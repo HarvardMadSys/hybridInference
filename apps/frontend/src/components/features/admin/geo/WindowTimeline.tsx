@@ -1,25 +1,16 @@
 'use client';
 
-import { area, curveMonotoneX, scaleLinear } from 'd3';
+import { area, curveMonotoneX, line, scaleLinear } from 'd3';
 import type { KeyboardEvent, PointerEvent } from 'react';
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
-import {
-  CONTINENT_COLORS,
-  CONTINENT_NAMES,
-  positiveNearestRankPercentile,
-  type GeoMetricModel,
-} from './geoMath';
+import { buildOriginSeries, ORIGIN_COLORS, type GeoMetricModel } from './geoMath';
 
-const WIDTH = 1_000;
-const HEIGHT = 96;
-const MARGIN = { top: 6, right: 8, bottom: 20, left: 8 } as const;
-
-interface StackedContinent {
-  continent: string;
-  lower: number[];
-  upper: number[];
-}
+const HEIGHT = 112;
+// The right margin holds the value ticks; the plot itself starts flush left.
+const MARGIN = { top: 10, right: 40, bottom: 22, left: 0 } as const;
+const FALLBACK_WIDTH = 1_000;
+const MIN_DAY_LABEL_GAP_PX = 58;
 
 function formatUtcReadout(timestamp: string | undefined): string {
   const date = new Date(timestamp ?? '');
@@ -34,7 +25,35 @@ function dayLabel(timestamp: string): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
-/** One timeline for the whole loaded window: stacked demand by continent plus the scrubber. */
+function formatTick(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${Math.round(value / 100) / 10}k`;
+  return String(Math.round(value));
+}
+
+/** The chart's rendered width; drawn in real pixels so its text is never stretched. */
+function useMeasuredWidth<T extends Element>() {
+  const ref = useRef<T>(null);
+  const [width, setWidth] = useState(FALLBACK_WIDTH);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const update = () => {
+      const measured = element.getBoundingClientRect().width;
+      if (measured > 0) setWidth(measured);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, width] as const;
+}
+
+const TOOL_BUTTON =
+  'rounded-md px-2.5 py-1 text-xs text-slate-300 ring-1 ring-inset ring-white/10 transition hover:bg-white/[0.06] focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/80 disabled:pointer-events-none disabled:opacity-35';
+
+/** One timeline for the whole loaded window: total demand, the selected country over it, and the scrubber. */
 export function WindowTimeline({
   data,
   selectedHourIndex,
@@ -42,7 +61,10 @@ export function WindowTimeline({
   playing,
   onTogglePlay,
   onHourChange,
+  onReturnToTotal,
   totalLabel,
+  selectedCountry,
+  selectedCountryName,
 }: {
   data: GeoAnalyticsResponse;
   selectedHourIndex: number | null;
@@ -50,75 +72,68 @@ export function WindowTimeline({
   playing: boolean;
   onTogglePlay: () => void;
   onHourChange: (hourIndex: number) => void;
+  onReturnToTotal: () => void;
   totalLabel: string;
+  selectedCountry: string | null;
+  selectedCountryName: string | null;
 }) {
   const hourCount = data.hours_index.length;
   const lastIndex = Math.max(0, hourCount - 1);
   const isHourDetail = selectedHourIndex !== null;
   const hourIndex = Math.max(0, Math.min(lastIndex, selectedHourIndex ?? lastIndex));
   const scrubbing = useRef(false);
+  const [chartRef, width] = useMeasuredWidth<SVGSVGElement>();
 
-  const { stacked, continents, yMax } = useMemo(() => {
-    const series = metricModel.continentSeries;
-    const ordered = [...series.keys()].sort((a, b) => {
-      const totalA = series.get(a)?.reduce((sum, value) => sum + value, 0) ?? 0;
-      const totalB = series.get(b)?.reduce((sum, value) => sum + value, 0) ?? 0;
-      return totalB - totalA || a.localeCompare(b);
-    });
-    const base = Array(hourCount).fill(0) as number[];
-    const layers: StackedContinent[] = ordered.map((continent) => {
-      const values = series.get(continent) ?? [];
-      const lower = [...base];
-      for (let index = 0; index < hourCount; index += 1) base[index] += values[index] ?? 0;
-      return { continent, lower, upper: [...base] };
-    });
-    return {
-      stacked: layers,
-      continents: ordered,
-      yMax: Math.max(1, positiveNearestRankPercentile(base, 0.99)),
-    };
-  }, [hourCount, metricModel]);
+  const metric = metricModel.metric;
+  const { totalSeries, yMax } = useMemo(() => {
+    const series = buildOriginSeries(data, metric);
+    // Preserve spikes: the labeled axis must represent every plotted value.
+    const cap = Math.max(1, ...series);
+    return { totalSeries: series, yMax: scaleLinear().domain([0, cap]).nice(3).domain()[1] };
+  }, [data, metric]);
+  const countrySeries = useMemo(
+    () => (selectedCountry ? buildOriginSeries(data, metric, selectedCountry) : null),
+    [data, metric, selectedCountry],
+  );
 
+  const plotRight = Math.max(MARGIN.left + 1, width - MARGIN.right);
   const x = scaleLinear()
     .domain([0, Math.max(1, lastIndex)])
-    .range([MARGIN.left, WIDTH - MARGIN.right]);
+    .range([MARGIN.left, plotRight]);
   const y = scaleLinear()
     .domain([0, yMax])
     .range([HEIGHT - MARGIN.bottom, MARGIN.top])
     .clamp(true);
-  const layerArea = area<number>()
+  const seriesArea = area<number>()
     .x((_, index) => x(index))
+    .y0(y(0))
+    .y1((value) => y(value))
     .curve(curveMonotoneX);
-  const hourIndices = Array.from({ length: hourCount }, (_, index) => index);
-  const layerPaths = stacked.map((layer) => {
-    layerArea.y0((_, index) => y(layer.lower[index] ?? 0));
-    layerArea.y1((_, index) => y(layer.upper[index] ?? 0));
-    return { continent: layer.continent, d: layerArea(hourIndices) ?? undefined };
-  });
+  const seriesLine = line<number>()
+    .x((_, index) => x(index))
+    .y((value) => y(value))
+    .curve(curveMonotoneX);
+  const ticks = y.ticks(2).filter((tick) => tick > 0 && Number.isInteger(tick));
 
   const midnights = useMemo(() => {
-    const days = Math.max(1, Math.round(hourCount / 24));
-    const labelEvery = days > 14 ? 5 : days > 7 ? 2 : 1;
-    const result: { index: number; label: string | null }[] = [];
-    let midnightCount = 0;
+    const result: { index: number; timestamp: string }[] = [];
     data.hours_index.forEach((timestamp, index) => {
       const date = new Date(timestamp);
       if (Number.isNaN(date.getTime()) || date.getUTCHours() !== 0) return;
-      result.push({
-        index,
-        label: midnightCount % labelEvery === 0 ? dayLabel(timestamp) : null,
-      });
-      midnightCount += 1;
+      result.push({ index, timestamp });
     });
     return result;
-  }, [data.hours_index, hourCount]);
+  }, [data.hours_index]);
+  // Space day labels by real pixels so they never run together on a phone.
+  const pixelsPerDay = ((plotRight - MARGIN.left) * 24) / Math.max(1, lastIndex);
+  const labelEvery = Math.max(1, Math.ceil(MIN_DAY_LABEL_GAP_PX / Math.max(1, pixelsPerDay)));
 
   const seekFromClientX = (element: SVGSVGElement, clientX: number) => {
     const rect = element.getBoundingClientRect();
     if (!rect.width || hourCount === 0) return;
-    const svgX = ((clientX - rect.left) / rect.width) * WIDTH;
-    const bounded = Math.max(MARGIN.left, Math.min(WIDTH - MARGIN.right, svgX));
-    onHourChange(Math.round(x.invert(bounded)));
+    const plotWidth = Math.max(1, rect.width - MARGIN.left - MARGIN.right);
+    const fraction = Math.max(0, Math.min(1, (clientX - rect.left - MARGIN.left) / plotWidth));
+    onHourChange(Math.round(fraction * lastIndex));
   };
 
   const handlePointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -162,103 +177,149 @@ export function WindowTimeline({
   const readout = isHourDetail ? formatUtcReadout(data.hours_index[hourIndex]) : totalLabel;
 
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-600 disabled:opacity-40"
-          disabled={!isHourDetail || hourIndex <= 0}
-          onClick={() => onHourChange(hourIndex - 1)}
-        >
-          ← 1h
-        </button>
-        <button
-          type="button"
-          aria-pressed={playing}
-          className={`rounded-md px-3 py-1.5 text-sm font-medium transition ${
-            playing ? 'bg-gray-900 text-white' : 'border border-gray-200 bg-white text-gray-700'
-          }`}
-          onClick={onTogglePlay}
-        >
-          {playing ? '⏸ Pause' : '▶ Play'}
-        </button>
-        <button
-          type="button"
-          className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-600 disabled:opacity-40"
-          disabled={!isHourDetail || hourIndex >= lastIndex}
-          onClick={() => onHourChange(hourIndex + 1)}
-        >
-          1h →
-        </button>
-        <p className="ml-auto text-sm font-medium tabular-nums text-gray-700">{readout}</p>
+    <section className="border-t border-white/[0.07] px-5 pb-4 pt-4 sm:px-8">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-slate-500">
+          {metric === 'tout' ? 'Output tokens' : 'Requests'} per hour (UTC)
+          {selectedCountryName && (
+            <span className="ml-3 text-xs normal-case tracking-normal text-white">
+              <span aria-hidden="true">— </span>
+              {selectedCountryName}
+            </span>
+          )}
+        </p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            className={TOOL_BUTTON}
+            disabled={!isHourDetail || hourIndex <= 0}
+            onClick={() => onHourChange(hourIndex - 1)}
+          >
+            ← 1h
+          </button>
+          <button
+            type="button"
+            aria-pressed={playing}
+            className={`${TOOL_BUTTON} min-w-[4.75rem] font-medium ${
+              playing ? 'bg-sky-300 text-slate-950 ring-sky-300 hover:bg-sky-200' : ''
+            }`}
+            onClick={onTogglePlay}
+          >
+            {playing ? '⏸ Pause' : '▶ Play'}
+          </button>
+          <button
+            type="button"
+            className={TOOL_BUTTON}
+            disabled={!isHourDetail || hourIndex >= lastIndex}
+            onClick={() => onHourChange(hourIndex + 1)}
+          >
+            1h →
+          </button>
+          {/* Always laid out so entering or leaving an hour never reflows the
+              toolbar; hidden from sight and assistive tech on the total. */}
+          <button
+            type="button"
+            aria-hidden={!isHourDetail}
+            className={`ml-1 rounded-md px-2 py-1 text-xs font-medium text-sky-300 transition hover:text-sky-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/80 ${
+              isHourDetail ? '' : 'invisible'
+            }`}
+            disabled={!isHourDetail}
+            onClick={onReturnToTotal}
+            tabIndex={isHourDetail ? undefined : -1}
+          >
+            <span aria-hidden="true">↩ </span>Back to {totalLabel}
+          </button>
+          {/* First on a phone, so the reserved button above trails the row
+              instead of indenting the readout. */}
+          <p className="order-first w-full text-[13px] tabular-nums text-slate-300 sm:order-none sm:w-auto sm:min-w-[9.5rem] sm:text-right">
+            <span className="text-slate-500">Showing </span>
+            <span className="font-medium text-white">{readout}</span>
+          </p>
+        </div>
       </div>
       <svg
+        ref={chartRef}
         aria-label="Demand timeline for the loaded window"
         aria-orientation="horizontal"
         aria-valuemax={lastIndex}
         aria-valuemin={0}
         aria-valuenow={hourIndex}
         aria-valuetext={isHourDetail ? readout : `${readout}; select an hour for details`}
-        className="mt-2 block h-24 w-full cursor-crosshair touch-none overflow-visible"
+        // Same UA `:focus` outline as the globe marks: keyboard focus only.
+        className="mt-3 block w-full cursor-crosshair touch-none select-none overflow-visible rounded-sm focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-sky-300"
+        height={HEIGHT}
         onKeyDown={handleKeyDown}
         onPointerCancel={handlePointerEnd}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerEnd}
-        preserveAspectRatio="none"
         role="slider"
         tabIndex={0}
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        viewBox={`0 0 ${width} ${HEIGHT}`}
       >
-        {midnights.map(({ index, label }) => (
-          <g key={index}>
+        {[0, ...ticks].map((tick) => (
+          <g key={tick}>
             <line
-              stroke="rgba(107,114,128,0.18)"
-              x1={x(index)}
-              x2={x(index)}
-              y1={MARGIN.top}
-              y2={HEIGHT - MARGIN.bottom}
+              stroke="rgba(255,255,255,0.06)"
+              x1={MARGIN.left}
+              x2={plotRight + 6}
+              y1={y(tick)}
+              y2={y(tick)}
             />
-            {label ? (
-              <text fill="#9ca3af" fontSize="10" x={x(index) + 3} y={HEIGHT - 6}>
-                {label}
-              </text>
-            ) : null}
+            <text fill="#64748b" fontSize={11} textAnchor="end" x={width} y={y(tick) + 4}>
+              {formatTick(tick)}
+            </text>
           </g>
         ))}
-        {layerPaths.map((layer) => (
+        {midnights.map(({ index, timestamp }, position) =>
+          position % labelEvery === 0 ? (
+            <text key={index} fill="#64748b" fontSize={11} x={x(index)} y={HEIGHT - 5}>
+              {dayLabel(timestamp)}
+            </text>
+          ) : null,
+        )}
+        <path
+          d={seriesArea(totalSeries) ?? undefined}
+          data-series="total"
+          fill={ORIGIN_COLORS.mark}
+          fillOpacity={countrySeries ? 0.07 : 0.12}
+        />
+        <path
+          d={seriesLine(totalSeries) ?? undefined}
+          fill="none"
+          stroke={ORIGIN_COLORS.mark}
+          strokeOpacity={countrySeries ? 0.55 : 0.95}
+          strokeWidth={1.25}
+        />
+        {countrySeries && (
           <path
-            key={layer.continent}
-            data-continent={layer.continent}
-            d={layer.d}
-            fill={CONTINENT_COLORS[layer.continent] ?? CONTINENT_COLORS['?']}
-            opacity={0.75}
-          />
-        ))}
-        {isHourDetail && (
-          <line
-            data-testid="selected-hour-marker"
-            stroke="#111827"
-            strokeWidth="1.2"
-            x1={x(hourIndex)}
-            x2={x(hourIndex)}
-            y1={MARGIN.top - 2}
-            y2={HEIGHT - MARGIN.bottom + 3}
+            d={seriesLine(countrySeries) ?? undefined}
+            data-series="selected"
+            fill="none"
+            stroke={ORIGIN_COLORS.selected}
+            strokeWidth={1.75}
           />
         )}
-      </svg>
-      <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-gray-500">
-        {continents.map((continent) => (
-          <span key={continent} className="inline-flex items-center gap-1">
-            <span
-              aria-hidden="true"
-              className="h-2 w-2 rounded-full"
-              style={{ backgroundColor: CONTINENT_COLORS[continent] ?? '#898781' }}
+        {isHourDetail && (
+          <g pointerEvents="none">
+            <line
+              data-testid="selected-hour-marker"
+              stroke={ORIGIN_COLORS.selected}
+              strokeWidth={1.5}
+              x1={x(hourIndex)}
+              x2={x(hourIndex)}
+              y1={MARGIN.top - 6}
+              y2={y(0)}
             />
-            {CONTINENT_NAMES[continent] ?? continent}
-          </span>
-        ))}
-      </div>
+            <circle
+              cx={x(hourIndex)}
+              cy={y(totalSeries[hourIndex] ?? 0)}
+              fill={ORIGIN_COLORS.selected}
+              r={3.5}
+            />
+          </g>
+        )}
+      </svg>
     </section>
   );
 }

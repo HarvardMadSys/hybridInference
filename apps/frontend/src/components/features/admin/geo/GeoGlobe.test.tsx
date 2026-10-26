@@ -77,6 +77,22 @@ class ResizeObserverMock {
   unobserve() {}
 }
 
+/** The headline number, e.g. `14` for "14 requests". */
+async function findTotal(value: string) {
+  expect(await screen.findByTestId('origins-total')).toHaveTextContent(new RegExp(`^${value}$`));
+}
+
+function expectTotal(value: string) {
+  expect(screen.getByTestId('origins-total')).toHaveTextContent(new RegExp(`^${value}$`));
+}
+
+/** The lead sentence, e.g. "United States leads with 71% of all requests." */
+function expectLead(name: string, share: string, unit = 'requests') {
+  expect(
+    screen.getByText(`leads with ${share} of all ${unit}.`, { exact: false }),
+  ).toHaveTextContent(`${name} leads with ${share} of all ${unit}.`);
+}
+
 function renderGeoGlobe() {
   return render(
     <QueryClientProvider client={queryClient}>
@@ -93,6 +109,8 @@ beforeEach(() => {
     },
   });
   vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+  // jsdom has no 2D context; the globe's land matrix simply is not drawn.
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
   // Reduced motion keeps view-request rotations instant in tests.
   vi.stubGlobal(
     'matchMedia',
@@ -117,6 +135,7 @@ afterEach(() => {
   cleanup();
   queryClient.clear();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('GeoGlobe', () => {
@@ -134,9 +153,10 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     renderGeoGlobe();
 
-    expect(await screen.findByText('14 requests')).toBeInTheDocument();
-    expect(screen.getByText('last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
-    expect(screen.getByText('United States 71% · 1 active country')).toBeInTheDocument();
+    await findTotal('14');
+    expect(screen.getByText('requests from 1 country')).toBeInTheDocument();
+    expect(screen.getByText('Last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
+    expectLead('United States', '71%');
 
     const metricGroup = screen.getByRole('group', { name: 'Metric' });
     expect(within(metricGroup).getByRole('button', { name: 'Requests' })).toHaveAttribute(
@@ -162,7 +182,7 @@ describe('GeoGlobe', () => {
   it('keeps cached origins visible while a remount refreshes stale data', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     const firstView = renderGeoGlobe();
-    expect(await screen.findByText('14 requests')).toBeInTheDocument();
+    await findTotal('14');
     firstView.unmount();
 
     queryClient.setQueryData(['admin', 'analytics', 'geo', 14], response(), {
@@ -171,7 +191,7 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockReturnValue(new Promise(() => undefined));
     renderGeoGlobe();
 
-    expect(screen.getByText('14 requests')).toBeInTheDocument();
+    expectTotal('14');
     expect(
       screen.queryByRole('status', { name: 'Loading request origins' }),
     ).not.toBeInTheDocument();
@@ -185,12 +205,14 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockResolvedValue(data);
     renderGeoGlobe();
 
-    expect(await screen.findByText('17 requests')).toBeInTheDocument();
-    expect(screen.getByText('United States 59% · 2 active countries')).toBeInTheDocument();
+    await findTotal('17');
+    expect(screen.getByText('requests from 2 countries')).toBeInTheDocument();
+    expectLead('United States', '59%');
 
     fireEvent.click(screen.getByRole('button', { name: 'Tokens' }));
-    expect(screen.getByText('120 output tokens')).toBeInTheDocument();
-    expect(screen.getByText('United States 67% · 2 active countries')).toBeInTheDocument();
+    expectTotal('120');
+    expect(screen.getByText('output tokens from 2 countries')).toBeInTheDocument();
+    expectLead('United States', '67%', 'output tokens');
   });
 
   it('drives selection through the top-origins rail with a globe ring', async () => {
@@ -205,10 +227,17 @@ describe('GeoGlobe', () => {
     const dot = screen.getByRole('button', { name: 'United States request origin' });
     expect(dot).toHaveAttribute('aria-pressed', 'true');
     expect(dot.querySelector('circle[data-layer="selection-ring"]')).not.toHaveAttribute('display');
+    // The timeline follows the same selection.
+    const timeline = screen
+      .getByRole('slider', { name: 'Demand timeline for the loaded window' })
+      .closest('section')!;
+    expect(timeline.querySelector('path[data-series="selected"]')).toBeInTheDocument();
+    expect(within(timeline).getByText('United States')).toBeInTheDocument();
 
     fireEvent.click(row);
     expect(row).toHaveAttribute('aria-pressed', 'false');
     expect(dot).toHaveAttribute('aria-pressed', 'false');
+    expect(timeline.querySelector('path[data-series="selected"]')).not.toBeInTheDocument();
   });
 
   it('shows the empty-hour copy when scrubbed to an hour without requests', async () => {
@@ -235,39 +264,107 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockResolvedValue(data);
     renderGeoGlobe();
 
-    expect(await screen.findByText('17 requests')).toBeInTheDocument();
-    expect(screen.getByText('last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
-    expect(screen.getByText('United States 59% · 2 active countries')).toBeInTheDocument();
+    await findTotal('17');
+    expect(screen.getByText('Last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
+    expectLead('United States', '59%');
     expect(screen.getByText('Top origins · last 14 days')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Back to 14-day total' })).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Globe of IP-based request origins' })).toBeVisible();
+
+    // The return control is laid out (but hidden) on the total, so drilling
+    // in reveals the same toolbar element instead of inserting a new row.
+    const timelineSection = screen
+      .getByRole('slider', { name: 'Demand timeline for the loaded window' })
+      .closest('section')!;
+    const reserved = within(timelineSection).getByText(/Back to 14-day total/, {
+      selector: 'button',
+    });
+    expect(reserved).toHaveAttribute('aria-hidden', 'true');
+    expect(reserved).toBeDisabled();
+    expect(within(timelineSection).getByText('14-day total')).toBeInTheDocument();
 
     const timeline = screen.getByRole('slider', { name: 'Demand timeline for the loaded window' });
     fireEvent.keyDown(timeline, { key: 'ArrowLeft' });
 
-    expect(screen.getByText('3 requests')).toBeInTheDocument();
-    expect(screen.getByText('at 00:00 UTC · Jul 15')).toBeInTheDocument();
-    expect(screen.getByText('CAN 100% · 1 active country')).toBeInTheDocument();
+    expectTotal('3');
+    expect(screen.getByText('Hour of Jul 15 · 00:00 UTC')).toBeInTheDocument();
+    expectLead('CAN', '100%');
     expect(screen.getByText('Top origins · 00:00 UTC')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Back to 14-day total' }));
+    expect(within(timelineSection).getByText('Jul 15 · 00:00 UTC')).toBeInTheDocument();
+    expect(
+      screen.getByRole('group', { name: 'Globe of IP-based request origins and day and night' }),
+    ).toBeVisible();
+    const back = within(timelineSection).getByRole('button', { name: 'Back to 14-day total' });
+    expect(back).toBe(reserved);
+    expect(back).toBeEnabled();
+    fireEvent.click(back);
 
-    expect(screen.getByText('17 requests')).toBeInTheDocument();
+    expectTotal('17');
     expect(screen.getByText('Top origins · last 14 days')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Back to 14-day total' })).not.toBeInTheDocument();
+  });
+
+  it('shows each top origin as a share of the whole scope total, unlocated included', async () => {
+    const data = response();
+    data.hours[0].b = [['CAN', 'NA', 3, 30]];
+    data.meta.rows_total = 17;
+    mockedGetGeoAnalytics.mockResolvedValue(data);
+    renderGeoGlobe();
+
+    const rail = (await screen.findByText('Top origins · last 14 days')).closest('aside')!;
+    const usa = within(rail).getByRole('button', {
+      name: 'United States: 10 requests, 59% of all requests in selected window',
+    });
+    expect(within(usa).getByText('59%')).toBeInTheDocument();
+    expect(within(usa).getByTestId('origin-share-bar')).toHaveStyle({
+      width: `${(10 / 17) * 100}%`,
+    });
+    expect(
+      within(rail).getByRole('button', {
+        name: 'CAN: 3 requests, 18% of all requests in selected window',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(rail).getByText('% of all 17 requests in selected window · 24% unlocated'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tokens' }));
+    expect(
+      within(rail).getByRole('button', {
+        name: 'United States: 80 output tokens, 67% of all output tokens in selected window',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(rail).getByText('% of all 120 output tokens in selected window · 8.3% unlocated'),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(
+      screen.getByRole('slider', { name: 'Demand timeline for the loaded window' }),
+      {
+        key: 'ArrowLeft',
+      },
+    );
+    expect(
+      within(rail).getByRole('button', {
+        name: 'CAN: 30 output tokens, 100% of all output tokens this hour',
+      }),
+    ).toBeInTheDocument();
+    expect(within(rail).getByText('% of all 30 output tokens this hour')).toBeInTheDocument();
   });
 
   it('refetches when the range changes and remembers cached ranges', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     renderGeoGlobe();
-    await screen.findByText('14 requests');
+    await findTotal('14');
 
     fireEvent.click(screen.getByRole('button', { name: '7d' }));
     await waitFor(() =>
       expect(mockedGetGeoAnalytics).toHaveBeenLastCalledWith(expect.objectContaining({ days: 7 })),
     );
-    await screen.findByText('14 requests');
+    await findTotal('14');
 
     fireEvent.click(screen.getByRole('button', { name: '14d' }));
-    await screen.findByText('14 requests');
+    await findTotal('14');
     expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2);
   });
 
@@ -333,7 +430,7 @@ describe('GeoGlobe', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('scan unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
-    expect(await screen.findByText('14 requests')).toBeInTheDocument();
+    await findTotal('14');
     await waitFor(() => expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2));
   });
 
@@ -352,7 +449,7 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockResolvedValue(data);
     renderGeoGlobe();
 
-    expect(await screen.findByText('96 requests')).toBeInTheDocument();
+    await findTotal('96');
     expect(
       screen.getByText('Origins unknown for all requests in this 14-day window.'),
     ).toBeInTheDocument();
@@ -374,24 +471,24 @@ describe('GeoGlobe', () => {
       Promise.resolve(options?.days === 7 ? seven : fourteen),
     );
     renderGeoGlobe();
-    expect(await screen.findByText('last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
+    expect(await screen.findByText('Last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
 
     const timeline = screen.getByRole('slider', { name: 'Demand timeline for the loaded window' });
     fireEvent.keyDown(timeline, { key: 'Home' });
     expect(screen.getByRole('button', { name: 'Back to 14-day total' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '7d' }));
-    expect(await screen.findByText('3 requests')).toBeInTheDocument();
-    expect(screen.getByText('last 7 days · through Jul 14 05:00 UTC')).toBeInTheDocument();
+    await findTotal('3');
+    expect(screen.getByText('Last 7 days · through Jul 14 05:00 UTC')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Back to 7-day total' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '14d' }));
-    expect(await screen.findByText('last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
+    expect(await screen.findByText('Last 14 days · through Jul 15 01:00 UTC')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '7d' }));
-    expect(await screen.findByText('last 7 days · through Jul 14 05:00 UTC')).toBeInTheDocument();
-    expect(screen.getByText('CAN 100% · 1 active country')).toBeInTheDocument();
-    expect(screen.queryByText('unknown hour')).not.toBeInTheDocument();
+    expect(await screen.findByText('Last 7 days · through Jul 14 05:00 UTC')).toBeInTheDocument();
+    expectLead('CAN', '100%');
+    expect(screen.queryByText('Unknown hour')).not.toBeInTheDocument();
     expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2);
   });
 
@@ -405,7 +502,7 @@ describe('GeoGlobe', () => {
 
     expect(await screen.findByText('No request origins yet')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '30d' }));
-    expect(await screen.findByText('14 requests')).toBeInTheDocument();
+    await findTotal('14');
   });
 
   it('returns focus to the trigger when data details closes', async () => {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GeoAnalyticsResponse, GeoMetric } from '@/lib/api/admin';
 import { getGeoAnalytics } from '@/lib/api/admin';
@@ -15,9 +16,11 @@ import {
   type PreparedAtlas,
 } from './GlobeCanvas';
 import {
-  demandWeightedRotation,
   deriveGeoMetricModel,
   hourOriginSummary,
+  landPoints,
+  openingRotation,
+  ORIGIN_COLORS,
   rotationForCoordinate,
   windowOriginSummary,
 } from './geoMath';
@@ -28,7 +31,9 @@ const HOUR_MS = 3_600_000;
 const STALE_AFTER_MS = 2 * HOUR_MS;
 const GEO_QUERY_STALE_MS = 60_000;
 const GEO_QUERY_REFRESH_MS = 5 * 60_000;
-const DEFAULT_ROTATION: [number, number] = [-100, -28];
+const DEFAULT_ROTATION: [number, number] = [-20, -30];
+// Spacing of the land dot matrix, in degrees of latitude.
+const LAND_STEP_DEGREES = 1.45;
 
 export type GeoRangeDays = 7 | 14 | 30;
 
@@ -45,7 +50,7 @@ const RANGE_OPTIONS: { value: GeoRangeDays; label: string }[] = [
 
 function formatCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`;
   return Math.round(value).toLocaleString('en-US');
 }
 
@@ -55,9 +60,9 @@ function metricUnit(metric: GeoMetric): string {
 
 function hourHeadline(timestamp: string | undefined): string {
   const date = new Date(timestamp ?? '');
-  if (Number.isNaN(date.getTime())) return 'unknown hour';
+  if (Number.isNaN(date.getTime())) return 'Unknown hour';
   const day = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-  return `at ${String(date.getUTCHours()).padStart(2, '0')}:00 UTC · ${day}`;
+  return `Hour of ${day} · ${String(date.getUTCHours()).padStart(2, '0')}:00 UTC`;
 }
 
 function hourShortLabel(timestamp: string | undefined): string {
@@ -68,9 +73,9 @@ function hourShortLabel(timestamp: string | undefined): string {
 
 function windowHeadline(days: GeoRangeDays, timestamp: string | undefined): string {
   const date = new Date(timestamp ?? '');
-  if (Number.isNaN(date.getTime())) return `last ${days} days`;
+  if (Number.isNaN(date.getTime())) return `Last ${days} days`;
   const day = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
-  return `last ${days} days · through ${day} ${String(date.getUTCHours()).padStart(2, '0')}:00 UTC`;
+  return `Last ${days} days · through ${day} ${String(date.getUTCHours()).padStart(2, '0')}:00 UTC`;
 }
 
 function isStale(generatedAt: string): boolean {
@@ -84,28 +89,40 @@ function Segmented<Value extends string | number>({
   options,
   value,
   onChange,
+  tone = 'dark',
 }: {
   label: string;
   options: readonly { value: Value; label: string }[];
   value: Value;
   onChange: (next: Value) => void;
+  tone?: 'light' | 'dark';
 }) {
+  const dark = tone === 'dark';
   return (
     <div
       aria-label={label}
-      className="inline-flex overflow-hidden rounded-lg border border-gray-200 bg-white"
+      className={`inline-flex rounded-lg p-0.5 ${
+        dark ? 'bg-white/[0.06] ring-1 ring-inset ring-white/10' : 'bg-gray-100'
+      }`}
       role="group"
     >
       {options.map((option) => {
         const active = option.value === value;
+        const stateClass = dark
+          ? active
+            ? 'bg-white/15 text-white'
+            : 'text-slate-400 hover:text-slate-200'
+          : active
+            ? 'bg-white text-gray-900 shadow-sm'
+            : 'text-gray-500 hover:text-gray-800';
         return (
           <button
             key={String(option.value)}
             type="button"
             aria-pressed={active}
-            className={`px-3 py-1.5 text-[13px] font-medium transition ${
-              active ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-50'
-            }`}
+            className={`rounded-md px-2.5 py-1 text-[13px] font-medium transition focus:outline-none focus-visible:ring-2 sm:px-3 ${
+              dark ? 'focus-visible:ring-sky-300/80' : 'focus-visible:ring-blue-600'
+            } ${stateClass}`}
             onClick={() => onChange(option.value)}
           >
             {option.label}
@@ -124,10 +141,16 @@ async function loadAtlas(signal: AbortSignal): Promise<PreparedAtlas> {
 
 function LoadingState() {
   return (
-    <div aria-label="Loading request origins" className="mt-6 space-y-3" role="status">
-      <div className="h-16 animate-pulse rounded-xl bg-gray-100" />
-      <div className="h-[440px] animate-pulse rounded-xl bg-gray-900" />
-      <p className="text-center text-sm text-gray-500">Loading request origins…</p>
+    <div
+      aria-label="Loading request origins"
+      className="mt-6 flex h-[560px] items-center justify-center rounded-2xl"
+      role="status"
+      style={{ backgroundColor: ORIGIN_COLORS.panel }}
+    >
+      <div className="flex flex-col items-center gap-4">
+        <div className="h-48 w-48 animate-pulse rounded-full bg-white/[0.05] ring-1 ring-sky-300/10" />
+        <p className="text-sm text-slate-500">Loading request origins…</p>
+      </div>
     </div>
   );
 }
@@ -162,7 +185,13 @@ function EmptyState({
         There were no requests in the latest {days}-day window.
       </p>
       <div className="mt-4 flex justify-center">
-        <Segmented label="Range" onChange={onDaysChange} options={RANGE_OPTIONS} value={days} />
+        <Segmented
+          label="Range"
+          onChange={onDaysChange}
+          options={RANGE_OPTIONS}
+          tone="light"
+          value={days}
+        />
       </div>
       <p className="mt-2 text-xs text-gray-400">Try a longer range.</p>
     </div>
@@ -172,14 +201,12 @@ function EmptyState({
 function Hero({
   mode,
   days,
-  timestamp,
   metric,
   summary,
   atlas,
 }: {
   mode: 'window' | 'hour';
   days: GeoRangeDays;
-  timestamp: string | undefined;
   metric: GeoMetric;
   summary: ReturnType<typeof windowOriginSummary>;
   atlas: PreparedAtlas;
@@ -187,39 +214,57 @@ function Hero({
   const unit = metricUnit(metric);
   const countryWord = summary.activeCountries === 1 ? 'country' : 'countries';
   const scope = mode === 'window' ? `this ${days}-day window` : 'this hour';
-  let subline = `No requests recorded in ${scope}.`;
+  let subline: ReactNode = `No requests recorded in ${scope}.`;
   if (summary.totalRequests > 0 && summary.top === null) {
     subline = `Origins unknown for all requests in ${scope}.`;
   } else if (summary.top !== null) {
-    const topName = atlasCountryName(atlas, summary.top.country);
-    const topShare = Math.round(summary.topShare * 100);
-    subline = `${topName} ${topShare}% · ${summary.activeCountries} active ${countryWord}`;
+    subline = (
+      <>
+        <span className="text-white">{atlasCountryName(atlas, summary.top.country)}</span> leads
+        with {Math.round(summary.topShare * 100)}% of all {unit}.
+      </>
+    );
   }
   return (
-    <div>
-      <p className="text-[28px] font-bold leading-tight tracking-tight text-gray-900">
-        <span>
-          {summary.totalValue > 0 ? `${formatCount(summary.totalValue)} ${unit}` : `No ${unit}`}
-        </span>
-        <span className="ml-2 text-base font-medium text-gray-500">
-          {mode === 'window' ? windowHeadline(days, timestamp) : hourHeadline(timestamp)}
-        </span>
+    <div className="min-w-0">
+      <p
+        className="text-[44px] font-light leading-none tracking-tight text-white tabular-nums"
+        data-testid="origins-total"
+      >
+        {formatCount(summary.totalValue)}
       </p>
-      <p aria-live="polite" className="mt-0.5 text-sm text-gray-600">
+      <p className="mt-2 text-sm text-slate-400">
+        {summary.activeCountries > 0
+          ? `${unit} from ${summary.activeCountries} ${countryWord}`
+          : unit}
+      </p>
+      <p aria-live="polite" className="mt-4 text-[15px] leading-snug text-slate-300">
         {subline}
       </p>
     </div>
   );
 }
 
+/** The opening view: always of request volume, so a metric switch never turns the globe. */
+function openingView(
+  data: GeoAnalyticsResponse,
+  atlas: PreparedAtlas,
+  land: readonly [number, number][],
+): [number, number] {
+  const origins = windowOriginSummary(data, deriveGeoMetricModel(data, 'n')).origins;
+  return openingRotation(origins, atlas.coordinates, land) ?? DEFAULT_ROTATION;
+}
+
 function GeoDashboard({
   data,
   atlas,
+  land,
   days,
   onDaysChange,
 }: {
   data: GeoAnalyticsResponse;
   atlas: PreparedAtlas;
+  land: readonly [number, number][];
   days: GeoRangeDays;
   onDaysChange: (next: GeoRangeDays) => void;
 }) {
@@ -229,10 +274,7 @@ function GeoDashboard({
   const [playing, setPlaying] = useState(false);
   const [selection, setSelection] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const initialRotation = useMemo(
-    () => demandWeightedRotation(data, atlas.coordinates) ?? DEFAULT_ROTATION,
-    [atlas.coordinates, data],
-  );
+  const initialRotation = useMemo(() => openingView(data, atlas, land), [atlas, data, land]);
   const [viewRequest, setViewRequest] = useState<GlobeViewRequest>({
     id: 0,
     rotation: initialRotation,
@@ -249,11 +291,8 @@ function GeoDashboard({
     setSelectedHourIndex(null);
     setPlaying(false);
     setSelection(null);
-    setViewRequest((request) => ({
-      id: request.id + 1,
-      rotation: demandWeightedRotation(data, atlas.coordinates) ?? DEFAULT_ROTATION,
-    }));
-  }, [atlas.coordinates, data]);
+    setViewRequest((request) => ({ id: request.id + 1, rotation: openingView(data, atlas, land) }));
+  }, [atlas, data, land]);
 
   useEffect(() => {
     if (!playing) return;
@@ -299,6 +338,7 @@ function GeoDashboard({
           id: request.id + 1,
           rotation: rotationForCoordinate(coordinate),
           animate: true,
+          unlessVisible: coordinate,
         }));
       }
     },
@@ -317,100 +357,110 @@ function GeoDashboard({
   const stale = isStale(data.meta.generated_at);
 
   return (
-    <div className="mt-6 space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Segmented label="Metric" onChange={setMetric} options={METRIC_OPTIONS} value={metric} />
-          <Segmented label="Range" onChange={onDaysChange} options={RANGE_OPTIONS} value={days} />
+    <div className="mt-6">
+      {/* One composed night panel: numbers, globe and timeline are a single
+          view of one selection, not separate cards. */}
+      <section
+        aria-label="Request origins overview"
+        className="overflow-hidden rounded-2xl text-slate-300 shadow-sm ring-1 ring-black/5"
+        style={{ backgroundColor: ORIGIN_COLORS.panel }}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.07] px-5 py-3.5 sm:px-8">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
+              {mode === 'window'
+                ? windowHeadline(days, data.hours_index[lastIndex])
+                : hourHeadline(data.hours_index[safeHourIndex])}
+            </p>
+            {data.meta.source === 'synthetic-demo' && (
+              <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-amber-950">
+                SYNTHETIC DEMO
+              </span>
+            )}
+            {stale && (
+              <span className="rounded bg-amber-300/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200 ring-1 ring-inset ring-amber-300/30">
+                STALE
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Segmented
+              label="Metric"
+              onChange={setMetric}
+              options={METRIC_OPTIONS}
+              value={metric}
+            />
+            <Segmented label="Range" onChange={onDaysChange} options={RANGE_OPTIONS} value={days} />
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {data.meta.source === 'synthetic-demo' && (
-            <span className="rounded bg-amber-400 px-2 py-0.5 text-[10px] font-bold tracking-wide text-amber-950">
-              SYNTHETIC DEMO
-            </span>
-          )}
-          {stale && (
-            <span className="rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-              STALE
-            </span>
-          )}
+
+        {(data.meta.degraded || !data.meta.geoip.country) && (
+          <div className="mx-5 mt-4 rounded-lg bg-amber-300/10 px-3 py-2 text-sm text-amber-200 ring-1 ring-inset ring-amber-300/25 sm:mx-8">
+            Location data is degraded — unlocated traffic stays in the totals but is not plotted.
+          </div>
+        )}
+
+        {/* Phones read hero, globe, then the list; wide screens put the globe
+            beside both. */}
+        <div className="grid lg:grid-cols-[minmax(0,19.5rem)_minmax(0,1fr)] lg:grid-rows-[auto_1fr]">
+          <div className="px-5 pt-6 sm:px-8 lg:col-start-1 lg:row-start-1 lg:pt-8">
+            <Hero atlas={atlas} days={days} metric={metric} mode={mode} summary={summary} />
+          </div>
+          <div className="h-[clamp(320px,100vw,460px)] min-w-0 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:h-auto lg:min-h-[540px]">
+            <GlobeCanvas
+              atlas={atlas}
+              land={land}
+              metricModel={metricModel}
+              mode={mode}
+              onSelect={handleGlobeSelect}
+              selectedCountry={selection}
+              snapshotTimestamp={data.hours_index[safeHourIndex]}
+              summary={summary}
+              viewRequest={viewRequest}
+            />
+          </div>
+          <div className="px-5 pb-6 sm:px-8 lg:col-start-1 lg:row-start-2 lg:pb-8 lg:pt-6">
+            <TopOrigins
+              announce={!playing}
+              atlas={atlas}
+              label={
+                mode === 'window'
+                  ? `last ${days} days`
+                  : hourShortLabel(data.hours_index[safeHourIndex])
+              }
+              metric={metric}
+              mode={mode}
+              onSelect={handleOriginSelect}
+              selectedCountry={selection}
+              summary={summary}
+            />
+          </div>
         </div>
-      </div>
 
-      <Hero
-        atlas={atlas}
-        days={days}
-        metric={metric}
-        mode={mode}
-        summary={summary}
-        timestamp={data.hours_index[safeHourIndex]}
-      />
+        <WindowTimeline
+          data={data}
+          metricModel={metricModel}
+          onHourChange={setBoundedHour}
+          onReturnToTotal={returnToWindowTotal}
+          onTogglePlay={togglePlay}
+          playing={playing}
+          selectedCountry={selection}
+          selectedCountryName={selection ? atlasCountryName(atlas, selection) : null}
+          selectedHourIndex={selectedHourIndex}
+          totalLabel={`${days}-day total`}
+        />
 
-      {mode === 'hour' && (
-        <div>
+        <footer className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-white/[0.07] px-5 py-3 text-xs text-slate-500 sm:px-8">
+          <span>Locations are estimated from request IPs.</span>
           <button
             type="button"
-            className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            onClick={returnToWindowTotal}
+            className="rounded font-medium text-sky-300 underline decoration-sky-300/30 underline-offset-2 hover:text-sky-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/80"
+            onClick={() => setDetailsOpen(true)}
           >
-            Back to {days}-day total
+            Data details
           </button>
-        </div>
-      )}
-
-      {(data.meta.degraded || !data.meta.geoip.country) && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          Location data is degraded — unlocated traffic stays in the totals but is not plotted.
-        </div>
-      )}
-
-      <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,1fr)_15rem]">
-        <GlobeCanvas
-          atlas={atlas}
-          metricModel={metricModel}
-          mode={mode}
-          onSelect={handleGlobeSelect}
-          selectedCountry={selection}
-          snapshotTimestamp={data.hours_index[safeHourIndex]}
-          summary={summary}
-          viewRequest={viewRequest}
-        />
-        <TopOrigins
-          announce={!playing}
-          atlas={atlas}
-          label={
-            mode === 'window'
-              ? `last ${days} days`
-              : hourShortLabel(data.hours_index[safeHourIndex])
-          }
-          metric={metric}
-          mode={mode}
-          onSelect={handleOriginSelect}
-          selectedCountry={selection}
-          summary={summary}
-        />
-      </div>
-
-      <WindowTimeline
-        data={data}
-        metricModel={metricModel}
-        onHourChange={setBoundedHour}
-        onTogglePlay={togglePlay}
-        playing={playing}
-        selectedHourIndex={selectedHourIndex}
-        totalLabel={`${days}-day total`}
-      />
-
-      <footer className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-[13px] text-gray-500">
-        <span>Locations are estimated from request IPs.</span>
-        <button
-          type="button"
-          className="font-medium text-blue-700 underline decoration-blue-200 underline-offset-2 hover:text-blue-900"
-          onClick={() => setDetailsOpen(true)}
-        >
-          Data details
-        </button>
-      </footer>
+        </footer>
+      </section>
 
       <DataDetailsDialog
         data={data}
@@ -440,6 +490,11 @@ export function GeoGlobe() {
   });
   const data = geoQuery.data ?? null;
   const atlas = atlasQuery.data ?? null;
+  // Sampled once per atlas (about 0.2s), not per range: the dashboard remounts on a range switch.
+  const land = useMemo(
+    () => (atlas ? landPoints(atlas.countries, LAND_STEP_DEGREES) : []),
+    [atlas],
+  );
   const error = geoQuery.error ?? atlasQuery.error;
 
   if ((!data || !atlas) && (geoQuery.isPending || atlasQuery.isPending)) return <LoadingState />;
@@ -467,5 +522,14 @@ export function GeoGlobe() {
   if (!data.hours_index.length || !data.hours.length || data.meta.rows_total === 0) {
     return <EmptyState days={days} onDaysChange={setDays} />;
   }
-  return <GeoDashboard key={days} atlas={atlas} data={data} days={days} onDaysChange={setDays} />;
+  return (
+    <GeoDashboard
+      key={days}
+      atlas={atlas}
+      data={data}
+      days={days}
+      land={land}
+      onDaysChange={setDays}
+    />
+  );
 }

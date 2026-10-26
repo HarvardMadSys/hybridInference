@@ -1,30 +1,27 @@
+import { geoBounds, geoContains, geoDistance } from 'd3';
+import type { GeoPermissibleObjects } from 'd3';
 import type { GeoAnalyticsResponse, GeoBucketRow, GeoMetric } from '@/lib/api/admin';
 
 export type { GeoMetric } from '@/lib/api/admin';
 
 const UNKNOWN_CONTINENT = '?';
 
-export const CONTINENT_NAMES: Readonly<Record<string, string>> = {
-  AS: 'Asia',
-  EU: 'Europe',
-  NA: 'N. America',
-  SA: 'S. America',
-  AF: 'Africa',
-  OC: 'Oceania',
-  AN: 'Antarctica',
-};
-
-// Fixed color slots: a continent keeps its color even when its rank changes.
-export const CONTINENT_COLORS: Readonly<Record<string, string>> = {
-  AS: '#3987e5',
-  NA: '#199e70',
-  EU: '#c98500',
-  SA: '#008300',
-  AF: '#9085e9',
-  OC: '#e66767',
-  AN: '#898781',
-  [UNKNOWN_CONTINENT]: '#898781',
-};
+// The night panel: one glowing accent for every view of origin volume, white
+// for the selection. Position on the globe already says where traffic comes
+// from, so color only has to say how much — and a selected country reads the
+// same in the globe, the list and the timeline.
+export const ORIGIN_COLORS = {
+  /** The panel the whole view sits on. */
+  panel: '#070b14',
+  /** Volume marks: glow, share bars, the timeline area. */
+  mark: '#7dd3fc',
+  /** The bright core of a volume mark. */
+  core: '#e0f2fe',
+  /** The selected country, over the volume marks. */
+  selected: '#ffffff',
+  /** Land points of the dot-matrix globe. */
+  land: '#94a3b8',
+} as const;
 
 export type GeoColumnIndex = Readonly<Record<string, number>>;
 
@@ -127,6 +124,28 @@ export function buildContinentSeries(
     }
   }
   return series;
+}
+
+/**
+ * Per-hour totals for one metric: every row (unlocated included, so it agrees
+ * with the headline total), or only the rows of one country.
+ */
+export function buildOriginSeries(
+  data: GeoAnalyticsResponse,
+  metric: GeoMetric,
+  country?: string,
+): number[] {
+  const bucketIndex = buildColumnIndex(data.bucket_cols);
+  const countryPosition = requiredIndex(bucketIndex, 'c');
+  const valuePosition = requiredIndex(bucketIndex, metric);
+  return data.hours_index.map((_, hourIndex) => {
+    let total = 0;
+    for (const row of data.hours[hourIndex]?.b ?? []) {
+      if (country !== undefined && stringAt(row, countryPosition) !== country) continue;
+      total += numberAt(row, valuePosition);
+    }
+    return total;
+  });
 }
 
 /** Derive stable range-wide series and separate p99 visual caps. */
@@ -269,47 +288,81 @@ export function hourOriginSummary(
 }
 
 /**
- * Rotation that centers the globe on the request-weighted centroid — of one hour
- * when `hourIndex` is given (what the viewer opens on), else of the whole window.
+ * Land as a near-equal-area grid of [lon, lat] points — the dot matrix the
+ * globe is drawn with. Pure geometry (bounding box, then point-in-polygon), so
+ * it needs no canvas and is computed once per atlas.
  */
-export function demandWeightedRotation(
-  data: GeoAnalyticsResponse,
-  coordinates: ReadonlyMap<string, [number, number]>,
-  hourIndex?: number,
-): [number, number] | null {
-  const bucketIndex = buildColumnIndex(data.bucket_cols);
-  const countryPosition = requiredIndex(bucketIndex, 'c');
-  const requestPosition = requiredIndex(bucketIndex, 'n');
-  const hours =
-    hourIndex === undefined
-      ? data.hours
-      : hourIndex >= 0 && hourIndex < data.hours.length
-        ? [data.hours[hourIndex]]
-        : [];
-  let x = 0;
-  let y = 0;
-  let z = 0;
-  let total = 0;
-  for (const hour of hours) {
-    for (const row of hour.b) {
-      const requests = numberAt(row, requestPosition);
-      if (requests <= 0) continue;
-      const coordinate = coordinates.get(stringAt(row, countryPosition));
-      if (!coordinate) continue;
-      const latitude = (coordinate[1] * Math.PI) / 180;
-      const longitude = (coordinate[0] * Math.PI) / 180;
-      x += requests * Math.cos(latitude) * Math.cos(longitude);
-      y += requests * Math.cos(latitude) * Math.sin(longitude);
-      z += requests * Math.sin(latitude);
-      total += requests;
+export function landPoints(
+  countries: readonly GeoPermissibleObjects[],
+  stepDegrees = 1.6,
+): [number, number][] {
+  const shapes = countries.map((country) => ({ country, bounds: geoBounds(country) }));
+  const points: [number, number][] = [];
+  for (let lat = -56; lat <= 82; lat += stepDegrees) {
+    const lonStep = stepDegrees / Math.max(0.25, Math.cos((lat * Math.PI) / 180));
+    for (let lon = -180; lon < 180; lon += lonStep) {
+      const point: [number, number] = [lon, lat];
+      const onLand = shapes.some(({ country, bounds: [[west, south], [east, north]] }) => {
+        if (lat < south || lat > north) return false;
+        // A shape across the antimeridian has west > east.
+        const inLongitude = west <= east ? lon >= west && lon <= east : lon >= west || lon <= east;
+        return inLongitude && geoContains(country, point);
+      });
+      if (onLand) points.push(point);
     }
   }
-  const magnitude = Math.hypot(x, y, z);
-  if (total <= 0 || magnitude === 0) return null;
-  return rotationForCoordinate([
-    (Math.atan2(y, x) * 180) / Math.PI,
-    (Math.asin(z / magnitude) * 180) / Math.PI,
-  ]);
+  return points;
+}
+
+const DEGREES = 180 / Math.PI;
+
+/**
+ * The opening view. The top origin must sit within 58° of the center so it is
+ * never pushed onto the rim. Among those views, score the demand in view (full
+ * weight within 62°, fading to nothing at 80°) plus how much land is in view —
+ * demand alone picks a view that can be half empty sea. Latitude stays between
+ * 10° and 45° so it reads as a globe rather than a polar map. Null when no
+ * origin is located.
+ */
+export function openingRotation(
+  origins: readonly { country: string; value: number }[],
+  coordinates: ReadonlyMap<string, [number, number]>,
+  land: readonly [number, number][],
+): [number, number] | null {
+  const located = origins.filter((origin) => origin.value > 0 && coordinates.has(origin.country));
+  if (located.length === 0) return null;
+  const anchor = coordinates.get(located[0].country)!;
+  const total = located.reduce((sum, origin) => sum + origin.value, 0);
+  // Every fourth land point is plenty to compare views.
+  const sampledLand = land.filter((_, index) => index % 4 === 0);
+  const candidates: { rotation: [number, number]; demand: number; land: number }[] = [];
+  for (let lat = 10; lat <= 45; lat += 5) {
+    for (let lon = -180; lon < 180; lon += 5) {
+      const center: [number, number] = [lon, lat];
+      if (geoDistance(center, anchor) * DEGREES > 58) continue;
+      let demand = 0;
+      for (const origin of located) {
+        const distance = geoDistance(center, coordinates.get(origin.country)!) * DEGREES;
+        const weight = distance <= 62 ? 1 : distance >= 80 ? 0 : (80 - distance) / 18;
+        demand += (origin.value / total) * weight;
+      }
+      let visibleLand = 0;
+      for (const point of sampledLand)
+        if (geoDistance(center, point) * DEGREES < 70) visibleLand += 1;
+      candidates.push({ rotation: [-lon, -lat], demand, land: visibleLand });
+    }
+  }
+  const maxLand = Math.max(1, ...candidates.map((candidate) => candidate.land));
+  let best = candidates[0]?.rotation ?? rotationForCoordinate(anchor);
+  let bestScore = -Infinity;
+  for (const candidate of candidates) {
+    const score = candidate.demand + 0.35 * (candidate.land / maxLand);
+    if (score > bestScore) {
+      bestScore = score;
+      best = candidate.rotation;
+    }
+  }
+  return best;
 }
 
 /** Rotation that centers the globe on one coordinate, with a readable latitude clamp. */
