@@ -796,6 +796,10 @@ async def update_user(
                 f"Cannot transition from '{current_status}' to '{new_status}'. "
                 f"Use the approve/reject endpoints for pending users.",
             )
+        # The lockout the role check above prevents: a suspended account loses
+        # its sessions and its admin access, and only an admin can resume it.
+        if new_status == "suspended" and user_id == get_admin_user_id(request):
+            raise HTTPException(409, "Cannot suspend your own account.")
 
     # Collect all users-table fields for a single round-trip
     user_table_updates: dict[str, object] = {}
@@ -958,6 +962,11 @@ async def delete_user(
 
     if not user_row:
         raise HTTPException(404, f"User '{user_id}' not found")
+
+    if user_id == get_admin_user_id(request):
+        # As with demoting or suspending oneself: it signs the admin out for
+        # good, and nothing but another admin could undo it.
+        raise HTTPException(409, "Cannot delete your own account.")
 
     if user_row["status"] not in ("active", "suspended"):
         raise HTTPException(
