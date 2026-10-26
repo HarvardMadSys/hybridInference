@@ -129,6 +129,23 @@ describe('Header', () => {
     expect(labels).toEqual(['Status', 'Example Project', 'Example Forum']);
   });
 
+  it('shows a docs link only when the deployment configures a docs URL', () => {
+    render(<Header />);
+
+    expect(screen.queryByRole('link', { name: 'Docs' })).not.toBeInTheDocument();
+
+    cleanup();
+    brandingOverride = { ...configuredBranding, docsUrl: 'https://docs.example.test/' };
+
+    render(<Header />);
+
+    const docsLink = screen.getByRole('link', { name: 'Docs' });
+
+    expect(docsLink).toHaveAttribute('href', 'https://docs.example.test/');
+    expect(docsLink).toHaveAttribute('target', '_blank');
+    expect(docsLink).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
   it('hides the stats link unless the deployment publishes stats', () => {
     render(<Header />);
 
