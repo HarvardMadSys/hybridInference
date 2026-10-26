@@ -1006,6 +1006,7 @@ class PrefillLoadTracker:
         rand: Callable[[], float],
         affinity_key: str | None = None,
         avoid: str | None = None,
+        fingerprint: str | None = None,
     ) -> int:
         """Pick a candidate by weight, then break toward the lighter endpoint.
 
@@ -1044,6 +1045,9 @@ class PrefillLoadTracker:
                 Dropped from the candidates when anything else remains --
                 a weighted draw would otherwise re-pick it a fair fraction of
                 the time, undoing the decision that was just made.
+            fingerprint: This request's conversation, so its elephant status is
+                judged as :meth:`acquire` will count it: another conversation
+                of the same caller gets no warm-prefix discount.
 
         Returns:
             Index into ``keys`` of the selected candidate.
@@ -1065,8 +1069,14 @@ class PrefillLoadTracker:
             # shorter than ``count`` while the loop below still indexes it with
             # indices into ``keys``.
             # Computed before taking the lock; uncached_estimate locks too.
+            # Gated on the fingerprint as in ``acquire``: judged on the loose
+            # discount, a sibling conversation looked warm here and kept an
+            # endpoint at its elephant limit eligible, and ``acquire`` then
+            # counted it as one more elephant on that endpoint.
             elephant_here = {
-                i: self.is_elephant(self.uncached_estimate(keys[i], tokens, affinity_key))
+                i: self.is_elephant(
+                    self.uncached_estimate(keys[i], tokens, affinity_key, fingerprint=fingerprint)
+                )
                 for i in eligible
             }
             if any(elephant_here.values()):
