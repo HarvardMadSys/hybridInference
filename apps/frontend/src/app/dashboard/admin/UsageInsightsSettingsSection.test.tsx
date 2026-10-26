@@ -28,38 +28,52 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function openEditor(onToast = vi.fn()) {
+async function renderSection(onToast = vi.fn()) {
   render(<UsageInsightsSettingsSection onToast={onToast} />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit Usage Insights' }));
+  await screen.findByLabelText('Model');
   return onToast;
 }
 
-describe('UsageInsightsSettingsSection', () => {
-  it('shows the saved model as text and no key field until Edit', async () => {
-    render(<UsageInsightsSettingsSection onToast={vi.fn()} />);
-    expect(await screen.findByText('glm-5.1')).toBeInTheDocument();
-    expect(screen.queryByRole('textbox')).toBeNull();
-    expect(screen.queryByLabelText('Gateway API key')).toBeNull();
+const saveButton = () => screen.queryByRole('button', { name: 'Save changes to Usage Insights' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Usage Insights' }));
-    expect(screen.getByLabelText('Model')).toHaveValue('glm-5.1');
+describe('UsageInsightsSettingsSection', () => {
+  it('edits the model in place, with an empty key field and no save bar until a change', async () => {
+    render(<UsageInsightsSettingsSection onToast={vi.fn()} />);
+    expect(await screen.findByLabelText('Model')).toHaveValue('glm-5.1');
+    // The stored key is never filled in: an empty field leaves it unchanged.
     expect(screen.getByLabelText('Gateway API key')).toHaveValue('');
-    expect(screen.getByRole('button', { name: 'Save changes to Usage Insights' })).toBeDisabled();
+    expect(screen.getByLabelText('Gateway API key')).toHaveAttribute('type', 'password');
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
+    expect(saveButton()).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    expect(saveButton()).toBeEnabled();
+    expect(updateUsageInsightsSettings).not.toHaveBeenCalled();
   });
 
-  it('Cancel discards the drafts and writes nothing', async () => {
-    await openEditor();
+  it('Discard drops the drafts and writes nothing', async () => {
+    await renderSection();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Usage Insights' }));
-    expect(screen.getByText('glm-5.1')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Usage Insights' }));
+    fireEvent.change(screen.getByLabelText('Gateway API key'), { target: { value: TYPED_KEY } });
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Usage Insights' }));
     expect(screen.getByLabelText('Model')).toHaveValue('glm-5.1');
+    expect(screen.getByLabelText('Gateway API key')).toHaveValue('');
+    expect(saveButton()).toBeNull();
     expect(updateUsageInsightsSettings).not.toHaveBeenCalled();
+  });
+
+  it('hides the save bar again once the model is typed back', async () => {
+    await renderSection();
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
+    expect(saveButton()).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-5.1' } });
+    expect(saveButton()).toBeNull();
   });
 
   it('confirms old -> new without the key, keeps drafts on Back, and saves once', async () => {
     vi.mocked(updateUsageInsightsSettings).mockResolvedValue({ ...SAVED, model: 'glm-6' });
-    const onToast = await openEditor();
+    const onToast = await renderSection();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
     fireEvent.change(screen.getByLabelText('Gateway API key'), { target: { value: TYPED_KEY } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
@@ -83,12 +97,15 @@ describe('UsageInsightsSettingsSection', () => {
       model: 'glm-6',
     });
     expect(onToast).toHaveBeenCalledWith('Usage Insights provider saved');
-    expect(screen.queryByLabelText('Gateway API key')).toBeNull();
+    // The saved model stays in place; the key field is empty again, and nothing is left to save.
+    expect(screen.getByLabelText('Model')).toHaveValue('glm-6');
+    expect(screen.getByLabelText('Gateway API key')).toHaveValue('');
+    expect(saveButton()).toBeNull();
   });
 
   it('keeps the dialog and the drafts when the save fails', async () => {
     vi.mocked(updateUsageInsightsSettings).mockRejectedValueOnce(new Error('upstream down'));
-    await openEditor();
+    await renderSection();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
     const dialog = screen.getByRole('dialog');
@@ -102,7 +119,7 @@ describe('UsageInsightsSettingsSection', () => {
     vi.mocked(updateUsageInsightsSettings)
       .mockRejectedValueOnce(new Error(`api_key ${TYPED_KEY} was rejected`))
       .mockResolvedValueOnce(SAVED);
-    await openEditor();
+    await renderSection();
     fireEvent.change(screen.getByLabelText('Gateway API key'), {
       target: { value: ` ${TYPED_KEY} ` },
     });
@@ -122,12 +139,16 @@ describe('UsageInsightsSettingsSection', () => {
   });
 
   it('refuses an empty model without asking or writing', async () => {
-    await openEditor();
+    await renderSection();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: '  ' } });
+    // An emptied model alone still shows the bar, with Save held back and the reason.
+    expect(screen.getByText('Model name cannot be empty.')).toBeVisible();
+    expect(saveButton()).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Gateway API key'), { target: { value: TYPED_KEY } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('alert')).toHaveTextContent('Model name cannot be empty.');
+    expect(screen.getByText('Model name cannot be empty.')).toBeVisible();
+    expect(updateUsageInsightsSettings).not.toHaveBeenCalled();
   });
 
   it('clears the key only after a confirmation', async () => {
@@ -144,7 +165,18 @@ describe('UsageInsightsSettingsSection', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear key' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Clear key' }));
+    // Clearing is not a save: the save bar stays away while it runs.
+    expect(saveButton()).toBeNull();
     await waitFor(() => expect(updateUsageInsightsSettings).toHaveBeenCalledWith({ api_key: '' }));
     expect(updateUsageInsightsSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds Clear key back while there are unsaved changes', async () => {
+    await renderSection();
+    fireEvent.change(screen.getByLabelText('Gateway API key'), { target: { value: TYPED_KEY } });
+    expect(screen.getByRole('button', { name: 'Clear key' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Usage Insights' }));
+    expect(screen.getByRole('button', { name: 'Clear key' })).toBeEnabled();
+    expect(updateUsageInsightsSettings).not.toHaveBeenCalled();
   });
 });

@@ -101,13 +101,8 @@ msgid ""
 msgstr "两个参数都必须是字面量（或由字面量组成的 `cond ? 'a' : 'b'`），字典检查才能读出它们。"
 
 #: ../developer/console-translations.md:47
-msgid ""
-"Administration pages (`/dashboard/admin`) are for operators, not users, "
-"and stay in English: they do not go through `t()`, and their container is"
-" marked `lang=\"en\"`. The rest of what stays in English is listed below."
-msgstr ""
-"管理页面（`/dashboard/admin`）面向运维人员而不是用户，保持英文：它们不经过 `t()`，容器标注为 "
-"`lang=\"en\"`。其他保留英文的内容见下文。"
+msgid "Administration pages (`/dashboard/admin`) are for operators, not users, and stay in English: their layout provides an English `LocaleProvider` without a translation catalog, and their container is marked `lang=\"en\"`. This also keeps shared components using `t()` and React portals in English without changing the reader’s saved language. Admin date/time labels use an explicit `en-US` locale while preserving their existing time zone. The rest of what stays in English is listed below."
+msgstr "管理页面（`/dashboard/admin`）面向运维人员而不是用户，保持英文：其布局提供不带翻译字典的英文 `LocaleProvider`，容器标注为 `lang=\"en\"`。这也让使用 `t()` 的共享组件和 React portal 保持英文，而不改变读者保存的语言偏好。管理页面的日期和时间标签显式使用 `en-US` 语言区域，同时保留原有时区。其他保留英文的内容见下文。"
 
 #: ../developer/console-translations.md:51
 msgid "The catalog"

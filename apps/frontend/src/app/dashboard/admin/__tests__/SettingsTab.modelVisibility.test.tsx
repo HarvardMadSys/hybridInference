@@ -91,7 +91,7 @@ describe('SettingsTab model visibility', () => {
     renderSettings();
 
     expect(await screen.findByRole('heading', { name: 'Model Visibility' })).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Model Visibility' }));
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Model Visibility' }));
     expect(api.updateModelVisibility).not.toHaveBeenCalled();

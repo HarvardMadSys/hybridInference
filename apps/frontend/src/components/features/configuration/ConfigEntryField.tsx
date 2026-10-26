@@ -79,14 +79,6 @@ const INPUT_ERROR_CLASS = `${TEXT_FIELD} ${FIELD_INVALID}`;
 const LINK_BUTTON_CLASS =
   'rounded-md px-2 py-1 text-[12px] font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:opacity-40';
 
-/** What a setting holds, as the read-only view shows it. A secret shows only whether it is set. */
-export function savedValueText(entry: ConfigEntry): string {
-  if (entry.secret) return entry.is_set ? 'Set' : 'Not set';
-  if (entry.type === 'bool') return entry.value === true ? 'On' : 'Off';
-  if (entry.value === null || entry.value === undefined || entry.value === '') return 'Not set';
-  return String(entry.value);
-}
-
 /**
  * One setting: its name and badges, what it is for, and an editor for its type.
  *
@@ -98,10 +90,9 @@ export function savedValueText(entry: ConfigEntry): string {
  * Render it inside a `<form autoComplete="off">`, so that browsers do not
  * offer to save a secret typed here as a password for the console.
  *
- * `readOnly` shows the saved value with no editor and no actions: the admin
- * Configuration tab edits a category only after its Edit button. There, Reset
- * and "Mark as secret" are staged like any other edit (`resetPending`,
- * `markSecretPending`) and written only when the category is saved.
+ * In the admin Configuration tab, Reset and "Mark as secret" are staged like
+ * any other edit (`resetPending`, `markSecretPending`) and written only when
+ * the category is saved.
  */
 export function ConfigEntryField({
   entry,
@@ -114,7 +105,6 @@ export function ConfigEntryField({
   serverError,
   onReset,
   onMarkSecret,
-  readOnly = false,
   resetPending = false,
   markSecretPending = false,
   disabled = false,
@@ -137,8 +127,6 @@ export function ConfigEntryField({
   onReset?: (entry: ConfigEntry) => void;
   /** Offer "Mark as secret" where it applies. Omitted in the setup wizard. */
   onMarkSecret?: (entry: ConfigEntry) => void;
-  /** Show the saved value only: no editor, no Reset, no "Mark as secret". */
-  readOnly?: boolean;
   /** Reset is staged: the save removes the stored value. */
   resetPending?: boolean;
   /** "Mark as secret" is staged: the save marks it. */
@@ -161,10 +149,8 @@ export function ConfigEntryField({
       .join(' ') || undefined;
   // Also for a stored value the backend refused: that entry reports what
   // applies in its place, and the row is still there to remove.
-  const canReset =
-    !readOnly && Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
-  const offerMarkSecret =
-    !readOnly && !resetPending && Boolean(onMarkSecret) && canMarkSecret(entry);
+  const canReset = Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
+  const offerMarkSecret = !resetPending && Boolean(onMarkSecret) && canMarkSecret(entry);
 
   // An edit back to the starting value is no edit, so it leaves no draft.
   const setValue = (value: string | boolean) =>
@@ -175,19 +161,6 @@ export function ConfigEntryField({
     control = (
       <output id={controlId} className="text-[12px] text-amber-700" aria-describedby={describedBy}>
         {entry.custom ? 'Deleted when you save' : 'Reset when you save'}
-      </output>
-    );
-  } else if (readOnly && !locked) {
-    const shown = savedValueText(entry);
-    control = (
-      <output
-        id={controlId}
-        aria-describedby={describedBy}
-        className={`block break-all text-[13px] ${shown === 'Not set' ? 'text-gray-400' : 'text-gray-800'} ${
-          entry.type === 'text' && !entry.secret ? 'whitespace-pre-wrap font-mono' : ''
-        }`}
-      >
-        {shown}
       </output>
     );
   } else if (locked) {
@@ -370,7 +343,7 @@ export function ConfigEntryField({
               Becomes secret when you save. This cannot be undone from the console.
             </p>
           ) : null}
-          {entry.type === 'list' && !locked && !readOnly && !resetPending ? (
+          {entry.type === 'list' && !locked && !resetPending ? (
             <p className="text-gray-400">A comma-separated list.</p>
           ) : null}
           {usedBy.length > 0 ? (

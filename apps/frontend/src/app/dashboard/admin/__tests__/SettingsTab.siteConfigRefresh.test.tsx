@@ -95,10 +95,6 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function editSection(name: string) {
-  fireEvent.click(screen.getByRole('button', { name: `Edit ${name}` }));
-}
-
 function saveSection(name: string) {
   fireEvent.click(screen.getByRole('button', { name: `Save changes to ${name}` }));
 }
@@ -116,9 +112,8 @@ describe('SettingsTab and the site configuration', () => {
     });
     renderSettings();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Feature Flags' }));
     fireEvent.click(
-      screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
+      await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
     saveSection('Feature Flags');
     expect(
@@ -145,8 +140,7 @@ describe('SettingsTab and the site configuration', () => {
     });
     renderSettings();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Numeric Settings' }));
-    const input = screen.getByLabelText('max_concurrent_requests_per_user value');
+    const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
     saveSection('Numeric Settings');
     expect(screen.getByRole('dialog')).toHaveTextContent('3 → 5');
@@ -158,35 +152,29 @@ describe('SettingsTab and the site configuration', () => {
     await waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1));
   });
 
-  it('shows saved values read-only, and changes nothing until the change is confirmed', async () => {
+  it('edits saved values in place, and changes nothing until the change is confirmed', async () => {
     renderSettings();
 
-    // Read-only by default: the values are text, with no switch or input.
-    const flag = await screen.findByLabelText('Toggle signup require email verification');
-    expect(flag.tagName).toBe('OUTPUT');
-    expect(flag).toHaveTextContent('On');
-    expect(screen.getByLabelText('max_concurrent_requests_per_user value')).toHaveTextContent('3');
-    expect(screen.queryByRole('switch')).toBeNull();
-    expect(screen.queryByRole('spinbutton')).toBeNull();
+    // Editable in place: no Edit step, and no save bar until something changes.
+    const flag = await screen.findByRole('switch', {
+      name: 'Toggle signup require email verification',
+    });
+    expect(flag).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByLabelText('max_concurrent_requests_per_user value')).toHaveValue(3);
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
 
-    editSection('Feature Flags');
-    fireEvent.click(
-      screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
-    );
+    fireEvent.click(flag);
     saveSection('Feature Flags');
     fireEvent.click(
       within(screen.getByRole('dialog')).getByRole('button', { name: 'Back to editing' }),
     );
-    // Back keeps the draft; Cancel drops it.
-    expect(
-      screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
-    ).toHaveAttribute('aria-checked', 'false');
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Feature Flags' }));
-    expect(screen.getByLabelText('Toggle signup require email verification')).toHaveTextContent(
-      'On',
-    );
+    // Back keeps the draft; Discard drops it.
+    expect(flag).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Feature Flags' }));
+    expect(flag).toHaveAttribute('aria-checked', 'true');
+    expect(screen.queryByRole('button', { name: 'Save changes to Feature Flags' })).toBeNull();
 
-    editSection('Numeric Settings');
     const input = screen.getByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -201,21 +189,42 @@ describe('SettingsTab and the site configuration', () => {
 
   it('refuses an out-of-range number without asking', async () => {
     renderSettings();
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Numeric Settings' }));
-    fireEvent.change(screen.getByLabelText('max_concurrent_requests_per_user value'), {
-      target: { value: '0' },
-    });
+    const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
+    fireEvent.change(input, { target: { value: '0' } });
+    // The bar shows for the invalid draft, with Save held back and the reason.
     expect(screen.getByRole('button', { name: 'Save changes to Numeric Settings' })).toBeDisabled();
+    expect(
+      screen.getByText('Correct max_concurrent_requests_per_user before saving.'),
+    ).toBeVisible();
+    fireEvent.keyDown(input, { key: 'Enter' });
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(updateRuntimeSetting).not.toHaveBeenCalled();
+  });
+
+  it('hides the save bar again once a change is undone by hand', async () => {
+    renderSettings();
+    const flag = await screen.findByRole('switch', {
+      name: 'Toggle signup require email verification',
+    });
+    fireEvent.click(flag);
+    expect(screen.getByRole('button', { name: 'Save changes to Feature Flags' })).toBeEnabled();
+    fireEvent.click(flag);
+    expect(screen.queryByRole('button', { name: 'Save changes to Feature Flags' })).toBeNull();
+
+    const input = screen.getByLabelText('max_concurrent_requests_per_user value');
+    fireEvent.change(input, { target: { value: '5' } });
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    fireEvent.change(input, { target: { value: '3' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to Numeric Settings' })).toBeNull();
+    expect(updateRuntimeSetting).not.toHaveBeenCalled();
   });
 
   it('leaves it alone when the change is refused, keeping the dialog and the draft', async () => {
     vi.mocked(updateRuntimeSetting).mockRejectedValueOnce(new Error('forbidden'));
     renderSettings();
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Feature Flags' }));
     fireEvent.click(
-      screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
+      await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
     saveSection('Feature Flags');
     confirm('Confirm save');
@@ -293,9 +302,8 @@ describe('SettingsTab feedback', () => {
     renderSettings();
 
     // A flag change is reviewed first; its result shows once it is confirmed.
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Feature Flags' }));
     fireEvent.click(
-      screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
+      await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
     saveSection('Feature Flags');
     confirm('Confirm save');
@@ -317,7 +325,7 @@ describe('SettingsTab feedback', () => {
 describe('SettingsTab section index', () => {
   it('links to every section on the page', async () => {
     renderSettings();
-    // Read-only until Edit: the flag shows as text.
+    // Once the settings have loaded.
     await screen.findByLabelText('Toggle signup require email verification');
 
     const index = screen.getByRole('navigation', { name: 'Settings sections' });
