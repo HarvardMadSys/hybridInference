@@ -1175,6 +1175,10 @@
     "source": "Dashboard",
     "text": "控制台"
   },
+  "chrome.header.docs": {
+    "source": "Docs",
+    "text": "文档"
+  },
   "chrome.header.docs_assistant": {
     "source": "Docs Assistant",
     "text": "文档助手"
