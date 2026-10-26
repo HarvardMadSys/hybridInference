@@ -1456,7 +1456,10 @@ def _parse_sse_chunk(buffer: bytes, raw: bytes) -> tuple[list[tuple[str, str]], 
             continue
         event_type = ""
         data_lines: list[str] = []
-        for line in block.splitlines():
+        # LF, not ``str.splitlines``: that also breaks on U+2028, U+2029 and
+        # U+0085, which JSON carries raw inside strings. A CRLF line keeps its
+        # CR here, and the strip below removes it.
+        for line in block.split("\n"):
             if line.startswith("event:"):
                 event_type = line[len("event:") :].strip()
             elif line.startswith("data:"):
