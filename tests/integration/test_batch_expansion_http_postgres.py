@@ -1,10 +1,15 @@
 """The batch API surfaces end to end over HTTP, against Postgres and real workers.
 
-The routers, the store, two workers (two gateway processes), the handlers, cost
-accounting and the owner's re-authentication from real ``users``/``api_keys``
-rows are the production code; only the upstream model is a stub, and the
-caller's management identity is resolved from a test key table (the
-key-to-account checks themselves are covered by the auth tests). What this
+The routers, the store, the handlers, cost accounting and the owner's
+re-authentication from real ``users``/``api_keys`` rows are the production code;
+only the upstream model is a stub, and the caller's management identity is
+resolved from a test key table (the key-to-account checks themselves are covered
+by the auth tests). It all runs in this one test process: one FastAPI app, one
+``AppServices``, reached in process through ``ASGITransport``, with two
+``BatchScheduler`` workers on the same event loop sharing one real Postgres
+database -- several workers claiming against each other through the database,
+not several gateway processes (that is exercised by running separate gateway
+processes, outside this suite). What this
 holds: an Anthropic Message Batch ends with every request accounted for and its
 results downloadable; a file batch is validated, run, sealed and downloaded
 byte-for-byte as its manifest says, and an invalid file runs nothing;
@@ -667,3 +672,83 @@ async def test_an_invalid_idna_webhook_host_is_a_400_without_any_lookup(gateway,
     assert (await gateway.client.get("/v1/batch_webhook", headers=KEY)).json() == {
         "configured": False
     }
+
+
+async def test_a_malformed_message_batch_request_errors_alone(gateway):
+    """A request with a wrongly typed field is one errored result, not a failed create."""
+    client, model = gateway.client, gateway.model
+    good = {
+        "model": model.config.id,
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "fine"}],
+    }
+    bad = {
+        "model": model.config.id,
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": [{"type": []}]}],
+    }
+    created = await client.post(
+        "/v1/messages/batches",
+        headers=ANTHROPIC,
+        json={
+            "requests": [{"custom_id": "good", "params": good}, {"custom_id": "bad", "params": bad}]
+        },
+    )
+    assert created.status_code == 200, created.text
+    batch_id = created.json()["id"]
+
+    async def ended():
+        body = (await client.get(f"/v1/messages/batches/{batch_id}", headers=ANTHROPIC)).json()
+        return body if body["processing_status"] == "ended" else None
+
+    final = await _until(ended, what="the mixed message batch to end")
+    assert (final["request_counts"]["succeeded"], final["request_counts"]["errored"]) == (1, 1)
+    lines = (await client.get(f"/v1/messages/batches/{batch_id}/results", headers=ANTHROPIC)).text
+    results = {
+        json.loads(line)["custom_id"]: json.loads(line)["result"] for line in lines.splitlines()
+    }
+    assert results["good"]["type"] == "succeeded"
+    error = results["bad"]["error"]["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "content block type" in error["message"]
+    assert model.calls == ["fine"]
+
+
+async def test_a_file_responses_batch_with_a_malformed_line_runs_nothing(gateway):
+    client, model = gateway.client, gateway.model
+    rows = [
+        {
+            "custom_id": "ok",
+            "method": "POST",
+            "url": "/v1/responses",
+            "body": {"model": model.config.id, "input": "hello"},
+        },
+        {
+            "custom_id": "bad",
+            "method": "POST",
+            "url": "/v1/responses",
+            "body": {"model": model.config.id, "input": [{"type": {}}]},
+        },
+    ]
+    uploaded = await _upload(client, ("\n".join(json.dumps(row) for row in rows) + "\n").encode())
+    created = await client.post(
+        "/v1/batches",
+        headers=KEY,
+        json={
+            "input_file_id": uploaded["id"],
+            "endpoint": "/v1/responses",
+            "completion_window": "24h",
+        },
+    )
+    assert created.status_code == 200, created.text
+    batch_id = created.json()["id"]
+
+    async def failed():
+        body = (await client.get(f"/v1/batches/{batch_id}", headers=KEY)).json()
+        return body if body["status"] == "failed" else None
+
+    final = await _until(failed, what="the malformed Responses file batch to fail")
+    (problem,) = final["errors"]["data"]
+    assert problem["line"] == 2 and "input item type" in problem["message"]
+    assert final["request_counts"]["total"] == 0
+    assert model.calls == []

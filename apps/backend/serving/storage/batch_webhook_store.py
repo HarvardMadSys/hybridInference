@@ -95,13 +95,19 @@ class BatchWebhookStore:
         return dict(row)
 
     async def delete_webhook(self, user_id: str) -> bool:
-        """Remove a user's webhook and its undelivered events. True when one existed."""
+        """Remove a user's webhook and its undelivered events. True when one existed.
+
+        The webhook goes first: deleting its row waits for any sealing
+        transaction that is writing an event under it (it holds the row ``FOR
+        KEY SHARE``), and the event delete that follows, a new statement, sees
+        that event once it is committed.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
+            result = await conn.execute("DELETE FROM batch_webhooks WHERE user_id = $1", user_id)
             await conn.execute(
                 "DELETE FROM batch_webhook_events WHERE user_id = $1 AND status = 'pending'",
                 user_id,
             )
-            result = await conn.execute("DELETE FROM batch_webhooks WHERE user_id = $1", user_id)
         return _rowcount(result) > 0
 
     async def list_events(self, user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -134,13 +140,16 @@ class BatchWebhookStore:
                     attempts = e.attempts + 1
                 FROM batch_webhooks AS w
                 WHERE e.id IN (
-                    SELECT id FROM batch_webhook_events
-                    WHERE status = 'pending' AND next_attempt_at <= now()
-                      AND attempts < $4
-                      AND (lease_expires_at IS NULL OR lease_expires_at <= now())
-                    ORDER BY next_attempt_at, id
+                    -- Only events whose webhook still exists: one left without
+                    -- it must never take the place of a deliverable event.
+                    SELECT pending.id FROM batch_webhook_events AS pending
+                    JOIN batch_webhooks AS hook ON hook.user_id = pending.user_id
+                    WHERE pending.status = 'pending' AND pending.next_attempt_at <= now()
+                      AND pending.attempts < $4
+                      AND (pending.lease_expires_at IS NULL OR pending.lease_expires_at <= now())
+                    ORDER BY pending.next_attempt_at, pending.id
                     LIMIT $3
-                    FOR UPDATE SKIP LOCKED
+                    FOR UPDATE OF pending SKIP LOCKED
                 )
                   AND w.user_id = e.user_id
                 RETURNING e.id, e.user_id, e.batch_id, e.event_type, e.payload, e.attempts,
@@ -201,16 +210,27 @@ class BatchWebhookStore:
         return _rowcount(result) > 0
 
     async def fail_exhausted(self, *, max_attempts: int = 8) -> int:
-        """Give up events whose every attempt was taken and whose last lease ran out."""
+        """Give up events that can no longer be delivered.
+
+        Those whose every attempt was taken and whose last lease ran out, and
+        those whose webhook no longer exists (left by an older version, which
+        removed events before the webhook).
+        """
         async with self._pool.acquire() as conn:
-            result = await conn.execute(
+            exhausted = await conn.execute(
                 "UPDATE batch_webhook_events SET status = 'failed', "
                 "last_error = COALESCE(last_error, 'delivery attempts exhausted') "
                 "WHERE status = 'pending' AND attempts >= $1 "
                 "AND (lease_expires_at IS NULL OR lease_expires_at <= now())",
                 max_attempts,
             )
-        return _rowcount(result)
+            orphaned = await conn.execute(
+                "UPDATE batch_webhook_events AS e SET status = 'failed', "
+                "last_error = 'webhook removed', lease_owner = NULL, lease_expires_at = NULL "
+                "WHERE e.status = 'pending' "
+                "AND NOT EXISTS (SELECT 1 FROM batch_webhooks AS w WHERE w.user_id = e.user_id)"
+            )
+        return _rowcount(exhausted) + _rowcount(orphaned)
 
     async def purge_old_events(self, *, days: int = 30) -> int:
         """Remove events finished more than *days* ago."""

@@ -48,6 +48,9 @@ class BatchFileOwnerUnavailable(RuntimeError):
 #: Size of a stored chunk of an upload.
 CHUNK_BYTES = 1024 * 1024
 
+#: Deleted uploads examined per collection.
+_GC_LIMIT = 200
+
 #: An upload not finished in this long is abandoned and collected.
 _STALE_UPLOAD_SECONDS = 3600
 
@@ -296,10 +299,40 @@ class BatchFileStore:
                 "UPDATE batch_files SET deleted_at = now() WHERE kind = 'upload' "
                 "AND deleted_at IS NULL AND expires_at IS NOT NULL AND expires_at <= now()"
             )
-            collected = await conn.execute(
+            candidates = await conn.fetch(
+                "SELECT id FROM batch_files WHERE kind = 'upload' AND deleted_at IS NOT NULL "
+                "ORDER BY deleted_at, id LIMIT $1",
+                _GC_LIMIT,
+            )
+        collected = 0
+        for row in candidates:
+            if await self.collect_upload(row["id"]):
+                collected += 1
+        return {"abandoned": _rowcount(abandoned), "collected": collected}
+
+    async def collect_upload(self, file_id: str) -> bool:
+        """Delete one deleted upload's bytes if nothing still needs them; True when deleted.
+
+        Lock first, then check, in two statements. The candidate list was read
+        earlier, and a ``DELETE`` whose ``NOT EXISTS`` was evaluated on that
+        older snapshot would miss a batch that pinned the input since (a new
+        job row does not make Postgres re-check the file row). So the row is
+        locked ``FOR UPDATE`` -- skipped while a create holds it ``FOR KEY
+        SHARE`` or a download renews its lease -- and the pins are read by a
+        new statement, which sees everything committed before the lock.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            locked = await conn.fetchval(
+                "SELECT id FROM batch_files WHERE id = $1 AND kind = 'upload' "
+                "AND deleted_at IS NOT NULL FOR UPDATE SKIP LOCKED",
+                file_id,
+            )
+            if locked is None:
+                return False
+            result = await conn.execute(
                 """
                 DELETE FROM batch_files AS f
-                WHERE f.kind = 'upload' AND f.deleted_at IS NOT NULL
+                WHERE f.id = $1
                   AND NOT EXISTS (
                       SELECT 1 FROM batch_jobs AS j
                       WHERE j.input_file_id = f.id AND j.phase = 'validating'
@@ -309,9 +342,10 @@ class BatchFileStore:
                       SELECT 1 FROM batch_read_leases AS l
                       WHERE l.file_id = f.id AND l.expires_at > now()
                   )
-                """
+                """,
+                file_id,
             )
-        return {"abandoned": _rowcount(abandoned), "collected": _rowcount(collected)}
+        return _rowcount(result) > 0
 
     async def upload_exists(self, file_id: str) -> bool:
         """Whether an upload's bytes are still stored (deleted-but-pinned included)."""

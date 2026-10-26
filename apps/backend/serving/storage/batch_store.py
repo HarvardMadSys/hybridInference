@@ -117,6 +117,14 @@ class BatchNotEnded(RuntimeError):
         super().__init__(f"Batch {batch_id!r} has not ended.")
 
 
+class BatchInputUnavailable(RuntimeError):
+    """A file batch's input upload is no longer available to create it from."""
+
+    def __init__(self, file_id: str) -> None:
+        self.file_id = file_id
+        super().__init__(f"File {file_id!r} is not available.")
+
+
 class BatchLimitExceeded(RuntimeError):
     """Admission refused: a per-user cap would be exceeded.
 
@@ -1166,6 +1174,8 @@ class BatchStore:
                 max_queued=max_queued,
                 requested=len(queued_records),
             )
+            if input_file_id is not None:
+                await self._pin_input(conn, input_file_id, user_id)
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO batch_jobs
@@ -1228,6 +1238,35 @@ class BatchStore:
                     f"SELECT {_BATCH_COLUMNS} FROM batch_jobs WHERE id = $1", batch_id
                 )
         return _batch_row(row)
+
+    async def _pin_input(self, conn: Any, file_id: str, user_id: str) -> None:
+        """Hold a file batch's input for the batch being created, or refuse it.
+
+        Run in the create transaction. The upload's row is locked ``FOR KEY
+        SHARE`` and re-read: a collection holding it (``FOR UPDATE``) is
+        waited for, and once it has deleted the row nothing is found and the
+        batch is refused. A collection that comes later finds the row locked
+        or, after this commits, the validating batch that pins it (see
+        :meth:`BatchFileStore.collect_garbage`). The router's earlier check is
+        not enough on its own: the input may be deleted or expire in between.
+
+        Raises:
+            BatchInputUnavailable: The upload is gone, deleted, expired, not
+                ready or not the user's.
+        """
+        found = await conn.fetchval(
+            """
+            SELECT id FROM batch_files
+            WHERE id = $1 AND user_id = $2 AND kind = 'upload' AND purpose = 'batch'
+              AND status = 'ready' AND deleted_at IS NULL
+              AND (expires_at IS NULL OR expires_at > now())
+            FOR KEY SHARE
+            """,
+            file_id,
+            user_id,
+        )
+        if found is None:
+            raise BatchInputUnavailable(file_id)
 
     async def _insert_failed_items(
         self, conn: Any, batch_id: str, failed_items: list[dict[str, Any]]
@@ -1667,8 +1706,10 @@ class BatchStore:
                     for statement in (
                         "DELETE FROM batch_files WHERE user_id = $1",
                         "DELETE FROM batch_idempotency WHERE owner_id = $1",
-                        "DELETE FROM batch_webhook_events WHERE user_id = $1",
+                        # The webhook before its events: removing it waits for
+                        # any transaction still writing an event under it.
                         "DELETE FROM batch_webhooks WHERE user_id = $1",
+                        "DELETE FROM batch_webhook_events WHERE user_id = $1",
                         "DELETE FROM batch_user_state WHERE user_id = $1",
                     ):
                         try:
@@ -3028,13 +3069,24 @@ def terminal_event(batch_id: str, api_surface: str, final_status: str) -> dict[s
 
 
 async def _enqueue_event(conn: Any, user_id: str, batch_id: str, event: dict[str, Any]) -> None:
-    """Add a webhook event to the outbox, when the user has an enabled webhook."""
+    """Add a webhook event to the outbox, when the user has an enabled webhook.
+
+    The webhook row is locked (``FOR KEY SHARE``) until the caller's
+    transaction commits, so a concurrent removal of the webhook waits for this
+    event and then removes it too: an event is never left behind without the
+    webhook it belongs to. A removal that committed first leaves no row to
+    lock, and no event is written.
+    """
     try:
+        enabled = await conn.fetchval(
+            "SELECT enabled FROM batch_webhooks WHERE user_id = $1 FOR KEY SHARE", user_id
+        )
+        if not enabled:
+            return
         await conn.execute(
             """
             INSERT INTO batch_webhook_events (id, user_id, batch_id, event_type, payload)
-            SELECT $1, $2, $3, $4, $5::jsonb
-            WHERE EXISTS (SELECT 1 FROM batch_webhooks WHERE user_id = $2 AND enabled)
+            VALUES ($1, $2, $3, $4, $5::jsonb)
             """,
             event["id"],
             user_id,
@@ -3251,6 +3303,7 @@ __all__ = [
     "SUPPORTED_JOB_KINDS",
     "TERMINAL_BATCH_STATUSES",
     "BatchDeleteInProgress",
+    "BatchInputUnavailable",
     "BatchLimitExceeded",
     "BatchNotEnded",
     "BatchOwnerUnavailable",

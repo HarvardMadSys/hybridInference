@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import HTTPException, Request
 
 from serving.storage.batch_store import (
+    BatchInputUnavailable,
     BatchLimitExceeded,
     BatchOwnerUnavailable,
     IdempotencyConflict,
@@ -203,6 +204,9 @@ async def create(store: Any, **kwargs: Any) -> dict[str, Any]:
         # account may have been suspended or hard-deleted before this
         # transaction locked it. Present the same answer as the auth path.
         raise HTTPException(401, "Invalid or expired API key") from None
+    except BatchInputUnavailable as exc:
+        # Deleted, expired or collected after the router's own check.
+        raise HTTPException(400, f"File '{exc.file_id}' not found") from None
     except BatchLimitExceeded as exc:
         raise limit_error(exc) from None
     except IdempotencyConflict:

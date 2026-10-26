@@ -123,6 +123,37 @@ _TRANSLATED_TOP_LEVEL = frozenset(
 _TRANSLATED_BLOCKS = frozenset({"text", "image", "tool_use", "tool_result"})
 
 
+def _label(value: Any) -> str:
+    """A field value as an error message names it: a string quoted, anything else by its type."""
+    if isinstance(value, str):
+        return repr(value[:80])
+    return f"of JSON type {type(value).__name__}"
+
+
+def _responses_tools_problem(tools: Any) -> str | None:
+    """Why Responses ``tools`` would not be carried as written, or None.
+
+    The translation skips anything that is not a function tool object, so
+    every entry must be one.
+    """
+    if tools is None:
+        return None
+    if not isinstance(tools, list):
+        return "tools: must be an array"
+    for index, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            return f"tools.{index}: must be an object"
+        kind = tool.get("type", "function")
+        if kind != "function":
+            return (
+                f"tools.{index}: tool type {_label(kind)} is not supported in batches; "
+                "only function tools are"
+            )
+        if "function" not in tool and not isinstance(tool.get("name"), str):
+            return f"tools.{index}.name: a function tool needs a name"
+    return None
+
+
 class ItemRejected(Exception):
     """An item that cannot be admitted, with the error its result reports."""
 
@@ -160,9 +191,9 @@ def _tools_problem(tools: Any, *, translated: bool) -> str | None:
         if not isinstance(tool, dict):
             return f"tools.{index} must be an object"
         kind = tool.get("type")
-        if kind not in (None, "custom"):
+        if kind is not None and kind != "custom":
             return (
-                f"tools.{index}: tool type {kind!r} is not supported in batches; "
+                f"tools.{index}: tool type {_label(kind)} is not supported in batches; "
                 "only client tools (name, description, input_schema) are"
             )
         if translated and ("cache_control" in tool or "strict" in tool):
@@ -181,8 +212,8 @@ def _blocks_problem(
         if not isinstance(block, dict):
             return f"{where}.content.{index} must be an object"
         kind = block.get("type")
-        if kind not in allowed:
-            return f"{where}.content.{index}: content block type {kind!r} is not supported"
+        if not isinstance(kind, str) or kind not in allowed:
+            return f"{where}.content.{index}: content block type {_label(kind)} is not supported"
         source = block.get("source")
         if isinstance(source, dict) and source.get("type") == "file":
             return f"{where}.content.{index}: Files API sources are not supported in batches"
@@ -546,8 +577,8 @@ def _responses_input_problem(value: Any) -> str | None:
         if not isinstance(item, dict):
             return f"input.{index}: must be an object"
         kind = item.get("type")
-        if kind not in _RESPONSES_ITEMS:
-            return f"input.{index}: input item type {kind!r} is not supported in batches"
+        if (kind is not None and not isinstance(kind, str)) or kind not in _RESPONSES_ITEMS:
+            return f"input.{index}: input item type {_label(kind)} is not supported in batches"
         content = item.get("content")
         if kind in (None, "message") and isinstance(content, list):
             for part_index, part in enumerate(content):
@@ -556,9 +587,9 @@ def _responses_input_problem(value: Any) -> str | None:
                 if not isinstance(part, dict):
                     return f"input.{index}.content.{part_index}: must be an object"
                 part_type = part.get("type")
-                if part_type not in _RESPONSES_PARTS:
+                if not isinstance(part_type, str) or part_type not in _RESPONSES_PARTS:
                     return (
-                        f"input.{index}.content.{part_index}: content type {part_type!r} "
+                        f"input.{index}.content.{part_index}: content type {_label(part_type)} "
                         "is not supported in batches"
                     )
                 if part_type in ("input_image", "image_url", "image") and not isinstance(
@@ -636,6 +667,9 @@ async def _admit_responses(body: dict[str, Any], ctx: AdmissionContext) -> str:
         raise ItemRejected(
             "invalid_request", "reasoning: only effort is supported", param="reasoning"
         )
+    problem = _responses_tools_problem(body.get("tools"))
+    if problem:
+        raise ItemRejected("invalid_request", problem, param="tools")
     _params, dropped = responses_request_to_chat_params(body)
     if dropped:
         raise ItemRejected(

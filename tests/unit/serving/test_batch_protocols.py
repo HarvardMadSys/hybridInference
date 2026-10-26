@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -580,3 +581,142 @@ def test_the_boundary_comes_from_the_content_type():
     assert multipart.boundary_of('multipart/form-data; boundary="abc"') == b"abc"
     with pytest.raises(multipart.MultipartError):
         multipart.boundary_of("application/json")
+
+
+# -- malformed bodies are refused, never raised -----------------------------------------
+
+_VALID_BODIES: dict[str, dict[str, Any]] = {
+    "chat": {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 5,
+        "tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}],
+    },
+    "embeddings": {"model": "e", "input": ["a", "b"]},
+    "messages": {
+        "model": "m",
+        "max_tokens": 5,
+        "system": [{"type": "text", "text": "s"}],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t",
+                        "content": [{"type": "text", "text": "r"}],
+                    },
+                ],
+            }
+        ],
+        "tools": [{"name": "f", "input_schema": {"type": "object"}}],
+        "tool_choice": {"type": "auto"},
+        "metadata": {"user_id": "u"},
+        "output_config": {"effort": "low"},
+    },
+    "responses": {
+        "model": "m",
+        "instructions": "i",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"type": "function_call_output", "call_id": "c", "output": "x"},
+        ],
+        "tools": [{"type": "function", "name": "f"}],
+        "text": {"format": {"type": "json_object"}},
+        "reasoning": {"effort": "low"},
+    },
+}
+_MALFORMED = [[], {}, 1, 1.5, True, None, "x", [[]], [{}], {"type": []}, {"type": {}}]
+
+
+def _paths(value: Any, path: tuple = ()) -> Any:
+    yield path
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _paths(child, (*path, key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from _paths(child, (*path, index))
+
+
+def _replaced(value: Any, path: tuple, replacement: Any) -> Any:
+    if not path:
+        return replacement
+    copied = json.loads(json.dumps(value))
+    node = copied
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = json.loads(json.dumps(replacement))
+    return copied
+
+
+def _admission_context(profile: Any) -> targets.AdmissionContext:
+    return targets.AdmissionContext(
+        user_ctx={},
+        routes={},
+        services=None,
+        visibility_resolver=None,
+        embedding_adapters={"e": SimpleNamespace(config=SimpleNamespace(id="e"))},
+        profile=profile,
+    )
+
+
+@pytest.mark.parametrize("target", sorted(_VALID_BODIES))
+async def test_every_malformed_value_anywhere_is_refused_not_raised(monkeypatch, target):
+    """Replace each value of a valid body by each wrong JSON type: ItemRejected or success only."""
+    openai = _openai_adapter(supported_params=["reasoning_effort"], reasoning_efforts=["low"])
+    route = SimpleNamespace(adapters=[(openai, 1.0), (_NATIVE, 1.0)])
+
+    async def admitted_model(model: Any, ctx: Any, target: str, resolver: Any = None) -> Any:
+        if not isinstance(model, str):
+            raise targets.ItemRejected("invalid_request", "model: a model name is required")
+        return model, route
+
+    monkeypatch.setattr(targets, "_cached_route_model", admitted_model)
+    body = _VALID_BODIES[target]
+    for profile in (None, profiles.PROFILES["2026-10-21"]):
+        ctx = _admission_context(profile)
+        assert await targets.admit_item(target, json.loads(json.dumps(body)), ctx)
+        for path in list(_paths(body)):
+            for replacement in _MALFORMED:
+                with contextlib.suppress(targets.ItemRejected):
+                    await targets.admit_item(target, _replaced(body, path, replacement), ctx)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        [{"type": []}],
+        [{"type": {}}],
+        [{"type": 3}],
+        [{"type": "text", "text": "a"}, {"type": None}],
+    ],
+)
+def test_a_content_block_whose_type_is_not_a_string_is_a_problem(content):
+    body = {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": content}]}
+    problem = targets.native_messages_problem(body)
+    assert problem is not None and "content block type" in problem
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"input": [{"type": {}}]},
+        {"input": [{"type": ["message"]}]},
+        {"input": [{"role": "user", "content": [{"type": []}]}]},
+        {"input": "x", "tools": [{"type": []}]},
+        {"input": "x", "tools": ["function"]},
+        {"input": "x", "tools": {"type": "function"}},
+        {"input": "x", "tools": [{"type": "function"}]},
+    ],
+)
+async def test_responses_with_malformed_types_or_tools_are_refused(monkeypatch, body):
+    async def admitted_model(*args: Any, **kwargs: Any) -> Any:
+        return "m", SimpleNamespace(adapters=[])
+
+    # The model is admitted, so a refusal can only come from the body's shape.
+    monkeypatch.setattr(targets, "_cached_route_model", admitted_model)
+    with pytest.raises(targets.ItemRejected) as refused:
+        await _admit_responses(body)
+    assert refused.value.param in ("input", "tools")
