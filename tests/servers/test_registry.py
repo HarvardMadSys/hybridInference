@@ -254,6 +254,42 @@ def test_only_a_registered_default_fills_a_reference(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "routes",
+    ["", "    route:\n      - kind: chutes\n        base_url: https://llm.chutes.ai/v1\n"],
+    ids=["default-route", "route-list"],
+)
+def test_an_unset_model_level_api_key_skips_the_model(tmp_path, monkeypatch, routes):
+    """A route inheriting the model's ``api_key: ${VAR}`` is held to it like its own.
+
+    Expanded in place, the model-level value reached the route as None, past
+    the check that skips a model whose env-backed key is unset: the model was
+    registered with no credential and every request went upstream unauthenticated.
+    """
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "models:\n"
+        "  - id: keyed-model\n"
+        "    name: Keyed\n"
+        "    provider: chutes\n"
+        "    base_url: https://llm.chutes.ai/v1\n"
+        "    api_key: ${REPRO_PROVIDER_API_KEY}\n" + routes
+    )
+    monkeypatch.delenv("REPRO_PROVIDER_API_KEY", raising=False)
+
+    exe = FixedRouter()
+    report = registry.ModelLoadReport()
+    count, _infos = registry.register_from_models_yaml(
+        exe, path, continue_on_missing_env=True, report=report
+    )
+
+    assert count == 0
+    assert "keyed-model" not in exe.routes
+    assert report.skipped_models == {"keyed-model": []}
+    assert report.unset_env_vars == {"REPRO_PROVIDER_API_KEY"}
+
+
+@pytest.mark.unit
 def test_register_from_models_yaml_merges_route_extra_body(tmp_path):
     yaml_text = (
         "models:\n"

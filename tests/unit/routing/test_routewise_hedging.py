@@ -1365,6 +1365,7 @@ class TestRouterHedgeMode:
 
         assert resp["source"] == "backup"
         assert resp["_routing"]["endpoint_id"] == "test-model:api-b"
+        assert resp["_routing"]["pricing"] == {"prompt": "4.0", "completion": "20.0"}
         routewise = resp["_routing"]["routewise"]
         assert routewise["hedged"] is True
         assert routewise["hedge_triggered"] is True
@@ -1910,6 +1911,7 @@ class TestWinnerAttribution:
             ],
             stream_delay=0.0,
         )
+        backup.config.pricing = {"prompt": "4.0", "completion": "20.0"}
         hedged = HedgedAdapter(
             primary=primary,
             backup=backup,
@@ -1925,6 +1927,8 @@ class TestWinnerAttribution:
         combined = "".join(chunks)
         assert "quick" in combined
         assert '"endpoint_id": "ep:fast"' in combined
+        routing = json.loads(chunks[0].removeprefix("data: "))["_routing"]
+        assert routing["pricing"] == {"prompt": "4.0", "completion": "20.0"}
         # Config must be swapped to backup's.
         assert hedged.config.provider == "fast-backup"
         assert hedged.config.endpoint_id == "ep:fast"

@@ -372,13 +372,15 @@ def _flatten_tool_result_content(content: Any) -> str:
 
 def _translate_params(body: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {}
-    if "max_tokens" in body:
+    # A null field is an unset one, as on the chat surface: passed on as None,
+    # the adapter's clamps raise TypeError before any upstream call.
+    if body.get("max_tokens") is not None:
         params["max_tokens"] = body["max_tokens"]
-    if "temperature" in body:
+    if body.get("temperature") is not None:
         params["temperature"] = body["temperature"]
-    if "top_p" in body:
+    if body.get("top_p") is not None:
         params["top_p"] = body["top_p"]
-    if "stop_sequences" in body:
+    if body.get("stop_sequences") is not None:
         params["stop"] = body["stop_sequences"]
     if body.get("stream"):
         params["stream"] = True

@@ -510,6 +510,90 @@ async def test_backup_exports_plaintext_secrets_and_excludes_setup_markers(confi
 
 
 @pytest.mark.asyncio
+async def test_backup_exports_the_signup_domain_allowlist(config_client) -> None:
+    client, _store, _audit = config_client
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_signup_allowed_domains = AsyncMock(
+        return_value=[
+            {"domain": "mit.edu", "is_wildcard": True, "created_by": None},
+            {"domain": "harvard.edu", "is_wildcard": False, "created_by": None},
+        ]
+    )
+
+    response = await client.get("/admin/config/backup", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["signup_allowed_domains"] == [
+        {"domain": "harvard.edu", "is_wildcard": False},
+        {"domain": "mit.edu", "is_wildcard": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_replaces_the_signup_domain_allowlist_and_refreshes_resolvers(
+    config_client,
+) -> None:
+    """An empty allowlist approves every signup, so a restore must not drop it."""
+    client, _store, _audit = config_client
+    services = client._transport.app.state.services
+    op_store = services.operational_store
+    op_store.list_signup_allowed_domains = AsyncMock(
+        return_value=[
+            {"domain": "harvard.edu", "is_wildcard": False},
+            {"domain": "old.org", "is_wildcard": False},
+        ]
+    )
+    op_store.add_signup_allowed_domain = AsyncMock()
+    op_store.remove_signup_allowed_domain = AsyncMock()
+    services.model_visibility_resolver = MagicMock(spec=["invalidate_cache"])
+    services.model_concurrency_resolver = MagicMock(spec=["invalidate_cache"])
+
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={
+            "schema_version": 1,
+            "signup_allowed_domains": [
+                {"domain": "harvard.edu", "is_wildcard": False},
+                {"domain": "mit.edu", "is_wildcard": True},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    op_store.remove_signup_allowed_domain.assert_awaited_once_with(
+        domain="old.org", is_wildcard=False
+    )
+    # An ADMIN_TOKEN caller has no account to attribute the row to.
+    op_store.add_signup_allowed_domain.assert_awaited_once_with(
+        domain="mit.edu", is_wildcard=True, created_by=None
+    )
+    services.model_visibility_resolver.invalidate_cache.assert_called_once_with()
+    services.model_concurrency_resolver.invalidate_cache.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_restore_accepts_a_paused_batch_model_its_backup_exported(config_client) -> None:
+    """A cap of 0 pauses a model's batch work; a backup taken meanwhile holds it."""
+    client, _store, _audit = config_client
+    services = client._transport.app.state.services
+    services.batch_store = MagicMock()
+    services.batch_store.list_model_limits = AsyncMock(return_value={})
+    services.batch_store.set_model_limit = AsyncMock()
+
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={"schema_version": 1, "batch_model_limits": {"glm-4.6": 0}},
+    )
+
+    assert response.status_code == 200
+    services.batch_store.set_model_limit.assert_awaited_once_with(
+        "glm-4.6", 0, updated_by="admin-token"
+    )
+
+
+@pytest.mark.asyncio
 async def test_restore_applies_backup_and_preserves_locked_api_key_secret(config_client) -> None:
     client, store, audit = config_client
     store.has_api_keys = True

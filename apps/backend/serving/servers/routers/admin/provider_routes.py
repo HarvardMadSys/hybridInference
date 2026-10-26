@@ -1044,6 +1044,12 @@ def _model_config_provider_for_target(target: ProviderTarget) -> str:
 
 def _apply_target_adapter_defaults(cfg: dict[str, Any], target: ProviderTarget) -> None:
     cfg["chat_path"] = target.chat_path
+    # Derived from the adapter kind, and set by ``_make_adapter`` only for the
+    # kinds that have them. ``cfg`` is a copy of another route's config, whose
+    # values would otherwise outlive a change of kind: an OpenRouter pin on a
+    # Chutes route lists, keys and probes it as OpenRouter.
+    cfg["openrouter_pinned_provider"] = None
+    cfg["provider_profile"] = None
 
 
 def _target_provider_from_request(

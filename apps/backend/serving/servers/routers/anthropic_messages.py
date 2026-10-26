@@ -1456,7 +1456,10 @@ def _parse_sse_chunk(buffer: bytes, raw: bytes) -> tuple[list[tuple[str, str]], 
             continue
         event_type = ""
         data_lines: list[str] = []
-        for line in block.splitlines():
+        # LF, not ``str.splitlines``: that also breaks on U+2028, U+2029 and
+        # U+0085, which JSON carries raw inside strings. A CRLF line keeps its
+        # CR here, and the strip below removes it.
+        for line in block.split("\n"):
             if line.startswith("event:"):
                 event_type = line[len("event:") :].strip()
             elif line.startswith("data:"):
@@ -1467,6 +1470,27 @@ def _parse_sse_chunk(buffer: bytes, raw: bytes) -> tuple[list[tuple[str, str]], 
     if len(leftover) > _SSE_LEFTOVER_CAP:
         leftover = b""
     return events, leftover
+
+
+def _shape_error(body: dict[str, Any]) -> str | None:
+    """Name a field whose JSON type the dispatch cannot take, or return None.
+
+    Preparing the dispatch reads ``messages`` as a list of objects and
+    ``metadata`` as an object, after the endpoint's dispatch claim is taken.
+    Anything else raised ``AttributeError`` there: a 500 for the client's
+    mistake, and on a half-open endpoint a probe claim held until it timed out.
+    Checked with the required fields instead, so it is a 400 before any claim.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return "Invalid field: messages must be an array"
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            return f"Invalid field: messages[{index}] must be an object"
+    metadata = body.get("metadata")
+    if metadata is not None and not isinstance(metadata, dict):
+        return "Invalid field: metadata must be an object"
+    return None
 
 
 # --- Route handler ---------------------------------------------------------
@@ -1511,14 +1535,19 @@ async def anthropic_messages(
         body = await request.json()
     except Exception:
         return _anthropic_error(400, "Invalid JSON in request body")
+    if not isinstance(body, dict):
+        return _anthropic_error(400, "Request body must be a JSON object")
 
     model_id = body.get("model")
     if not model_id:
         return _anthropic_error(400, "Missing required field: model")
     if "messages" not in body:
         return _anthropic_error(400, "Missing required field: messages")
-    if "max_tokens" not in body:
+    if body.get("max_tokens") is None:
         return _anthropic_error(400, "Missing required field: max_tokens")
+    shape_error = _shape_error(body)
+    if shape_error is not None:
+        return _anthropic_error(400, shape_error)
 
     # Before dispatch, so this covers the native passthrough as well as the
     # translated path. A native Anthropic upstream is forwarded this body
@@ -2520,6 +2549,8 @@ async def anthropic_count_tokens(
         body = await request.json()
     except Exception:
         return _anthropic_error(400, "Invalid JSON in request body")
+    if not isinstance(body, dict):
+        return _anthropic_error(400, "Request body must be a JSON object")
 
     model_id = body.get("model")
     if not model_id:

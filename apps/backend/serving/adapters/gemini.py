@@ -12,7 +12,14 @@ import aiohttp
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .openai_compat import _key_pool_provider_label, completion_timeout_s
+from .openai_compat import (
+    _INCOMPLETE_STREAM_ERROR,
+    UpstreamStreamError,
+    _key_pool_provider_label,
+    _stream_error_message,
+    _stream_error_status,
+    completion_timeout_s,
+)
 from .upstream_limiter import UpstreamSlot, acquire_upstream_slot, outcome_status, upstream_slot
 
 
@@ -137,15 +144,24 @@ class GeminiAdapter(BaseAdapter):
                 name = tool_call_names.get(msg.get("tool_call_id")) or msg.get("name") or "tool"
                 # Try to parse JSON content; fall back to string
                 response_payload: Any
-                if isinstance(raw_content, dict | list):
+                if isinstance(raw_content, dict):
                     response_payload = raw_content
+                elif isinstance(raw_content, list):
+                    # OpenAI content parts: the result is their text.
+                    response_payload = "".join(
+                        part.get("text") or ""
+                        for part in raw_content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    )
                 else:
                     try:
                         response_payload = json.loads(raw_content or "{}")
                     except Exception:
-                        response_payload = {
-                            "output": str(raw_content) if raw_content is not None else ""
-                        }
+                        response_payload = str(raw_content) if raw_content is not None else ""
+                # FunctionResponse.response is a Struct: Gemini refuses an array
+                # or a scalar there with 400, so any other value is wrapped.
+                if not isinstance(response_payload, dict):
+                    response_payload = {"output": response_payload}
                 contents.append(
                     {
                         "role": "user",
@@ -313,7 +329,7 @@ class GeminiAdapter(BaseAdapter):
     async def _acquire_upstream_slot(self) -> UpstreamSlot:
         """Take an outbound concurrency slot for this endpoint's provider account.
 
-        Single-key adapter (the key rides in the query string), so the bucket —
+        Single-key adapter (the key rides in a request header), so the bucket —
         keyed on (provider label, key) — is fixed for the route. Raises
         ``UpstreamSaturated`` when the account's allowance is already full,
         which the router turns into a fallback to another endpoint. The
@@ -326,6 +342,15 @@ class GeminiAdapter(BaseAdapter):
             base_url=self.config.base_url,
             deployment_type=self.config.deployment_type,
         )
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Return the header carrying the API key.
+
+        Not the ``?key=`` query parameter the API also accepts: aiohttp renders
+        the request URL into ``str()`` of every error it raises, and that text
+        reaches logs and the request log's routing metadata.
+        """
+        return {"x-goog-api-key": self.config.api_key} if self.config.api_key else {}
 
     def _upstream_slot(self) -> AbstractAsyncContextManager[UpstreamSlot]:
         """Return an ``async with`` guard around :meth:`_acquire_upstream_slot`."""
@@ -353,9 +378,7 @@ class GeminiAdapter(BaseAdapter):
 
         # Use provider_model_id if available, otherwise fall back to config.id
         model_name = getattr(self.config, "provider_model_id", None) or self.config.id
-        url = (
-            f"{self.config.base_url}/models/{model_name}:generateContent?key={self.config.api_key}"
-        )
+        url = f"{self.config.base_url}/models/{model_name}:generateContent"
 
         # retries=1 => exactly one attempt, NO retry: a completion POST is
         # non-idempotent (re-sending double-bills generations and hammers
@@ -366,6 +389,7 @@ class GeminiAdapter(BaseAdapter):
             data = await self.http.json_post_with_retry(
                 url,
                 json=request_body,
+                headers=self._auth_headers(),
                 timeout=aiohttp.ClientTimeout(total=completion_timeout_s()),
                 retries=1,
             )
@@ -498,10 +522,7 @@ class GeminiAdapter(BaseAdapter):
         # Use provider_model_id if available, otherwise fall back to config.id
         model_name = getattr(self.config, "provider_model_id", None) or self.config.id
         # Prefer SSE for reliable incremental tokens with Gemini; add alt=sse.
-        url = (
-            f"{self.config.base_url}/models/{model_name}:streamGenerateContent"
-            f"?key={self.config.api_key}&alt=sse"
-        )
+        url = f"{self.config.base_url}/models/{model_name}:streamGenerateContent?alt=sse"
 
         # Debug: log request body when tool messages present
         from serving.utils.logging import get_logger
@@ -522,9 +543,16 @@ class GeminiAdapter(BaseAdapter):
         finish_reason_raw = "STOP"
         has_function_call = False
         tool_call_count = 0
+        # Whether the upstream said the generation ended: a finishReason, a
+        # blocked prompt, or [DONE]. A body that closes without one was cut short.
+        saw_end = False
 
         # Auto-detect upstream streaming format (SSE vs NDJSON) and parse both.
-        headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            **self._auth_headers(),
+        }
         slot = await self._acquire_upstream_slot()
         # What the concurrency limiter is told when the slot goes back.
         # Neutral by default so an exit neither branch below reaches -- a
@@ -541,8 +569,21 @@ class GeminiAdapter(BaseAdapter):
                     # Accept either raw JSON line or SSE 'data: ' prefixed line.
                     raw = line[6:] if line.startswith("data: ") else line
                     if raw.strip() == "[DONE]":
+                        saw_end = True
                         break
                     data = json.loads(raw)
+
+                    # An error frame ends the stream with the upstream's own
+                    # reason, e.g. a 503 "model is overloaded" mid-generation.
+                    if isinstance(data, dict) and data.get("error"):
+                        error = data["error"]
+                        raise UpstreamStreamError(
+                            _stream_error_message(error), _stream_error_status(error)
+                        )
+                    if isinstance(data.get("promptFeedback"), dict) and data["promptFeedback"].get(
+                        "blockReason"
+                    ):
+                        saw_end = True
 
                     emitted_any = False
                     # Reset per-frame: not every frame carries a candidate (blocked
@@ -555,6 +596,7 @@ class GeminiAdapter(BaseAdapter):
                         # Track finish reason from upstream
                         if candidate.get("finishReason"):
                             finish_reason_raw = candidate["finishReason"]
+                            saw_end = True
 
                         # Handle case where content or parts might be missing
                         if "content" not in candidate:
@@ -654,12 +696,19 @@ class GeminiAdapter(BaseAdapter):
 
                 except json.JSONDecodeError:
                     continue
+            if not saw_end:
+                # A clean close is no proof the generation finished: report it,
+                # as openai_compat does, rather than end a cut-off answer as stop.
+                raise aiohttp.ClientError(_INCOMPLETE_STREAM_ERROR)
             # Loop ran to completion or broke on [DONE]: the upstream
             # answered, so the concurrency level it was asked to hold was
             # fine.
             upstream_outcome = 200
         except Exception as exc:
-            upstream_outcome = outcome_status(exc)
+            # An error frame names its status; a 429 one shrinks the limit.
+            upstream_outcome = (
+                exc.status if isinstance(exc, UpstreamStreamError) else outcome_status(exc)
+            )
             raise
         finally:
             # Held across the whole generation, not just the response open,

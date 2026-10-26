@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -110,6 +111,9 @@ async def update_runtime_setting_endpoint(
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a string value")
 
     if expected_type in ("int", "float"):
+        # Before the bounds: NaN compares false to both of them.
+        if not math.isfinite(value):
+            raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a finite number")
         lo = entry.get("min")
         hi = entry.get("max")
         if lo is not None and value < lo:

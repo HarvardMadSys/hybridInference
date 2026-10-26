@@ -115,10 +115,17 @@ def _content_parts_to_text_or_blocks(content: Any) -> Any:
     return blocks
 
 
-def _function_call_output_to_text(output: Any) -> str:
-    """Coerce a Responses ``function_call_output.output`` into chat tool text."""
+def _function_call_output_to_content(output: Any) -> Any:
+    """Coerce a Responses ``function_call_output.output`` into chat tool content.
+
+    The spec's array form (``input_text`` / ``input_image`` parts) is translated
+    as message content is: text alone collapses to a string, and an image stays
+    an image block, so the modality check sees it. Anything else is serialized.
+    """
     if isinstance(output, str):
         return output
+    if isinstance(output, list):
+        return _content_parts_to_text_or_blocks(output)
     return json.dumps(output)
 
 
@@ -202,7 +209,7 @@ def responses_input_to_messages(
                 {
                     "role": "tool",
                     "tool_call_id": item.get("call_id") or item.get("id") or "",
-                    "content": _function_call_output_to_text(item.get("output")),
+                    "content": _function_call_output_to_content(item.get("output")),
                 }
             )
         # reasoning / item_reference / other types: skipped (no chat analogue).

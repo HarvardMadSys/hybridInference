@@ -96,7 +96,11 @@ class SSEParser:
         event: str | None = None
         msg_id: str | None = None
 
-        for raw_line in frame.splitlines():
+        # Split on LF only: ``feed`` has already turned CR and CRLF into LF, the
+        # only line ends SSE knows. ``str.splitlines`` would also break on
+        # U+2028, U+2029 and U+0085, which JSON carries raw inside strings, and
+        # cut the payload in two.
+        for raw_line in frame.split("\n"):
             line = raw_line.rstrip("\r")
             if line.startswith(":"):
                 continue

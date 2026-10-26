@@ -29,3 +29,19 @@ class AlertingLogHandler(logging.Handler):
                 self.queue.put_nowait(record)
             except Exception:
                 self.dropped_count += 1
+
+
+def install_alert_log_handler(handler: AlertingLogHandler) -> None:
+    """Attach ``handler`` to the root logger, where every record reaches it once.
+
+    Only there. The engine picks the request log out by ``record.name``; a
+    second copy on that logger would see its records twice, and turning the
+    logger's propagation off to prevent that also cuts it off from the root's
+    console and ``LOG_FILE`` handlers, its only output.
+    """
+    logging.getLogger().addHandler(handler)
+
+
+def uninstall_alert_log_handler(handler: AlertingLogHandler) -> None:
+    """Detach ``handler`` from where :func:`install_alert_log_handler` put it."""
+    logging.getLogger().removeHandler(handler)

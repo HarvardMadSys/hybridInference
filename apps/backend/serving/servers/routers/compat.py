@@ -6,6 +6,7 @@ import json
 
 from fastapi import APIRouter, Depends, Header, Request, Response
 
+from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
@@ -33,6 +34,7 @@ async def single_completion(
     log_store=Depends(get_log_store),
     model_router_registry=Depends(get_model_router_registry),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    runtime_settings: RuntimeSettings | None = Depends(get_runtime_settings),
     completions_logger=Depends(get_completions_logger),
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
@@ -51,6 +53,7 @@ async def single_completion(
         log_store=log_store,
         model_router_registry=model_router_registry,
         model_visibility_resolver=model_visibility_resolver,
+        runtime_settings=runtime_settings,
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
@@ -67,6 +70,7 @@ async def legacy_completions(
     log_store=Depends(get_log_store),
     model_router_registry=Depends(get_model_router_registry),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    runtime_settings: RuntimeSettings | None = Depends(get_runtime_settings),
     completions_logger=Depends(get_completions_logger),
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
@@ -88,6 +92,7 @@ async def legacy_completions(
         log_store=log_store,
         model_router_registry=model_router_registry,
         model_visibility_resolver=model_visibility_resolver,
+        runtime_settings=runtime_settings,
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,

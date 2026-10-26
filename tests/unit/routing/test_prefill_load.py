@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -1110,6 +1111,54 @@ def test_elephant_gate_is_not_fooled_by_a_sibling_conversation():
     other = t.acquire("ep", 500_000, affinity_key="key1", fingerprint="conv-b")
     assert other.elephant is True
     assert t.elephants("ep") == 1
+
+
+def _sibling_conversation_setup(tracker: PrefillLoadTracker) -> None:
+    """Key K's conversation A left a warm prefix on A; a stranger's elephant fills A."""
+    tracker.release(
+        tracker.acquire("A", 300_000, affinity_key="K", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    tracker.acquire("A", 400_000, affinity_key="stranger", fingerprint="x")
+    assert tracker.elephants("A") == 1  # A is at ELEPHANT_LIMIT
+
+
+@pytest.mark.unit
+def test_selection_keeps_a_sibling_conversations_elephant_off_a_saturated_endpoint():
+    """Selection must judge an elephant the way ``acquire`` then counts it.
+
+    Read on the loose caller-scoped discount, K's unrelated conversation B
+    looked warm on A and kept A eligible at its elephant limit; ``acquire``
+    then counted it as an elephant there, stacking two mega-prefills on A.
+    """
+    t = PrefillLoadTracker()
+    _sibling_conversation_setup(t)
+    rng = random.Random(1)
+
+    picks = {
+        t.select_index(["A", "B"], [0.5, 0.5], 300_000, rng.random, "K", fingerprint="conv-b")
+        for _ in range(500)
+    }
+
+    assert picks == {1}
+
+
+@pytest.mark.unit
+def test_router_selection_passes_the_conversation_fingerprint(monkeypatch):
+    r = FixedRouter()
+    a = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    b = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(a, 0.5), (b, 0.5)])
+    req_ctx.set({"affinity_key": "K"})
+    _sibling_conversation_setup(r.prefill_load)
+    # Both of the two draws land on A unless A is filtered out.
+    monkeypatch.setattr("routing.routers.random.random", lambda: 0.0)
+
+    chosen, claim = r._select_and_claim_adapter("m", prefill_tokens=300_000, fingerprint="conv-b")
+
+    assert chosen is b
+    if claim is not None:
+        r._health_registry.end_dispatch(claim)
 
 
 @pytest.mark.unit
