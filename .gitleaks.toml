@@ -83,7 +83,7 @@ regexes = [
 description = "Error-scrubbing tests need recognisable but fake provider key strings."
 targetRules = ["generic-api-key"]
 condition = "AND"
-paths = ['''^tests/test_error_scrubbing\.py$''']
+paths = ['''^tests/unit/test_error_scrubbing\.py$''']
 regexes = [
   '''^AIzaSecretKey123$''',
   '''^sk-proj-ABC123DEF456GHI789$''',
