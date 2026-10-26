@@ -986,7 +986,12 @@ class FixedRouter:
         prompt over the offload route's max input does not get it at all, not
         even last.
         """
-        route = self.routes[model_id]
+        route = self.routes.get(model_id)
+        if route is None:
+            # Removed while this request was upstream (an admin deleted the
+            # model's last route): nothing to fall back to, so the primary's
+            # own error is the one the request ends with.
+            return FallbackOrder([], None), None
         candidates = self._dispatch_range(
             model_id,
             route,
