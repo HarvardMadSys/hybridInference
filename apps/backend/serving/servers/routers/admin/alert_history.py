@@ -87,6 +87,15 @@ def _window(
             return _error(422, "invalid_request", "Timestamps need an explicit offset.")
     end = until or now
     start = since or (end - DEFAULT_WINDOW)
+    return _checked_window(start, end)
+
+
+def _checked_window(
+    start: dt.datetime, end: dt.datetime
+) -> tuple[dt.datetime, dt.datetime] | JSONResponse:
+    """Order and span rules every window obeys, resolved here or carried in a cursor."""
+    if start.tzinfo is None or end.tzinfo is None:
+        return _error(422, "invalid_request", "Timestamps need an explicit offset.")
     if start >= end:
         return _error(422, "invalid_request", "since must be before until.")
     if end - start > MAX_WINDOW:
@@ -94,6 +103,25 @@ def _window(
             422, "invalid_request", "A query spans at most 7 days; query older history in windows."
         )
     return start, end
+
+
+def _carried_window(
+    carried: tuple[dt.datetime, dt.datetime],
+    since: dt.datetime | None,
+    until: dt.datetime | None,
+) -> tuple[dt.datetime, dt.datetime] | JSONResponse:
+    """A cursor's window, held to the rules of the first page that minted it.
+
+    The cursor is not signed, so its window is only a claim: it must pass the
+    same checks as a resolved window and agree with whatever bound the query
+    named explicitly (the fingerprint pins those, not the window).
+    """
+    window = _checked_window(*carried)
+    if isinstance(window, JSONResponse):
+        return window
+    if (since is not None and window[0] != since) or (until is not None and window[1] != until):
+        return _error(422, "invalid_request", "The cursor does not belong to this query.")
+    return window
 
 
 def _fingerprint(identity: ReaderIdentity, **parts: Any) -> str:
@@ -452,7 +480,7 @@ async def history_events(
             after, carried = store.decode_cursor(cursor, fingerprint)
         except ValueError:
             return _error(422, "invalid_request", "The cursor does not belong to this query.")
-    window = carried or _window(since, until, now)
+    window = _carried_window(carried, since, until) if carried else _window(since, until, now)
     if isinstance(window, JSONResponse):
         return window
     start, end = window

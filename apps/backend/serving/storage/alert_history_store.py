@@ -597,9 +597,14 @@ async def purge_subject(conn: Any, digest: str) -> int:
     """Delete every history row about the subject with fence digest ``digest``.
 
     Runs inside the hard delete's transaction, after its fence is established.
+    The ``<> '{}'`` term changes no result (a containing array is never empty)
+    but repeats the partial GIN index's predicate, which the planner needs to
+    see in the query before it will use that index.
     """
     status = await conn.execute(
-        f"DELETE FROM {EVENTS_TABLE} WHERE subject_digests @> ARRAY[$1]::text[]", digest
+        f"DELETE FROM {EVENTS_TABLE} "
+        "WHERE subject_digests <> '{}' AND subject_digests @> ARRAY[$1]::text[]",
+        digest,
     )
     try:
         return int(status.rsplit(" ", 1)[-1])
@@ -1063,6 +1068,8 @@ async def events_referencing_request(
 ) -> list[dict[str, Any]]:
     """Backend events in scope that reference ``request_id``, with owner digests."""
     where = _Where()
+    # The first term repeats the partial GIN index's predicate so it is usable.
+    where.add("request_ids <> '{}'")
     where.add("request_ids @> ARRAY[?]::text[]", request_id)
     where.add("source = ?", "backend")
     where.scope(scope)

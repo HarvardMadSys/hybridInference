@@ -497,3 +497,94 @@ async def test_writer_uses_a_writer_queue_separately_from_the_pool(pool):
     q.offer(rec("o:w1", ns="ahtest-writer2"))
     assert await w.flush_once() is True
     assert await count(pool, "source_namespace = 'ahtest-writer2'") == 1
+
+
+class _RecordingConn:
+    """Pass-through connection that keeps every statement and its arguments."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.statements: list[tuple[str, tuple]] = []
+
+    def transaction(self, **kwargs):
+        return self._conn.transaction(**kwargs)
+
+    async def execute(self, sql, *args):
+        self.statements.append((sql, args))
+        return await self._conn.execute(sql, *args)
+
+    async def fetch(self, sql, *args):
+        self.statements.append((sql, args))
+        return await self._conn.fetch(sql, *args)
+
+    def history_statement(self) -> tuple[str, tuple]:
+        (found,) = [s for s in self.statements if "alert_history_events" in s[0]]
+        return found
+
+
+async def _plan(conn, sql, args, plan_cache_mode):
+    """The plan PostgreSQL chooses for ``sql`` when it may not fall back to a scan."""
+    async with conn.transaction():
+        # A sequential scan is then chosen only when no index can serve the
+        # query at all, so a missing index name means "not eligible".
+        await conn.execute("SET LOCAL enable_seqscan = off")
+        await conn.execute(f"SET LOCAL plan_cache_mode = {plan_cache_mode}")
+        return await conn.fetchval(f"EXPLAIN (FORMAT JSON) {sql}", *args)
+
+
+@pytest.mark.parametrize("plan_cache_mode", ["force_custom_plan", "force_generic_plan"])
+async def test_subject_and_request_lookups_can_use_their_partial_gin_indexes(pool, plan_cache_mode):
+    digest = fence_account_digest("ahtest-user-7", SECRET)
+    await write(
+        pool,
+        [
+            rec("o:gin1", subjects=[digest], refs=[("ahtest-req-gin", digest)]),
+            rec("o:gin2"),
+        ],
+    )
+    async with pool.acquire() as conn:
+        # The shape of real history: almost every row names no account and no
+        # request. On a near-empty table any index looks as good as another.
+        await conn.execute(
+            "INSERT INTO alert_history_events (record_id, source, source_namespace, "
+            "origin_record_id, payload_digest, schema_version, deployment_id, "
+            "target_environment, occurred_at, kind, origin) "
+            "SELECT gen_random_uuid(), 'backend', 'ahtest-gin-bulk', 'bulk:' || n, 'd', 1, "
+            "'ahtest-dep', 'test', now(), 'suppression_summary', 'live' "
+            "FROM generate_series(1, 5000) AS n"
+        )
+        await conn.execute("ANALYZE alert_history_events")
+        recorder = _RecordingConn(conn)
+        refs = await store.events_referencing_request(
+            recorder, scope=store.Scope(), request_id="ahtest-req-gin"
+        )
+        assert [r["owner_digests"] for r in refs] == [[digest]]
+        lookup_sql, lookup_args = recorder.history_statement()
+
+        recorder = _RecordingConn(conn)
+        async with conn.transaction():
+            assert await store.purge_subject(recorder, digest) == 1
+        purge_sql, purge_args = recorder.history_statement()
+
+        lookup_plan = await _plan(conn, lookup_sql, lookup_args, plan_cache_mode)
+        purge_plan = await _plan(conn, purge_sql, purge_args, plan_cache_mode)
+        assert "idx_alert_history_events_requests" in lookup_plan, lookup_plan
+        assert "idx_alert_history_events_subjects" in purge_plan, purge_plan
+
+        # Control: without the repeated predicate the same containment test
+        # cannot use the partial index, which is what the queries used to send.
+        bare_lookup = await _plan(
+            conn,
+            "SELECT record_id FROM alert_history_events WHERE request_ids @> ARRAY[$1]::text[]",
+            ("ahtest-req-gin",),
+            plan_cache_mode,
+        )
+        bare_purge = await _plan(
+            conn,
+            "DELETE FROM alert_history_events WHERE subject_digests @> ARRAY[$1]::text[]",
+            (digest,),
+            plan_cache_mode,
+        )
+        assert "idx_alert_history_events_requests" not in bare_lookup
+        assert "idx_alert_history_events_subjects" not in bare_purge
+    assert await count(pool, "origin_record_id = 'o:gin2'") == 1
