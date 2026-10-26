@@ -1,7 +1,9 @@
 # Batch Inference (`/v1/batches`)
 
 **Date:** 2026-10-25
-**Status:** Accepted; implemented with this record
+**Status:** Accepted; implemented with this record. Revised and extended by
+[2026-10-26-batch-api-expansion-design.zh.md](2026-10-26-batch-api-expansion-design.zh.md),
+which implements most of section 13.
 **Related:** #1503 (a general batch endpoint), #1510 (the first draft and its
 spec, `2026-10-10-batch-processing-design.md`, which this record replaces; it was
 not merged), #1509 (completion webhooks, deferred)

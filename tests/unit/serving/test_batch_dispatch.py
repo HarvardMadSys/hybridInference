@@ -18,7 +18,6 @@ from fastapi import FastAPI
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
-from serving.batch import dispatch as dispatch_module
 from serving.batch.dispatch import BATCH_USER_AGENT, DispatchResult, dispatch_item
 from serving.schemas import ChatCompletionResponse
 from serving.servers.deps import AppServices
@@ -304,7 +303,9 @@ async def test_an_unexpected_exception_is_reported_not_raised(monkeypatch):
     async def broken(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("handler bug")
 
-    monkeypatch.setattr(dispatch_module, "chat_completions", broken)
+    from serving.servers.routers import completions
+
+    monkeypatch.setattr(completions, "chat_completions", broken)
     app, services = _setup(_Upstream())
 
     result = await _dispatch(app, services)

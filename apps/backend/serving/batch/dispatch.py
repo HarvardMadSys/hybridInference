@@ -1,23 +1,42 @@
-"""Run one batch item through the chat-completions handler.
+"""Run one batch item through the handler of its target.
 
-A batch item is served by the handler behind ``POST /v1/chat/completions``,
-called directly -- the way ``responses.py`` and ``compat.py`` delegate to it --
-so routing, fallback, circuit breaking, model access, cost accounting and
-request logging apply to it unchanged.
+A batch item is served by the handler behind its endpoint, called directly --
+the way ``responses.py`` and ``compat.py`` delegate to the chat handler -- so
+routing, fallback, circuit breaking, model access, cost accounting and request
+logging apply to it unchanged:
 
-What the HTTP stack provides around that handler is provided here instead:
+=================  ==========================================================
+target             handler
+=================  ==========================================================
+``chat``           ``completions.chat_completions``
+``embeddings``     ``embeddings.create_embeddings``
+``messages``       ``anthropic_messages.anthropic_messages``
+``responses``      ``responses.create_response``
+=================  ==========================================================
+
+What the HTTP stack provides around a handler is provided here instead:
 
 * a request scope, opened as ``RequestIdMiddleware`` opens one, in a context of
   its own, so nothing leaks between items or into the worker;
 * the caller role, published as ``verify_api_key`` publishes it, so the
   upstream key pool keeps keys reserved for a higher tier away from batch
   traffic exactly as it does from the owner's own requests;
+* every argument FastAPI would inject. A handler's parameters default to
+  ``Depends(...)``/``Header(...)`` markers, which are truthy objects, so an
+  argument left out would silently reach the handler as a marker.
+  :func:`call_handler` refuses any call that leaves one out;
 * a ``Request`` for the handler to read: the item's body with ``stream`` forced
   off, a batch user agent, and no network peer. A batch item has none, and must
   never pass for a trusted or loopback caller: its client resolves to
   ``"unknown"``, unresolved, so its routing affinity follows the owner's key
   and nothing keyed on a client address applies to it;
-* the serialization the route applies to the handler's return value.
+* the serialization the route applies to the handler's return value, and the
+  reading of a ``JSONResponse`` -- the Messages and Responses handlers answer
+  errors with one rather than raising, and its status decides the outcome.
+
+The handler's own billing point reports what it charged
+(:mod:`serving.batch.attempts`); nothing here charges anything. The attempt's
+``api_logs`` rows carry the batch, item and attempt.
 
 Whether an item runs at all -- its owner re-authenticated, the owner's
 concurrency slot held -- is the worker's decision (:mod:`serving.batch.scheduler`).
@@ -28,22 +47,31 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import datetime as dt
+import inspect
 import json
 import secrets
 from dataclasses import dataclass, replace
 from typing import Any
 
 import anyio
-from fastapi import HTTPException, Response
+from fastapi import HTTPException, Response, params as fastapi_params
 from pydantic import ValidationError
 from starlette.requests import Request
+from starlette.responses import Response as StarletteResponse
 
+from serving.batch.attempts import observing
+from serving.batch.targets import TARGET_PATHS, AdapterRequirement
 from serving.exceptions import safe_detail_text, scrub_error_for_user
 from serving.pricing import get_pricing_snapshot
-from serving.schemas import ChatCompletionResponse
+from serving.schemas import ChatCompletionResponse, EmbeddingRequest
 from serving.servers.auth import publish_caller_role
 from serving.servers.deps import get_completions_logger, get_cost_tracker, get_pricing_lookup
-from serving.servers.routers.completions import chat_completions
+from serving.storage.batch_store import (
+    TARGET_CHAT,
+    TARGET_EMBEDDINGS,
+    TARGET_MESSAGES,
+    TARGET_RESPONSES,
+)
 from serving.storage.utils import json_safe
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -54,9 +82,13 @@ logger = get_logger(__name__)
 #: User agent of every request the batch worker runs, as ``api_logs`` records it.
 BATCH_USER_AGENT = "hybridinference-batch/1.0"
 
-_CHAT_PATH = "/v1/chat/completions"
+# Statuses a handler answers with when an upstream call was made but its
+# answer lost (a gateway timeout, a broken connection, an internal failure after
+# sending): the attempt's cost is unknown, not zero.
+_UNCERTAIN_STATUSES = frozenset({500, 502, 504})
 
-# Statuses besides 5xx on which the same request may well succeed later.
+# Statuses besides 5xx on which the same request may well succeed later (529:
+# Anthropic's "overloaded").
 _RETRYABLE_STATUSES = frozenset({408, 425, 429})
 
 _ERROR_CODES: dict[int, str] = {
@@ -71,6 +103,7 @@ _ERROR_CODES: dict[int, str] = {
     429: "rate_limited",
     503: "service_unavailable",
     504: "timeout",
+    529: "service_unavailable",
 }
 
 # Who a batch item's request comes from, as client-IP resolution
@@ -88,15 +121,22 @@ _BATCH_CLIENT = ClientIpInfo(
     resolved=False,
 )
 
+# The FastAPI markers a handler parameter defaults to when FastAPI is meant to
+# fill it in.
+_INJECTED_DEFAULTS = (fastapi_params.Depends, fastapi_params.Param, fastapi_params.Body)
+
 
 @dataclass(frozen=True)
 class DispatchResult:
     """How one attempt at a batch item went.
 
-    ``response`` is the chat completion body on success. On failure, ``error``
-    is ``{"code", "message", "status"}`` and ``retryable`` says whether the same
-    request may succeed if sent again. ``request_id`` is the ``api_logs`` id of
-    the request, once the handler got far enough to log it under one.
+    ``response`` is the target's response body on success. On failure,
+    ``error`` is ``{"code", "message", "status"}`` (plus ``"anthropic"``, the
+    Anthropic error object, for a Messages item) and ``retryable`` says whether
+    the same request may succeed if sent again. ``request_id`` is the
+    ``api_logs`` id of the request, once the handler got far enough to log it.
+    ``cost_status`` is ``billed`` (``cost_usd`` was charged), ``not_billed`` or
+    ``unknown``; ``dispatched`` whether the handler was entered at all.
     """
 
     status_code: int
@@ -107,32 +147,31 @@ class DispatchResult:
     completion_tokens: int | None = None
     cost_usd: float | None = None
     request_id: str | None = None
+    usage: dict[str, Any] | None = None
+    cost_status: str = "not_billed"
+    dispatched: bool = True
 
 
-class _CostCapture:
-    """The shared cost tracker, remembering what the increments it schedules cost.
+def call_handler(handler: Any, /, *args: Any, **kwargs: Any) -> Any:
+    """Call a FastAPI handler directly, refusing to leave any injected argument out.
 
-    The handler charges the owner through ``schedule_increment``, which returns
-    the routing info enriched with the computed ``upstream_cost_usd``; that is
-    the item's cost. Everything else is the wrapped tracker's.
+    Raises:
+        TypeError: A parameter that FastAPI would inject (one defaulting to a
+            ``Depends``/``Header``/``Query``/``Body`` marker) was not supplied.
     """
-
-    def __init__(self, tracker: Any) -> None:
-        """Wrap *tracker*."""
-        self._tracker = tracker
-        self.cost_usd: float | None = None
-
-    async def schedule_increment(self, **kwargs: Any) -> Any:
-        """Charge as the wrapped tracker does, and keep the cost it computed."""
-        routing = await self._tracker.schedule_increment(**kwargs)
-        cost = getattr(routing, "upstream_cost_usd", None)
-        if cost is not None:
-            self.cost_usd = (self.cost_usd or 0.0) + float(cost)
-        return routing
-
-    def __getattr__(self, name: str) -> Any:
-        """Delegate everything else to the wrapped tracker."""
-        return getattr(self._tracker, name)
+    signature = inspect.signature(handler)
+    bound = signature.bind_partial(*args, **kwargs)
+    missing = [
+        name
+        for name, parameter in signature.parameters.items()
+        if name not in bound.arguments and isinstance(parameter.default, _INJECTED_DEFAULTS)
+    ]
+    if missing:
+        raise TypeError(
+            f"{getattr(handler, '__name__', handler)!r} called without {', '.join(missing)}: "
+            "a batch dispatch must supply every argument FastAPI would inject"
+        )
+    return handler(*args, **kwargs)
 
 
 async def dispatch_item(
@@ -142,17 +181,25 @@ async def dispatch_item(
     user_ctx: dict[str, Any],
     body: dict[str, Any],
     batch_id: str,
+    target: str = TARGET_CHAT,
+    item_id: int | None = None,
+    attempt: int | None = None,
+    protocol_profile: str | None = None,
     timeout_s: float | None = None,
 ) -> DispatchResult:
-    """Run one batch item's chat request and report how it went. Never raises.
+    """Run one batch item's request and report how it went. Never raises.
 
     Args:
-        app: The FastAPI application; the handler reads its services off it.
+        app: The FastAPI application; the handlers read its services off it.
         services: The application's services.
         user_ctx: The owner's user context for this attempt, as
             :func:`serving.servers.auth.authenticate_stored_key` returned it.
-        body: The item's ``/v1/chat/completions`` request body.
+        body: The item's request body for *target*.
         batch_id: The item's batch, recorded in ``api_logs.batch_job_id``.
+        target: ``chat``, ``embeddings``, ``messages`` or ``responses``.
+        item_id: The item, recorded in the log row's metadata.
+        attempt: The attempt number, recorded likewise.
+        protocol_profile: The ``anthropic-version`` of a Messages item.
         timeout_s: How long the attempt may run before it is abandoned as a
             timeout; ``None`` for no limit beyond the upstream timeouts.
 
@@ -168,6 +215,10 @@ async def dispatch_item(
             user_ctx=user_ctx,
             body=body,
             batch_id=batch_id,
+            target=target,
+            item_id=item_id,
+            attempt=attempt,
+            protocol_profile=protocol_profile,
             timeout_s=timeout_s,
         ),
         name=f"batch_dispatch:{batch_id}",
@@ -182,70 +233,210 @@ async def _dispatch(
     user_ctx: dict[str, Any],
     body: dict[str, Any],
     batch_id: str,
+    target: str,
+    item_id: int | None,
+    attempt: int | None,
+    protocol_profile: str | None,
     timeout_s: float | None,
 ) -> DispatchResult:
     if not isinstance(body, dict):
-        return _failure(400, "The request body must be a JSON object.")
+        return replace(_failure(400, "The request body must be a JSON object."), dispatched=False)
+    executor = _EXECUTORS.get(target)
+    if executor is None:
+        return replace(_failure(400, f"Unsupported batch target {target!r}."), dispatched=False)
+    request_body = {**body, "stream": False} if target != TARGET_EMBEDDINGS else dict(body)
     try:
-        raw = json.dumps({**body, "stream": False}).encode()
+        raw = json.dumps(request_body).encode()
     except (TypeError, ValueError):
-        return _failure(400, "The request body is not valid JSON.")
+        return replace(_failure(400, "The request body is not valid JSON."), dispatched=False)
 
     scope_request_id = secrets.token_hex(12)
-    cost: _CostCapture | None = None
+    seed: dict[str, Any] = {
+        "request_id": scope_request_id,
+        "client_user_agent": BATCH_USER_AGENT,
+        "pricing_time": dt.datetime.now(dt.UTC),
+        "pricing_snapshot": get_pricing_snapshot(),
+    }
+    if target == TARGET_MESSAGES:
+        seed[req_ctx.BATCH_EXECUTION] = AdapterRequirement(body=request_body)
+        if protocol_profile:
+            seed[req_ctx.ANTHROPIC_VERSION] = protocol_profile
     result: Any = None
+    # The upstream may have run, and charged, without the handler reporting it:
+    # an attempt abandoned at its deadline, or one that crashed.
+    uncertain = False
     deadline = anyio.move_on_after(timeout_s)
-    try:
-        # The scope RequestIdMiddleware opens for an HTTP request.
-        req_ctx.reset_request_scope(
-            request_id=scope_request_id,
-            client_user_agent=BATCH_USER_AGENT,
-            pricing_time=dt.datetime.now(dt.UTC),
-            pricing_snapshot=get_pricing_snapshot(),
-        )
-        caller = publish_caller_role({**user_ctx, "batch_job_id": batch_id})
-        cost = _CostCapture(get_cost_tracker(services))
-        with deadline:
-            result = await chat_completions(
-                _request(app, raw, scope_request_id),
-                Response(),
-                authorization=None,
-                user_ctx=caller,
-                router_exec=services.router,
-                log_store=getattr(services, "log_store", None),
-                model_router_registry=getattr(services, "model_router_registry", None),
-                model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
-                runtime_settings=None,
-                completions_logger=get_completions_logger(services),
-                pricing_lookup=get_pricing_lookup(services),
-                cost_tracker=cost,
+    with observing() as observer:
+        try:
+            # The scope RequestIdMiddleware opens for an HTTP request.
+            req_ctx.reset_request_scope(**seed)
+            caller = publish_caller_role(
+                {
+                    **user_ctx,
+                    "batch_job_id": batch_id,
+                    "batch_item_id": item_id,
+                    "batch_attempt": attempt,
+                }
             )
-    except HTTPException as exc:
-        outcome = (
-            _TIMED_OUT
-            if deadline.cancel_called
-            else _failure(exc.status_code, _detail_message(exc.detail, exc.status_code))
-        )
-    except Exception as exc:
-        if deadline.cancel_called:
-            outcome = _TIMED_OUT
+            request = _request(app, raw, scope_request_id, TARGET_PATHS[target], protocol_profile)
+            with deadline:
+                result = await executor(services, request, caller, request_body)
+        except HTTPException as exc:
+            if deadline.cancel_called:
+                outcome, uncertain = _TIMED_OUT, True
+            else:
+                outcome = _failure(exc.status_code, _detail_message(exc.detail, exc.status_code))
+        except Exception as exc:
+            uncertain = True
+            if deadline.cancel_called:
+                outcome = _TIMED_OUT
+            else:
+                logger.exception(
+                    "batch item dispatch failed unexpectedly (batch %s)",
+                    batch_id,
+                    extra={"event": "batch_dispatch_error", "error_type": type(exc).__name__},
+                )
+                outcome = _failure(500, scrub_error_for_user(exc, None, 500))
         else:
-            logger.exception(
-                "batch item dispatch failed unexpectedly (batch %s)",
-                batch_id,
-                extra={"event": "batch_dispatch_error", "error_type": type(exc).__name__},
-            )
-            outcome = _failure(500, scrub_error_for_user(exc, None, 500))
-    else:
-        outcome = _TIMED_OUT if deadline.cancelled_caught else _completed(result)
+            if deadline.cancelled_caught:
+                outcome, uncertain = _TIMED_OUT, True
+            else:
+                outcome = _completed(target, result)
+        request_id = observer.request_id or _logged_request_id(scope_request_id)
+        cost_usd: float | None = None
+        if observer.billed:
+            cost_status = "billed" if observer.cost_known else "unknown"
+            cost_usd = observer.cost_usd
+        elif uncertain or outcome.error is None or outcome.status_code in _UNCERTAIN_STATUSES:
+            # Served (or perhaps served) but never priced by its billing point:
+            # unknown, never zero. A gateway timeout or a broken connection
+            # answered as 502/504 is the same: the upstream may have finished,
+            # and charged, after the answer was lost.
+            cost_status = "unknown"
+        else:
+            # The handler answered with an error; the surfaces bill only success.
+            cost_status = "not_billed"
+        # The target's own usage object (native shape) when the response has one.
+        usage = outcome.usage or observer.usage
+    prompt_tokens, completion_tokens = _usage_tokens(usage, outcome)
     return replace(
         outcome,
-        cost_usd=cost.cost_usd if cost is not None else None,
-        request_id=_logged_request_id(scope_request_id),
+        cost_usd=cost_usd,
+        cost_status=cost_status,
+        request_id=request_id,
+        usage=usage,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
     )
 
 
-def _request(app: Any, raw_body: bytes, request_id: str) -> Request:
+# -- executors: one per target, every injected argument supplied ----------------
+
+
+async def _run_chat(services: Any, request: Request, caller: dict[str, Any], body: dict) -> Any:
+    from serving.servers.routers.completions import chat_completions
+
+    return await call_handler(
+        chat_completions,
+        request,
+        Response(),
+        authorization=None,
+        user_ctx=caller,
+        router_exec=services.router,
+        log_store=getattr(services, "log_store", None),
+        model_router_registry=getattr(services, "model_router_registry", None),
+        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
+        runtime_settings=None,
+        completions_logger=get_completions_logger(services),
+        pricing_lookup=get_pricing_lookup(services),
+        cost_tracker=get_cost_tracker(services),
+        _concurrency_slot=None,
+    )
+
+
+async def _run_embeddings(
+    services: Any, request: Request, caller: dict[str, Any], body: dict
+) -> Any:
+    from serving.servers.routers.embeddings import create_embeddings
+
+    try:
+        payload = EmbeddingRequest.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(400, "The request is not a valid embeddings request.") from exc
+    return await call_handler(
+        create_embeddings,
+        payload,
+        request,
+        authorization=None,
+        user_ctx=caller,
+        embedding_adapters=getattr(services, "embedding_adapters", None) or {},
+        log_store=getattr(services, "log_store", None),
+        completions_logger=get_completions_logger(services),
+        op_store=getattr(services, "operational_store", None),
+        runtime_settings=None,
+        _concurrency_slot=None,
+    )
+
+
+async def _run_messages(services: Any, request: Request, caller: dict[str, Any], body: dict) -> Any:
+    from serving.servers.routers.anthropic_messages import anthropic_messages
+
+    return await call_handler(
+        anthropic_messages,
+        request,
+        user_ctx=caller,
+        router_exec=services.router,
+        log_store=getattr(services, "log_store", None),
+        op_store=getattr(services, "operational_store", None),
+        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
+        _conc=None,
+    )
+
+
+async def _run_responses(
+    services: Any, request: Request, caller: dict[str, Any], body: dict
+) -> Any:
+    from serving.servers.routers.responses import create_response
+
+    return await call_handler(
+        create_response,
+        request,
+        Response(),
+        authorization=None,
+        user_ctx=caller,
+        router_exec=services.router,
+        log_store=getattr(services, "log_store", None),
+        model_router_registry=getattr(services, "model_router_registry", None),
+        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
+        completions_logger=get_completions_logger(services),
+        pricing_lookup=get_pricing_lookup(services),
+        cost_tracker=get_cost_tracker(services),
+        # Never stored: a batch Responses request is independent (see targets).
+        response_store=None,
+        _concurrency_slot=None,
+    )
+
+
+_EXECUTORS = {
+    TARGET_CHAT: _run_chat,
+    TARGET_EMBEDDINGS: _run_embeddings,
+    TARGET_MESSAGES: _run_messages,
+    TARGET_RESPONSES: _run_responses,
+}
+
+#: The handler each target runs, for the tests that hold every injected
+#: parameter of each to a supplied argument.
+HANDLERS: dict[str, tuple[str, str]] = {
+    TARGET_CHAT: ("serving.servers.routers.completions", "chat_completions"),
+    TARGET_EMBEDDINGS: ("serving.servers.routers.embeddings", "create_embeddings"),
+    TARGET_MESSAGES: ("serving.servers.routers.anthropic_messages", "anthropic_messages"),
+    TARGET_RESPONSES: ("serving.servers.routers.responses", "create_response"),
+}
+
+
+def _request(
+    app: Any, raw_body: bytes, request_id: str, path: str, anthropic_version: str | None
+) -> Request:
     """Build the ``Request`` the handler reads: *raw_body*, from no network peer."""
     delivered = False
 
@@ -258,6 +449,13 @@ def _request(app: Any, raw_body: bytes, request_id: str) -> Request:
 
     state: dict[str, Any] = {"request_id": request_id}
     preset_client_ip_info(state, _BATCH_CLIENT)
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(raw_body)).encode()),
+        (b"user-agent", BATCH_USER_AGENT.encode()),
+    ]
+    if anthropic_version:
+        headers.append((b"anthropic-version", anthropic_version.encode()))
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -267,14 +465,10 @@ def _request(app: Any, raw_body: bytes, request_id: str) -> Request:
         "server": None,
         "client": None,
         "root_path": "",
-        "path": _CHAT_PATH,
-        "raw_path": _CHAT_PATH.encode(),
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
-        "headers": [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(raw_body)).encode()),
-            (b"user-agent", BATCH_USER_AGENT.encode()),
-        ],
+        "headers": headers,
         "app": app,
         "state": state,
     }
@@ -336,11 +530,20 @@ def _error_code(status_code: int) -> str:
     return "upstream_error" if status_code >= 500 else "invalid_request"
 
 
-def _failure(status_code: int, message: str) -> DispatchResult:
+def _failure(
+    status_code: int, message: str, *, anthropic: dict[str, Any] | None = None
+) -> DispatchResult:
     """Return a failed attempt with *status_code*, retryable when that status is."""
+    error: dict[str, Any] = {
+        "code": _error_code(status_code),
+        "message": message,
+        "status": status_code,
+    }
+    if anthropic is not None:
+        error["anthropic"] = anthropic
     return DispatchResult(
         status_code=status_code,
-        error={"code": _error_code(status_code), "message": message, "status": status_code},
+        error=error,
         retryable=status_code >= 500 or status_code in _RETRYABLE_STATUSES,
     )
 
@@ -349,19 +552,71 @@ def _failure(status_code: int, message: str) -> DispatchResult:
 _TIMED_OUT = _failure(504, "The request did not complete in time.")
 
 
-def _completed(result: Any) -> DispatchResult:
+def _read_json_response(result: StarletteResponse) -> tuple[int, Any]:
+    """The status and decoded JSON body of a ``JSONResponse`` a handler returned."""
+    try:
+        decoded = json.loads(bytes(result.body))
+    except (ValueError, TypeError, AttributeError):
+        decoded = None
+    return int(result.status_code), decoded
+
+
+def _completed(target: str, result: Any) -> DispatchResult:
     """Return the attempt that produced *result*, the handler's return value."""
+    if isinstance(result, StarletteResponse):
+        if not hasattr(result, "body"):
+            # A streaming response: the batch forced stream off, so this is a
+            # handler that did not honour it.
+            return _failure(502, "The handler returned a stream for a batch request.")
+        status, body = _read_json_response(result)
+        if status >= 400 or not isinstance(body, dict):
+            return _error_from_body(target, status if status >= 400 else 502, body)
+        result = body
     if not isinstance(result, dict):
         return _failure(502, "The upstream response had an unexpected shape.")
-    response = _client_body(result)
-    usage = response.get("usage")
-    usage = usage if isinstance(usage, dict) else {}
+    if target == TARGET_MESSAGES and result.get("type") == "error":
+        return _error_from_body(target, 502, result)
+    response = _client_body(result) if target == TARGET_CHAT else json_safe(result)
+    usage = response.get("usage") if isinstance(response, dict) else None
     return DispatchResult(
         status_code=200,
         response=response,
-        prompt_tokens=_token_count(usage.get("prompt_tokens")),
-        completion_tokens=_token_count(usage.get("completion_tokens")),
+        usage=usage if isinstance(usage, dict) else None,
     )
+
+
+def _error_from_body(target: str, status: int, body: Any) -> DispatchResult:
+    """A failed attempt from an error body a handler answered with."""
+    message = None
+    anthropic = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if target == TARGET_MESSAGES and isinstance(error.get("type"), str):
+                anthropic = {"type": error["type"], "message": message or ""}
+        elif isinstance(body.get("detail"), str):
+            message = body["detail"]
+    if not isinstance(message, str) or not message:
+        message = safe_detail_text(None, status)
+    return _failure(status, message, anthropic=anthropic)
+
+
+def _usage_tokens(usage: Any, outcome: DispatchResult) -> tuple[int | None, int | None]:
+    """Prompt and completion tokens from a usage object of any target's shape."""
+    if not isinstance(usage, dict):
+        return outcome.prompt_tokens, outcome.completion_tokens
+    prompt = _token_count(usage.get("prompt_tokens"))
+    if prompt is None:
+        prompt = _token_count(usage.get("input_tokens"))
+        if prompt is not None:
+            # Anthropic counts cached input apart; the batch totals count it all.
+            for extra in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+                prompt += _token_count(usage.get(extra)) or 0
+    completion = _token_count(usage.get("completion_tokens"))
+    if completion is None:
+        completion = _token_count(usage.get("output_tokens"))
+    return prompt, completion
 
 
 def _token_count(value: Any) -> int | None:

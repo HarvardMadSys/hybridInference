@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-25 14:12+0000\n"
+"POT-Creation-Date: 2026-10-26 03:56-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -26,167 +26,227 @@ msgstr "批量推理"
 
 #: ../developer/batches.md:3
 msgid ""
-"`/v1/batches` takes many chat-completion requests in one call and answers"
-" them later. You submit the whole job, poll it, then page through the "
+"A batch is many inference requests handed to the gateway in one call and "
+"answered later. You submit the whole job, poll it, then collect the "
 "results. The gateway runs the requests in the background, a few at a time"
 " per model, beside its interactive traffic."
 msgstr ""
 
 #: ../developer/batches.md:8
-msgid ""
-"The shapes follow OpenAI's Batch API: batch objects, their statuses and "
-"the result lines are the same. Two things differ. The requests travel "
-"inline in the create call, because the gateway has no Files API, and the "
-"results are read a page at a time rather than downloaded as a file."
+msgid "There are three ways to submit one, and each speaks its own protocol:"
 msgstr ""
 
-#: ../developer/batches.md:14
+#: ../developer/batches.md
+msgid "API"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "Submit"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "Results"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "OpenAI, inline"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "`POST /v1/batches` with the requests in a `requests` array"
+msgstr ""
+
+#: ../developer/batches.md
+#, python-brace-format
+msgid "Paged from `/v1/batches/{id}/results`, or one JSONL export"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "OpenAI, from a file"
+msgstr ""
+
+#: ../developer/batches.md
+msgid ""
+"Upload a JSONL file to `/v1/files`, then `POST /v1/batches` with its "
+"`input_file_id`"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "An output file and an error file, downloaded from `/v1/files`"
+msgstr ""
+
+#: ../developer/batches.md ../developer/batches.md:379
+msgid "Anthropic Message Batches"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "`POST /v1/messages/batches` (also under `/anthropic`)"
+msgstr ""
+
+#: ../developer/batches.md
+#, python-brace-format
+msgid "JSONL from `/v1/messages/batches/{id}/results`"
+msgstr ""
+
+#: ../developer/batches.md:16
+msgid ""
+"A batch request can be a chat completion (`/v1/chat/completions`), an "
+"embedding (`/v1/embeddings`), an independent Responses request "
+"(`/v1/responses`) or an Anthropic message. The shapes follow OpenAI's "
+"Batch API and Anthropic's Message Batches API; the differences are listed"
+" at the end of this page."
+msgstr ""
+
+#: ../developer/batches.md:22
 msgid ""
 "Only **internal** users and administrators can create batches unless the "
 "operator opens them to other roles. A gateway with batch inference turned"
-" off, or without a database, answers every `/v1/batches` route with "
-"`404`."
+" off, or without a database, answers every batch route with `404`. File "
+"batches, Anthropic Message Batches, embeddings, Responses requests and "
+"webhooks are available once the operator turns on "
+"`BATCH_EXPANSION_ENABLED`."
 msgstr ""
 
-#: ../developer/batches.md:19
+#: ../developer/batches.md:29
 msgid "How it works"
 msgstr ""
 
-#: ../developer/batches.md:21
+#: ../developer/batches.md:31
 msgid ""
 "Creating a batch validates every request in it and stores them. Nothing "
 "runs during that call: the batch starts as `validating`, and the "
 "gateway's worker starts its requests as soon as their models have room."
 msgstr ""
 
-#: ../developer/batches.md:25
+#: ../developer/batches.md:35
 msgid ""
-"Each request then runs exactly as if you had sent it to "
-"`/v1/chat/completions` yourself: the same models, routing and fallback, "
-"the same price, logged under your account. It counts toward your daily "
-"cost quota and takes one of your concurrent-request slots while it runs, "
-"so a batch never gets more than your own traffic could. Requests run in "
-"no particular order, and a request that fails for a reason that may pass "
-"— a timeout, a `429`, a `5xx` — is retried with backoff, up to eight "
-"attempts in all. A request the model rejects (any other `4xx`) fails at "
-"once."
+"Each request then runs exactly as if you had sent it to its endpoint "
+"yourself: the same models, routing and fallback, the same price, logged "
+"under your account. It counts toward your daily cost quota and takes one "
+"of your concurrent-request slots while it runs, so a batch never gets "
+"more than your own traffic could. Requests run in no particular order, "
+"and a request that fails for a reason that may pass — a timeout, a `429`,"
+" a `5xx` — is retried with backoff, up to eight attempts in all. A "
+"request the model rejects (any other `4xx`) fails at once."
 msgstr ""
 
-#: ../developer/batches.md:34
+#: ../developer/batches.md:44
 msgid ""
 "Before each request runs, the gateway checks the API key that created the"
 " batch again:"
 msgstr ""
 
-#: ../developer/batches.md:37
+#: ../developer/batches.md:47
 msgid ""
 "if the key was revoked or has expired, or the account was suspended or "
 "deleted, the batch fails;"
 msgstr ""
 
-#: ../developer/batches.md:39
+#: ../developer/batches.md:49
 msgid ""
 "if your daily quota is used up, your batches pause until it renews at "
 "midnight UTC;"
 msgstr ""
 
-#: ../developer/batches.md:41
+#: ../developer/batches.md:51
 msgid "if your role no longer allows batches, they pause until it does."
 msgstr ""
 
-#: ../developer/batches.md:43
+#: ../developer/batches.md:53
 msgid "So keep the key you created a batch with until the batch finishes."
 msgstr ""
 
-#: ../developer/batches.md:45
+#: ../developer/batches.md:55
 msgid "Create a batch"
 msgstr ""
 
-#: ../developer/batches.md:47
+#: ../developer/batches.md:57
 msgid "`POST /v1/batches` with your API key:"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Field"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Required"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Meaning"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`requests`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "yes"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "The requests, at least one"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`requests[].custom_id`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "Your name for the request, 1–512 characters, unique in the batch. Results"
 " carry it back"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`requests[].method`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "no"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`POST`, the default"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`requests[].url`"
 msgstr ""
 
-#: ../developer/batches.md:13
-msgid "`/v1/chat/completions`, the default and the only endpoint batches serve"
+#: ../developer/batches.md:21
+msgid ""
+"`/v1/chat/completions` (the default), `/v1/embeddings` or "
+"`/v1/responses`. Every request of one batch uses the same `url`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`requests[].body`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
-"A chat-completion request body, as you would send it to "
-"`/v1/chat/completions`. `stream` must not be `true`"
+"The request body, as you would send it to that endpoint. `stream` must "
+"not be `true`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`metadata`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "Up to 16 string pairs for your own use; keys up to 64 characters, values "
 "up to 512"
 msgstr ""
 
-#: ../developer/batches.md:87
+#: ../developer/batches.md:97
 msgid ""
 "One batch may use several models. Auto models (`auto`, `auto-<tier>`) "
 "cannot be used in a batch; name a specific model."
 msgstr ""
 
-#: ../developer/batches.md:90
+#: ../developer/batches.md:100
 msgid ""
 "If that name is an alias, the stored request retains the name you sent, "
 "but the worker dispatches it to the canonical model the alias named when "
@@ -194,7 +254,7 @@ msgid ""
 "submitted work to another model or another model's concurrency limit."
 msgstr ""
 
-#: ../developer/batches.md:95
+#: ../developer/batches.md:105
 #, python-brace-format
 msgid ""
 "The whole batch is refused when any request in it is invalid. The error "
@@ -202,119 +262,133 @@ msgid ""
 " the request:"
 msgstr ""
 
-#: ../developer/batches.md:102
+#: ../developer/batches.md:117
 msgid "A model you may not use is reported exactly like one that does not exist."
 msgstr ""
 
-#: ../developer/batches.md:104
+#: ../developer/batches.md:119
 msgid "The answer is the new batch:"
 msgstr ""
 
-#: ../developer/batches.md:133
+#: ../developer/batches.md:148
 msgid ""
-"The file fields are always `null`. `cost_usd`, what the batch's finished "
-"requests have cost so far, and `error`, why the whole batch failed, are "
-"not in OpenAI's object."
+"An inline batch has no files, so its file fields are `null`. Several "
+"fields are not in OpenAI's object: `cost_usd`, what the batch's finished "
+"requests were billed so far; `cost_unknown_attempts`, attempts whose cost"
+" is unknown and not in `cost_usd` (see [Costs](#costs)); "
+"`results_expires_at`, when the results will be deleted; and `error`, why "
+"the whole batch failed. `usage` totals the tokens of the finished "
+"requests."
 msgstr ""
 
-#: ../developer/batches.md:137
+#: ../developer/batches.md:155
 msgid "Check on a batch"
 msgstr ""
 
-#: ../developer/batches.md:139
+#: ../developer/batches.md:157
 #, python-brace-format
 msgid ""
 "`GET /v1/batches/{id}` returns the batch object again. Poll it until "
 "`status` is one of the four final ones:"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Status"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`validating`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Stored; no request has started yet"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`in_progress`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Requests are running"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
+msgid "`finalizing`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid ""
+"A file batch: every request has finished and its output files are being "
+"written"
+msgstr ""
+
+#: ../developer/batches.md:21
 msgid "`completed`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "Every request has finished, successfully or not. Read each one's outcome "
 "in the results"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`failed`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "The batch stopped because the key or account that created it is no longer"
 " valid; `error` says so (`owner_unauthorized`). Requests that had not "
 "started are `failed` with `batch_failed`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`expired`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "The completion window (`completion_window`, from `created_at` to "
 "`expires_at`) closed first. Requests that had not started are `expired` "
 "with `batch_expired`; finished ones keep their results"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`cancelling`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Cancelled while requests were running; they are finishing"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`cancelled`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Cancelled. Requests that had not started never will"
 msgstr ""
 
-#: ../developer/batches.md:152
+#: ../developer/batches.md:171
 msgid ""
 "`request_counts.completed` counts the requests that succeeded and "
 "`request_counts.failed` those that failed, including the ones a failed or"
 " expired batch never ran. Cancelled requests are in neither."
 msgstr ""
 
-#: ../developer/batches.md:156
+#: ../developer/batches.md:175
 msgid "Read the results"
 msgstr ""
 
-#: ../developer/batches.md:158
+#: ../developer/batches.md:177
 #, python-brace-format
 msgid ""
 "`GET /v1/batches/{id}/results` pages through the batch's requests in the "
 "order you submitted them, with each one's outcome:"
 msgstr ""
 
-#: ../developer/batches.md:207
+#: ../developer/batches.md:226
 msgid ""
 "`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the "
 "next page with `after` set to the page's `last_id`. Every request of the "
@@ -323,7 +397,7 @@ msgid ""
 " in a final status, or read them again later."
 msgstr ""
 
-#: ../developer/batches.md:213
+#: ../developer/batches.md:232
 msgid ""
 "A finished request has a `status` of `completed`, with the chat "
 "completion in `response.body`, or `failed`, with an `error` instead. A "
@@ -331,97 +405,97 @@ msgid ""
 "codes:"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`code`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`invalid_request`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "The model rejected the request (`400`, `422`)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`model_not_found`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "The model is gone, or you may no longer use it (`404`)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`forbidden`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Refused (`403`)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`rate_limited`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Still rate-limited after every retry (`429`)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`timeout`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Still timing out after every retry (`504`)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`service_unavailable`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "No endpoint could serve it after every retry (`503`)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`upstream_error`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Another server error after every retry"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`batch_failed`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Not run: the batch failed"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`batch_expired`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Not run before the completion window closed"
 msgstr ""
 
-#: ../developer/batches.md:229
+#: ../developer/batches.md:248
 msgid "`error.status` is the HTTP status behind the error, when there was one."
 msgstr ""
 
-#: ../developer/batches.md:231
+#: ../developer/batches.md:250
 msgid ""
 "A short Python client that submits a batch, waits for it and collects "
 "every result:"
 msgstr ""
 
-#: ../developer/batches.md:277
+#: ../developer/batches.md:296
 msgid "Cancel or delete a batch"
 msgstr ""
 
-#: ../developer/batches.md:279
+#: ../developer/batches.md:298
 #, python-brace-format
 msgid ""
 "`POST /v1/batches/{id}/cancel` stops a batch. Requests that have not "
@@ -430,323 +504,717 @@ msgid ""
 " that has already finished returns it unchanged."
 msgstr ""
 
-#: ../developer/batches.md:289
+#: ../developer/batches.md:303
 #, python-brace-format
 msgid ""
 "`DELETE /v1/batches/{id}` deletes a batch with its requests and results "
 "and answers `{\"id\": \"batch_...\", \"object\": \"batch.deleted\", "
 "\"deleted\": true}`. Its status does not matter, but deletion is blocked "
-"with `409` while any request holds a live upstream lease. Cancel the batch, "
-"wait for its running requests to finish (or their leases to expire), then "
-"delete it. A stale `running` item whose lease has expired does not block "
-"deletion."
+"with `409` while any request holds a live upstream lease. Cancel the "
+"batch, wait for its running requests to finish (or their leases to "
+"expire), then delete it. A stale `running` item whose lease has expired "
+"does not block deletion."
 msgstr ""
 
-#: ../developer/batches.md:290
+#: ../developer/batches.md:310
 msgid ""
 "A finished batch is deleted automatically after the deployment's "
 "retention period, seven days by default, so collect its results before "
 "then."
 msgstr ""
 
-#: ../developer/batches.md:293
+#: ../developer/batches.md:313
 msgid "List your batches"
 msgstr ""
 
-#: ../developer/batches.md:295
+#: ../developer/batches.md:315
 msgid ""
 "`GET /v1/batches` lists your own batches, newest first. `limit` is 1–100 "
 "(default 20); for the next page pass `after` set to the `last_id` of the "
 "previous one. The answer has the shape of a results page, with batch "
-"objects in `data`."
+"objects in `data`. It lists OpenAI batches, inline and from files; "
+"Message Batches are listed by `GET /v1/messages/batches`, and an id of "
+"one API reads as not found on the other."
 msgstr ""
 
-#: ../developer/batches.md:300
+#: ../developer/batches.md:322
 msgid ""
-"Reading, cancelling, deleting and listing your batches work even if your "
-"role no longer allows creating them, so you can always collect and remove"
-" what you submitted. Another user's batch reads as not found. "
+"Reading, downloading, cancelling, deleting and listing your batches work "
+"even if your role no longer allows creating them or your daily quota is "
+"used up, so you can always collect and remove what you submitted, with "
+"any of your API keys. Another user's batch reads as not found. "
 "Administrators may read, cancel and delete any batch."
 msgstr ""
 
-#: ../developer/batches.md:305
+#: ../developer/batches.md:328
+msgid "Batches from a file"
+msgstr ""
+
+#: ../developer/batches.md:330
+msgid ""
+"The OpenAI flow: upload a JSONL file whose every line is one request, "
+"then create a batch from it."
+msgstr ""
+
+#: ../developer/batches.md:343
+#, python-brace-format
+msgid ""
+"Each line is `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`, "
+"the `url` equal to the batch's `endpoint`. Every line must use the same "
+"model."
+msgstr ""
+
+#: ../developer/batches.md:346
+msgid ""
+"The batch starts as `validating` while the gateway reads the file in the "
+"background. If any line is invalid — not JSON, a repeated `custom_id`, "
+"another `url` or model, a body the endpoint would refuse — the whole "
+"batch is `failed` and nothing of it runs; `errors` lists the problems "
+"with their line numbers. Otherwise it moves to `in_progress`. Once every "
+"request has finished it is `finalizing` for a moment while its result "
+"files are written, and then reaches its final status with "
+"`output_file_id` (the successful requests) and `error_file_id` (the "
+"others) set; either is `null` when it has no lines."
+msgstr ""
+
+#: ../developer/batches.md:355
+#, python-brace-format
+msgid ""
+"Download them with `GET /v1/files/{id}/content`. A result file is the "
+"same bytes every time it is downloaded, and its size and SHA-256 (the "
+"`ETag`) are fixed when the batch ends. `GET /v1/files` lists your files, "
+"`GET /v1/files/{id}` returns one, and `DELETE /v1/files/{id}` deletes one"
+" for good: a deleted output file is not written again, though the batch "
+"still names it. Deleting an input file does not affect a batch already "
+"created from it."
+msgstr ""
+
+#: ../developer/batches.md:362
+msgid "The official OpenAI SDKs work with this flow:"
+msgstr ""
+
+#: ../developer/batches.md:376
+#, python-brace-format
+msgid ""
+"An inline batch's results are also available as one JSONL file, in the "
+"same line shape, once it has ended: `GET /v1/batches/{id}/output.jsonl`."
+msgstr ""
+
+#: ../developer/batches.md:381
+msgid ""
+"`/v1/messages/batches` (and `/anthropic/v1/messages/batches`) speak "
+"Anthropic's Message Batches API, so the official Anthropic SDKs work "
+"against it:"
+msgstr ""
+
+#: ../developer/batches.md:405
+msgid ""
+"Every request needs the `anthropic-version` header. `2023-06-01` and "
+"`2026-10-21` are accepted; a batch keeps the version it was created with,"
+" and each of its requests is checked against that version's rules (under "
+"`2026-10-21`, `temperature`, `top_p` and `top_k` are refused, as are "
+"document blocks in assistant messages and citations on user text). "
+"`anthropic-beta` is refused."
+msgstr ""
+
+#: ../developer/batches.md:412
+msgid ""
+"The envelope — `custom_id` (up to 64 letters, digits, `_` and `-`, "
+"unique), the number of requests, the body size — is checked at once and "
+"any problem refuses the batch. Each request's `params` is then checked on"
+" its own: one the gateway cannot run as written, including one naming a "
+"model you may not use, becomes an `errored` result and the others still "
+"run. A request is never sent with a parameter silently dropped: when a "
+"model's route cannot carry a parameter (extended thinking, cache control "
+"or structured output on a non-Anthropic backend, for example), the "
+"request errors instead."
+msgstr ""
+
+#: ../developer/batches.md:421
+msgid ""
+"`request_counts` hold every request as `processing` until the whole batch"
+" has `ended`; `results_url` appears then. Cancelling makes it `canceling`"
+" until its running requests finish. A batch can be deleted only once it "
+"has ended."
+msgstr ""
+
+#: ../developer/batches.md:425
+msgid ""
+"Each request is a single inference turn. A result that asks for a tool "
+"call is for your program to carry out and send back in a new request; the"
+" gateway never runs your tools."
+msgstr ""
+
+#: ../developer/batches.md:429
+msgid "Embeddings and Responses in a batch"
+msgstr ""
+
+#: ../developer/batches.md:431
+msgid ""
+"`/v1/embeddings` and `/v1/responses` can be batched like chat "
+"completions, inline or from a file. A batched Responses request must be "
+"independent: omit `store` or set it to `false`, and leave out "
+"`previous_response_id`, `conversation`, `background` and `stream`. Hosted"
+" tools, file inputs and any other field the gateway would have to drop "
+"are refused."
+msgstr ""
+
+#: ../developer/batches.md:437
+msgid "Submitting safely twice"
+msgstr ""
+
+#: ../developer/batches.md:439
+msgid ""
+"Send an `Idempotency-Key` header with a create call (any of the three "
+"APIs) to make it safe to retry. The same key with the same request "
+"returns the batch the first call created, even if your quota has since "
+"run out or your role changed; the same key with a different request "
+"answers `409`. After the batch is deleted the key answers `410` for at "
+"least a day; a key is remembered until a day after its batch ends. The "
+"key belongs to your account, so any of your API keys can replay it, and a"
+" replay never changes which key the batch runs under. The SDKs do not "
+"send this header for you."
+msgstr ""
+
+#: ../developer/batches.md:448
+msgid "Costs"
+msgstr ""
+
+#: ../developer/batches.md:450
+msgid ""
+"Every attempt at a request is recorded with what it was billed, at the "
+"same point and the same price as an interactive request; a batch is never"
+" billed a second time on top. `cost_usd` adds up the attempts whose cost "
+"is known."
+msgstr ""
+
+#: ../developer/batches.md:454
+msgid ""
+"When an attempt's result was lost after the request had been sent — the "
+"gateway timed out, or a worker stopped mid-request — the provider may "
+"still have run and charged it. Its cost is then *unknown*: it is counted "
+"in `cost_unknown_attempts` and left out of `cost_usd` rather than counted"
+" as zero. A retried request may therefore have run more than once."
+msgstr ""
+
+#: ../developer/batches.md:460
+msgid "Webhooks"
+msgstr ""
+
+#: ../developer/batches.md:462
+#, python-brace-format
+msgid ""
+"Instead of polling, register one HTTPS endpoint for your batches with "
+"`PUT /v1/batch_webhook` (`{\"url\": \"https://…\"}`), or on the console's"
+" **Batches** page. The answer carries the signing secret, `whsec_…`, "
+"once; send `\"rotate_secret\": true` to get a new one. `GET "
+"/v1/batch_webhook` shows the webhook, `DELETE /v1/batch_webhook` removes "
+"it, and `GET /v1/batch_webhook/events` lists recent deliveries."
+msgstr ""
+
+#: ../developer/batches.md:469
+#, python-brace-format
+msgid ""
+"When a batch ends, after its results can be read, the gateway POSTs an "
+"event: `batch.completed`, `batch.failed`, `batch.expired` or "
+"`batch.cancelled` for an OpenAI batch, `message_batch.ended` for a "
+"Message Batch. The body names the batch only (`{\"id\", \"object\": "
+"\"event\", \"type\", \"created_at\", \"data\": {\"id\"}}`); fetch the "
+"results with your API key. Deliveries are signed as Standard Webhooks "
+"are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 of "
+"`\"{webhook-id}.{webhook-timestamp}.{body}\"` with the secret's base64 "
+"part as the key). A delivery that is not answered with a `2xx` is retried"
+" with backoff, up to eight attempts; the same event can arrive more than "
+"once, so deduplicate on `webhook-id`."
+msgstr ""
+
+#: ../developer/batches.md:480
+msgid ""
+"A webhook URL must be HTTPS and reach a public address. Private, "
+"loopback, link-local and cloud-metadata addresses are refused when the "
+"URL is saved, again on every redirect, and again on every connection."
+msgstr ""
+
+#: ../developer/batches.md:484
+msgid "Batches in the console"
+msgstr ""
+
+#: ../developer/batches.md:486
+msgid ""
+"The **Batches** page of the console (from the dashboard) lists your "
+"batches across all three APIs with their progress, tokens and known cost,"
+" and lets you cancel, delete and download results, and set up your "
+"webhook."
+msgstr ""
+
+#: ../developer/batches.md:490
 msgid "Limits"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Limit"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Default"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Size of the create request's body"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "32 MiB (`413` above it)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Requests per batch"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "50,000"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "Batches you may have unfinished at once (`validating`, `in_progress` or "
 "`cancelling`)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "10 (`429` above it)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
+msgid "Unfinished requests across all your batches"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "100,000 (`429` above it)"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Size of an input file, and of one of its lines"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "32 MiB; 4 MiB per line"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Input files you may keep, and upload per hour"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "512 MiB; 60"
+msgstr ""
+
+#: ../developer/batches.md:21
 msgid "Time a batch has to finish (`completion_window`)"
 msgstr ""
 
-#: ../developer/batches.md:13
-msgid "24 hours"
+#: ../developer/batches.md:21
+msgid "24 hours (always 24 hours for file batches and Message Batches)"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Time a finished batch is kept"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "7 days"
 msgstr ""
 
-#: ../developer/batches.md:315
+#: ../developer/batches.md:503
 msgid ""
 "The operator may have changed any of them. A larger job is several "
 "batches."
 msgstr ""
 
-#: ../developer/batches.md:317
+#: ../developer/batches.md:505
 msgid "Errors from the create call"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "When"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`400`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "The body is not valid JSON or not a batch; a request is invalid, uses an "
 "unknown or auto model, or repeats a `custom_id`; too many requests; or "
 "the request carries `X-On-Behalf-Of`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`401`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
-"The API key is invalid or expired when authentication runs, or the account"
-" becomes unavailable before the batch is stored"
+"The API key is invalid or expired when authentication runs, or the "
+"account becomes unavailable before the batch is stored"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`403`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Your role may not create batches"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`404`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Batch inference is not available on this gateway"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`413`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "The body is larger than the size limit"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`429`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "You have the most unfinished batches allowed, or your daily quota is used"
 " up"
 msgstr ""
 
-#: ../developer/batches.md:327
-msgid "Compared with OpenAI's Batch API"
+#: ../developer/batches.md:516
+msgid "Compared with OpenAI's and Anthropic's batch APIs"
 msgstr ""
 
-#: ../developer/batches.md:329
+#: ../developer/batches.md:518
+msgid ""
+"Batch requests cost the same as interactive ones: there is no batch "
+"discount, and the gateway runs each request itself rather than handing "
+"the batch to a provider's own batch service."
+msgstr ""
+
+#: ../developer/batches.md:521
+msgid ""
+"The limits are the deployment's (see [Limits](#limits)), lower than the "
+"providers' own: 50,000 requests and 32 MiB per batch by default."
+msgstr ""
+
+#: ../developer/batches.md:523
+msgid ""
+"The 24-hour window of file batches and Message Batches is when the "
+"gateway stops *starting* requests. Requests already running when it ends "
+"finish, so a batch may reach its final status after `expires_at`."
+msgstr ""
+
+#: ../developer/batches.md:526
 #, python-brace-format
 msgid ""
-"The requests are the `requests` array of the create call. There is no "
-"`input_file_id`, and no `output_file_id` or `error_file_id` to download: "
-"results come from `/v1/batches/{id}/results`."
+"The inline form, `GET /v1/batches/{id}/results`, the JSONL export, "
+"`DELETE /v1/batches/{id}`, `Idempotency-Key` and the cost fields are this"
+" gateway's own."
 msgstr ""
 
-#: ../developer/batches.md:332
-msgid "The completion window is the deployment's, not chosen per batch."
+#: ../developer/batches.md:529
+msgid "Only `purpose=batch` files exist, and they serve batches only."
 msgstr ""
 
-#: ../developer/batches.md:333
-msgid "Only `/v1/chat/completions` can be batched, and `stream` is refused."
+#: ../developer/batches.md:530
+msgid ""
+"Responses requests in a batch are independent: `store: true`, "
+"`previous_response_id`, `conversation`, `background` and hosted tools are"
+" refused."
 msgstr ""
 
-#: ../developer/batches.md:334
-#, python-brace-format
-msgid "`DELETE /v1/batches/{id}` exists; the status `finalizing` never occurs."
+#: ../developer/batches.md:533
+msgid ""
+"Message Batches belong to your account; there are no workspaces. "
+"`anthropic-beta` is refused, and so are server tools, Files API sources, "
+"MCP servers and containers."
 msgstr ""
 
-#: ../developer/batches.md:335
-msgid "Batch requests cost the same as interactive ones."
-msgstr ""
-
-#: ../developer/batches.md:337
+#: ../developer/batches.md:537
 msgid "Running batch inference"
 msgstr ""
 
-#: ../developer/batches.md:339
+#: ../developer/batches.md:539
 msgid ""
 "These settings are on the admin console's **Configuration** tab, under "
 "**Batch inference**. None needs a restart: a change applies to the next "
 "request and to the worker's next round."
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Setting"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_ENABLED`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "on"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "Serve batch inference. Off, every `/v1/batches` route answers `404` and "
 "no queued request starts; stored batches are kept"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_MIN_ROLE`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`internal`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "Lowest role that may create batches (`free`, `pro`, `internal`, `admin`)."
 " A queued request also waits while its owner's role is below it"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_MODEL_CONCURRENCY`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "4"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid ""
 "Batch requests a model runs at once, across the whole deployment, when it"
 " has no cap of its own. `0` pauses batch work on those models"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_YIELD_TO_INTERACTIVE`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Interactive requests in flight on a model take batch slots from its cap"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_MAX_REQUESTS`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "50000"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Requests one batch may hold"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_MAX_BODY_MB`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "32"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Largest create request, in MiB"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_MAX_ACTIVE_PER_USER`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "10"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Unfinished batches one user may have"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_COMPLETION_WINDOW_HOURS`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "24"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "Hours a new batch has before its unstarted requests expire, 1–168"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "`BATCH_RETENTION_DAYS`"
 msgstr ""
 
-#: ../developer/batches.md:13
+#: ../developer/batches.md:21
 msgid "7"
 msgstr ""
 
-#: ../developer/batches.md:13
-msgid "Days a finished batch and its results are kept"
+#: ../developer/batches.md:21
+msgid ""
+"Days a finished batch and its results are kept. A batch keeps the value "
+"it was created with"
 msgstr ""
 
-#: ../developer/batches.md:355
+#: ../developer/batches.md:21
+msgid "`BATCH_EXPANSION_ENABLED`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "off"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid ""
+"Allow creating file batches, Message Batches, embedding and Responses "
+"batches, and webhooks. Off, batches already accepted keep running and "
+"stay readable, downloadable, cancellable and deletable"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_MAX_QUEUED_REQUESTS_PER_USER`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "100000"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Unfinished requests one user may have across all their batches"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_USER_MAX_CONCURRENCY`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "8"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid ""
+"Batch requests one user may have running at once across the deployment "
+"and every model; `0` removes this cap"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_SHARED_INTERACTIVE_LOAD`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid ""
+"Yield to the interactive requests of every gateway process, not only the "
+"worker's own"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_INTERACTIVE_RESERVE`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "0"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid ""
+"Slots of every model's batch cap kept free for interactive requests, on "
+"top of those in flight"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_MAX_LINE_KB`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "4096"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Largest line of an input file"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_MAX_RESULT_KB`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Largest response one batch request may store"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_FILES_MAX_TOTAL_MB_PER_USER`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "512"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Uploaded input files one user may keep"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_FILE_UPLOADS_PER_HOUR`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "60"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Input files one user may upload per hour"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_FILE_RETENTION_DAYS`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "30"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "Days an uploaded input file is kept"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_ANTHROPIC_VERSIONS`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`2023-06-01,2026-10-21`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`anthropic-version` values a Message Batch may be created under"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid "`BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS`"
+msgstr ""
+
+#: ../developer/batches.md:21
+msgid ""
+"Let webhooks reach private and loopback addresses. For isolated test "
+"deployments only"
+msgstr ""
+
+#: ../developer/batches.md:567
 #, python-brace-format
 msgid ""
 "A model's own cap is set in **Batch Concurrency** on the admin Settings "
@@ -759,7 +1227,7 @@ msgid ""
 " limit, so it does not grow with the number of processes."
 msgstr ""
 
-#: ../developer/batches.md:364
+#: ../developer/batches.md:576
 msgid ""
 "Every gateway process runs a worker; requests of one batch may run in "
 "several of them. A process that stops hands its unfinished requests back,"
@@ -767,10 +1235,46 @@ msgid ""
 "lease runs out, a few minutes later."
 msgstr ""
 
-#: ../developer/batches.md:369
+#: ../developer/batches.md:581
 msgid ""
-"The batches live in the operational database (`batch_jobs`, `batch_items`"
-" and `batch_model_limits`), and each request a batch runs is a row in "
-"`api_logs` with `batch_job_id` set. Permanently deleting a user deletes "
-"their batches too."
+"The batches live in the operational database: `batch_jobs`, "
+"`batch_items`, `batch_attempts` (one row per attempt, with what it was "
+"billed), `batch_idempotency`, `batch_files` and `batch_file_chunks`, "
+"`batch_webhooks` and `batch_webhook_events`, `batch_model_limits` and a "
+"few tables of scheduling state. Each request a batch runs is a row in "
+"`api_logs` with `batch_job_id` set, and its item and attempt in the row's"
+" metadata. Permanently deleting a user deletes their batches, files, "
+"idempotency records and webhook too."
+msgstr ""
+
+#: ../developer/batches.md:589
+msgid ""
+"The admin console's **Batches** tab lists every user's batches, totals "
+"them per user and lets an administrator cancel one."
+msgstr ""
+
+#: ../developer/batches.md:592
+msgid "Upgrading a deployment"
+msgstr ""
+
+#: ../developer/batches.md:594
+msgid ""
+"A gateway older than the one that added file batches and Message Batches "
+"has a worker that would run their requests as chat completions. So keep "
+"`BATCH_EXPANSION_ENABLED` off until every gateway process runs the new "
+"version, then turn it on. Turning it off again later stops new batches of"
+" those kinds and nothing else."
+msgstr ""
+
+#: ../developer/batches.md:600
+msgid ""
+"To roll back to an older version after batches of the new kinds were "
+"accepted, do it while the new version is still running, since only it can"
+" manage them: turn `BATCH_EXPANSION_ENABLED` off, then cancel (or let "
+"finish) every file batch, Message Batch and embedding or Responses batch "
+"until none is queued, running, validating or finalizing, and delete those"
+" you no longer need. Then stop every gateway process before any process "
+"of the older version starts. An older worker cannot tell these batches "
+"apart, and turning `BATCH_ENABLED` off does not make it safe: it only "
+"hides the batch routes."
 msgstr ""

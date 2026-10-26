@@ -247,6 +247,7 @@ async def create_response(
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        _concurrency_slot=None,
     )
     if not isinstance(chat_result, dict):
         raise HTTPException(502, "Unexpected upstream response shape")
@@ -318,6 +319,7 @@ async def _stream_response(
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        _concurrency_slot=None,
     )
 
     translator = ResponsesStreamTranslator(

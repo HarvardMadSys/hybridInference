@@ -160,6 +160,11 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         # middleware demotes probe lines from it, so a leftover True would
         # demote the next request on the task to DEBUG.
         "synthetic_probe",
+        # Published only by the batch worker in the scope it opens for one item:
+        # the anthropic-version it was created under, and which adapters may
+        # serve it. Cleared anyway, so no later scope on the task inherits them.
+        "anthropic_version",
+        "batch_execution",
     }
 )
 

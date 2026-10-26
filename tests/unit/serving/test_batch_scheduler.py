@@ -78,6 +78,7 @@ class FakeStore:
                 "model_id": model,
                 "request": {"model": model, "messages": [{"role": "user", "content": "hi"}]},
                 "attempts": 0,
+                "attempt_seq": 0,
                 "error": None,
                 "user_id": user,
                 "key_hash": "owner-key-hash",
@@ -110,7 +111,7 @@ class FakeStore:
             item
             and item["status"] == "running"
             and item["claimed_by"] == worker_id
-            and item["attempts"] == attempt
+            and item["attempt_seq"] == attempt
         ):
             return item
         return None
@@ -127,7 +128,9 @@ class FakeStore:
             }
         )
 
-    async def claim_items(self, *, model_id, worker_id, limit, max_running, lease_seconds):
+    async def claim_items(
+        self, *, model_id, worker_id, limit, max_running, lease_seconds, user_max_running=0
+    ):
         self.claims.append({"model_id": model_id, "limit": limit, "max_running": max_running})
         now = datetime.now(UTC)
         live = self.count("running", model_id)
@@ -142,7 +145,12 @@ class FakeStore:
                 continue
             if item["next_attempt_at"] is not None and item["next_attempt_at"] > now:
                 continue
-            item.update(status="running", attempts=item["attempts"] + 1, claimed_by=worker_id)
+            item.update(
+                status="running",
+                attempts=item["attempts"] + 1,
+                attempt_seq=item["attempt_seq"] + 1,
+                claimed_by=worker_id,
+            )
             item["next_attempt_at"] = None
             claimed.append(dict(item))
         return claimed
@@ -168,7 +176,7 @@ class FakeStore:
         )
         return True
 
-    async def retry_item(self, *, item_id, worker_id, attempt, next_attempt_at, error):
+    async def retry_item(self, *, item_id, worker_id, attempt, next_attempt_at, error, **extra):
         self.calls["retry_item"] += 1
         item = self._owned(item_id, worker_id, attempt)
         if item is None:
@@ -176,15 +184,34 @@ class FakeStore:
         item.update(status="queued", next_attempt_at=next_attempt_at, error=error, claimed_by=None)
         return True
 
-    async def release_item(self, *, item_id, worker_id, attempt, next_attempt_at=None):
+    async def release_item(
+        self, *, item_id, worker_id, attempt, next_attempt_at=None, dispatched=False
+    ):
         self.calls["release_item"] += 1
         item = self._owned(item_id, worker_id, attempt)
         if item is None:
             return False
         item.update(
-            status="queued", attempts=attempt - 1, next_attempt_at=next_attempt_at, claimed_by=None
+            status="queued",
+            attempts=item["attempts"] - 1,
+            next_attempt_at=next_attempt_at,
+            claimed_by=None,
+            released_dispatched=dispatched,
         )
         return True
+
+    async def mark_dispatched(self, *, item_id, worker_id, attempt):
+        self.calls["mark_dispatched"] += 1
+        return self._owned(item_id, worker_id, attempt) is not None
+
+    async def claim_batch_work(self, *, phase, worker_id, lease_seconds, limit=1):
+        return []
+
+    async def stale_validations(self):
+        return []
+
+    async def seal_backlog(self):
+        return 0
 
     async def fail_batch(self, batch_id, error):
         batch = self.batches[batch_id]
@@ -227,9 +254,31 @@ class FakeDispatch:
         self.gates[model] = asyncio.Event()
         return self.gates[model]
 
-    async def __call__(self, *, app, services, user_ctx, body, batch_id, timeout_s=None):
+    async def __call__(
+        self,
+        *,
+        app,
+        services,
+        user_ctx,
+        body,
+        batch_id,
+        target="chat",
+        item_id=None,
+        attempt=None,
+        protocol_profile=None,
+        timeout_s=None,
+    ):
         model = body["model"]
-        self.calls.append({"user_ctx": user_ctx, "body": body, "batch_id": batch_id})
+        self.calls.append(
+            {
+                "user_ctx": user_ctx,
+                "body": body,
+                "batch_id": batch_id,
+                "target": target,
+                "item_id": item_id,
+                "attempt": attempt,
+            }
+        )
         self.running[model] += 1
         self.peak[model] = max(self.peak[model], self.running[model])
         try:

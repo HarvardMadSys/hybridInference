@@ -1,0 +1,348 @@
+'use client';
+
+import { useState } from 'react';
+import Link from 'next/link';
+
+import { Button } from '@/components/ui/Button';
+import { useT, type Translate } from '@/components/providers/useT';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
+import {
+  cancelMyBatch,
+  deleteMyBatch,
+  downloadMyResults,
+  isCancellable,
+  listMyBatches,
+  type ConsoleBatch,
+  type ResultKind,
+} from '@/lib/api/batches';
+import { getErrorMessage } from '@/lib/utils/errors';
+import { fill } from '@/lib/utils/interpolate';
+
+import { usePagedBatches } from './usePagedBatches';
+import { WebhookSettings } from './WebhookSettings';
+
+const STATUS_TONE: Record<string, string> = {
+  completed: 'bg-green-50 text-green-700 ring-green-200',
+  ended: 'bg-green-50 text-green-700 ring-green-200',
+  failed: 'bg-red-50 text-red-700 ring-red-200',
+  expired: 'bg-amber-50 text-amber-800 ring-amber-200',
+  cancelled: 'bg-gray-100 text-gray-700 ring-gray-200',
+  cancelling: 'bg-gray-100 text-gray-700 ring-gray-200',
+  canceling: 'bg-gray-100 text-gray-700 ring-gray-200',
+};
+
+/** The protocol a batch was submitted through, as the list names it. */
+export function surfaceLabel(batch: ConsoleBatch, t: Translate): string {
+  if (batch.api_surface === 'anthropic')
+    return t('batches.surface.anthropic', 'Anthropic Message Batch');
+  if (batch.api_surface === 'openai_file') return t('batches.surface.file', 'OpenAI batch (file)');
+  return t('batches.surface.inline', 'OpenAI batch (inline)');
+}
+
+/** A batch's status in words, in its protocol's vocabulary. */
+export function statusLabel(status: string, t: Translate): string {
+  const labels: Record<string, string> = {
+    validating: t('batches.status.validating', 'Validating'),
+    in_progress: t('batches.status.in_progress', 'In progress'),
+    finalizing: t('batches.status.finalizing', 'Finalizing'),
+    completed: t('batches.status.completed', 'Completed'),
+    ended: t('batches.status.ended', 'Ended'),
+    failed: t('batches.status.failed', 'Failed'),
+    expired: t('batches.status.expired', 'Expired'),
+    cancelling: t('batches.status.cancelling', 'Cancelling'),
+    canceling: t('batches.status.cancelling', 'Cancelling'),
+    cancelled: t('batches.status.cancelled', 'Cancelled'),
+  };
+  return labels[status] ?? status;
+}
+
+function formatTime(epoch: number | null): string {
+  if (!epoch) return '—';
+  return new Date(epoch * 1000).toLocaleString();
+}
+
+/** Done / total, whichever protocol's tallies the batch has. */
+export function progress(batch: ConsoleBatch): { done: number; total: number; failed: number } {
+  const counts = batch.request_counts;
+  if (batch.api_surface === 'anthropic') {
+    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+    return {
+      done: total - (counts.processing ?? 0),
+      total,
+      failed: (counts.errored ?? 0) + (counts.expired ?? 0),
+    };
+  }
+  return {
+    done: (counts.completed ?? 0) + (counts.failed ?? 0) + batch.cancelled,
+    total: counts.total ?? 0,
+    failed: counts.failed ?? 0,
+  };
+}
+
+function BatchRow({
+  batch,
+  busy,
+  onCancel,
+  onDelete,
+  onDownload,
+}: {
+  batch: ConsoleBatch;
+  busy: boolean;
+  onCancel: (batch: ConsoleBatch) => void;
+  onDelete: (batch: ConsoleBatch) => void;
+  onDownload: (batch: ConsoleBatch, kind: ResultKind) => void;
+}) {
+  const t = useT();
+  const { done, total, failed } = progress(batch);
+  const tone = STATUS_TONE[batch.status] ?? 'bg-blue-50 text-blue-700 ring-blue-200';
+  return (
+    <li className="py-4" data-testid={`batch-${batch.id}`}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="truncate text-sm font-medium text-gray-900">{batch.id}</code>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tone}`}
+            >
+              {statusLabel(batch.status, t)}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            {surfaceLabel(batch, t)}
+            {batch.endpoint ? ` · ${batch.endpoint}` : ''}
+            {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
+          </p>
+          <dl className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-gray-600 sm:grid-cols-4">
+            <div>
+              <dt className="text-gray-400">{t('batches.row.requests', 'Requests')}</dt>
+              <dd>
+                {fill(t('batches.row.progress', '{done} of {total} done'), {
+                  done: String(done),
+                  total: String(total),
+                })}
+                {failed > 0
+                  ? ` · ${fill(t('batches.row.failed', '{failed} failed'), { failed: String(failed) })}`
+                  : ''}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-400">{t('batches.row.tokens', 'Tokens')}</dt>
+              <dd>
+                {fill(t('batches.row.tokens_value', '{input} in · {output} out'), {
+                  input: batch.usage.input_tokens.toLocaleString(),
+                  output: batch.usage.output_tokens.toLocaleString(),
+                })}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-400">{t('batches.row.cost', 'Known cost')}</dt>
+              <dd>
+                ${batch.cost_usd.toFixed(4)}
+                {batch.cost_unknown_attempts > 0 && (
+                  <span
+                    className="ml-1 text-amber-700"
+                    title={t(
+                      'batches.row.unknown_cost_hint',
+                      'Attempts whose result was lost after the request was sent; their cost is unknown and not included.',
+                    )}
+                  >
+                    {fill(t('batches.row.unknown_cost', '+ {count} unknown'), {
+                      count: String(batch.cost_unknown_attempts),
+                    })}
+                  </span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-gray-400">{t('batches.row.created', 'Created')}</dt>
+              <dd>{formatTime(batch.created_at)}</dd>
+            </div>
+          </dl>
+          {batch.validation_error?.data?.length ? (
+            <p className="mt-2 text-xs text-red-700">
+              {batch.validation_error.data
+                .slice(0, 3)
+                .map((problem) =>
+                  problem.line
+                    ? fill(t('batches.row.line_problem', 'Line {line}: {message}'), {
+                        line: String(problem.line),
+                        message: problem.message ?? '',
+                      })
+                    : (problem.message ?? ''),
+                )
+                .join(' · ')}
+            </p>
+          ) : null}
+          {batch.error?.message ? (
+            <p className="mt-2 text-xs text-red-700">{batch.error.message}</p>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {batch.results_available && batch.api_surface !== 'openai_file' && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => onDownload(batch, 'all')}
+            >
+              {t('batches.action.download', 'Download results')}
+            </Button>
+          )}
+          {batch.results_available && batch.output_file_id && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => onDownload(batch, 'output')}
+            >
+              {t('batches.action.download_output', 'Download outputs')}
+            </Button>
+          )}
+          {batch.results_available && batch.error_file_id && (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy}
+              onClick={() => onDownload(batch, 'error')}
+            >
+              {t('batches.action.download_errors', 'Download errors')}
+            </Button>
+          )}
+          {isCancellable(batch) && (
+            <Button size="sm" variant="secondary" disabled={busy} onClick={() => onCancel(batch)}>
+              {t('batches.action.cancel', 'Cancel')}
+            </Button>
+          )}
+          <Button size="sm" variant="danger" disabled={busy} onClick={() => onDelete(batch)}>
+            {t('batches.action.delete', 'Delete')}
+          </Button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * The signed-in user's batches across every API, with what each has done and
+ * cost so far, the actions an owner has (cancel, delete, download results) and
+ * their webhook settings. Batches are created through the API, not here.
+ */
+export function BatchesView() {
+  const t = useT();
+  const toast = useAccountToast();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const { batches, hasMore, loading, loadingMore, error, reload, loadMore, replace, remove } =
+    usePagedBatches((after) => listMyBatches(after), 'mine');
+
+  async function handleCancel(batch: ConsoleBatch) {
+    const message = t(
+      'batches.confirm.cancel',
+      'Cancel this batch? Requests that have not started will not run; running ones finish.',
+    );
+    if (!window.confirm(message)) return;
+    setBusyId(batch.id);
+    try {
+      replace(await cancelMyBatch(batch.id));
+      toast.success(t('batches.toast.cancelled', 'Batch cancelled.'));
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDelete(batch: ConsoleBatch) {
+    const message = t(
+      'batches.confirm.delete',
+      'Delete this batch and its results? This cannot be undone.',
+    );
+    if (!window.confirm(message)) return;
+    setBusyId(batch.id);
+    try {
+      await deleteMyBatch(batch.id);
+      remove(batch.id);
+      toast.success(t('batches.toast.deleted', 'Batch deleted.'));
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDownload(batch: ConsoleBatch, kind: ResultKind) {
+    setBusyId(batch.id);
+    try {
+      await downloadMyResults(batch.id, kind);
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <Link href="/dashboard" className="text-sm text-gray-500 hover:text-gray-900">
+            ← {t('batches.back', 'Dashboard')}
+          </Link>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">
+            {t('batches.title', 'Batches')}
+          </h1>
+          <p className="mt-1 text-sm text-gray-500">
+            {t(
+              'batches.subtitle',
+              'Batches you submitted through /v1/batches or /v1/messages/batches. Results are kept for a limited time after a batch ends.',
+            )}
+          </p>
+        </div>
+        <Button variant="secondary" onClick={() => void reload()} disabled={loading}>
+          {t('batches.refresh', 'Refresh')}
+        </Button>
+      </div>
+
+      <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+        {error && (
+          <p role="alert" className="mb-3 text-sm text-red-700">
+            {error}
+          </p>
+        )}
+        {loading ? (
+          <p className="text-sm text-gray-500">{t('batches.loading', 'Loading batches…')}</p>
+        ) : batches.length === 0 && !error ? (
+          <p className="text-sm text-gray-500">
+            {t('batches.empty', 'You have no batches. Submit one through the API to see it here.')}
+          </p>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {batches.map((batch) => (
+              <BatchRow
+                key={batch.id}
+                batch={batch}
+                busy={busyId === batch.id}
+                onCancel={handleCancel}
+                onDelete={handleDelete}
+                onDownload={handleDownload}
+              />
+            ))}
+          </ul>
+        )}
+        {hasMore && !loading && (
+          <div className="mt-4">
+            <Button
+              variant="secondary"
+              disabled={loadingMore}
+              aria-busy={loadingMore || undefined}
+              onClick={() => void loadMore()}
+            >
+              {t('batches.more', 'Show more')}
+            </Button>
+          </div>
+        )}
+      </section>
+
+      <WebhookSettings />
+    </div>
+  );
+}

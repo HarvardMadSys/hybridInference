@@ -48,6 +48,10 @@ class _FakeBatchStore:
     async def model_stats(self) -> dict[str, dict[str, int]]:
         return {model_id: dict(counts) for model_id, counts in self.stats.items()}
 
+    async def cancel_batch(self, batch_id: str) -> dict | None:
+        self.writes.append(("cancel", batch_id))
+        return {"id": batch_id, "user_id": "u-owner"} if batch_id == "batch_1" else None
+
 
 def _make_adapter(model_id: str):
     adapter = MagicMock()
@@ -347,6 +351,33 @@ async def test_patch_writes_an_audit_record(admin_client):
         "old_max_concurrency": 3,
         "new_max_concurrency": 1,
     }
+
+
+async def test_cancelling_a_users_batch_audits_it_against_its_owner(admin_client, monkeypatch):
+    client, store = admin_client
+    monkeypatch.setattr(
+        "serving.servers.routers.batch_console.batch_view", lambda row: {"id": row["id"]}
+    )
+
+    response = await client.post("/admin/batch/jobs/batch_1/cancel", headers=ADMIN)
+
+    assert response.status_code == 200
+    assert store.writes == [("cancel", "batch_1")]
+    client.audit.assert_awaited_once()
+    kwargs = client.audit.await_args.kwargs
+    assert kwargs["action"] == "batch.jobs.cancel"
+    assert kwargs["actor"].type == "admin_token"
+    assert (kwargs["target"].type, kwargs["target"].id) == ("user", "u-owner")
+    assert kwargs["details"] == {"batch_id": "batch_1"}
+
+
+async def test_cancelling_an_unknown_batch_is_a_404_and_not_audited(admin_client):
+    client, _ = admin_client
+
+    response = await client.post("/admin/batch/jobs/batch_missing/cancel", headers=ADMIN)
+
+    assert response.status_code == 404
+    client.audit.assert_not_awaited()
 
 
 # --- access ----------------------------------------------------------------------------
