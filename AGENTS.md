@@ -64,9 +64,11 @@ afresh (e.g. after switching to an older branch), use `make test-db-local-reset`
 - **Branch naming:** `<user>/<scope>/<feature-name>` (e.g. `jason/claude/add-x`).
 - **Use a git worktree** rather than working in the main checkout. Worktree should be put in /tmp/claude/worktree/<feature-name>.
 - **PRs target `dev`.**
-- **Verify against a running deployment** before claiming done. If you are
-  working on one, its staging host and test account are in its overlay guide
-  (`distributions/<name>/AGENTS.md`) — never write credentials into this file.
+- **Verify runtime changes against a running deployment** before claiming live
+  acceptance. A local/example deployment is sufficient when appropriate. For a
+  specific deployment, consult `distributions/<name>/AGENTS.md`; never write its
+  credentials here. Documentation/skill-only changes need content and link checks,
+  not a deployment.
 
 ## 6. Project-specific knowledge
 
@@ -258,11 +260,22 @@ The old `agent_*` tables stay in existing databases as read-only history
 Pointer table. Each row links to the canonical doc or skill — this guide does
 not duplicate their content.
 
+Repository skills live only in `.agents/skills/`. Use and edit these canonical
+files directly.
+
+Shared workflow rules apply to every skill: reuse a suitable task worktree or
+create one following section 5, preserve other work, and use the gates in
+section 4. User instructions determine whether to commit, publish comments,
+push or open a PR. Merge and deployment require authorization for those actions;
+neither a skill name nor a green CI result grants it. A request to monitor does
+not imply permission to merge. Do not force-push or bypass branch protection.
+
 | Task | Where to look |
 |---|---|
-| Implement a feature | [.kilo/skills/impl-feat/SKILL.md](.kilo/skills/impl-feat/SKILL.md) |
-| Debug a bug or test failure | [.kilo/skills/debug/SKILL.md](.kilo/skills/debug/SKILL.md) |
-| Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
+| Implement a feature | [.agents/skills/impl-feat/SKILL.md](.agents/skills/impl-feat/SKILL.md) |
+| Debug a bug or test failure | [.agents/skills/debug/SKILL.md](.agents/skills/debug/SKILL.md) |
+| Address PR review / fix CI | [.agents/skills/check-pr/SKILL.md](.agents/skills/check-pr/SKILL.md) |
+| Follow one PR to readiness | [.agents/skills/babysit-pr/SKILL.md](.agents/skills/babysit-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
 | Run / operate the cloud agent | `docs/operations.md` in [hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent) |

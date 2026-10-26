@@ -16,6 +16,7 @@ from serving.adapters.key_pool import KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value
 from serving.exceptions import operator_safe_error
+from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import (
     circuit_open_policy,
@@ -785,6 +786,28 @@ class _CircuitBreaker:
                         ),
                     },
                 )
+                # The trip is still a fact for alert history, held back here
+                # before it could reach the alert path.
+                alert_history.external_decision(
+                    f"circuit_open:{self.provider}",
+                    reason="policy_disabled" if alerting_off or paging_off else "rate_limited",
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    kind="state",
+                    context={
+                        "provider": self.provider,
+                        "consecutive_failures": self.consecutive_failures,
+                        "gate": (
+                            "circuit_open_disabled"
+                            if alerting_off
+                            else "usage_limit_paging_off"
+                            if paging_off
+                            else "muted"
+                            if muted
+                            else "min_alert_gap"
+                        ),
+                    },
+                )
                 return
 
             context: dict[str, Any] = {
@@ -1148,12 +1171,22 @@ class EndpointHealthRegistry:
         now = time.monotonic()
         with self._lock:
             last_scheduled = self._auth_alert_at.get(endpoint_id)
-            if (
+            throttled = (
                 last_scheduled is not None
                 and (now - last_scheduled) < _AUTH_ALERT_SCHEDULE_INTERVAL_SEC
-            ):
-                return
-            self._auth_alert_at[endpoint_id] = now
+            )
+            if not throttled:
+                self._auth_alert_at[endpoint_id] = now
+        if throttled:
+            alert_history.external_decision(
+                _auth_alert_key(endpoint_id),
+                reason="rate_limited",
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                kind="state",
+                context={"endpoint_id": endpoint_id, "status": status},
+            )
+            return
         context: dict[str, Any] = {
             "endpoint_id": endpoint_id,
             "status": status,

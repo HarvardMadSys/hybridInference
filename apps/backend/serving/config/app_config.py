@@ -35,6 +35,7 @@ import contextlib
 import math
 import os
 import secrets
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -158,6 +159,8 @@ class _State:
     generation: int = 0
     store: AppConfigStore | None = None
     refresh_task: asyncio.Task[None] | None = None
+    #: ``time.monotonic()`` of the last successful read of the table.
+    read_at: float | None = None
 
 
 _STATE = _State()
@@ -190,6 +193,21 @@ logging_utils.use_setting_resolver(config_value)
 def get_config_health() -> ConfigHealth:
     """Return the cached configuration health (synchronous)."""
     return _STATE.health
+
+
+def seconds_since_read() -> float | None:
+    """Age of the stored configuration this process serves, in seconds.
+
+    ``None`` when the process reads no table (environment-only configuration,
+    which cannot go stale); infinity when a table is attached but has never
+    been read. For a caller that must not act on a configuration it cannot
+    confirm is current — a credential check that fails closed.
+    """
+    if _STATE.store is None:
+        return None
+    if _STATE.read_at is None:
+        return math.inf
+    return time.monotonic() - _STATE.read_at
 
 
 def loaded_from_database() -> bool:
@@ -907,6 +925,7 @@ async def load(
     _STATE.database_enabled = database_enabled
     _STATE.discovered = _discover()
     await store.ensure_schema()
+    read_started = time.monotonic()
     if bootstrap:
         async with store.transaction() as transaction:
             rows = await transaction.fetch_all()
@@ -917,6 +936,7 @@ async def load(
         rows, resets = await _read(store)
     _STATE.loaded = True
     _apply(rows, boot=True, resets=resets)
+    _STATE.read_at = read_started
 
 
 async def _import_environment(
@@ -1181,6 +1201,7 @@ async def refresh() -> None:
     if not _STATE.loaded:
         await store.ensure_schema()
     generation = _STATE.generation
+    read_started = time.monotonic()
     rows, resets = await _read(store)
     if generation != _STATE.generation:
         return  # A newer read was applied while this one ran.
@@ -1190,6 +1211,9 @@ async def refresh() -> None:
     else:
         # Runtime settings (signup, verification) feed the required rules.
         refresh_health()
+    # The snapshot in force is now confirmed current as of when this read
+    # began; a read whose result was discarded above confirms nothing.
+    _STATE.read_at = read_started
 
 
 async def _refresh_loop(interval_seconds: float) -> None:
@@ -1225,10 +1249,12 @@ async def _reload(store: AppConfigStore) -> None:
     """Re-read and apply, so a write takes effect in this process at once."""
     while True:
         generation = _STATE.generation
+        read_started = time.monotonic()
         rows, resets = await _read(store)
         if generation == _STATE.generation:
             _STATE.loaded = True
             _apply(rows, boot=False, resets=resets)
+            _STATE.read_at = read_started
             return
 
 

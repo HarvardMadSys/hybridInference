@@ -7,7 +7,12 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.analytics.automation_score import score_users_from_logs
-from serving.storage import admin_view_results, daily_activity_rollup, user_usage_rollup
+from serving.storage import (
+    admin_view_results,
+    alert_history_store,
+    daily_activity_rollup,
+    user_usage_rollup,
+)
 from serving.storage.base import LogStore, Row
 from serving.storage.log_schema import (
     check_erasure_fence,
@@ -1240,6 +1245,15 @@ class PostgresLogStore(LogStore):
                         await admin_view_results.clear(conn)
                 except _asyncpg.UndefinedTableError:
                     pass
+            # Alert history names the account only through its fence digest;
+            # the rows about it go in this transaction, after the fence, so a
+            # history write still buffered anywhere finds the tombstone.
+            history_count: int | None
+            try:
+                async with conn.transaction():
+                    history_count = await alert_history_store.purge_subject(conn, _fence_key)
+            except _asyncpg.UndefinedTableError:
+                history_count = None
             recipients_count: int | None
             try:
                 # email_broadcast_recipients is created lazily by the broadcast
@@ -1262,6 +1276,8 @@ class PostgresLogStore(LogStore):
         counts = {"api_logs": int(purged["n"])}
         if usage_count is not None:
             counts["user_usage_daily"] = usage_count
+        if history_count is not None:
+            counts["alert_history_events"] = history_count
         if recipients_count is not None:
             counts["email_broadcast_recipients"] = recipients_count
         return counts

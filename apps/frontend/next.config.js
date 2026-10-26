@@ -183,6 +183,15 @@ const nextConfig = {
           source: '/internal/agent-grants/:path*',
           destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants/:path*`,
         },
+        // Alert history from sources outside this network (the status monitor).
+        // Exactly one path, not a prefix: the endpoint admits only a scoped
+        // writer credential (ALERT_HISTORY_WRITER_CREDENTIALS) and answers 404
+        // while alert history is off, so forwarding it publishes nothing a
+        // deployment has not configured. Reads stay under /admin/:path*.
+        {
+          source: '/internal/alert-history/events',
+          destination: `${BACKEND_INTERNAL_URL}/internal/alert-history/events`,
+        },
         { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
         // Public homepage updates. The tunnel routes every public path to this
         // container, so this rewrite forwards the request on to FastAPI (same

@@ -695,6 +695,17 @@ msgstr ""
 msgid "Add the path to the table above."
 msgstr "把这条路径加进上面的表格。"
 
+#: ../developer/public-path-table.md
+msgid "`/internal/alert-history/events`"
+msgstr "`/internal/alert-history/events`"
+
+#: ../developer/public-path-table.md
+msgid ""
+"alert-history ingestion from external sources (`POST`; scoped writer token, "
+"`404` while off — see [Alert history](alert-history.md))"
+msgstr ""
+"外部来源的告警历史接收（`POST`；使用有范围限制的写入令牌，关闭时返回 `404`——见 [告警历史](alert-history.md)）"
+
 #~ msgid ""
 #~ "The table below is generated from "
 #~ "the `rewrites()` function in "
@@ -803,4 +814,3 @@ msgstr "把这条路径加进上面的表格。"
 #~ "Every destination below is "
 #~ "`${BACKEND_INTERNAL_URL}` plus the same path."
 #~ msgstr "下面每一条的目标都是 `${BACKEND_INTERNAL_URL}` 加上同样的路径。"
-

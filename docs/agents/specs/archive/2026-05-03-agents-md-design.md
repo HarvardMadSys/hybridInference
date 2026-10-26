@@ -44,7 +44,7 @@ Eight sections, each scaled to its content. Total length: ~300–500 lines.
 
 ### 2. Repo map
 
-Annotated top-level tree. Source the layout from `.kilo/skills/debug/SKILL.md` (already accurate). Entries to include:
+Annotated top-level tree. Source the layout from `.agents/skills/debug/SKILL.md` (already accurate). Entries to include:
 
 - `apps/backend/{serving,routing,benchmark}/`
 - `apps/frontend/`
@@ -132,9 +132,9 @@ Pointer table. Each row links to the canonical doc/skill. No content duplication
 
 | Task | Where to look |
 |---|---|
-| Implement a feature | `.kilo/skills/impl-feat/SKILL.md` |
-| Debug a bug or test failure | `.kilo/skills/debug/SKILL.md` |
-| Address PR review / fix CI | `.kilo/skills/check-pr/SKILL.md` |
+| Implement a feature | `.agents/skills/impl-feat/SKILL.md` |
+| Debug a bug or test failure | `.agents/skills/debug/SKILL.md` |
+| Address PR review / fix CI | `.agents/skills/check-pr/SKILL.md` |
 | Add a new model | `docs/developer/adding-models.md` |
 | Add a local model (vLLM/SGLang/Ollama) | `docs/developer/add-local-model.md` |
 | Touch routing logic | `docs/developer/routing.md` |
@@ -171,4 +171,4 @@ Pointer table. Each row links to the canonical doc/skill. No content duplication
 
 - **Drift.** Section 6 mentions specific files (`routing/routers.py`, `routing/executor.py`). If those move or get renamed, AGENTS.md goes stale silently. Mitigation: keep file references minimal in section 6.5 (gotchas) where they matter most, and rely on pointer-style links in section 7 elsewhere.
 - **Provider vs upstream terminology.** The doc must use whichever the codebase uses. Implementation step should grep the codebase to confirm before writing 6.2.
-- **Test marker accuracy.** The `external` and `dbtest` markers were stated in `.kilo/skills/debug/SKILL.md`; confirm against `pyproject.toml` or `pytest.ini` during implementation.
+- **Test marker accuracy.** The `external` and `dbtest` markers were stated in `.agents/skills/debug/SKILL.md`; confirm against `pyproject.toml` or `pytest.ini` during implementation.
