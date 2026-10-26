@@ -64,7 +64,7 @@ from routing.routers import (
     adapter_supports_modalities,
 )
 from routing.streaming import has_non_empty_content
-from routing.telemetry import failed_attempt, routing_chunk
+from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -2463,6 +2463,8 @@ class RouteWiseRouter:
         routing.setdefault("provider", adapter.config.provider)
         routing.setdefault("base_url", adapter.config.base_url)
         routing.setdefault("endpoint_id", getattr(adapter.config, "endpoint_id", None))
+        if "pricing" not in routing:
+            routing["pricing"] = adapter_pricing_snapshot(adapter)
         if failed_attempts:
             routing["fallback"] = True
             routing["fallback_policy"] = "routewise_resolve"

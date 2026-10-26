@@ -35,7 +35,8 @@ logger = get_logger(__name__)
 class PricingLookup:
     """Cache adapter pricing keyed by endpoint_id (fallback: provider+base_url).
 
-    The adapter config is looked up on every call, a walk over one route's
+    An executed attempt's pricing snapshot takes precedence. Without one,
+    the adapter config is looked up on every call, a walk over one route's
     adapters: an admin route edit installs a new adapter at runtime and keeps
     its endpoint_id when the target and URL are unchanged. What is cached is
     the pricing read from one config, kept while that config is the one
@@ -63,8 +64,9 @@ class PricingLookup:
 
         Resolution order:
 
-        1. Adapter-emitted dict in ``routing.extra["pricing"]`` (some
-           adapters override their registered pricing per-call).
+        1. Executed-attempt dict in ``routing.extra["pricing"]`` (some
+           adapters override their registered pricing per-call; routers
+           fill in the executed adapter's price otherwise).
         2. Registry walk by ``routing.endpoint_id`` / ``(provider, base_url)``
            — typed result is cached so float parsing only happens once.
         """
@@ -103,9 +105,11 @@ class PricingLookup:
 
     @staticmethod
     def _embedded_pricing_dict(routing: RoutingInfo) -> dict[str, str] | None:
-        """Pull adapter-emitted pricing dict from ``routing.extra``."""
+        """Pull the executed attempt's pricing dict from ``routing.extra``."""
         embedded = routing.extra.get("pricing")
-        if isinstance(embedded, dict) and embedded:
+        # An empty snapshot means this attempt was unpriced. Do not borrow a
+        # replacement route's price (or a preceding fallback attempt's price).
+        if isinstance(embedded, dict):
             return embedded  # type: ignore[return-value]
         return None
 

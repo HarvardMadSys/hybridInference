@@ -44,7 +44,7 @@ from routing.prefill_load import (
 )
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
-from routing.telemetry import failed_attempt, routing_chunk
+from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
 from serving.adapters.upstream_limiter import EngineHold
 from serving.config.app_config import config_value, on_change
 from serving.exceptions import operator_safe_error
@@ -2328,6 +2328,8 @@ class FixedRouter:
                 }
             # Always inject endpoint_id so observation keys match latency profiles.
             resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(primary))
+            if "pricing" not in resp["_routing"]:
+                resp["_routing"]["pricing"] = adapter_pricing_snapshot(execution)
             if primary_plan.reason is not None:
                 resp["_routing"].setdefault("offload", primary_plan.reason)
             return resp
@@ -2465,6 +2467,8 @@ class FixedRouter:
                             "fallback": True,
                         }
                     resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(adapter))
+                    if "pricing" not in resp["_routing"]:
+                        resp["_routing"]["pricing"] = adapter_pricing_snapshot(execution)
                     resp["_routing"].setdefault("failed_attempts", failed_attempts)
                     if offload_reason is not None:
                         resp["_routing"].setdefault("offload", offload_reason)

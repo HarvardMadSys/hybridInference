@@ -207,6 +207,26 @@ def test_pricing_lookup_raw_dict_prefers_embedded_extra_over_registry():
     assert lookup.raw_dict_for_routing(routing) == embedded
 
 
+def test_empty_attempt_snapshot_does_not_borrow_replacement_route_price():
+    adapter = _make_adapter(
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        pricing={"prompt": "9", "completion": "15"},
+        endpoint_id="openai-prod",
+    )
+    lookup = PricingLookup(router=_make_router({"gpt-4": [adapter]}))
+    routing = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        provider="openai",
+        endpoint_id="openai-prod",
+        extra={"pricing": {}},
+    )
+
+    assert lookup.for_routing(routing) is None
+    assert lookup.raw_dict_for_routing(routing) == {}
+
+
 def test_pricing_lookup_does_not_cache_across_scheduled_price_windows():
     adapter = _make_adapter(
         provider="deepseek",
