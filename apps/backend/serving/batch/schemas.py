@@ -1,24 +1,36 @@
-"""Request and response bodies of the batch surface (``/v1/batches``).
+"""Request and response bodies of the OpenAI-shaped batch surface (``/v1/batches``).
 
-The create body is inline: a ``requests`` array whose entries have the shape of
-the lines of an OpenAI batch input file (``custom_id``, ``method``, ``url``,
-``body``), because the gateway has no Files API. Responses are OpenAI-shaped
-batch objects, plus two fields of ours (``cost_usd`` and ``error``); per-request
-results are read a page at a time rather than downloaded as an output file.
+Two ways to create a batch share ``POST /v1/batches``:
 
-Only the envelope is validated here. Whether each ``body`` is a chat request the
-caller may send is decided by the router, which knows the route table and the
-caller.
+- **inline**: a ``requests`` array whose entries have the shape of the lines of
+  an OpenAI batch input file (``custom_id``, ``method``, ``url``, ``body``).
+  Results are read a page at a time (``/results``) or as one JSONL export;
+- **file**: OpenAI's own shape, ``input_file_id`` of an uploaded JSONL file plus
+  ``endpoint`` and ``completion_window``. Results arrive as output and error
+  files (``/v1/files``).
+
+The two are exclusive. Responses are OpenAI-shaped batch objects, plus fields
+of ours: ``cost_usd`` (what the batch's finished attempts were billed so far),
+``cost_unknown_attempts`` (attempts whose cost is unknown and so not in
+``cost_usd``), ``usage`` and ``error`` (why the whole batch failed, e.g.
+``owner_unauthorized``).
+
+Only the envelope is validated here. Whether each ``body`` is a request the
+caller may send is decided by the target (``serving.batch.targets``), which
+knows the route table and the caller.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-#: The one endpoint batch requests may target.
+#: The endpoint inline batches target unless their requests name another.
 CHAT_COMPLETIONS_URL = "/v1/chat/completions"
+
+#: The completion window file batches accept (OpenAI's only value).
+FILE_COMPLETION_WINDOW = "24h"
 
 #: Longest ``custom_id`` accepted. It is indexed (unique within a batch), and an
 #: index entry must stay well under Postgres's limit of about 2.7 KB.
@@ -36,6 +48,7 @@ RESULT_ID_PREFIX = "batch_req_"
 BatchStatus = Literal[
     "validating",
     "in_progress",
+    "finalizing",
     "completed",
     "failed",
     "expired",
@@ -66,7 +79,7 @@ class BatchRequestItem(BaseModel):
 
 
 class BatchCreateRequest(BaseModel):
-    """``POST /v1/batches`` body.
+    """``POST /v1/batches`` body, inline or from a file (exactly one of the two).
 
     The number of requests has no static ceiling here: ``BATCH_MAX_REQUESTS`` is
     a live setting, checked by the router.
@@ -74,8 +87,25 @@ class BatchCreateRequest(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    requests: list[BatchRequestItem] = Field(min_length=1)
+    requests: list[BatchRequestItem] | None = Field(default=None, min_length=1)
+    input_file_id: str | None = Field(default=None, min_length=1, max_length=128)
+    endpoint: str | None = None
+    completion_window: str | None = None
     metadata: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _one_mode(self) -> BatchCreateRequest:
+        if self.requests is None and self.input_file_id is None:
+            raise ValueError(
+                "requests: Field required (or input_file_id, for a batch from an uploaded file)"
+            )
+        if self.requests is not None and self.input_file_id is not None:
+            raise ValueError("send either requests (inline) or input_file_id (file), not both")
+        if self.input_file_id is not None and (
+            self.endpoint is None or self.completion_window is None
+        ):
+            raise ValueError("a file batch needs endpoint and completion_window")
+        return self
 
     @field_validator("metadata")
     @classmethod
@@ -100,28 +130,38 @@ class BatchRequestCounts(BaseModel):
     failed: int = 0
 
 
+class BatchUsage(BaseModel):
+    """Tokens the batch's finished requests used, as OpenAI's batch object reports them."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
 class BatchObject(BaseModel):
     """An OpenAI-shaped batch object.
 
-    The file fields are always null: requests arrive inline and results are read
-    from ``GET /v1/batches/{id}/results``. ``cost_usd`` (what the batch's
-    finished requests cost so far) and ``error`` (why the whole batch failed,
-    e.g. ``owner_unauthorized``) are ours.
+    An inline batch has no files (``input_file_id``, ``output_file_id`` and
+    ``error_file_id`` are null); its results are read from
+    ``GET /v1/batches/{id}/results``. A file batch names its input and, once
+    sealed, its output and error files; ``errors`` lists what made its input
+    invalid. ``cost_usd``, ``cost_unknown_attempts``, ``results_expires_at``
+    and ``error`` are ours.
     """
 
     id: str
     object: Literal["batch"] = "batch"
     endpoint: str = CHAT_COMPLETIONS_URL
-    errors: None = None
-    input_file_id: None = None
+    errors: dict[str, Any] | None = None
+    input_file_id: str | None = None
     completion_window: str
     status: BatchStatus
-    output_file_id: None = None
-    error_file_id: None = None
+    output_file_id: str | None = None
+    error_file_id: str | None = None
     created_at: int
     in_progress_at: int | None = None
     expires_at: int | None = None
-    finalizing_at: None = None
+    finalizing_at: int | None = None
     completed_at: int | None = None
     failed_at: int | None = None
     expired_at: int | None = None
@@ -129,7 +169,10 @@ class BatchObject(BaseModel):
     cancelled_at: int | None = None
     request_counts: BatchRequestCounts
     metadata: dict[str, Any] | None = None
+    usage: BatchUsage | None = None
     cost_usd: float = 0.0
+    cost_unknown_attempts: int = 0
+    results_expires_at: int | None = None
     error: dict[str, Any] | None = None
 
 

@@ -49,6 +49,7 @@ from serving.auto_mode import (
     session_key,
     strip_foreign_thinking,
 )
+from serving.batch.attempts import batch_log_attribution, note_request_id, observe_billing
 from serving.config.app_config import config_value, on_change
 from serving.exceptions import (
     conceal_served_model,
@@ -545,6 +546,21 @@ def _pick_dispatch_adapter(
     prompt over its max input may not be sent (``eligible_adapters``).
     """
     eligible = router_exec.eligible_adapters(canonical, size_prompt=size_prompt)
+    requirement = req_ctx.get().get(req_ctx.BATCH_EXECUTION)
+    if requirement is not None and eligible:
+        # A batch item may only go to an adapter that serves it as written
+        # (serving/batch/targets.py): never one that would drop a parameter.
+        eligible = [entry for entry in eligible if requirement.problem(entry[0]) is None]
+        if not eligible:
+            route = router_exec.routes.get(canonical)
+            capable = route is not None and any(
+                requirement.problem(entry[0]) is None for entry in route.adapters
+            )
+            if not capable:
+                raise HTTPException(
+                    400, f"Model '{model_id}' cannot serve this batch request as written"
+                )
+            raise HTTPException(503, f"No provider is currently available for model '{model_id}'")
     if not eligible:
         # Every provider for this model is admin-disabled, has an open circuit,
         # or is already being probed. Same disposition the chat path gives
@@ -764,6 +780,9 @@ async def _maybe_reroute_small_reasoning_call(
     Any failure to resolve the target leaves everything unchanged.
     """
     max_tokens = body.get("max_tokens")
+    if req_ctx.get().get(req_ctx.BATCH_EXECUTION) is not None:
+        # A batch item runs on the model it was admitted for, never another.
+        return canonical, route, adapter
     # Cheap, in-memory gates first (so ordinary traffic never reads the toggle):
     # only tiny budgets, aimed at a reasoning model, that are NOT tool-safety
     # checks. Safety verdicts are always left on the caller's chosen model.
@@ -1081,6 +1100,13 @@ def _schedule_log_store_task(
     # billed, matching the chat/embedding paths.
     if status_code == 200:
         _schedule_messages_cost_increment(op_store, user_id, usage_for_cost, pricing)
+        # What this request is charged, for a batch attempt watching it; the
+        # same inputs as the increment above. Unpriced reads as unknown.
+        observe_billing(
+            cost_usd=calculate_cost(usage_for_cost, pricing) if pricing else None,
+            usage=usage_for_cost,
+            request_id=request_id,
+        )
 
 
 # --- Endpoint health recording ---------------------------------------------
@@ -1486,6 +1512,8 @@ async def anthropic_messages(
     """Handle Anthropic Messages API requests (non-streaming)."""
     request_id = f"amsg_{int(time.time() * 1_000_000)}"
     start = time.time()
+    # The log row's id, for a batch attempt running this request.
+    note_request_id(request_id)
 
     # Per-caller identity for multi-key rotation, published before any dispatch.
     # Pinned to the specific hyi-xxx key in use (not user_id — a user may hold
@@ -1849,6 +1877,8 @@ async def anthropic_messages(
     # spend unattributed — and the per-job budget reads this same ledger.
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
+    # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
+    metadata.update(batch_log_attribution(user_ctx))
     # The usage window query needs the grant itself and the real start time;
     # ``ledger_attribution`` says why the insert timestamp is not enough.
     metadata.update(ledger_attribution(user_ctx, started_at=start))

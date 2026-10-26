@@ -20,8 +20,8 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
-from serving.batch import config as batch_config_module
-from serving.servers.auth import verify_api_key
+from serving.batch import config as batch_config_module, targets
+from serving.servers.auth import verify_api_key, verify_batch_management_identity
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import batches
@@ -101,7 +101,9 @@ class FakeBatchStore:
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
         completion_window_seconds: int,
+        **options: Any,
     ) -> dict[str, Any]:
+        self.options = options
         self.created.append(
             {
                 "batch_id": batch_id,
@@ -137,6 +139,10 @@ class FakeBatchStore:
             "cancelled_at": None,
             "expires_at": now + timedelta(seconds=completion_window_seconds),
             "paused_until": None,
+            "api_surface": options.get("api_surface", "openai_inline"),
+            "target": options.get("target", "chat"),
+            "schema_version": 2,
+            "phase": options.get("phase", "runnable"),
         }
         self.batches[batch_id] = row
         self.items[batch_id] = [
@@ -166,14 +172,16 @@ class FakeBatchStore:
             if row["user_id"] == user_id and row["status"] in ACTIVE
         )
 
-    async def get_batch(self, batch_id: str, *, user_id: str | None = None) -> dict | None:
+    async def get_batch(
+        self, batch_id: str, *, user_id: str | None = None, surfaces=None
+    ) -> dict | None:
         row = self.batches.get(batch_id)
         if row is None or (user_id is not None and row["user_id"] != user_id):
             return None
         return dict(row)
 
     async def list_batches(
-        self, *, user_id: str, limit: int, after: str | None = None
+        self, *, user_id: str, limit: int, after: str | None = None, surfaces=None
     ) -> list[dict[str, Any]]:
         rows = sorted(
             (row for row in self.batches.values() if row["user_id"] == user_id),
@@ -196,7 +204,9 @@ class FakeBatchStore:
             for item in items[:limit]
         ]
 
-    async def cancel_batch(self, batch_id: str, *, user_id: str | None = None) -> dict | None:
+    async def cancel_batch(
+        self, batch_id: str, *, user_id: str | None = None, surfaces=None
+    ) -> dict | None:
         row = self.batches.get(batch_id)
         if row is None or (user_id is not None and row["user_id"] != user_id):
             return None
@@ -212,7 +222,9 @@ class FakeBatchStore:
                 row["cancelled_at"] = now
         return dict(row)
 
-    async def delete_batch(self, batch_id: str, *, user_id: str | None = None) -> bool:
+    async def delete_batch(
+        self, batch_id: str, *, user_id: str | None = None, surfaces=None
+    ) -> bool:
         row = self.batches.get(batch_id)
         if row is None or (user_id is not None and row["user_id"] != user_id):
             return False
@@ -286,6 +298,8 @@ def app(services, users, settings) -> FastAPI:
         return {"authenticated": True, **users[key]}
 
     app.dependency_overrides[verify_api_key] = fake_verify
+    # Every batch route authenticates without the daily quota gate.
+    app.dependency_overrides[verify_batch_management_identity] = fake_verify
     install_error_handlers(app)
     app.include_router(batches.router)
     return app
@@ -776,13 +790,14 @@ async def test_an_auto_name_served_by_auto_mode_is_refused_even_if_registered(
     async def served_by_auto(model, _services):
         return object()
 
-    monkeypatch.setattr(batches, "auto_mode_for", served_by_auto)
+    # Model admission (auto models included) lives with the targets now.
+    monkeypatch.setattr(targets, "auto_mode_for", served_by_auto)
     refused = await client.post("/v1/batches", json=body, headers=_auth())
 
     async def not_served_by_auto(model, _services):
         return None
 
-    monkeypatch.setattr(batches, "auto_mode_for", not_served_by_auto)
+    monkeypatch.setattr(targets, "auto_mode_for", not_served_by_auto)
     accepted = await client.post("/v1/batches", json=body, headers=_auth())
 
     assert refused.status_code == 400
@@ -1176,7 +1191,7 @@ async def test_delete_is_409_while_an_upstream_request_lease_is_live(client, sto
     batch = await _create(client)
     path = f"/v1/batches/{batch['id']}"
 
-    async def delete_in_progress(batch_id, *, user_id=None):
+    async def delete_in_progress(batch_id, *, user_id=None, **scope):
         raise BatchDeleteInProgress(batch_id)
 
     monkeypatch.setattr(store, "delete_batch", delete_in_progress)

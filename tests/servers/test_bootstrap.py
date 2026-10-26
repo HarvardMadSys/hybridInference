@@ -1359,7 +1359,8 @@ def batch_scheduler_class():
     class FakeBatchScheduler:
         instances: list = []  # noqa: RUF012
 
-        def __init__(self, *, app, services, store, limits):
+        def __init__(self, *, app, services, store, limits, **options):
+            self.options = options
             self.app = app
             self.services = services
             self.store = store

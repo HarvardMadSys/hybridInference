@@ -6,14 +6,16 @@ as it holds it, it is counted here under its model's canonical id. The batch
 worker (:mod:`serving.batch.scheduler`) leaves that many of a model's batch
 slots to interactive traffic while ``BATCH_YIELD_TO_INTERACTIVE`` is on.
 
-Process-local by design: each gateway process yields to the traffic it serves
-itself. No lock, like the per-user limiter: the counts are only touched from
-the event loop, and neither entering nor leaving awaits anything.
+The counts are per process. Each process also publishes its counts to the
+database every couple of seconds (:class:`SharedInteractiveLoad`), so the batch
+worker of every process yields to the interactive traffic of all of them. No
+lock, like the per-user limiter: the counts are only touched from the event
+loop, and neither entering nor leaving awaits anything.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -91,6 +93,67 @@ class InteractiveLoad:
         """Return how many requests on *model_id* are in flight now."""
         return self._in_flight.get(model_id, 0)
 
+    def snapshot(self) -> dict[str, int]:
+        """Return every model's in-flight count now (for the shared view)."""
+        return dict(self._in_flight)
+
 
 #: The process's count, kept by ``enforce_user_concurrency``.
 INTERACTIVE_LOAD = InteractiveLoad()
+
+
+class SharedInteractiveLoad:
+    """The deployment's interactive load: every process's published counts.
+
+    A publisher task writes this process's counts to the store every
+    ``publish_seconds``; :meth:`read` sums, in one snapshot, the rows of every
+    other process refreshed within ``ttl_seconds`` (a process that died or lost
+    the database drops out once its rows age past it), and adds this process's
+    live local count.
+
+    Failure policy: when the shared rows cannot be read, :meth:`read` returns
+    None and the worker starts no new batch request that round (it fails
+    closed, protecting interactive traffic); requests already running are not
+    touched.
+    """
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        process_id: str,
+        local: InteractiveLoad,
+        ttl_seconds: float = 10.0,
+        publish_seconds: float = 2.0,
+    ) -> None:
+        self._store = store
+        self._process_id = process_id
+        self._local = local
+        self.ttl_seconds = ttl_seconds
+        self.publish_seconds = publish_seconds
+
+    async def publish(self) -> None:
+        """Write this process's current counts."""
+        await self._store.publish_interactive_load(
+            process_id=self._process_id, load=self._local.snapshot()
+        )
+
+    async def read(self) -> dict[str, int] | None:
+        """Every fresh process's counts summed per model, or None when unreadable."""
+        try:
+            # Every other process's rows, in one snapshot; this process's own
+            # row is replaced by its live count rather than subtracted, so a
+            # publish between two reads can never hide load.
+            others = await self._store.interactive_load(
+                ttl_seconds=self.ttl_seconds, exclude_process=self._process_id
+            )
+        except Exception:
+            return None
+        total = dict(others)
+        for model_id, count in self._local.snapshot().items():
+            total[model_id] = total.get(model_id, 0) + count
+        return {model_id: count for model_id, count in total.items() if count > 0}
+
+    async def withdraw(self) -> None:
+        """Remove this process's rows (a clean stop)."""
+        await self._store.withdraw_interactive_load(self._process_id)

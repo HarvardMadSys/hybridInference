@@ -77,7 +77,9 @@ if TYPE_CHECKING:
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
+    from serving.storage.batch_file_store import BatchFileStore
     from serving.storage.batch_store import BatchStore
+    from serving.storage.batch_webhook_store import BatchWebhookStore
     from serving.storage.database import DatabaseLogger
     from serving.storage.responses_store import ResponseStore
 
@@ -125,6 +127,9 @@ class AppServices:
     batch_store: BatchStore | None = None
     batch_model_limits: BatchModelLimits | None = None
     batch_scheduler: BatchScheduler | None = None
+    # Batch input/output files and webhooks, over the batch store's pool.
+    batch_file_store: BatchFileStore | None = None
+    batch_webhook_store: BatchWebhookStore | None = None
     # The batch store while its schema migration waits for a lock at boot:
     # nothing is served from it, but the hard-delete purge still goes through it.
     batch_store_pending: BatchStore | None = None
@@ -196,6 +201,20 @@ def get_batch_store(
 ) -> BatchStore | None:
     """Dependency to obtain the batch job store (if configured)."""
     return getattr(services, "batch_store", None)
+
+
+def get_batch_file_store(
+    services: AppServices = Depends(get_services),
+) -> BatchFileStore | None:
+    """Dependency to obtain the batch file store (if configured)."""
+    return getattr(services, "batch_file_store", None)
+
+
+def get_batch_webhook_store(
+    services: AppServices = Depends(get_services),
+) -> BatchWebhookStore | None:
+    """Dependency to obtain the batch webhook store (if configured)."""
+    return getattr(services, "batch_webhook_store", None)
 
 
 def get_batch_store_for_purge(

@@ -1003,10 +1003,120 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_RETENTION_DAYS",
         "batch",
-        "Days a finished batch and its results are kept before they are deleted.",
+        "Days a finished batch and its results are kept before they are deleted. A "
+        "change applies to batches created afterwards.",
         type="int",
         default="7",
         minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_EXPANSION_ENABLED",
+        "batch",
+        "Allow creating the newer batch kinds: Anthropic Message Batches, file batches "
+        "with the Files upload, and Embeddings and Responses requests. Turn on only once "
+        "every gateway process runs a version that supports them. Off, batches already "
+        "accepted still run and can still be read, downloaded, cancelled and deleted.",
+        type="bool",
+        default="0",
+        flag=True,
+    ),
+    ConfigEntry(
+        "BATCH_SHARED_INTERACTIVE_LOAD",
+        "batch",
+        "Count the interactive requests in flight on every gateway process, not only "
+        "this one, when batch work yields to interactive traffic. If that shared count "
+        "cannot be read, no new batch request starts until it can.",
+        type="bool",
+        default="1",
+        flag=True,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_QUEUED_REQUESTS_PER_USER",
+        "batch",
+        "Unfinished batch requests one user may have across all their batches. A batch "
+        "that would go past it is refused, however it is split.",
+        type="int",
+        default="100000",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_USER_MAX_CONCURRENCY",
+        "batch",
+        "Batch requests one user may have running at once across the whole deployment "
+        "and every model. 0 removes this cap (the per-user and per-model limits still "
+        "apply).",
+        type="int",
+        default="8",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "BATCH_INTERACTIVE_RESERVE",
+        "batch",
+        "Slots of every model's batch cap always left free for interactive requests, on "
+        "top of those interactive requests already in flight take (while batch work "
+        "yields to interactive traffic). 0 keeps no extra room.",
+        type="int",
+        default="0",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_LINE_KB",
+        "batch",
+        "Largest line of an uploaded batch input file, in KiB.",
+        type="int",
+        default="4096",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_RESULT_KB",
+        "batch",
+        "Largest response one batch request may store, in KiB. A larger response fails "
+        "the request with result_too_large.",
+        type="int",
+        default="4096",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_FILES_MAX_TOTAL_MB_PER_USER",
+        "batch",
+        "Uploaded batch input files one user may keep at once, in MiB.",
+        type="int",
+        default="512",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_FILE_UPLOADS_PER_HOUR",
+        "batch",
+        "Batch input files one user may upload per hour.",
+        type="int",
+        default="60",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_FILE_RETENTION_DAYS",
+        "batch",
+        "Days an uploaded batch input file is kept before it is deleted.",
+        type="int",
+        default="30",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_ANTHROPIC_VERSIONS",
+        "batch",
+        "Comma-separated anthropic-version values a Message Batch may be created under. "
+        "Known versions: 2023-06-01, 2026-10-21. A request with any other version is "
+        "refused.",
+        default="2023-06-01,2026-10-21",
+    ),
+    ConfigEntry(
+        "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
+        "batch",
+        "Let batch webhooks reach private, loopback and link-local addresses. For "
+        "isolated test deployments only: on, a user can make the gateway send requests "
+        "into its own network. Cloud metadata addresses stay refused.",
+        type="bool",
+        default="0",
+        flag=True,
     ),
     # --- network -----------------------------------------------------------
     _setting(

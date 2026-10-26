@@ -25,6 +25,7 @@ from serving.auto_mode import (
     openai_features,
     session_key,
 )
+from serving.batch.attempts import batch_log_attribution
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.exceptions import scrub_error_for_user
 from serving.grant_auth import ledger_attribution
@@ -550,9 +551,8 @@ async def chat_completions(
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
     # Present only when the batch worker runs the request for a batch
     # (serving/batch/dispatch.py); lands in api_logs.batch_job_id, the batch's
-    # cost and usage attribution.
-    if user_ctx.get("batch_job_id"):
-        metadata["batch_job_id"] = user_ctx["batch_job_id"]
+    # cost and usage attribution, with the item and attempt in the metadata.
+    metadata.update(batch_log_attribution(user_ctx))
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
 
     early_params: dict[str, Any] = {"stream": effective_stream}

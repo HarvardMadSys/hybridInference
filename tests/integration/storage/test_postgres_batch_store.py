@@ -55,6 +55,26 @@ BATCH_KEYS = {
     "cancelled_at",
     "expires_at",
     "paused_until",
+    # Added with API surfaces, targets, phases, files and attempt accounting.
+    "api_surface",
+    "target",
+    "schema_version",
+    "protocol_profile",
+    "phase",
+    "pending_terminal_status",
+    "validation_error",
+    "input_file_id",
+    "output_file_id",
+    "error_file_id",
+    "results_expires_at",
+    "finalizing_at",
+    "sealed_at",
+    "cancelled_count",
+    "expired_count",
+    "prompt_tokens",
+    "completion_tokens",
+    "unknown_cost_count",
+    "idempotency_key",
 }
 RATE_LIMITED = {"code": "rate_limited", "message": "slow down", "status": 429}
 _TEST_USERS = ("alice", "bob", "carol", "dave", "erin")
@@ -165,7 +185,8 @@ async def _complete(
     return await store.complete_item(
         item_id=item["id"],
         worker_id=worker,
-        attempt=item["attempts"] if attempt is None else attempt,
+        # The claim's fencing token (attempt_seq), not the retry count.
+        attempt=item["attempt_seq"] if attempt is None else attempt,
         response=None if error else {"id": f"chatcmpl-{item['id']}", "choices": []},
         error=error,
         status_code=error.get("status", 500) if error else 200,
@@ -180,7 +201,7 @@ async def _retry(store: BatchStore, item: dict[str, Any], *, when: datetime | No
     return await store.retry_item(
         item_id=item["id"],
         worker_id="worker-1",
-        attempt=item["attempts"],
+        attempt=item["attempt_seq"],
         next_attempt_at=when or datetime.now(UTC) - timedelta(seconds=1),
         error=RATE_LIMITED,
     )
@@ -385,6 +406,10 @@ async def test_results_page_through_items_in_submission_order(store):
         "cost_usd": None,
         "request_id": None,
         "completed_at": None,
+        "usage": None,
+        "cost_status": None,
+        "attempts": 0,
+        "model_id": created["model_ids"][0],
     }
     assert await store.list_results(created["id"], after=ids[-1]) == []
     assert await store.list_results("batch_unknown") == []
@@ -602,10 +627,17 @@ async def test_a_claim_hands_the_worker_what_it_needs(pool, store):
         "model_id",
         "request",
         "attempts",
+        "attempt_seq",
         "error",
         "user_id",
         "key_hash",
+        "api_surface",
+        "target",
+        "protocol_profile",
+        "endpoint",
     }
+    assert item["attempt_seq"] == 1
+    assert (item["api_surface"], item["target"]) == ("openai_inline", "chat")
     assert item["batch_id"] == created["id"]
     assert item["custom_id"] == "req-0"
     assert item["model_id"] == model
@@ -659,16 +691,19 @@ async def test_batches_take_turns(store):
     def picked(items):
         return [(item["batch_id"], item["custom_id"]) for item in items]
 
+    # One user's batches take turns within a claim as well as across claims:
+    # the older one first while neither has been served yet ...
     assert picked(await _claim(store, model, limit=2)) == [
         (older["id"], "a-0"),
-        (older["id"], "a-1"),
-    ]
-    assert picked(await _claim(store, model, limit=2)) == [
         (newer["id"], "b-0"),
+    ]
+    # ... then the one served earlier in the last claim, so neither gets
+    # ahead of the other ...
+    assert picked(await _claim(store, model, limit=2)) == [
+        (older["id"], "a-1"),
         (newer["id"], "b-1"),
     ]
-    # The batch claimed from longest ago goes first and, once out of items,
-    # the next one fills the room.
+    # ... and once one runs out of items, the next one fills the room.
     assert picked(await _claim(store, model, limit=3)) == [
         (older["id"], "a-2"),
         (newer["id"], "b-2"),
@@ -934,7 +969,7 @@ async def test_worker_writes_apply_only_under_the_current_claim(pool, store):
         is False
     )
     assert await store.release_item(item_id=item["id"], worker_id="worker-1", attempt=0) is False
-    assert await _complete(store, {"id": 10**12, "attempts": 1}) is False
+    assert await _complete(store, {"id": 10**12, "attempt_seq": 1}) is False
     stored = (await _rows(pool, created["id"]))[0]
     assert (stored["status"], stored["attempts"], stored["claimed_by"]) == (
         "running",
@@ -1025,15 +1060,26 @@ async def test_a_retry_keeps_the_attempt_and_a_release_hands_it_back(pool, store
     (second,) = await _claim(store, model)
     assert (second["attempts"], second["error"]) == (2, RATE_LIMITED)
 
-    assert await store.release_item(item_id=item["id"], worker_id="worker-1", attempt=2)
+    # Writes are fenced on the claim's attempt_seq, which never goes back.
+    assert await store.release_item(
+        item_id=item["id"], worker_id="worker-1", attempt=second["attempt_seq"]
+    )
     stored = (await _rows(pool, created["id"]))[0]
     assert (stored["status"], stored["attempts"], stored["claimed_by"]) == ("queued", 1, None)
     (third,) = await _claim(store, model)
     assert (third["attempts"], third["error"]) == (2, RATE_LIMITED)
+    # A released claim's token cannot fence the newer claim of the same count.
+    assert third["attempt_seq"] == second["attempt_seq"] + 1
+    assert not await store.release_item(
+        item_id=item["id"], worker_id="worker-1", attempt=second["attempt_seq"]
+    )
 
     later = datetime.now(UTC) + timedelta(minutes=5)
     assert await store.release_item(
-        item_id=item["id"], worker_id="worker-1", attempt=2, next_attempt_at=later
+        item_id=item["id"],
+        worker_id="worker-1",
+        attempt=third["attempt_seq"],
+        next_attempt_at=later,
     )
     assert await _claim(store, model) == []
     assert (await store.get_batch(created["id"]))["status"] == "in_progress"
@@ -1304,7 +1350,9 @@ async def test_sweep_finalizes_what_no_worker_will_finish(pool, store):
     await store.fail_batch(failed["id"], {"code": "owner_unauthorized", "message": "x"})
     await _expire_lease(pool, stuck["id"])
 
-    assert await store.sweep(retention_days=7) == {"expired": 0, "finalized": 2, "purged": 0}
+    # The failed batch is final already, but (stored by this version) it is
+    # sealed only once its last running item settles: that counts too.
+    assert await store.sweep(retention_days=7) == {"expired": 0, "finalized": 3, "purged": 0}
 
     assert (await store.get_batch(cancelling["id"]))["status"] == "cancelled"
     assert await _statuses(pool, cancelling["id"]) == ["completed", "cancelled"]
@@ -1327,17 +1375,26 @@ async def test_sweep_purges_finished_batches_past_retention(pool, store):
             assert await _complete(store, item)
     await _execute(
         pool,
-        "UPDATE batch_jobs SET completed_at = now() - interval '8 days' WHERE id = $1",
+        # Results are final from the sealing on; stored before phases existed,
+        # from the final status. Both are backdated, as a real batch has both.
+        "UPDATE batch_jobs SET completed_at = now() - interval '8 days', "
+        "sealed_at = now() - interval '8 days' WHERE id = $1",
         old_done["id"],
     )
     await _execute(
         pool,
-        "UPDATE batch_jobs SET completed_at = now() - interval '6 days' WHERE id = $1",
+        # Results are final from the sealing on; stored before phases existed,
+        # from the final status. Both are backdated, as a real batch has both.
+        "UPDATE batch_jobs SET completed_at = now() - interval '6 days', "
+        "sealed_at = now() - interval '6 days' WHERE id = $1",
         recent_done["id"],
     )
     await _execute(
         pool,
-        "UPDATE batch_jobs SET cancelled_at = now() - interval '30 days' WHERE id = $1",
+        # Results are final from the sealing on; stored before phases existed,
+        # from the final status. Both are backdated, as a real batch has both.
+        "UPDATE batch_jobs SET cancelled_at = now() - interval '30 days', "
+        "sealed_at = now() - interval '30 days' WHERE id = $1",
         old_cancelled["id"],
     )
     await _execute(

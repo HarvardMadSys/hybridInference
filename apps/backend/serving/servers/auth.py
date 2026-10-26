@@ -704,6 +704,57 @@ def publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
     return user_ctx
 
 
+def _quota_exceeded(
+    request: Request,
+    *,
+    user_id: str,
+    role: str,
+    quota_usd: float,
+    spent_usd: float,
+) -> HTTPException:
+    """Log the quota rejection and return the 429 every quota-gated route answers."""
+    seconds_until_midnight_utc = _seconds_until_utc_midnight()
+    quota_reset_at = _next_utc_midnight()
+    asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        log_rejection(
+            request=request,
+            status_code=429,
+            error_code="quota_exceeded",
+            reason=(f"quota_usd={quota_usd:.4f} spent_usd={spent_usd:.4f}"),
+            user={
+                "user_id": user_id,
+                "role": role,
+                # The caller passed key auth to reach the quota gate, so
+                # the rejection log's probe-trust check sees a real key.
+                "authenticated": True,
+            },
+        )
+    )
+    return HTTPException(
+        status_code=429,
+        detail={
+            "error": "Daily cost quota exceeded",
+            "quota_usd": quota_usd,
+            "spent_usd": spent_usd,
+            "remaining_usd": max(0, quota_usd - spent_usd),
+            "reset_at": quota_reset_at.isoformat(),
+            "contact_email": _quota_contact(),
+            "message": (
+                f"Need more quota? Email {_quota_contact()} and explain your use case."
+                if _quota_contact()
+                else "Daily quota exhausted. Contact the operator of this deployment."
+            ),
+            "retry_after": seconds_until_midnight_utc,
+        },
+        headers={
+            "Retry-After": str(seconds_until_midnight_utc),
+            "X-RateLimit-Limit-Cost": str(quota_usd),
+            "X-RateLimit-Remaining-Cost": str(max(0, quota_usd - spent_usd)),
+            "X-RateLimit-Reset": str(int(quota_reset_at.timestamp())),
+        },
+    )
+
+
 async def verify_api_key(
     request: Request,
     authorization: str | None = Header(None),
@@ -801,45 +852,12 @@ async def verify_api_key(
 
     # Check cost quota
     if _over_daily_quota(cost_spent, quota_daily_cost_usd):
-        seconds_until_midnight_utc = _seconds_until_utc_midnight()
-        quota_reset_at = _next_utc_midnight()
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
-            log_rejection(
-                request=request,
-                status_code=429,
-                error_code="quota_exceeded",
-                reason=(f"quota_usd={quota_daily_cost_usd:.4f} spent_usd={cost_spent:.4f}"),
-                user={
-                    "user_id": effective_user_id,
-                    "role": identity.get("role") or "free",
-                    # The caller passed key auth to reach the quota gate, so
-                    # the rejection log's probe-trust check sees a real key.
-                    "authenticated": True,
-                },
-            )
-        )
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "error": "Daily cost quota exceeded",
-                "quota_usd": quota_daily_cost_usd,
-                "spent_usd": cost_spent,
-                "remaining_usd": max(0, quota_daily_cost_usd - cost_spent),
-                "reset_at": quota_reset_at.isoformat(),
-                "contact_email": _quota_contact(),
-                "message": (
-                    f"Need more quota? Email {_quota_contact()} and explain your use case."
-                    if _quota_contact()
-                    else "Daily quota exhausted. Contact the operator of this deployment."
-                ),
-                "retry_after": seconds_until_midnight_utc,
-            },
-            headers={
-                "Retry-After": str(seconds_until_midnight_utc),
-                "X-RateLimit-Limit-Cost": str(quota_daily_cost_usd),
-                "X-RateLimit-Remaining-Cost": str(max(0, quota_daily_cost_usd - cost_spent)),
-                "X-RateLimit-Reset": str(int(quota_reset_at.timestamp())),
-            },
+        raise _quota_exceeded(
+            request,
+            user_id=effective_user_id,
+            role=identity.get("role") or "free",
+            quota_usd=quota_daily_cost_usd,
+            spent_usd=cost_spent,
         )
 
     # Update last_used timestamp on the presented key — fire-and-forget
@@ -858,7 +876,9 @@ async def verify_api_key(
     )
 
 
-async def authenticate_stored_key(key_hash: str | None, op_store: Any) -> dict[str, Any]:
+async def authenticate_stored_key(
+    key_hash: str | None, op_store: Any, *, check_quota: bool = True
+) -> dict[str, Any]:
     """Authenticate, as of now, the owner of work stored under an API key.
 
     For work that runs after the request that stored it has gone -- a batch
@@ -890,6 +910,9 @@ async def authenticate_stored_key(key_hash: str | None, op_store: Any) -> dict[s
         StoredKeyQuotaExceeded: The owner has spent today's cost quota.
         Exception: Whatever the store raised, unchanged: the answer is unknown,
             not no. Also raised without an operational store to ask.
+
+    ``check_quota`` False skips the daily cost quota, for work that spends
+    nothing (validating a batch's input).
     """
     if not is_user_auth_enabled():
         return _anonymous_context()
@@ -910,7 +933,7 @@ async def authenticate_stored_key(key_hash: str | None, op_store: Any) -> dict[s
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
-    if _over_daily_quota(cost_spent, quota_daily_cost_usd):
+    if check_quota and _over_daily_quota(cost_spent, quota_daily_cost_usd):
         raise StoredKeyQuotaExceeded(
             quota_usd=quota_daily_cost_usd,
             spent_usd=cost_spent,
@@ -921,6 +944,77 @@ async def authenticate_stored_key(key_hash: str | None, op_store: Any) -> dict[s
         key_hash=key_hash,
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+    )
+
+
+async def verify_batch_management_identity(
+    request: Request,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    x_on_behalf_of: str | None = Header(None, alias="X-On-Behalf-Of"),
+    op_store=Depends(get_operational_store),
+) -> dict[str, Any]:
+    """Authenticate a caller managing batches and files, without the daily quota gate.
+
+    Everything :func:`verify_api_key` checks about the key and the account
+    still applies -- a revoked or expired key, a suspended, deleted or
+    unverified account, a blocked IP -- and the same user context comes back,
+    role and admin flag included. Only the daily cost quota is left out:
+    listing, reading, downloading, cancelling and deleting what one already
+    submitted spends nothing, and must keep working exactly when the quota is
+    spent. The context carries ``quota_exceeded`` so a route that does create
+    work enforces the quota itself (:func:`enforce_daily_quota`), after its
+    idempotency check.
+
+    Agent-sandbox grant tokens and ``X-On-Behalf-Of`` are refused: batch work
+    runs later under the key that created it, which neither of those is.
+    """
+    presented_key = _extract_api_key(authorization, x_api_key)
+    if grants.looks_like_grant_token(presented_key):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "type": "insufficient_scope",
+                    "message": "This credential may only be used for model inference.",
+                }
+            },
+        )
+    if x_on_behalf_of:
+        raise HTTPException(
+            400,
+            "X-On-Behalf-Of is not supported for batches: a batch belongs to the key that "
+            "creates it",
+        )
+    if not is_user_auth_enabled():
+        return publish_caller_role({**_anonymous_context(), "quota_exceeded": False})
+
+    user, key_hash, spend_today = await _authenticate_by_api_key(
+        request, authorization, x_api_key, op_store, want_spend=True
+    )
+    tracked_task(op_store.update_key_last_used(user["id"]), name="key_last_used")
+    quota_daily_cost_usd = _daily_quota_usd(user)
+    cost_spent = spend_today or 0.0
+    context = _user_context(
+        user,
+        key_hash=key_hash,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
+    )
+    context["quota_exceeded"] = _over_daily_quota(cost_spent, quota_daily_cost_usd)
+    return publish_caller_role(context)
+
+
+def enforce_daily_quota(request: Request, user_ctx: dict[str, Any]) -> None:
+    """Refuse with the quota 429 when a management identity has spent today's quota."""
+    if not user_ctx.get("quota_exceeded"):
+        return
+    raise _quota_exceeded(
+        request,
+        user_id=user_ctx.get("user_id") or "anonymous",
+        role=user_ctx.get("role") or "free",
+        quota_usd=float(user_ctx.get("quota_daily_cost_usd") or 0.0),
+        spent_usd=float(user_ctx.get("spent_today_usd") or 0.0),
     )
 
 

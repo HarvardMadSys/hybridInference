@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from serving.batch.attempts import observe_billing
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
@@ -258,7 +259,17 @@ class CostTracker:
         models with zero pricing legitimately produce zero cost).
         """
         pricing = routing.pricing or self._pricing.for_routing(routing)
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "reasoning_tokens": reasoning_tokens,
+        }
         if pricing is None:
+            # A batch attempt records this charge as unknown, never as zero.
+            observe_billing(cost_usd=None, usage=usage)
             return routing
 
         cost = self._compute_cost(
@@ -276,6 +287,9 @@ class CostTracker:
         import dataclasses as _dc
 
         enriched = _dc.replace(routing, pricing=pricing, upstream_cost_usd=cost)
+        # What this request is charged, reported to a batch attempt watching it
+        # (serving/batch/attempts.py); nothing outside a batch attempt listens.
+        observe_billing(cost_usd=cost if cost is not None else None, usage=usage)
 
         if cost is None or cost <= 0 or self._op_store is None:
             return enriched

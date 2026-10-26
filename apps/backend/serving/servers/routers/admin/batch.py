@@ -8,13 +8,16 @@ batch settings in Admin -> Configuration -> Batch inference; a cap of 0 pauses
 batch work on the model. Every process reads the caps through
 ``BatchModelLimits``: the process that serves a write sees it at once, the
 others within seconds.
+
+It also gives administrators an overview of every user's batches
+(``/admin/batch/jobs``, ``/admin/batch/summary``) and lets them cancel one.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from serving.batch.config import batch_config
 from serving.schemas_admin import (
@@ -149,3 +152,92 @@ async def update_batch_model_limit(
 
     stats = await batch_store.model_stats()
     return _item(model_id, new, batch_config().default_model_concurrency, stats.get(model_id))
+
+
+# -- every user's batches -------------------------------------------------------------
+
+
+@router.get("/batch/jobs")
+async def list_all_batches(
+    user_id: str | None = Query(None, description="Only this user's batches"),
+    status: str | None = Query(None, description="Only batches in this internal status"),
+    surface: str | None = Query(None, description="openai_inline, openai_file or anthropic"),
+    limit: int = Query(50, ge=1, le=200),
+    after: str | None = Query(None),
+    _admin_id: str = Depends(verify_admin_access),
+    batch_store=Depends(get_batch_store),
+) -> dict[str, Any]:
+    """Every user's batches, newest first, with counts, tokens and known cost."""
+    if batch_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    from serving.servers.routers.batch_console import batch_view
+
+    rows = await batch_store.list_batches(
+        user_id=user_id,
+        limit=limit + 1,
+        after=after,
+        surfaces={surface} if surface else None,
+        status=status,
+    )
+    data = [batch_view(row) for row in rows[:limit]]
+    return {
+        "object": "list",
+        "data": data,
+        "has_more": len(rows) > limit,
+        "last_id": data[-1]["id"] if data else None,
+    }
+
+
+@router.get("/batch/summary")
+async def batch_summary(
+    _admin_id: str = Depends(verify_admin_access),
+    batch_store=Depends(get_batch_store),
+) -> dict[str, Any]:
+    """Per-user batch totals: batches, active ones, requests, tokens and known cost."""
+    if batch_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    users = await batch_store.batch_summary()
+    for user in users:
+        created = user.get("last_created_at")
+        user["last_created_at"] = int(created.timestamp()) if created is not None else None
+    totals = {
+        key: sum(user[key] for user in users)
+        for key in (
+            "batches",
+            "active",
+            "requests",
+            "completed",
+            "failed",
+            "prompt_tokens",
+            "completion_tokens",
+            "unknown_cost_attempts",
+        )
+    }
+    totals["cost_usd"] = sum(user["cost_usd"] for user in users)
+    return {"users": users, "totals": totals}
+
+
+@router.post("/batch/jobs/{batch_id}/cancel")
+async def admin_cancel_batch(
+    request: Request,
+    batch_id: str,
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+    batch_store=Depends(get_batch_store),
+) -> dict[str, Any]:
+    """Cancel any user's batch (audited as ``batch.jobs.cancel``)."""
+    if batch_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    from serving.servers.routers.batch_console import batch_view
+
+    row = await batch_store.cancel_batch(batch_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
+    await log_admin_action(
+        op_store,
+        get_client_ip(request),
+        "batch.jobs.cancel",
+        row.get("user_id"),
+        {"batch_id": batch_id},
+    )
+    return batch_view(row)

@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
 from serving.adapters.key_pool import KeyPoolExhausted
+from serving.batch.attempts import batch_log_attribution, note_request_id, observe_billing
 from serving.config.runtime_settings import get_runtime_settings
 from serving.grant_auth import ledger_attribution
 from serving.observability.tracked_tasks import tracked_task
@@ -146,6 +147,8 @@ async def create_embeddings(
     """
     model = request.model
     request_id = f"emb_{uuid.uuid4().hex}"
+    # The log row's id, for a batch attempt running this request.
+    note_request_id(request_id)
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
     # Resolved the same way as on the chat surfaces, so a client that labels its
@@ -211,6 +214,8 @@ async def create_embeddings(
         "agent_job_id": user_ctx.get("agent_job_id"),
     }
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
+    # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
+    metadata.update(batch_log_attribution(user_ctx))
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
     if declared_session is not None:
@@ -339,6 +344,13 @@ async def create_embeddings(
         # any authenticated client bypass quota by setting it. The probe flag
         # affects log suppression only — never cost/quota.
         _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
+        # What this request is charged, for a batch attempt watching it; the
+        # same inputs as the increment above. Unpriced reads as unknown.
+        observe_billing(
+            cost_usd=calculate_cost(normalize_usage(usage) or usage, pricing) if pricing else None,
+            usage=usage,
+            request_id=request_id,
+        )
         return response
     except HTTPException:
         raise

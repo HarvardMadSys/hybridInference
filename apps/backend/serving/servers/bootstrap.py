@@ -45,7 +45,9 @@ from serving.servers.routewise_compat import (
     apply_routewise_settings_to_router,
 )
 from serving.setup_state import init_setup_state
+from serving.storage.batch_file_store import BatchFileStore
 from serving.storage.batch_store import BatchStore
+from serving.storage.batch_webhook_store import BatchWebhookStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
@@ -252,6 +254,10 @@ def _defer_batch_store(services: AppServices, store: BatchStore) -> None:
     async def finish() -> None:
         await store.initialize()  # SchemaLockUnavailable: retried by the caller
         services.batch_model_limits = BatchModelLimits(store)
+        pool = getattr(store, "pool", None)
+        if pool is not None:
+            services.batch_file_store = BatchFileStore(pool)
+            services.batch_webhook_store = BatchWebhookStore(pool)
         services.batch_store = store
         services.batch_store_pending = None
         logger.info("Batch store initialized (Postgres) after a deferred migration")
@@ -1902,6 +1908,10 @@ async def initialize() -> AppServices:
         auto_mode=auto_mode,
         batch_store=batch_store,
         batch_model_limits=batch_model_limits,
+        batch_file_store=BatchFileStore(batch_store.pool) if batch_store is not None else None,
+        batch_webhook_store=(
+            BatchWebhookStore(batch_store.pool) if batch_store is not None else None
+        ),
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
@@ -1917,7 +1927,7 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
     """Start the in-process batch worker when there is a batch store.
 
     Called from the app lifespan once ``app.state.services`` is set: the worker
-    runs each batch request through the chat-completions handler with a
+    runs each batch request through the handler of its target with a
     synthetic request whose scope carries the live app. It starts whether or not
     ``BATCH_ENABLED`` is on, reads the setting every round and claims nothing
     while it is off, so turning batches on needs no restart.
@@ -1943,6 +1953,7 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
         # imports the chat-completions handler, and this module stays
         # importable without the HTTP layer.
         from serving.batch.scheduler import BatchScheduler
+        from serving.servers.auth import decrypt_api_key
 
         if services.batch_model_limits is None:
             services.batch_model_limits = BatchModelLimits(store)
@@ -1951,6 +1962,12 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
             services=services,
             store=store,
             limits=services.batch_model_limits,
+            # Every process publishes its interactive load and yields to all of
+            # them (serving/batch/interactive_load.py).
+            share_interactive_load=True,
+            file_store=getattr(services, "batch_file_store", None),
+            webhook_store=getattr(services, "batch_webhook_store", None),
+            decrypt_secret=decrypt_api_key,
         )
         scheduler.start()
     except Exception:
