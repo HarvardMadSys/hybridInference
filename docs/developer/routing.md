@@ -611,6 +611,10 @@ their value, and the backend logs a warning naming them once per process.
 Remove them from `models.yaml`. FixedRouter's
 [prefill-aware selection](#prefill-aware-selection) is unchanged.
 
+`latency_min_samples` is accepted the same way. Provider selection never read
+it, so it was removed, and a registry that still sets it starts with the same
+warning.
+
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
 exactly against the usage records a provider's quota fetcher returns. RouteWise

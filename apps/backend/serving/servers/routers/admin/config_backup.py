@@ -30,11 +30,18 @@ try:
         MODEL_ROUTEWISE_SETTING_PREFIX,
         _coerce_setting_value,
         _parse_model_setting_key,
+        is_retired_routewise_setting_row,
     )
 except ImportError:
     MODEL_ROUTEWISE_SETTING_PREFIX = "model_routewise_setting:"
     _coerce_setting_value = None  # type: ignore[assignment]
     _parse_model_setting_key = None  # type: ignore[assignment]
+
+    def is_retired_routewise_setting_row(setting_key: str) -> bool:  # type: ignore[misc]
+        """Without RouteWise settings, no stored row is a retired one."""
+        return False
+
+
 from serving.config.settings import VALID_ROLES
 from serving.observability import alert_mutes
 from serving.observability.alert_snooze import SNOOZE_SETTING_KEY, init_alert_snooze
@@ -225,6 +232,19 @@ def _validate_site_setting(item: ConfigBackupSiteSetting) -> tuple[str, str, str
     return key, value, value_type
 
 
+def _restorable_site_settings(payload: ConfigBackupPayload) -> list[ConfigBackupSiteSetting]:
+    """Return the backup's site settings less those of retired RouteWise settings.
+
+    Nothing reads such a row any more, so a restore drops it rather than
+    refusing a backup taken while the setting existed.
+    """
+    return [
+        item
+        for item in payload.site_settings
+        if not is_retired_routewise_setting_row(item.key.strip())
+    ]
+
+
 def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
     if payload.schema_version != 1:
         raise HTTPException(
@@ -233,7 +253,7 @@ def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
         )
 
     seen_settings: set[str] = set()
-    for s in payload.site_settings:
+    for s in _restorable_site_settings(payload):
         key, _val, _vtype = _validate_site_setting(s)
         if key in seen_settings:
             raise HTTPException(
@@ -369,7 +389,7 @@ async def export_config_backup(
     site_settings: list[ConfigBackupSiteSetting] = []
     for row in await _call_store(op_store, "list_settings", default=[]):
         key = str(row["key"])
-        if key in _EXCLUDED_SITE_SETTING_KEYS:
+        if key in _EXCLUDED_SITE_SETTING_KEYS or is_retired_routewise_setting_row(key):
             continue
         site_settings.append(
             ConfigBackupSiteSetting(
@@ -642,9 +662,13 @@ async def _apply_operational_and_batch_stores(
     if op_store is not None:
         # 1. site_settings (preserve setup_completed_at and setup_code)
         current_settings = await _call_store(op_store, "list_settings", default=[])
+        # A retired RouteWise setting's stored row is not in the target either,
+        # so a restore also clears one left behind.
         target_settings = {
             key: (val, vtype)
-            for key, val, vtype in (_validate_site_setting(s) for s in payload.site_settings)
+            for key, val, vtype in (
+                _validate_site_setting(s) for s in _restorable_site_settings(payload)
+            )
         }
         for row in current_settings:
             existing_key = str(row["key"])

@@ -120,7 +120,6 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
         side_effect=lambda key: {
             "routewise_budget_alpha": {"value": "0.6", "value_type": "float"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
-            "routewise_latency_min_samples": {"value": "10", "value_type": "int"},
             "routewise_probe_enabled": {"value": "false", "value_type": "bool"},
             "routewise_probe_interval_sec": {"value": "300.0", "value_type": "float"},
         }.get(key)
@@ -134,7 +133,6 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
     assert response.status_code == 200
     items = response.json()["settings"]
     keys = [item["key"] for item in items]
-    # A stored routewise_latency_min_samples is not offered: routing never reads it.
     assert keys == [
         "routewise_budget_alpha",
         "routewise_latency_slo_sec",
@@ -615,7 +613,6 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     assert response.status_code == 200
     assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
-    assert router.config.latency_min_samples == 10
 
 
 @pytest.mark.asyncio
@@ -674,7 +671,6 @@ async def test_global_patch_does_not_build_or_override_uncached_yaml_model(admin
     assert isinstance(uncached_router, RouteWiseRouter)
     assert uncached_router.config.budget_alpha == 0.5
     assert uncached_router.config.latency_slo_sec == 3.0
-    assert uncached_router.config.latency_min_samples == 10
 
 
 @pytest.mark.asyncio
@@ -730,7 +726,6 @@ async def test_routewise_patch_refreshes_canonical_and_alias_cache_once(admin_cl
     assert response.status_code == 200
     assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
-    assert router.config.latency_min_samples == 10
     router.apply_runtime_overrides.assert_called_once()
     router.refresh_probe_task.assert_awaited_once_with()
 
@@ -751,11 +746,11 @@ def test_routewise_router_collection_rejects_invalid_runtime_override():
 
 
 @pytest.mark.asyncio
-async def test_routewise_latency_min_samples_is_not_offered(admin_client):
-    # Provider selection never reads it, so the console has nothing to tune;
-    # a models.yaml that still names it keeps loading.
+async def test_the_removed_latency_min_samples_is_no_routewise_setting(admin_client):
+    # Provider selection never read it, so it is gone; a models.yaml that still
+    # names it keeps loading, and the key is dropped.
     client, op_store, _ = admin_client
-    _registry, _resolver, rows = await _install_model_settings_registry(
+    registry, _resolver, rows = await _install_model_settings_registry(
         client,
         op_store,
         models_config={
@@ -765,6 +760,7 @@ async def test_routewise_latency_min_samples_is_not_offered(admin_client):
     headers = {"Authorization": "Bearer test-admin"}
     key = "routewise_latency_min_samples"
 
+    assert isinstance(registry.get_router("model-a"), RouteWiseRouter)
     listed = await client.get(
         "/admin/routewise/model-settings", params={"model_id": "model-a"}, headers=headers
     )

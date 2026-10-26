@@ -1368,9 +1368,9 @@ async def test_apply_persisted_model_router_strategy_overrides(admin_client):
             "updated_by": "127.0.0.1",
         },
         {
-            "key": "routewise_latency_min_samples",
-            "value": "12",
-            "value_type": "int",
+            "key": "routewise_budget_alpha",
+            "value": "0.5",
+            "value_type": "float",
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
         },
