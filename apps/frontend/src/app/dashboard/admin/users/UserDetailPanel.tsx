@@ -310,6 +310,7 @@ function AccountSettings({
     if (changes.length === 0) return;
     const pendingPatch = patch;
     confirmation.request({
+      key: 'account settings',
       title: `Save ${plural(changes.length, 'change')} to account settings for ${userLabel}?`,
       confirmLabel: 'Confirm save',
       busyLabel: 'Saving…',
@@ -452,13 +453,13 @@ function AccountSettings({
         </div>
       )}
 
-      {/* The confirmation is the table's: another write must not bring up this bar. */}
+      {/* The confirmation is the table's: only this save makes the bar busy. */}
       <EditBar
         target="account settings"
         changeCount={changeCount}
         onCancel={cancel}
         onSave={save}
-        busy={busy && changeCount > 0}
+        busy={confirmation.savingKey === 'account settings'}
         error={saveError}
         inPlace
       />
@@ -517,6 +518,7 @@ function TextSetting({
     if (!changed) return;
     const pending = next;
     confirmation.request({
+      key: target,
       title: `Save 1 change to the ${target} for ${userLabel}?`,
       confirmLabel: 'Confirm save',
       busyLabel: 'Saving…',
@@ -555,13 +557,13 @@ function TextSetting({
         <span>{next === null ? emptyText : null}</span>
         <span className="shrink-0 tabular-nums">{value.length} / 2000</span>
       </div>
-      {/* The confirmation is the table's: another write must not bring up this bar. */}
+      {/* The confirmation is the table's: only this save makes the bar busy. */}
       <EditBar
         target={target}
         changeCount={changed ? 1 : 0}
         onCancel={cancel}
         onSave={save}
-        busy={busy && changed}
+        busy={confirmation.savingKey === target}
         inPlace
       />
     </section>

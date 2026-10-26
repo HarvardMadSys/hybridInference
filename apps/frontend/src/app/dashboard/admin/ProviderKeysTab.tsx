@@ -349,6 +349,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     const provider = selectedProvider;
     const pending = changedTiers.map((key) => ({ key, minRole: tierDrafts[draftId(key)] }));
     confirmation.request({
+      key: 'tiers',
       title: `Save ${plural(pending.length, 'tier change')} for ${provider} keys?`,
       confirmLabel: 'Confirm save',
       busyLabel: 'Saving…',
@@ -619,13 +620,13 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
             </table>
           </div>
         )}
-        {/* The confirmation also serves the key actions: they must not bring up this bar. */}
+        {/* The confirmation also serves the key actions: only the tier save makes the bar busy. */}
         <EditBar
           target={tiersTarget}
           changeCount={changedTiers.length}
           onCancel={cancelTiers}
           onSave={saveTiers}
-          busy={confirmation.busy && tiersChanged}
+          busy={confirmation.savingKey === 'tiers'}
           error={tierSaveError}
           inPlace
         />
