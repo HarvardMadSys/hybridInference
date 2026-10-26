@@ -38,7 +38,7 @@ import {
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import { ChangeList, plural, type Change } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import { BUTTON_GHOST, BUTTON_PRIMARY } from '@/components/features/admin/adminStyles';
@@ -652,6 +652,9 @@ interface ProviderRoutesTabProps {
   showRoutewiseSettings?: boolean;
 }
 
+// Why a control that would drop an unsaved draft is unavailable for now.
+const HELD_FOR_DRAFTS = 'Save or discard the unsaved changes first';
+
 export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
   const toast = useAccountToast();
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
@@ -696,14 +699,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [keysLoading, setKeysLoading] = useState(false);
   const [createKeysLoading, setCreateKeysLoading] = useState(false);
   const confirmation = useConfirmAction();
-  // Fixed weights, a routing-policy switch and a concurrency limit are read-only
-  // until Edit; their drafts are written only after the confirmation.
-  const [editingWeights, setEditingWeights] = useState(false);
+  // Fixed weights, the routing policy and a concurrency limit are edited in
+  // place; their drafts are written only after the confirmation.
   const [weightsError, setWeightsError] = useState<string | null>(null);
-  const [editingStrategy, setEditingStrategy] = useState(false);
-  const [draftStrategy, setDraftStrategy] = useState<ProviderRouteStrategy>('fixed');
-  const [editingConcurrencyKey, setEditingConcurrencyKey] = useState<string | null>(null);
-  const [concurrencyError, setConcurrencyError] = useState<string | null>(null);
+  // The policy chosen for the selected model; null while it is the saved one.
+  const [draftStrategy, setDraftStrategy] = useState<ProviderRouteStrategy | null>(null);
+  // Route key → why that row's concurrency limit could not be saved.
+  const [concurrencyErrors, setConcurrencyErrors] = useState<Record<string, string>>({});
   const [routeEditError, setRouteEditError] = useState<string | null>(null);
   const [verifyingKey, setVerifyingKey] = useState<string | null>(null);
   const [verifyingCreateRoute, setVerifyingCreateRoute] = useState(false);
@@ -1650,6 +1652,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         setRoutes((current) => [...current, created]);
         if (model) {
           setSelectedModel(created.model_id);
+          resetInlineDrafts();
         }
         setAddingRoute(false);
         setCreatingModel(false);
@@ -1701,9 +1704,64 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       delete next[key];
       return next;
     });
-  const inlineEditing = editingWeights || editingStrategy || editingConcurrencyKey !== null;
+  const dropConcurrencyDraft = (key: string) => {
+    setDraftConcurrencyLimits((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setConcurrencyErrors((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  };
+  // Drafts belong to the model they were made for. The model can only switch
+  // once none of them is a change, so this drops nothing unsaved.
+  const resetInlineDrafts = () => {
+    setDraftStrategy(null);
+    setDraftWeights({});
+    setWeightsError(null);
+    setDraftConcurrencyLimits({});
+    setConcurrencyErrors({});
+  };
+
+  // Fixed weights: only real changes count, and an invalid draft is one, so
+  // Save can say what to fix. A deleted route shows no weight to edit.
+  const weightChanges = isRoutewise
+    ? []
+    : selectedRoutes.flatMap((route) => {
+        if (route.removed) return [];
+        const key = weightKeyFor(route);
+        const draft = draftWeights[key];
+        if (draft === undefined) return [];
+        const before = effectiveWeightFor(route);
+        const parsed = parseWeightDraft(draft);
+        if (parsed !== null && parsed === before) return [];
+        return [{ route, key, before, parsed }];
+      });
+
+  // A runtime OpenRouter concurrency limit, edited in its own row.
+  const concurrencyDraftFor = (route: ProviderRoute) => {
+    const draft = draftConcurrencyLimits[routeKey(route)];
+    if (draft === undefined) return { changed: false, parsed: route.concurrency_limit };
+    const trimmed = draft.trim();
+    if (trimmed === '' && route.concurrency_limit == null) return { changed: false, parsed: null };
+    const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : null;
+    return { changed: parsed === null || parsed !== route.concurrency_limit, parsed };
+  };
+  const limitsChanged =
+    isRoutewise &&
+    selectedRoutes.some(
+      (route) =>
+        !route.removed && canEditConcurrencyLimit(route) && concurrencyDraftFor(route).changed,
+    );
+
+  const weightsChanged = weightChanges.length > 0;
+  const strategyChanged = draftStrategy !== null && draftStrategy !== strategy;
+  const inlineChanged = weightsChanged || strategyChanged || limitsChanged;
   // The offload and RouteWise panels keep drafts for the selected model too, and
-  // drop them when it changes; they report whether an edit or confirmation is open.
+  // drop them when it changes; they report whether a draft or confirmation is open.
   const [panelEditing, setPanelEditing] = useState({ offload: false, routewise: false });
   const onOffloadEditingChange = useCallback(
     (active: boolean) => setPanelEditing((prev) => ({ ...prev, offload: active })),
@@ -1714,18 +1772,21 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     [],
   );
   const panelOpen = panelEditing.offload || panelEditing.routewise;
-  // Switching model, directly or by creating one, would drop any open draft.
+  // Switching model, directly or by creating one, would drop any unsaved draft.
   // The route, capability and create dialogs are modal, but their drafts belong
-  // to this model too, as does any open confirmation. So would switching the
-  // routing policy: the panel being edited belongs to the current policy
-  // (Queue offload to fixed, RouteWise parameters to routewise).
+  // to this model too, as does any open confirmation. Unchanged fields hold
+  // nothing back.
   const modelLocked =
-    inlineEditing ||
+    inlineChanged ||
     panelOpen ||
     editingRoute !== null ||
     capabilityRoute !== null ||
     createFormOpen ||
     confirmation.open;
+  // So would switching the routing policy: it unmounts the panel of the current
+  // policy (Queue offload for fixed, RouteWise parameters for routewise) and
+  // swaps the table's weights for limits or back.
+  const policyHeld = weightsChanged || limitsChanged || panelOpen;
 
   // Discrete row actions. Each `run` throws on failure, so the confirmation
   // stays open with the error and the same action can be retried.
@@ -1794,6 +1855,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             : await removeProviderRoute(route.model_id, route.route_id);
           replaceModelRoutes(updated.model_id ?? route.model_id, updated.routes);
           setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
+          // A deleted route has no weight or limit to edit; Restore starts it afresh.
+          dropWeightDraft(weightKeyFor(route));
+          dropConcurrencyDraft(key);
           toast.success(
             runtime ? 'Provider route deleted' : 'Config route deleted; Restore brings it back',
           );
@@ -1991,23 +2055,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     });
   };
 
-  // Routing policy: read-only until Edit, then one reviewed change.
-  const startStrategyEdit = () => {
-    setDraftStrategy(strategy === 'routewise' ? 'routewise' : 'fixed');
-    setEditingStrategy(true);
-  };
-
-  const cancelStrategyEdit = () => {
+  // Routing policy: chosen in place, then one reviewed change.
+  const discardStrategy = () => {
     if (confirmation.busy) return;
-    setEditingStrategy(false);
+    setDraftStrategy(null);
   };
 
   const saveStrategy = () => {
     const model = selectedModel;
     const before = strategy;
     const next = draftStrategy;
-    if (!model || next === before) return;
+    if (!model || next === null || next === before || policyHeld) return;
     confirmation.request({
+      key: `${model} routing policy`,
       title: `Save 1 change to ${model} routing policy?`,
       confirmLabel: 'Confirm save',
       busyLabel: 'Saving…',
@@ -2022,29 +2082,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         const updated = await updateProviderRouteStrategy(model, next);
         replaceModelRoutes(updated.model_id ?? model, updated.routes);
         setEditingRoute(null);
-        setEditingStrategy(false);
+        // Nothing else was changed (the save waits until it is not), so the
+        // controls the new policy shows start from what is saved.
+        resetInlineDrafts();
         toast.success('Routing policy updated');
         void loadOffloadRoutes();
       },
     });
   };
 
-  // Fixed weights: read-only until Edit; only real changes are drafts.
-  const weightChanges = selectedRoutes.flatMap((route) => {
-    const key = weightKeyFor(route);
-    const draft = draftWeights[key];
-    if (draft === undefined) return [];
-    const before = effectiveWeightFor(route);
-    const parsed = parseWeightDraft(draft);
-    if (parsed !== null && parsed === before) return [];
-    return [{ route, key, before, parsed }];
-  });
-
-  const cancelWeights = () => {
+  const discardWeights = () => {
     if (confirmation.busy) return;
     setDraftWeights({});
     setWeightsError(null);
-    setEditingWeights(false);
   };
 
   const saveWeights = () => {
@@ -2057,6 +2107,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     const model = selectedModel;
     const pending = weightChanges.map((change) => ({ ...change, weight: change.parsed as number }));
     confirmation.request({
+      key: `${model} weights`,
       title: `Save ${plural(pending.length, 'change')} to ${model} weights?`,
       confirmLabel: 'Confirm save',
       busyLabel: 'Saving…',
@@ -2088,7 +2139,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         void loadOffloadRoutes();
         setWeightsError(failure);
         if (failure) return;
-        setEditingWeights(false);
         toast.success(
           pending.length === 1
             ? `Updated ${pending[0].route.endpoint_id} weight.`
@@ -2098,37 +2148,31 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     });
   };
 
-  // A runtime OpenRouter concurrency limit: one row at a time, read-only until Edit.
-  const concurrencyDraftFor = (route: ProviderRoute) => {
-    const draft = draftConcurrencyLimits[routeKey(route)];
-    if (draft === undefined) return { changed: false, parsed: route.concurrency_limit };
-    const trimmed = draft.trim();
-    const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : null;
-    return { changed: parsed === null || parsed !== route.concurrency_limit, parsed };
-  };
-
-  const startConcurrencyEdit = (route: ProviderRoute) => {
-    setDraftConcurrencyLimits({});
-    setConcurrencyError(null);
-    setEditingConcurrencyKey(routeKey(route));
-  };
-
-  const cancelConcurrencyEdit = () => {
+  // Each row's limit is saved, or discarded, on its own; another row's draft is
+  // never touched.
+  const discardConcurrencyLimit = (route: ProviderRoute) => {
     if (confirmation.busy) return;
-    setDraftConcurrencyLimits({});
-    setConcurrencyError(null);
-    setEditingConcurrencyKey(null);
+    dropConcurrencyDraft(routeKey(route));
   };
 
   const saveConcurrencyLimit = (route: ProviderRoute) => {
+    const key = routeKey(route);
     const { changed, parsed } = concurrencyDraftFor(route);
     if (!changed) return;
     if (parsed === null || parsed < 1) {
-      setConcurrencyError('Concurrency limit must be a positive integer.');
+      setConcurrencyErrors((current) => ({
+        ...current,
+        [key]: 'Concurrency limit must be a positive integer.',
+      }));
       return;
     }
-    setConcurrencyError(null);
+    setConcurrencyErrors((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
     confirmation.request({
+      key: `${route.endpoint_id} concurrency limit`,
       title: `Save 1 change to ${route.endpoint_id} concurrency limit?`,
       confirmLabel: 'Confirm save',
       busyLabel: 'Saving…',
@@ -2152,8 +2196,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           concurrency_limit: parsed,
         });
         updateRoute(updated);
-        setDraftConcurrencyLimits({});
-        setEditingConcurrencyKey(null);
+        dropConcurrencyDraft(key);
         toast.success('Concurrency limit updated');
       },
     });
@@ -2171,6 +2214,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             value={selectedModel}
             onValueChange={(next) => {
               setSelectedModel(next);
+              resetInlineDrafts();
               setEditingRoute(null);
               setCapabilityRoute(null);
               setAddingRoute(false);
@@ -2182,9 +2226,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             searchPlaceholder="Search models…"
             emptyText="No models match"
             // Unsaved weight, policy, limit, capability, offload or RouteWise drafts
-            // belong to this model; finish or cancel them before switching.
+            // belong to this model; save or discard them before switching.
             disabled={modelLocked}
-            title={modelLocked ? 'Save or cancel the open edit first' : undefined}
+            title={modelLocked ? HELD_FOR_DRAFTS : undefined}
             size="lg"
             className="mt-1 w-full min-w-[240px] max-w-sm"
           />
@@ -2193,23 +2237,27 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           {loading && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}
-          <span className="text-[13px] text-gray-500">
-            Routing policy:{' '}
-            <output
-              aria-label={editingStrategy ? 'Saved routing policy' : 'Routing policy'}
-              className="font-medium text-gray-900"
-            >
-              {strategy}
-            </output>
-          </span>
-          {!editingStrategy && (
-            <EditButton
-              target={`${selectedModel} routing policy`}
-              onClick={startStrategyEdit}
-              disabled={!selectedModel || loading || modelLocked}
-              title={modelLocked ? 'Save or cancel the open edit first' : undefined}
-            />
-          )}
+          <label className="text-[13px] text-gray-500" htmlFor="provider-route-strategy">
+            Routing policy
+          </label>
+          <Select<ProviderRouteStrategy>
+            id="provider-route-strategy"
+            value={draftStrategy ?? (strategy === 'routewise' ? 'routewise' : 'fixed')}
+            // A draft only; Save changes reviews it and Confirm writes.
+            onValueChange={(next) => setDraftStrategy(next === strategy ? null : next)}
+            // Held while another routing draft is unsaved, since a switch would
+            // drop it. A policy chosen first stays changeable; its Save waits.
+            disabled={
+              !selectedModel || loading || confirmation.busy || (!strategyChanged && policyHeld)
+            }
+            title={!strategyChanged && policyHeld ? HELD_FOR_DRAFTS : undefined}
+            options={[
+              { value: 'routewise', label: 'routewise' },
+              { value: 'fixed', label: 'fixed' },
+            ]}
+            size="md"
+            className={`w-32 font-medium ${strategyChanged ? '!border-amber-400' : ''}`}
+          />
           <button
             type="button"
             onClick={openAddForm}
@@ -2222,7 +2270,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             type="button"
             onClick={openCreateModelForm}
             disabled={loading || providerOptions.length === 0 || modelLocked}
-            title={modelLocked ? 'Save or cancel the open edit first' : undefined}
+            title={modelLocked ? HELD_FOR_DRAFTS : undefined}
             className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Create model
@@ -2230,40 +2278,22 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       </div>
 
-      {editingStrategy && (
-        <div className="rounded-lg border border-gray-400 bg-white px-4 py-3 shadow-sm">
-          <label
-            className="text-[12px] font-medium text-gray-500"
-            htmlFor="provider-route-strategy"
-          >
-            Routing policy
-          </label>
-          <Select<ProviderRouteStrategy>
-            id="provider-route-strategy"
-            value={draftStrategy}
-            // A draft only; Save changes reviews it and Confirm writes.
-            onValueChange={setDraftStrategy}
-            disabled={confirmation.busy}
-            options={[
-              { value: 'routewise', label: 'routewise' },
-              { value: 'fixed', label: 'fixed' },
-            ]}
-            size="lg"
-            className={`mt-1 w-32 font-medium ${draftStrategy !== strategy ? '!border-amber-400' : ''}`}
-          />
-          <EditBar
-            target={`${selectedModel} routing policy`}
-            changeCount={draftStrategy !== strategy ? 1 : 0}
-            onCancel={cancelStrategyEdit}
-            onSave={saveStrategy}
-            busy={confirmation.busy}
-            // A panel edit opened after this one would be dropped by the switch.
-            blocked={
-              draftStrategy !== strategy && panelOpen ? 'Save or cancel the open edit first' : null
-            }
-          />
-        </div>
-      )}
+      {selectedModel ? (
+        <EditBar
+          target={`${selectedModel} routing policy`}
+          changeCount={strategyChanged ? 1 : 0}
+          onCancel={discardStrategy}
+          onSave={saveStrategy}
+          // Several bars can be up at once; only the one being saved reads "Saving…".
+          busy={confirmation.savingKey === `${selectedModel} routing policy`}
+          // A weight, limit or panel draft made after the policy was chosen
+          // would be dropped by the switch.
+          blocked={
+            strategyChanged && policyHeld ? 'Save or discard the other unsaved changes first' : null
+          }
+          inPlace
+        />
+      ) : null}
 
       {selectedModel && selectedRoutes.length > 0 && (!isRoutewise || selectedOffload) && (
         // RouteWise does not use offload routes, and the console refuses to switch
@@ -2311,17 +2341,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           <p className="text-[12px] text-gray-500">
             Fixed weights decide each route&apos;s share of {selectedModel}&apos;s requests.
           </p>
-          {!editingWeights && (
-            <EditButton
-              target={`${selectedModel} weights`}
-              onClick={() => {
-                setDraftWeights({});
-                setWeightsError(null);
-                setEditingWeights(true);
-              }}
-              disabled={loading || inlineEditing}
-            />
-          )}
         </div>
       )}
 
@@ -2336,7 +2355,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       ) : (
         <div
           className={`overflow-hidden rounded-lg border bg-white text-[13px] ${
-            editingWeights ? 'border-gray-400 shadow-sm' : 'border-gray-200'
+            weightsChanged || limitsChanged ? 'border-gray-400 shadow-sm' : 'border-gray-200'
           }`}
         >
           <div className="hidden grid-cols-[minmax(0,1.1fr)_minmax(0,1.6fr)_minmax(0,.95fr)_minmax(176px,.9fr)_minmax(86px,.6fr)_minmax(96px,.6fr)] gap-3 rounded-t-lg bg-gray-50 px-4 py-2 text-[12px] font-semibold uppercase tracking-wide text-gray-500 lg:grid">
@@ -2378,7 +2397,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               const editableConcurrencyLimit = canEditConcurrencyLimit(route);
               const draftConcurrencyLimit =
                 draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
-              const isEditingConcurrencyLimit = editingConcurrencyKey === key;
               const concurrencyLimitChanged = concurrencyDraftFor(route).changed;
               const isOffloadRoute = selectedOffload?.route_id === route.route_id;
               return (
@@ -2445,49 +2463,36 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       <div>—</div>
                     ) : isRoutewise ? (
                       editableConcurrencyLimit ? (
-                        isEditingConcurrencyLimit ? (
-                          <div>
-                            <input
-                              aria-label={`Concurrency limit for ${route.endpoint_id}`}
-                              className={`h-8 w-20 rounded-md border px-2 text-right text-[13px] text-gray-900 ${
-                                concurrencyLimitChanged ? 'border-amber-400' : 'border-gray-300'
-                              }`}
-                              disabled={confirmation.busy}
-                              min={1}
-                              step={1}
-                              type="number"
-                              value={draftConcurrencyLimit}
-                              onChange={(event) =>
-                                setDraftConcurrencyLimits((current) => ({
-                                  ...current,
-                                  [key]: event.target.value,
-                                }))
-                              }
-                            />
-                            <EditBar
-                              target={`${route.endpoint_id} concurrency limit`}
-                              changeCount={concurrencyLimitChanged ? 1 : 0}
-                              onCancel={cancelConcurrencyEdit}
-                              onSave={() => saveConcurrencyLimit(route)}
-                              busy={confirmation.busy}
-                              error={concurrencyError}
-                            />
-                          </div>
-                        ) : (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <output
-                              aria-label={`Concurrency limit for ${route.endpoint_id}`}
-                              className="tabular-nums text-gray-900"
-                            >
-                              {route.concurrency_limit ?? '—'}
-                            </output>
-                            <EditButton
-                              target={`${route.endpoint_id} concurrency limit`}
-                              onClick={() => startConcurrencyEdit(route)}
-                              disabled={inlineEditing}
-                            />
-                          </div>
-                        )
+                        <div>
+                          <input
+                            aria-label={`Concurrency limit for ${route.endpoint_id}`}
+                            className={`h-8 w-20 rounded-md border px-2 text-right text-[13px] text-gray-900 ${
+                              concurrencyLimitChanged ? 'border-amber-400' : 'border-gray-300'
+                            }`}
+                            disabled={confirmation.busy}
+                            min={1}
+                            step={1}
+                            type="number"
+                            value={draftConcurrencyLimit}
+                            onChange={(event) =>
+                              setDraftConcurrencyLimits((current) => ({
+                                ...current,
+                                [key]: event.target.value,
+                              }))
+                            }
+                          />
+                          <EditBar
+                            target={`${route.endpoint_id} concurrency limit`}
+                            changeCount={concurrencyLimitChanged ? 1 : 0}
+                            onCancel={() => discardConcurrencyLimit(route)}
+                            onSave={() => saveConcurrencyLimit(route)}
+                            busy={
+                              confirmation.savingKey === `${route.endpoint_id} concurrency limit`
+                            }
+                            error={concurrencyErrors[key] ?? null}
+                            inPlace
+                          />
+                        </div>
                       ) : route.route_type === 'quota' ? (
                         <RouteQuotaCell route={route} />
                       ) : (
@@ -2499,8 +2504,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           YAML {formatWeight(yamlWeight)} · Effective{' '}
                           {formatWeight(effectiveWeight)}
                         </div>
-                        {editingWeights ? (
-                          <div>
+                        <div>
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <input
                               aria-label={`Runtime weight for ${route.endpoint_id}`}
                               aria-invalid={draftWeightInvalid || undefined}
@@ -2524,25 +2529,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                                 }));
                               }}
                             />
-                            {draftWeightInvalid && (
-                              <p className="mt-1 text-[11px] text-red-600">
-                                Enter a non-negative number.
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <output
-                              aria-label={`Runtime weight for ${route.endpoint_id}`}
-                              className="tabular-nums text-gray-900"
-                            >
-                              {formatWeight(effectiveWeight)}
-                            </output>
                             {hasWeightOverride ? (
+                              // The reset replaces the weight this row's draft
+                              // was typed against, so it waits for the draft.
                               <button
                                 aria-label={`Clear ${route.endpoint_id} weight override`}
                                 type="button"
-                                disabled={isSavingWeight || inlineEditing}
+                                disabled={isSavingWeight || weightChanged}
+                                title={weightChanged ? HELD_FOR_DRAFTS : undefined}
                                 onClick={() => confirmClearWeight(route)}
                                 className="h-8 rounded-md border border-gray-300 px-2 text-[12px] font-medium text-gray-600 disabled:opacity-50"
                               >
@@ -2550,7 +2544,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                               </button>
                             ) : null}
                           </div>
-                        )}
+                          {draftWeightInvalid && (
+                            <p className="mt-1 text-[11px] text-red-600">
+                              Enter a non-negative number.
+                            </p>
+                          )}
+                        </div>
                         {isOffloadRoute && (
                           // The weight still decides whether routing may use the
                           // route at all (0 turns the offload off), but not how
@@ -2714,15 +2713,16 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       )}
 
-      {editingWeights && (
+      {!isRoutewise && (
         <EditBar
           target={`${selectedModel} weights`}
           changeCount={weightChanges.length}
-          onCancel={cancelWeights}
+          onCancel={discardWeights}
           onSave={saveWeights}
-          busy={confirmation.busy}
+          busy={confirmation.savingKey === `${selectedModel} weights`}
           error={weightsError}
           sticky
+          inPlace
         />
       )}
 
