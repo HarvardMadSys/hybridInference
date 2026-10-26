@@ -18,6 +18,7 @@ from serving.servers.routers.admin import (
     batch,
     broadcast,
     config,
+    config_backup,
     export,
     login_events,
     metrics,
@@ -55,6 +56,7 @@ router.include_router(auth_blocks.router)
 router.include_router(batch.router)
 router.include_router(broadcast.router)
 router.include_router(config.router)
+router.include_router(config_backup.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
 router.include_router(metrics.router)

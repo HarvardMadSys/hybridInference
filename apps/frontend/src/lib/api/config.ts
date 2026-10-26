@@ -213,6 +213,60 @@ export async function resetConfigKey(key: string): Promise<ConfigResponse> {
   return readConfig(resp);
 }
 
+export interface ConfigBackupPayload {
+  schema_version: number;
+  exported_at?: string | null;
+  app_config?: Array<{ key: string; value: string; secret?: boolean; source?: string }>;
+  site_settings?: Array<{ key: string; value: string; value_type?: string }>;
+  provider_definitions?: Array<Record<string, unknown>>;
+  provider_keys?: Array<Record<string, unknown>>;
+  disabled_provider_env_keys?: Array<Record<string, unknown>>;
+  provider_env_key_min_roles?: Array<Record<string, unknown>>;
+  disabled_providers?: string[];
+  provider_route_states?: Array<Record<string, unknown>>;
+  provider_route_candidates?: Array<Record<string, unknown>>;
+  provider_route_configs?: Array<Record<string, unknown>>;
+  provider_route_capabilities?: Array<Record<string, unknown>>;
+  provider_weight_overrides?: Array<Record<string, unknown>>;
+  model_visibility_overrides?: Array<Record<string, unknown>>;
+  model_concurrency_exemptions?: string[];
+  batch_model_limits?: Record<string, number>;
+  signup_allowed_domains?: Array<Record<string, unknown>>;
+}
+
+export interface ConfigRestoreResponse {
+  config: ConfigResponse;
+  immutable_keys_preserved: string[];
+}
+
+/**
+ * Export all administrator-configurable state, including plaintext secrets, as a
+ * portable JSON backup bundle.
+ */
+export async function exportConfigBackup(): Promise<ConfigBackupPayload> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/config/backup', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  return readJson<ConfigBackupPayload>(resp);
+}
+
+/**
+ * Restore administrator-configurable state from a backup bundle.
+ */
+export async function restoreConfigBackup(backup: unknown): Promise<ConfigRestoreResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/config/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(backup),
+  });
+  const result = await readJson<ConfigRestoreResponse>(resp);
+  return {
+    ...result,
+    config: withoutSecretValues(result.config),
+  };
+}
+
 /**
  * Ask the backend to exit so Docker or systemd starts it again. Answers 202
  * before the process goes down; 409 when it cannot restart itself.

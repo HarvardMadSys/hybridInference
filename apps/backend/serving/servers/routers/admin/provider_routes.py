@@ -6421,3 +6421,59 @@ async def apply_persisted_model_router_strategy_overrides(services, op_store) ->
                 strategy,
                 exc,
             )
+
+
+async def reconcile_live_routes_from_store(services, op_store) -> None:
+    """Reconcile the in-memory route table and router strategies with persisted state."""
+    router = getattr(services, "router", None)
+    routes = getattr(router, "routes", None)
+    if not isinstance(routes, dict):
+        return
+
+    for model_id, route in list(routes.items()):
+        if not _is_canonical_model(model_id, route):
+            continue
+        if _is_runtime_created_route(route):
+            entries = _raw_route_entries(route)
+            previous_router = _detach_model_router_strategy_override(services, model_id)
+            _mutate_router_routes(services, lambda mid=model_id: routes.pop(mid, None))
+            for removed_adapter, _weight, _removed_endpoint_id in entries:
+                _unregister_dynamic_adapter(removed_adapter)
+            if previous_router is not None:
+                await _retire_previous_managed_router(
+                    services,
+                    model_id=model_id,
+                    previous_router=previous_router,
+                    active_router=None,
+                    stop_managed=True,
+                )
+        else:
+            baseline = _baseline_route_entries(route)
+            current_entries = _raw_route_entries(route)
+            setattr(route, REMOVED_ENTRIES_ATTR, {})
+            setattr(route, CAPABILITY_OVERRIDES_ATTR, {})
+            _set_route_entries(services, route, list(baseline))
+            for current_adapter, _weight, _endpoint_id in current_entries:
+                _unregister_replaced_dynamic_adapter(route, current_adapter)
+            previous_router = _detach_model_router_strategy_override(services, model_id)
+            if previous_router is not None:
+                active_router = None
+                if services.model_router_registry is not None:
+                    try:
+                        active_router = services.model_router_registry.get_router(model_id)
+                    except Exception:
+                        active_router = None
+                await _retire_previous_managed_router(
+                    services,
+                    model_id=model_id,
+                    previous_router=previous_router,
+                    active_router=active_router,
+                    stop_managed=True,
+                )
+
+    await apply_persisted_model_router_strategy_overrides(services, op_store)
+    await apply_persisted_provider_route_candidates(services, op_store)
+    await apply_persisted_provider_route_configs(services, op_store)
+    await sync_route_capability_overrides(services, op_store)
+    apply_persisted_provider_route_removals(services)
+    _rebuild_routewise_routers(services)

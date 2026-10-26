@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 — pydantic resolves the annotation at runtime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -103,4 +103,166 @@ class RestartResponse(BaseModel):
     instance: str = Field(
         ...,
         description="The process that is exiting; /health reports another once it is back",
+    )
+
+
+class ConfigBackupAppConfigRow(BaseModel):
+    """One stored ``app_config`` row in a configuration backup."""
+
+    key: str
+    value: str = ""
+    secret: bool = False
+    source: Literal["admin", "setup", "env_import", "generated", "reset"] = "admin"
+
+
+class ConfigBackupSiteSetting(BaseModel):
+    """One admin-editable ``site_settings`` row in a configuration backup."""
+
+    key: str
+    value: str
+    value_type: str = "str"
+
+
+class ConfigBackupProviderDefinition(BaseModel):
+    """One custom provider definition in a configuration backup."""
+
+    provider: str
+    display_name: str
+    adapter_kind: str = "openai_compat"
+    default_base_url: str
+    status: Literal["active", "disabled"] = "active"
+
+
+class ConfigBackupProviderKey(BaseModel):
+    """One dynamic provider API key (with plaintext secret) in a configuration backup."""
+
+    id: str
+    provider: str
+    api_key: str
+    label: str | None = None
+    status: Literal["active", "disabled"] = "active"
+    min_role: str = "free"
+
+
+class ConfigBackupDisabledEnvKey(BaseModel):
+    """One disabled environment provider API key tombstone in a configuration backup."""
+
+    provider: str
+    key_hash: str
+    key_prefix: str
+
+
+class ConfigBackupEnvKeyMinRole(BaseModel):
+    """One environment provider API key tier reservation in a configuration backup."""
+
+    provider: str
+    key_hash: str
+    key_prefix: str
+    min_role: str
+
+
+class ConfigBackupRouteState(BaseModel):
+    """One provider route state (disabled and/or removed) in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    disabled: bool = False
+    removed: bool = False
+
+
+class ConfigBackupRouteCandidate(BaseModel):
+    """One runtime provider route candidate in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    route_type: str
+    provider: str
+    openrouter_sort: str | None = None
+    deployment_type: str = "auto"
+    base_url: str
+    api_key_id: str | None = None
+    provider_model_id: str
+    quota_limit: int | None = None
+    concurrency_limit: int | None = None
+    weight: float = 1.0
+    pricing: dict[str, str] | None = None
+    capabilities: dict[str, Any] | None = None
+    endpoint_id: str | None = None
+
+
+class ConfigBackupRouteConfig(BaseModel):
+    """One config-route target override in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    provider: str
+    openrouter_sort: str | None = None
+    deployment_type: str | None = None
+    base_url: str
+    api_key_id: str | None = None
+    provider_model_id: str
+    quota_limit: int | None = None
+    concurrency_limit: int | None = None
+
+
+class ConfigBackupRouteCapability(BaseModel):
+    """One route capability override in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    capabilities: dict[str, Any]
+
+
+class ConfigBackupWeightOverride(BaseModel):
+    """One endpoint weight override in a configuration backup."""
+
+    model_id: str
+    endpoint_id: str
+    weight: float
+
+
+class ConfigBackupModelVisibility(BaseModel):
+    """One model visibility override in a configuration backup."""
+
+    model_id: str
+    required_role: str
+
+
+class ConfigBackupSignupDomain(BaseModel):
+    """One allowed signup email domain in a configuration backup."""
+
+    domain: str
+    is_wildcard: bool = False
+
+
+class ConfigBackupPayload(BaseModel):
+    """Complete backup bundle of all administrator-configurable state."""
+
+    schema_version: int = Field(1, description="Backup schema version")
+    exported_at: datetime | None = Field(None, description="UTC timestamp when the backup was made")
+    app_config: list[ConfigBackupAppConfigRow] = Field(default_factory=list)
+    site_settings: list[ConfigBackupSiteSetting] = Field(default_factory=list)
+    provider_definitions: list[ConfigBackupProviderDefinition] = Field(default_factory=list)
+    provider_keys: list[ConfigBackupProviderKey] = Field(default_factory=list)
+    disabled_provider_env_keys: list[ConfigBackupDisabledEnvKey] = Field(default_factory=list)
+    provider_env_key_min_roles: list[ConfigBackupEnvKeyMinRole] = Field(default_factory=list)
+    disabled_providers: list[str] = Field(default_factory=list)
+    provider_route_states: list[ConfigBackupRouteState] = Field(default_factory=list)
+    provider_route_candidates: list[ConfigBackupRouteCandidate] = Field(default_factory=list)
+    provider_route_configs: list[ConfigBackupRouteConfig] = Field(default_factory=list)
+    provider_route_capabilities: list[ConfigBackupRouteCapability] = Field(default_factory=list)
+    provider_weight_overrides: list[ConfigBackupWeightOverride] = Field(default_factory=list)
+    model_visibility_overrides: list[ConfigBackupModelVisibility] = Field(default_factory=list)
+    model_concurrency_exemptions: list[str] = Field(default_factory=list)
+    batch_model_limits: dict[str, int] = Field(default_factory=dict)
+    signup_allowed_domains: list[ConfigBackupSignupDomain] = Field(default_factory=list)
+
+
+class ConfigRestoreResponse(BaseModel):
+    """Result of restoring a configuration backup."""
+
+    config: ConfigResponse
+    immutable_keys_preserved: list[str] = Field(
+        default_factory=list,
+        description="Immutable keys whose existing target values were kept",
     )
