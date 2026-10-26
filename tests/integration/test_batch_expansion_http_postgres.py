@@ -640,18 +640,30 @@ async def test_a_malformed_webhook_url_is_a_400_not_a_server_error(gateway, url)
 
 async def test_an_invalid_idna_webhook_host_is_a_400_without_any_lookup(gateway, monkeypatch):
     loop = asyncio.get_running_loop()
-    lookups: list[Any] = []
+    real_getaddrinfo = loop.getaddrinfo
+    host = "a" * 64 + ".example.com"
+    webhook_lookups: list[Any] = []
 
-    async def no_lookup(*args: Any, **kwargs: Any) -> Any:
-        lookups.append(args)
-        raise AssertionError("a malformed host must not reach DNS")
+    async def guarded_lookup(name: Any, *args: Any, **kwargs: Any) -> Any:
+        # Only the webhook's own host is watched: the database pool (whose
+        # host may be a name, as in CI) and the background workers keep
+        # resolving normally.
+        text = name.decode() if isinstance(name, bytes) else str(name)
+        if text.rstrip(".").lower() == host:
+            webhook_lookups.append(text)
+            raise AssertionError("a malformed host must not reach DNS")
+        return await real_getaddrinfo(name, *args, **kwargs)
 
-    monkeypatch.setattr(loop, "getaddrinfo", no_lookup)
-    url = "https://" + "a" * 64 + ".example.com/hook"
-    response = await gateway.client.put("/v1/batch_webhook", headers=KEY, json={"url": url})
-    assert response.status_code == 400, response.text
-    assert "malformed" in response.text
-    assert lookups == []
+    with monkeypatch.context() as patched:
+        patched.setattr(loop, "getaddrinfo", guarded_lookup)
+        response = await gateway.client.put(
+            "/v1/batch_webhook", headers=KEY, json={"url": f"https://{host}/hook"}
+        )
+        assert response.status_code == 400, response.text
+        assert "malformed" in response.text
+        assert webhook_lookups == []
+    # Restored before reading the state back through the database.
+    assert loop.getaddrinfo == real_getaddrinfo
     assert (await gateway.client.get("/v1/batch_webhook", headers=KEY)).json() == {
         "configured": False
     }
