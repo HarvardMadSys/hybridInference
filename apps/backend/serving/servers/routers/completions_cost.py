@@ -35,9 +35,11 @@ logger = get_logger(__name__)
 class PricingLookup:
     """Cache adapter pricing keyed by endpoint_id (fallback: provider+base_url).
 
-    Adapters are immutable after :func:`bootstrap.initialize`, so the cache
-    lives for the lifetime of the process. ``invalidate()`` is a future-only
-    extension if hot-reload ever lands.
+    The adapter config is looked up on every call, a walk over one route's
+    adapters: an admin route edit installs a new adapter at runtime and keeps
+    its endpoint_id when the target and URL are unchanged. What is cached is
+    the pricing read from one config, kept while that config is the one
+    installed.
     """
 
     def __init__(self, *, router: Any) -> None:
@@ -50,9 +52,9 @@ class PricingLookup:
                 config that matches the routing target.
         """
         self._router = router
-        self._config_cache: dict[tuple[str, str | None], Any | None] = {}
-        self._dict_cache: dict[tuple[str, str | None], dict[str, str] | None] = {}
-        self._typed_cache: dict[tuple[str, str | None], Pricing | None] = {}
+        # Each value is (the config it was read from, the pricing).
+        self._dict_cache: dict[tuple[str, str | None], tuple[Any, dict[str, str] | None]] = {}
+        self._typed_cache: dict[tuple[str, str | None], tuple[Any, Pricing | None]] = {}
 
     # -- public API ----------------------------------------------------------
 
@@ -71,13 +73,18 @@ class PricingLookup:
             return _pricing_from_dict(embedded)
 
         key = self._cache_key(routing)
-        if key is not None and key in self._typed_cache and not self._is_scheduled(routing):
-            return self._typed_cache[key]
+        config = self._lookup_config(routing)
+        if key is None or config is None:
+            return None
+        scheduled = has_scheduled_pricing(config)
+        cached = self._typed_cache.get(key)
+        if not scheduled and cached is not None and cached[0] is config:
+            return cached[1]
 
         raw = self._lookup_raw_dict(routing)
         typed = _pricing_from_dict(raw) if raw is not None else None
-        if key is not None and not self._is_scheduled(routing):
-            self._typed_cache[key] = typed
+        if not scheduled:
+            self._typed_cache[key] = (config, typed)
         return typed
 
     def raw_dict_for_routing(self, routing: RoutingInfo) -> dict[str, str] | None:
@@ -119,25 +126,20 @@ class PricingLookup:
         config = self._lookup_config(routing)
         if config is None:
             return None
-        if not has_scheduled_pricing(config) and key in self._dict_cache:
-            return self._dict_cache[key]
+        scheduled = has_scheduled_pricing(config)
+        cached = self._dict_cache.get(key)
+        if not scheduled and cached is not None and cached[0] is config:
+            return cached[1]
 
         raw = effective_pricing(config)
-        if not has_scheduled_pricing(config):
-            self._dict_cache[key] = raw
+        if not scheduled:
+            self._dict_cache[key] = (config, raw)
         return raw
 
-    def _is_scheduled(self, routing: RoutingInfo) -> bool:
-        config = self._lookup_config(routing)
-        return config is not None and has_scheduled_pricing(config)
-
     def _lookup_config(self, routing: RoutingInfo) -> Any | None:
-        key = self._cache_key(routing)
-        if key is None:
+        if self._cache_key(routing) is None:
             return None
-        if key not in self._config_cache:
-            self._config_cache[key] = self._walk_routes_for_pricing_config(routing)
-        return self._config_cache[key]
+        return self._walk_routes_for_pricing_config(routing)
 
     def _walk_routes_for_pricing_config(self, routing: RoutingInfo) -> Any | None:
         """Walk ``router.routes[model].adapters`` to find a matching config.
