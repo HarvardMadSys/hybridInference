@@ -2547,15 +2547,15 @@ class BatchStore:
             final = {"validating": "failed", "cancelling": "cancelled", "expired": "expired"}.get(
                 row["status"], "failed"
             )
+            # The status itself moves when the batch is sealed, like every
+            # other file batch; until then it shows as finalizing/cancelling.
             await conn.execute(
-                f"""
+                """
                 UPDATE batch_jobs
                 SET request_count = 0, completed_count = 0, failed_count = 0,
                     cancelled_count = 0, expired_count = 0,
                     validation_error = CASE WHEN $2 = 'failed' THEN $3::jsonb END,
-                    phase = 'runnable', status = $2,
-                    {_STATUS_TIMESTAMP[final]} = COALESCE({_STATUS_TIMESTAMP[final]}, now()),
-                    work_owner = NULL, work_expires_at = NULL
+                    phase = 'runnable', work_owner = NULL, work_expires_at = NULL
                 WHERE id = $1
                 """,
                 batch_id,
