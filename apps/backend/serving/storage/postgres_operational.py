@@ -14,6 +14,7 @@ from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import grants, quota
+from serving.audit import AuditTarget, audit_columns
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
     AccountSchemaPending,
@@ -28,6 +29,11 @@ from serving.storage.account_schema import (
     migrate_login_events_account_schema,
     migrate_users_account_schema,
     read_account_schema,
+)
+from serving.storage.audit_schema import (
+    SELECT_COLUMNS as AUDIT_SELECT_COLUMNS,
+    ensure_admin_audit_log_schema,
+    insert_audit_row,
 )
 from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.storage.browser_session_schema import ensure_browser_session_tables
@@ -51,6 +57,8 @@ if TYPE_CHECKING:
     from decimal import Decimal
 
     import asyncpg
+
+    from serving.audit import AuditActor
 
 logger = get_logger(__name__)
 
@@ -128,15 +136,17 @@ _FIRST_RUN_SETUP_LOCK_SQL = (
 
 
 class RequiredOperationalSchemaUnavailable(SchemaLockUnavailable):
-    """A hard-delete safety column could not be installed at startup.
+    """A column the store cannot serve without could not be installed at startup.
 
-    Unlike ordinary operational migrations, the hard-delete claim marker is
-    required before the store can be exposed: resume_user and both hard-delete
-    phases select it on every request. A lock timeout therefore must fail
-    startup rather than defer the migration while serving against an unsafe
-    schema. Only a database older than the marker (#1421) can hit this; the
-    account columns added since are deferrable instead (see
-    :mod:`serving.storage.account_schema`).
+    Unlike ordinary operational migrations, two are required before the store
+    can be exposed. The hard-delete claim marker: resume_user and both
+    hard-delete phases select it on every request. The ``admin_audit_log``
+    attribution columns (:mod:`serving.storage.audit_schema`): every audit
+    write names them, and an audit row without them would lose who acted. A
+    lock timeout on either therefore must fail startup rather than defer the
+    migration while serving against an unsafe schema. Only a database older
+    than the column can hit this; the account columns are deferrable instead
+    (see :mod:`serving.storage.account_schema`).
     """
 
 
@@ -364,6 +374,24 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             raise RequiredOperationalSchemaUnavailable(
                 "hard-delete claim columns are required before the operational store "
                 "can serve; refusing deferred startup while its migration is locked"
+            ) from exc
+
+        # --- admin_audit_log ---
+        # Shared with DatabaseLogger (serving.storage.audit_schema). Every
+        # audit write names the attribution columns, so like the hard-delete
+        # claim columns they are required: a lock timeout refuses startup
+        # rather than serving writes that would fail or lose their actor. Also
+        # like them, installed here, before any migration whose lock timeout
+        # propagates and lets bootstrap expose the store with the rest
+        # deferred (the role default below, the api_keys columns). The table
+        # references no other, so nothing it needs is built later.
+        try:
+            await ensure_admin_audit_log_schema(conn)
+        except SchemaLockUnavailable as exc:
+            raise RequiredOperationalSchemaUnavailable(
+                "admin_audit_log attribution columns are required before the "
+                "operational store can serve; refusing deferred startup while "
+                "their migration is locked"
             ) from exc
 
         # The account columns (login names, phone numbers, accounts without an
@@ -800,31 +828,6 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_identity_auth_codes_expires "
             "ON identity_auth_codes(expires_at)"
-        )
-
-        # --- admin_audit_log ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS admin_audit_log (
-                id BIGSERIAL PRIMARY KEY,
-                timestamp TIMESTAMPTZ DEFAULT NOW(),
-                admin_ip TEXT NOT NULL,
-                action TEXT NOT NULL,
-                target_user_id TEXT,
-                details JSONB,
-                success BOOLEAN DEFAULT TRUE
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp "
-            "ON admin_audit_log(timestamp DESC)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_admin_audit_user "
-            "ON admin_audit_log(target_user_id, timestamp DESC)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_admin_audit_action "
-            "ON admin_audit_log(action, timestamp DESC)"
         )
 
         # --- user_daily_cost ---
@@ -1376,7 +1379,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         marker_key: str,
         marker_value: str,
         code_key: str,
-        admin_ip: str,
+        admin_ip: str | None = None,
+        actor: AuditActor | None = None,
     ) -> bool:
         """Create the first administrator unless setup has already completed.
 
@@ -1391,6 +1395,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 a login name and no email yet; nothing was written.
         """
         await self._require_account_schema("login_names")
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(_FIRST_RUN_SETUP_LOCK_SQL)
             if await conn.fetchval("SELECT 1 FROM site_settings WHERE key = $1", marker_key):
@@ -1415,15 +1422,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             # The code has done its job; it must not outlive the setup it guards.
             await conn.execute("DELETE FROM site_settings WHERE key = $1", code_key)
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "setup.admin_created",
-                user_id,
-                json.dumps({"login_name": login_name.lower(), "user_name": user_name}),
-                True,
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="setup.admin_created",
+                details={"login_name": login_name.lower(), "user_name": user_name},
+                success=True,
             )
         return True
 
@@ -1477,11 +1481,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         self,
         user_id: str,
         *,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
         self_service: bool = False,
+        actor: AuditActor | None = None,
     ) -> None:
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
@@ -1490,6 +1495,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         requires the account to still be active and not an administrator
         under the row lock; otherwise ``SelfDeleteRefused`` rolls it all back.
         """
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
+        details: dict[str, Any] = {"email": email, "reason": reason}
+        if admin_id is not None:
+            details["admin_id"] = admin_id
+        if self_service:
+            details["self_service"] = True
         async with self._pool.acquire() as conn, conn.transaction():
             if self_service:
                 # The route checked these before proving ownership; a promotion
@@ -1510,18 +1523,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             await self._forget_browser_session_account(conn, user_id)
             await conn.execute("DELETE FROM email_verification_tokens WHERE user_id = $1", user_id)
             await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", user_id)
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "delete_user",
-                user_id,
-                json.dumps(
-                    {"email": email, "reason": reason}
-                    | ({"self_service": True} if self_service else {})
-                ),
-                True,
+            await insert_audit_row(
+                conn, columns=audit, action="delete_user", details=details, success=True
             )
 
     @staticmethod
@@ -1610,12 +1613,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         self,
         user_id: str,
         *,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        actor: AuditActor | None = None,
     ) -> None:
-        """Resume a soft-deleted user: set status='active' and audit.
+        """Resume a soft-deleted user: set status='active' and audit it as *actor*.
 
         API keys remain ``revoked`` — the user re-creates one through the
         normal flow.  All mutations and the audit-log insert are atomic.
@@ -1625,6 +1629,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         hard-delete claim. The row lock makes resume and the operational
         hard-delete claim mutually exclusive.
         """
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
@@ -1633,15 +1640,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             if row is not None and row["hard_delete_pending"]:
                 raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
             await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "resume_user",
-                user_id,
-                json.dumps({"admin_id": admin_id, "email": email, "reason": reason}),
-                True,
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="resume_user",
+                details={"admin_id": admin_id, "email": email, "reason": reason},
+                success=True,
             )
 
     async def hard_delete_user(
@@ -1649,10 +1653,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         user_id: str,
         *,
         claim_token: str,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        actor: AuditActor | None = None,
     ) -> dict[str, int]:
         """Permanently delete a user row and all operationally-linked rows.
 
@@ -1660,7 +1665,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         the caller must purge them separately via
         ``LogStore.hard_delete_user_data``.  Returns ``{table_name: row_count}``
         for audit details.
+
+        The erased audit rows are those whose user target is this account;
+        rows it wrote as an actor about something else keep its id.
         """
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
 
         def _row_count(status: str) -> int:
             # asyncpg execute() returns "DELETE <n>" / "UPDATE <n>" — parse n
@@ -1724,22 +1735,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             # entries for this user were wiped above — the caller accepted
             # that compliance loss.  No FK on target_user_id, so an orphan
             # reference here is fine.
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "hard_delete_user",
-                user_id,
-                json.dumps(
-                    {
-                        "admin_id": admin_id,
-                        "email": email,
-                        "reason": reason,
-                        "rows_wiped": counts,
-                    }
-                ),
-                True,
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="hard_delete_user",
+                details={
+                    "admin_id": admin_id,
+                    "email": email,
+                    "reason": reason,
+                    "rows_wiped": counts,
+                },
+                success=True,
             )
 
         return counts
@@ -3170,23 +3176,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def log_admin_action(
         self,
         *,
-        admin_ip: str,
+        admin_ip: str | None = None,
         action: str,
         target_user_id: str | None = None,
         details: dict[str, Any] | None = None,
         success: bool = True,
+        actor: AuditActor | None = None,
+        target: AuditTarget | None = None,
     ) -> None:
-        """Insert a row into admin_audit_log."""
+        """Insert a row into admin_audit_log, attributed to *actor* and *target*."""
+        columns = audit_columns(
+            admin_ip=admin_ip, target_user_id=target_user_id, actor=actor, target=target
+        )
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                action,
-                target_user_id,
-                json.dumps(details) if details else None,
-                success,
+            await insert_audit_row(
+                conn, columns=columns, action=action, details=details, success=success
             )
 
     async def list_audit_log(
@@ -3220,8 +3224,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             total = count_row["total"] if count_row else 0
 
             rows = await conn.fetch(
-                f"SELECT id, timestamp, admin_ip, action, target_user_id, "
-                f"details, success FROM admin_audit_log "
+                f"SELECT {AUDIT_SELECT_COLUMNS} FROM admin_audit_log "
                 f"{where_sql} ORDER BY timestamp DESC "
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,

@@ -482,7 +482,15 @@ class UpdateUserResponse(BaseModel):
 
 
 class AuditLogEntry(BaseModel):
-    """Single entry from the admin audit log."""
+    """Single entry from the audit log (see ``serving.audit``).
+
+    ``admin_ip`` and ``target_user_id`` are returned exactly as stored: on a
+    legacy row ``admin_ip`` may hold an address, an email or a login name,
+    and ``target_user_id`` may hold a provider or model name. The
+    attribution fields are null on such a row ("not recorded"); on a row
+    that has them, ``source_ip`` is the trusted client address (null when
+    there was none) and ``target_user_id`` is set only for a ``user`` target.
+    """
 
     id: int
     timestamp: datetime
@@ -491,6 +499,11 @@ class AuditLogEntry(BaseModel):
     target_user_id: str | None = None
     details: dict[str, Any] | None = None
     success: bool = True
+    actor_type: str | None = None
+    actor_id: str | None = None
+    source_ip: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
 
 
 class ListAuditLogResponse(BaseModel):

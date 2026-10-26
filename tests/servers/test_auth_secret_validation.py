@@ -18,8 +18,9 @@ from serving.config import app_config
 from serving.config.runtime_settings import RuntimeSettings
 from serving.config.settings import get_settings
 from serving.servers import app as app_module, bootstrap
-from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers.admin import settings as settings_routes
+from tests.fixtures.audit import ADMIN_ACTOR
 
 
 @pytest.fixture
@@ -219,6 +220,7 @@ async def settings_client(monkeypatch, auth_environment):
     app = FastAPI()
     app.include_router(settings_routes.router)
     app.dependency_overrides[verify_admin_access] = lambda: "test-admin"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
     app.state.services = AppServices(
         router=MagicMock(), operational_store=store, runtime_settings=runtime_settings
     )

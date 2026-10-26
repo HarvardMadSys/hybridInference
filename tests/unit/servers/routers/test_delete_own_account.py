@@ -143,6 +143,11 @@ async def test_password_account_is_deleted_with_its_identifier_and_password(setu
     assert store.delete_user.call_args.args == ("owner",)
     assert store.delete_user.call_args.kwargs["self_service"] is True
     assert store.delete_user.call_args.kwargs["email"] == "owner@example.org"
+    # The owner acted on its own account, signed in: a user actor with its
+    # stable id, and no administrator named.
+    actor = store.delete_user.call_args.kwargs["actor"]
+    assert (actor.type, actor.id) == ("user", "owner")
+    assert "admin_id" not in store.delete_user.call_args.kwargs
     [task] = tasks.tasks
     assert task.func is auth_routes.send_account_deleted_email
     assert task.args == ("owner@example.org",)

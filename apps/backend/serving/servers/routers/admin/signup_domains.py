@@ -8,6 +8,7 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
+from serving.audit import AuditActor, AuditTarget
 from serving.auth.signup_policy import invalidate_allowlist_cache
 from serving.schemas_admin import (
     AddSignupAllowedDomainRequest,
@@ -15,8 +16,12 @@ from serving.schemas_admin import (
     SignupAllowedDomain,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_admin_user_id, get_operational_store, verify_admin_access
-from serving.utils.request_ip import get_client_ip
+from serving.servers.deps import (
+    get_admin_audit_actor,
+    get_admin_user_id,
+    get_operational_store,
+    verify_admin_access,
+)
 
 router = APIRouter(prefix="/admin")
 
@@ -111,7 +116,7 @@ async def list_signup_allowed_domains_endpoint(
 async def add_signup_allowed_domain_endpoint(
     request: Request,
     payload: AddSignupAllowedDomainRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> SignupAllowedDomain:
     r"""Add a domain (or ``*.subdomain`` wildcard) to the signup allowlist.
@@ -157,10 +162,10 @@ async def add_signup_allowed_domain_endpoint(
 
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "signup_domain.add",
-        None,
-        {"domain": domain, "is_wildcard": is_wildcard},
+        action="signup_domain.add",
+        details={"domain": domain, "is_wildcard": is_wildcard},
+        actor=actor,
+        target=AuditTarget("signup_domain", f"*.{domain}" if is_wildcard else domain),
     )
 
     return _signup_domain_to_schema(row)
@@ -168,10 +173,9 @@ async def add_signup_allowed_domain_endpoint(
 
 @router.delete("/signup-domains/{domain}", status_code=204)
 async def remove_signup_allowed_domain_endpoint(
-    request: Request,
     domain: str,
     wildcard: bool = Query(False, description="True iff removing a *.suffix entry"),
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> Response:
     """Remove a domain from the signup allowlist.
@@ -209,10 +213,10 @@ async def remove_signup_allowed_domain_endpoint(
 
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "signup_domain.remove",
-        None,
-        {"domain": normalized, "is_wildcard": bool(wildcard)},
+        action="signup_domain.remove",
+        details={"domain": normalized, "is_wildcard": bool(wildcard)},
+        actor=actor,
+        target=AuditTarget("signup_domain", f"*.{normalized}" if wildcard else normalized),
     )
 
     return Response(status_code=204)

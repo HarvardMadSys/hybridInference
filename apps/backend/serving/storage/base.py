@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
 
+    from serving.audit import AuditActor, AuditTarget
+
 
 @dataclass
 class ProviderKeyRow:
@@ -249,7 +251,8 @@ class OperationalStore(ABC):
         marker_key: str,
         marker_value: str,
         code_key: str,
-        admin_ip: str,
+        admin_ip: str | None = None,
+        actor: AuditActor | None = None,
     ) -> bool:
         """Create the deployment's first administrator, at most once.
 
@@ -257,8 +260,9 @@ class OperationalStore(ABC):
         users table is empty and the setup marker *marker_key* absent, insert
         an active, verified ``admin`` without an email address, write the
         marker, delete the setup code stored under *code_key* and audit
-        ``setup.admin_created``. Returns False, writing nothing, when setup
-        has already been completed.
+        ``setup.admin_created`` by *actor* (a ``bootstrap`` actor: no account
+        existed to act) with the new account as its user target. Returns
+        False, writing nothing, when setup has already been completed.
         """
 
     @abstractmethod
@@ -294,16 +298,20 @@ class OperationalStore(ABC):
         self,
         user_id: str,
         *,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
         self_service: bool = False,
+        actor: AuditActor | None = None,
     ) -> None:
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
         All mutations and the audit-log insert must be atomic (single
-        transaction). *self_service* marks the audit entry as the account
+        transaction). The audit row is attributed to *actor* (see
+        ``log_admin_action``); *admin_id*, the actor's display identity, is
+        kept in its details as ``admin_id`` like the resume and hard-delete
+        rows. *self_service* marks the audit entry as the account
         owner's own deletion rather than an administrator's, and must raise
         ``SelfDeleteRefused`` without changing anything unless the account,
         read under the same transaction's row lock, is still active and not
@@ -338,12 +346,13 @@ class OperationalStore(ABC):
         self,
         user_id: str,
         *,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        actor: AuditActor | None = None,
     ) -> None:
-        """Resume a soft-deleted user: set status='active' and audit.
+        """Resume a soft-deleted user: set status='active' and audit it as *actor*.
 
         API keys remain ``revoked`` — the user must re-create one through
         the normal flow.  All mutations and the audit-log insert are atomic.
@@ -355,10 +364,11 @@ class OperationalStore(ABC):
         user_id: str,
         *,
         claim_token: str,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        actor: AuditActor | None = None,
     ) -> dict[str, int]:
         """Permanently delete a user row and all operationally-linked rows.
 
@@ -369,10 +379,12 @@ class OperationalStore(ABC):
         - ``email_verification_tokens``
         - ``password_reset_tokens``
         - ``user_daily_cost``
-        - ``admin_audit_log`` rows referencing this user (compliance loss
-          accepted at the caller level)
+        - ``admin_audit_log`` rows whose user target is this user (compliance
+          loss accepted at the caller level); rows the account performed as
+          an actor about other objects are kept
         - ``users`` row itself
-        - Inserts a NEW ``admin_audit_log`` row for the hard-delete itself.
+        - Inserts a NEW ``admin_audit_log`` row for the hard-delete itself,
+          attributed to *actor*.
 
         ``api_logs`` and ``email_broadcast_recipients`` live in the LogStore,
         not this contract — the caller must purge them separately via
@@ -948,13 +960,26 @@ class OperationalStore(ABC):
     async def log_admin_action(
         self,
         *,
-        admin_ip: str,
+        admin_ip: str | None = None,
         action: str,
         target_user_id: str | None = None,
         details: dict[str, Any] | None = None,
         success: bool = True,
+        actor: AuditActor | None = None,
+        target: AuditTarget | None = None,
     ) -> None:
-        """Insert a row into admin_audit_log."""
+        """Insert a row into admin_audit_log.
+
+        *actor* and *target* are the row's attribution (see
+        :mod:`serving.audit`): ``actor_type`` / ``actor_id`` / ``source_ip``
+        come from the actor, with ``admin_ip`` mirroring its address, and
+        ``target_user_id`` is set only for a user target. A caller that
+        passes neither writes a legacy row: *admin_ip* and *target_user_id*
+        stored raw as given, and every attribution column NULL. A legacy
+        *target_user_id* stays untyped; its type is never inferred from it.
+        Passing a legacy argument together with the actor or target it would
+        contradict raises ``ValueError``.
+        """
 
     @abstractmethod
     async def list_audit_log(
@@ -965,7 +990,12 @@ class OperationalStore(ABC):
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
-        """Return ``(total_count, audit_rows)`` with optional filters."""
+        """Return ``(total_count, audit_rows)`` with optional filters.
+
+        Each row has the legacy columns and the attribution columns
+        (``actor_type``, ``actor_id``, ``target_type``, ``target_id``), NULL
+        for a row written without them.
+        """
 
     # -- cost counters (user_daily_cost table) ---------------------------------
 

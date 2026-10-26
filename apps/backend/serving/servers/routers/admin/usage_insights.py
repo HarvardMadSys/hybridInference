@@ -23,8 +23,9 @@ import json
 from datetime import UTC, datetime
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.config.site_identity import get_site_identity
 from serving.http import AsyncHTTPClient
 from serving.schemas_admin import (
@@ -37,6 +38,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_db_logger,
     get_operational_store,
     verify_admin_access,
@@ -50,7 +52,6 @@ from serving.utils.prompt_sampling import (
     user_agent_from_metadata,
     user_messages,
 )
-from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -413,9 +414,9 @@ async def get_usage_insights_settings(
 
 @router.put("/usage-insights/settings", response_model=UsageInsightsSettings)
 async def update_usage_insights_settings(
-    request: Request,
     payload: UsageInsightsSettingsUpdate,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> UsageInsightsSettings:
     """Set or clear the analysis API key and/or model."""
@@ -442,12 +443,12 @@ async def update_usage_insights_settings(
 
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "usage_insights_settings_update",
+        action="usage_insights_settings_update",
         details={
             "api_key_changed": payload.api_key is not None,
             "model_changed": payload.model is not None,
         },
+        actor=actor,
     )
 
     api_key, model = await _load_provider(op_store)
@@ -472,9 +473,8 @@ async def _collect_samples(
 
 @router.post("/usage-insights/samples", response_model=UsageInsightsSamplesResponse)
 async def admin_sample_usage(
-    request: Request,
     payload: UsageInsightsRequest,
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db_logger=Depends(get_db_logger),
 ) -> UsageInsightsSamplesResponse:
     """Return the same random sample Analyze usage would send to the LLM.
@@ -491,10 +491,10 @@ async def admin_sample_usage(
 
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "usage_insights_samples",
-        target_user_id=user_id,
+        action="usage_insights_samples",
         details={"sampled_requests": len(samples), "scope": scope},
+        actor=actor,
+        target=AuditTarget.user(user_id) if user_id else None,
     )
 
     return UsageInsightsSamplesResponse(
@@ -506,9 +506,8 @@ async def admin_sample_usage(
 
 @router.post("/usage-insights/analyze", response_model=UsageInsightsResponse)
 async def admin_analyze_usage(
-    request: Request,
     payload: UsageInsightsRequest,
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db_logger=Depends(get_db_logger),
     op_store=Depends(get_operational_store),
 ) -> UsageInsightsResponse:
@@ -540,10 +539,10 @@ async def admin_analyze_usage(
 
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "usage_insights_analyze",
-        target_user_id=user_id,
+        action="usage_insights_analyze",
         details={"sampled_requests": used, "model": model, "scope": scope},
+        actor=actor,
+        target=AuditTarget.user(user_id) if user_id else None,
     )
 
     return UsageInsightsResponse(

@@ -6,9 +6,10 @@ import datetime as dt
 import math
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
 from routing.routewise.router import RouteWiseRouter
+from serving.audit import AuditActor, AuditTarget
 from serving.config.routewise_model_settings import (
     ROUTEWISE_SETTING_KEYS,
     ResolvedRouteWiseSetting,
@@ -40,6 +41,7 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
+    get_admin_audit_actor,
     get_db_logger,
     get_operational_store,
     get_services,
@@ -47,7 +49,6 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin/routewise")
 logger = get_logger(__name__)
@@ -302,10 +303,10 @@ async def list_routewise_settings_endpoint(
 
 @router.patch("/settings/{key}", response_model=RoutewiseSettingItem)
 async def update_routewise_setting_endpoint(
-    request: Request,
     key: str,
     payload: UpdateSettingRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
@@ -340,13 +341,12 @@ async def update_routewise_setting_endpoint(
             key,
         )
 
-    ip = get_client_ip(request)
     await _log_admin_action_best_effort(
         op_store,
-        ip,
-        "routewise_settings.update",
-        None,
-        {"key": key, "old_value": old_value, "new_value": value},
+        action="routewise_settings.update",
+        details={"key": key, "old_value": old_value, "new_value": value},
+        actor=actor,
+        target=AuditTarget("setting", key),
     )
 
     return RoutewiseSettingItem(
@@ -391,11 +391,11 @@ async def list_model_routewise_settings_endpoint(
     response_model=RoutewiseSettingItem,
 )
 async def update_model_routewise_setting_endpoint(
-    request: Request,
     key: str,
     payload: UpdateSettingRequest,
     model_id: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
@@ -448,12 +448,14 @@ async def update_model_routewise_setting_endpoint(
                     key,
                 )
 
+    # The model is the target; its id is not a user's, so target_user_id stays
+    # NULL (legacy rows of this action hold the model id there).
     await _log_admin_action_best_effort(
         op_store,
-        get_client_ip(request),
-        "routewise_model_settings.update",
-        canonical_model_id,
-        {
+        action="routewise_model_settings.update",
+        actor=actor,
+        target=AuditTarget.model(canonical_model_id),
+        details={
             "key": key,
             "old_value": previous.value,
             "new_value": resolved.value,
@@ -469,10 +471,10 @@ async def update_model_routewise_setting_endpoint(
     response_model=RoutewiseSettingItem,
 )
 async def reset_model_routewise_setting_endpoint(
-    request: Request,
     key: str,
     model_id: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
@@ -515,10 +517,10 @@ async def reset_model_routewise_setting_endpoint(
 
     await _log_admin_action_best_effort(
         op_store,
-        get_client_ip(request),
-        "routewise_model_settings.reset",
-        canonical_model_id,
-        {
+        action="routewise_model_settings.reset",
+        actor=actor,
+        target=AuditTarget.model(canonical_model_id),
+        details={
             "key": key,
             "old_value": previous.value,
             "new_value": resolved.value,
@@ -566,9 +568,9 @@ async def list_routewise_probe_samples_endpoint(
 
 @router.post("/probes/run", response_model=RunRoutewiseProbeResponse)
 async def run_routewise_probe_endpoint(
-    request: Request,
     payload: RunRoutewiseProbeRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> RunRoutewiseProbeResponse:
@@ -577,11 +579,15 @@ async def run_routewise_probe_endpoint(
     if not routers:
         raise HTTPException(status_code=404, detail="No RouteWise router found")
     results = []
+    # The model actually probed: a submitted alias resolves to its canonical
+    # id, which is what the audit row targets (the alias stays in details).
+    canonical_model_id: str | None = None
     for router_obj in routers:
         router_obj.attach_operational_store(op_store)
         probe_model_id = payload.model_id
         if probe_model_id:
             probe_model_id = router_obj.canonical_model_id(probe_model_id)
+            canonical_model_id = probe_model_id
         results.extend(
             await router_obj.run_probe_once(
                 model_id=probe_model_id,
@@ -592,10 +598,10 @@ async def run_routewise_probe_endpoint(
     # Audit after probing so failures still return probe diagnostics to the UI.
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "routewise_probes.run",
-        None,
-        {
+        action="routewise_probes.run",
+        actor=actor,
+        target=AuditTarget.model(canonical_model_id) if canonical_model_id else None,
+        details={
             "model_id": payload.model_id,
             "endpoint_id": payload.endpoint_id,
             "idle_only": payload.idle_only,

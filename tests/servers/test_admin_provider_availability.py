@@ -127,6 +127,39 @@ async def test_disable_provider_persists_and_updates_resolver(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_provider_toggle_audits_a_provider_target_not_a_user(admin_client, monkeypatch):
+    """The stored row types the provider; its name never lands in ``target_user_id``.
+
+    Rows written before this put the provider name there, where the user
+    filter and hard-delete erasure read it as a user id.
+    """
+    from serving.servers.auth import log_admin_action
+    from tests.fixtures.audit import AuditRowRecorder
+
+    client, op_store, _resolver, _ = admin_client
+    recorder = AuditRowRecorder()
+    op_store.log_admin_action = recorder.log_admin_action
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.providers.log_admin_action", log_admin_action
+    )
+
+    for disabled in (True, False):
+        response = await client.patch(
+            "/admin/providers/openrouter/disabled",
+            json={"disabled": disabled},
+            headers={"Authorization": "Bearer test-admin"},
+        )
+        assert response.status_code == 200
+
+    assert [row["details"]["disabled"] for row in recorder.rows] == [True, False]
+    for row in recorder.rows:
+        assert row["action"] == "providers.disabled.update"
+        assert (row["target_type"], row["target_id"]) == ("provider", "openrouter")
+        assert row["target_user_id"] is None
+        assert (row["actor_type"], row["actor_id"]) == ("admin_token", None)
+
+
+@pytest.mark.asyncio
 async def test_enable_provider_clears_state(admin_client):
     client, op_store, resolver, _ = admin_client
     resolver.set_disabled("openrouter")

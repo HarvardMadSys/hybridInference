@@ -42,6 +42,7 @@ except ImportError:
         return False
 
 
+from serving.audit import AuditActor, AuditTarget
 from serving.config.settings import VALID_ROLES
 from serving.observability import alert_mutes
 from serving.observability.alert_snooze import SNOOZE_SETTING_KEY, init_alert_snooze
@@ -66,6 +67,7 @@ from serving.schemas_config import (
 from serving.servers import restart
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_admin_user_id,
     get_operational_store,
     get_services,
@@ -377,6 +379,7 @@ def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
 async def export_config_backup(
     response: Response,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ConfigBackupPayload:
@@ -614,10 +617,10 @@ async def export_config_backup(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "config.backup",
-        None,
-        {
+        action="config.backup",
+        actor=actor,
+        target=AuditTarget("config", "backup"),
+        details={
             "app_config": len(app_config_items),
             "site_settings": len(site_settings),
             "provider_definitions": len(provider_definitions),
@@ -1104,6 +1107,7 @@ async def restore_config_backup(
     request: Request,
     response: Response,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ConfigRestoreResponse:
@@ -1140,10 +1144,10 @@ async def restore_config_backup(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "config.restore",
-        None,
-        {
+        action="config.restore",
+        actor=actor,
+        target=AuditTarget("config", "backup"),
+        details={
             "app_config": len(payload.app_config),
             "site_settings": len(payload.site_settings),
             "provider_definitions": len(payload.provider_definitions),

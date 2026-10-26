@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
+from serving.audit import AuditTarget
 from serving.exceptions import (
     UserNotFoundError,
     generic_message_for_status,
@@ -59,6 +60,7 @@ from serving.servers.deps import (
     get_model_visibility_resolver,
     get_operational_store,
     get_router,
+    user_audit_actor,
 )
 from serving.servers.routers.models import _build_model_list_async
 from serving.servers.routers.reauth import confirm_account_owner
@@ -67,7 +69,6 @@ from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
@@ -489,13 +490,13 @@ async def create_api_key(
     logger.info(f"API key created for user: {current_user['user_id']}")
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "create_key",
-        current_user["user_id"],
-        {
+        action="create_key",
+        details={
             "actor": "user",
             "key_prefix": key_prefix,
         },
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(current_user["user_id"]),
     )
 
     return APIKeyResponse(
@@ -657,10 +658,10 @@ async def delete_api_key(
     if response and audit_action:
         await log_admin_action(
             db_logger,
-            get_client_ip(request),
-            audit_action,
-            current_user["user_id"],
-            audit_details,
+            action=audit_action,
+            details=audit_details,
+            actor=user_audit_actor(request, current_user),
+            target=AuditTarget.user(current_user["user_id"]),
         )
         # Both branches write api_keys directly, bypassing
         # CachedOperationalStore, so the auth cache is evicted here rather than
@@ -722,14 +723,14 @@ async def regenerate_api_key(
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "regenerate_key",
-        current_user["user_id"],
-        {
+        action="regenerate_key",
+        details={
             "actor": "user",
             "old_key_prefix": old_key_row["key_prefix"],
             "new_key_prefix": key_prefix,
         },
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(current_user["user_id"]),
     )
 
     return APIKeyRegenerateResponse(

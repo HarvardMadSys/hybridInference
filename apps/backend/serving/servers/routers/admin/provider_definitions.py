@@ -15,6 +15,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys, provider_registry
+from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
 from serving.config.distribution import resolve_config_path
 from serving.config.provider_labels import BUILT_IN_DISPLAY_NAMES, humanize_provider
@@ -28,7 +29,12 @@ from serving.schemas_admin import (
     UpdateProviderDefinitionRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, get_services, verify_admin_access
+from serving.servers.deps import (
+    get_admin_audit_actor,
+    get_operational_store,
+    get_services,
+    verify_admin_access,
+)
 from serving.servers.registry import parse_openrouter_kind, resolve_reference
 from serving.servers.routers.admin.provider_routes import (
     PROVIDER_TARGETS,
@@ -766,6 +772,7 @@ async def probe_provider_definition(
 async def create_provider_definition(
     payload: CreateProviderDefinitionRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     services=Depends(get_services),
 ) -> ProviderDefinitionItem:
@@ -822,10 +829,10 @@ async def create_provider_definition(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "provider_definition.create",
-        None,
-        {
+        action="provider_definition.create",
+        actor=actor,
+        target=AuditTarget.provider(provider),
+        details={
             "provider": provider,
             "display_name": row.display_name,
             "adapter_kind": row.adapter_kind,
@@ -853,6 +860,7 @@ async def update_provider_definition(
     provider: str,
     payload: UpdateProviderDefinitionRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     services=Depends(get_services),
 ) -> ProviderDefinitionItem:
@@ -929,10 +937,10 @@ async def update_provider_definition(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "provider_definition.update",
-        None,
-        {
+        action="provider_definition.update",
+        actor=actor,
+        target=AuditTarget.provider(provider_slug),
+        details={
             "provider": provider_slug,
             "display_name": updated.display_name,
             "default_base_url": updated.default_base_url,
@@ -960,7 +968,7 @@ async def update_provider_definition(
 )
 async def delete_provider_definition(
     provider: str,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     services=Depends(get_services),
 ) -> DeleteProviderDefinitionResponse:
@@ -1004,10 +1012,10 @@ async def delete_provider_definition(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "provider_definition.delete",
-        None,
-        {
+        action="provider_definition.delete",
+        actor=actor,
+        target=AuditTarget.provider(provider_slug),
+        details={
             "provider": provider_slug,
             "display_name": row.display_name,
             "deleted_keys": deleted_keys,

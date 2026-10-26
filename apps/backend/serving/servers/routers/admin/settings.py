@@ -5,8 +5,9 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.auth.signup_policy import (
     distribution_allows_public_signup,
     invalidate_signup_policy_cache,
@@ -28,11 +29,11 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     database_enabled,
+    get_admin_audit_actor,
     get_auto_mode,
     get_operational_store,
     verify_admin_access,
 )
-from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
@@ -89,10 +90,10 @@ async def list_runtime_settings_endpoint(
 
 @router.patch("/settings/{key}", response_model=RuntimeSettingItem)
 async def update_runtime_setting_endpoint(
-    request: Request,
     key: str,
     payload: UpdateSettingRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
 ) -> RuntimeSettingItem:
@@ -194,13 +195,12 @@ async def update_runtime_setting_endpoint(
     # Signup and verification decide whether mail settings are required.
     refresh_health()
 
-    ip = get_client_ip(request)
     await log_admin_action(
         op_store,
-        ip,
-        "settings.update",
-        None,
-        {"key": key, "old_value": old_value, "new_value": value},
+        action="settings.update",
+        details={"key": key, "old_value": old_value, "new_value": value},
+        actor=actor,
+        target=AuditTarget("setting", key),
     )
 
     return RuntimeSettingItem(

@@ -717,6 +717,11 @@ async def test_add_persists_and_seeds_pool(client):
     assert api_key in pool.snapshot_keys()
     assert len(store.rows) == 1
     assert store.audit and store.audit[0]["action"] == "add_provider_key"
+    # The new key row is the typed target, by id; the shared token acted.
+    target = store.audit[0]["target"]
+    assert (target.type, target.id, target.user_id) == ("provider_key", body["key"]["id"], None)
+    assert store.audit[0]["actor"].type == "admin_token"
+    assert store.audit[0]["target_user_id"] is None
 
 
 @pytest.mark.asyncio

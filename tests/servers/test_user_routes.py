@@ -68,7 +68,8 @@ class TestAPIKeyManagement:
         async with auth_db_logger.pool.acquire() as conn:
             audit_row = await conn.fetchrow(
                 """
-                SELECT action, details, success
+                SELECT action, details, success, actor_type, actor_id,
+                       target_type, target_id
                 FROM admin_audit_log
                 WHERE target_user_id = $1 AND action = 'create_key'
                 ORDER BY timestamp DESC
@@ -84,6 +85,10 @@ class TestAPIKeyManagement:
         assert details["actor"] == "user"
         assert details["key_prefix"] == data["key_prefix"]
         assert data["api_key"] not in json.dumps(details)
+        # The account acted on itself through its own session: a user actor
+        # with its stable id, and the same account as the typed target.
+        assert (audit_row["actor_type"], audit_row["actor_id"]) == ("user", test_user["id"])
+        assert (audit_row["target_type"], audit_row["target_id"]) == ("user", test_user["id"])
 
     @pytest.mark.asyncio
     async def test_create_duplicate_api_key(

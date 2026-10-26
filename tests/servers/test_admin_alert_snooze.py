@@ -106,8 +106,8 @@ async def test_a_snooze_is_stored_reported_and_audited(admin_client):
     assert before + 600 <= body["snooze_until"] <= time.time() + 600
     assert store.rows  # persisted, so every worker and a restart see it
     assert (await client.get("/admin/alerts/snooze", headers=AUTH)).json()["snoozed"] is True
-    assert audit.await_args.args[2] == "alerts.snooze"
-    assert audit.await_args.args[4]["duration_seconds"] == 600
+    assert audit.await_args.kwargs["action"] == "alerts.snooze"
+    assert audit.await_args.kwargs["details"]["duration_seconds"] == 600
 
 
 async def test_a_snoozed_breach_sends_nothing_and_a_cleared_one_pages_again(admin_client):
@@ -127,7 +127,7 @@ async def test_a_snoozed_breach_sends_nothing_and_a_cleared_one_pages_again(admi
 
     # Cleared to a deadline in the past, so every worker reads it as lifted.
     assert float(store.rows["slack_alerts_snooze_until"]["value"]) == 0.0
-    assert audit.await_args.args[2] == "alerts.snooze_clear"
+    assert audit.await_args.kwargs["action"] == "alerts.snooze_clear"
 
 
 async def test_a_lapsed_snooze_no_longer_silences(admin_client):

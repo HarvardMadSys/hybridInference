@@ -336,11 +336,17 @@ async def test_patch_writes_an_audit_record(admin_client):
     client.audit.assert_awaited_once()
     args = client.audit.await_args.args
     assert args[0] is client.app.state.services.operational_store
-    assert args[2:] == (
-        "batch.models.update",
-        None,
-        {"model_id": "public-model", "old_max_concurrency": 3, "new_max_concurrency": 1},
-    )
+    kwargs = client.audit.await_args.kwargs
+    assert kwargs["action"] == "batch.models.update"
+    assert kwargs["actor"].type == "admin_token"
+    assert kwargs["actor"].id is None
+    assert kwargs["target"].type == "model"
+    assert kwargs["target"].id == "public-model"
+    assert kwargs["details"] == {
+        "model_id": "public-model",
+        "old_max_concurrency": 3,
+        "new_max_concurrency": 1,
+    }
 
 
 # --- access ----------------------------------------------------------------------------

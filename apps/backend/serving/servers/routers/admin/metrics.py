@@ -8,7 +8,7 @@ import inspect
 import json
 import time
 from datetime import UTC, datetime
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -39,6 +39,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_db_logger,
     get_log_store,
     get_operational_store,
@@ -56,7 +57,9 @@ from serving.servers.routers.admin._refreshing_cache import RefreshingResult
 from serving.storage import account_schema, admin_view_results, perf_metrics_index
 from serving.storage.utils import coerce_json_object
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+
+if TYPE_CHECKING:
+    from serving.audit import AuditActor
 
 router = APIRouter(prefix="/admin")
 logger = get_logger(__name__)
@@ -1835,9 +1838,8 @@ async def admin_get_recent_request_content(
 
 @router.post("/recent-requests/clear-errors", response_model=AdminClearErrorRequestsResponse)
 async def admin_clear_error_requests(
-    request: Request,
     hours: int = 1,
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
 ) -> AdminClearErrorRequestsResponse:
@@ -1868,10 +1870,9 @@ async def admin_clear_error_requests(
     if op_store is not None:
         await log_admin_action(
             op_store,
-            get_client_ip(request),
-            "clear_error_requests",
-            None,
-            {"hours": hours, "deleted_count": deleted_count},
+            action="clear_error_requests",
+            details={"hours": hours, "deleted_count": deleted_count},
+            actor=actor,
         )
 
     _RECENT_REQUESTS_COUNT_CACHE.clear()
