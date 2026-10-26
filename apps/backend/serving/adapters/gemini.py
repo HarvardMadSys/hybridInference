@@ -313,7 +313,7 @@ class GeminiAdapter(BaseAdapter):
     async def _acquire_upstream_slot(self) -> UpstreamSlot:
         """Take an outbound concurrency slot for this endpoint's provider account.
 
-        Single-key adapter (the key rides in the query string), so the bucket —
+        Single-key adapter (the key rides in a request header), so the bucket —
         keyed on (provider label, key) — is fixed for the route. Raises
         ``UpstreamSaturated`` when the account's allowance is already full,
         which the router turns into a fallback to another endpoint. The
@@ -326,6 +326,15 @@ class GeminiAdapter(BaseAdapter):
             base_url=self.config.base_url,
             deployment_type=self.config.deployment_type,
         )
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Return the header carrying the API key.
+
+        Not the ``?key=`` query parameter the API also accepts: aiohttp renders
+        the request URL into ``str()`` of every error it raises, and that text
+        reaches logs and the request log's routing metadata.
+        """
+        return {"x-goog-api-key": self.config.api_key} if self.config.api_key else {}
 
     def _upstream_slot(self) -> AbstractAsyncContextManager[UpstreamSlot]:
         """Return an ``async with`` guard around :meth:`_acquire_upstream_slot`."""
@@ -353,9 +362,7 @@ class GeminiAdapter(BaseAdapter):
 
         # Use provider_model_id if available, otherwise fall back to config.id
         model_name = getattr(self.config, "provider_model_id", None) or self.config.id
-        url = (
-            f"{self.config.base_url}/models/{model_name}:generateContent?key={self.config.api_key}"
-        )
+        url = f"{self.config.base_url}/models/{model_name}:generateContent"
 
         # retries=1 => exactly one attempt, NO retry: a completion POST is
         # non-idempotent (re-sending double-bills generations and hammers
@@ -366,6 +373,7 @@ class GeminiAdapter(BaseAdapter):
             data = await self.http.json_post_with_retry(
                 url,
                 json=request_body,
+                headers=self._auth_headers(),
                 timeout=aiohttp.ClientTimeout(total=completion_timeout_s()),
                 retries=1,
             )
@@ -498,10 +506,7 @@ class GeminiAdapter(BaseAdapter):
         # Use provider_model_id if available, otherwise fall back to config.id
         model_name = getattr(self.config, "provider_model_id", None) or self.config.id
         # Prefer SSE for reliable incremental tokens with Gemini; add alt=sse.
-        url = (
-            f"{self.config.base_url}/models/{model_name}:streamGenerateContent"
-            f"?key={self.config.api_key}&alt=sse"
-        )
+        url = f"{self.config.base_url}/models/{model_name}:streamGenerateContent?alt=sse"
 
         # Debug: log request body when tool messages present
         from serving.utils.logging import get_logger
@@ -524,7 +529,11 @@ class GeminiAdapter(BaseAdapter):
         tool_call_count = 0
 
         # Auto-detect upstream streaming format (SSE vs NDJSON) and parse both.
-        headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+            **self._auth_headers(),
+        }
         slot = await self._acquire_upstream_slot()
         # What the concurrency limiter is told when the slot goes back.
         # Neutral by default so an exit neither branch below reaches -- a

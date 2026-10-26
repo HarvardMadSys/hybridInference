@@ -39,6 +39,7 @@ class Upstream:
             {
                 "path": request.path,
                 "query": dict(request.query),
+                "headers": dict(request.headers),
                 "json": await request.json(),
             }
         )
@@ -223,7 +224,9 @@ async def test_the_request_names_the_model_and_carries_config_and_tools(upstream
 
     [request] = upstream.requests
     assert request["path"] == f"/v1beta/models/gemini-2.5-pro-001:{method}"
-    assert request["query"]["key"] == "test-upstream-credential"
+    # In a header, not the URL: aiohttp renders the URL into every error it raises.
+    assert "key" not in request["query"]
+    assert request["headers"]["x-goog-api-key"] == "test-upstream-credential"
     assert (request["query"].get("alt") == "sse") is (mode == "stream")
     sent = request["json"]
     assert sent["generationConfig"] == {
@@ -398,6 +401,22 @@ async def test_a_stream_refused_upfront_raises(upstream):
         [c async for c in _adapter(upstream).stream_chat_completion(USER)]
 
     assert "429" in str(caught.value)
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_an_upstream_error_does_not_carry_the_credential(upstream, mode):
+    # Its text reaches logs and the request log's metadata (``str(exc)``).
+    upstream.status = 429
+    upstream.reply = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}
+    adapter = _adapter(upstream)
+
+    with pytest.raises(Exception) as caught:
+        if mode == "chat":
+            await adapter.chat_completion(USER)
+        else:
+            [c async for c in adapter.stream_chat_completion(USER)]
+
+    assert "test-upstream-credential" not in str(caught.value)
 
 
 async def test_an_ndjson_stream_is_read_and_stops_at_done(upstream):
