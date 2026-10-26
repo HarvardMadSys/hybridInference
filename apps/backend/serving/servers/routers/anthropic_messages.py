@@ -1520,7 +1520,7 @@ async def anthropic_messages(
         return _anthropic_error(400, "Missing required field: model")
     if "messages" not in body:
         return _anthropic_error(400, "Missing required field: messages")
-    if "max_tokens" not in body:
+    if body.get("max_tokens") is None:
         return _anthropic_error(400, "Missing required field: max_tokens")
 
     # Before dispatch, so this covers the native passthrough as well as the

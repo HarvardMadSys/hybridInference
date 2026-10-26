@@ -242,6 +242,11 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
             json.dumps({"model": NATIVE_MODEL, "messages": []}).encode(),
             "Missing required field: max_tokens",
         ),
+        (
+            "/v1/messages",
+            json.dumps({"model": NATIVE_MODEL, "messages": [], "max_tokens": None}).encode(),
+            "Missing required field: max_tokens",
+        ),
         ("/v1/messages/count_tokens", b"{not json", "Invalid JSON in request body"),
         (
             "/v1/messages/count_tokens",
@@ -254,6 +259,7 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
         "no-model",
         "no-messages",
         "no-max-tokens",
+        "null-max-tokens",
         "count-not-json",
         "count-no-messages",
     ],
