@@ -283,17 +283,16 @@ function AccountSettings({
   // An invalid quota is still an unsaved change: Save stays enabled and says why it cannot go.
   const changeCount = changes.length + (invalidQuota ? 1 : 0);
 
-  // A field set back to its saved value is no draft, so a later refresh of the
-  // saved value shows through instead of being masked by a stale copy.
   const change = (next: Partial<AccountDraft>) => {
     setSaveError(null);
-    const saved = savedAccount(detail);
     setDraft((prev) => {
-      const merged: Partial<AccountDraft> = { ...prev, ...next };
-      for (const field of Object.keys(next) as (keyof AccountDraft)[]) {
-        if (JSON.stringify(merged[field]) === JSON.stringify(saved[field])) delete merged[field];
+      const updated = { ...prev, ...next };
+      const saved = savedAccount(detail);
+      // Reverted fields follow later refetches like untouched fields.
+      for (const key of Object.keys(updated) as (keyof AccountDraft)[]) {
+        if (JSON.stringify(updated[key]) === JSON.stringify(saved[key])) delete updated[key];
       }
-      return merged;
+      return updated;
     });
   };
 
@@ -512,9 +511,12 @@ function TextSetting({
   className: string;
 }) {
   // `null` until the administrator types; the field then shows the draft.
-  const [draft, setDraft] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ value: string; saved: string | null } | null>(null);
   const busy = confirmation.busy;
-  const value = draft ?? saved ?? '';
+  // Keep typed whitespace so a word can be appended, but a reverted draft must
+  // stop shadowing the saved value when another section refreshes the detail.
+  const hasDraftChange = draft !== null && (draft.value.trim() || null) !== (draft.saved ?? null);
+  const value = draft && (hasDraftChange || draft.saved === saved) ? draft.value : (saved ?? '');
   const next = value.trim() ? value.trim() : null;
   const changed = draft !== null && next !== (saved ?? null);
 
@@ -554,8 +556,7 @@ function TextSetting({
       {header}
       <textarea
         value={value}
-        // Typed back to the saved text, it is no draft: a refresh shows through.
-        onChange={(e) => setDraft(e.target.value === (saved ?? '') ? null : e.target.value)}
+        onChange={(e) => setDraft({ value: e.target.value, saved })}
         disabled={busy}
         rows={rows}
         maxLength={2000}

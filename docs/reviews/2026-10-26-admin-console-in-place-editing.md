@@ -150,10 +150,10 @@ New tests:
   changes or an open confirmation to the parent".
 
 Review follow-up: in `UserDetailPanel`, `RuntimeSettingsSection` and the routing weights and limits, a field typed back to its saved value used to keep its draft. The bar went away, but a refreshed saved value stayed masked and could come back as a change. Those drafts are now dropped. The tests are:
-- `users/UserTable.test.tsx`: "lets a refresh show through a field typed back to its saved value" and "lets a refresh show through a note typed back to its saved text";
+- `users/UserTable.test.tsx`: "follows a refreshed quota after the edit was reverted by hand", "keeps other unsaved fields when a quota edit is reverted" (both from the reviewer's fix, a5b2083) and "lets a refresh show through a note typed back to its saved text";
 - `ProviderRoutesTab.test.tsx`: "lets a refreshed limit show through a draft typed back to the saved one".
 
-All three fail without the fix. Runtime settings reload only on mount, so no refresh path reaches a reverted draft there today; the same fix applies anyway.
+Each fails without its fix. Runtime settings reload only on mount, so no refresh path reaches a reverted draft there today; the same fix applies anyway.
 
 ## Verification
 
@@ -165,6 +165,6 @@ Run from `apps/frontend`:
 | `npm run lint` | clean |
 | `npm run type-check` | clean |
 | `npm run i18n:check` | clean |
-| `npx vitest run` | 147 files, 1,902 tests passed |
+| `npx vitest run` | 147 files, 1,905 tests passed |
 
 Not done: browser acceptance against a running deployment.

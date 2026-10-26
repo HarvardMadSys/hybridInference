@@ -867,30 +867,6 @@ describe('UserTable account settings: in place, review, confirm', () => {
     expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
   });
 
-  it('lets a refresh show through a field typed back to its saved value', async () => {
-    vi.mocked(getUserDetail)
-      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 100, admin_note: null }))
-      // Another write changed the quota while the panel was open.
-      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 250, admin_note: 'VIP customer' }));
-    const onUpdate = await renderAccountSettings();
-    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
-    fireEvent.change(quota, { target: { value: '200' } });
-    fireEvent.change(quota, { target: { value: '100' } });
-    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
-
-    // Saving the note refetches the detail.
-    fireEvent.change(screen.getByLabelText('Admin note'), { target: { value: 'VIP customer' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes to admin note' }));
-    clickInDialog('Confirm save');
-    await waitFor(() => expect(getUserDetail).toHaveBeenCalledTimes(2));
-
-    // The reverted quota left no draft behind to mask the new value or revive a change.
-    await waitFor(() => expect(quota).toHaveValue(250));
-    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
-    expect(onUpdate).toHaveBeenCalledTimes(1);
-    expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: 'VIP customer' });
-  });
-
   it('lets a refresh show through a note typed back to its saved text', async () => {
     vi.mocked(getUserDetail)
       .mockResolvedValueOnce(detailFixture({ role: 'free', admin_note: null }))
@@ -1249,5 +1225,94 @@ describe('UserTable account actions', () => {
       'user@example.com is no longer in the list.',
     );
     expect(onApprove).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserTable reverted drafts', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+  it('follows a refreshed quota after the edit was reverted by hand', async () => {
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture())
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 250, admin_note: 'saved note' }));
+    renderTable();
+    await expand();
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
+    fireEvent.change(quota, { target: { value: '200' } });
+    fireEvent.change(quota, { target: { value: '100' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Admin note'), { target: { value: 'saved note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to admin note' }));
+    clickInDialog('Confirm save');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(quota).toHaveValue(250);
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+  });
+});
+
+describe('UserTable reverted text drafts', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+  it.each([
+    ['Admin note', 'admin note', 'Suspension message', 'suspension message'],
+    ['Suspension message', 'suspension message', 'Admin note', 'admin note'],
+  ])(
+    'refreshes %s after its trimmed draft is reverted',
+    async (label, target, otherLabel, otherTarget) => {
+      vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+      vi.mocked(getUserDetail)
+        .mockResolvedValueOnce(
+          detailFixture({ status: 'suspended', admin_note: 'old', suspension_message: 'old' }),
+        )
+        .mockResolvedValueOnce(
+          detailFixture({
+            status: 'suspended',
+            admin_note: 'updated',
+            suspension_message: 'updated',
+          }),
+        );
+      renderTable({ ...baseUser, status: 'suspended' });
+      await expand();
+      const field = screen.getByLabelText(label);
+      fireEvent.change(field, { target: { value: 'draft' } });
+      fireEvent.change(field, { target: { value: ' old ' } });
+      expect(field).toHaveValue(' old ');
+      expect(screen.queryByRole('button', { name: `Save changes to ${target}` })).toBeNull();
+      fireEvent.change(screen.getByLabelText(otherLabel), { target: { value: 'updated' } });
+      fireEvent.click(screen.getByRole('button', { name: `Save changes to ${otherTarget}` }));
+      clickInDialog('Confirm save');
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(field).toHaveValue('updated');
+      expect(screen.queryByRole('button', { name: `Save changes to ${target}` })).toBeNull();
+    },
+  );
+});
+
+describe('UserTable independent account drafts', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+  it('keeps other unsaved fields when a quota edit is reverted', async () => {
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture());
+    const onUpdate = vi.fn(async () => undefined);
+    renderTable(baseUser, { onUpdate });
+    await expand();
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
+    fireEvent.change(quota, { target: { value: '200' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Max concurrent' }), {
+      target: { value: '4' },
+    });
+    fireEvent.change(quota, { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+    clickInDialog('Confirm save');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith('user-1', { max_concurrent_requests: 4 });
   });
 });
