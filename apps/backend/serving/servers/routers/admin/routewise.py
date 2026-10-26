@@ -52,7 +52,12 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/admin/routewise")
 logger = get_logger(__name__)
 
-ROUTEWISE_KEYS = ROUTEWISE_SETTING_KEYS
+# The RouteWise settings the console lists and edits. routewise_latency_min_samples
+# still resolves, so stored overrides and models.yaml that name it keep loading,
+# but provider selection never reads it: there is nothing to tune.
+ROUTEWISE_KEYS = tuple(
+    key for key in ROUTEWISE_SETTING_KEYS if key != "routewise_latency_min_samples"
+)
 
 # Maps each decisions range to its (lookback window, time-bucket) size in seconds.
 DECISIONS_RANGE_SECONDS: dict[str, tuple[int, int]] = {

@@ -54,6 +54,16 @@ class Category:
     id: str
     label: str
     description: str
+    #: Whether its settings can take effect in this deployment; the console
+    #: offers none of them while it returns false. ``None`` is always.
+    in_effect: Callable[[], bool] | None = None
+
+
+def _sms_provider_registered() -> bool:
+    # Phone sign-in needs a provider an extension registers; "none" is always listed.
+    from serving.utils.delivery import sms_provider_names
+
+    return len(sms_provider_names()) > 1
 
 
 CATEGORIES: tuple[Category, ...] = (
@@ -73,7 +83,12 @@ CATEGORIES: tuple[Category, ...] = (
         "Email",
         "Outgoing mail for verification, password reset and notifications.",
     ),
-    Category("phone", "Phone authentication", "Optional phone sign-in and SMS delivery."),
+    Category(
+        "phone",
+        "Phone authentication",
+        "Optional phone sign-in and SMS delivery.",
+        in_effect=_sms_provider_registered,
+    ),
     Category(
         "providers",
         "Providers",
@@ -104,6 +119,7 @@ CATEGORIES: tuple[Category, ...] = (
 )
 
 CATEGORY_IDS: frozenset[str] = frozenset(category.id for category in CATEGORIES)
+_CATEGORY_BY_ID: dict[str, Category] = {category.id: category for category in CATEGORIES}
 
 
 @dataclass(frozen=True)
@@ -1463,6 +1479,20 @@ def static_entry(key: str) -> ConfigEntry | None:
 @lru_cache(maxsize=1)
 def _static_by_key() -> dict[str, ConfigEntry]:
     return {entry.key: entry for entry in static_entries()}
+
+
+def is_offered(entry: ConfigEntry) -> bool:
+    """Return whether the admin console offers *entry* for editing.
+
+    It offers neither a setting with a single accepted value, which leaves
+    nothing to choose, nor the settings of a category that cannot take effect
+    here: the phone settings do nothing until an extension registers an SMS
+    provider.
+    """
+    if len(entry.choices) == 1:
+        return False
+    category = _CATEGORY_BY_ID.get(entry.category)
+    return category is None or category.in_effect is None or category.in_effect()
 
 
 def is_environment_only(key: str) -> bool:

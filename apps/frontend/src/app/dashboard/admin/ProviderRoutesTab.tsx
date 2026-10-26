@@ -823,13 +823,25 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         : '';
   const strategy = selectedRoutes[0]?.strategy ?? 'fixed';
   const isRoutewise = strategy === 'routewise';
+  // RouteWise does not use offload routes, and the console refuses to switch a
+  // model that has one; a fixed model needs a second route to offload to. The
+  // panel still appears whenever a policy is stored (a RouteWise model's
+  // registry `router:` changed, or the other route went), so the leftover can
+  // be seen and cleared, and when the policies failed to load, to say so.
+  const showOffloadPanel =
+    Boolean(selectedModel) &&
+    selectedRoutes.length > 0 &&
+    (selectedOffload !== null ||
+      (!isRoutewise && (selectedRoutes.length > 1 || offloadLoadError !== null)));
   const createStrategy = creatingModel ? newModelStrategy : strategy;
   const createIsRoutewise = createStrategy === 'routewise';
   const createRouteTypeOptions = useMemo(
     () => routeTypeOptionsForStrategy(createIsRoutewise),
     [createIsRoutewise],
   );
-  const showCreateWeight = !createIsRoutewise;
+  // RouteWise reads no weights, and a new model's only route takes every
+  // request whatever its weight: a weight matters only beside other routes.
+  const showCreateWeight = !createIsRoutewise && !creatingModel;
   const showCreateLimits =
     createForm.routeType === 'quota' || createForm.routeType === 'concurrency' || showCreateWeight;
   const editingRuntimeRoute = editingRoute?.source === 'runtime';
@@ -883,7 +895,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       Number.isInteger(parsedCreateConcurrencyLimit) &&
       parsedCreateConcurrencyLimit > 0);
   const createWeightValid =
-    createIsRoutewise || (Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0);
+    !showCreateWeight || (Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0);
   const createRouteTypeValid = routeTypeAllowedForStrategy(createForm.routeType, createIsRoutewise);
   const formOpenRouterProviderValid = customOpenRouterProviderValid(
     form.openRouterProvider,
@@ -977,7 +989,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       quota_limit: createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
       concurrency_limit:
         createForm.routeType === 'concurrency' ? parsedCreateConcurrencyLimit : null,
-      weight: createIsRoutewise ? 1 : parsedCreateWeight,
+      weight: showCreateWeight ? parsedCreateWeight : 1,
     }),
     [
       createForm.apiKeyId,
@@ -992,7 +1004,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       parsedCreateQuotaLimit,
       parsedCreateWeight,
       selectedCreateOpenRouterProvider,
-      createIsRoutewise,
+      showCreateWeight,
     ],
   );
   const editVerificationSignature = (() => {
@@ -2265,11 +2277,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       )}
 
-      {selectedModel && selectedRoutes.length > 0 && (!isRoutewise || selectedOffload) && (
-        // RouteWise does not use offload routes, and the console refuses to switch
-        // a model that has one. The panel still appears for a RouteWise model
-        // when a policy is stored for it anyway (its registry `router:` changed),
-        // so the leftover can be seen and cleared.
+      {showOffloadPanel && (
         <OffloadRoutePanel
           modelId={selectedModel}
           routes={selectedRoutes}
@@ -2949,14 +2957,30 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-type">
                     Route type
                   </label>
-                  <Select<ProviderRouteType>
-                    id="new-route-type"
-                    value={createForm.routeType}
-                    onValueChange={onCreateRouteTypeChange}
-                    options={createRouteTypeOptions}
-                    size="lg"
-                    className="mt-1 w-full"
-                  />
+                  {createRouteTypeOptions.length > 1 ? (
+                    <Select<ProviderRouteType>
+                      id="new-route-type"
+                      value={createForm.routeType}
+                      onValueChange={onCreateRouteTypeChange}
+                      options={createRouteTypeOptions}
+                      size="lg"
+                      className="mt-1 w-full"
+                    />
+                  ) : (
+                    // Fixed routing takes on_demand routes only: nothing to choose.
+                    <>
+                      <output
+                        id="new-route-type"
+                        aria-describedby="new-route-type-help"
+                        className="mt-1 flex h-9 items-center text-[13px] text-gray-900"
+                      >
+                        {createForm.routeType}
+                      </output>
+                      <p id="new-route-type-help" className="text-[11px] leading-5 text-gray-400">
+                        Quota and concurrency routes require the routewise routing policy.
+                      </p>
+                    </>
+                  )}
                 </div>
                 <div>
                   <label

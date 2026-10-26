@@ -364,6 +364,51 @@ describe('ProviderRoutesTab', () => {
     expect(screen.queryByTestId('offload-route-panel')).not.toBeInTheDocument();
   });
 
+  it('shows no offload panel for a fixed model with no second route', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, strategy: 'fixed', route_type: 'on_demand' }],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    expect(
+      await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api'),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(listOffloadRoutes).toHaveBeenCalled());
+    expect(screen.queryByTestId('offload-route-panel')).not.toBeInTheDocument();
+  });
+
+  it('still shows a stored offload policy on a fixed model left with one route', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, strategy: 'fixed', route_type: 'on_demand' }],
+    });
+    vi.mocked(listOffloadRoutes).mockResolvedValue({
+      queue_enabled: true,
+      max_wait_seconds: 30,
+      offload_routes: [
+        {
+          model_id: 'minimax-fast',
+          route_id: 'minimax-fast:openrouter-api',
+          wait_seconds: 5,
+          endpoint_id: 'minimax-fast:openrouter-api',
+          active: false,
+          inactive_reason: 'The offload route is no longer one of the model’s routes.',
+          updated_at: null,
+          updated_by: 'admin@example.com',
+        },
+      ],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    expect(await screen.findByTestId('offload-route-panel')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear offload route' })).toBeEnabled();
+  });
+
   it('keeps the routes table when the offload routes fail to load', async () => {
     const fixedRoute = { ...route, strategy: 'fixed' };
     vi.mocked(listProviderRoutes).mockResolvedValue({
@@ -871,16 +916,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
     expect(screen.getByLabelText('Routing policy')).toHaveTextContent('fixed');
-    const routeTypeSelect = screen.getByLabelText('Route type');
-    expect(
-      within(openOptions(routeTypeSelect)).getByRole('option', { name: 'on_demand' }),
-    ).toBeInTheDocument();
-    expect(
-      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'concurrency' }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'quota' }),
-    ).not.toBeInTheDocument();
+    // Fixed routing takes on_demand routes alone, so there is no choice to offer.
+    const routeType = screen.getByLabelText('Route type');
+    expect(routeType.tagName).toBe('OUTPUT');
+    expect(routeType).toHaveTextContent('on_demand');
+    expect(routeType).toHaveAccessibleDescription(
+      'Quota and concurrency routes require the routewise routing policy.',
+    );
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Fixed weight')).toHaveValue(1);
   });
 
@@ -2054,13 +2097,11 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
-    const routeTypeSelect = screen.getByLabelText('Route type');
-    expect(
-      within(openOptions(routeTypeSelect)).getByRole('option', { name: 'on_demand' }),
-    ).toBeInTheDocument();
-    expect(
-      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'concurrency' }),
-    ).not.toBeInTheDocument();
+    // A new model starts on fixed routing, which takes on_demand routes alone,
+    // and its only route takes every request whatever its weight.
+    expect(screen.getByLabelText('Route type')).toHaveTextContent('on_demand');
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Fixed weight')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
     });
@@ -2206,6 +2247,33 @@ describe('ProviderRoutesTab', () => {
     });
     expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('offers a route type choice only under the routewise policy', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
+
+    chooseValue(screen.getByLabelText('Initial routing policy'), 'routewise');
+    const routeTypeSelect = screen.getByRole('combobox', { name: 'Route type' });
+    expect(
+      within(openOptions(routeTypeSelect))
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['on_demand', 'quota', 'concurrency']);
+    chooseValue(routeTypeSelect, 'quota');
+
+    chooseValue(screen.getByLabelText('Initial routing policy'), 'fixed');
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Route type')).toHaveTextContent('on_demand');
   });
 
   it('verifies a runtime model without creating it', async () => {

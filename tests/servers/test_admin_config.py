@@ -142,6 +142,20 @@ async def test_get_reports_a_variable_a_model_needs(config_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_leaves_out_settings_with_nothing_to_choose(config_client) -> None:
+    client, _store, _audit = config_client
+
+    body = (await client.get("/admin/config", headers=AUTH)).json()
+
+    # No delivery extension is loaded: email has SMTP alone, and phone sign-in
+    # has no SMS provider for its settings to tune.
+    keys = set(_entries(body))
+    assert "EMAIL_PROVIDER" not in keys
+    assert not any(key.startswith("SMS_") for key in keys)
+    assert {"SMTP_HOST", "SMTP_PASSWORD"} <= keys
+
+
+@pytest.mark.asyncio
 async def test_patch_stores_and_returns_the_full_configuration(config_client) -> None:
     client, store, audit = config_client
 

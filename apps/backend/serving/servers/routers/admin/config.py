@@ -14,12 +14,14 @@ router = APIRouter(prefix="/admin")
 
 
 def _response() -> ConfigResponse:
-    return ConfigResponse(**app_config.describe(), restart_supported=restart.restart_supported())
+    return ConfigResponse(
+        **app_config.describe(offered_only=True), restart_supported=restart.restart_supported()
+    )
 
 
 @router.get("/config", response_model=ConfigResponse)
 async def get_config(_admin_id: str = Depends(verify_admin_access)) -> ConfigResponse:
-    """List every setting with its effective value; secrets carry none."""
+    """List every setting the console offers, with its effective value; secrets carry none."""
     return _response()
 
 

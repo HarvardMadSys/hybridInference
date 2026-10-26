@@ -10,6 +10,7 @@ from serving.auth.signup_policy import (
     distribution_allows_public_signup,
     invalidate_signup_policy_cache,
 )
+from serving.auto_mode import AUTO_MODE_SETTING_KEY, AutoMode
 from serving.config.app_config import refresh_health
 from serving.config.distribution import DistributionConfigError
 from serving.config.runtime_settings import (
@@ -24,7 +25,12 @@ from serving.schemas_admin import (
     UpdateSettingRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import database_enabled, get_operational_store, verify_admin_access
+from serving.servers.deps import (
+    database_enabled,
+    get_auto_mode,
+    get_operational_store,
+    verify_admin_access,
+)
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
@@ -50,12 +56,20 @@ async def list_runtime_settings_endpoint(
     _admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
+    auto_mode: AutoMode | None = Depends(get_auto_mode),
 ) -> ListSettingsResponse:
-    """List all runtime settings with current values and defaults."""
+    """List the runtime settings with current values and defaults.
+
+    The RouteWise ones have a panel of their own, and the auto-mode switch is
+    left out while the model registry configures no auto models for it to serve.
+    """
     if not op_store:
         raise HTTPException(500, "Database not configured")
     rt = _require_runtime_settings(rt)
     items = await rt.list_all()
+    hidden = set(ROUTEWISE_SETTINGS_KEYS)
+    if auto_mode is None:
+        hidden.add(AUTO_MODE_SETTING_KEY)
     return ListSettingsResponse(
         settings=[
             RuntimeSettingItem(
@@ -68,7 +82,7 @@ async def list_runtime_settings_endpoint(
                 max=i.get("max"),
             )
             for i in items
-            if i["key"] not in ROUTEWISE_SETTINGS_KEYS
+            if i["key"] not in hidden
         ]
     )
 

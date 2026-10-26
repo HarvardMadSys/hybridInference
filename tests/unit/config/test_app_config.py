@@ -839,6 +839,58 @@ async def test_describe_compares_the_environment_as_a_typed_value(config_env, mo
     assert entries["SMTP_PORT"]["environment_ignored"] is True
 
 
+@pytest.mark.asyncio
+async def test_the_console_listing_leaves_out_settings_with_nothing_to_choose(
+    config_env, extension_registry
+) -> None:
+    # No extension registers a delivery provider: email has SMTP alone, and the
+    # phone settings can do nothing without an SMS provider.
+    await _boot(FakeAppConfigStore())
+
+    offered = {entry["key"] for entry in app_config.describe(offered_only=True)["entries"]}
+    assert "EMAIL_PROVIDER" not in offered
+    assert not {"SMS_PROVIDER", "SMS_AUTH_ENABLED", "SMS_OTP_MAX_ATTEMPTS"} & offered
+    assert {"SMTP_HOST", "LOG_LEVEL", "BATCH_MIN_ROLE"} <= offered
+    # The full description, which the command line lists, keeps them.
+    described = {entry["key"] for entry in app_config.describe()["entries"]}
+    assert {"EMAIL_PROVIDER", "SMS_PROVIDER", "SMS_AUTH_ENABLED"} <= described
+
+
+@pytest.mark.asyncio
+async def test_the_console_lists_delivery_settings_once_an_extension_offers_a_choice(
+    config_env, sample_delivery
+) -> None:
+    await _boot(FakeAppConfigStore())
+
+    offered = {entry["key"] for entry in app_config.describe(offered_only=True)["entries"]}
+    assert {"EMAIL_PROVIDER", "SMS_PROVIDER", "SMS_AUTH_ENABLED", "SAMPLE_SMS_REGION"} <= offered
+
+
+@pytest.mark.asyncio
+async def test_the_console_lists_a_setting_it_does_not_offer_while_it_needs_attention(
+    config_env, extension_registry
+) -> None:
+    _write_models(
+        config_env,
+        """
+        models:
+          - id: chat
+            base_url: https://api.example/v1
+            api_key: ${SMS_DEFAULT_COUNTRY_CODE}
+        """,
+    )
+    store = FakeAppConfigStore(
+        [row("EMAIL_PROVIDER", "unloaded_email"), row("SMS_OTP_MAX_ATTEMPTS", "99")]
+    )
+    await _boot(store)
+
+    entries = {entry["key"]: entry for entry in app_config.describe(offered_only=True)["entries"]}
+    assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp"
+    assert entries["SMS_OTP_MAX_ATTEMPTS"]["invalid"] == "must be at most 10"
+    assert entries["SMS_DEFAULT_COUNTRY_CODE"]["missing"] is True
+    assert "SMS_AUTH_ENABLED" not in entries
+
+
 # --- writes ------------------------------------------------------------------
 
 

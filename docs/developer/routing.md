@@ -797,7 +797,9 @@ auto:
 Each profile is served as `auto-<name>`. The auto models exist only while the
 `auto_mode_enabled` runtime setting is on, and it is off by default. While it
 is off, a request naming one gets 404 and `/v1/models` does not list them.
-Requests that name a real model are never affected.
+Requests that name a real model are never affected. The admin Settings tab
+offers the switch only once the backend has started with a valid `auto:`
+section; without one it has nothing to serve.
 
 **Which candidate serves.** The first one in the list that can serve the
 request. A candidate is skipped for any of these reasons:
