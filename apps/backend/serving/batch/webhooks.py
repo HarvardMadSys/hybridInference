@@ -135,7 +135,12 @@ def check_url(url: str, *, allow_private: bool) -> str:
     try:
         ipaddress.ip_address(host)
     except ValueError:
-        pass
+        # A name: it must encode as IDNA (no empty or over-long label), or the
+        # lookup would fail with a UnicodeError before any network I/O.
+        try:
+            host.encode("idna")
+        except UnicodeError:
+            raise WebhookTargetRefused("The webhook URL is malformed.") from None
     else:
         if _refused_address(host, allow_private=allow_private):
             raise WebhookTargetRefused("The webhook address is not allowed.")
@@ -156,6 +161,10 @@ async def check_resolves_public(url: str, *, allow_private: bool) -> None:
     except ValueError:
         raise WebhookTargetRefused("The webhook URL is malformed.") from None
     loop = asyncio.get_running_loop()
+    try:
+        host.encode("idna")
+    except UnicodeError:
+        raise WebhookTargetRefused("The webhook URL is malformed.") from None
     try:
         infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as exc:

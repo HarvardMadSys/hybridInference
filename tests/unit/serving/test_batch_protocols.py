@@ -384,7 +384,14 @@ def test_webhook_urls_that_reach_inside_are_refused(url):
 
 @pytest.mark.parametrize(
     "url",
-    ["https://[broken/h", "https://example.com:bad/hook", "https://example.com:99999/hook"],
+    [
+        "https://[broken/h",
+        "https://example.com:bad/hook",
+        "https://example.com:99999/hook",
+        # A 64-character label is not valid IDNA.
+        "https://" + "a" * 64 + ".example.com/hook",
+        "https://a..example.com/hook",
+    ],
 )
 async def test_a_malformed_webhook_url_is_refused_before_any_lookup(monkeypatch, url):
     loop = asyncio.get_running_loop()
