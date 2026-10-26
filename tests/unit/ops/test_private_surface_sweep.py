@@ -77,3 +77,26 @@ def test_current_tree_has_no_unclassified_private_surface() -> None:
     assert set(buckets) == set(sweep_module.PENDING), (
         "remove empty PENDING entries when their migration finishes"
     )
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "missing"])
+def test_symlink_text_remains_in_the_scan(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    """Directory and dangling aliases must not hide private link targets."""
+    target = tmp_path / "target"
+    if kind == "file":
+        target.write_text("ordinary content")
+    elif kind == "directory":
+        target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target.name, target_is_directory=kind == "directory")
+    assert sweep_module.read_text(alias) == target.name
+
+    private_alias = tmp_path / "private-alias"
+    private_alias.symlink_to(_SAMPLES["cluster path"])
+    monkeypatch.setattr(sweep_module, "tracked_files", lambda _root: ["alias", "private-alias"])
+    _buckets, violations = sweep_module.sweep(tmp_path)
+    assert len(violations) == 1
+    assert "private-alias" in violations[0]
+    assert "cluster path" in violations[0]
