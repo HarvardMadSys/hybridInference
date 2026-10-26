@@ -479,3 +479,38 @@ def test_export_request_type_filters_and_is_audited():
     db.log_admin_action.assert_awaited_once()
     details = db.log_admin_action.await_args.kwargs["details"]
     assert details["request_type"] == "embedding"
+
+
+def test_export_is_audited_before_any_row_is_streamed():
+    """An export whose download is dropped must not go unrecorded.
+
+    The audit row was written in the body generator's ``finally``, which a client
+    disconnect cancels together with the rest of the stream: content already
+    downloaded left no trace in the audit log that exists to record it.
+    """
+    import asyncio
+
+    from serving.servers.routers.admin import export as export_routes
+
+    db = _make_mock_db([[_make_mock_row()], []])
+
+    response = asyncio.run(
+        export_routes.admin_export_requests(
+            start_time=datetime(2024, 1, 1, tzinfo=UTC),
+            end_time=datetime(2024, 12, 31, tzinfo=UTC),
+            user_id=None,
+            session_id=None,
+            model_id=None,
+            errors_only=False,
+            outcome=None,
+            request_type=None,
+            include_content=True,
+            admin_id="admin-1",
+            db_logger=db,
+        )
+    )
+
+    # Not one byte of the body read yet.
+    assert response.body_iterator is not None
+    db.log_admin_action.assert_awaited_once()
+    assert db.log_admin_action.await_args.kwargs["details"]["include_content"] is True
