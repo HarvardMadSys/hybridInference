@@ -260,16 +260,8 @@ The old `agent_*` tables stay in existing databases as read-only history
 Pointer table. Each row links to the canonical doc or skill — this guide does
 not duplicate their content.
 
-Skill bodies live only in `.agents/skills/`. The per-skill directory symlinks in
-`.codex/skills/` and `.kilo/skills/` preserve the existing tool entry points and
-old links; edit the canonical files, never maintain separate copies. Current
-Codex and Kilo versions discover `.agents/skills/` directly; the aliases retain
-compatibility with clients using the older paths. A client that lists aliases
-separately may show the same skill more than once. See the
-[Codex skill locations](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)
-and [Kilo skill locations](https://kilo.ai/docs/customize/skills#skill-locations).
-Check out Git symlinks as links (for example, `core.symlinks=true` on a system
-that supports them); the compatibility entries are not standalone copied skills.
+Repository skills live only in `.agents/skills/`. Use and edit these canonical
+files directly.
 
 Shared workflow rules apply to every skill: reuse a suitable task worktree or
 create one following section 5, preserve other work, and use the gates in
