@@ -46,8 +46,12 @@ const t = useT();
   catalog check can read them.
 
 Administration pages (`/dashboard/admin`) are for operators, not users, and stay
-in English: they do not go through `t()`, and their container is marked
-`lang="en"`. The rest of what stays in English is listed below.
+in English: their layout provides an English `LocaleProvider` without a
+translation catalog, and their container is marked `lang="en"`. This also keeps
+shared components using `t()` and React portals in English without changing the
+reader’s saved language. Admin date/time labels use an explicit `en-US` locale
+while preserving their existing time zone. The rest of what stays in English is
+listed below.
 
 ## The catalog
 

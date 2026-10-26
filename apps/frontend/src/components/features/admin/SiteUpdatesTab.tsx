@@ -693,7 +693,7 @@ export function SiteUpdatesTab() {
                       </span>
                       <time
                         dateTime={u.created_at}
-                        title={`Created ${new Date(u.created_at).toLocaleString()}`}
+                        title={`Created ${new Date(u.created_at).toLocaleString('en-US')}`}
                       >
                         {fmtDate(u.created_at)}
                       </time>

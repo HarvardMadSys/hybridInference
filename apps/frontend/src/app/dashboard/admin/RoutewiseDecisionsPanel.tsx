@@ -161,7 +161,7 @@ function fmtBucketLabel(iso: string, range: RoutewiseDecisionsRange): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   if (range === '24h') {
-    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   }
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
@@ -182,7 +182,7 @@ function resetAtLabel(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleTimeString(undefined, {
+  return d.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
     timeZoneName: 'short',
