@@ -867,6 +867,49 @@ describe('UserTable account settings: in place, review, confirm', () => {
     expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
   });
 
+  it('lets a refresh show through a field typed back to its saved value', async () => {
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 100, admin_note: null }))
+      // Another write changed the quota while the panel was open.
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 250, admin_note: 'VIP customer' }));
+    const onUpdate = await renderAccountSettings();
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
+    fireEvent.change(quota, { target: { value: '200' } });
+    fireEvent.change(quota, { target: { value: '100' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+
+    // Saving the note refetches the detail.
+    fireEvent.change(screen.getByLabelText('Admin note'), { target: { value: 'VIP customer' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to admin note' }));
+    clickInDialog('Confirm save');
+    await waitFor(() => expect(getUserDetail).toHaveBeenCalledTimes(2));
+
+    // The reverted quota left no draft behind to mask the new value or revive a change.
+    await waitFor(() => expect(quota).toHaveValue(250));
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: 'VIP customer' });
+  });
+
+  it('lets a refresh show through a note typed back to its saved text', async () => {
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture({ role: 'free', admin_note: null }))
+      .mockResolvedValueOnce(detailFixture({ role: 'pro', admin_note: 'Set elsewhere' }));
+    await renderAccountSettings();
+    const note = screen.getByLabelText('Admin note');
+    fireEvent.change(note, { target: { value: 'draft' } });
+    fireEvent.change(note, { target: { value: '' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+
+    chooseOption('Role', 'pro');
+    saveAccount();
+    clickInDialog('Confirm save');
+    await waitFor(() => expect(getUserDetail).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => expect(screen.getByLabelText('Admin note')).toHaveValue('Set elsewhere'));
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+  });
+
   it('lists old -> new, keeps drafts on Back, and writes one patch on Confirm', async () => {
     const onUpdate = await renderAccountSettings();
     chooseOption('Role', 'pro');

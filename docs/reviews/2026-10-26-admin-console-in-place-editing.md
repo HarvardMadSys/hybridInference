@@ -9,7 +9,7 @@ are unchanged. This record covers what was changed and verified on this date. It
 
 | Rule | Applies to | Behaviour |
 |---|---|---|
-| **edit** | Changing saved values | **Field.** Editable in place, with no Edit step. It shows the draft, or the saved value when there is none. A secret field is never prefilled, and an empty secret means unchanged. Changes are local drafts, and no write is made from `onChange` or `onBlur`. **Save bar.** Appears with the first change and goes away when the change is discarded or typed back by hand. It shows the count of unsaved changes, **Discard** (zero writes) and **Save changes**. The review lists each change `old → new`. **Back to editing** keeps the drafts, and only **Confirm save** writes. The busy and failure behaviour of 2026-10-24 is unchanged. **Invalid draft.** Counts as unsaved, so the bar stays up. Settings, Batch Concurrency and Usage Insights hold Save back with the reason (`blocked`). Users, weights, limits, Queue offload and RouteWise parameters show the reason on Save, as before. **Locks.** A lock that used to wait for an open edit now waits for an unsaved change or an open confirmation. An unchanged field locks nothing. |
+| **edit** | Changing saved values | **Field.** Editable in place, with no Edit step. It shows the draft, or the saved value when there is none. A secret field is never prefilled, and an empty secret means unchanged. Changes are local drafts, and no write is made from `onChange` or `onBlur`. **Save bar.** Appears with the first change and goes away when the change is discarded or typed back by hand. A value typed back to what is saved is no draft at all, so a later refresh of the saved value shows through instead of being masked by a stale copy. It shows the count of unsaved changes, **Discard** (zero writes) and **Save changes**. The review lists each change `old → new`. **Back to editing** keeps the drafts, and only **Confirm save** writes. The busy and failure behaviour of 2026-10-24 is unchanged. **Invalid draft.** Counts as unsaved, so the bar stays up. Settings, Batch Concurrency and Usage Insights hold Save back with the reason (`blocked`). Users, weights, limits, Queue offload and RouteWise parameters show the reason on Save, as before. **Locks.** A lock that used to wait for an open edit now waits for an unsaved change or an open confirmation. An unchanged field locks nothing. |
 
 Entities opened explicitly keep their **Edit `<name>`** button, because the editor has to be opened:
 - the provider definition and route modals;
@@ -149,6 +149,12 @@ New tests:
   "holds Reset while that setting has an unsaved change"; and, for each panel, "reports only unsaved
   changes or an open confirmation to the parent".
 
+Review follow-up: in `UserDetailPanel`, `RuntimeSettingsSection` and the routing weights and limits, a field typed back to its saved value used to keep its draft. The bar went away, but a refreshed saved value stayed masked and could come back as a change. Those drafts are now dropped. The tests are:
+- `users/UserTable.test.tsx`: "lets a refresh show through a field typed back to its saved value" and "lets a refresh show through a note typed back to its saved text";
+- `ProviderRoutesTab.test.tsx`: "lets a refreshed limit show through a draft typed back to the saved one".
+
+All three fail without the fix. Runtime settings reload only on mount, so no refresh path reaches a reverted draft there today; the same fix applies anyway.
+
 ## Verification
 
 Run from `apps/frontend`:
@@ -159,6 +165,6 @@ Run from `apps/frontend`:
 | `npm run lint` | clean |
 | `npm run type-check` | clean |
 | `npm run i18n:check` | clean |
-| `npx vitest run` | 147 files, 1,899 tests passed |
+| `npx vitest run` | 147 files, 1,902 tests passed |
 
 Not done: browser acceptance against a running deployment.

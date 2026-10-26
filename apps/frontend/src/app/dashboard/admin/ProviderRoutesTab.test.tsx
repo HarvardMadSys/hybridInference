@@ -3925,6 +3925,51 @@ describe('ProviderRoutesTab', () => {
       expect(updateProviderRouteCandidate).toHaveBeenCalledTimes(1);
     });
 
+    it('lets a refreshed limit show through a draft typed back to the saved one', async () => {
+      const openRouterRoute = (provider: string, limit: number) => ({
+        ...route,
+        route_id: `minimax-fast:openrouter[${provider}]-api`,
+        provider: 'openrouter',
+        upstream_provider: 'openrouter',
+        openrouter_provider: provider,
+        key_provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        concurrency_limit: limit,
+        endpoint_id: `minimax-fast:openrouter[${provider}]-api`,
+        source: 'runtime' as const,
+      });
+      const parasail = openRouterRoute('parasail', 2);
+      const deepinfra = openRouterRoute('deepinfra', 3);
+      // Deleting a route answers with the model's routes as they now stand:
+      // parasail's limit was changed meanwhile.
+      vi.mocked(deleteProviderRouteCandidate).mockResolvedValue({
+        model_id: 'minimax-fast',
+        strategy: 'routewise',
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [route, { ...parasail, concurrency_limit: 5 }] as never,
+      });
+      renderRoutewiseRoute([route, parasail, deepinfra]);
+
+      const parasailLimit = await screen.findByLabelText(
+        `Concurrency limit for ${parasail.endpoint_id}`,
+      );
+      fireEvent.change(parasailLimit, { target: { value: '4' } });
+      fireEvent.change(parasailLimit, { target: { value: '2' } });
+      expect(screen.queryByText('1 unsaved change')).not.toBeInTheDocument();
+
+      const row = screen.getAllByText(deepinfra.endpoint_id, { selector: 'div' })[0].parentElement!
+        .parentElement as HTMLElement;
+      fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+      confirmAction('Delete');
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+      // No stale copy of 2 is left to mask the new limit or to come back as a change.
+      expect(screen.getByLabelText(`Concurrency limit for ${parasail.endpoint_id}`)).toHaveValue(5);
+      expect(screen.queryByText('1 unsaved change')).not.toBeInTheDocument();
+      expect(updateProviderRouteCandidate).not.toHaveBeenCalled();
+    });
+
     it('keeps a failed row action in its dialog, and Cancel writes nothing', async () => {
       const runtimeRoute = { ...route, source: 'runtime' as const };
       vi.mocked(deleteProviderRouteCandidate).mockRejectedValue(new Error('route is in use'));

@@ -2474,12 +2474,18 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             step={1}
                             type="number"
                             value={draftConcurrencyLimit}
-                            onChange={(event) =>
-                              setDraftConcurrencyLimits((current) => ({
-                                ...current,
-                                [key]: event.target.value,
-                              }))
-                            }
+                            onChange={(event) => {
+                              const value = event.target.value;
+                              // Typed back to what is saved, it is no draft: a
+                              // refresh of the saved limit shows through.
+                              setDraftConcurrencyLimits((current) => {
+                                const next = { ...current };
+                                if (value === String(route.concurrency_limit ?? '')) {
+                                  delete next[key];
+                                } else next[key] = value;
+                                return next;
+                              });
+                            }}
                           />
                           <EditBar
                             target={`${route.endpoint_id} concurrency limit`}
@@ -2523,10 +2529,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                               value={draftWeight}
                               onChange={(event) => {
                                 const value = event.target.value;
-                                setDraftWeights((current) => ({
-                                  ...current,
-                                  [weightKey]: value,
-                                }));
+                                // Typed back to the effective weight, it is no
+                                // draft: a refresh (a Reset, say) shows through.
+                                setDraftWeights((current) => {
+                                  const next = { ...current };
+                                  if (value === formatWeight(effectiveWeight)) {
+                                    delete next[weightKey];
+                                  } else next[weightKey] = value;
+                                  return next;
+                                });
                               }}
                             />
                             {hasWeightOverride ? (

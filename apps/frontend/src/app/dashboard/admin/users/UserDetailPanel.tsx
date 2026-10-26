@@ -283,9 +283,18 @@ function AccountSettings({
   // An invalid quota is still an unsaved change: Save stays enabled and says why it cannot go.
   const changeCount = changes.length + (invalidQuota ? 1 : 0);
 
+  // A field set back to its saved value is no draft, so a later refresh of the
+  // saved value shows through instead of being masked by a stale copy.
   const change = (next: Partial<AccountDraft>) => {
     setSaveError(null);
-    setDraft((prev) => ({ ...prev, ...next }));
+    const saved = savedAccount(detail);
+    setDraft((prev) => {
+      const merged: Partial<AccountDraft> = { ...prev, ...next };
+      for (const field of Object.keys(next) as (keyof AccountDraft)[]) {
+        if (JSON.stringify(merged[field]) === JSON.stringify(saved[field])) delete merged[field];
+      }
+      return merged;
+    });
   };
 
   const toggleDisabledModel = (modelId: string) => {
@@ -545,7 +554,8 @@ function TextSetting({
       {header}
       <textarea
         value={value}
-        onChange={(e) => setDraft(e.target.value)}
+        // Typed back to the saved text, it is no draft: a refresh shows through.
+        onChange={(e) => setDraft(e.target.value === (saved ?? '') ? null : e.target.value)}
         disabled={busy}
         rows={rows}
         maxLength={2000}

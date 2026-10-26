@@ -146,8 +146,19 @@ function RuntimeSettingsSection({
   const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const draftOf = (setting: RuntimeSettingItem) =>
-    drafts[setting.key] ?? (kind === 'flag' ? !!setting.value : String(setting.value ?? ''));
+  const savedDraft = (setting: RuntimeSettingItem) =>
+    kind === 'flag' ? !!setting.value : String(setting.value ?? '');
+  const draftOf = (setting: RuntimeSettingItem) => drafts[setting.key] ?? savedDraft(setting);
+
+  // A value set back to what is saved is no draft, so a later refresh of the
+  // saved value shows through instead of being masked by a stale copy.
+  const changeDraft = (setting: RuntimeSettingItem, value: string | boolean) =>
+    setDrafts((prev) => {
+      const next = { ...prev };
+      if (value === savedDraft(setting)) delete next[setting.key];
+      else next[setting.key] = value;
+      return next;
+    });
 
   // A setting is changed when its draft is valid and differs from what is saved.
   const changes = settings.flatMap((setting): SettingChange[] => {
@@ -296,9 +307,7 @@ function RuntimeSettingsSection({
                       aria-checked={draft === true}
                       aria-label={name}
                       disabled={confirmation.busy}
-                      onClick={() =>
-                        setDrafts((prev) => ({ ...prev, [setting.key]: !(draft === true) }))
-                      }
+                      onClick={() => changeDraft(setting, !(draft === true))}
                       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
                         draft === true ? 'bg-gray-900' : 'bg-gray-200'
                       }`}
@@ -317,9 +326,7 @@ function RuntimeSettingsSection({
                       max={setting.max ?? undefined}
                       value={String(draft)}
                       disabled={confirmation.busy}
-                      onChange={(e) =>
-                        setDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
-                      }
+                      onChange={(e) => changeDraft(setting, e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
