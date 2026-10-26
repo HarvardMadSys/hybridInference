@@ -247,7 +247,37 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
             json.dumps({"model": NATIVE_MODEL, "messages": [], "max_tokens": None}).encode(),
             "Missing required field: max_tokens",
         ),
+        ("/v1/messages", b"[]", "Request body must be a JSON object"),
+        (
+            "/v1/messages",
+            json.dumps({"model": OPENAI_MODEL, "messages": "hi", "max_tokens": 5}).encode(),
+            "Invalid field: messages must be an array",
+        ),
+        (
+            "/v1/messages",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}, 1],
+                    "max_tokens": 5,
+                }
+            ).encode(),
+            "Invalid field: messages[1] must be an object",
+        ),
+        (
+            "/v1/messages",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 5,
+                    "metadata": "user-1",
+                }
+            ).encode(),
+            "Invalid field: metadata must be an object",
+        ),
         ("/v1/messages/count_tokens", b"{not json", "Invalid JSON in request body"),
+        ("/v1/messages/count_tokens", b"[]", "Request body must be a JSON object"),
         (
             "/v1/messages/count_tokens",
             json.dumps({"model": NATIVE_MODEL}).encode(),
@@ -260,7 +290,12 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
         "no-messages",
         "no-max-tokens",
         "null-max-tokens",
+        "not-an-object",
+        "messages-not-an-array",
+        "message-not-an-object",
+        "metadata-not-an-object",
         "count-not-json",
+        "count-not-an-object",
         "count-no-messages",
     ],
 )
