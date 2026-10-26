@@ -1615,6 +1615,14 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_provider_env_key_reservations(provider)
 
+    async def list_all_disabled_provider_env_keys(self) -> list[tuple[str, str, str]]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_disabled_provider_env_keys()
+
+    async def list_all_provider_env_key_reservations(self) -> list[tuple[str, str, str, str]]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_provider_env_key_reservations()
+
 
 __all__ = [
     "CacheBackend",

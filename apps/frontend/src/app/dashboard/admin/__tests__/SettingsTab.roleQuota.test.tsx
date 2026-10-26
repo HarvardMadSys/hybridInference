@@ -22,6 +22,7 @@ vi.mock('@/lib/api/admin', async () => {
     // the test exercises; unmocked they reach the real gateway.
     listModelVisibility: vi.fn(async () => ({ models: [] })),
     listModelConcurrency: vi.fn(async () => ({ models: [] })),
+    listBatchModelLimits: vi.fn(async () => ({ default_concurrency: 4, models: [] })),
     listRoutewiseSettings: vi.fn(async () => ({ settings: [] })),
     listRouteWeights: vi.fn(async () => []),
     getAlertSnooze: vi.fn(async () => ({

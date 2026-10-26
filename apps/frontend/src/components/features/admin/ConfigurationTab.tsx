@@ -65,10 +65,13 @@ import {
   type ConfigGroup,
 } from '@/components/features/configuration/configDrafts';
 import {
+  exportConfigBackup,
   getConfig,
   patchConfig,
   resetConfigKey,
+  restoreConfigBackup,
   testAlertNotification,
+  type ConfigBackupPayload,
   type ConfigEntry,
   type ConfigResponse,
   type ConfigScalar,
@@ -78,6 +81,25 @@ import { navigateTo } from '@/lib/utils/navigation';
 
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
+}
+
+function downloadBackupJson(payload: ConfigBackupPayload): void {
+  const datePart = (payload.exported_at ?? new Date().toISOString()).slice(0, 10);
+  const filename = `hybrid-inference-config-backup-${datePart}.json`;
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
+    type: 'application/json',
+  });
+  if (typeof URL.createObjectURL !== 'function') return;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  if (typeof URL.revokeObjectURL === 'function') {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /** A category's validated changes, waiting for the administrator to confirm them. */
@@ -158,6 +180,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
   const testConfirmation = useConfirmAction();
+  const backupConfirmation = useConfirmAction();
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
   const saveInFlight = useRef(false);
 
@@ -453,6 +477,119 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
+  const requestBackupDownload = () => {
+    backupConfirmation.request({
+      title: 'Download configuration backup?',
+      confirmLabel: 'Download backup',
+      busyLabel: 'Downloading…',
+      body: (
+        <div className="space-y-2">
+          <p>
+            Exports all administrator-configurable state as a portable JSON file, including
+            application settings, runtime settings, custom providers, provider API keys, route
+            overrides, model visibility, concurrency exemptions, batch limits, and allowed signup
+            domains.
+          </p>
+          <p className="font-medium text-amber-800">
+            This backup file includes API keys and secrets in plain text. Store it securely and
+            never share it publicly.
+          </p>
+        </div>
+      ),
+      run: async () => {
+        const payload = await exportConfigBackup();
+        downloadBackupJson(payload);
+        toast.success('Downloaded configuration backup.');
+      },
+    });
+  };
+
+  const onRestoreFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    let parsed: ConfigBackupPayload;
+    try {
+      const text = await file.text();
+      const raw: unknown = JSON.parse(text);
+      if (
+        !raw ||
+        typeof raw !== 'object' ||
+        Array.isArray(raw) ||
+        typeof (raw as { schema_version?: unknown }).schema_version !== 'number'
+      ) {
+        toast.error('The selected file is not a valid configuration backup JSON.');
+        return;
+      }
+      parsed = raw as ConfigBackupPayload;
+    } catch {
+      toast.error('The selected file is not a valid configuration backup JSON.');
+      return;
+    }
+
+    const appConfigCount = Array.isArray(parsed.app_config) ? parsed.app_config.length : 0;
+    const siteSettingsCount = Array.isArray(parsed.site_settings) ? parsed.site_settings.length : 0;
+    const providerCount = Array.isArray(parsed.provider_definitions)
+      ? parsed.provider_definitions.length
+      : 0;
+    const keyCount = Array.isArray(parsed.provider_keys) ? parsed.provider_keys.length : 0;
+    const routeCount =
+      (Array.isArray(parsed.provider_route_candidates)
+        ? parsed.provider_route_candidates.length
+        : 0) +
+      (Array.isArray(parsed.provider_route_configs) ? parsed.provider_route_configs.length : 0);
+
+    backupConfirmation.request({
+      title: 'Restore configuration from backup?',
+      confirmLabel: 'Restore configuration',
+      busyLabel: 'Restoring…',
+      tone: 'danger',
+      body: (
+        <div className="space-y-2">
+          <ChangeList
+            changes={[
+              { label: 'Backup file', after: file.name },
+              ...(parsed.exported_at ? [{ label: 'Exported at', after: parsed.exported_at }] : []),
+              { label: 'Application settings', after: plural(appConfigCount, 'stored row') },
+              { label: 'Runtime & model settings', after: plural(siteSettingsCount, 'setting') },
+              {
+                label: 'Custom providers & keys',
+                after: `${plural(providerCount, 'provider')}, ${plural(keyCount, 'API key')}`,
+              },
+              { label: 'Routes & overrides', after: plural(routeCount, 'route') },
+            ]}
+          />
+          <p className="font-medium text-red-800">
+            Restoring replaces the current configuration, providers, API keys, routes, and runtime
+            settings with the contents of this backup. Existing user API key encryption secrets are
+            automatically preserved when user API keys already exist.
+          </p>
+        </div>
+      ),
+      run: async () => {
+        const res = await restoreConfigBackup(parsed);
+        setConfig(res.config);
+        setDrafts({});
+        setEntryErrors({});
+        setGroupErrors({});
+        setPendingResets({});
+        setPendingSecrets({});
+        setAlertChannelDraft(null);
+        setAlertTestResult(null);
+        setEditingGroup(null);
+        router.refresh();
+        if (res.immutable_keys_preserved.length > 0) {
+          toast.success(
+            `Restored configuration (preserved existing ${res.immutable_keys_preserved.join(', ')}).`,
+          );
+        } else {
+          toast.success('Restored configuration from backup.');
+        }
+      },
+    });
+  };
+
   if (loading && !config) {
     return (
       <div className="mt-6">
@@ -625,6 +762,30 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         >
           Add variable
         </button>
+        <button
+          type="button"
+          onClick={requestBackupDownload}
+          disabled={backupConfirmation.busy}
+          className={BUTTON_SECONDARY}
+        >
+          Backup
+        </button>
+        <button
+          type="button"
+          onClick={() => restoreInputRef.current?.click()}
+          disabled={backupConfirmation.busy}
+          className={BUTTON_SECONDARY}
+        >
+          Restore
+        </button>
+        <input
+          ref={restoreInputRef}
+          type="file"
+          accept=".json,application/json"
+          aria-label="Select configuration backup file"
+          onChange={(event) => void onRestoreFileSelected(event)}
+          className="sr-only"
+        />
       </div>
 
       {adding ? (
@@ -811,6 +972,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       ) : null}
 
       {testConfirmation.dialog}
+      {backupConfirmation.dialog}
 
       {pendingSave ? (
         <ConfirmDialog

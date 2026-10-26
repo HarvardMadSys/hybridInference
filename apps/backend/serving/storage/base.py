@@ -1754,6 +1754,14 @@ class OperationalStore(ABC):
         returns.
         """
 
+    async def list_all_disabled_provider_env_keys(self) -> list[tuple[str, str, str]]:
+        """Return ``(provider, key_hash, key_prefix)`` for all disabled env keys."""
+        return []
+
+    async def list_all_provider_env_key_reservations(self) -> list[tuple[str, str, str, str]]:
+        """Return ``(provider, key_hash, key_prefix, min_role)`` for all reserved env keys."""
+        return []
+
 
 # ---------------------------------------------------------------------------
 # LogStore — api_logs, api_stats_hourly

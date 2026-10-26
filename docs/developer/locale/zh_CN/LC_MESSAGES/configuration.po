@@ -2015,3 +2015,20 @@ msgstr "短信服务需要 `TENCENT_CLOUD_SECRET_ID`、`TENCENT_CLOUD_SECRET_KEY
 #: ../developer/configuration.md
 msgid "A deployment that used the Tencent adapter before it became optional adds the module to `BACKEND_EXTENSIONS` when it upgrades; setting names and stored values are unchanged. On a gateway that does not load a provider, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it."
 msgstr "此前使用腾讯适配器的部署在升级时把该模块加入 `BACKEND_EXTENSIONS`，配置名称和存储值都不变。未加载某个服务的网关会把它曾使用的残留旧行列为普通自定义配置：没有代码读取它，秘密标记保留，管理员可以删除。"
+
+#: ../developer/configuration.md
+msgid "Cap how many batch requests a model runs at once"
+msgstr "限制一个模型同时运行的批量请求数"
+
+#: ../developer/configuration.md
+msgid "**Batch Concurrency**"
+msgstr ""
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid "`PATCH /admin/batch/models/{model_id}` sets or clears a model's cap; `GET /admin/batch/models` lists the caps with each model's running and queued batch requests"
+msgstr "`PATCH /admin/batch/models/{model_id}` 设置或清除某个模型的上限；`GET /admin/batch/models` 列出各模型的上限及其正在运行和排队的批量请求"
+
+#: ../developer/configuration.md
+msgid "`batch_model_limits`"
+msgstr ""

@@ -51,7 +51,7 @@ from __future__ import annotations
 import ipaddress
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
@@ -378,6 +378,24 @@ def _trusted_direct_client_networks() -> tuple[ipaddress.IPv4Network | ipaddress
 def _trusted_cloudflare_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
     """Return parsed Cloudflare-authorized networks from settings."""
     return get_settings().trusted_cloudflare_parsed
+
+
+def preset_client_ip_info(scope_state: dict[str, Any], info: ClientIpInfo) -> None:
+    """Record *info* as the client of a request whose scope is still being built.
+
+    For requests the gateway issues itself on a caller's behalf, with no network
+    peer to resolve (the batch worker's): :func:`get_client_ip_info` then
+    returns *info* instead of resolving the missing peer, which would log
+    ``client_ip_resolution_unresolved`` -- the signal for degraded proxy
+    provenance, not for internal callers.
+
+    Args:
+        scope_state: The ASGI scope's ``state`` dict, before the ``Request`` is
+            built over it.
+        info: The identity to report; never a loopback, private or trusted
+            address, which other checks would read as a trusted caller.
+    """
+    scope_state[_IP_INFO_STATE_KEY] = info
 
 
 def get_client_ip_info(request: Request) -> ClientIpInfo:

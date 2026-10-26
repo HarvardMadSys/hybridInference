@@ -51,6 +51,7 @@ vi.mock('@/lib/api/admin', async () => {
       model_id: 'gpt-4o-mini',
       exempt: true,
     })),
+    listBatchModelLimits: vi.fn(async () => ({ default_concurrency: 4, models: [] })),
     listRoutewiseSettings: vi.fn(async () => ({ settings: [] })),
     updateRoutewiseSetting: vi.fn(),
     listRouteWeights: vi.fn(async () => []),

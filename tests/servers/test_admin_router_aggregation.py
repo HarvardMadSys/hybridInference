@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 136  # includes role-quota, provider-key verification/probe, key min-role (db+env)
+    expected = 140  # includes role-quota, provider-key verification/probe, key min-role (db+env)
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -85,6 +85,10 @@ def test_admin_router_has_expected_route_count() -> None:
     # reset one route's context window, output cap, modalities and tool support.
     # 133 -> 136: provider-route-states (disable/enable any route) and
     # provider-route-removals POST/DELETE (delete and restore a config route).
+    # 136 -> 138: batch/models list and per-model update, the batch
+    # concurrency caps an administrator sets per model.
+    # 138 -> 140: config/backup GET and config/restore POST, portable
+    # configuration backup and restore across all admin-editable domains.
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

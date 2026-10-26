@@ -477,7 +477,7 @@ describe('BroadcastsTab', () => {
       const review = await screen.findByRole('dialog', {
         name: 'Schedule this broadcast for 3 recipients?',
       });
-      expect(review).toHaveTextContent(`Delivery${when.toLocaleString()}`);
+      expect(review).toHaveTextContent(`Delivery${when.toLocaleString('en-US')}`);
       expect(review).toHaveTextContent('Spend today (UTC)More than $5');
       expect(review).toHaveTextContent('can be cancelled from Send History');
       expect(createBroadcast).not.toHaveBeenCalled();
@@ -593,7 +593,7 @@ describe('BroadcastsTab', () => {
         name: 'Cancel the scheduled broadcast “November maintenance”?',
       });
       expect(review).toHaveTextContent('It will not be sent to its 42 recipients');
-      expect(review).toHaveTextContent(new Date(SCHEDULED.scheduled_at!).toLocaleString());
+      expect(review).toHaveTextContent(new Date(SCHEDULED.scheduled_at!).toLocaleString('en-US'));
       expect(nativeConfirm).not.toHaveBeenCalled();
       expect(getBroadcastDetail).not.toHaveBeenCalled();
 

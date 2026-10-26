@@ -64,6 +64,8 @@ if TYPE_CHECKING:
     from routing.model_router_registry import ModelRouterRegistry
     from routing.routers import FixedRouter, ManagedRouter
     from serving.auto_mode import AutoMode
+    from serving.batch.model_limits import BatchModelLimits
+    from serving.batch.scheduler import BatchScheduler
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
@@ -76,6 +78,7 @@ if TYPE_CHECKING:
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
+    from serving.storage.batch_store import BatchStore
     from serving.storage.database import DatabaseLogger
     from serving.storage.responses_store import ResponseStore
 
@@ -117,6 +120,15 @@ class AppServices:
     # The ``auto:`` section of models.yaml, when it loaded cleanly. Served only
     # while the ``auto_mode_enabled`` runtime setting is on (serving/auto_mode.py).
     auto_mode: AutoMode | None = None
+    # Batch inference (serving/batch/): the job store, the per-model caps an
+    # administrator sets on it, and the in-process worker draining it. All
+    # three are absent without a database, where /v1/batches answers 404.
+    batch_store: BatchStore | None = None
+    batch_model_limits: BatchModelLimits | None = None
+    batch_scheduler: BatchScheduler | None = None
+    # The batch store while its schema migration waits for a lock at boot:
+    # nothing is served from it, but the hard-delete purge still goes through it.
+    batch_store_pending: BatchStore | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
@@ -178,6 +190,34 @@ def get_response_store(
 ) -> ResponseStore | None:
     """Dependency to obtain the Responses API store (if configured)."""
     return getattr(services, "responses_store", None)
+
+
+def get_batch_store(
+    services: AppServices = Depends(get_services),
+) -> BatchStore | None:
+    """Dependency to obtain the batch job store (if configured)."""
+    return getattr(services, "batch_store", None)
+
+
+def get_batch_store_for_purge(
+    services: AppServices = Depends(get_services),
+) -> BatchStore | None:
+    """Dependency to obtain the batch store an erasure must purge, ready or not."""
+    return getattr(services, "batch_store", None) or getattr(services, "batch_store_pending", None)
+
+
+def get_batch_model_limits(
+    services: AppServices = Depends(get_services),
+) -> BatchModelLimits | None:
+    """Dependency to obtain the per-model batch concurrency caps (if configured)."""
+    return getattr(services, "batch_model_limits", None)
+
+
+def get_batch_scheduler(
+    services: AppServices = Depends(get_services),
+) -> BatchScheduler | None:
+    """Dependency to obtain the in-process batch worker (if running)."""
+    return getattr(services, "batch_scheduler", None)
 
 
 def get_user_concurrency_limiter(

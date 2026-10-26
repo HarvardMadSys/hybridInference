@@ -73,11 +73,11 @@ old-format fallback.
 | admin users: approve, reject, update | admin / admin_token | user |
 | admin users: delete, resume, hard delete (in-transaction) | admin / admin_token | user |
 | admin API keys: create, update, revoke, hard delete | admin / admin_token | user (key owner) |
-| models: concurrency, visibility | admin / admin_token | model |
+| models: concurrency, visibility, batch concurrency | admin / admin_token | model |
 | routing weights, offload routes, provider routes (strategy, model, candidate, capabilities, state, delete, restore) | admin / admin_token | model |
 | RouteWise model settings; probe run | admin / admin_token | model (canonical id) |
 | RouteWise global settings; runtime settings | admin / admin_token | setting |
-| app configuration update/reset | admin / admin_token | config |
+| app configuration update/reset; configuration backup/restore | admin / admin_token | config |
 | provider disable/enable; provider definitions | admin / admin_token | provider |
 | provider keys (DB and env) | admin / admin_token | provider_key |
 | alert mute/unmute | admin / admin_token | alert_type |

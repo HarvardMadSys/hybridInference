@@ -93,6 +93,8 @@ async def admin_client(monkeypatch, mock_stores):
 
     response_store = MagicMock()
     response_store.delete_user_responses = AsyncMock(return_value=0)
+    batch_store = MagicMock()
+    batch_store.delete_user_batches = AsyncMock(return_value=0)
 
     services = AppServices(
         router=router,
@@ -100,6 +102,7 @@ async def admin_client(monkeypatch, mock_stores):
         operational_store=op_store,
         log_store=log_store,
         responses_store=response_store,
+        batch_store=batch_store,
         routing_manager=None,
     )
     app.state.services = services  # type: ignore[attr-defined]
@@ -1469,6 +1472,10 @@ async def test_hard_delete_user_wipes_data(admin_client):
     response_store = client._transport.app.state.services.responses_store
     response_store.delete_user_responses.assert_awaited_once_with("u1")
 
+    # So are the user's batches, with their stored requests and results.
+    batch_store = client._transport.app.state.services.batch_store
+    batch_store.delete_user_batches.assert_awaited_once_with("u1")
+
     op_store.begin_hard_delete_user.assert_awaited_once_with("u1")
 
     # The operational claim precedes LogStore purge and final deletion.
@@ -1511,10 +1518,119 @@ async def test_hard_delete_aborts_when_resume_wins_race(admin_client):
     op_store.begin_hard_delete_user.assert_awaited_once_with("u1")
     log_store.hard_delete_user_data.assert_not_awaited()
 
-    # But response_store and op_store were NOT touched.
+    # But response_store, batch_store and op_store were NOT touched.
     response_store = client._transport.app.state.services.responses_store
     response_store.delete_user_responses.assert_not_awaited()
+    batch_store = client._transport.app.state.services.batch_store
+    batch_store.delete_user_batches.assert_not_awaited()
     op_store.hard_delete_user.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_purges_batches_before_the_account_rows(admin_client):
+    """Batches go after the log purge and before the operational wipe.
+
+    A failed batch purge leaves the user soft-deleted with the fence in place,
+    so the admin's retry purges what is left.
+    """
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    batch_store = client._transport.app.state.services.batch_store
+    manager = MagicMock()
+    manager.attach_mock(log_store.hard_delete_user_data, "log_store_hard_delete_data")
+    manager.attach_mock(batch_store.delete_user_batches, "batch_store_delete_user_batches")
+    manager.attach_mock(op_store.hard_delete_user, "op_store_hard_delete")
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 200
+    call_names = [c[0] for c in manager.mock_calls]
+    assert call_names == [
+        "log_store_hard_delete_data",
+        "batch_store_delete_user_batches",
+        "op_store_hard_delete",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_stops_when_the_batch_purge_fails(admin_client):
+    """The account rows stay, so the hard-delete can be retried."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    batch_store = client._transport.app.state.services.batch_store
+    batch_store.delete_user_batches.side_effect = RuntimeError("batch store unavailable")
+
+    with pytest.raises(RuntimeError, match="batch store unavailable"):
+        await client.post(
+            "/admin/users/u1/hard-delete",
+            headers=AUTH,
+            json={"confirm": True},
+        )
+
+    op_store.hard_delete_user.assert_not_awaited()
+    # The log purge already established the fence, so the claim is kept.
+    op_store.release_hard_delete_user_claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_works_without_a_batch_store(admin_client):
+    """A deployment without a database-backed batch store has nothing to purge."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    client._transport.app.state.services.batch_store = None
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 200
+    op_store.hard_delete_user.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_purges_batches_while_their_migration_is_pending(admin_client):
+    """A batch store still waiting for its schema migration at boot is purged all the same.
+
+    Batches stored before this boot are in the database whether or not this
+    process has finished migrating their tables.
+    """
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    services = client._transport.app.state.services
+    pending = services.batch_store
+    services.batch_store = None
+    services.batch_store_pending = pending
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True},
+    )
+
+    assert response.status_code == 200
+    pending.delete_user_batches.assert_awaited_once_with("u1")
 
 
 @pytest.mark.asyncio
