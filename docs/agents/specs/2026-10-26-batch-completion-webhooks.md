@@ -8,8 +8,8 @@ Follows: [`2026-10-25-batch-inference-design.md`](2026-10-25-batch-inference-des
 ## Problem
 
 Batch jobs run for hours. Without a callback, every caller has to poll
-`GET /v1/batches/{id}` in a loop. The issue asks for a per-batch URL, an HMAC
-signature, retries with backoff, and a delivery log.
+`GET /v1/batches/{id}` in a loop. The issue asks for a per-batch URL, retries
+with backoff, and a delivery log.
 
 ## Shape
 
@@ -24,16 +24,19 @@ signature, retries with backoff, and a delivery log.
   callback. There is no delivery table; the retained log is the latest attempt's
   status code and error, exposed as the batch's `webhook` object.
 
-## Deliberate deviations from the issue
+## Signing
 
-- **No HMAC signature in this draft.** The issue asks for one; the draft ships
-  unsigned so the callback and its state can be reviewed first. The payload is
-  the batch object, so a receiver can confirm an event by reading the batch with
-  its own key. A per-batch secret returned once at create and an
-  `X-HybridInference-Signature` header are the planned follow-up.
-- **The "delivery log" is the last attempt per batch**, not a history. A table
-  of attempts would earn its place when retries need per-attempt diagnostics or
-  when a second event type exists.
+Payloads are unsigned. The callback carries the batch object, so a receiver can
+confirm an event by reading the batch with its own key. A per-batch secret
+returned once at create and an `X-HybridInference-Signature` header are a
+possible follow-up if a receiver needs to trust the payload without calling
+back; signing is not part of the issue's scope.
+
+## Delivery log
+
+The retained log is the latest attempt per batch, not a history. A table of
+attempts would earn its place when retries need per-attempt diagnostics or when
+a second event type exists.
 
 ## Delivery
 
@@ -76,7 +79,7 @@ types and which may legitimately point at an internal endpoint.
 
 ## Deferred
 
-- HMAC signature and a per-batch signing secret.
+- Request signing and a per-batch secret (optional).
 - Per-attempt delivery history and receiver-side replay protection.
 - Event subscriptions (`batch.completed` and friends) and other event types.
 - Custom headers or a caller-supplied signing scheme.

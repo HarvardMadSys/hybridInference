@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-25 14:12+0000\n"
+"POT-Creation-Date: 2026-10-26 11:43+0530\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -202,26 +202,26 @@ msgid ""
 " the request:"
 msgstr ""
 
-#: ../developer/batches.md:102
+#: ../developer/batches.md:107
 msgid "A model you may not use is reported exactly like one that does not exist."
 msgstr ""
 
-#: ../developer/batches.md:104
+#: ../developer/batches.md:109
 msgid "The answer is the new batch:"
 msgstr ""
 
-#: ../developer/batches.md:133
+#: ../developer/batches.md:138
 msgid ""
 "The file fields are always `null`. `cost_usd`, what the batch's finished "
 "requests have cost so far, and `error`, why the whole batch failed, are "
 "not in OpenAI's object."
 msgstr ""
 
-#: ../developer/batches.md:137
+#: ../developer/batches.md:142
 msgid "Check on a batch"
 msgstr ""
 
-#: ../developer/batches.md:139
+#: ../developer/batches.md:144
 #, python-brace-format
 msgid ""
 "`GET /v1/batches/{id}` returns the batch object again. Poll it until "
@@ -296,25 +296,78 @@ msgstr ""
 msgid "Cancelled. Requests that had not started never will"
 msgstr ""
 
-#: ../developer/batches.md:152
+#: ../developer/batches.md:157
 msgid ""
 "`request_counts.completed` counts the requests that succeeded and "
 "`request_counts.failed` those that failed, including the ones a failed or"
 " expired batch never ran. Cancelled requests are in neither."
 msgstr ""
 
-#: ../developer/batches.md:156
+#: ../developer/batches.md:161
+msgid "Completion webhooks"
+msgstr ""
+
+#: ../developer/batches.md:163
+msgid ""
+"Polling is optional. Add `webhook_url` to the create body and the gateway"
+" POSTs one event when the batch reaches a final status:"
+msgstr ""
+
+#: ../developer/batches.md:173
+msgid ""
+"The URL must be HTTPS, at most 4096 characters, and carry no credentials "
+"or fragment; anything else is a `400` at create. Every delivery resolves "
+"it afresh and refuses loopback, private, link-local and metadata "
+"addresses, so a host that starts answering privately after the batch was "
+"created is not posted to. Redirects are not followed."
+msgstr ""
+
+#: ../developer/batches.md:179
+msgid "The event is:"
+msgstr ""
+
+#: ../developer/batches.md:194
+msgid ""
+"with `X-HybridInference-Event: batch.finished` and `X-HybridInference-"
+"Delivery: evt_batch_0123456789abcdef`, the latter stable across retries. "
+"One event fires for every final status (`completed`, `failed`, "
+"`cancelled` or `expired`); read `data.batch.status`."
+msgstr ""
+
+#: ../developer/batches.md:199
+#, python-brace-format
+msgid ""
+"Delivery is one POST per attempt, with a 10 second timeout, retried three"
+" times five and ten minutes apart. Only a 2xx is success. It is at least "
+"once: a gateway that dies between your answer and its own bookkeeping "
+"posts again. Use the event as a signal, and `GET "
+"/v1/batches/{id}/results` as the source of truth. Payloads are unsigned "
+"in this release; confirm one with your API key by reading the batch."
+msgstr ""
+
+#: ../developer/batches.md:206
+msgid "The batch object's `webhook` says where delivery stands:"
+msgstr ""
+
+#: ../developer/batches.md:220
+msgid ""
+"`status` is `pending`, `delivering`, `delivered` or `failed`. The URL "
+"itself is never returned. Deleting the batch cancels a callback that has "
+"not gone out."
+msgstr ""
+
+#: ../developer/batches.md:223
 msgid "Read the results"
 msgstr ""
 
-#: ../developer/batches.md:158
+#: ../developer/batches.md:225
 #, python-brace-format
 msgid ""
 "`GET /v1/batches/{id}/results` pages through the batch's requests in the "
 "order you submitted them, with each one's outcome:"
 msgstr ""
 
-#: ../developer/batches.md:207
+#: ../developer/batches.md:274
 msgid ""
 "`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the "
 "next page with `after` set to the page's `last_id`. Every request of the "
@@ -323,7 +376,7 @@ msgid ""
 " in a final status, or read them again later."
 msgstr ""
 
-#: ../developer/batches.md:213
+#: ../developer/batches.md:280
 msgid ""
 "A finished request has a `status` of `completed`, with the chat "
 "completion in `response.body`, or `failed`, with an `error` instead. A "
@@ -407,21 +460,21 @@ msgstr ""
 msgid "Not run before the completion window closed"
 msgstr ""
 
-#: ../developer/batches.md:229
+#: ../developer/batches.md:296
 msgid "`error.status` is the HTTP status behind the error, when there was one."
 msgstr ""
 
-#: ../developer/batches.md:231
+#: ../developer/batches.md:298
 msgid ""
 "A short Python client that submits a batch, waits for it and collects "
 "every result:"
 msgstr ""
 
-#: ../developer/batches.md:277
+#: ../developer/batches.md:344
 msgid "Cancel or delete a batch"
 msgstr ""
 
-#: ../developer/batches.md:279
+#: ../developer/batches.md:346
 #, python-brace-format
 msgid ""
 "`POST /v1/batches/{id}/cancel` stops a batch. Requests that have not "
@@ -430,30 +483,30 @@ msgid ""
 " that has already finished returns it unchanged."
 msgstr ""
 
-#: ../developer/batches.md:289
+#: ../developer/batches.md:351
 #, python-brace-format
 msgid ""
 "`DELETE /v1/batches/{id}` deletes a batch with its requests and results "
 "and answers `{\"id\": \"batch_...\", \"object\": \"batch.deleted\", "
 "\"deleted\": true}`. Its status does not matter, but deletion is blocked "
-"with `409` while any request holds a live upstream lease. Cancel the batch, "
-"wait for its running requests to finish (or their leases to expire), then "
-"delete it. A stale `running` item whose lease has expired does not block "
-"deletion."
+"with `409` while any request holds a live upstream lease. Cancel the "
+"batch, wait for its running requests to finish (or their leases to "
+"expire), then delete it. A stale `running` item whose lease has expired "
+"does not block deletion."
 msgstr ""
 
-#: ../developer/batches.md:290
+#: ../developer/batches.md:358
 msgid ""
 "A finished batch is deleted automatically after the deployment's "
 "retention period, seven days by default, so collect its results before "
 "then."
 msgstr ""
 
-#: ../developer/batches.md:293
+#: ../developer/batches.md:361
 msgid "List your batches"
 msgstr ""
 
-#: ../developer/batches.md:295
+#: ../developer/batches.md:363
 msgid ""
 "`GET /v1/batches` lists your own batches, newest first. `limit` is 1–100 "
 "(default 20); for the next page pass `after` set to the `last_id` of the "
@@ -461,7 +514,7 @@ msgid ""
 "objects in `data`."
 msgstr ""
 
-#: ../developer/batches.md:300
+#: ../developer/batches.md:368
 msgid ""
 "Reading, cancelling, deleting and listing your batches work even if your "
 "role no longer allows creating them, so you can always collect and remove"
@@ -469,7 +522,7 @@ msgid ""
 "Administrators may read, cancel and delete any batch."
 msgstr ""
 
-#: ../developer/batches.md:305
+#: ../developer/batches.md:373
 msgid "Limits"
 msgstr ""
 
@@ -523,13 +576,13 @@ msgstr ""
 msgid "7 days"
 msgstr ""
 
-#: ../developer/batches.md:315
+#: ../developer/batches.md:383
 msgid ""
 "The operator may have changed any of them. A larger job is several "
 "batches."
 msgstr ""
 
-#: ../developer/batches.md:317
+#: ../developer/batches.md:385
 msgid "Errors from the create call"
 msgstr ""
 
@@ -554,8 +607,8 @@ msgstr ""
 
 #: ../developer/batches.md:13
 msgid ""
-"The API key is invalid or expired when authentication runs, or the account"
-" becomes unavailable before the batch is stored"
+"The API key is invalid or expired when authentication runs, or the "
+"account becomes unavailable before the batch is stored"
 msgstr ""
 
 #: ../developer/batches.md:13
@@ -592,11 +645,11 @@ msgid ""
 " up"
 msgstr ""
 
-#: ../developer/batches.md:327
+#: ../developer/batches.md:396
 msgid "Compared with OpenAI's Batch API"
 msgstr ""
 
-#: ../developer/batches.md:329
+#: ../developer/batches.md:398
 #, python-brace-format
 msgid ""
 "The requests are the `requests` array of the create call. There is no "
@@ -604,28 +657,28 @@ msgid ""
 "results come from `/v1/batches/{id}/results`."
 msgstr ""
 
-#: ../developer/batches.md:332
+#: ../developer/batches.md:401
 msgid "The completion window is the deployment's, not chosen per batch."
 msgstr ""
 
-#: ../developer/batches.md:333
+#: ../developer/batches.md:402
 msgid "Only `/v1/chat/completions` can be batched, and `stream` is refused."
 msgstr ""
 
-#: ../developer/batches.md:334
+#: ../developer/batches.md:403
 #, python-brace-format
 msgid "`DELETE /v1/batches/{id}` exists; the status `finalizing` never occurs."
 msgstr ""
 
-#: ../developer/batches.md:335
+#: ../developer/batches.md:404
 msgid "Batch requests cost the same as interactive ones."
 msgstr ""
 
-#: ../developer/batches.md:337
+#: ../developer/batches.md:406
 msgid "Running batch inference"
 msgstr ""
 
-#: ../developer/batches.md:339
+#: ../developer/batches.md:408
 msgid ""
 "These settings are on the admin console's **Configuration** tab, under "
 "**Batch inference**. None needs a restart: a change applies to the next "
@@ -746,7 +799,7 @@ msgstr ""
 msgid "Days a finished batch and its results are kept"
 msgstr ""
 
-#: ../developer/batches.md:355
+#: ../developer/batches.md:424
 #, python-brace-format
 msgid ""
 "A model's own cap is set in **Batch Concurrency** on the admin Settings "
@@ -759,7 +812,7 @@ msgid ""
 " limit, so it does not grow with the number of processes."
 msgstr ""
 
-#: ../developer/batches.md:364
+#: ../developer/batches.md:433
 msgid ""
 "Every gateway process runs a worker; requests of one batch may run in "
 "several of them. A process that stops hands its unfinished requests back,"
@@ -767,10 +820,11 @@ msgid ""
 "lease runs out, a few minutes later."
 msgstr ""
 
-#: ../developer/batches.md:369
+#: ../developer/batches.md:438
 msgid ""
 "The batches live in the operational database (`batch_jobs`, `batch_items`"
 " and `batch_model_limits`), and each request a batch runs is a row in "
 "`api_logs` with `batch_job_id` set. Permanently deleting a user deletes "
 "their batches too."
 msgstr ""
+

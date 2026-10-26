@@ -17,8 +17,9 @@ deploying for a few minutes still gets the event. The URL is caller-supplied, so
 every attempt resolves it afresh and refuses a non-public target
 (:mod:`serving.utils.webhook_target`).
 
-Payloads are unsigned in this draft. The issue's HMAC signature is a follow-up;
-callers can already verify the payload against the API by polling the batch.
+Payloads are unsigned: a receiver confirms an event by reading the batch with
+its own key. Signing is a possible follow-up if one needs to trust the payload
+without calling back.
 """
 
 from __future__ import annotations
