@@ -602,6 +602,15 @@ Resource limits used to live in `router_params:`. Those keys are now rejected
 at boot with a message naming their route-level replacement, so a stale
 registry fails loudly rather than silently using defaults.
 
+RouteWise does not read prefill load: the latency estimates used by its LP and
+hedge choice have no backlog penalty, and it takes no prefill lease. The three keys of that
+withdrawn feature — `prefill_load_routing_enabled`,
+`prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are still
+accepted so an older registry keeps starting, but they have no effect whatever
+their value, and the backend logs a warning naming them once per process.
+Remove them from `models.yaml`. FixedRouter's
+[prefill-aware selection](#prefill-aware-selection) is unchanged.
+
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
 exactly against the usage records a provider's quota fetcher returns. RouteWise

@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from routing.endpoint_health import EndpointHealthRegistry
-    from routing.prefill_load import PrefillLoadTracker
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,4 +14,3 @@ class RouterBuildDependencies:
     """Process-scoped collaborators supplied to router strategy factories."""
 
     health_registry: EndpointHealthRegistry
-    prefill_load: PrefillLoadTracker | None = None

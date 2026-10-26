@@ -6,10 +6,12 @@ Self-registers via ``register_strategy("routewise")`` at import time.
 field-for-field with the same defaults.  ``extra="forbid"`` rejects unknown
 keys at boot, so a typo in ``models.yaml`` (``router_params: { daily_quotas: 5000 }``)
 fails fast with a clear message rather than silently using the default.
+Keys of a withdrawn feature are the one exception: see ``_RETIRED_PARAMS``.
 """
 
 from __future__ import annotations
 
+import threading
 from dataclasses import fields
 from typing import Any, get_type_hints
 
@@ -18,6 +20,9 @@ from pydantic import BaseModel, create_model, model_validator
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from routing.strategies import register_strategy
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Former field names and where their replacement lives now.
 # Kept so a stale models.yaml fails at boot with a pointer instead of a bare
@@ -31,6 +36,34 @@ _MOVED_TO_ROUTE_LEVEL = {
     "concurrency_limit": "route-level concurrency.limit",
     "concurrency_monthly_fee": "removed (subscription fees are sunk cost)",
 }
+
+# Tuning keys of the withdrawn prefill-load-aware routing (#1419). Unlike the
+# keys above, these never changed what a deployment provisions, so a
+# models.yaml that still sets one keeps booting: the key is dropped and has no
+# effect, whatever its value.
+_RETIRED_PARAMS = frozenset(
+    {
+        "prefill_load_routing_enabled",
+        "prefill_load_scale_ms_per_1k",
+        "prefill_load_max_penalty_ms",
+    }
+)
+_warned_retired_params: set[str] = set()
+_warned_retired_params_lock = threading.Lock()
+
+
+def _warn_retired_params(keys: list[str]) -> None:
+    # Validation also runs on Admin reads, so warn once per key per process.
+    with _warned_retired_params_lock:
+        fresh = [key for key in keys if key not in _warned_retired_params]
+        _warned_retired_params.update(fresh)
+    if fresh:
+        logger.warning(
+            "Ignoring retired RouteWise router_params %s: prefill-load-aware "
+            "routing was withdrawn and these keys have no effect; remove them "
+            "from models.yaml",
+            ", ".join(fresh),
+        )
 
 
 class _RouteWiseParamsBase(BaseModel):
@@ -49,6 +82,10 @@ class _RouteWiseParamsBase(BaseModel):
                     "RouteWise resource limits moved from router_params to the "
                     f"route entries in models.yaml: {hints}"
                 )
+            retired = sorted(set(data) & _RETIRED_PARAMS)
+            if retired:
+                _warn_retired_params(retired)
+                data = {key: value for key, value in data.items() if key not in _RETIRED_PARAMS}
         return data
 
 

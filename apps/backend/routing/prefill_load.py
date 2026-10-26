@@ -49,7 +49,7 @@ from serving.config.app_config import config_value, on_change
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
 logger = get_logger(__name__)
 
@@ -782,11 +782,6 @@ class PrefillLoadTracker:
         """Return in-flight prefill tokens currently charged to an endpoint."""
         with self._lock:
             return self._backlog.get(endpoint_id, 0)
-
-    def backlog_snapshot(self, endpoint_ids: Iterable[str]) -> dict[str, int]:
-        """Return one short, consistent backlog snapshot for route selection."""
-        with self._lock:
-            return {endpoint_id: self._backlog.get(endpoint_id, 0) for endpoint_id in endpoint_ids}
 
     def elephants(self, endpoint_id: str) -> int:
         """Return the number of elephants currently prefilling on an endpoint."""
