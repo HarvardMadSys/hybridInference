@@ -312,6 +312,27 @@ async def test_update_float_setting_rejects_bool(monkeypatch, admin_client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["NaN", "Infinity"])
+async def test_update_float_setting_rejects_a_non_finite_number(admin_client, literal):
+    """NaN passes every bound, all its comparisons being false.
+
+    Stored as the default daily quota, it is seeded onto new keys, and no spend
+    is ever over a NaN quota.
+    """
+    client, op_store, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/user_daily_quota_free",
+        content=f'{{"value": {literal}}}',
+        headers={"Authorization": "Bearer test-admin", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert "finite" in response.json()["detail"].lower()
+    op_store.set_setting.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_list_settings_includes_log_rejected_requests(admin_client):
     """The new log_rejected_requests bool setting is exposed via /admin/settings."""
     client, op_store, _ = admin_client
