@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
-import { APIError } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { jsonOrThrow, safeFetch } from '../client';
 
 afterEach(() => {
@@ -49,6 +49,25 @@ describe('jsonOrThrow', () => {
     });
     await expect(jsonOrThrow(resp)).rejects.toMatchObject({ code: 'TOKEN_EXPIRED' });
   });
+
+  it.each([
+    ['error', 400, 'Invalid or expired verification code.'],
+    ['error', 503, 'Verification code expired. Please request another code.'],
+    ['error', 400, 'Verification token has expired. Please request a new one.'],
+    ['detail', 400, 'Verification token has expired. Please request a new one.'],
+  ])(
+    'shows the server sentence for a %s-shaped %i about an expired code or link, not "session expired"',
+    async (shape, status, message) => {
+      const body = shape === 'error' ? { error: { message } } : { detail: message };
+      const resp = new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const err = await jsonOrThrow(resp).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(APIError);
+      expect(getErrorMessage(err)).toBe(message);
+    },
+  );
 
   it('maps a typed { error } 403 whose message names unverified email to EMAIL_NOT_VERIFIED', async () => {
     const resp = new Response(
