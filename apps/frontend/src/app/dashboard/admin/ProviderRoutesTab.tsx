@@ -288,7 +288,7 @@ function routeQuotaResetLabel(route: ProviderRoute) {
   if (!route.quota_reset_at) return null;
   const resetAt = new Date(route.quota_reset_at);
   if (Number.isNaN(resetAt.getTime())) return null;
-  return resetAt.toLocaleTimeString(undefined, {
+  return resetAt.toLocaleTimeString('en-US', {
     hour: '2-digit',
     minute: '2-digit',
     timeZoneName: 'short',

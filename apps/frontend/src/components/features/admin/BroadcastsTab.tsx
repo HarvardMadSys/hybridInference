@@ -225,7 +225,7 @@ export function BroadcastsTab() {
               ...audienceRows(request),
               {
                 label: 'Delivery',
-                after: later ? new Date(scheduledAt).toLocaleString() : 'Immediately',
+                after: later ? new Date(scheduledAt).toLocaleString('en-US') : 'Immediately',
               },
             ]}
           />
@@ -277,7 +277,7 @@ export function BroadcastsTab() {
       body: (
         <p>
           {`It will not be sent to its ${plural(bc.recipient_count, 'recipient')}${
-            bc.scheduled_at ? ` at ${new Date(bc.scheduled_at).toLocaleString()}` : ''
+            bc.scheduled_at ? ` at ${new Date(bc.scheduled_at).toLocaleString('en-US')}` : ''
           }. This cannot be undone.`}
         </p>
       ),
@@ -788,11 +788,11 @@ export function BroadcastsTab() {
                           </td>
                           <td className="whitespace-nowrap px-4 py-2.5 align-top text-[12px] text-gray-500">
                             {bc.sent_at ? (
-                              <span title={new Date(bc.sent_at).toLocaleString()}>
+                              <span title={new Date(bc.sent_at).toLocaleString('en-US')}>
                                 Sent {relTime(bc.sent_at)}
                               </span>
                             ) : bc.scheduled_at ? (
-                              <span>For {new Date(bc.scheduled_at).toLocaleString()}</span>
+                              <span>For {new Date(bc.scheduled_at).toLocaleString('en-US')}</span>
                             ) : (
                               '—'
                             )}
