@@ -114,6 +114,7 @@ class Store:
         self.create_verification_token = AsyncMock()
         self.get_verification_token = AsyncMock()
         self.mark_verification_used = AsyncMock()
+        self.delete_user_reset_tokens = AsyncMock()
         self.record_phone_login_event = AsyncMock()
         self.get_session_by_token_hash = AsyncMock(
             return_value={

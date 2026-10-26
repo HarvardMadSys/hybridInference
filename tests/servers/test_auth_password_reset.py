@@ -65,6 +65,25 @@ async def test_reset_password_success(test_app, test_client, mock_operational_st
 
 
 @pytest.mark.asyncio
+async def test_reset_password_retires_every_outstanding_link(
+    test_app, test_client, mock_operational_store
+):
+    """Every link the account still holds was sent to reset the password just replaced."""
+    mock_operational_store.get_reset_token.return_value = {
+        "user_id": "user123",
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        "used_at": None,
+    }
+
+    response = await test_client.post(
+        "/auth/reset-password", json={"token": "valid_token_123", "new_password": "NewPassword123"}
+    )
+
+    assert response.status_code == 200
+    mock_operational_store.delete_user_reset_tokens.assert_awaited_once_with("user123")
+
+
+@pytest.mark.asyncio
 async def test_reset_password_invalid_token(test_app, test_client, mock_operational_store):
     """Test password reset with invalid token."""
     mock_operational_store.get_reset_token.return_value = None
