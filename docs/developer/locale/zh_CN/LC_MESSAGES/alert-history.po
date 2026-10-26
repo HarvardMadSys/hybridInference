@@ -1,0 +1,950 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-26 04:54-0400\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/alert-history.md:1
+msgid "Alert history"
+msgstr "告警历史"
+
+#: ../developer/alert-history.md:3
+msgid ""
+"The gateway can keep a structured history of what its alerting did: every "
+"breach it observed, every recovery, every decision not to notify (cooldown, "
+"mute, snooze, no channel, a policy switch), every delivery attempt and its "
+"result, and the admin console's test notifications. Other alert producers — "
+"the status monitor first — submit their own history through an authenticated"
+" ingestion endpoint. People and agents read it back through a scoped, read-"
+"only API."
+msgstr ""
+"网关可以为自己的告警行为保留一份结构化历史：它观察到的每次越限、每次恢复、每个不发通知的决定（冷却、静音、暂停、无渠道、策略开关）、每次投递尝试及其结果，以及管理控制台发出的测试通知。其他告警来源（首先是状态监控）通过一个经过认证的接收端点提交各自的历史。人和"
+" Agent 通过一个有范围限制的只读 API 读取这些历史。"
+
+#: ../developer/alert-history.md:11
+msgid ""
+"It is **off by default** and changes nothing about what is sent: thresholds,"
+" cooldowns, mutes, snoozes, retries, routing and the `bool` that "
+"`alert_slack()` / `AlertSink.post()` return are exactly as before. It is a "
+"record, not an alert-noise feature."
+msgstr ""
+"它**默认关闭**，并且完全不改变发送的内容：阈值、冷却、静音、暂停、重试、路由，以及 `alert_slack()` / "
+"`AlertSink.post()` 返回的 `bool`，都与以前完全相同。它是一份记录，不是降低告警噪声的功能。"
+
+#: ../developer/alert-history.md:16
+msgid "What \"kept\" means"
+msgstr "“保留”是什么意思"
+
+#: ../developer/alert-history.md:18
+msgid ""
+"**Only a committed PostgreSQL row is saved.** Capture offers each fact to a "
+"bounded in-memory buffer without waiting; a background writer commits it. "
+"Being queued is not being saved."
+msgstr ""
+"**只有已提交的 PostgreSQL "
+"行才算保存**。采集时把每条事实放进一个有上限的内存缓冲区，不做等待；由后台写入器负责提交。进入队列不等于已保存。"
+
+#: ../developer/alert-history.md:21
+msgid ""
+"**Best effort, honestly reported.** A crash, a shutdown that runs out of "
+"time, or a buffer that fills during a long database outage can lose "
+"uncommitted facts. Refusals are counted and written later as a `history_gap`"
+" record, but that record can be lost too. Every read answer therefore "
+"carries `completeness: best_effort`, `unknown_gaps_possible: true` and "
+"`late_arrivals_possible: true`. An empty gap list never proves the history "
+"is complete."
+msgstr ""
+"**尽力而为，并如实报告**。进程崩溃、关闭时超出时间，或者数据库长时间不可用导致缓冲区写满，都可能丢失尚未提交的事实。被拒收的记录会计数，之后写成一条"
+" `history_gap` 记录，但这条记录本身也可能丢失。因此每个读取结果都带有 `completeness: "
+"best_effort`、`unknown_gaps_possible: true` 和 `late_arrivals_possible: "
+"true`。缺口列表为空，并不能证明历史是完整的。"
+
+#: ../developer/alert-history.md:28
+msgid ""
+"**History starts when capture is enabled.** Past channel messages are not "
+"turned into history."
+msgstr "**历史从开启采集时开始**。过去的渠道消息不会变成历史。"
+
+#: ../developer/alert-history.md:30
+msgid ""
+"**No automatic deletion.** Nothing deletes history on a timer. Plan database"
+" capacity and backups for it, and see [Erasure](#erasure)."
+msgstr "**不会自动删除**。没有任何定时任务删除历史。请为它规划数据库容量和备份，并参见 [删除](#erasure)。"
+
+#: ../developer/alert-history.md:33
+msgid ""
+"PostgreSQL is the only store. There is no local file, disk spool, SQLite "
+"buffer or message broker."
+msgstr "PostgreSQL 是唯一的存储。没有本地文件、磁盘暂存、SQLite 缓冲，也没有消息代理。"
+
+#: ../developer/alert-history.md:36
+msgid "Turning it on"
+msgstr "开启"
+
+#: ../developer/alert-history.md:38
+msgid ""
+"Settings, under **Alerts** on the admin console's Configuration tab (or the "
+"environment):"
+msgstr "设置位于管理控制台 Configuration 标签页的 **Alerts** 下（也可以用环境变量）："
+
+#: ../developer/alert-history.md
+msgid "Setting"
+msgstr "设置"
+
+#: ../developer/alert-history.md
+msgid "Default"
+msgstr "默认值"
+
+#: ../developer/alert-history.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../developer/alert-history.md
+msgid "`ALERT_HISTORY_ENABLED`"
+msgstr "`ALERT_HISTORY_ENABLED`"
+
+#: ../developer/alert-history.md
+msgid "`false`"
+msgstr "`false`"
+
+#: ../developer/alert-history.md
+msgid ""
+"Capture backend history and accept history from configured sources. Applies "
+"after a restart."
+msgstr "采集后端历史，并接收已配置来源的历史。重启后生效。"
+
+#: ../developer/alert-history.md
+msgid "`ALERT_HISTORY_DEPLOYMENT_ID`"
+msgstr "`ALERT_HISTORY_DEPLOYMENT_ID`"
+
+#: ../developer/alert-history.md
+msgid "`default`"
+msgstr "`default`"
+
+#: ../developer/alert-history.md
+msgid ""
+"This deployment's id on every history row; reader credentials are scoped by "
+"it. Applies after a restart."
+msgstr "写在每一行历史上的本部署 id；只读凭据按它限定范围。重启后生效。"
+
+#: ../developer/alert-history.md
+msgid "`ALERT_HISTORY_READ_CREDENTIALS`"
+msgstr "`ALERT_HISTORY_READ_CREDENTIALS`"
+
+#: ../developer/alert-history.md
+msgid "empty"
+msgstr "空"
+
+#: ../developer/alert-history.md
+msgid "JSON list of read-only credentials (see below)."
+msgstr "只读凭据的 JSON 列表（见下文）。"
+
+#: ../developer/alert-history.md
+msgid "`ALERT_HISTORY_WRITER_CREDENTIALS`"
+msgstr "`ALERT_HISTORY_WRITER_CREDENTIALS`"
+
+#: ../developer/alert-history.md
+msgid "JSON list of source credentials (see below)."
+msgstr "来源凭据的 JSON 列表（见下文）。"
+
+#: ../developer/alert-history.md:48
+msgid ""
+"The observed environment comes from `DEPLOYMENT_ENV` (or is inferred from "
+"`BASE_URL`, as for alert cards)."
+msgstr "被观察的环境取自 `DEPLOYMENT_ENV`（或者像告警卡片一样，从 `BASE_URL` 推断）。"
+
+#: ../developer/alert-history.md:51
+msgid ""
+"When enabled, the gateway creates two tables at startup (`CREATE TABLE IF "
+"NOT EXISTS`, catalog-gated, like the rest of the schema): "
+"`alert_history_sources` and `alert_history_events`. History uses **its own "
+"small connection pool** (at most four connections, created lazily), so it "
+"never takes a connection the request path needs, and a database that is down"
+" at boot only delays history. Neither a missing schema nor an unreachable "
+"database stops the gateway from starting or alerting."
+msgstr ""
+"开启后，网关在启动时创建两张表（`CREATE TABLE IF NOT EXISTS`，与其余 schema "
+"一样先检查目录）：`alert_history_sources` 和 "
+"`alert_history_events`。历史使用**自己的小连接池**（最多四个连接，按需创建），所以它从不占用请求路径需要的连接；启动时数据库不可用，也只会推迟历史的写入。无论"
+" schema 缺失还是数据库无法连接，都不会阻止网关启动或发送告警。"
+
+#: ../developer/alert-history.md:59
+msgid "What a record holds"
+msgstr "一条记录包含什么"
+
+#: ../developer/alert-history.md:61
+msgid ""
+"Each fact is one row with: its source identity (`source`, "
+"`source_namespace`, `source_instance_id`, `process_id`), the deployment and "
+"observed environment, `occurred_at` (when it happened, source clock) and "
+"`recorded_at` (database clock, written in the committing transaction), a "
+"`kind`, the alert type and a redacted alert key, the rule id and a short "
+"hash of the rule configuration in force (`rule_version`), allowlisted "
+"`facts`, and for decisions and deliveries the reason, channel, outcome, "
+"stable error code and duration. Delivery attempts carry a redacted **message"
+" snapshot**: the sink's own rendering of the redacted title and fields, with"
+" the names of omitted fields and a truncation flag."
+msgstr ""
+"每条事实是一行，包含：来源身份（`source`、`source_namespace`、`source_instance_id`、`process_id`），部署和被观察的环境，`occurred_at`（事情发生的时间，来源的时钟）和"
+" `recorded_at`（数据库时钟，在写入它的事务中取得），一个 `kind`，告警类型和脱敏后的告警键，规则 id "
+"以及当时生效的规则配置的短哈希（`rule_version`），白名单内的 "
+"`facts`；对于决定和投递，还有原因、渠道、结果、稳定的错误码和耗时。投递尝试带有一份脱敏的**消息快照**：由发送渠道自己渲染脱敏后的标题和字段，附带被省略字段的名称和截断标记。"
+
+#: ../developer/alert-history.md:71
+msgid ""
+"Kinds: `condition_triggered`, `condition_ended` (with `end_basis` "
+"`observed_healthy` or `no_samples` — never conflated), "
+"`notification_decision`, `suppression_summary`, `delivery_attempt`, "
+"`delivery_result`, `resolution_retry_terminated`, `history_gap`, and "
+"`history_conflict` (written by the store only)."
+msgstr ""
+"类型：`condition_triggered`、`condition_ended`（带 `end_basis`，取值为 "
+"`observed_healthy` 或 "
+"`no_samples`，两者从不混淆）、`notification_decision`、`suppression_summary`、`delivery_attempt`、`delivery_result`、`resolution_retry_terminated`、`history_gap`，以及"
+" `history_conflict`（只由存储层写入）。"
+
+#: ../developer/alert-history.md:77
+msgid ""
+"Delivery outcomes: `accepted` (the channel confirmed; for WeCom HTTP 2xx "
+"*and* `errcode == 0`), `rejected` (an explicit refusal), `not_sent` (nothing"
+" left: rendering failed, the connection was never made), `unknown` (it may "
+"have been sent: a timeout after sending, a cancellation, no result "
+"recorded). An attempt without a result reads as `unknown`."
+msgstr ""
+"投递结果：`accepted`（渠道已确认；对企业微信而言是 HTTP 2xx *且* `errcode == "
+"0`），`rejected`（明确拒绝），`not_sent`（什么都没发出：渲染失败、连接从未建立），`unknown`（可能已经发出：发送后超时、被取消、没有记录到结果）。没有结果的尝试按"
+" `unknown` 读取。"
+
+#: ../developer/alert-history.md:83
+msgid "What is never kept"
+msgstr "哪些内容从不保留"
+
+#: ../developer/alert-history.md:85
+msgid ""
+"Facts are copied only for an allowlist of field names (counts, rates, "
+"thresholds, provider/model/endpoint labels, stable reasons). Every other "
+"field — upstream error text, request paths, IP addresses, key prefixes, "
+"account lists, request ids — is left out and named in the record's "
+"`limitations` (`omitted:<field>`). A field name being allowlisted does not "
+"make its value safe: every kept string, title and snapshot passes value "
+"redaction that replaces credential headers, `Bearer`/`Basic` values, secret-"
+"named `name=value` pairs, well-known token shapes, URL paths and queries, "
+"e-mail and IP addresses and long opaque runs, and records "
+"`redacted:<field>`. The same redaction runs again at the ingestion boundary,"
+" whatever a source claims about having redacted its text already."
+msgstr ""
+"事实只按字段名白名单复制（计数、比率、阈值、provider/模型/端点的标签、稳定的原因）。其他字段——上游错误文本、请求路径、IP "
+"地址、密钥前缀、账号列表、请求 id——都会被省略，并在记录的 `limitations` "
+"中注明（`omitted:<field>`）。字段名在白名单内，并不代表它的值是安全的：每个保留下来的字符串、标题和快照都要经过值脱敏，替换掉凭据类请求头、`Bearer`/`Basic`"
+" 的值、名称像密钥的 `name=value` 对、常见的令牌形状、URL 的路径和查询串、电子邮件和 IP 地址以及很长的不透明字符串，并记录 "
+"`redacted:<field>`。在接收边界会再做一次同样的脱敏，不管来源声称自己是否已经脱敏。"
+
+#: ../developer/alert-history.md:97
+msgid ""
+"Account identifiers are never stored in the clear. An alert whose key names "
+"an account (`cost_overrun:<user>:<day>`) is stored as "
+"`cost_overrun:[subject]:<day>` with the account's erasure-fence digest in "
+"`subject_digests`. Without a fence secret the digest is not kept either and "
+"the record says `subject_unfenced`."
+msgstr ""
+"账号标识从不以明文保存。键里含有账号的告警（`cost_overrun:<user>:<day>`）保存为 "
+"`cost_overrun:[subject]:<day>`，并把该账号的删除围栏摘要放进 "
+"`subject_digests`。没有围栏密钥时，摘要也不保存，记录中会注明 `subject_unfenced`。"
+
+#: ../developer/alert-history.md:103
+msgid "Episodes"
+msgstr "Episode"
+
+#: ../developer/alert-history.md:105
+msgid ""
+"A backend **episode** is one breach as one process observed it: opened by "
+"the first breached evaluation, ended by the observation that ended it. "
+"Workers do not merge episodes, and one worker's recovery does not close "
+"another's."
+msgstr ""
+"后端的 **episode** 是某一个进程观察到的一次越限：由第一次越限的评估开启，由结束它的那次观察结束。不同 worker 的 episode "
+"不会合并，一个 worker 的恢复也不会关闭另一个 worker 的 episode。"
+
+#: ../developer/alert-history.md:109
+msgid ""
+"The episode is independent of the notification tracker. When a recovery card"
+" fails, the tracker re-arms the key so the card can be retried; the episode "
+"stays ended and the retries are attached to it — the episode id is fixed "
+"when the send starts and carried by the retry, so a result that returns "
+"after a new breach never touches the new episode. A breach after that opens "
+"a new episode and ends the old one's retry (`resolution_retry_terminated`, "
+"`superseded_by_new_episode`)."
+msgstr ""
+"episode 与通知跟踪器相互独立。恢复卡片发送失败时，跟踪器会重新挂起这个键，以便重试发送卡片；episode "
+"保持已结束，重试都关联到它——episode id 在发送开始时就已固定，并随重试一起携带，所以在新的越限之后才返回的结果不会碰到新的 "
+"episode。此后再次越限会开启新的 episode，并结束旧 episode "
+"的重试（`resolution_retry_terminated`、`superseded_by_new_episode`）。"
+
+#: ../developer/alert-history.md:117
+msgid ""
+"A decision not to notify is recorded once per episode and reason, then "
+"counted in non-overlapping 30-second windows (`suppression_summary` with "
+"`count`, `bucket_start`, `bucket_end`, first/last time). A breach held back "
+"by its producer before it reached the alert path (a circuit page turned off "
+"by policy, the failed-request detector's own cooldown, a disabled "
+"`db_disconnect` report) is still recorded as a breach with that decision."
+msgstr ""
+"不发通知的决定在每个 episode 中按原因只单独记录一次，之后按互不重叠的 30 秒窗口计数（`suppression_summary`，带 "
+"`count`、`bucket_start`、`bucket_end` "
+"以及首次/末次时间）。在到达告警路径之前就被产生方拦下的越限（被策略关闭的熔断器告警、失败请求检测器自己的冷却、被关闭的 `db_disconnect`"
+" 报告），仍然记为一次越限，并带上相应的决定。"
+
+#: ../developer/alert-history.md:124
+msgid ""
+"Admin test notifications are recorded with `origin: test`, joined to the "
+"audit row by their `test_id` (`audit_ref`), and never open an episode."
+msgstr ""
+"管理员的测试通知记为 `origin: test`，通过 `test_id`（`audit_ref`）关联到审计记录，并且从不开启 episode。"
+
+#: ../developer/alert-history.md:127
+msgid "Reading"
+msgstr "读取"
+
+#: ../developer/alert-history.md:129
+msgid ""
+"Admins use their normal login or `ADMIN_TOKEN`; agents use a scoped reader "
+"token. Every endpoint is read-only."
+msgstr "管理员使用平常的登录或 `ADMIN_TOKEN`；Agent 使用有范围限制的只读令牌。所有端点都是只读的。"
+
+#: ../developer/alert-history.md
+msgid "Endpoint"
+msgstr "端点"
+
+#: ../developer/alert-history.md
+msgid "Returns"
+msgstr "返回"
+
+#: ../developer/alert-history.md
+msgid "`GET /admin/alert-history/status`"
+msgstr "`GET /admin/alert-history/status`"
+
+#: ../developer/alert-history.md
+msgid ""
+"One entry per **source and target environment** (see [Status](#status)). "
+"Admins also see the answering worker's own buffer under `this_process`; "
+"other workers' buffers are known only from their last written snapshot."
+msgstr ""
+"每个**来源和目标环境**一项（见 [状态](#status)）。管理员还能在 `this_process` 下看到响应请求的那个 worker "
+"自己的缓冲区；其他 worker 的缓冲区只能从它们最后写入的快照得知。"
+
+#: ../developer/alert-history.md
+msgid "`GET /admin/alert-history/events`"
+msgstr "`GET /admin/alert-history/events`"
+
+#: ../developer/alert-history.md
+msgid ""
+"Events that **occurred** in `[since, until)` (default the last 24 h, at most"
+" 7 days per query), filtered by `source`, `source_namespace`, "
+"`deployment_id`, `target_environment`, `kind`, `alert_type`, `model_id`, "
+"`endpoint_id`, `channel`, `outcome`, `origin`."
+msgstr ""
+"在 `[since, until)` 内**发生**的事件（默认最近 24 小时，每次查询最多 7 天），可按 "
+"`source`、`source_namespace`、`deployment_id`、`target_environment`、`kind`、`alert_type`、`model_id`、`endpoint_id`、`channel`、`outcome`、`origin`"
+" 过滤。"
+
+#: ../developer/alert-history.md
+#, python-brace-format
+msgid "`GET /admin/alert-history/episodes/{episode_id}`"
+msgstr "`GET /admin/alert-history/episodes/{episode_id}`"
+
+#: ../developer/alert-history.md
+msgid "One backend episode's records."
+msgstr "一个后端 episode 的记录。"
+
+#: ../developer/alert-history.md
+#, python-brace-format
+msgid ""
+"`GET /admin/alert-history/source-"
+"incidents/{source}/{incident_id}?source_namespace=…`"
+msgstr ""
+"`GET /admin/alert-history/source-"
+"incidents/{source}/{incident_id}?source_namespace=…`"
+
+#: ../developer/alert-history.md
+msgid "A source incident across its generations."
+msgstr "一个来源事故在各代（generation）中的记录。"
+
+#: ../developer/alert-history.md
+#, python-brace-format
+msgid "`GET /admin/alert-history/request-evidence/{request_id}`"
+msgstr "`GET /admin/alert-history/request-evidence/{request_id}`"
+
+#: ../developer/alert-history.md
+msgid ""
+"Time, model, endpoint, status code, latency and error class of a request "
+"that a history record in your scope references — nothing else, and nothing "
+"for an unreferenced request."
+msgstr "你的范围内某条历史记录所引用的请求的时间、模型、端点、状态码、延迟和错误类别——仅此而已；没有被引用的请求则什么都不返回。"
+
+#: ../developer/alert-history.md:140
+msgid ""
+"Pages are at most 200 records (default 50), keyed on `(recorded_at, "
+"record_id)` behind an opaque cursor that is bound to the query (and carries "
+"its resolved time window). `recorded_at` is the database clock when the row "
+"was **inserted**, inside its transaction — not commit order, and the API is "
+"not a changefeed. Two concurrent writes can commit in the opposite order to "
+"their `recorded_at`: a reader can page past the later one before the earlier"
+" one becomes visible, and that row then appears on **no** later page of that"
+" scan. Pagination is not a snapshot (`late_arrivals_possible: true`)."
+msgstr ""
+"每页最多 200 条记录（默认 50），以 `(recorded_at, record_id)` "
+"为键，通过一个与查询绑定的不透明游标翻页（游标还带着解析后的时间窗口）。`recorded_at` "
+"是这一行被**插入**时的数据库时钟，取自它所在的事务内部——不是提交顺序，这个 API "
+"也不是变更流（changefeed）。两个并发写入的提交顺序可能与它们的 `recorded_at` "
+"相反：读取方可能先翻过较晚的那一行，较早的那一行才变得可见，于是这一行在这次扫描后面的任何一页上都**不会**出现。分页不是快照（`late_arrivals_possible:"
+" true`）。"
+
+#: ../developer/alert-history.md:149
+msgid ""
+"To collect everything for a window, rescan the `occurred_at` window from its"
+" start and deduplicate by `record_id`. Rescanning helps only for what has "
+"committed by the time of the rescan: no finite overlap or delay guarantees "
+"completeness for a record that arrives arbitrarily late (a buffered backend "
+"record, a source's retry hours later). Sort by `occurred_at` for display."
+msgstr ""
+"要收齐一个窗口的全部记录，请从头重新扫描这个 `occurred_at` 窗口，并按 `record_id` "
+"去重。重新扫描只对到重扫时已经提交的记录有效：对任意晚到的记录（一条被缓冲的后端记录、来源在几小时后的重试），任何有限的重叠或延迟都不能保证完整。展示时请按"
+" `occurred_at` 排序。"
+
+#: ../developer/alert-history.md:155
+msgid ""
+"Episode and source-incident timelines also return `end_recorded` and a "
+"`summary` over the **whole timeline in your scope**, not the page being "
+"read: `records`, `generation_count`, `trigger_recorded` and `end_recorded` "
+"come from one exact aggregate over every matching row; `generations` lists "
+"at most 100 per-generation groups, with `generations_truncated` when there "
+"are more — the totals never depend on that list. `end_recorded: false` means"
+" no end record had been committed when the read ran — not that the condition"
+" is still on, and never that it recovered."
+msgstr ""
+"Episode 和来源事故的时间线还会返回 `end_recorded` 和一个 "
+"`summary`，范围是**你的范围内的整条时间线**，而不是正在读取的这一页：`records`、`generation_count`、`trigger_recorded`"
+" 和 `end_recorded` 来自对所有匹配行的一次精确聚合；`generations` 最多列出 100 个按代分组的结果，超出时带 "
+"`generations_truncated`——这些总数从不依赖于该列表。`end_recorded: false` "
+"的意思是读取时还没有已提交的结束记录——不代表这个状况仍在持续，更不代表它已经恢复。"
+
+#: ../developer/alert-history.md:164
+msgid "Status"
+msgstr "状态"
+
+#: ../developer/alert-history.md:166
+msgid ""
+"`sources` has one entry per `(source, source_namespace, "
+"target_environment)`: every target configuration expects (the backend's "
+"environment; each environment of each writer credential) plus any other "
+"target that has reported. Each is looked up on its own, so a busy source or "
+"a healthy environment cannot hide another one:"
+msgstr ""
+"`sources` 中每个 `(source, source_namespace, target_environment)` "
+"一项：包括配置预期会上报的每个目标（后端的环境；每个写入凭据的每个环境），以及任何已经上报过的其他目标。每一项都单独查询，所以繁忙的来源或正常的环境不会遮住另一项："
+
+#: ../developer/alert-history.md:172
+msgid ""
+"`connection`: `reporting` (last report within `stale_after_sec`), `stale` "
+"(reported, but not within it), `never_reported` (no report for *this* target"
+" at all), `disabled` (capture off), or `unknown` when the database cannot be"
+" read."
+msgstr ""
+"`connection`：`reporting`（最后一次上报在 `stale_after_sec` "
+"之内），`stale`（上报过，但不在这个时间之内），`never_reported`（*这个*目标从未上报过），`disabled`（采集已关闭），或者数据库无法读取时为"
+" `unknown`。"
+
+#: ../developer/alert-history.md:176
+msgid ""
+"`stale_after_sec`: 180 for the backend (heartbeat every 30 s); for a source,"
+" its writer credential's `stale_after_sec` (default 180, 60…86400). A source"
+" that reports on a slower cadence — a 20-minute cron — must set it above "
+"that cadence, or it shows `stale` between runs."
+msgstr ""
+"`stale_after_sec`：后端为 180（每 30 秒一次心跳）；来源则取它的写入凭据的 `stale_after_sec`（默认 "
+"180，范围 60…86400）。上报节奏更慢的来源——例如 20 分钟一次的定时任务——必须把它设得大于这个节奏，否则在两次运行之间会显示为 "
+"`stale`。"
+
+#: ../developer/alert-history.md:180
+msgid ""
+"`first_recorded_at` / `last_recorded_at` (committed records about this "
+"target), `last_successful_write_at`, `last_report_at`."
+msgstr ""
+"`first_recorded_at` / "
+"`last_recorded_at`（关于这个目标的已提交记录），`last_successful_write_at`，`last_report_at`。"
+
+#: ../developer/alert-history.md:182
+msgid ""
+"`instance_count` (a floor when `instance_count_is_floor`), the 20 most "
+"recently reporting `instances`, and `instances_truncated`. An instance's "
+"`state` is `running`, `stopped` (it sent a stop record — a backend shutdown,"
+" or a completed invocation with `stop_reason: invocation_complete` and its "
+"`lost_at_stop`), or `unknown` (no stop record and no recent report: it may "
+"have crashed)."
+msgstr ""
+"`instance_count`（当 `instance_count_is_floor` 时是一个下限），最近上报的 20 个 "
+"`instances`，以及 `instances_truncated`。实例的 `state` 为 "
+"`running`、`stopped`（它发送过停止记录——后端正常关闭，或一次已完成的调用，带 `stop_reason: "
+"invocation_complete` 及其 `lost_at_stop`），或者 "
+"`unknown`（没有停止记录，最近也没有上报：它可能已经崩溃）。"
+
+#: ../developer/alert-history.md:188
+msgid ""
+"`targets_truncated` when more than 200 targets exist; `known_gaps` lists at "
+"most 50 gap and conflict records from the last 7 days, with "
+"`known_gaps_truncated` and a pointer to the events read for the rest."
+msgstr ""
+"目标超过 200 个时带 `targets_truncated`；`known_gaps` 最多列出最近 7 天内的 50 条缺口和冲突记录，带 "
+"`known_gaps_truncated`，并指出到事件读取接口查看其余记录。"
+
+#: ../developer/alert-history.md:192
+msgid ""
+"When the database cannot be read, list endpoints answer `503 "
+"history_unavailable` and the status endpoint says `database: unavailable`; "
+"neither ever answers with an empty history."
+msgstr ""
+"数据库无法读取时，列表类端点返回 `503 history_unavailable`，状态端点给出 `database: "
+"unavailable`；两者都从不以空历史作答。"
+
+#: ../developer/alert-history.md:196
+msgid ""
+"Request evidence is owner-checked: the record holds the request's owner only"
+" as an erasure-fence digest, the lookup must match it, and the read takes "
+"the owner's shared fence lock, so it waits for an erasure in progress and "
+"finds nothing after one. Request logs have their own retention, so evidence "
+"may be gone while the alert record remains."
+msgstr ""
+"请求证据会核对归属：记录里只以删除围栏摘要的形式保存请求的所有者，查询时必须与它匹配，并且读取时会取得该所有者的共享围栏锁，所以它会等待正在进行的删除，删除完成后就什么也找不到了。请求日志有自己的保留期限，因此告警记录还在时，证据可能已经不存在。"
+
+#: ../developer/alert-history.md:202
+msgid "Credentials"
+msgstr "凭据"
+
+#: ../developer/alert-history.md:204
+msgid ""
+"Both lists store only the **SHA-256 of each token**. Generate a token, keep "
+"it in the consumer's own secret store, and put only its hash here:"
+msgstr "两个列表都只保存**每个令牌的 SHA-256**。生成一个令牌，把它保存在使用方自己的密钥存储中，这里只放它的哈希："
+
+#: ../developer/alert-history.md:212
+msgid "Reader credential — what it may read is fixed here:"
+msgstr "只读凭据——它可以读取什么，在这里固定："
+
+#: ../developer/alert-history.md:222
+msgid ""
+"Writer credential — the identity of everything it submits is fixed here, not"
+" by the request:"
+msgstr "写入凭据——它提交的所有内容的身份在这里固定，而不是由请求决定："
+
+#: ../developer/alert-history.md:236
+msgid ""
+"`stale_after_sec` (optional, default 180, 60…86400) is how long the source "
+"may be silent per environment before status calls it stale: its reporting "
+"cadence plus a margin."
+msgstr ""
+"`stale_after_sec`（可选，默认 180，范围 60…86400）是来源在每个环境中可以沉默多久，超过后状态接口就称它为 "
+"stale：即它的上报节奏再加一些余量。"
+
+#: ../developer/alert-history.md:240
+msgid ""
+"Rules: tokens shorter than 32 characters are refused; `expires_at` needs an "
+"explicit offset; `source: backend` is reserved; ids and hashes are unique "
+"across both lists; credentials for the same `(source, source_namespace)` "
+"must name the same deployment. A reader token works only on the read "
+"endpoints, a writer token only on the ingestion endpoint; neither is "
+"accepted by any other admin or internal route."
+msgstr ""
+"规则：短于 32 个字符的令牌会被拒绝；`expires_at` 需要明确的时区偏移；`source: backend` 是保留值；两个列表中的 id "
+"和哈希都必须唯一；同一个 `(source, source_namespace)` "
+"的多个凭据必须指向同一个部署。只读令牌只能用于读取端点，写入令牌只能用于接收端点；其他任何管理或内部路由都不接受它们。"
+
+#: ../developer/alert-history.md:247
+msgid ""
+"**Fail closed.** A list that does not parse refuses every history token (an "
+"admin still gets in on their own credential). So does a configuration this "
+"worker cannot confirm is current: settings are re-read every 10 seconds, and"
+" when the snapshot in force was last confirmed more than 30 seconds ago, no "
+"history token is accepted until a read succeeds. A revoked credential "
+"therefore stops working everywhere within about 30 seconds, or the endpoint "
+"refuses everyone."
+msgstr ""
+"**失败即关闭**。无法解析的列表会让所有历史令牌都被拒绝（管理员仍可用自己的凭据进入）。当前 worker 无法确认配置是最新的时候也一样：设置每 "
+"10 秒重读一次，如果当前生效的快照最后一次确认是在 30 秒以前，那么在读取成功之前不接受任何历史令牌。因此，被吊销的凭据会在大约 30 "
+"秒内在所有地方失效，否则端点会拒绝所有人。"
+
+#: ../developer/alert-history.md:255
+msgid ""
+"**Rotation.** Add the new credential (same `source` and `source_namespace` "
+"for a writer) alongside the old one, deploy the new token to the consumer, "
+"confirm it is used (`status` shows the source reporting), then remove the "
+"old entry. To revoke immediately, remove the entry; to limit exposure, keep "
+"`expires_at` short."
+msgstr ""
+"**轮换**。在旧凭据旁边加上新凭据（写入凭据要用相同的 `source` 和 "
+"`source_namespace`），把新令牌部署到使用方，确认它已在使用（`status` "
+"显示该来源正在上报），然后删除旧条目。要立即吊销，删除该条目即可；要限制暴露范围，就把 `expires_at` 设得短一些。"
+
+#: ../developer/alert-history.md:261
+msgid "Ingestion API"
+msgstr "接收 API"
+
+#: ../developer/alert-history.md:269
+msgid ""
+"At most 50 events and 256 KiB per request, 64 KiB per event. The answer is "
+"`200` **only after the transaction holding the batch has committed**; "
+"anything else, including no answer, means \"not known to be saved\", and the"
+" source resends the same events with the same ids."
+msgstr ""
+"每个请求最多 50 个事件、256 KiB，每个事件最多 64 KiB。**只有在保存这一批的事务提交之后**才返回 "
+"`200`；其他任何结果，包括没有响应，都表示“不确定是否已保存”，来源应以相同的 id 重新发送相同的事件。"
+
+#: ../developer/alert-history.md:274
+msgid ""
+"A minimal request — one event and the sending instance's status; the fields "
+"are described below:"
+msgstr "一个最小的请求——一个事件加上发送实例的状态；字段说明见下文："
+
+#: ../developer/alert-history.md:292
+msgid ""
+"Event fields. Required: `origin_record_id` (1–200 chars of "
+"`[A-Za-z0-9._:@/-]`, generated by the source, fixed before the first "
+"submission, one per fact), `kind`, `occurred_at` (RFC 3339 **string** with "
+"an explicit offset, within 400 days past and 5 minutes future), and "
+"`target_environment` (must be in the credential's list). Optional: `origin` "
+"(`live`, `test`), `source_instance_id`, `severity`, `alert_type`, `rule_id`,"
+" `rule_version`, `source_event_id`, `source_incident_id`, `generation`, "
+"`action_id`, `attempt_id`, `observation_scope`, `model_id`, `endpoint_id`, "
+"`end_basis`, `decision_reason`, `count`, `bucket_start`/`bucket_end`, "
+"`channel`, `outcome`, `error_code` (a stable code, never free text), "
+"`duration_ms`, `facts` (a flat object of at most 32 keys; values string "
+"(≤500 accepted, see below), number, boolean, null), `message` (`title`, "
+"`body`, `format`, `format_version`, `redacted`, `truncated`, "
+"`omitted_fields`) and `external_ref` (`system`, `ref`). Any other field — "
+"`source`, `source_namespace`, `deployment_id` included — is a `422`. "
+"Identifiers that contain a credential or address shape are a `422`. Request "
+"references are not accepted from sources: the gateway cannot prove who owns "
+"them."
+msgstr ""
+"事件字段。必填：`origin_record_id`（1–200 个 `[A-Za-z0-9._:@/-]` "
+"字符，由来源生成，在第一次提交前就固定，每条事实一个），`kind`，`occurred_at`（带明确时区偏移的 RFC 3339 "
+"**字符串**，在过去 400 天到未来 5 分钟之内），以及 "
+"`target_environment`（必须在凭据的列表中）。可选：`origin`（`live`、`test`），`source_instance_id`，`severity`，`alert_type`，`rule_id`，`rule_version`，`source_event_id`，`source_incident_id`，`generation`，`action_id`，`attempt_id`，`observation_scope`，`model_id`，`endpoint_id`，`end_basis`，`decision_reason`，`count`，`bucket_start`/`bucket_end`，`channel`，`outcome`，`error_code`（稳定的错误码，绝不是自由文本），`duration_ms`，`facts`（最多"
+" 32 个键的扁平对象；值为字符串（最多接受 500 个字符，见下文）、数字、布尔值或 "
+"null），`message`（`title`、`body`、`format`、`format_version`、`redacted`、`truncated`、`omitted_fields`）以及"
+" `external_ref`（`system`、`ref`）。其他任何字段——包括 "
+"`source`、`source_namespace`、`deployment_id`——都会返回 `422`。含有凭据或地址形状的标识也返回 "
+"`422`。不接受来源提交的请求引用：网关无法证明它们属于谁。"
+
+#: ../developer/alert-history.md:310
+msgid ""
+"**Facts are typed; text facts are recognized names only.** Numbers, booleans"
+" and nulls are kept under any well-formed name (strings up to 500 characters"
+" pass validation, as on the sending side). A *string* fact is kept only "
+"under a recognized name, of one of two kinds:"
+msgstr ""
+"**事实有类型；文本事实只认可已知名称**。数字、布尔值和 null 在任何格式正确的名称下都会保留（与发送方一样，最多 500 "
+"个字符的字符串可以通过校验）。*字符串*事实只在已知名称下保留，已知名称分为两类："
+
+#: ../developer/alert-history.md:315
+#, python-brace-format
+msgid ""
+"**Codes** — the value must be a lowercase code token, "
+"`[a-z0-9][a-z0-9_.:-]{0,99}` (e.g. `control_plane_rpc`, "
+"`stale_result_not_applied`, `manual_reconciliation_required`); anything else"
+" under these names is dropped: `action_status`, `action_status_after`, "
+"`action_type`, `basis`, `check`, `claim_mode`, `commit`, `commit_state`, "
+"`control_plane_action`, `cycle_owner`, `db_kind`, `default_owner`, "
+"`delivery_owner`, `end_trigger`, `endpoint_id_omitted`, `error_type`, "
+"`gate`, `handoff_outcome`, `incident_key_form`, `incident_state`, "
+"`lifecycle_action`, `lifecycle_state`, `mode`, `model_id_omitted`, "
+"`notification`, `observation_basis`, `phase`, `previous_state`, `probe`, "
+"`producer_source`, `reason`, `record_role`, `recovery_notification`, "
+"`region`, `role`, `rule_version`, `source_event_id_form`, `state`, `status`,"
+" `store`, `task_name`, `transition`, `transport`, `trigger`, `window`."
+msgstr ""
+"**代码**——值必须是小写的代码记号 `[a-z0-9][a-z0-9_.:-]{0,99}`（例如 "
+"`control_plane_rpc`、`stale_result_not_applied`、`manual_reconciliation_required`）；这些名称下的其他任何值都会被丢弃：`action_status`、`action_status_after`、`action_type`、`basis`、`check`、`claim_mode`、`commit`、`commit_state`、`control_plane_action`、`cycle_owner`、`db_kind`、`default_owner`、`delivery_owner`、`end_trigger`、`endpoint_id_omitted`、`error_type`、`gate`、`handoff_outcome`、`incident_key_form`、`incident_state`、`lifecycle_action`、`lifecycle_state`、`mode`、`model_id_omitted`、`notification`、`observation_basis`、`phase`、`previous_state`、`probe`、`producer_source`、`reason`、`record_role`、`recovery_notification`、`region`、`role`、`rule_version`、`source_event_id_form`、`state`、`status`、`store`、`task_name`、`transition`、`transport`、`trigger`、`window`。"
+
+#: ../developer/alert-history.md:319
+msgid ""
+"**Identifiers** — kept exactly, never partly redacted: the identifier "
+"charset `[A-Za-z0-9._:@/-]`, mixed case, at most 200 characters, and dropped"
+" if it carries an e-mail address, a URL, `bearer`/`authorization`/ "
+"`password`/`secret`/`api_key` or a known token shape: `monitor_incident_key`"
+" (e.g. `status-monitor:model:Example-Org/Example-Model-1`, "
+"`fp:4f2185d2122b562b`)."
+msgstr ""
+"**标识**——原样保留，从不部分脱敏：使用标识字符集 `[A-Za-z0-9._:@/-]`，允许大小写混合，最多 200 "
+"个字符；如果含有电子邮件地址、URL、`bearer`/`authorization`/ `password`/`secret`/`api_key` "
+"或已知的令牌形状，则丢弃：`monitor_incident_key`（例如 `status-monitor:model:Example-"
+"Org/Example-Model-1`、`fp:4f2185d2122b562b`）。"
+
+#: ../developer/alert-history.md:324
+msgid ""
+"**Labels** — printable, cut to 200 characters, redacted: `alert`, "
+"`availability`, `budget`, `endpoint_id`, `first_at`, `first_lost_at`, "
+"`hour`, `hourly_spend`, `last_at`, `last_lost_at`, `model`, `over_by`, "
+"`provider`, `quota`, `rate`, `spend`, `top_endpoints`, `top_error_types`, "
+"`top_providers`, `top_status_codes`."
+msgstr ""
+"**标签**——可打印字符，截断到 200 "
+"个字符，并脱敏：`alert`、`availability`、`budget`、`endpoint_id`、`first_at`、`first_lost_at`、`hour`、`hourly_spend`、`last_at`、`last_lost_at`、`model`、`over_by`、`provider`、`quota`、`rate`、`spend`、`top_endpoints`、`top_error_types`、`top_providers`、`top_status_codes`。"
+
+#: ../developer/alert-history.md:326
+msgid ""
+"Every other string fact — a note, an error message, a prompt, a request body"
+" — is dropped and named in the record's `limitations` (`omitted:<name>`); so"
+" is any fact whose name marks a secret, whatever its type. The same rule "
+"applies to `source_status.rules_snapshot` (at most 64 keys and 16 KiB, as on"
+" the sending side). The names follow the status monitor's and alert control "
+"plane's technical field inventory; adding one is a contract change on both "
+"sides. A handoff to an intermediary (`channel: other`, `outcome: unknown`) "
+"keeps the facts that explain it — `transport`, `delivery_owner`, "
+"`handoff_outcome`, `control_plane_action`, `lifecycle_state`, `commit` and "
+"the like."
+msgstr ""
+"其他所有字符串事实——备注、错误消息、提示词、请求体——都会被丢弃，并在记录的 `limitations` "
+"中注明（`omitted:<name>`）；名称像密钥的事实无论什么类型也同样丢弃。同样的规则适用于 "
+"`source_status.rules_snapshot`（与发送方一样，最多 64 个键、16 "
+"KiB）。这些名称依据状态监控和告警控制面的技术字段清单；增加一个名称属于双方的契约变更。交给中间方的投递（`channel: "
+"other`、`outcome: "
+"unknown`）会保留解释它的事实——`transport`、`delivery_owner`、`handoff_outcome`、`control_plane_action`、`lifecycle_state`、`commit`"
+" 等。"
+
+#: ../developer/alert-history.md:336
+msgid ""
+"An event sent without `source_instance_id` (a fact a source re-observes in "
+"later runs, so a replay stays a byte-identical duplicate) is kept with "
+"`association_incomplete: true` and `no_source_instance` in `limitations`."
+msgstr ""
+"不带 `source_instance_id` 发送的事件（来源在之后的运行中会再次观察到的事实，这样重放仍是逐字节相同的重复）会被保留，并带上 "
+"`association_incomplete: true`，在 `limitations` 中注明 `no_source_instance`。"
+
+#: ../developer/alert-history.md:340
+msgid ""
+"**Identity and dedup.** The key is `(source, source_namespace, "
+"origin_record_id)`, the first two from the credential. The server computes "
+"`payload_digest`, the SHA-256 of the canonical JSON of the validated, "
+"server-redacted event (keys sorted, timestamps normalised to UTC "
+"microseconds, absent and null fields dropped). Same key and digest: a "
+"**duplicate**, nothing new written, the original `record_id` returned. Same "
+"key, different digest: a **conflict**; the stored fact is not overwritten, "
+"the losing version is kept as a `history_conflict` row (digest and kind "
+"only). Validation and scope errors fail the whole request; duplicates and "
+"conflicts are per item."
+msgstr ""
+"**身份与去重**。键是 `(source, source_namespace, origin_record_id)`，前两项来自凭据。服务器计算 "
+"`payload_digest`，即经过校验、并由服务器脱敏后的事件的规范 JSON 的 SHA-256（键排序，时间戳规范化为 UTC 微秒，缺失和 "
+"null 字段去掉）。键和摘要都相同：属于**重复**，不写入新内容，返回原来的 "
+"`record_id`。键相同、摘要不同：属于**冲突**；已保存的事实不会被覆盖，落败的版本作为一条 `history_conflict` "
+"行保留（只含摘要和类型）。校验错误和范围错误会让整个请求失败；重复和冲突则按条目处理。"
+
+#: ../developer/alert-history.md:351
+msgid ""
+"Derive ids from the source fact: `inc:<incident>:g<generation>:triggered`, "
+"`act:<action>:a<n>:result`. Never from submission time, a per-retry random "
+"value, or the message text."
+msgstr ""
+"id "
+"应由来源事实推导：`inc:<incident>:g<generation>:triggered`、`act:<action>:a<n>:result`。绝不要由提交时间、每次重试时的随机值或消息文本推导。"
+
+#: ../developer/alert-history.md:355
+msgid "Response:"
+msgstr "响应："
+
+#: ../developer/alert-history.md:365
+#, python-brace-format
+msgid ""
+"Errors use `{\"error\": {\"type\": …, \"message\": …}}`: `401 unauthorized`,"
+" `403 scope_denied` / `wrong_credential_kind`, `404 "
+"alert_history_not_configured`, `413 payload_too_large`, `415`, `422 "
+"invalid_request` (with `error.details`: index, field path and code — never "
+"the submitted value; also for JSON nested deeper than 16 levels or not valid"
+" JSON), `408 request_timeout` (the body did not arrive within 10 seconds; "
+"read before any commit slot is taken), `429 too_many_requests` and `503 "
+"history_unavailable` / `history_auth_unavailable` (both with `Retry-After`; "
+"resend the same body)."
+msgstr ""
+"错误使用 `{\"error\": {\"type\": …, \"message\": …}}`：`401 unauthorized`，`403 "
+"scope_denied` / `wrong_credential_kind`，`404 "
+"alert_history_not_configured`，`413 payload_too_large`，`415`，`422 "
+"invalid_request`（带 `error.details`：索引、字段路径和代码——从不包含提交的值；JSON 嵌套超过 16 层或不是有效 "
+"JSON 时也返回它），`408 request_timeout`（请求体未在 10 秒内到达；在占用任何提交名额之前读取），`429 "
+"too_many_requests` 以及 `503 history_unavailable` / "
+"`history_auth_unavailable`（两者都带 `Retry-After`；请重新发送相同的请求体）。"
+
+#: ../developer/alert-history.md:375
+msgid ""
+"A source keeps no undeclared local copy, bounds its retries by its own "
+"execution budget, and reports what it gave up on as a `history_gap` later."
+msgstr "来源不保留未声明的本地副本，用自己的执行预算限制重试，并在之后把放弃的部分报告为 `history_gap`。"
+
+#: ../developer/alert-history.md:378
+msgid ""
+"Source status (heartbeat; `events` may be empty): `source_instance_id`, "
+"`target_environment` and `observed_at` required; `release_id`, `started_at`,"
+" `sync_watermark`, `pending_count`, `pending_reported_at`, `dropped_count`, "
+"`last_error_code`, `rules_snapshot_hash`, `rules_snapshot` (flat, like "
+"`facts`) optional. Stored timestamps never move backwards, and the read API "
+"presents the snapshot as last reported, never as live state."
+msgstr ""
+"来源状态（心跳；`events` 可以为空）：`source_instance_id`、`target_environment` 和 "
+"`observed_at` "
+"必填；`release_id`、`started_at`、`sync_watermark`、`pending_count`、`pending_reported_at`、`dropped_count`、`last_error_code`、`rules_snapshot_hash`、`rules_snapshot`（扁平结构，与"
+" `facts` 相同）可选。已保存的时间戳从不倒退，读取 API 把快照作为最后一次上报的内容展示，从不当作实时状态。"
+
+#: ../developer/alert-history.md:385
+msgid ""
+"A short-lived producer (one cron run, one RPC, one alarm) closes its "
+"instance in its **final** status: `stopped_at` (RFC 3339 with offset), "
+"`stop_reason: \"invocation_complete\"` and `lost_at_stop` (0…10^9, the "
+"records it knows it lost) — all three or none, and only with `pending_count:"
+" 0`; a stop with work still queued, or with `pending_count` absent, is a "
+"`422`, and `stopped_at` may not precede `started_at` or lie more than 5 "
+"minutes ahead. Only a committed `200` with `source_status: \"recorded\"` "
+"confirms it. Such an instance reads as `stopped`, not as a crashed "
+"`unknown`. It claims nothing about records it did not know it lost: unknown "
+"gaps stay possible."
+msgstr ""
+"短生命周期的生产方（一次定时任务运行、一次 RPC、一次 alarm）在它的**最后**一次状态中关闭自己的实例：`stopped_at`（带时区偏移的"
+" RFC 3339）、`stop_reason: \"invocation_complete\"` 和 "
+"`lost_at_stop`（0…10^9，它已知丢失的记录数）——三者必须同时出现或都不出现，并且只能与 `pending_count: 0` "
+"一起出现；仍有待写入的工作，或缺少 `pending_count` 时发送停止信息，会返回 `422`；`stopped_at` 不能早于 "
+"`started_at`，也不能超前 5 分钟以上。只有带 `source_status: \"recorded\"` 的已提交 `200` "
+"才确认它。这样的实例显示为 `stopped`，而不是崩溃后的 `unknown`。它不对自己不知道已丢失的记录做任何声明：未知缺口仍然可能存在。"
+
+#: ../developer/alert-history.md:395
+msgid "Example lifecycle event:"
+msgstr "生命周期事件示例："
+
+#: ../developer/alert-history.md:411
+msgid "Example delivery result:"
+msgstr "投递结果示例："
+
+#: ../developer/alert-history.md:425
+msgid ""
+"The ingestion endpoint runs in the gateway, so a gateway outage is also an "
+"ingestion outage; sources report that as failed or unknown submissions."
+msgstr "接收端点运行在网关中，所以网关不可用也就意味着接收不可用；来源会把这种情况报告为失败或结果未知的提交。"
+
+#: ../developer/alert-history.md:428
+msgid "Buffer, writer and shutdown"
+msgstr "缓冲区、写入器与关闭"
+
+#: ../developer/alert-history.md:430
+msgid ""
+"Per process: at most 2,000 records or 8 MiB queued, **counting the batch "
+"being written**; batches of at most 50 records / 256 KiB, flushed every "
+"second; failures back off with jitter from 1 to 30 seconds while the records"
+" stay queued; a full buffer refuses new records and keeps what it has. Each "
+"record is written in its own savepoint, so one unwritable record is dropped "
+"and counted without failing its batch. A lost `COMMIT` response is resent "
+"and answered as duplicates. A heartbeat updates the instance's source row "
+"every 30 seconds even with nothing to write; a heartbeat proves only that it"
+" was written. Its pending snapshot (`pending_count`, `pending_bytes`, "
+"`oldest_pending_at`) describes, consistently, what stays queued once the "
+"batch committed with it."
+msgstr ""
+"每个进程：最多排队 2,000 条记录或 8 MiB，**包括正在写入的那一批**；每批最多 50 条记录 / 256 KiB，每秒刷新一次；失败时以 "
+"1 到 30 "
+"秒带抖动的退避重试，记录保留在队列中；缓冲区满时拒收新记录，保留已有的记录。每条记录在自己的保存点中写入，所以一条无法写入的记录会被丢弃并计数，而不会让整批失败。丢失的"
+" `COMMIT` 响应会被重新发送，并作为重复来应答。即使没有内容要写，心跳也会每 30 "
+"秒更新一次实例的来源行；心跳只能证明它自己被写入了。它的待写快照（`pending_count`、`pending_bytes`、`oldest_pending_at`）一致地描述了随它一起提交的那一批完成后仍留在队列中的内容。"
+
+#: ../developer/alert-history.md:441
+msgid ""
+"Startup installs the recorder before any producer starts. Shutdown runs "
+"after the producers have stopped: it waits up to 5 seconds for every task "
+"still in the alert path or scheduled to enter it (request handlers, the "
+"breaker's and the health route's detached alert tasks, scheduler jobs, sends"
+" awaiting their result), then writes its open summary windows, closes the "
+"buffer and drains it — the write already in progress, its cancellation, the "
+"drain, the stop record and closing the pool all inside a 5-second budget. "
+"What is left is reported in the instance's stop record (`lost_at_stop`) and "
+"logged, and is lost. A new process is a new source instance; an instance "
+"with no stop record is shown as `unknown`, never as cleanly stopped."
+msgstr ""
+"启动时，记录器在任何生产方启动之前安装。关闭在生产方都已停止之后进行：最多等待 5 "
+"秒，等仍在告警路径中或即将进入告警路径的所有任务结束（请求处理、熔断器和健康检查路由分离出去的告警任务、调度任务、等待结果的发送），然后写出尚未结束的汇总窗口，关闭缓冲区并把它排空——正在进行的写入、它的取消、排空、停止记录以及关闭连接池，全部在"
+" 5 "
+"秒预算之内。剩下的内容会在实例的停止记录中报告（`lost_at_stop`）并写入日志，这些内容就丢失了。新进程是一个新的来源实例；没有停止记录的实例显示为"
+" `unknown`，从不显示为正常停止。"
+
+#: ../developer/alert-history.md:452
+msgid "Erasure"
+msgstr "删除"
+
+#: ../developer/alert-history.md:454
+msgid ""
+"Hard-deleting an account removes, in the same transaction that establishes "
+"its erasure fence, every history row whose `subject_digests` contain the "
+"account. Every history write — however long it waited in a buffer — takes "
+"the fence's shared lock on its subjects and checks the fence in its own "
+"transaction, so a record about an erased account is never written "
+"afterwards, and a write during an erasure waits for it. Request evidence "
+"reads take the same lock. Backups and restores of the database carry history"
+" like any other table and are subject to the same deletion practice."
+msgstr ""
+"硬删除一个账号时，在建立其删除围栏的同一个事务中，删除所有 `subject_digests` "
+"含有该账号的历史行。每一次历史写入——不论它在缓冲区中等了多久——都会对它涉及的主体取得围栏的共享锁，并在自己的事务中检查围栏，所以关于已删除账号的记录之后永远不会被写入；删除进行期间的写入会等它完成。请求证据的读取也取得同一把锁。数据库的备份和恢复像其他表一样包含历史，同样遵守删除规范。"
+
+#: ../developer/alert-history.md:463
+msgid "Limitations"
+msgstr "限制"
+
+#: ../developer/alert-history.md:465
+msgid ""
+"In-memory state per worker: buffers, open episodes and summary windows are "
+"lost on a crash."
+msgstr "内存状态按 worker 保存：缓冲区、尚未结束的 episode 和汇总窗口在崩溃时会丢失。"
+
+#: ../developer/alert-history.md:467
+msgid ""
+"The suppression summary has no metric peak: the alert path sees decisions, "
+"not the metric."
+msgstr "抑制汇总没有指标峰值：告警路径看到的是决定，而不是指标。"
+
+#: ../developer/alert-history.md:469
+msgid ""
+"`recorded_at` is the insert-time clock inside the writing transaction, not "
+"its commit time; a transaction that commits late is invisible to a cursor "
+"that has already passed it. There is no commit-ordered feed; rescan and "
+"deduplicate by `record_id` (see [Reading](#reading))."
+msgstr ""
+"`recorded_at` "
+"是写入事务内部的插入时钟，而不是它的提交时间；提交较晚的事务，对已经越过它的游标不可见。不存在按提交顺序排列的数据流；请重新扫描并按 "
+"`record_id` 去重（见 [读取](#reading)）。"
+
+#: ../developer/alert-history.md:473
+msgid ""
+"Request references are kept only for an authenticated caller, and only with "
+"a fence secret."
+msgstr "只有对已认证的调用方，并且只有在设置了围栏密钥时，才保留请求引用。"
+
+#: ../developer/alert-history.md:475
+msgid ""
+"The ingestion endpoint is reachable through the console proxy at "
+"`/internal/alert-history/events` — that one path, not the `/internal` prefix"
+" (see [Public path table](public-path-table.md)). The proxy adds no "
+"authentication: the gateway admits only a configured writer credential, and "
+"answers `404` while alert history is off or no writer is configured."
+msgstr ""
+"接收端点可以通过控制台代理在 `/internal/alert-history/events` 访问——只有这一个路径，而不是 `/internal` "
+"前缀（见 [公开路径表](public-path-"
+"table.md)）。代理不添加任何认证：网关只接受已配置的写入凭据，在告警历史关闭或没有配置写入凭据时返回 `404`。"

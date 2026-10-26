@@ -1036,6 +1036,20 @@ msgstr ""
 msgid "Batches submitted to `/v1/batches`, with their requests and results until `BATCH_RETENTION_DAYS` after they finish, and the per-model batch concurrency caps; see [Batch Inference](batches.md)"
 msgstr "提交到 `/v1/batches` 的批次及其请求和结果（保留到批次结束后 `BATCH_RETENTION_DAYS` 天），以及每个模型的批量并发上限；见[批量推理](batches.md)"
 
+#: ../developer/database.md
+msgid ""
+"`ensure_schema` in `apps/backend/serving/storage/alert_history_store.py`"
+msgstr ""
+"`apps/backend/serving/storage/alert_history_store.py` 里的 `ensure_schema`"
+
+#: ../developer/database.md
+msgid ""
+"`alert_history_sources` and `alert_history_events`, only when "
+"`ALERT_HISTORY_ENABLED` is on (see [Alert history](alert-history.md))"
+msgstr ""
+"`alert_history_sources` 和 `alert_history_events`，仅在 `ALERT_HISTORY_ENABLED` "
+"开启时创建（见 [告警历史](alert-history.md)）"
+
 #~ msgid "`session_id` / `conversation_id` headers"
 #~ msgstr "`session_id` / `conversation_id` 头"
 

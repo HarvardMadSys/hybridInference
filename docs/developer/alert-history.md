@@ -271,8 +271,22 @@ At most 50 events and 256 KiB per request, 64 KiB per event. The answer is
 else, including no answer, means "not known to be saved", and the source
 resends the same events with the same ids.
 
+A minimal request — one event and the sending instance's status; the fields
+are described below:
+
 ```json
-{"schema_version": 1, "source_status": {…}, "events": [{…}, …]}
+{"schema_version": 1,
+ "events": [{
+  "origin_record_id": "inc:inc_7f3a:g2:triggered",
+  "kind": "condition_triggered",
+  "occurred_at": "2026-10-26T08:15:30.125Z",
+  "target_environment": "production",
+  "source_instance_id": "monitor-2026-10-26T08:00:00Z-a1b2"}],
+ "source_status": {
+  "source_instance_id": "monitor-2026-10-26T08:00:00Z-a1b2",
+  "target_environment": "production",
+  "observed_at": "2026-10-26T08:15:31.200Z",
+  "pending_count": 0}}
 ```
 
 Event fields. Required: `origin_record_id` (1–200 chars of
