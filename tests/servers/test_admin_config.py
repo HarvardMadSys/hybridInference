@@ -143,6 +143,20 @@ async def test_get_reports_a_variable_a_model_needs(config_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_leaves_out_settings_with_nothing_to_choose(config_client) -> None:
+    client, _store, _audit = config_client
+
+    body = (await client.get("/admin/config", headers=AUTH)).json()
+
+    # No delivery extension is loaded: email has SMTP alone, and phone sign-in
+    # has no SMS provider for its settings to tune.
+    keys = set(_entries(body))
+    assert "EMAIL_PROVIDER" not in keys
+    assert not any(key.startswith("SMS_") for key in keys)
+    assert {"SMTP_HOST", "SMTP_PASSWORD"} <= keys
+
+
+@pytest.mark.asyncio
 async def test_patch_stores_and_returns_the_full_configuration(config_client) -> None:
     client, store, audit = config_client
 
@@ -521,6 +535,90 @@ async def test_backup_exports_plaintext_secrets_and_excludes_setup_markers(confi
 
 
 @pytest.mark.asyncio
+async def test_backup_exports_the_signup_domain_allowlist(config_client) -> None:
+    client, _store, _audit = config_client
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_signup_allowed_domains = AsyncMock(
+        return_value=[
+            {"domain": "mit.edu", "is_wildcard": True, "created_by": None},
+            {"domain": "harvard.edu", "is_wildcard": False, "created_by": None},
+        ]
+    )
+
+    response = await client.get("/admin/config/backup", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["signup_allowed_domains"] == [
+        {"domain": "harvard.edu", "is_wildcard": False},
+        {"domain": "mit.edu", "is_wildcard": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_restore_replaces_the_signup_domain_allowlist_and_refreshes_resolvers(
+    config_client,
+) -> None:
+    """An empty allowlist approves every signup, so a restore must not drop it."""
+    client, _store, _audit = config_client
+    services = client._transport.app.state.services
+    op_store = services.operational_store
+    op_store.list_signup_allowed_domains = AsyncMock(
+        return_value=[
+            {"domain": "harvard.edu", "is_wildcard": False},
+            {"domain": "old.org", "is_wildcard": False},
+        ]
+    )
+    op_store.add_signup_allowed_domain = AsyncMock()
+    op_store.remove_signup_allowed_domain = AsyncMock()
+    services.model_visibility_resolver = MagicMock(spec=["invalidate_cache"])
+    services.model_concurrency_resolver = MagicMock(spec=["invalidate_cache"])
+
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={
+            "schema_version": 1,
+            "signup_allowed_domains": [
+                {"domain": "harvard.edu", "is_wildcard": False},
+                {"domain": "mit.edu", "is_wildcard": True},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    op_store.remove_signup_allowed_domain.assert_awaited_once_with(
+        domain="old.org", is_wildcard=False
+    )
+    # An ADMIN_TOKEN caller has no account to attribute the row to.
+    op_store.add_signup_allowed_domain.assert_awaited_once_with(
+        domain="mit.edu", is_wildcard=True, created_by=None
+    )
+    services.model_visibility_resolver.invalidate_cache.assert_called_once_with()
+    services.model_concurrency_resolver.invalidate_cache.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_restore_accepts_a_paused_batch_model_its_backup_exported(config_client) -> None:
+    """A cap of 0 pauses a model's batch work; a backup taken meanwhile holds it."""
+    client, _store, _audit = config_client
+    services = client._transport.app.state.services
+    services.batch_store = MagicMock()
+    services.batch_store.list_model_limits = AsyncMock(return_value={})
+    services.batch_store.set_model_limit = AsyncMock()
+
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={"schema_version": 1, "batch_model_limits": {"glm-4.6": 0}},
+    )
+
+    assert response.status_code == 200
+    services.batch_store.set_model_limit.assert_awaited_once_with(
+        "glm-4.6", 0, updated_by="admin-token"
+    )
+
+
+@pytest.mark.asyncio
 async def test_restore_applies_backup_and_preserves_locked_api_key_secret(config_client) -> None:
     client, store, audit = config_client
     store.has_api_keys = True
@@ -579,6 +677,49 @@ async def test_restore_applies_backup_and_preserves_locked_api_key_secret(config
     assert audit.await_args.kwargs["actor"].type == "admin_token"
     assert audit.await_args.kwargs["actor"].id is None
     assert audit.await_args.kwargs["target"] == AuditTarget("config", "backup")
+
+
+@pytest.mark.asyncio
+async def test_backup_leaves_out_the_retired_routewise_latency_threshold(config_client) -> None:
+    # routewise_latency_min_samples was removed; its rows may still be stored,
+    # and a backup taken while it existed must still restore.
+    client, _store, _audit = config_client
+    retired = [
+        {"key": "routewise_latency_min_samples", "value": "10", "value_type": "int"},
+        {
+            "key": "model_routewise_setting:routewise_latency_min_samples:chat",
+            "value": "4",
+            "value_type": "int",
+        },
+    ]
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_settings = AsyncMock(
+        return_value=[*retired, {"key": "signup_enabled", "value": "true", "value_type": "bool"}]
+    )
+    op_store.delete_setting = AsyncMock()
+    op_store.set_setting = AsyncMock()
+
+    exported = (await client.get("/admin/config/backup", headers=AUTH)).json()
+    assert [s["key"] for s in exported["site_settings"]] == ["signup_enabled"]
+
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={
+            "schema_version": 1,
+            "site_settings": [
+                *retired,
+                {"key": "signup_enabled", "value": "true", "value_type": "bool"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    op_store.set_setting.assert_awaited_once_with("signup_enabled", "true", "bool", "admin-token")
+    # The rows left behind are cleared rather than kept.
+    assert {call.args[0] for call in op_store.delete_setting.await_args_list} == {
+        row["key"] for row in retired
+    }
 
 
 @pytest.mark.asyncio

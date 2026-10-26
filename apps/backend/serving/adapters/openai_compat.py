@@ -1546,8 +1546,17 @@ class OpenAICompatAdapter(BaseAdapter):
                         # than letting the loop fall out and report the missing
                         # terminator. Guarded on empty choices because a normal
                         # content chunk may legitimately carry a null `error`.
-                        if isinstance(data, dict) and data.get("error") and not raw_choices:
-                            error = data["error"]
+                        # OpenRouter's mid-stream error keeps its choices and
+                        # marks them ``finish_reason: "error"``: a failure, never
+                        # a finish, with or without the error object beside it.
+                        errored = isinstance(raw_choices, list) and any(
+                            isinstance(choice, dict) and choice.get("finish_reason") == "error"
+                            for choice in raw_choices
+                        )
+                        if isinstance(data, dict) and (
+                            (data.get("error") and not raw_choices) or errored
+                        ):
+                            error = data.get("error")
                             raise UpstreamStreamError(
                                 _stream_error_message(error),
                                 _stream_error_status(error),
@@ -1639,8 +1648,9 @@ class OpenAICompatAdapter(BaseAdapter):
             if abandoned:
                 slot_status = release_status = None
             elif stream_error:
-                slot_status = 0
-                release_status = stream_error_status if stream_error_status else 0
+                # An error frame's own status, so a 429 one shrinks the AIMD
+                # limit as a 429 response would; 0 for everything statusless.
+                slot_status = release_status = stream_error_status if stream_error_status else 0
             else:
                 slot_status = release_status = 200
             if active_slot is not None:

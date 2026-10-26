@@ -409,6 +409,32 @@ async def test_delete_user_success(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_delete_user_self_guard_keeps_actor_attribution(admin_client):
+    """The self-delete guard reads the request; the store write still names the actor.
+
+    An ADMIN_TOKEN caller has no account, so the guard never matches it, and the
+    soft delete's in-transaction audit row is attributed to the shared token.
+    """
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "active",
+    }
+
+    response = await client.post(
+        "/admin/users/u1/delete",
+        headers=AUTH,
+        json={"reason": "Account requested deletion"},
+    )
+
+    assert response.status_code == 200, response.text
+    actor = op_store.delete_user.await_args.kwargs["actor"]
+    assert actor.type == "admin_token"
+    assert actor.id is None
+
+
+@pytest.mark.asyncio
 async def test_delete_user_from_suspended(admin_client):
     """Suspended users can be deleted."""
     client, op_store, _log_store, _log = admin_client
@@ -625,6 +651,40 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 
     # Schema validation rejects 'deleted' (pattern only allows active|suspended)
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_user_refuses_a_quota_for_a_keyless_user_before_writing(admin_client):
+    """The quota lives on the key; refusing it must not leave the rest applied unaudited."""
+    client, op_store, _log_store, mock_log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.get_active_key_by_account.return_value = None
+
+    response = await client.patch(
+        "/admin/users/u1", headers=AUTH, json={"role": "admin", "quota_daily_cost_usd": 5}
+    )
+
+    assert response.status_code == 409
+    op_store.update_user_fields.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_user_refuses_a_quota_with_a_suspension_before_writing(admin_client):
+    """Suspending revokes the key the quota would be written to."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.get_active_key_by_account.return_value = {"key_prefix": "hyi-abc"}
+    op_store.suspend_user = AsyncMock()
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"status": "suspended", "quota_daily_cost_usd": 5},
+    )
+
+    assert response.status_code == 409
+    op_store.suspend_user.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -2412,6 +2472,23 @@ async def test_user_detail_shows_usage_only_while_the_user_holds_a_key(admin_cli
     assert without_key["last_request_at"] is None
     # Turn averages come from api_logs by user_id, so they stay visible.
     assert without_key["avg_turns"] == pytest.approx(5.0)
+
+
+@pytest.mark.asyncio
+async def test_user_detail_shows_a_zero_quota_as_zero(admin_client):
+    """0 is a limit (no spend allowed), and every request is refused under it."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    log_store.get_user_detail_usage = AsyncMock(return_value={})
+    op_store.get_active_key_by_account.return_value = {
+        "key_prefix": "hyi-abc",
+        "quota_daily_cost_usd": Decimal("0.0000"),
+        "quota_monthly_cost_usd": Decimal("0.0000"),
+    }
+
+    detail = (await client.get("/admin/users/u1/detail", headers=AUTH)).json()
+
+    assert (detail["quota_daily_usd"], detail["quota_monthly_usd"]) == (0.0, 0.0)
 
 
 @pytest.mark.asyncio

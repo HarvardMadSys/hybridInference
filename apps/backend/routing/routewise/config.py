@@ -34,9 +34,6 @@ class RouteWiseConfig:
             used as a cold-start prior when the live profile window is empty.
         latency_max_samples_per_profile: Maximum request outcomes retained per
             provider latency profile.
-        latency_min_samples: Legacy minimum sample count exposed for runtime
-            tuning; RouteWise provider selection uses the layered latency prior
-            instead of gating cold endpoints out of the LP.
         budget_alpha: Interpolation factor for the LP cost budget:
             ``c_min + alpha * (c_max - c_min)``.
         db_bootstrap_enabled: Whether to warm RouteWise in-memory state from
@@ -94,7 +91,6 @@ class RouteWiseConfig:
     latency_window_sec: float = 900.0  # 15 min profile window
     latency_history_prior_window_sec: float = 86_400.0
     latency_max_samples_per_profile: int = 5000
-    latency_min_samples: int = 10  # retained for runtime compatibility/diagnostics
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: LatencyHedgeMode = "disabled"
 

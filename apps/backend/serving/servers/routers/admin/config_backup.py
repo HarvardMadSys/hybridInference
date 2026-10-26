@@ -9,7 +9,7 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from serving.adapters import dynamic_keys, provider_registry
 from serving.auth.signup_policy import (
@@ -30,11 +30,18 @@ try:
         MODEL_ROUTEWISE_SETTING_PREFIX,
         _coerce_setting_value,
         _parse_model_setting_key,
+        is_retired_routewise_setting_row,
     )
 except ImportError:
     MODEL_ROUTEWISE_SETTING_PREFIX = "model_routewise_setting:"
     _coerce_setting_value = None  # type: ignore[assignment]
     _parse_model_setting_key = None  # type: ignore[assignment]
+
+    def is_retired_routewise_setting_row(setting_key: str) -> bool:  # type: ignore[misc]
+        """Without RouteWise settings, no stored row is a retired one."""
+        return False
+
+
 from serving.audit import AuditActor, AuditTarget
 from serving.config.settings import VALID_ROLES
 from serving.observability import alert_mutes
@@ -61,6 +68,7 @@ from serving.servers import restart
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_admin_audit_actor,
+    get_admin_user_id,
     get_operational_store,
     get_services,
     verify_admin_access,
@@ -226,6 +234,19 @@ def _validate_site_setting(item: ConfigBackupSiteSetting) -> tuple[str, str, str
     return key, value, value_type
 
 
+def _restorable_site_settings(payload: ConfigBackupPayload) -> list[ConfigBackupSiteSetting]:
+    """Return the backup's site settings less those of retired RouteWise settings.
+
+    Nothing reads such a row any more, so a restore drops it rather than
+    refusing a backup taken while the setting existed.
+    """
+    return [
+        item
+        for item in payload.site_settings
+        if not is_retired_routewise_setting_row(item.key.strip())
+    ]
+
+
 def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
     if payload.schema_version != 1:
         raise HTTPException(
@@ -234,7 +255,7 @@ def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
         )
 
     seen_settings: set[str] = set()
-    for s in payload.site_settings:
+    for s in _restorable_site_settings(payload):
         key, _val, _vtype = _validate_site_setting(s)
         if key in seen_settings:
             raise HTTPException(
@@ -346,7 +367,8 @@ def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
             )
 
     for model_id, max_concurrent in payload.batch_model_limits.items():
-        if not model_id.strip() or int(max_concurrent) < 1:
+        # 0 is a cap like any other: it pauses the model's batch work.
+        if not model_id.strip() or int(max_concurrent) < 0:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid batch_model_limit for {model_id!r}: {max_concurrent}",
@@ -370,7 +392,7 @@ async def export_config_backup(
     site_settings: list[ConfigBackupSiteSetting] = []
     for row in await _call_store(op_store, "list_settings", default=[]):
         key = str(row["key"])
-        if key in _EXCLUDED_SITE_SETTING_KEYS:
+        if key in _EXCLUDED_SITE_SETTING_KEYS or is_retired_routewise_setting_row(key):
             continue
         site_settings.append(
             ConfigBackupSiteSetting(
@@ -583,7 +605,7 @@ async def export_config_backup(
     batch_model_limits_raw = await _call_store(batch_store, "list_model_limits", default={})
     batch_model_limits = {str(k): int(v) for k, v in sorted((batch_model_limits_raw or {}).items())}
 
-    domains_raw = await _call_store(op_store, "list_signup_domains", default=[])
+    domains_raw = await _call_store(op_store, "list_signup_allowed_domains", default=[])
     signup_allowed_domains = [
         ConfigBackupSignupDomain(
             domain=str(row["domain"]),
@@ -637,14 +659,19 @@ async def _apply_operational_and_batch_stores(
     batch_store: Any,
     payload: ConfigBackupPayload,
     admin_id: str,
+    admin_user_id: str | None = None,
 ) -> None:
     """Replace operational and batch store configuration domains to match ``payload``."""
     if op_store is not None:
         # 1. site_settings (preserve setup_completed_at and setup_code)
         current_settings = await _call_store(op_store, "list_settings", default=[])
+        # A retired RouteWise setting's stored row is not in the target either,
+        # so a restore also clears one left behind.
         target_settings = {
             key: (val, vtype)
-            for key, val, vtype in (_validate_site_setting(s) for s in payload.site_settings)
+            for key, val, vtype in (
+                _validate_site_setting(s) for s in _restorable_site_settings(payload)
+            )
         }
         for row in current_settings:
             existing_key = str(row["key"])
@@ -940,23 +967,26 @@ async def _apply_operational_and_batch_stores(
         for mid in target_exemptions:
             await _call_store(op_store, "set_model_concurrency_exemption", mid, admin_id)
 
-        # 14. signup_allowed_domains
+        # 14. signup_allowed_domains, keyed as the table is: (domain, is_wildcard).
+        # ``created_by`` references users.id, so it takes the admin's account id
+        # (None for ADMIN_TOKEN), not the ``admin_id`` display identity.
         current_domains = {
-            str(row["domain"])
-            for row in await _call_store(op_store, "list_signup_domains", default=[])
+            (str(row["domain"]), bool(row.get("is_wildcard", False)))
+            for row in await _call_store(op_store, "list_signup_allowed_domains", default=[])
         }
-        target_domains = {d.domain.strip(): d for d in payload.signup_allowed_domains}
-        for dom in current_domains - set(target_domains):
-            await _call_store(op_store, "remove_signup_domain", dom)
-        for dom, d in target_domains.items():
-            if dom not in current_domains:
-                await _call_store(
-                    op_store,
-                    "add_signup_domain",
-                    dom,
-                    is_wildcard=d.is_wildcard,
-                    added_by=admin_id,
-                )
+        target_domains = {(d.domain.strip(), d.is_wildcard) for d in payload.signup_allowed_domains}
+        for dom, is_wildcard in sorted(current_domains - target_domains):
+            await _call_store(
+                op_store, "remove_signup_allowed_domain", domain=dom, is_wildcard=is_wildcard
+            )
+        for dom, is_wildcard in sorted(target_domains - current_domains):
+            await _call_store(
+                op_store,
+                "add_signup_allowed_domain",
+                domain=dom,
+                is_wildcard=is_wildcard,
+                created_by=admin_user_id,
+            )
 
     if batch_store is not None:
         current_limits = await _call_store(batch_store, "list_model_limits", default={})
@@ -1057,12 +1087,12 @@ async def _refresh_live_caches(services: Any, op_store: Any) -> None:
                 )
 
     vis_resolver = getattr(services, "model_visibility_resolver", None)
-    if vis_resolver is not None and callable(getattr(vis_resolver, "invalidate", None)):
-        vis_resolver.invalidate()
+    if vis_resolver is not None and callable(getattr(vis_resolver, "invalidate_cache", None)):
+        vis_resolver.invalidate_cache()
 
     conc_resolver = getattr(services, "model_concurrency_resolver", None)
-    if conc_resolver is not None and callable(getattr(conc_resolver, "invalidate", None)):
-        conc_resolver.invalidate()
+    if conc_resolver is not None and callable(getattr(conc_resolver, "invalidate_cache", None)):
+        conc_resolver.invalidate_cache()
 
     batch_limits = getattr(services, "batch_model_limits", None)
     if batch_limits is not None and callable(getattr(batch_limits, "invalidate", None)):
@@ -1074,6 +1104,7 @@ async def _refresh_live_caches(services: Any, op_store: Any) -> None:
 @router.post("/admin/config/restore", response_model=ConfigRestoreResponse)
 async def restore_config_backup(
     payload: ConfigBackupPayload,
+    request: Request,
     response: Response,
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
@@ -1097,6 +1128,7 @@ async def restore_config_backup(
                 batch_store,
                 payload,
                 admin_id,
+                get_admin_user_id(request),
             ),
         )
     except app_config.ConfigUpdateError as exc:
@@ -1128,7 +1160,7 @@ async def restore_config_backup(
 
     return ConfigRestoreResponse(
         config=ConfigResponse(
-            **app_config.describe(),
+            **app_config.describe(offered_only=True),
             restart_supported=restart.restart_supported(),
         ),
         immutable_keys_preserved=preserved,

@@ -415,23 +415,14 @@ class HybridRouter:
         being re-attempted. Only an attempt that failed before the client could
         see anything hands over to the next candidate, which is the same rule the
         single-router path applies.
+
+        Nothing runs until the first read, selection included, as in
+        ``FixedRouter.stream_chat_completion``: the serving layer reads the
+        stream inside the handling that turns a routing error into its status
+        (every circuit open is a 503), so one raised by this call would escape
+        it as a 500.
         """
-        decision = self.select_decision(
-            model_id,
-            messages,
-            routing_options=routing_options,
-            **params,
-        )
-        plan = self._attempt_plan(model_id, messages, decision, routing_options, params)
-        return _fallback_stream(
-            self,
-            decision,
-            plan,
-            model_id,
-            messages,
-            routing_options,
-            params,
-        )
+        return _fallback_stream(self, model_id, messages, routing_options, params)
 
     def _attempt_plan(
         self,
@@ -771,14 +762,19 @@ def _serves(backend: Any, model_id: str) -> bool:
 
 async def _fallback_stream(
     router: HybridRouter,
-    decision: RoutingDecision,
-    plan: Sequence[_Attempt],
     model_id: str,
     messages: list[dict[str, Any]],
     routing_options: RoutingRequestOptions | None,
     params: dict[str, Any],
 ) -> AsyncIterator[Any]:
     """Forward the first attempt the client can see, else try the next candidate."""
+    decision = router.select_decision(
+        model_id,
+        messages,
+        routing_options=routing_options,
+        **params,
+    )
+    plan = router._attempt_plan(model_id, messages, decision, routing_options, params)
     attempts: list[dict[str, Any]] = []
     errors: list[BaseException] = []
     refusals: list[BaseException] = []

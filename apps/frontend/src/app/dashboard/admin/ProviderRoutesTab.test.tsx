@@ -333,7 +333,6 @@ describe('ProviderRoutesTab', () => {
     );
     expect(screen.queryByTestId(`offload-badge-${fixedRoute.route_id}`)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
     chooseValue(screen.getByLabelText('Offload route'), fixedRoute.route_id);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Queue offload' }));
     expect(setOffloadRoute).not.toHaveBeenCalled();
@@ -362,6 +361,51 @@ describe('ProviderRoutesTab', () => {
 
     expect(await screen.findByText('minimax-fast')).toBeInTheDocument();
     expect(screen.queryByTestId('offload-route-panel')).not.toBeInTheDocument();
+  });
+
+  it('shows no offload panel for a fixed model with no second route', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, strategy: 'fixed', route_type: 'on_demand' }],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    expect(
+      await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api'),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(listOffloadRoutes).toHaveBeenCalled());
+    expect(screen.queryByTestId('offload-route-panel')).not.toBeInTheDocument();
+  });
+
+  it('still shows a stored offload policy on a fixed model left with one route', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, strategy: 'fixed', route_type: 'on_demand' }],
+    });
+    vi.mocked(listOffloadRoutes).mockResolvedValue({
+      queue_enabled: true,
+      max_wait_seconds: 30,
+      offload_routes: [
+        {
+          model_id: 'minimax-fast',
+          route_id: 'minimax-fast:openrouter-api',
+          wait_seconds: 5,
+          endpoint_id: 'minimax-fast:openrouter-api',
+          active: false,
+          inactive_reason: 'The offload route is no longer one of the model’s routes.',
+          updated_at: null,
+          updated_by: 'admin@example.com',
+        },
+      ],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    expect(await screen.findByTestId('offload-route-panel')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear offload route' })).toBeEnabled();
   });
 
   it('keeps the routes table when the offload routes fail to load', async () => {
@@ -432,7 +476,7 @@ describe('ProviderRoutesTab', () => {
     expect(screen.queryByLabelText('Fixed weight')).not.toBeInTheDocument();
   });
 
-  it('holds the model selection while an offload edit or its review is open', async () => {
+  it('holds the model selection while an offload draft or its review is open', async () => {
     const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
     // Offload needs a second route to point at, on each model.
     const secondRoute = (base: typeof fixedRoute) => ({
@@ -462,10 +506,12 @@ describe('ProviderRoutesTab', () => {
     const createModel = screen.getByRole('button', { name: 'Create model' });
     expect(selector).toBeEnabled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
+    // The prefilled wait typed again is no change, and holds nothing.
+    fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '5' } });
+    expect(selector).toBeEnabled();
+    chooseValue(screen.getByLabelText('Offload route'), fixedRoute.route_id);
     expect(selector).toBeDisabled();
     expect(createModel).toBeDisabled();
-    chooseValue(screen.getByLabelText('Offload route'), fixedRoute.route_id);
     fireEvent.change(screen.getByLabelText('Offload wait seconds'), { target: { value: '9' } });
 
     // Still held while the review is open, and after going back to it.
@@ -476,14 +522,14 @@ describe('ProviderRoutesTab', () => {
     expect(selector).toBeDisabled();
     expect(screen.getByLabelText('Offload wait seconds')).toHaveValue(9);
 
-    // Cancel releases it; the next model starts from its own stored values.
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Queue offload' }));
+    // Discard releases it; the next model starts from its own stored values.
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Queue offload' }));
     expect(selector).toBeEnabled();
     expect(createModel).toBeEnabled();
     chooseValue(selector, 'other-model');
     expect(selector).toHaveAttribute('data-value', 'other-model');
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Queue offload' }));
-    expect(screen.getByLabelText('Offload wait seconds')).not.toHaveValue(9);
+    expect(await screen.findByLabelText('Offload wait seconds')).toHaveValue(5);
+    expect(screen.getByLabelText('Offload route')).toHaveAttribute('data-value', '');
     expect(setOffloadRoute).not.toHaveBeenCalled();
   });
 
@@ -520,7 +566,6 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
     await screen.findByTestId('offload-route-panel');
     const selector = screen.getByLabelText('Selected model');
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
     chooseValue(screen.getByLabelText('Offload route'), fixedRoute.route_id);
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Queue offload' }));
     expect(selector).toBeDisabled();
@@ -529,7 +574,7 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => expect(selector).toBeEnabled());
   });
 
-  it('holds the model selection while RouteWise parameters are being edited', async () => {
+  it('holds the model selection while RouteWise parameters have unsaved changes', async () => {
     const otherRoute = {
       ...route,
       model_id: 'other-routewise',
@@ -559,15 +604,17 @@ describe('ProviderRoutesTab', () => {
     });
 
     render(<ProviderRoutesTab showRoutewiseSettings />);
-    const edit = await screen.findByRole('button', { name: 'Edit RouteWise parameters' });
+    const alpha = await screen.findByLabelText('Cost budget alpha value');
     const selector = screen.getByLabelText('Selected model');
     expect(selector).toBeEnabled();
 
-    fireEvent.click(edit);
+    fireEvent.change(alpha, { target: { value: '0.4' } });
     expect(selector).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Create model' })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Discard changes to RouteWise parameters' }),
+    );
     expect(selector).toBeEnabled();
     chooseValue(selector, 'other-routewise');
     await waitFor(() => expect(listRoutewiseSettings).toHaveBeenLastCalledWith('other-routewise'));
@@ -575,7 +622,8 @@ describe('ProviderRoutesTab', () => {
   });
 
   describe('routing policy and the panels it shows', () => {
-    const LOCKED = 'Save or cancel the open edit first';
+    const HELD = 'Save or discard the unsaved changes first';
+    const BLOCKED = 'Save or discard the other unsaved changes first';
     const budgetSetting: RoutewiseSettingItem = {
       key: 'routewise_budget_alpha',
       value: 0.75,
@@ -599,25 +647,30 @@ describe('ProviderRoutesTab', () => {
         settings: [budgetSetting],
       });
       render(<ProviderRoutesTab showRoutewiseSettings />);
-      return screen.findByRole('button', { name: 'Edit RouteWise parameters' });
+      return screen.findByLabelText('Cost budget alpha value');
     }
 
-    it('holds the routing policy while RouteWise parameters are being edited', async () => {
-      const editParameters = await renderRoutewiseWithParameters();
-      const editPolicy = screen.getByRole('button', { name: 'Edit minimax-fast routing policy' });
-      expect(editPolicy).toBeEnabled();
+    const discardParameters = () =>
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Discard changes to RouteWise parameters' }),
+      );
+
+    it('holds the routing policy while RouteWise parameters have unsaved changes', async () => {
+      const alpha = await renderRoutewiseWithParameters();
+      const policy = screen.getByLabelText('Routing policy');
+      expect(policy).toBeEnabled();
 
       // Switching to fixed would unmount the RouteWise panel and drop its drafts.
-      fireEvent.click(editParameters);
-      expect(editPolicy).toBeDisabled();
-      expect(editPolicy).toHaveAttribute('title', LOCKED);
+      fireEvent.change(alpha, { target: { value: '0.4' } });
+      expect(policy).toBeDisabled();
+      expect(policy).toHaveAttribute('title', HELD);
 
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
-      expect(editPolicy).toBeEnabled();
-      expect(editPolicy).not.toHaveAttribute('title');
+      discardParameters();
+      expect(policy).toBeEnabled();
+      expect(policy).not.toHaveAttribute('title');
     });
 
-    it('holds the routing policy while a Queue offload draft is open', async () => {
+    it('holds the routing policy while a Queue offload draft is unsaved', async () => {
       const fixedRoute = { ...route, strategy: 'fixed', route_type: 'on_demand' };
       vi.mocked(listProviderRoutes).mockResolvedValue({
         provider_options: providerOptions,
@@ -638,34 +691,74 @@ describe('ProviderRoutesTab', () => {
 
       render(<ProviderRoutesTab />);
       await screen.findByTestId('offload-route-panel');
-      const editPolicy = screen.getByRole('button', { name: 'Edit minimax-fast routing policy' });
-      expect(editPolicy).toBeEnabled();
+      const policy = screen.getByLabelText('Routing policy');
+      expect(policy).toBeEnabled();
 
       // Switching to routewise would unmount the offload panel and drop a new draft.
-      fireEvent.click(screen.getByRole('button', { name: 'Edit Queue offload' }));
-      expect(editPolicy).toBeDisabled();
-      expect(editPolicy).toHaveAttribute('title', LOCKED);
+      chooseValue(screen.getByLabelText('Offload route'), 'minimax-fast:openrouter-api');
+      expect(policy).toBeDisabled();
+      expect(policy).toHaveAttribute('title', HELD);
 
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Queue offload' }));
-      expect(editPolicy).toBeEnabled();
+      fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Queue offload' }));
+      expect(policy).toBeEnabled();
     });
 
-    it('holds a policy switch while a parameter edit opened after it is open', async () => {
-      const editParameters = await renderRoutewiseWithParameters();
-      fireEvent.click(screen.getByRole('button', { name: 'Edit minimax-fast routing policy' }));
-      chooseValue(screen.getByLabelText('Routing policy'), 'fixed');
+    it('holds a policy switch while a parameter change made after it is unsaved', async () => {
+      const alpha = await renderRoutewiseWithParameters();
+      const policy = screen.getByLabelText('Routing policy');
+      chooseValue(policy, 'fixed');
       const savePolicy = screen.getByRole('button', {
         name: 'Save changes to minimax-fast routing policy',
       });
       expect(savePolicy).toBeEnabled();
 
-      fireEvent.click(editParameters);
+      fireEvent.change(alpha, { target: { value: '0.4' } });
       expect(savePolicy).toBeDisabled();
-      expect(screen.getByText(LOCKED)).toBeVisible();
+      expect(screen.getByText(BLOCKED)).toBeVisible();
+      // The policy chosen first can still be changed back by hand.
+      expect(policy).toBeEnabled();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing RouteWise parameters' }));
+      discardParameters();
       expect(savePolicy).toBeEnabled();
       expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
+    });
+
+    it('holds the routing policy while a fixed weight is unsaved, and the other way round', async () => {
+      const fixedRoute = { ...route, strategy: 'fixed' };
+      vi.mocked(listProviderRoutes).mockResolvedValue({
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [fixedRoute],
+      });
+      render(<ProviderRoutesTab />);
+      const weight = await screen.findByLabelText(`Runtime weight for ${fixedRoute.endpoint_id}`);
+      const policy = screen.getByLabelText('Routing policy');
+      const discardWeights = () =>
+        fireEvent.click(
+          screen.getByRole('button', { name: 'Discard changes to minimax-fast weights' }),
+        );
+
+      // Switching to routewise would hide the weights, and the draft with them.
+      fireEvent.change(weight, { target: { value: '3' } });
+      expect(policy).toBeDisabled();
+      expect(policy).toHaveAttribute('title', HELD);
+      discardWeights();
+      expect(policy).toBeEnabled();
+
+      // A weight changed after the policy holds the policy's Save instead.
+      chooseValue(policy, 'routewise');
+      const savePolicy = screen.getByRole('button', {
+        name: 'Save changes to minimax-fast routing policy',
+      });
+      expect(savePolicy).toBeEnabled();
+      fireEvent.change(weight, { target: { value: '3' } });
+      expect(savePolicy).toBeDisabled();
+      expect(screen.getByText(BLOCKED)).toBeVisible();
+      discardWeights();
+      expect(savePolicy).toBeEnabled();
+
+      expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
+      expect(setRouteWeight).not.toHaveBeenCalled();
     });
   });
 
@@ -803,10 +896,7 @@ describe('ProviderRoutesTab', () => {
     expect(
       await screen.findByRole('heading', { name: 'RouteWise parameters' }),
     ).toBeInTheDocument();
-    expect(await screen.findByLabelText('Cost budget alpha value')).toHaveTextContent('0.75');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit RouteWise parameters' }));
-    const alphaInput = screen.getByLabelText('Cost budget alpha value');
+    const alphaInput = await screen.findByLabelText('Cost budget alpha value');
     expect(alphaInput).toHaveValue(0.75);
     fireEvent.change(alphaInput, { target: { value: '0.4' } });
 
@@ -832,7 +922,7 @@ describe('ProviderRoutesTab', () => {
       );
     });
     await waitFor(() => {
-      expect(screen.getByLabelText('Cost budget alpha value')).toHaveTextContent('0.4');
+      expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
     });
 
     expect((await screen.findAllByText('minimax-fast:featherless-api')).length).toBeGreaterThan(0);
@@ -871,20 +961,18 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
     expect(screen.getByLabelText('Routing policy')).toHaveTextContent('fixed');
-    const routeTypeSelect = screen.getByLabelText('Route type');
-    expect(
-      within(openOptions(routeTypeSelect)).getByRole('option', { name: 'on_demand' }),
-    ).toBeInTheDocument();
-    expect(
-      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'concurrency' }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'quota' }),
-    ).not.toBeInTheDocument();
+    // Fixed routing takes on_demand routes alone, so there is no choice to offer.
+    const routeType = screen.getByLabelText('Route type');
+    expect(routeType.tagName).toBe('OUTPUT');
+    expect(routeType).toHaveTextContent('on_demand');
+    expect(routeType).toHaveAccessibleDescription(
+      'Quota and concurrency routes require the routewise routing policy.',
+    );
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Fixed weight')).toHaveValue(1);
   });
 
-  it('edits fixed route weights after Edit and confirms each change', async () => {
+  it('edits fixed route weights in place and confirms each change', async () => {
     const fixedRoute = { ...route, strategy: 'fixed' };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
@@ -926,16 +1014,13 @@ describe('ProviderRoutesTab', () => {
 
     render(<ProviderRoutesTab />);
 
-    const weight = await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api');
-    expect(weight.tagName).toBe('OUTPUT');
-    expect(weight).toHaveTextContent('1');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit minimax-fast weights' }));
-    const input = screen.getByLabelText('Runtime weight for minimax-fast:featherless-api');
+    // Editable in place: no Edit step, and no save bar until something changes.
+    const input = await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api');
     expect(input).toHaveValue(1);
+    expect(screen.queryByRole('button', { name: /^Edit .* weights$/ })).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Save changes to minimax-fast weights' }),
-    ).toBeDisabled();
+      screen.queryByRole('button', { name: 'Save changes to minimax-fast weights' }),
+    ).not.toBeInTheDocument();
     fireEvent.change(input, { target: { value: '3' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to minimax-fast weights' }));
 
@@ -952,9 +1037,12 @@ describe('ProviderRoutesTab', () => {
       );
     });
     expect(setRouteWeight).toHaveBeenCalledTimes(1);
-    expect(
-      await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api'),
-    ).toHaveTextContent('3');
+    expect(screen.getByLabelText('Runtime weight for minimax-fast:featherless-api')).toHaveValue(3);
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: 'Save changes to minimax-fast weights' }),
+      ).not.toBeInTheDocument();
+    });
 
     fireEvent.click(
       await screen.findByRole('button', {
@@ -972,6 +1060,51 @@ describe('ProviderRoutesTab', () => {
       expect(clearRouteWeight).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:featherless-api');
     });
     expect(clearRouteWeight).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Runtime weight for minimax-fast:featherless-api')).toHaveValue(
+        1,
+      );
+    });
+  });
+
+  it('holds a weight Reset while that weight has an unsaved change', async () => {
+    const fixedRoute = { ...route, strategy: 'fixed' };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [fixedRoute],
+    });
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: 'minimax-fast',
+        strategy: 'fixed',
+        endpoint_id: 'minimax-fast:featherless-api',
+        provider: 'featherless',
+        base_url: 'https://api.featherless.ai/v1',
+        yaml_weight: 1,
+        override_weight: 3,
+        effective_weight: 3,
+      },
+    ]);
+
+    render(<ProviderRoutesTab />);
+
+    const reset = await screen.findByRole('button', {
+      name: 'Clear minimax-fast:featherless-api weight override',
+    });
+    expect(reset).toBeEnabled();
+    const input = screen.getByLabelText('Runtime weight for minimax-fast:featherless-api');
+    // The reset would replace the weight the draft was typed against.
+    fireEvent.change(input, { target: { value: '5' } });
+    expect(reset).toBeDisabled();
+    expect(reset).toHaveAttribute('title', 'Save or discard the unsaved changes first');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Discard changes to minimax-fast weights' }),
+    );
+    expect(input).toHaveValue(3);
+    expect(reset).toBeEnabled();
+    expect(clearRouteWeight).not.toHaveBeenCalled();
   });
 
   it('disables and enables routes of both sources the same way', async () => {
@@ -1937,7 +2070,7 @@ describe('ProviderRoutesTab', () => {
     });
   });
 
-  it('updates a runtime OpenRouter concurrency limit after Edit and confirmation', async () => {
+  it('updates a runtime OpenRouter concurrency limit in place after confirmation', async () => {
     const runtimeRoute = {
       ...route,
       route_id: 'minimax-fast:openrouter[parasail]-api',
@@ -1974,23 +2107,15 @@ describe('ProviderRoutesTab', () => {
 
     render(<ProviderRoutesTab />);
 
-    const limit = await screen.findByLabelText(
-      'Concurrency limit for minimax-fast:openrouter[parasail]-api',
-    );
-    expect(limit).toHaveTextContent('2');
-    expect(
-      screen.queryByLabelText('Concurrency limit for minimax-fast:featherless-api'),
-    ).not.toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: 'Edit minimax-fast:openrouter[parasail]-api concurrency limit',
-      }),
-    );
-    const limitInput = screen.getByLabelText(
+    const limitInput = await screen.findByLabelText(
       'Concurrency limit for minimax-fast:openrouter[parasail]-api',
     );
     expect(limitInput).toHaveValue(2);
+    expect(
+      screen.queryByLabelText('Concurrency limit for minimax-fast:featherless-api'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Save changes to / })).not.toBeInTheDocument();
+
     fireEvent.change(limitInput, { target: { value: '4' } });
     fireEvent.click(
       screen.getByRole('button', {
@@ -2010,10 +2135,11 @@ describe('ProviderRoutesTab', () => {
     });
     expect(updateProviderRouteCandidate).toHaveBeenCalledTimes(1);
     await waitFor(() => {
-      expect(
-        screen.getByLabelText('Concurrency limit for minimax-fast:openrouter[parasail]-api'),
-      ).toHaveTextContent('4');
+      expect(screen.queryByRole('button', { name: /^Save changes to / })).not.toBeInTheDocument();
     });
+    expect(
+      screen.getByLabelText('Concurrency limit for minimax-fast:openrouter[parasail]-api'),
+    ).toHaveValue(4);
   });
 
   it('creates a runtime model with an initial provider route', async () => {
@@ -2054,13 +2180,11 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
-    const routeTypeSelect = screen.getByLabelText('Route type');
-    expect(
-      within(openOptions(routeTypeSelect)).getByRole('option', { name: 'on_demand' }),
-    ).toBeInTheDocument();
-    expect(
-      within(openOptions(routeTypeSelect)).queryByRole('option', { name: 'concurrency' }),
-    ).not.toBeInTheDocument();
+    // A new model starts on fixed routing, which takes on_demand routes alone,
+    // and its only route takes every request whatever its weight.
+    expect(screen.getByLabelText('Route type')).toHaveTextContent('on_demand');
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Fixed weight')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
     });
@@ -2206,6 +2330,33 @@ describe('ProviderRoutesTab', () => {
     });
     expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('offers a route type choice only under the routewise policy', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
+
+    chooseValue(screen.getByLabelText('Initial routing policy'), 'routewise');
+    const routeTypeSelect = screen.getByRole('combobox', { name: 'Route type' });
+    expect(
+      within(openOptions(routeTypeSelect))
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['on_demand', 'quota', 'concurrency']);
+    chooseValue(routeTypeSelect, 'quota');
+
+    chooseValue(screen.getByLabelText('Initial routing policy'), 'fixed');
+    expect(screen.queryByRole('combobox', { name: 'Route type' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Route type')).toHaveTextContent('on_demand');
   });
 
   it('verifies a runtime model without creating it', async () => {
@@ -3118,13 +3269,13 @@ describe('ProviderRoutesTab', () => {
 
     render(<ProviderRoutesTab />);
 
-    const policy = await screen.findByLabelText('Routing policy');
-    expect(policy.tagName).toBe('OUTPUT');
-    expect(policy).toHaveTextContent('routewise');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit minimax-fast routing policy' }));
-    const select = screen.getByLabelText('Routing policy');
-    expect(select).toHaveAttribute('data-value', 'routewise');
+    // Chosen in place: no Edit step, and no save bar until the policy differs.
+    const select = await screen.findByLabelText('Routing policy');
+    await waitFor(() => expect(select).toHaveAttribute('data-value', 'routewise'));
+    expect(select).toHaveTextContent('routewise');
+    expect(
+      screen.queryByRole('button', { name: 'Save changes to minimax-fast routing policy' }),
+    ).not.toBeInTheDocument();
     chooseValue(select, 'fixed');
     expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
     fireEvent.click(
@@ -3144,6 +3295,13 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Routing policy')).toHaveTextContent('fixed');
     });
+    expect(
+      screen.queryByRole('button', { name: 'Save changes to minimax-fast routing policy' }),
+    ).not.toBeInTheDocument();
+    // The saved policy's controls are shown: weights instead of limits.
+    expect(
+      screen.getByLabelText('Runtime weight for minimax-fast:featherless-api'),
+    ).toBeInTheDocument();
   });
 
   it('preserves an engine declaration and invalidates verification when deployment changes', async () => {
@@ -3305,7 +3463,7 @@ describe('ProviderRoutesTab', () => {
       deleteProviderRouteCandidate,
     ];
 
-    it('never writes from browsing or reselecting a select, and holds the model while the policy is edited', async () => {
+    it('never writes from browsing or reselecting a select, and holds the model while a policy change is unsaved', async () => {
       const otherRoute = {
         ...route,
         model_id: 'other-model',
@@ -3313,7 +3471,8 @@ describe('ProviderRoutesTab', () => {
         endpoint_id: 'other-model:featherless-api',
       };
       renderRoutewiseRoute([route, otherRoute]);
-      await screen.findByRole('button', { name: 'Edit minimax-fast routing policy' });
+      const policy = await screen.findByLabelText('Routing policy');
+      await waitFor(() => expect(policy).toHaveAttribute('data-value', 'routewise'));
       const selector = screen.getByLabelText('Selected model');
       const createModel = screen.getByRole('button', { name: 'Create model' });
 
@@ -3324,34 +3483,35 @@ describe('ProviderRoutesTab', () => {
       chooseValue(selector, 'minimax-fast');
       expect(selector).toHaveAttribute('data-value', 'minimax-fast');
 
-      fireEvent.click(screen.getByRole('button', { name: 'Edit minimax-fast routing policy' }));
-      expect(selector).toBeDisabled();
-      expect(createModel).toBeDisabled();
-      const policy = screen.getByLabelText('Routing policy');
+      // Browsing the policy, or choosing the saved one, is no change and holds nothing.
       fireEvent.keyDown(policy, { key: 'ArrowDown' });
       fireEvent.keyDown(policy, { key: 'Escape' });
       chooseValue(policy, 'routewise');
-      expect(screen.getByText('No changes yet')).toBeVisible();
       expect(
-        screen.getByRole('button', { name: 'Save changes to minimax-fast routing policy' }),
-      ).toBeDisabled();
-      // A different policy is only a draft.
+        screen.queryByRole('button', { name: 'Save changes to minimax-fast routing policy' }),
+      ).not.toBeInTheDocument();
+      expect(selector).toBeEnabled();
+      expect(createModel).toBeEnabled();
+      // A different policy is only a draft, and it holds the model.
       chooseValue(policy, 'fixed');
       expect(screen.getByText('1 unsaved change')).toBeVisible();
       expect(selector).toBeDisabled();
+      expect(createModel).toBeDisabled();
+      expect(selector).toHaveAttribute('title', 'Save or discard the unsaved changes first');
 
-      // Cancel discards it and releases the model, which can then be switched.
+      // Discard drops it and releases the model, which can then be switched.
       fireEvent.click(
-        screen.getByRole('button', { name: 'Cancel editing minimax-fast routing policy' }),
+        screen.getByRole('button', { name: 'Discard changes to minimax-fast routing policy' }),
       );
       expect(screen.getByLabelText('Routing policy')).toHaveTextContent('routewise');
       expect(selector).toBeEnabled();
       expect(createModel).toBeEnabled();
       chooseValue(selector, 'other-model');
       expect(selector).toHaveAttribute('data-value', 'other-model');
+      expect(screen.getByLabelText('Routing policy')).toBeEnabled();
       expect(
-        await screen.findByRole('button', { name: 'Edit other-model routing policy' }),
-      ).toBeEnabled();
+        screen.queryByRole('button', { name: 'Save changes to other-model routing policy' }),
+      ).not.toBeInTheDocument();
 
       // The route editor's selects: the same provider again is no change.
       fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
@@ -3367,7 +3527,7 @@ describe('ProviderRoutesTab', () => {
       for (const write of writes()) expect(write).not.toHaveBeenCalled();
     });
 
-    it('holds the model selection while fixed weights are edited, and Cancel releases it', async () => {
+    it('holds the model selection while a fixed weight is unsaved, and Discard releases it', async () => {
       const otherRoute = {
         ...fixedRoute,
         model_id: 'other-model',
@@ -3381,20 +3541,26 @@ describe('ProviderRoutesTab', () => {
       });
       render(<ProviderRoutesTab />);
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Edit minimax-fast weights' }));
+      const weight = await screen.findByLabelText(`Runtime weight for ${fixedRoute.endpoint_id}`);
       const selector = screen.getByLabelText('Selected model');
-      expect(selector).toBeDisabled();
-      expect(screen.getByRole('button', { name: 'Create model' })).toBeDisabled();
-      fireEvent.change(screen.getByLabelText(`Runtime weight for ${fixedRoute.endpoint_id}`), {
-        target: { value: '3' },
-      });
+      const createModel = screen.getByRole('button', { name: 'Create model' });
+      // The saved weight typed again is no change, and holds nothing.
+      fireEvent.change(weight, { target: { value: '1' } });
+      expect(selector).toBeEnabled();
+      expect(createModel).toBeEnabled();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing minimax-fast weights' }));
+      fireEvent.change(weight, { target: { value: '3' } });
+      expect(selector).toBeDisabled();
+      expect(createModel).toBeDisabled();
+
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Discard changes to minimax-fast weights' }),
+      );
       expect(selector).toBeEnabled();
       chooseValue(selector, 'other-model');
       expect(
-        await screen.findByRole('button', { name: 'Edit other-model weights' }),
-      ).toBeInTheDocument();
+        await screen.findByLabelText(`Runtime weight for ${otherRoute.endpoint_id}`),
+      ).toHaveValue(1);
       expect(setRouteWeight).not.toHaveBeenCalled();
     });
 
@@ -3608,7 +3774,7 @@ describe('ProviderRoutesTab', () => {
       expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
     });
 
-    it('cancels weight edits with zero writes', async () => {
+    it('discards weight drafts with zero writes', async () => {
       vi.mocked(listProviderRoutes).mockResolvedValue({
         provider_options: providerOptions,
         openrouter_provider_options: openRouterProviderOptions,
@@ -3617,16 +3783,17 @@ describe('ProviderRoutesTab', () => {
 
       render(<ProviderRoutesTab />);
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Edit minimax-fast weights' }));
-      fireEvent.change(screen.getByLabelText('Runtime weight for minimax-fast:featherless-api'), {
-        target: { value: '5' },
-      });
+      const weight = await screen.findByLabelText(
+        'Runtime weight for minimax-fast:featherless-api',
+      );
+      fireEvent.change(weight, { target: { value: '5' } });
       expect(screen.getByText('1 unsaved change')).toBeVisible();
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing minimax-fast weights' }));
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Discard changes to minimax-fast weights' }),
+      );
 
-      expect(
-        screen.getByLabelText('Runtime weight for minimax-fast:featherless-api'),
-      ).toHaveTextContent('1');
+      expect(weight).toHaveValue(1);
+      expect(screen.queryByText('1 unsaved change')).not.toBeInTheDocument();
       expect(setRouteWeight).not.toHaveBeenCalled();
     });
 
@@ -3639,10 +3806,10 @@ describe('ProviderRoutesTab', () => {
 
       render(<ProviderRoutesTab />);
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Edit minimax-fast weights' }));
-      fireEvent.change(screen.getByLabelText('Runtime weight for minimax-fast:featherless-api'), {
-        target: { value: '-1' },
-      });
+      fireEvent.change(
+        await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api'),
+        { target: { value: '-1' } },
+      );
       fireEvent.click(screen.getByRole('button', { name: 'Save changes to minimax-fast weights' }));
 
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -3667,10 +3834,10 @@ describe('ProviderRoutesTab', () => {
 
       render(<ProviderRoutesTab />);
 
-      fireEvent.click(await screen.findByRole('button', { name: 'Edit minimax-fast weights' }));
-      fireEvent.change(screen.getByLabelText(`Runtime weight for ${fixedRoute.endpoint_id}`), {
-        target: { value: '2' },
-      });
+      fireEvent.change(
+        await screen.findByLabelText(`Runtime weight for ${fixedRoute.endpoint_id}`),
+        { target: { value: '2' } },
+      );
       fireEvent.change(
         screen.getByLabelText(`Runtime weight for ${secondFixedRoute.endpoint_id}`),
         { target: { value: '4' } },
@@ -3700,18 +3867,21 @@ describe('ProviderRoutesTab', () => {
       ]);
     });
 
-    it('cancels a routing policy edit with zero writes', async () => {
+    it('discards a routing policy draft with zero writes', async () => {
       renderRoutewiseRoute();
 
+      const policy = await screen.findByLabelText('Routing policy');
+      await waitFor(() => expect(policy).toHaveAttribute('data-value', 'routewise'));
+      chooseValue(policy, 'fixed');
+      expect(policy).toHaveTextContent('fixed');
       fireEvent.click(
-        await screen.findByRole('button', { name: 'Edit minimax-fast routing policy' }),
-      );
-      chooseValue(screen.getByLabelText('Routing policy'), 'fixed');
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Cancel editing minimax-fast routing policy' }),
+        screen.getByRole('button', { name: 'Discard changes to minimax-fast routing policy' }),
       );
 
-      expect(screen.getByLabelText('Routing policy')).toHaveTextContent('routewise');
+      expect(policy).toHaveTextContent('routewise');
+      expect(
+        screen.queryByRole('button', { name: 'Save changes to minimax-fast routing policy' }),
+      ).not.toBeInTheDocument();
       expect(updateProviderRouteStrategy).not.toHaveBeenCalled();
     });
 
@@ -3730,13 +3900,8 @@ describe('ProviderRoutesTab', () => {
       };
       renderRoutewiseRoute([route, runtimeRoute]);
 
-      fireEvent.click(
-        await screen.findByRole('button', {
-          name: 'Edit minimax-fast:openrouter[parasail]-api concurrency limit',
-        }),
-      );
       fireEvent.change(
-        screen.getByLabelText('Concurrency limit for minimax-fast:openrouter[parasail]-api'),
+        await screen.findByLabelText('Concurrency limit for minimax-fast:openrouter[parasail]-api'),
         { target: { value: '0' } },
       );
       fireEvent.click(
@@ -3747,6 +3912,129 @@ describe('ProviderRoutesTab', () => {
 
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(screen.getByText('Concurrency limit must be a positive integer.')).toBeVisible();
+      expect(updateProviderRouteCandidate).not.toHaveBeenCalled();
+    });
+
+    it("saves and discards each row's concurrency limit on its own", async () => {
+      const openRouterRoute = (provider: string, limit: number) => ({
+        ...route,
+        route_id: `minimax-fast:openrouter[${provider}]-api`,
+        provider: 'openrouter',
+        upstream_provider: 'openrouter',
+        openrouter_provider: provider,
+        key_provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        concurrency_limit: limit,
+        endpoint_id: `minimax-fast:openrouter[${provider}]-api`,
+        source: 'runtime' as const,
+      });
+      const parasail = openRouterRoute('parasail', 2);
+      const deepinfra = openRouterRoute('deepinfra', 3);
+      let finishSave!: () => void;
+      vi.mocked(updateProviderRouteCandidate).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishSave = () => resolve({ ...parasail, concurrency_limit: 4 });
+          }),
+      );
+      renderRoutewiseRoute([route, parasail, deepinfra]);
+
+      const parasailLimit = await screen.findByLabelText(
+        `Concurrency limit for ${parasail.endpoint_id}`,
+      );
+      const deepinfraLimit = screen.getByLabelText(
+        `Concurrency limit for ${deepinfra.endpoint_id}`,
+      );
+      const selector = screen.getByLabelText('Selected model');
+      const policy = screen.getByLabelText('Routing policy');
+      fireEvent.change(parasailLimit, { target: { value: '4' } });
+      fireEvent.change(deepinfraLimit, { target: { value: '6' } });
+      // Switching model or policy would drop them, or hide them behind weights.
+      expect(selector).toBeDisabled();
+      expect(policy).toBeDisabled();
+
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: `Save changes to ${parasail.endpoint_id} concurrency limit`,
+        }),
+      );
+      expect(topDialog()).toHaveTextContent('Concurrency limit2 → 4');
+      expect(topDialog()).not.toHaveTextContent(deepinfra.endpoint_id);
+      confirmAction('Confirm save');
+      // Only the row being saved reads as saving; the other row's bar is not its write.
+      expect(
+        screen.getByRole('button', {
+          name: `Save changes to ${parasail.endpoint_id} concurrency limit`,
+        }),
+      ).toHaveTextContent('Saving…');
+      expect(
+        screen.getByRole('button', {
+          name: `Save changes to ${deepinfra.endpoint_id} concurrency limit`,
+        }),
+      ).toHaveTextContent('Save changes');
+      finishSave();
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      expect(vi.mocked(updateProviderRouteCandidate).mock.calls).toEqual([
+        ['minimax-fast', parasail.route_id, { concurrency_limit: 4 }],
+      ]);
+
+      // The other row keeps its draft, and the model stays held for it.
+      expect(deepinfraLimit).toHaveValue(6);
+      expect(selector).toBeDisabled();
+      fireEvent.click(
+        screen.getByRole('button', {
+          name: `Discard changes to ${deepinfra.endpoint_id} concurrency limit`,
+        }),
+      );
+      expect(deepinfraLimit).toHaveValue(3);
+      expect(parasailLimit).toHaveValue(4);
+      expect(selector).toBeEnabled();
+      expect(policy).toBeEnabled();
+      expect(updateProviderRouteCandidate).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a refreshed limit show through a draft typed back to the saved one', async () => {
+      const openRouterRoute = (provider: string, limit: number) => ({
+        ...route,
+        route_id: `minimax-fast:openrouter[${provider}]-api`,
+        provider: 'openrouter',
+        upstream_provider: 'openrouter',
+        openrouter_provider: provider,
+        key_provider: 'openrouter',
+        base_url: 'https://openrouter.ai/api/v1',
+        concurrency_limit: limit,
+        endpoint_id: `minimax-fast:openrouter[${provider}]-api`,
+        source: 'runtime' as const,
+      });
+      const parasail = openRouterRoute('parasail', 2);
+      const deepinfra = openRouterRoute('deepinfra', 3);
+      // Deleting a route answers with the model's routes as they now stand:
+      // parasail's limit was changed meanwhile.
+      vi.mocked(deleteProviderRouteCandidate).mockResolvedValue({
+        model_id: 'minimax-fast',
+        strategy: 'routewise',
+        provider_options: providerOptions,
+        openrouter_provider_options: openRouterProviderOptions,
+        routes: [route, { ...parasail, concurrency_limit: 5 }] as never,
+      });
+      renderRoutewiseRoute([route, parasail, deepinfra]);
+
+      const parasailLimit = await screen.findByLabelText(
+        `Concurrency limit for ${parasail.endpoint_id}`,
+      );
+      fireEvent.change(parasailLimit, { target: { value: '4' } });
+      fireEvent.change(parasailLimit, { target: { value: '2' } });
+      expect(screen.queryByText('1 unsaved change')).not.toBeInTheDocument();
+
+      const row = screen.getAllByText(deepinfra.endpoint_id, { selector: 'div' })[0].parentElement!
+        .parentElement as HTMLElement;
+      fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+      confirmAction('Delete');
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+      // No stale copy of 2 is left to mask the new limit or to come back as a change.
+      expect(screen.getByLabelText(`Concurrency limit for ${parasail.endpoint_id}`)).toHaveValue(5);
+      expect(screen.queryByText('1 unsaved change')).not.toBeInTheDocument();
       expect(updateProviderRouteCandidate).not.toHaveBeenCalled();
     });
 

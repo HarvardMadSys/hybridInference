@@ -724,11 +724,12 @@ async def get_user_detail(
         last_login_at=user_row.get("last_login_at"),
         has_key=has_key,
         key_prefix=key_row["key_prefix"] if key_row else None,
+        # ``is not None``: a quota of 0 is a limit, not an unset one.
         quota_daily_usd=float(key_row["quota_daily_cost_usd"])
-        if key_row and key_row.get("quota_daily_cost_usd")
+        if key_row and key_row.get("quota_daily_cost_usd") is not None
         else None,
         quota_monthly_usd=float(key_row["quota_monthly_cost_usd"])
-        if key_row and key_row.get("quota_monthly_cost_usd")
+        if key_row and key_row.get("quota_monthly_cost_usd") is not None
         else None,
         usage_today_usd=usage_today_usd,
         usage_today_requests=usage_today_req,
@@ -799,6 +800,26 @@ async def update_user(
                 f"Cannot transition from '{current_status}' to '{new_status}'. "
                 f"Use the approve/reject endpoints for pending users.",
             )
+        # The lockout the role check above prevents: a suspended account loses
+        # its sessions and its admin access, and only an admin can resume it.
+        if new_status == "suspended" and user_id == get_admin_user_id(request):
+            raise HTTPException(409, "Cannot suspend your own account.")
+
+    # Validate key-level fields: the quota is written to the active key, so
+    # with no key -- or with the suspension below revoking it -- nothing of
+    # this request may be written either.
+    key_fields = {
+        k: v
+        for k, v in payload_dict.items()
+        if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
+    }
+    if key_fields:
+        if new_status == "suspended":
+            raise HTTPException(
+                409, "Suspending a user revokes their API key; change its quota separately"
+            )
+        if not await op_store.get_active_key_by_account(user_id):
+            raise HTTPException(409, "User has no active API key to update")
 
     # Collect all users-table fields for a single round-trip
     user_table_updates: dict[str, object] = {}
@@ -842,16 +863,7 @@ async def update_user(
         await op_store.update_user_fields(user_id, **user_table_updates)
 
     # Update key-level fields
-    key_fields = {
-        k: v
-        for k, v in payload_dict.items()
-        if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
-    }
     if key_fields:
-        has_key = await op_store.get_active_key_by_account(user_id)
-        if not has_key:
-            raise HTTPException(409, "User has no active API key to update")
-
         await op_store.update_key(user_id, **key_fields)
         updated.extend(key_fields)
 
@@ -949,6 +961,7 @@ async def list_audit_log(
 
 @router.post("/users/{user_id}/delete", response_model=DeleteUserResponse)
 async def delete_user(
+    request: Request,
     user_id: str,
     payload: DeleteUserRequest,
     admin_id: str = Depends(verify_admin_access),
@@ -971,6 +984,11 @@ async def delete_user(
 
     if not user_row:
         raise HTTPException(404, f"User '{user_id}' not found")
+
+    if user_id == get_admin_user_id(request):
+        # As with demoting or suspending oneself: it signs the admin out for
+        # good, and nothing but another admin could undo it.
+        raise HTTPException(409, "Cannot delete your own account.")
 
     if user_row["status"] not in ("active", "suspended"):
         raise HTTPException(

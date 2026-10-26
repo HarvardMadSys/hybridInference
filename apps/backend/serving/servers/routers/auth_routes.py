@@ -927,6 +927,9 @@ async def verify_email(
                 status_code=409,
                 detail="Email address cannot be bound to this account.",
             )
+        # Reset links already sent to the replaced address go with it, as the
+        # notice below tells that address.
+        await op_store.delete_user_reset_tokens(token_row["user_id"])
         if previous_email and previous_email.lower() != pending_email.lower():
             background_tasks.add_task(send_email_changed_email, previous_email, pending_email)
     else:
@@ -1022,8 +1025,9 @@ async def reset_password(
     password_hash_str = password_utils.hash_password(body.new_password)
     await op_store.update_user_fields(token_row["user_id"], password_hash=password_hash_str)
 
-    # Mark token as used
-    await op_store.mark_reset_used(body.token)
+    # The link is spent, and so is every other one the account still holds:
+    # each was sent to reset the password just replaced.
+    await op_store.delete_user_reset_tokens(token_row["user_id"])
 
     # Revoke all existing sessions for security
     await op_store.delete_user_sessions(token_row["user_id"])

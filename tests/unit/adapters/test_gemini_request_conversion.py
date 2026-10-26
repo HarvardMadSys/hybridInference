@@ -84,8 +84,25 @@ def test_every_system_message_is_kept(adapter):
         ({"temp": 18}, {"temp": 18}),
         ("18 degrees", {"output": "18 degrees"}),
         (None, {}),
+        # FunctionResponse.response is a Struct: an object, never an array or a scalar.
+        ('[{"title": "a"}]', {"output": [{"title": "a"}]}),
+        ("42", {"output": 42}),
+        ("true", {"output": True}),
+        (
+            [{"type": "text", "text": "18 "}, {"type": "text", "text": "degrees"}],
+            {"output": "18 degrees"},
+        ),
     ],
-    ids=["json-text", "object", "plain-text", "none"],
+    ids=[
+        "json-text",
+        "object",
+        "plain-text",
+        "none",
+        "json-array",
+        "json-number",
+        "json-bool",
+        "content-parts",
+    ],
 )
 def test_a_tool_result_becomes_a_function_response(adapter, content, response):
     body = adapter._convert_messages_to_gemini(

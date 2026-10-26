@@ -26,10 +26,6 @@ function renderWithQueryClient(ui: React.ReactElement, queryClient = createTestQ
   return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
-async function editSection() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit Model Concurrency Limit' }));
-}
-
 function saveAndConfirm() {
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to Model Concurrency Limit' }));
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));
@@ -55,14 +51,13 @@ describe('ModelConcurrencySection', () => {
 
     expect(screen.getByText('Loading...')).toBeInTheDocument();
     expect(await screen.findByText('gpt-4o-mini')).toBeInTheDocument();
-    // Read-only until Edit.
-    expect(screen.getByLabelText('Concurrency exemption for gpt-4o-mini')).toHaveTextContent(
-      'Not exempt',
-    );
-    expect(screen.queryByRole('checkbox')).toBeNull();
-    await editSection();
+    // Editable in place: no Edit step, and no save bar until something changes.
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
     const checkbox = screen.getByLabelText('Concurrency exemption for gpt-4o-mini');
     expect(checkbox).not.toBeChecked();
+    expect(
+      screen.queryByRole('button', { name: 'Save changes to Model Concurrency Limit' }),
+    ).toBeNull();
   });
 
   it('PATCHes exempt=true when the admin checks the box', async () => {
@@ -76,8 +71,7 @@ describe('ModelConcurrencySection', () => {
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
 
-    await editSection();
-    const checkbox = screen.getByLabelText('Concurrency exemption for gpt-4o-mini');
+    const checkbox = await screen.findByLabelText('Concurrency exemption for gpt-4o-mini');
     fireEvent.click(checkbox);
     expect(updateModelConcurrency).not.toHaveBeenCalled();
     fireEvent.click(
@@ -106,8 +100,7 @@ describe('ModelConcurrencySection', () => {
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
 
-    await editSection();
-    const checkbox = screen.getByLabelText('Concurrency exemption for gpt-4o-mini');
+    const checkbox = await screen.findByLabelText('Concurrency exemption for gpt-4o-mini');
     expect(checkbox).toBeChecked();
     fireEvent.click(checkbox);
     saveAndConfirm();
@@ -155,8 +148,7 @@ describe('ModelConcurrencySection', () => {
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
 
-    await editSection();
-    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    fireEvent.click(await screen.findByLabelText('Concurrency exemption for gpt-4o-mini'));
     saveAndConfirm();
 
     const dialog = screen.getByRole('dialog');
@@ -184,8 +176,7 @@ describe('ModelConcurrencySection', () => {
 
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />, queryClient);
 
-    await editSection();
-    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    fireEvent.click(await screen.findByLabelText('Concurrency exemption for gpt-4o-mini'));
     saveAndConfirm();
 
     await waitFor(() => {
@@ -193,18 +184,35 @@ describe('ModelConcurrencySection', () => {
     });
   });
 
-  it('discards drafts on Cancel without writing', async () => {
+  it('discards drafts on Discard without writing', async () => {
     vi.mocked(listModelConcurrency).mockResolvedValue({
       models: [{ model_id: 'gpt-4o-mini', exempt: false }],
     });
     renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
-    await editSection();
-    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    fireEvent.click(await screen.findByLabelText('Concurrency exemption for gpt-4o-mini'));
     expect(screen.getByText('1 unsaved change')).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Model Concurrency Limit' }));
-    expect(screen.getByLabelText('Concurrency exemption for gpt-4o-mini')).toHaveTextContent(
-      'Not exempt',
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Discard changes to Model Concurrency Limit' }),
     );
+    expect(screen.getByLabelText('Concurrency exemption for gpt-4o-mini')).not.toBeChecked();
+    expect(screen.queryByText('1 unsaved change')).toBeNull();
+    expect(updateModelConcurrency).not.toHaveBeenCalled();
+  });
+
+  it('hides the save bar again once a change is undone by hand', async () => {
+    vi.mocked(listModelConcurrency).mockResolvedValue({
+      models: [{ model_id: 'gpt-4o-mini', exempt: false }],
+    });
+    renderWithQueryClient(<ModelConcurrencySection onToast={onToast} />);
+    const checkbox = await screen.findByLabelText('Concurrency exemption for gpt-4o-mini');
+    fireEvent.click(checkbox);
+    expect(
+      screen.getByRole('button', { name: 'Save changes to Model Concurrency Limit' }),
+    ).toBeEnabled();
+    fireEvent.click(checkbox);
+    expect(
+      screen.queryByRole('button', { name: 'Save changes to Model Concurrency Limit' }),
+    ).toBeNull();
     expect(updateModelConcurrency).not.toHaveBeenCalled();
   });
 });

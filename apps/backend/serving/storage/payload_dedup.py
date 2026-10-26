@@ -105,8 +105,9 @@ def _strip_dict(
                 result[MESSAGE_RESIDUAL_KEY] = residuals
 
     # Only drop tools when the tools column actually holds the same value. On
-    # early-error rows params carries no tools, so this is the only copy.
-    if "tools" in result and stored_tools is not None and result["tools"] == stored_tools:
+    # early-error rows params carries no tools, so this is the only copy; and
+    # the column stores an empty list as NULL, so an empty one stays here too.
+    if "tools" in result and stored_tools and result["tools"] == stored_tools:
         del result["tools"]
 
     return result

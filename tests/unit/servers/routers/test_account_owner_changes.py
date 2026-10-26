@@ -76,6 +76,7 @@ class Store:
         self.bind_user_email = AsyncMock(return_value=True)
         self.update_user_fields = AsyncMock()
         self.revoke_user_sessions = AsyncMock(return_value=0)
+        self.delete_user_reset_tokens = AsyncMock()
 
 
 @pytest.fixture
@@ -210,6 +211,16 @@ async def test_following_the_link_binds_and_tells_the_replaced_address(setup):
 
 
 @pytest.mark.asyncio
+async def test_a_bound_address_retires_the_reset_links_sent_to_the_old_one(setup):
+    # The notice tells the old address it no longer receives the account's
+    # resets; a link it already holds must not outlive that either.
+    store = Store(account())
+    store.get_verification_token.return_value = token_row()
+    await auth_routes.verify_email("link", BackgroundTasks(), store)
+    store.delete_user_reset_tokens.assert_awaited_once_with("owner")
+
+
+@pytest.mark.asyncio
 async def test_a_used_link_never_binds_again(setup):
     # The account moved on to another address after following this link.
     store = Store(account(email="later@e2e-mail.org"))
@@ -303,6 +314,17 @@ async def test_changing_the_password_signs_other_sessions_out_and_tells_the_owne
     assert task.func is user_routes.send_password_changed_email
     assert task.args == ("owner@e2e-mail.org",)
     assert task.kwargs == {"first_password": False}
+
+
+@pytest.mark.asyncio
+async def test_changing_the_password_retires_outstanding_reset_links(setup):
+    # Like the other sessions it signs out, a reset link someone else holds is
+    # a way back in that must not survive the change.
+    store = Store(account())
+    await change(
+        store, ChangePasswordRequest(old_password=PASSWORD, new_password="Brand-New-Pass-1")
+    )
+    store.delete_user_reset_tokens.assert_awaited_once_with("owner")
 
 
 @pytest.mark.asyncio

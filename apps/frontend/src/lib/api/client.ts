@@ -266,7 +266,9 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'RESET_TOKEN_INVALID';
       } else if (lowerMessage.includes('already been used')) {
         errorCode = 'TOKEN_ALREADY_USED';
-      } else if (lowerMessage.includes('expired')) {
+      } else if (lowerMessage.includes('expired') && resp.status === 401) {
+        // Only an expired session is a 401. A 400/503 about an expired SMS code
+        // or verification link keeps its own message, which says what to do.
         errorCode = 'TOKEN_EXPIRED';
       } else if (lowerMessage.includes('invalid') && lowerMessage.includes('token')) {
         errorCode = 'INVALID_TOKEN';
@@ -317,7 +319,7 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'RESET_TOKEN_INVALID';
       } else if (lowerMessage.includes('already been used')) {
         errorCode = 'TOKEN_ALREADY_USED';
-      } else if (lowerMessage.includes('expired')) {
+      } else if (lowerMessage.includes('expired') && resp.status === 401) {
         errorCode = 'TOKEN_EXPIRED';
       } else if (lowerMessage.includes('invalid') && lowerMessage.includes('token')) {
         errorCode = 'INVALID_TOKEN';

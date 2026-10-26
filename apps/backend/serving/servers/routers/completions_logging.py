@@ -112,7 +112,16 @@ class CompletionsLogger:
         provider (``None`` = unknown). It MUST NOT be synthesized: if the
         provider did not report usage, leave it as ``None``.
         """
+        provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
+        terminal_key = endpoint_id or provider or "unknown"
         failed_attempts = _extract_failed_attempts(routing)
+        if not success and failed_attempts:
+            last_provider, last_endpoint = _extract_failed_attempt_keys(failed_attempts[-1])
+            if (last_endpoint or last_provider or "unknown") == terminal_key:
+                # The router lists the final attempt among the failed ones as
+                # well as naming it the endpoint: it is the terminal failure
+                # below, and reported twice it would count as two.
+                failed_attempts = failed_attempts[:-1]
         seen_failed_attempts: set[tuple[str, str | None, str | None]] = set()
         for attempt in failed_attempts:
             failed_provider, failed_endpoint = _extract_failed_attempt_keys(attempt)
@@ -142,10 +151,9 @@ class CompletionsLogger:
                 )
             )
 
-        provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         obs = RoutingObservation(
             model_id=model_id,
-            endpoint_id=endpoint_id or provider or "unknown",
+            endpoint_id=terminal_key,
             ttft_ms=ttft_ms,
             total_latency_ms=total_latency_ms,
             token_count=prompt_tokens + completion_tokens,

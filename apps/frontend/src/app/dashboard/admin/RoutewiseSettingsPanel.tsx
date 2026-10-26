@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
 import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { useReportEditing } from '@/components/features/admin/confirm/useReportEditing';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
@@ -24,7 +24,6 @@ import { Select } from '@/components/ui/Select';
 const SETTING_LABELS: Record<string, string> = {
   routewise_budget_alpha: 'Cost budget alpha',
   routewise_latency_slo_sec: 'Latency SLO (sec)',
-  routewise_latency_min_samples: 'Legacy sample threshold',
   routewise_probe_enabled: 'Background probes',
   routewise_probe_interval_sec: 'Probe interval (sec)',
 };
@@ -49,7 +48,7 @@ const PROBE_STALE_LOOKBEHIND_MS = 60 * 60 * 1000;
 interface RoutewiseSettingsPanelProps {
   modelId?: string;
   endpoints?: ProbeEndpointOption[];
-  /** Whether an edit or confirmation is open, so the parent can hold the model selection. */
+  /** Whether a change is unsaved or a confirmation open, so the parent can hold the model selection. */
   onEditingChange?: (active: boolean) => void;
 }
 
@@ -161,10 +160,9 @@ export function RoutewiseSettingsPanel({
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
   const [settings, setSettings] = useState<RoutewiseSettingItem[]>([]);
-  // Setting key → the edited value; read-only until Edit, written only after Confirm.
+  // Setting key → the value typed in place, kept only while it differs from the
+  // stored one; written only after Confirm.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [editing, setEditing] = useState(false);
-  useReportEditing(editing || confirmation.open, onEditingChange);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -236,7 +234,6 @@ export function RoutewiseSettingsPanel({
     const requestedEpoch = modelIdentity.current.epoch;
     // Another model's drafts are never carried over.
     setDrafts({});
-    setEditing(false);
     setSaveError(null);
     if (!requestedModelId) {
       setSettings([]);
@@ -346,6 +343,8 @@ export function RoutewiseSettingsPanel({
   const changedSettings = settings.filter((setting) =>
     settingChanged(setting, drafts[setting.key]),
   );
+  const hasChanges = changedSettings.length > 0;
+  useReportEditing(hasChanges || confirmation.open, onEditingChange);
 
   const changeDraft = (setting: RoutewiseSettingItem, value: string) => {
     setDrafts((prev) => {
@@ -356,11 +355,10 @@ export function RoutewiseSettingsPanel({
     });
   };
 
-  const cancelEdit = () => {
+  const discard = () => {
     if (confirmation.busy) return;
     setDrafts({});
     setSaveError(null);
-    setEditing(false);
   };
 
   const handleSave = () => {
@@ -422,7 +420,6 @@ export function RoutewiseSettingsPanel({
         if (stale()) return;
         setSaveError(failure);
         if (failure) return;
-        setEditing(false);
         toast.success(
           pending.length === 1
             ? `Updated ${displayKey(pending[0].setting)}.`
@@ -538,7 +535,7 @@ export function RoutewiseSettingsPanel({
   return (
     <section
       aria-label={SECTION}
-      className={`rounded-lg border bg-white p-4 ${editing ? 'border-gray-400 shadow-sm' : 'border-gray-200'}`}
+      className={`rounded-lg border bg-white p-4 ${hasChanges ? 'border-gray-400 shadow-sm' : 'border-gray-200'}`}
     >
       <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -547,9 +544,6 @@ export function RoutewiseSettingsPanel({
             Runtime knobs and probe controls used by RouteWise latency/cost decisions.
           </p>
         </div>
-        {!editing && !loading && settings.length > 0 ? (
-          <EditButton target={SECTION} onClick={() => setEditing(true)} />
-        ) : null}
       </div>
 
       {error && (
@@ -576,9 +570,8 @@ export function RoutewiseSettingsPanel({
       ) : (
         <div className="space-y-3">
           {settings.map((setting) => {
-            const saved = settingDraft(setting);
-            const draft = drafts[setting.key] ?? saved;
-            const changed = setting.key in drafts;
+            const draft = drafts[setting.key] ?? settingDraft(setting);
+            const changed = settingChanged(setting, drafts[setting.key]);
             const validated = validateSettingDraft(setting, draft);
             const isBoolean = setting.value_type === 'bool';
 
@@ -597,38 +590,14 @@ export function RoutewiseSettingsPanel({
                   <p className="mt-1 text-[11px] font-medium text-gray-500">
                     Source: {SETTING_SOURCE_LABELS[setting.source]}
                   </p>
-                  {editing && !validated.ok && draft !== '' && (
+                  {changed && !validated.ok && draft !== '' && (
                     <p className="mt-0.5 text-[11px] text-red-600" role="alert">
                       {validated.error}
                     </p>
                   )}
                 </div>
                 <div className="flex items-center gap-2 justify-self-start sm:justify-self-end">
-                  {!editing ? (
-                    <>
-                      <output
-                        aria-label={
-                          isBoolean
-                            ? `${displayKey(setting)} enabled`
-                            : `${displayKey(setting)} value`
-                        }
-                        className="text-[13px] tabular-nums text-gray-900"
-                      >
-                        {settingValueLabel(setting, saved)}
-                      </output>
-                      {setting.overridden && (
-                        <button
-                          type="button"
-                          aria-label={`Reset ${displayKey(setting)}`}
-                          disabled={confirmation.busy}
-                          onClick={() => handleResetSetting(setting)}
-                          className="rounded-md border border-gray-200 px-3 py-1 text-[12px] font-medium text-gray-700 disabled:opacity-40"
-                        >
-                          Reset
-                        </button>
-                      )}
-                    </>
-                  ) : isBoolean ? (
+                  {isBoolean ? (
                     <label
                       className={`flex h-8 items-center gap-2 rounded-md border px-2 text-[12px] font-medium text-gray-700 ${
                         changed ? 'border-amber-400' : 'border-gray-200'
@@ -659,6 +628,20 @@ export function RoutewiseSettingsPanel({
                       onChange={(e) => changeDraft(setting, e.target.value)}
                     />
                   )}
+                  {setting.overridden && (
+                    // The reset replaces the value this setting's draft was
+                    // typed against, so it waits for the draft.
+                    <button
+                      type="button"
+                      aria-label={`Reset ${displayKey(setting)}`}
+                      disabled={confirmation.busy || changed}
+                      title={changed ? 'Save or discard the unsaved change first' : undefined}
+                      onClick={() => handleResetSetting(setting)}
+                      className="rounded-md border border-gray-200 px-3 py-1 text-[12px] font-medium text-gray-700 disabled:opacity-40"
+                    >
+                      Reset
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -666,16 +649,15 @@ export function RoutewiseSettingsPanel({
         </div>
       )}
 
-      {editing ? (
-        <EditBar
-          target={SECTION}
-          changeCount={changedSettings.length}
-          onCancel={cancelEdit}
-          onSave={handleSave}
-          busy={confirmation.busy}
-          error={saveError}
-        />
-      ) : null}
+      <EditBar
+        target={SECTION}
+        changeCount={changedSettings.length}
+        onCancel={discard}
+        onSave={handleSave}
+        busy={confirmation.busy}
+        error={saveError}
+        inPlace
+      />
 
       <div className="mt-5 border-t border-gray-100 pt-4">
         <div className="flex flex-wrap items-end justify-between gap-3">

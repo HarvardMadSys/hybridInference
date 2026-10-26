@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from routing.endpoints import endpoint_id_for_adapter
@@ -199,6 +201,9 @@ async def set_route_weight(
     """Set a runtime route weight override for one endpoint."""
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
+    # NaN compares false to everything, so it would pass both checks below.
+    if not math.isfinite(payload.weight):
+        raise HTTPException(status_code=400, detail="weight must be a finite number")
     if payload.weight < 0:
         raise HTTPException(status_code=400, detail="weight must be >= 0")
 

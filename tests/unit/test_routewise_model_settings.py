@@ -9,6 +9,7 @@ from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from routing.routewise.router import RouteWiseRouter
 from serving.config.routewise_model_settings import (
+    MODEL_ROUTEWISE_SETTING_PREFIX,
     ROUTEWISE_SETTING_KEYS,
     RouteWiseSettingsResolver,
     apply_routewise_settings_to_router,
@@ -46,7 +47,6 @@ async def test_resolver_precedence_and_alias_canonicalization():
     global_rows = {
         "routewise_budget_alpha": {"value": "0.9", "value_type": "float"},
         "routewise_latency_slo_sec": {"value": "4.0", "value_type": "float"},
-        "routewise_latency_min_samples": {"value": "12", "value_type": "int"},
         "routewise_probe_enabled": {"value": "true", "value_type": "bool"},
         "routewise_probe_interval_sec": {"value": "45", "value_type": "float"},
     }
@@ -76,17 +76,17 @@ async def test_resolver_precedence_and_alias_canonicalization():
     )
     slo = resolved["routewise_latency_slo_sec"]
     assert (slo.value, slo.fallback_value, slo.source) == (0.8, 0.8, "model_config")
-    samples = resolved["routewise_latency_min_samples"]
-    assert (samples.value, samples.fallback_value, samples.source) == (
-        12,
-        12,
+    interval = resolved["routewise_probe_interval_sec"]
+    assert (interval.value, interval.fallback_value, interval.source) == (
+        45.0,
+        45.0,
         "global_default",
     )
     assert resolved["routewise_probe_enabled"].value is True
     store.get_setting.assert_not_awaited()
 
-    resolver.set_override("alias", "routewise_latency_min_samples", 20)
-    assert _overrides(resolver)["routewise_latency_min_samples"] == 20
+    resolver.set_override("alias", "routewise_probe_interval_sec", 60.0)
+    assert _overrides(resolver)["routewise_probe_interval_sec"] == 60.0
 
 
 @pytest.mark.asyncio
@@ -98,7 +98,6 @@ async def test_resolver_preserves_values_accepted_by_yaml_strategy_schema():
         router_params={
             "budget_alpha": 2,
             "latency_slo_sec": 0.05,
-            "latency_min_samples": 0,
             "routewise_probe_enabled": 1,
             "routewise_probe_interval_sec": 1,
         }
@@ -110,7 +109,6 @@ async def test_resolver_preserves_values_accepted_by_yaml_strategy_schema():
 
     assert resolved["routewise_budget_alpha"].value == 2.0
     assert resolved["routewise_latency_slo_sec"].value == 0.05
-    assert resolved["routewise_latency_min_samples"].value == 0
     assert resolved["routewise_probe_enabled"].value is True
     assert resolved["routewise_probe_interval_sec"].value == 1.0
 
@@ -280,20 +278,26 @@ async def test_newer_global_refresh_fences_an_older_slow_read():
 
 
 @pytest.mark.asyncio
-async def test_apply_replaces_all_five_fields_and_reconciles_probe_task():
+async def test_apply_replaces_all_four_fields_and_reconciles_probe_task():
     store = AsyncMock()
     store.list_settings.return_value = [
+        *(
+            {
+                "key": model_routewise_setting_key(key, "model"),
+                "value": value,
+            }
+            for key, value in {
+                "routewise_budget_alpha": "0.25",
+                "routewise_latency_slo_sec": "1.5",
+                "routewise_probe_enabled": "true",
+                "routewise_probe_interval_sec": "30",
+            }.items()
+        ),
+        # Left by the retired latency_min_samples setting: nothing reads it.
         {
-            "key": model_routewise_setting_key(key, "model"),
-            "value": value,
-        }
-        for key, value in {
-            "routewise_budget_alpha": "0.25",
-            "routewise_latency_slo_sec": "1.5",
-            "routewise_latency_min_samples": "4",
-            "routewise_probe_enabled": "true",
-            "routewise_probe_interval_sec": "30",
-        }.items()
+            "key": f"{MODEL_ROUTEWISE_SETTING_PREFIX}routewise_latency_min_samples:model",
+            "value": "4",
+        },
     ]
     store.get_setting.return_value = None
     registry = _registry()
@@ -313,7 +317,6 @@ async def test_apply_replaces_all_five_fields_and_reconciles_probe_task():
 
     assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
-    assert router.config.latency_min_samples == 4
     assert router.config.routewise_probe_enabled is True
     assert router.config.routewise_probe_interval_sec == 30.0
     assert router._probe_task is not None
@@ -454,6 +457,6 @@ async def test_probe_refresh_propagates_caller_cancellation_without_replacement(
 def test_scoped_setting_keys_are_one_row_per_key():
     keys = model_routewise_setting_keys("provider:model/with/slash")
 
-    assert len(keys) == len(ROUTEWISE_SETTING_KEYS) == 5
+    assert len(keys) == len(ROUTEWISE_SETTING_KEYS) == 4
     assert keys[0].startswith("model_routewise_setting:routewise_budget_alpha:")
     assert all(key.endswith("provider:model/with/slash") for key in keys)

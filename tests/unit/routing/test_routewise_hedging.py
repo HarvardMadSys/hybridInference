@@ -1268,7 +1268,6 @@ class TestRouterHedgeMode:
         """Probability-target mode returns a real HedgedAdapter."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=5,
             latency_slo_sec=3.0,
             latency_hedge_mode="probability_target",
         )
@@ -1302,7 +1301,6 @@ class TestRouterHedgeMode:
         """An in-flight hedge must not mix a new runtime SLO into its old schedule."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=3.0,
             latency_hedge_mode="probability_target",
         )
@@ -1338,7 +1336,6 @@ class TestRouterHedgeMode:
         """Probability-target hedging dispatches the backup and records the winner."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1365,6 +1362,7 @@ class TestRouterHedgeMode:
 
         assert resp["source"] == "backup"
         assert resp["_routing"]["endpoint_id"] == "test-model:api-b"
+        assert resp["_routing"]["pricing"] == {"prompt": "4.0", "completion": "20.0"}
         routewise = resp["_routing"]["routewise"]
         assert routewise["hedged"] is True
         assert routewise["hedge_triggered"] is True
@@ -1385,7 +1383,6 @@ class TestRouterHedgeMode:
         """A hidden hedged primary failure must feed the normal observation path."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1440,7 +1437,6 @@ class TestRouterHedgeMode:
         """A planned hedge is not recorded as triggered if primary returns first."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1476,7 +1472,6 @@ class TestRouterHedgeMode:
         """Streaming hedges emit winner routing before backup content."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1529,7 +1524,6 @@ class TestRouterHedgeMode:
         """A hedged primary 400 reaches the registry unchanged and stays exempt."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1619,7 +1613,6 @@ class TestRouterHedgeMode:
         """Backup selection is not restricted to on-demand providers."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1663,7 +1656,6 @@ class TestRouterHedgeMode:
         """Quota backups consume quota when the hedge actually dispatches."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1707,7 +1699,6 @@ class TestRouterHedgeMode:
         """Checkpoint backup selection matches SIM/REAL raw marginal-cost tiebreak."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1758,7 +1749,6 @@ class TestRouterHedgeMode:
         """Checkpoint hedging re-evaluates current state instead of using a stale backup."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
@@ -1910,6 +1900,7 @@ class TestWinnerAttribution:
             ],
             stream_delay=0.0,
         )
+        backup.config.pricing = {"prompt": "4.0", "completion": "20.0"}
         hedged = HedgedAdapter(
             primary=primary,
             backup=backup,
@@ -1925,6 +1916,8 @@ class TestWinnerAttribution:
         combined = "".join(chunks)
         assert "quick" in combined
         assert '"endpoint_id": "ep:fast"' in combined
+        routing = json.loads(chunks[0].removeprefix("data: "))["_routing"]
+        assert routing["pricing"] == {"prompt": "4.0", "completion": "20.0"}
         # Config must be swapped to backup's.
         assert hedged.config.provider == "fast-backup"
         assert hedged.config.endpoint_id == "ep:fast"

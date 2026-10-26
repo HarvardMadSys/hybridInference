@@ -16,6 +16,7 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseProbeResult, RouteWiseRouter
 from serving.audit import AuditTarget
 from serving.config.routewise_model_settings import (
+    ROUTEWISE_SETTING_KEYS,
     RouteWiseSettingsResolver,
     model_routewise_setting_key,
 )
@@ -120,7 +121,6 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
         side_effect=lambda key: {
             "routewise_budget_alpha": {"value": "0.6", "value_type": "float"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
-            "routewise_latency_min_samples": {"value": "10", "value_type": "int"},
             "routewise_probe_enabled": {"value": "false", "value_type": "bool"},
             "routewise_probe_interval_sec": {"value": "300.0", "value_type": "float"},
         }.get(key)
@@ -137,7 +137,6 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
     assert keys == [
         "routewise_budget_alpha",
         "routewise_latency_slo_sec",
-        "routewise_latency_min_samples",
         "routewise_probe_enabled",
         "routewise_probe_interval_sec",
     ]
@@ -621,7 +620,6 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     assert response.status_code == 200
     assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
-    assert router.config.latency_min_samples == 10
 
 
 @pytest.mark.asyncio
@@ -680,7 +678,6 @@ async def test_global_patch_does_not_build_or_override_uncached_yaml_model(admin
     assert isinstance(uncached_router, RouteWiseRouter)
     assert uncached_router.config.budget_alpha == 0.5
     assert uncached_router.config.latency_slo_sec == 3.0
-    assert uncached_router.config.latency_min_samples == 10
 
 
 @pytest.mark.asyncio
@@ -736,7 +733,6 @@ async def test_routewise_patch_refreshes_canonical_and_alias_cache_once(admin_cl
     assert response.status_code == 200
     assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
-    assert router.config.latency_min_samples == 10
     router.apply_runtime_overrides.assert_called_once()
     router.refresh_probe_task.assert_awaited_once_with()
 
@@ -757,18 +753,42 @@ def test_routewise_router_collection_rejects_invalid_runtime_override():
 
 
 @pytest.mark.asyncio
-async def test_patch_routewise_latency_min_samples_is_still_runtime_tunable(admin_client):
+async def test_the_removed_latency_min_samples_is_no_routewise_setting(admin_client):
+    # Provider selection never read it, so it is gone; a models.yaml that still
+    # names it keeps loading, and the key is dropped.
     client, op_store, _ = admin_client
-    op_store.get_setting = AsyncMock(return_value=None)
-
-    response = await client.patch(
-        "/admin/routewise/settings/routewise_latency_min_samples",
-        json={"value": 12},
-        headers={"Authorization": "Bearer test-admin"},
+    registry, _resolver, rows = await _install_model_settings_registry(
+        client,
+        op_store,
+        models_config={
+            "model-a": {"router": "routewise", "router_params": {"latency_min_samples": 4}}
+        },
     )
+    headers = {"Authorization": "Bearer test-admin"}
+    key = "routewise_latency_min_samples"
 
-    assert response.status_code == 200
-    assert response.json()["value"] == 12
+    assert isinstance(registry.get_router("model-a"), RouteWiseRouter)
+    listed = await client.get(
+        "/admin/routewise/model-settings", params={"model_id": "model-a"}, headers=headers
+    )
+    assert listed.status_code == 200
+    assert key not in {item["key"] for item in listed.json()["settings"]}
+    responses = [
+        await client.patch(f"/admin/routewise/settings/{key}", json={"value": 12}, headers=headers),
+        await client.patch(
+            f"/admin/routewise/model-settings/{key}",
+            params={"model_id": "model-a"},
+            json={"value": 12},
+            headers=headers,
+        ),
+        await client.delete(
+            f"/admin/routewise/model-settings/{key}",
+            params={"model_id": "model-a"},
+            headers=headers,
+        ),
+    ]
+    assert [response.status_code for response in responses] == [404, 404, 404]
+    assert rows == {}
 
 
 @pytest.mark.asyncio
@@ -979,7 +999,7 @@ async def test_patch_routewise_setting_rejects_unknown_key(admin_client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", routewise_admin.ROUTEWISE_KEYS)
+@pytest.mark.parametrize("key", ROUTEWISE_SETTING_KEYS)
 async def test_generic_admin_settings_rejects_routewise_keys(admin_client, key):
     client, _, _ = admin_client
 
@@ -1003,4 +1023,4 @@ async def test_generic_admin_settings_list_excludes_all_routewise_keys(admin_cli
 
     assert response.status_code == 200
     keys = {item["key"] for item in response.json()["settings"]}
-    assert keys.isdisjoint(routewise_admin.ROUTEWISE_KEYS)
+    assert keys.isdisjoint(ROUTEWISE_SETTING_KEYS)

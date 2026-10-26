@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.auto_mode import AutoMode
 from serving.config.runtime_settings import RuntimeSettings
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
@@ -89,7 +90,22 @@ async def test_list_settings_excludes_routewise_keys(admin_client):
     keys = {item["key"] for item in response.json()["settings"]}
     assert "routewise_budget_alpha" not in keys
     assert "routewise_latency_slo_sec" not in keys
-    assert "routewise_latency_min_samples" not in keys
+
+
+@pytest.mark.asyncio
+async def test_list_settings_offers_the_auto_mode_switch_only_with_auto_models(admin_client):
+    client, _op_store, _ = admin_client
+    headers = {"Authorization": "Bearer test-admin"}
+
+    async def keys() -> set[str]:
+        response = await client.get("/admin/settings", headers=headers)
+        assert response.status_code == 200
+        return {item["key"] for item in response.json()["settings"]}
+
+    # No auto: section in the model registry, so the switch has nothing to serve.
+    assert "auto_mode_enabled" not in await keys()
+    client._transport.app.state.services.auto_mode = MagicMock(spec=AutoMode)
+    assert "auto_mode_enabled" in await keys()
 
 
 @pytest.mark.asyncio
@@ -309,6 +325,27 @@ async def test_update_float_setting_rejects_bool(monkeypatch, admin_client):
     )
     assert response.status_code == 400
     assert "numeric" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["NaN", "Infinity"])
+async def test_update_float_setting_rejects_a_non_finite_number(admin_client, literal):
+    """NaN passes every bound, all its comparisons being false.
+
+    Stored as the default daily quota, it is seeded onto new keys, and no spend
+    is ever over a NaN quota.
+    """
+    client, op_store, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/user_daily_quota_free",
+        content=f'{{"value": {literal}}}',
+        headers={"Authorization": "Bearer test-admin", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert "finite" in response.json()["detail"].lower()
+    op_store.set_setting.assert_not_awaited()
 
 
 @pytest.mark.asyncio

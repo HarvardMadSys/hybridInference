@@ -207,6 +207,26 @@ def test_pricing_lookup_raw_dict_prefers_embedded_extra_over_registry():
     assert lookup.raw_dict_for_routing(routing) == embedded
 
 
+def test_empty_attempt_snapshot_does_not_borrow_replacement_route_price():
+    adapter = _make_adapter(
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        pricing={"prompt": "9", "completion": "15"},
+        endpoint_id="openai-prod",
+    )
+    lookup = PricingLookup(router=_make_router({"gpt-4": [adapter]}))
+    routing = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        provider="openai",
+        endpoint_id="openai-prod",
+        extra={"pricing": {}},
+    )
+
+    assert lookup.for_routing(routing) is None
+    assert lookup.raw_dict_for_routing(routing) == {}
+
+
 def test_pricing_lookup_does_not_cache_across_scheduled_price_windows():
     adapter = _make_adapter(
         provider="deepseek",
@@ -277,6 +297,45 @@ def test_pricing_lookup_caches_provider_base_url_fallback():
     adapter.config.pricing = {"prompt": "999.0", "completion": "999.0"}
     second = lookup.for_routing(routing)
     assert first == second
+
+
+@pytest.mark.parametrize("old_pricing", [{"prompt": "1", "completion": "2"}, None])
+def test_pricing_lookup_follows_an_adapter_replaced_under_the_same_endpoint_id(old_pricing):
+    """An admin route edit installs a new adapter and keeps the endpoint id.
+
+    The edited route must be billed and logged at its new price from the next
+    request on, including a route first seen with no pricing at all.
+    """
+    old = _make_adapter(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        pricing=old_pricing,
+        endpoint_id="m:openrouter-api",
+    )
+    router = _make_router({"m": [old]})
+    lookup = PricingLookup(router=router)
+    routing = RoutingInfo(
+        request_id="rid",
+        model="m",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        endpoint_id="m:openrouter-api",
+    )
+    lookup.for_routing(routing)
+    lookup.raw_dict_for_routing(routing)
+
+    new = _make_adapter(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        pricing={"prompt": "10", "completion": "20"},
+        endpoint_id="m:openrouter-api",
+    )
+    router.routes["m"].adapters = [(new, 1.0)]
+
+    pricing = lookup.for_routing(routing)
+    assert pricing is not None
+    assert (pricing.prompt_price, pricing.completion_price) == (10.0, 20.0)
+    assert lookup.raw_dict_for_routing(routing) == {"prompt": "10", "completion": "20"}
 
 
 # ---------------------------------------------------------------------------

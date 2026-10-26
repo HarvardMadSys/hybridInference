@@ -1415,18 +1415,18 @@ async def initialize() -> AppServices:
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
     alert_engine = None
     if settings.alerts_enabled:
+        alert_handler = None
         try:
-            import logging as _stdlogging
-
             from serving.observability.alert_config import load_alert_config
             from serving.observability.alert_rules import AlertEngine
-            from serving.observability.log_handler import AlertingLogHandler
+            from serving.observability.log_handler import (
+                AlertingLogHandler,
+                install_alert_log_handler,
+                uninstall_alert_log_handler,
+            )
 
             alert_handler = AlertingLogHandler(maxsize=10_000)
-            _req_log = _stdlogging.getLogger("serving.servers.middleware.request_log")
-            _req_log.addHandler(alert_handler)
-            _req_log.propagate = False
-            _stdlogging.getLogger().addHandler(alert_handler)
+            install_alert_log_handler(alert_handler)
 
             alert_cfg = load_alert_config(str(resolve_config_path("alerts").path))
             alert_engine = AlertEngine(
@@ -1441,6 +1441,9 @@ async def initialize() -> AppServices:
         except Exception:
             logger.exception("Alert engine startup failed")
             alert_engine = None
+            if alert_handler is not None:
+                # Nothing will drain it.
+                uninstall_alert_log_handler(alert_handler)
     else:
         logger.info("alerts disabled (ALERTS_ENABLED=false)")
 
@@ -2010,10 +2013,9 @@ async def shutdown(services: AppServices) -> None:
             logger.exception("Alert engine shutdown failed")
         handler = getattr(services.alert_engine, "_handler", None)
         if handler is not None:
-            import logging as _stdlogging
+            from serving.observability.log_handler import uninstall_alert_log_handler
 
-            _stdlogging.getLogger("serving.servers.middleware.request_log").removeHandler(handler)
-            _stdlogging.getLogger().removeHandler(handler)
+            uninstall_alert_log_handler(handler)
 
     # Broadcast email scheduler
     try:

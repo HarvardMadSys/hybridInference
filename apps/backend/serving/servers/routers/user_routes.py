@@ -954,6 +954,8 @@ async def change_password(
     revoked = await op_store.revoke_user_sessions(
         current_user["user_id"], except_sid=current_user.get("sid")
     )
+    # So does an outstanding reset link: another way back in.
+    await op_store.delete_user_reset_tokens(current_user["user_id"])
 
     if user_row.get("email") and user_row.get("email_verified") and is_email_enabled():
         background_tasks.add_task(
