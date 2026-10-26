@@ -7,7 +7,8 @@ Two lifecycles that cross transactions:
   older version) must never stop other users' events from being delivered;
 - a file batch accepted from an upload must keep that upload's bytes until it
   is validated, whatever a concurrent collection read: either the batch is
-  refused because the deletion won, or the bytes stay.
+  refused because the deletion won, or the bytes stay. Uploads kept that way
+  must not keep collection from reaching the ones behind them.
 
 Interleavings are forced with advisory-lock barriers in triggers and by
 waiting until a session is seen blocked in ``pg_stat_activity``.
@@ -23,6 +24,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+import serving.storage.batch_file_store as file_module
 from serving.storage.batch_file_store import BatchFileStore
 from serving.storage.batch_store import (
     BatchInputUnavailable,
@@ -384,3 +386,52 @@ async def test_a_deleted_or_expired_input_cannot_start_a_batch(pool, users):
     with pytest.raises(BatchInputUnavailable):
         await _create_from(store, owner, theirs)
     assert await store.list_batches(user_id=owner, limit=5) == []
+
+
+async def test_pinned_and_leased_uploads_do_not_starve_collection(pool, users, monkeypatch):
+    # A page of two stands for the 200 a round takes; the oldest deleted uploads
+    # are all still needed and fill it, the one behind them is not.
+    monkeypatch.setattr(file_module, "_GC_LIMIT", 2)
+    store, files = BatchStore(pool), BatchFileStore(pool)
+    owner = users()
+    pinned = [await _upload(files, owner) for _ in range(2)]
+    batches = [await _create_from(store, owner, file_id) for file_id in pinned]
+    # One download whose lease row is live (its row's horizon has lapsed), and
+    # one that ended while the horizon it stamped on the row still runs.
+    by_lease_row = await _upload(files, owner)
+    lease = await store.take_read_lease(file_id=by_lease_row, ttl_seconds=600)
+    by_horizon = await _upload(files, owner)
+    await store.drop_read_lease(await store.take_read_lease(file_id=by_horizon, ttl_seconds=600))
+    target = await _upload(files, owner)
+    needed = [*pinned, by_lease_row, by_horizon]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE batch_files SET read_lease_until = now() - interval '1 second' WHERE id = $1",
+            by_lease_row,
+        )
+        # Oldest first, ahead of anything other tests left behind.
+        for position, file_id in enumerate([*needed, target]):
+            assert await files.delete_file(file_id, user_id=owner)
+            await conn.execute(
+                "UPDATE batch_files SET deleted_at = timestamptz '2000-01-01' "
+                "+ make_interval(secs => $2) WHERE id = $1",
+                file_id,
+                float(position),
+            )
+    await files.collect_garbage()
+    assert not await files.upload_exists(target)
+    for file_id in needed:
+        assert await files.upload_exists(file_id)
+    # Once nothing needs them they go too, two a round.
+    for batch in batches:
+        assert await store.fail_validation(batch_id=batch["id"], worker_id=None, errors={})
+    await store.drop_read_lease(lease)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE batch_files SET read_lease_until = now() - interval '1 second' WHERE id = $1",
+            by_horizon,
+        )
+    for _ in range(2):
+        await files.collect_garbage()
+    for file_id in needed:
+        assert not await files.upload_exists(file_id)

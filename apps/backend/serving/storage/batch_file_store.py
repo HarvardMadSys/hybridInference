@@ -299,9 +299,25 @@ class BatchFileStore:
                 "UPDATE batch_files SET deleted_at = now() WHERE kind = 'upload' "
                 "AND deleted_at IS NULL AND expires_at IS NOT NULL AND expires_at <= now()"
             )
+            # Only uploads that look collectable now: a page of the oldest
+            # deleted ones would otherwise fill up with files still pinned or
+            # leased, every round, and never reach those behind them. This
+            # read only narrows the choice; collect_upload decides.
             candidates = await conn.fetch(
-                "SELECT id FROM batch_files WHERE kind = 'upload' AND deleted_at IS NOT NULL "
-                "ORDER BY deleted_at, id LIMIT $1",
+                """
+                SELECT f.id FROM batch_files AS f
+                WHERE f.kind = 'upload' AND f.deleted_at IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM batch_jobs AS j
+                      WHERE j.input_file_id = f.id AND j.phase = 'validating'
+                  )
+                  AND (f.read_lease_until IS NULL OR f.read_lease_until <= now())
+                  AND NOT EXISTS (
+                      SELECT 1 FROM batch_read_leases AS l
+                      WHERE l.file_id = f.id AND l.expires_at > now()
+                  )
+                ORDER BY f.deleted_at, f.id LIMIT $1
+                """,
                 _GC_LIMIT,
             )
         collected = 0
