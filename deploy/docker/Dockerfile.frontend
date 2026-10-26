@@ -10,7 +10,7 @@ FROM scratch AS site-ui
 COPY deploy/docker/site-ui/.built-in-ui /.built-in-ui
 
 # ---- Stage 3: build ----
-FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS builder
+FROM deps AS builder
 WORKDIR /app
 
 # Public build settings remain compatible with existing neutral deployments.
@@ -80,7 +80,6 @@ ENV NEXT_PUBLIC_STORAGE_KEY_PREFIX=$NEXT_PUBLIC_STORAGE_KEY_PREFIX
 ENV NEXT_PUBLIC_DATA_POLICY_NOTICE=$NEXT_PUBLIC_DATA_POLICY_NOTICE
 ENV NEXT_PUBLIC_TEAM_JSON=$NEXT_PUBLIC_TEAM_JSON
 ENV NEXT_PUBLIC_SPONSORS_JSON=$NEXT_PUBLIC_SPONSORS_JSON
-COPY --from=deps /app/node_modules node_modules
 COPY apps/frontend/ .
 
 # Which module, if any. `SITE_UI_SUBDIR` names the module inside the context, so
