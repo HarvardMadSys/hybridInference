@@ -9,6 +9,8 @@ import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY } from '../adminStyles';
  *
  * `inPlace` is for settings whose fields are always editable: the bar appears
  * with the first change (or an error to show), and its Cancel reads Discard.
+ * A busy confirmation alone does not bring it up, as one dialog often serves
+ * other actions on the screen too.
  * Without it the bar belongs to an editor that was opened, and Cancel closes it.
  *
  * `sticky` keeps it at the bottom of the screen while a long section scrolls;
@@ -43,7 +45,7 @@ export function EditBar({
   submit?: boolean;
   inPlace?: boolean;
 }) {
-  if (inPlace && changeCount === 0 && !error && !busy) return null;
+  if (inPlace && changeCount === 0 && !error) return null;
   return (
     <div
       className={`${
