@@ -7,6 +7,10 @@ import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY } from '../adminStyles';
  * changes are unsaved. Save is disabled for a no-op, while the save is
  * `blocked` and while a write runs.
  *
+ * `inPlace` is for settings whose fields are always editable: the bar appears
+ * with the first change (or an error to show), and its Cancel reads Discard.
+ * Without it the bar belongs to an editor that was opened, and Cancel closes it.
+ *
  * `sticky` keeps it at the bottom of the screen while a long section scrolls;
  * place it as the last child of the edited section.
  */
@@ -20,6 +24,7 @@ export function EditBar({
   blocked,
   sticky = false,
   submit = false,
+  inPlace = false,
 }: {
   /** What is edited, for the buttons' accessible names: "Save changes to <target>". */
   target: string;
@@ -36,14 +41,16 @@ export function EditBar({
   blocked?: string | null;
   sticky?: boolean;
   submit?: boolean;
+  inPlace?: boolean;
 }) {
+  if (inPlace && changeCount === 0 && !error && !busy) return null;
   return (
     <div
-      className={
+      className={`${
         sticky
           ? 'sticky bottom-0 z-10 mt-2 border-t border-gray-200 bg-white/95 py-3 backdrop-blur'
           : 'mt-3 border-t border-gray-100 pt-3'
-      }
+      }${inPlace ? ' animate-admin-reveal' : ''}`}
     >
       {error ? (
         <p
@@ -74,10 +81,10 @@ export function EditBar({
           type="button"
           onClick={onCancel}
           disabled={busy}
-          aria-label={`Cancel editing ${target}`}
+          aria-label={inPlace ? `Discard changes to ${target}` : `Cancel editing ${target}`}
           className={BUTTON_GHOST}
         >
-          Cancel
+          {inPlace ? 'Discard' : 'Cancel'}
         </button>
         <button
           type={submit ? 'submit' : 'button'}
