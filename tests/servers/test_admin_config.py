@@ -573,6 +573,27 @@ async def test_restore_replaces_the_signup_domain_allowlist_and_refreshes_resolv
 
 
 @pytest.mark.asyncio
+async def test_restore_accepts_a_paused_batch_model_its_backup_exported(config_client) -> None:
+    """A cap of 0 pauses a model's batch work; a backup taken meanwhile holds it."""
+    client, _store, _audit = config_client
+    services = client._transport.app.state.services
+    services.batch_store = MagicMock()
+    services.batch_store.list_model_limits = AsyncMock(return_value={})
+    services.batch_store.set_model_limit = AsyncMock()
+
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={"schema_version": 1, "batch_model_limits": {"glm-4.6": 0}},
+    )
+
+    assert response.status_code == 200
+    services.batch_store.set_model_limit.assert_awaited_once_with(
+        "glm-4.6", 0, updated_by="admin-token"
+    )
+
+
+@pytest.mark.asyncio
 async def test_restore_applies_backup_and_preserves_locked_api_key_secret(config_client) -> None:
     client, store, audit = config_client
     store.has_api_keys = True

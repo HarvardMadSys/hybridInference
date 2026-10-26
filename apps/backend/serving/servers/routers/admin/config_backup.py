@@ -345,7 +345,8 @@ def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
             )
 
     for model_id, max_concurrent in payload.batch_model_limits.items():
-        if not model_id.strip() or int(max_concurrent) < 1:
+        # 0 is a cap like any other: it pauses the model's batch work.
+        if not model_id.strip() or int(max_concurrent) < 0:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid batch_model_limit for {model_id!r}: {max_concurrent}",
