@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import aiohttp
 import pytest
 from aiohttp import web
 
 from serving.adapters.base import ModelConfig
 from serving.adapters.gemini import GeminiAdapter
+from serving.adapters.openai_compat import UpstreamStreamError
 from serving.http import AsyncHTTPClient
 
 pytestmark = pytest.mark.asyncio
@@ -379,6 +381,37 @@ async def test_the_stream_survives_odd_frames_and_stops_at_done(upstream):
     text = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
     assert text == "Hello"
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+async def test_an_error_frame_mid_stream_raises_with_its_status(upstream):
+    """Gemini reports a failure after some output as a frame of its own, then closes."""
+    upstream.lines = [
+        _frame({"candidates": [_candidate([{"text": "Hel"}], finish="")]}),
+        _frame(
+            {"error": {"code": 503, "message": "The model is overloaded.", "status": "UNAVAILABLE"}}
+        ),
+    ]
+
+    with pytest.raises(UpstreamStreamError) as caught:
+        [c async for c in _adapter(upstream).stream_chat_completion(USER)]
+
+    assert caught.value.status == 503
+    assert "overloaded" in str(caught.value)
+
+
+async def test_a_body_that_ends_without_a_finish_reason_is_a_truncation(upstream):
+    """A clean close is not a finished generation; it must not end as ``stop``."""
+    upstream.lines = [_frame({"candidates": [_candidate([{"text": "Hel"}], finish="")]})]
+
+    with pytest.raises(aiohttp.ClientError):
+        [c async for c in _adapter(upstream).stream_chat_completion(USER)]
+
+
+async def test_a_blocked_prompt_still_ends_the_stream_normally(upstream):
+    """A refused prompt has no candidate and no finish reason, and is no upstream fault."""
+    chunks = await _stream(upstream, [_frame({"promptFeedback": {"blockReason": "SAFETY"}})])
+
+    assert chunks[-1]["choices"][0]["finish_reason"] is not None
 
 
 async def test_without_usage_metadata_the_stream_estimates_usage(upstream):
