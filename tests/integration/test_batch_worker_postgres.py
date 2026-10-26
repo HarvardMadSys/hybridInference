@@ -241,8 +241,12 @@ async def _paused(store: BatchStore, batch_id: str) -> bool:
     return row is not None and row["paused_until"] is not None
 
 
-async def test_two_workers_drain_a_batch_within_the_deployment_wide_cap(gateway, owner):
+async def test_two_workers_drain_a_batch_within_the_deployment_wide_cap(
+    gateway, owner, monkeypatch
+):
     """Every request runs exactly once, no model ever exceeds its cap, and spend is counted."""
+    # Below model b's six requests, so the default cap is what holds it back.
+    monkeypatch.setenv("BATCH_MODEL_CONCURRENCY", "4")
     store, a, b = gateway.store, gateway.models["a"], gateway.models["b"]
     await store.set_model_limit(a.config.id, 2, "test")
     items = [(f"a{i}", a.config.id) for i in range(12)] + [(f"b{i}", b.config.id) for i in range(6)]
