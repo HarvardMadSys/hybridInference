@@ -242,6 +242,38 @@ async def test_update_api_key_success(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_update_api_key_refuses_a_revoked_key_instead_of_reporting_success(admin_client):
+    """``update_key`` skips revoked rows, so a 200 here claimed a change never written."""
+    client, op_store, _log_store, log_action = admin_client
+    op_store.get_key_detail.return_value = {"user_id": "alice", "status": "revoked"}
+
+    response = await client.patch(
+        "/admin/api-keys/alice",
+        headers={"Authorization": "Bearer test-admin"},
+        json={"status": "active"},
+    )
+
+    assert response.status_code == 409
+    op_store.update_key.assert_not_awaited()
+    log_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_api_key_still_updates_a_suspended_key(admin_client):
+    client, op_store, _log_store, _log_action = admin_client
+    op_store.get_key_detail.return_value = {"user_id": "alice", "status": "suspended"}
+
+    response = await client.patch(
+        "/admin/api-keys/alice",
+        headers={"Authorization": "Bearer test-admin"},
+        json={"status": "active"},
+    )
+
+    assert response.status_code == 200
+    op_store.update_key.assert_awaited_once_with("alice", status="active")
+
+
+@pytest.mark.asyncio
 async def test_update_api_key_no_fields(admin_client):
     client, _op_store, _log_store, _log_action = admin_client
     response = await client.patch(

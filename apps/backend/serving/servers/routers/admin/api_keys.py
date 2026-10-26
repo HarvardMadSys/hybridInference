@@ -260,6 +260,11 @@ async def update_api_key(
     existing = await op_store.get_key_detail(user_id)
     if not existing:
         raise HTTPException(404, f"User '{user_id}' not found")
+    # ``get_key_detail`` prefers a live key, so a revoked row means the user has
+    # none -- and ``update_key`` never writes a revoked row. Answering 200 and
+    # auditing the change would report an update that did not happen.
+    if existing.get("status") == "revoked":
+        raise HTTPException(409, f"API key for user '{user_id}' is revoked; nothing to update")
 
     await op_store.update_key(user_id, **payload_dict)
 
