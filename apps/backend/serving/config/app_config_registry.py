@@ -969,7 +969,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Batch Concurrency; this is only the default. 0 pauses batch work on every "
         "model without a cap.",
         type="int",
-        default="4",
+        default="64",
         minimum=0,
     ),
     ConfigEntry(
@@ -1059,11 +1059,25 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "BATCH_USER_MAX_CONCURRENCY",
         "batch",
         "Batch requests one user may have running at once across the whole deployment "
-        "and every model. 0 removes this cap (the per-user and per-model limits still "
+        "and every model. 0 removes this cap (the per-role and per-model limits still "
         "apply).",
         type="int",
-        default="8",
+        default="64",
         minimum=0,
+    ),
+    *(
+        ConfigEntry(
+            f"BATCH_ROLE_CONCURRENCY_{role.upper()}",
+            "batch",
+            f"Batch requests one {role} user may have running at once in each gateway "
+            "process. Separate from the role's interactive concurrency limit: batch work "
+            "neither waits on nor takes the slots of the user's own interactive requests. "
+            "0 removes this cap (the per-user and per-model batch limits still apply).",
+            type="int",
+            default=str(default),
+            minimum=0,
+        )
+        for role, default in (("free", 8), ("pro", 16), ("internal", 64), ("admin", 64))
     ),
     ConfigEntry(
         "BATCH_INTERACTIVE_RESERVE",

@@ -26,10 +26,11 @@ items again.
 Before every attempt the item's owner is authenticated afresh from the stored
 key (:func:`~serving.servers.auth.authenticate_stored_key`): a revoked key or
 closed account fails the batch, a spent daily quota pauses the owner's batches
-until it renews, and a role below ``BATCH_MIN_ROLE`` pauses them for a while. The item then takes the
-owner's per-user concurrency slot, as the owner's own request would
-(:func:`~serving.servers.concurrency.user_slot_for`), its attempt is marked as
-dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
+until it renews, and a role below ``BATCH_MIN_ROLE`` pauses them for a while. The item then takes a
+slot of the owner's batch quota -- ``BATCH_ROLE_CONCURRENCY_<ROLE>``, counted in
+this process by a limiter of the worker's own, apart from the interactive
+per-user limiter, so batch work and the owner's own requests never compete for
+one budget -- its attempt is marked as dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
 on its target. A failure that may pass (a timeout, a 429, a 5xx) is retried
 with exponential backoff, a bounded number of times, and only such failures
 count toward cooling a model down; a caller error (any other 4xx) fails the
@@ -69,7 +70,7 @@ from serving.servers.auth import (
     StoredKeyRejected,
     authenticate_stored_key,
 )
-from serving.servers.concurrency import canonical_model_id, user_slot_for
+from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id
 from serving.storage.batch_store import TARGET_CHAT
 from serving.utils.logging import get_logger
 
@@ -155,6 +156,11 @@ def _default_worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(3)}"
 
 
+async def _role_quota() -> dict[str, int]:
+    """The batch quota of each role, read live like every batch setting."""
+    return dict(batch_config().role_concurrency)
+
+
 class BatchScheduler:
     """Claims and runs this process's share of the queued batch items."""
 
@@ -201,6 +207,9 @@ class BatchScheduler:
         self._services = services
         self._store = store
         self._limits = limits
+        # The batch quota of each owner, by role: a limiter of its own, never
+        # the interactive one (see the module docstring).
+        self._role_slots = UserConcurrencyLimiter(_role_quota)
         self._load = load if load is not None else INTERACTIVE_LOAD
         self._shared_load = shared_load
         self._file_store = file_store
@@ -794,40 +803,31 @@ class BatchScheduler:
     async def _take_user_slot(
         self, user_ctx: dict[str, Any], model: str
     ) -> Callable[[], None] | None:
-        """Take the owner's concurrency slot for *model*; return how to give it back.
+        """Take a slot of the owner's batch quota; return how to give it back.
 
-        The slot the owner's own request for the model would take, exempt-model
-        budget and per-user override included. ``None`` when the owner has none
-        free. Without a limiter there is nothing to hold, as for an HTTP request.
+        The quota is the owner's role's ``BATCH_ROLE_CONCURRENCY_<ROLE>``, held
+        across every model. ``None`` when the owner has none free. *model* only
+        labels the deferral in the logs.
         """
-        limiter = getattr(self._services, "user_concurrency_limiter", None)
-        if limiter is None:
-            return lambda: None
-        slot_key, max_concurrent = await user_slot_for(
-            user_ctx,
-            model,
-            router=getattr(self._services, "router", None),
-            concurrency_resolver=getattr(self._services, "model_concurrency_resolver", None),
-            embedding_adapters=getattr(self._services, "embedding_adapters", None),
-        )
-        granted, _limit, _role = await limiter.try_acquire(
-            slot_key,
+        user_id = str(user_ctx.get("user_id") or "")
+        granted, _limit, _role = await self._role_slots.try_acquire(
+            user_id,
             user_ctx.get("role", "free") or "free",
             bool(user_ctx.get("is_admin", False)),
-            max_concurrent,
         )
         if not granted:
             return None
 
         def give_back() -> None:
             try:
-                limiter.release(slot_key)
+                self._role_slots.release(user_id)
             except Exception:
                 logger.exception(
-                    "batch: releasing a user concurrency slot failed",
+                    "batch: releasing a batch quota slot failed",
                     extra={
                         "event": "batch_slot_release_failed",
                         "user_id": user_ctx.get("user_id"),
+                        "model": model,
                     },
                 )
 

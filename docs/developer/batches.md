@@ -34,9 +34,10 @@ starts its requests as soon as their models have room.
 
 Each request then runs exactly as if you had sent it to its endpoint yourself:
 the same models, routing and fallback, the same price, logged under your
-account. It counts toward your daily cost quota and takes one of your
-concurrent-request slots while it runs, so a batch never gets more than your own
-traffic could. Requests run in no particular order, and a request that fails for
+account. It counts toward your daily cost quota. It does **not** use your
+concurrent-request limit: batch work has a separate quota per role, so a
+running batch never blocks your own interactive requests, and they never hold
+up the batch. Requests run in no particular order, and a request that fails for
 a reason that may pass — a timeout, a `429`, a `5xx` — is retried with backoff,
 up to eight attempts in all. A request the model rejects (any other `4xx`)
 fails at once.
@@ -544,7 +545,7 @@ and to the worker's next round.
 |---|---|---|
 | `BATCH_ENABLED` | on | Serve batch inference. Off, every `/v1/batches` route answers `404` and no queued request starts; stored batches are kept |
 | `BATCH_MIN_ROLE` | `internal` | Lowest role that may create batches (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it |
-| `BATCH_MODEL_CONCURRENCY` | 4 | Batch requests a model runs at once, across the whole deployment, when it has no cap of its own. `0` pauses batch work on those models |
+| `BATCH_MODEL_CONCURRENCY` | 64 | Batch requests a model runs at once, across the whole deployment, when it has no cap of its own. `0` pauses batch work on those models |
 | `BATCH_YIELD_TO_INTERACTIVE` | on | Interactive requests in flight on a model take batch slots from its cap |
 | `BATCH_MAX_REQUESTS` | 50000 | Requests one batch may hold |
 | `BATCH_MAX_BODY_MB` | 32 | Largest create request, in MiB |
@@ -553,7 +554,8 @@ and to the worker's next round.
 | `BATCH_RETENTION_DAYS` | 7 | Days a finished batch and its results are kept. A batch keeps the value it was created with |
 | `BATCH_EXPANSION_ENABLED` | off | Allow creating file batches, Message Batches, embedding and Responses batches, and webhooks. Off, batches already accepted keep running and stay readable, downloadable, cancellable and deletable |
 | `BATCH_MAX_QUEUED_REQUESTS_PER_USER` | 100000 | Unfinished requests one user may have across all their batches |
-| `BATCH_USER_MAX_CONCURRENCY` | 8 | Batch requests one user may have running at once across the deployment and every model; `0` removes this cap |
+| `BATCH_USER_MAX_CONCURRENCY` | 64 | Batch requests one user may have running at once across the deployment and every model; `0` removes this cap |
+| `BATCH_ROLE_CONCURRENCY_FREE` / `_PRO` / `_INTERNAL` / `_ADMIN` | 8 / 16 / 64 / 64 | Batch requests one user of that role may have running at once in each gateway process. Separate from the role's interactive concurrency limit (`user_concurrency_<role>` and a user's own override apply to interactive requests only); `0` removes this cap |
 | `BATCH_SHARED_INTERACTIVE_LOAD` | on | Yield to the interactive requests of every gateway process, not only the worker's own |
 | `BATCH_INTERACTIVE_RESERVE` | 0 | Slots of every model's batch cap kept free for interactive requests, on top of those in flight |
 | `BATCH_MAX_LINE_KB` | 4096 | Largest line of an input file |

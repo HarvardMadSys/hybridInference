@@ -228,7 +228,9 @@ def test_every_batch_setting_is_registered_and_applies_live() -> None:
     assert category.label == "Batch inference"
     entries = _batch_entries()
     # Every key serving.batch.config reads, and nothing else.
-    assert set(entries) == {value for name, value in vars(batch).items() if name.endswith("_KEY")}
+    assert set(entries) == {
+        value for name, value in vars(batch).items() if name.endswith("_KEY")
+    } | set(batch.ROLE_CONCURRENCY_KEYS.values())
     for entry in entries.values():
         assert entry.field is None, entry.key
         assert not entry.restart_required, entry.key
@@ -262,6 +264,11 @@ def test_the_batch_entries_accept_exactly_what_the_batch_config_reads(monkeypatc
         batch.MAX_ACTIVE_KEY: lambda config: config.max_active_per_user,
         batch.WINDOW_HOURS_KEY: lambda config: config.completion_window_hours,
         batch.RETENTION_DAYS_KEY: lambda config: config.retention_days,
+        batch.USER_MAX_CONCURRENCY_KEY: lambda config: config.user_max_concurrency,
+        **{
+            key: (lambda config, role=role: config.role_concurrency[role])
+            for role, key in batch.ROLE_CONCURRENCY_KEYS.items()
+        },
     }
     for key, read in reads.items():
         entry = entries[key]

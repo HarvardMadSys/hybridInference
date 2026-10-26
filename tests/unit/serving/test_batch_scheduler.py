@@ -623,27 +623,27 @@ async def test_an_unreachable_store_defers_the_item(worker, dispatch, auth):
     assert store.batches["b1"]["status"] == "in_progress"
 
 
-async def test_full_user_slots_defer_the_item(worker, dispatch, auth, limiter):
-    auth.outcome = _owner_ctx(max_concurrent_requests=1)
-    granted, _, _ = await limiter.try_acquire(OWNER, "internal", False, 1)
-    assert granted
+async def test_a_full_batch_quota_defers_the_item(worker, dispatch, settings):
+    settings["BATCH_ROLE_CONCURRENCY_INTERNAL"] = "1"
     store = FakeStore()
-    store.add(1)
+    store.add(2)
+    gate = dispatch.hold("m1")
     scheduler = worker(store)
     before = datetime.now(UTC)
 
     scheduler.start()
-    await until(lambda: store.calls["release_item"] == 1)
+    await until(lambda: dispatch.running["m1"] == 1 and store.calls["release_item"] == 1)
 
-    item = store.items[1]
-    assert item["status"] == "queued"
-    assert item["attempts"] == 0
-    assert item["next_attempt_at"] >= before + timedelta(seconds=SLOW.slot_retry_seconds)
-    assert dispatch.calls == []
+    deferred = [item for item in store.items.values() if item["status"] == "queued"]
+    assert len(deferred) == 1
+    assert deferred[0]["attempts"] == 0
+    assert deferred[0]["next_attempt_at"] >= before + timedelta(seconds=SLOW.slot_retry_seconds)
+    assert len(dispatch.calls) == 1
+    gate.set()
 
 
-async def test_the_owners_slot_is_held_during_dispatch_and_released_after(
-    worker, dispatch, auth, limiter
+async def test_the_owners_batch_slot_is_held_during_dispatch_and_released_after(
+    worker, dispatch, auth
 ):
     store = FakeStore()
     store.add(1)
@@ -652,14 +652,36 @@ async def test_the_owners_slot_is_held_during_dispatch_and_released_after(
 
     scheduler.start()
     await until(lambda: dispatch.running["m1"] == 1)
-    assert limiter._slots[OWNER].in_use == 1
+    assert scheduler._role_slots._slots[OWNER].in_use == 1
 
     gate.set()
     await until(lambda: store.count("completed") == 1)
-    assert limiter._slots[OWNER].in_use == 0
+    assert scheduler._role_slots._slots[OWNER].in_use == 0
     call = dispatch.calls[0]
     assert call["user_ctx"] == auth.outcome
     assert call["batch_id"] == "b1"
+
+
+async def test_batch_work_does_not_use_the_interactive_concurrency_limit(
+    worker, dispatch, auth, limiter
+):
+    # The owner's interactive budget -- a per-user override of 1 -- is spent.
+    auth.outcome = _owner_ctx(max_concurrent_requests=1)
+    granted, _, _ = await limiter.try_acquire(OWNER, "internal", False, 1)
+    assert granted
+    store = FakeStore()
+    store.add(2)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 2)
+
+    # Both run on the batch quota; the interactive slot is neither needed nor taken.
+    assert scheduler._role_slots._slots[OWNER].in_use == 2
+    assert limiter._slots[OWNER].in_use == 1
+    gate.set()
+    await until(lambda: store.count("completed") == 2)
 
 
 # -- failures -------------------------------------------------------------------------

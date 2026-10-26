@@ -3,7 +3,7 @@
 Only the upstream is stubbed (an adapter behind a real ``FixedRouter``). The rest
 is the code production runs: claiming, re-authenticating the owner from the
 stored key against the real ``api_keys`` and ``users`` rows, the owner's
-concurrency slot, the chat-completions handler, cost accounting into
+batch quota slot, the chat-completions handler, cost accounting into
 ``user_daily_cost``, and the batch's settlement. Two schedulers sharing one
 database stand for two gateway processes.
 """

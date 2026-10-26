@@ -118,13 +118,13 @@ async def test_list_shows_every_canonical_chat_model_at_the_default(admin_client
 
     assert response.status_code == 200
     body = response.json()
-    assert body["default_concurrency"] == 4
+    assert body["default_concurrency"] == 64
     # Aliases, unpublished routes and embedding models are not listed.
     assert [model["model_id"] for model in body["models"]] == ["provider/model", "public-model"]
     assert _by_id(body)["public-model"] == {
         "model_id": "public-model",
         "max_concurrency": None,
-        "effective_concurrency": 4,
+        "effective_concurrency": 64,
         "running": 0,
         "queued": 0,
     }
@@ -149,7 +149,7 @@ async def test_list_reports_overrides_load_and_models_only_the_store_knows(admin
     assert models["public-model"]["effective_concurrency"] == 0
     assert models["public-model"]["queued"] == 5
     assert models["provider/model"]["max_concurrency"] is None
-    assert models["provider/model"]["effective_concurrency"] == 4
+    assert models["provider/model"]["effective_concurrency"] == 64
     assert models["provider/model"]["running"] == 3
     # A cap left behind by a model that is no longer routed, and a model that
     # still has batch requests open, stay visible.
