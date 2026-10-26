@@ -55,6 +55,16 @@ BATCH_KEYS = {
     "cancelled_at",
     "expires_at",
     "paused_until",
+    "webhook_url",
+    "webhook_status",
+    "webhook_attempts",
+    "webhook_next_attempt_at",
+    "webhook_claimed_by",
+    "webhook_lease_expires_at",
+    "webhook_last_status_code",
+    "webhook_last_error",
+    "webhook_last_attempt_at",
+    "webhook_delivered_at",
 }
 RATE_LIMITED = {"code": "rate_limited", "message": "slow down", "status": 429}
 _TEST_USERS = ("alice", "bob", "carol", "dave", "erin")
@@ -1571,7 +1581,23 @@ async def test_processes_booting_at_once_create_the_schema_once():
 
 async def test_a_settled_schema_takes_no_ddl():
     conn = MagicMock()
-    conn.fetch = AsyncMock(return_value=[])  # nothing missing
+    columns = [
+        {"name": f"batch_jobs.{column}"}
+        for column in (
+            "webhook_url",
+            "webhook_status",
+            "webhook_attempts",
+            "webhook_next_attempt_at",
+            "webhook_claimed_by",
+            "webhook_lease_expires_at",
+            "webhook_last_status_code",
+            "webhook_last_error",
+            "webhook_last_attempt_at",
+            "webhook_delivered_at",
+        )
+    ]
+    # The table/index probe, then the column probe: nothing missing either way.
+    conn.fetch = AsyncMock(side_effect=[[], columns])
     conn.execute = AsyncMock()
     acquire = MagicMock()
     acquire.__aenter__ = AsyncMock(return_value=conn)

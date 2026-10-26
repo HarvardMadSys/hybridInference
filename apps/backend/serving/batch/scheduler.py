@@ -34,10 +34,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import os
 import random
-import secrets
-import socket
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -46,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.dispatch import dispatch_item
+from serving.batch.identity import default_worker_id
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoad
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
@@ -125,11 +123,6 @@ class _InFlight:
     settled: bool = False
 
 
-def _default_worker_id() -> str:
-    """Return an id naming this process in claims; unique per worker instance."""
-    return f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(3)}"
-
-
 class BatchScheduler:
     """Claims and runs this process's share of the queued batch items."""
 
@@ -165,7 +158,7 @@ class BatchScheduler:
         self._store = store
         self._limits = limits
         self._load = load if load is not None else INTERACTIVE_LOAD
-        self._worker_id = worker_id or _default_worker_id()
+        self._worker_id = worker_id or default_worker_id()
         self._timings = timings or SchedulerTimings()
         self._clock = clock
         self._wake = asyncio.Event()

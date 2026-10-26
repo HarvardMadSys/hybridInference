@@ -76,6 +76,7 @@ class BatchCreateRequest(BaseModel):
 
     requests: list[BatchRequestItem] = Field(min_length=1)
     metadata: dict[str, str] | None = None
+    webhook_url: str | None = None
 
     @field_validator("metadata")
     @classmethod
@@ -98,6 +99,23 @@ class BatchRequestCounts(BaseModel):
     total: int = 0
     completed: int = 0
     failed: int = 0
+
+
+class BatchWebhookState(BaseModel):
+    """Where the completion callback for a batch stands.
+
+    The URL itself is never returned: it can carry a credential in its path or
+    query, so read it back from what you configured and identify it here by
+    ``url_fingerprint``.
+    """
+
+    url_fingerprint: str
+    status: Literal["pending", "delivering", "delivered", "failed"]
+    attempts: int = 0
+    last_status_code: int | None = None
+    last_error: str | None = None
+    last_attempt_at: int | None = None
+    delivered_at: int | None = None
 
 
 class BatchObject(BaseModel):
@@ -131,6 +149,7 @@ class BatchObject(BaseModel):
     metadata: dict[str, Any] | None = None
     cost_usd: float = 0.0
     error: dict[str, Any] | None = None
+    webhook: BatchWebhookState | None = None
 
 
 class BatchList(BaseModel):

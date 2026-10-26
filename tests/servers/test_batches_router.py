@@ -101,6 +101,7 @@ class FakeBatchStore:
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
         completion_window_seconds: int,
+        webhook_url: str | None = None,
     ) -> dict[str, Any]:
         self.created.append(
             {
@@ -112,6 +113,7 @@ class FakeBatchStore:
                 "items": items,
                 "metadata": metadata,
                 "completion_window_seconds": completion_window_seconds,
+                "webhook_url": webhook_url,
             }
         )
         now = datetime(2026, 10, 25, 12, 0, tzinfo=UTC) + timedelta(seconds=next(self._ticks))
@@ -137,6 +139,14 @@ class FakeBatchStore:
             "cancelled_at": None,
             "expires_at": now + timedelta(seconds=completion_window_seconds),
             "paused_until": None,
+            "webhook_url": webhook_url,
+            "webhook_status": "pending" if webhook_url else "none",
+            "webhook_attempts": 0,
+            "webhook_next_attempt_at": now if webhook_url else None,
+            "webhook_last_status_code": None,
+            "webhook_last_error": None,
+            "webhook_last_attempt_at": None,
+            "webhook_delivered_at": None,
         }
         self.batches[batch_id] = row
         self.items[batch_id] = [
@@ -1189,3 +1199,48 @@ async def test_delete_is_409_while_an_upstream_request_lease_is_live(client, sto
         "running requests to finish before deleting it"
     )
     assert batch["id"] in store.batches
+
+
+# --- completion webhooks -----------------------------------------------------
+
+
+async def test_a_webhook_url_is_stored_but_never_returned(client, store):
+    url = "https://hooks.example.com/batch?token=secret"
+    batch = await _create(client, body=_body(2, webhook_url=url))
+
+    assert store.created[0]["webhook_url"] == url
+    assert batch["webhook"]["status"] == "pending"
+    assert batch["webhook"]["attempts"] == 0
+    assert "url" not in batch["webhook"]
+    assert "hooks.example.com" not in json.dumps(batch)
+    assert "secret" not in json.dumps(batch)
+
+    path = f"/v1/batches/{batch['id']}"
+    for response in (
+        await client.get(path, headers=_auth()),
+        await client.get("/v1/batches", headers=_auth()),
+    ):
+        assert response.status_code == 200
+        assert "hooks.example.com" not in response.text
+        assert "secret" not in response.text
+
+
+async def test_a_batch_without_a_webhook_has_no_webhook_state(client):
+    batch = await _create(client)
+
+    assert batch["webhook"] is None
+
+
+@pytest.mark.parametrize(
+    ("url", "problem"),
+    [
+        ("http://hooks.example.com/batch", "must use https"),
+        ("https://hooks.example.com/batch#frag", "must not have a fragment"),
+        ("https://user:pass@hooks.example.com/batch", "must not include credentials"),
+    ],
+)
+async def test_an_unusable_webhook_url_is_refused(client, url, problem):
+    response = await client.post("/v1/batches", json=_body(1, webhook_url=url), headers=_auth())
+
+    assert response.status_code == 400
+    assert problem in _message(response)

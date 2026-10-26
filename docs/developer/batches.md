@@ -158,6 +158,68 @@ one of the four final ones:
 `request_counts.failed` those that failed, including the ones a failed or
 expired batch never ran. Cancelled requests are in neither.
 
+## Completion webhooks
+
+Polling is optional. Add `webhook_url` to the create body and the gateway POSTs
+one event when the batch reaches a final status:
+
+```json
+{
+  "requests": [{"custom_id": "q-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "glm-4.7", "messages": [{"role": "user", "content": "hi"}]}}],
+  "webhook_url": "https://ci.example.com/hooks/batch"
+}
+```
+
+The URL must be HTTPS, at most 4096 characters, and carry no credentials or
+fragment; anything else is a `400` at create. Every delivery resolves it afresh
+and refuses loopback, private, link-local and metadata addresses, so a host that
+starts answering privately after the batch was created is not posted to.
+Redirects are not followed.
+
+The event is:
+
+```json
+{
+  "id": "evt_batch_0123456789abcdef",
+  "object": "batch.event",
+  "type": "batch.finished",
+  "created_at": 1761480000,
+  "data": {
+    "batch": {"...": "the same object GET /v1/batches/{id} returns"},
+    "results_url": "/v1/batches/batch_0123456789abcdef/results"
+  }
+}
+```
+
+with `X-HybridInference-Event: batch.finished` and
+`X-HybridInference-Delivery: evt_batch_0123456789abcdef`, the latter stable
+across retries. One event fires for every final status (`completed`, `failed`,
+`cancelled` or `expired`); read `data.batch.status`.
+
+Delivery is one POST per attempt, with a 10 second timeout, retried three times
+five and ten minutes apart. Only a 2xx is success. It is at least once: a
+gateway that dies between your answer and its own bookkeeping posts again. Use
+the event as a signal, and `GET /v1/batches/{id}/results` as the source of truth.
+Payloads are unsigned in this release; confirm one with your API key by reading
+the batch.
+
+The batch object's `webhook` says where delivery stands:
+
+```json
+"webhook": {
+  "url_fingerprint": "3f9c2a1b7d40",
+  "status": "delivered",
+  "attempts": 1,
+  "last_status_code": 200,
+  "last_error": null,
+  "last_attempt_at": 1761480005,
+  "delivered_at": 1761480005
+}
+```
+
+`status` is `pending`, `delivering`, `delivered` or `failed`. The URL itself is
+never returned. Deleting the batch cancels a callback that has not gone out.
+
 ## Read the results
 
 `GET /v1/batches/{id}/results` pages through the batch's requests in the order

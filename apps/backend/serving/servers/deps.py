@@ -125,6 +125,7 @@ class AppServices:
     batch_store: BatchStore | None = None
     batch_model_limits: BatchModelLimits | None = None
     batch_scheduler: BatchScheduler | None = None
+    batch_webhooks: Any | None = None
     # The batch store while its schema migration waits for a lock at boot:
     # nothing is served from it, but the hard-delete purge still goes through it.
     batch_store_pending: BatchStore | None = None

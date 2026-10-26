@@ -127,7 +127,18 @@ _TABLES: tuple[tuple[str, str], ...] = (
             cancelled_at TIMESTAMPTZ,
             expires_at TIMESTAMPTZ NOT NULL,
             paused_until TIMESTAMPTZ,
-            last_claimed_at TIMESTAMPTZ
+            last_claimed_at TIMESTAMPTZ,
+            webhook_url TEXT,
+            webhook_status TEXT NOT NULL DEFAULT 'none'
+                CHECK (webhook_status IN ('none', 'pending', 'delivering', 'delivered', 'failed')),
+            webhook_attempts INTEGER NOT NULL DEFAULT 0,
+            webhook_next_attempt_at TIMESTAMPTZ,
+            webhook_claimed_by TEXT,
+            webhook_lease_expires_at TIMESTAMPTZ,
+            webhook_last_status_code INTEGER,
+            webhook_last_error TEXT,
+            webhook_last_attempt_at TIMESTAMPTZ,
+            webhook_delivered_at TIMESTAMPTZ
         )
         """,
     ),
@@ -215,12 +226,43 @@ _INDEXES: tuple[tuple[str, str], ...] = (
         "CREATE INDEX IF NOT EXISTS idx_batch_items_running "
         "ON batch_items (model_id, lease_expires_at) WHERE status = 'running'",
     ),
+    (
+        # Webhooks due to be delivered: terminal batches still pending, with
+        # the fewest attempts first.
+        "idx_batch_jobs_webhook_due",
+        "CREATE INDEX IF NOT EXISTS idx_batch_jobs_webhook_due "
+        "ON batch_jobs (webhook_next_attempt_at) "
+        "WHERE webhook_status = 'pending'",
+    ),
+)
+
+# Columns added after ``batch_jobs`` first shipped. ``CREATE TABLE IF NOT
+# EXISTS`` leaves an existing table alone, so a deployment that ran an earlier
+# build needs the ALTERs; the names double as the catalog keys
+# ``_missing_schema_objects`` checks.
+_ALTERS: tuple[tuple[str, str], ...] = tuple(
+    (f"batch_jobs.{column}", f"ALTER TABLE batch_jobs ADD COLUMN IF NOT EXISTS {column} {ddl}")
+    for column, ddl in (
+        ("webhook_url", "TEXT"),
+        ("webhook_status", "TEXT NOT NULL DEFAULT 'none'"),
+        ("webhook_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("webhook_next_attempt_at", "TIMESTAMPTZ"),
+        ("webhook_claimed_by", "TEXT"),
+        ("webhook_lease_expires_at", "TIMESTAMPTZ"),
+        ("webhook_last_status_code", "INTEGER"),
+        ("webhook_last_error", "TEXT"),
+        ("webhook_last_attempt_at", "TIMESTAMPTZ"),
+        ("webhook_delivered_at", "TIMESTAMPTZ"),
+    )
 )
 
 _BATCH_COLUMNS = (
     "id, user_id, key_hash, endpoint, status, model_ids, request_count, completed_count, "
     "failed_count, metadata, error, cost_usd, created_at, in_progress_at, completed_at, "
-    "failed_at, expired_at, cancelling_at, cancelled_at, expires_at, paused_until"
+    "failed_at, expired_at, cancelling_at, cancelled_at, expires_at, paused_until, "
+    "webhook_url, webhook_status, webhook_attempts, webhook_next_attempt_at, "
+    "webhook_claimed_by, webhook_lease_expires_at, webhook_last_status_code, "
+    "webhook_last_error, webhook_last_attempt_at, webhook_delivered_at"
 )
 _RESULT_COLUMNS = (
     "id, custom_id, status, status_code, response, error, prompt_tokens, completion_tokens, "
@@ -415,6 +457,41 @@ _PURGE_ONE_SQL = """
     RETURNING id
 """
 
+# One completion callback to deliver: a terminal batch whose webhook is ready,
+# or one whose delivering worker's lease ran out. LIMIT under the lock, so two
+# processes never take the same batch.
+_CLAIM_WEBHOOKS_SQL = """
+    WITH due AS (
+        SELECT id
+        FROM batch_jobs
+        WHERE webhook_url IS NOT NULL
+          AND webhook_attempts < $4
+          AND status IN ('completed', 'failed', 'expired', 'cancelled')
+          AND NOT EXISTS (
+              SELECT 1 FROM batch_items AS i
+              WHERE i.batch_id = batch_jobs.id AND i.status IN ('queued', 'running')
+          )
+          AND (
+              (webhook_status = 'pending'
+               AND (webhook_next_attempt_at IS NULL OR webhook_next_attempt_at <= now()))
+              OR (webhook_status = 'delivering' AND webhook_lease_expires_at <= now())
+          )
+        ORDER BY webhook_next_attempt_at ASC NULLS FIRST, id ASC
+        LIMIT $2
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE batch_jobs AS j
+    SET webhook_status = 'delivering',
+        webhook_claimed_by = $1,
+        webhook_lease_expires_at = now() + make_interval(secs => $3)
+    FROM due
+    WHERE j.id = due.id
+    RETURNING j.*
+"""
+
+# The guard on every delivery write: still delivering under this worker's claim.
+_WEBHOOK_GUARD = "id = $1 AND webhook_status = 'delivering' AND webhook_claimed_by = $2"
+
 
 class BatchStore:
     """Postgres-backed store for batch jobs, their items and per-model caps."""
@@ -443,7 +520,7 @@ class BatchStore:
                 # Another process may have created everything while this one
                 # waited for the lock.
                 missing = await _missing_schema_objects(conn)
-                for name, ddl in (*_TABLES, *_INDEXES):
+                for name, ddl in (*_TABLES, *_ALTERS, *_INDEXES):
                     if name in missing:
                         await execute_ddl(conn, ddl)
 
@@ -460,6 +537,7 @@ class BatchStore:
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
         completion_window_seconds: int,
+        webhook_url: str | None = None,
     ) -> dict[str, Any]:
         """Store a new batch and all of its items in one transaction.
 
@@ -476,6 +554,8 @@ class BatchStore:
             metadata: The caller's metadata, or None.
             completion_window_seconds: Time the batch has before its
                 unstarted items expire.
+            webhook_url: Where to POST a completion callback, or None. Stored
+                as is; it is never returned by the API.
 
         Returns:
             The batch row, status ``validating``.
@@ -511,9 +591,12 @@ class BatchStore:
                 f"""
                 INSERT INTO batch_jobs
                     (id, user_id, key_hash, endpoint, model_ids, request_count,
-                     metadata, expires_at)
+                     metadata, expires_at, webhook_url, webhook_status,
+                     webhook_next_attempt_at)
                 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
-                        now() + make_interval(secs => $8))
+                        now() + make_interval(secs => $8), $9,
+                        CASE WHEN $9::text IS NULL THEN 'none' ELSE 'pending' END,
+                        CASE WHEN $9::text IS NULL THEN NULL ELSE now() END)
                 RETURNING {_BATCH_COLUMNS}
                 """,
                 batch_id,
@@ -524,6 +607,7 @@ class BatchStore:
                 len(items),
                 _dump_json(metadata),
                 float(completion_window_seconds),
+                webhook_url,
             )
             if records:
                 await conn.copy_records_to_table(
@@ -1097,6 +1181,127 @@ class BatchStore:
                 counts["purged"] += 1
         return counts
 
+    # -- completion webhooks -----------------------------------------------------
+
+    async def claim_webhook_deliveries(
+        self,
+        *,
+        worker_id: str,
+        limit: int,
+        lease_seconds: int,
+        max_attempts: int,
+    ) -> list[dict[str, Any]]:
+        """Claim up to *limit* completion callbacks this process should deliver.
+
+        A batch with a webhook is claimable only once it is terminal. A row left
+        ``delivering`` by a process that died is claimable again after its lease
+        runs out, as long as it has attempts left.
+
+        Returns:
+            Batch rows (the webhook API view's shape), in delivery order.
+        """
+        if limit <= 0:
+            return []
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                _CLAIM_WEBHOOKS_SQL,
+                worker_id,
+                limit,
+                float(lease_seconds),
+                int(max_attempts),
+            )
+        return [_batch_row(row) for row in rows]
+
+    async def record_webhook_attempt(
+        self,
+        *,
+        batch_id: str,
+        worker_id: str,
+        status_code: int | None,
+        error: str | None,
+    ) -> int | None:
+        """Count one delivery attempt and keep its outcome.
+
+        Returns:
+            The attempt count now, or None when the claim was lost (the batch
+            was deleted, or another worker took it over after the lease ran out).
+        """
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "UPDATE batch_jobs "
+                "SET webhook_attempts = webhook_attempts + 1, "
+                "    webhook_last_status_code = $3, webhook_last_error = $4, "
+                "    webhook_last_attempt_at = now() "
+                f"WHERE {_WEBHOOK_GUARD} "
+                "RETURNING webhook_attempts",
+                batch_id,
+                worker_id,
+                status_code,
+                error,
+            )
+
+    async def finish_webhook_delivery(
+        self,
+        *,
+        batch_id: str,
+        worker_id: str,
+        delivered: bool,
+        max_attempts: int,
+        retry: bool = True,
+    ) -> bool:
+        """Close a delivery: ``delivered``, ``failed``, or back to ``pending``.
+
+        A failed attempt with attempts left returns the row to ``pending`` when
+        *retry* is true; the sender's own retry loop keeps it ``delivering``
+        instead, so this matters only when that loop ends without a verdict.
+        *retry* false marks a permanent refusal failed at once.
+
+        Returns:
+            Whether the write applied to this worker's claim.
+        """
+        async with self._pool.acquire() as conn:
+            if delivered:
+                result = await conn.execute(
+                    "UPDATE batch_jobs "
+                    "SET webhook_status = 'delivered', webhook_delivered_at = now(), "
+                    "    webhook_claimed_by = NULL, webhook_lease_expires_at = NULL, "
+                    "    webhook_last_error = NULL "
+                    f"WHERE {_WEBHOOK_GUARD}",
+                    batch_id,
+                    worker_id,
+                )
+            else:
+                result = await conn.execute(
+                    "UPDATE batch_jobs "
+                    "SET webhook_status = CASE WHEN $4::boolean AND webhook_attempts < $3 "
+                    "                         THEN 'pending' ELSE 'failed' END, "
+                    "    webhook_claimed_by = NULL, webhook_lease_expires_at = NULL, "
+                    "    webhook_next_attempt_at = now() "
+                    f"WHERE {_WEBHOOK_GUARD}",
+                    batch_id,
+                    worker_id,
+                    int(max_attempts),
+                    retry,
+                )
+        return _rowcount(result) > 0
+
+    async def release_webhook_delivery(self, *, batch_id: str, worker_id: str) -> bool:
+        """Hand a delivery back, spending no attempt (shutdown did not send).
+
+        Returns:
+            Whether the write applied to this worker's claim.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE batch_jobs "
+                "SET webhook_status = 'pending', webhook_claimed_by = NULL, "
+                "    webhook_lease_expires_at = NULL, webhook_next_attempt_at = now() "
+                f"WHERE {_WEBHOOK_GUARD}",
+                batch_id,
+                worker_id,
+            )
+        return _rowcount(result) > 0
+
     # -- admin: per-model caps ---------------------------------------------------
 
     async def list_model_limits(self) -> dict[str, int]:
@@ -1217,12 +1422,22 @@ class BatchStore:
 
 
 async def _missing_schema_objects(conn: Any) -> set[str]:
-    """Names of the batch tables and indexes the database does not have yet."""
+    """Names of the batch tables, columns and indexes the database does not have yet."""
     names = [name for name, _ in (*_TABLES, *_INDEXES)]
     rows = await conn.fetch(
         "SELECT name FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL", names
     )
-    return {row["name"] for row in rows}
+    missing = {row["name"] for row in rows}
+    present_columns = await conn.fetch(
+        """
+        SELECT table_name || '.' || column_name AS name
+        FROM information_schema.columns
+        WHERE table_schema = ANY(current_schemas(false)) AND table_name = 'batch_jobs'
+        """
+    )
+    present = {row["name"] for row in present_columns}
+    missing |= {name for name, _ in _ALTERS if name not in present}
+    return missing
 
 
 def _batch_row(row: Any) -> dict[str, Any]:
@@ -1249,6 +1464,16 @@ def _batch_row(row: Any) -> dict[str, Any]:
         "cancelled_at": row["cancelled_at"],
         "expires_at": row["expires_at"],
         "paused_until": row["paused_until"],
+        "webhook_url": row["webhook_url"],
+        "webhook_status": row["webhook_status"],
+        "webhook_attempts": row["webhook_attempts"],
+        "webhook_next_attempt_at": row["webhook_next_attempt_at"],
+        "webhook_claimed_by": row["webhook_claimed_by"],
+        "webhook_lease_expires_at": row["webhook_lease_expires_at"],
+        "webhook_last_status_code": row["webhook_last_status_code"],
+        "webhook_last_error": row["webhook_last_error"],
+        "webhook_last_attempt_at": row["webhook_last_attempt_at"],
+        "webhook_delivered_at": row["webhook_delivered_at"],
     }
 
 

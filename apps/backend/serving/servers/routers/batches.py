@@ -29,7 +29,6 @@ import asyncio
 import json
 import re
 import uuid
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -46,11 +45,11 @@ from serving.batch.schemas import (
     BatchDeleted,
     BatchList,
     BatchObject,
-    BatchRequestCounts,
     BatchResult,
     BatchResultResponse,
     BatchResultsPage,
 )
+from serving.batch.view import batch_object
 from serving.config.settings import has_role
 from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.schemas import ChatCompletionRequest
@@ -64,6 +63,7 @@ from serving.servers.deps import (
 from serving.servers.model_availability import model_not_found_detail
 from serving.storage.batch_store import BatchDeleteInProgress, BatchOwnerUnavailable
 from serving.utils.logging import get_logger
+from serving.utils.webhook_target import webhook_url_problem
 
 if TYPE_CHECKING:
     from serving.batch.config import BatchConfig
@@ -123,54 +123,6 @@ def _lookup_scope(user_ctx: dict[str, Any]) -> str | None:
 
 def _not_found(batch_id: str) -> HTTPException:
     return HTTPException(404, f"Batch '{batch_id}' not found")
-
-
-def _epoch(value: Any) -> int | None:
-    return int(value.timestamp()) if isinstance(value, datetime) else None
-
-
-def _completion_window(row: dict[str, Any], config: BatchConfig) -> str:
-    """Return the window the batch was created with, as OpenAI spells it (``24h``).
-
-    Read off the batch's own timestamps rather than the live setting, which may
-    have changed since.
-    """
-    created, expires = row.get("created_at"), row.get("expires_at")
-    if isinstance(created, datetime) and isinstance(expires, datetime):
-        hours = max(1, round((expires - created).total_seconds() / 3600))
-    else:
-        hours = config.completion_window_hours
-    return f"{hours}h"
-
-
-def _batch_object(row: dict[str, Any], config: BatchConfig) -> BatchObject:
-    """Map a store row to the API object.
-
-    Field by field, so the row's ownership columns (``user_id``, ``key_hash``)
-    can never reach a response.
-    """
-    return BatchObject(
-        id=row["id"],
-        endpoint=row.get("endpoint") or CHAT_COMPLETIONS_URL,
-        completion_window=_completion_window(row, config),
-        status=row["status"],
-        created_at=_epoch(row.get("created_at")) or 0,
-        in_progress_at=_epoch(row.get("in_progress_at")),
-        expires_at=_epoch(row.get("expires_at")),
-        completed_at=_epoch(row.get("completed_at")),
-        failed_at=_epoch(row.get("failed_at")),
-        expired_at=_epoch(row.get("expired_at")),
-        cancelling_at=_epoch(row.get("cancelling_at")),
-        cancelled_at=_epoch(row.get("cancelled_at")),
-        request_counts=BatchRequestCounts(
-            total=row.get("request_count") or 0,
-            completed=row.get("completed_count") or 0,
-            failed=row.get("failed_count") or 0,
-        ),
-        metadata=row.get("metadata"),
-        cost_usd=float(row.get("cost_usd") or 0.0),
-        error=row.get("error"),
-    )
 
 
 def _result(row: dict[str, Any]) -> BatchResult:
@@ -417,6 +369,10 @@ async def create_batch(
     # takes a while.
     await _check_active_limit(store, owner, config)
     payload = _parse_create_body(await _read_body(request, config.max_body_bytes))
+    if payload.webhook_url is not None:
+        problem = webhook_url_problem(payload.webhook_url)
+        if problem is not None:
+            raise HTTPException(400, f"webhook_url {problem}")
     items, model_ids = await _validate_requests(
         payload,
         config=config,
@@ -436,6 +392,7 @@ async def create_batch(
             items=items,
             metadata=payload.metadata,
             completion_window_seconds=config.completion_window_seconds,
+            webhook_url=payload.webhook_url,
         )
     except BatchOwnerUnavailable:
         # Authentication succeeded before the body was validated, but the
@@ -458,7 +415,7 @@ async def create_batch(
         extra={"user_id": owner},
     )
     _wake_worker(services)
-    return _batch_object(row, config)
+    return batch_object(row, config)
 
 
 @router.get("/v1/batches", response_model=BatchList)
@@ -473,7 +430,7 @@ async def list_batches(
     store, config = _surface(store)
     _reject_on_behalf_of(request)
     rows = await store.list_batches(user_id=_owner(user_ctx), limit=limit + 1, after=after)
-    page = [_batch_object(row, config) for row in rows[:limit]]
+    page = [batch_object(row, config) for row in rows[:limit]]
     return BatchList(
         data=page,
         has_more=len(rows) > limit,
@@ -495,7 +452,7 @@ async def retrieve_batch(
     row = await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx))
     if row is None:
         raise _not_found(batch_id)
-    return _batch_object(row, config)
+    return batch_object(row, config)
 
 
 @router.post("/v1/batches/{batch_id}/cancel", response_model=BatchObject)
@@ -515,7 +472,7 @@ async def cancel_batch(
     row = await store.cancel_batch(batch_id, user_id=_lookup_scope(user_ctx))
     if row is None:
         raise _not_found(batch_id)
-    return _batch_object(row, config)
+    return batch_object(row, config)
 
 
 @router.delete("/v1/batches/{batch_id}", response_model=BatchDeleted)

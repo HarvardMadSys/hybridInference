@@ -321,7 +321,8 @@ results, beside the Responses purge.
 
 - Embeddings and Responses as batch targets.
 - A Files API: JSONL upload, output and error files (`output_file_id`).
-- Completion webhooks (#1509).
+- Completion webhooks (#1509): implemented in
+  [`2026-10-26-batch-completion-webhooks.md`](2026-10-26-batch-completion-webhooks.md).
 - A batch price discount.
 - Auto models in batches.
 - An atomic per-user active-batch limit: it is checked twice around the insert,

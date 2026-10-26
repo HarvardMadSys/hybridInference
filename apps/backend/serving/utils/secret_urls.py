@@ -28,7 +28,9 @@ every *other* outbound call the gateway makes, and a blanket
 from the one sink being fixed.
 
 Used by the alert senders (``serving.observability.alerts`` and
-``serving.admin.failed_request_alerter``) and deliberately nothing else.
+``serving.admin.failed_request_alerter``) and by the batch completion webhook
+sender (``serving.batch.webhooks``), whose caller-supplied URL can carry the
+same kind of credential.
 """
 
 from __future__ import annotations

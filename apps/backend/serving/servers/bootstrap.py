@@ -1958,10 +1958,26 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
         return
     services.batch_scheduler = scheduler
     logger.info("Batch scheduler started")
+    try:
+        from serving.batch.webhooks import WebhookSender
+
+        sender = WebhookSender(store=store)
+        sender.start()
+    except Exception:
+        logger.exception("Batch webhook sender failed to start; completion callbacks will wait")
+        return
+    services.batch_webhooks = sender
 
 
 async def _stop_batch_scheduler(services: AppServices) -> None:
-    """Stop the batch worker, handing its unfinished requests back to the queue."""
+    """Stop batch background work: callbacks first, then the item worker."""
+    sender = getattr(services, "batch_webhooks", None)
+    if sender is not None:
+        try:
+            await sender.stop()
+        except Exception:
+            logger.exception("Batch webhook sender shutdown failed")
+        services.batch_webhooks = None
     scheduler = getattr(services, "batch_scheduler", None)
     if scheduler is None:
         return
