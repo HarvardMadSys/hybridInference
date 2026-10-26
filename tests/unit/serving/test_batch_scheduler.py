@@ -128,9 +128,7 @@ class FakeStore:
             }
         )
 
-    async def claim_items(
-        self, *, model_id, worker_id, limit, max_running, lease_seconds, user_max_running=0
-    ):
+    async def claim_items(self, *, model_id, worker_id, limit, max_running, lease_seconds):
         self.claims.append({"model_id": model_id, "limit": limit, "max_running": max_running})
         now = datetime.now(UTC)
         live = self.count("running", model_id)

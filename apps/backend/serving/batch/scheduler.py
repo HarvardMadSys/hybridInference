@@ -18,8 +18,8 @@ the shared view (:class:`~serving.batch.interactive_load.SharedInteractiveLoad`)
 while ``BATCH_SHARED_INTERACTIVE_LOAD`` is on, else this process's own. When the
 shared view cannot be read, no new item starts that round.
 ``BATCH_INTERACTIVE_RESERVE`` keeps that many more slots of every cap free.
-Users take turns before batches do, and ``BATCH_USER_MAX_CONCURRENCY`` caps one
-user's running items across the deployment -- the batch budget of a user. Claimed items carry a lease the loop keeps
+Users take turns before batches do; how many of a user's items run at once is
+their role's batch quota (below). Claimed items carry a lease the loop keeps
 extending; when a process dies its leases run out and any process claims those
 items again.
 
@@ -576,7 +576,6 @@ class BatchScheduler:
             limit=room,
             max_running=cap,
             lease_seconds=self._timings.lease_seconds,
-            user_max_running=cfg.user_max_concurrency,
         )
         if not items:
             return

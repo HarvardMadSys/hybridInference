@@ -71,8 +71,6 @@ FILES_MAX_TOTAL_MB_KEY = "BATCH_FILES_MAX_TOTAL_MB_PER_USER"
 FILE_UPLOADS_PER_HOUR_KEY = "BATCH_FILE_UPLOADS_PER_HOUR"
 #: Days an uploaded file is kept.
 FILE_RETENTION_DAYS_KEY = "BATCH_FILE_RETENTION_DAYS"
-#: Batch requests one user may have running at once across the deployment.
-USER_MAX_CONCURRENCY_KEY = "BATCH_USER_MAX_CONCURRENCY"
 #: Batch requests one user of each role may have running at once in a gateway
 #: process -- the batch counterpart of the role's interactive concurrency limit.
 ROLE_CONCURRENCY_KEYS: dict[str, str] = {
@@ -99,8 +97,7 @@ DEFAULT_MAX_RESULT_KB = 4096
 DEFAULT_FILES_MAX_TOTAL_MB = 512
 DEFAULT_FILE_UPLOADS_PER_HOUR = 60
 DEFAULT_FILE_RETENTION_DAYS = 30
-DEFAULT_USER_MAX_CONCURRENCY = 64
-#: 0 means no per-role cap (``BATCH_USER_MAX_CONCURRENCY`` still applies).
+#: 0 means no cap for that role.
 DEFAULT_ROLE_CONCURRENCY: dict[str, int] = {"free": 8, "pro": 16, "internal": 64, "admin": 64}
 DEFAULT_INTERACTIVE_RESERVE = 0
 #: Every Anthropic version a batch can be validated and run under (see
@@ -133,7 +130,6 @@ class BatchConfig:
     files_max_total_bytes: int = DEFAULT_FILES_MAX_TOTAL_MB * 1024 * 1024
     file_uploads_per_hour: int = DEFAULT_FILE_UPLOADS_PER_HOUR
     file_retention_days: int = DEFAULT_FILE_RETENTION_DAYS
-    user_max_concurrency: int = DEFAULT_USER_MAX_CONCURRENCY
     role_concurrency: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_ROLE_CONCURRENCY))
     interactive_reserve: int = DEFAULT_INTERACTIVE_RESERVE
     anthropic_versions: tuple[str, ...] = KNOWN_ANTHROPIC_VERSIONS
@@ -204,9 +200,6 @@ def batch_config() -> BatchConfig:
             FILE_UPLOADS_PER_HOUR_KEY, DEFAULT_FILE_UPLOADS_PER_HOUR, minimum=1
         ),
         file_retention_days=_int(FILE_RETENTION_DAYS_KEY, DEFAULT_FILE_RETENTION_DAYS, minimum=1),
-        user_max_concurrency=_int(
-            USER_MAX_CONCURRENCY_KEY, DEFAULT_USER_MAX_CONCURRENCY, minimum=0
-        ),
         role_concurrency={
             role: _int(key, DEFAULT_ROLE_CONCURRENCY[role], minimum=0)
             for role, key in ROLE_CONCURRENCY_KEYS.items()

@@ -28,8 +28,8 @@ items from here, so whatever coordinates the processes lives in SQL:
   live leases while holding it, so a model's cap holds deployment-wide. Users
   take turns first and batches second: the user claimed from least recently
   goes first, and splitting work into more batches does not earn a user more
-  turns. A user's own running items, across every model, are capped too
-  (``user_max_running``), under a per-user claim lock.
+  turns. A user's own running items are capped by the worker, per role
+  (``serving.batch.scheduler``), not here.
 - **Leases**: a claimed item stays ``running`` until ``lease_expires_at``, which
   its worker keeps extending (:meth:`BatchStore.heartbeat`). The item of a
   worker that died is claimable again once its lease has run out, and that
@@ -202,12 +202,11 @@ ACTIVE_BATCH_STATUSES: frozenset[str] = frozenset({"validating", "in_progress", 
 IDEMPOTENCY_RETENTION_SECONDS = 24 * 3600
 
 # Two-key advisory locks. Each class plus ``hashtext(<key>)``: claims for one
-# model, a user's admission, a user's claims. Two keys sharing a hash merely
+# model, a user's admission. Two keys sharing a hash merely
 # serialize. The two-key space is separate from the one-key space the other
 # locks in this layer use.
 _CLAIM_LOCK_CLASS = 0x42415443  # ASCII "BATC"
 _USER_ADMISSION_LOCK_CLASS = 0x42415541  # "BAUA"
-_USER_CLAIM_LOCK_CLASS = 0x42415543  # "BAUC"
 _CLAIM_LOCK_SQL = "SELECT pg_advisory_xact_lock($1, hashtext($2))"
 
 # Serializes schema creation across processes booting at once.
@@ -682,26 +681,11 @@ _CLAIM_CANDIDATES_SQL = f"""
                    ORDER BY c.batch_pos, c.claim_seq ASC NULLS FIRST, c.created_at, c.batch_id
                ) AS user_pos
         FROM candidates AS c
-    ),
-    caps AS (
-        SELECT * FROM unnest($3::text[], $4::int[]) AS cap(user_id, remaining)
     )
     SELECT r.id, r.batch_id, r.user_id
     FROM ranked AS r
-    LEFT JOIN caps ON caps.user_id = r.user_id
-    WHERE $5::int <= 0 OR r.user_pos <= COALESCE(caps.remaining, $5::int)
     ORDER BY r.user_pos, r.user_seq ASC NULLS FIRST, r.user_id, r.batch_pos, r.id
     LIMIT $2
-"""
-
-# Running items whose lease is live, per user, across every model.
-_USER_RUNNING_SQL = """
-    SELECT j.user_id, count(*) AS running
-    FROM batch_items AS i
-    JOIN batch_jobs AS j ON j.id = i.batch_id
-    WHERE i.status = 'running' AND i.lease_expires_at > now()
-      AND ($1::text[] IS NULL OR j.user_id = ANY($1::text[]))
-    GROUP BY j.user_id
 """
 
 # Locks the candidates' batches in id order, keeping those still claimable.
@@ -1746,17 +1730,13 @@ class BatchStore:
         limit: int,
         max_running: int,
         lease_seconds: int,
-        user_max_running: int = 0,
     ) -> list[dict[str, Any]]:
         """Claim up to *limit* items of one model for *worker_id*.
 
         Holding the model's advisory lock, counts the model's running items
         whose lease is live across the deployment and claims at most
         ``max_running`` minus that many. Users take turns, then their batches
-        (see :data:`_CLAIM_CANDIDATES_SQL`). With ``user_max_running`` above
-        0, no user ends up with more than that many live items across every
-        model: the candidates' users are locked in sorted order and their
-        running items counted again before anything is taken.
+        (see :data:`_CLAIM_CANDIDATES_SQL`).
 
         A claimed item becomes ``running`` under a lease of *lease_seconds*,
         with its attempt counted and an attempt record opened; an item taken
@@ -1787,41 +1767,9 @@ class BatchStore:
             room = min(limit, max_running - live)
             if room <= 0:
                 return []
-            cap_users: list[str] = []
-            cap_remaining: list[int] = []
-            if user_max_running > 0:
-                for row in await conn.fetch(_USER_RUNNING_SQL, None):
-                    cap_users.append(row["user_id"])
-                    cap_remaining.append(max(0, user_max_running - row["running"]))
-            candidates = await conn.fetch(
-                _CLAIM_CANDIDATES_SQL,
-                model_id,
-                room,
-                cap_users,
-                cap_remaining,
-                int(user_max_running),
-            )
+            candidates = await conn.fetch(_CLAIM_CANDIDATES_SQL, model_id, room)
             if not candidates:
                 return []
-            if user_max_running > 0:
-                users = sorted({row["user_id"] for row in candidates})
-                for user in users:
-                    await conn.execute(_CLAIM_LOCK_SQL, _USER_CLAIM_LOCK_CLASS, user)
-                running = {
-                    row["user_id"]: row["running"]
-                    for row in await conn.fetch(_USER_RUNNING_SQL, users)
-                }
-                kept = []
-                taken: dict[str, int] = {}
-                for row in candidates:
-                    user = row["user_id"]
-                    if running.get(user, 0) + taken.get(user, 0) >= user_max_running:
-                        continue
-                    taken[user] = taken.get(user, 0) + 1
-                    kept.append(row)
-                candidates = kept
-                if not candidates:
-                    return []
             owners = {
                 row["id"]: row
                 for row in await conn.fetch(

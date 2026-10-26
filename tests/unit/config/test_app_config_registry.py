@@ -264,7 +264,6 @@ def test_the_batch_entries_accept_exactly_what_the_batch_config_reads(monkeypatc
         batch.MAX_ACTIVE_KEY: lambda config: config.max_active_per_user,
         batch.WINDOW_HOURS_KEY: lambda config: config.completion_window_hours,
         batch.RETENTION_DAYS_KEY: lambda config: config.retention_days,
-        batch.USER_MAX_CONCURRENCY_KEY: lambda config: config.user_max_concurrency,
         **{
             key: (lambda config, role=role: config.role_concurrency[role])
             for role, key in batch.ROLE_CONCURRENCY_KEYS.items()

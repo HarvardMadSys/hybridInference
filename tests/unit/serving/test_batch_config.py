@@ -27,7 +27,6 @@ def test_defaults_restrict_batches_to_internal_users(stored):
     assert config.enabled is True
     assert config.min_role == "internal"
     assert config.default_model_concurrency == 64
-    assert config.user_max_concurrency == 64
     assert config.role_concurrency == {"free": 8, "pro": 16, "internal": 64, "admin": 64}
     assert config.max_body_bytes == 32 * 1024 * 1024
     assert config.completion_window_seconds == 24 * 3600
@@ -45,7 +44,6 @@ def test_stored_values_apply_on_the_next_read(stored):
             "BATCH_MAX_ACTIVE_PER_USER": "3",
             "BATCH_COMPLETION_WINDOW_HOURS": "48",
             "BATCH_RETENTION_DAYS": "30",
-            "BATCH_USER_MAX_CONCURRENCY": "20",
             "BATCH_ROLE_CONCURRENCY_INTERNAL": "12",
             "BATCH_ROLE_CONCURRENCY_ADMIN": "0",
         }
@@ -62,7 +60,6 @@ def test_stored_values_apply_on_the_next_read(stored):
     assert config.max_active_per_user == 3
     assert config.completion_window_hours == 48
     assert config.retention_days == 30
-    assert config.user_max_concurrency == 20
     assert config.role_concurrency == {"free": 8, "pro": 16, "internal": 12, "admin": 0}
 
 
@@ -71,7 +68,6 @@ def test_stored_values_apply_on_the_next_read(stored):
     [
         ("BATCH_MIN_ROLE", "superuser", "min_role", "internal"),
         ("BATCH_MODEL_CONCURRENCY", "-1", "default_model_concurrency", 64),
-        ("BATCH_USER_MAX_CONCURRENCY", "-1", "user_max_concurrency", 64),
         ("BATCH_MAX_REQUESTS", "lots", "max_requests", 50_000),
         ("BATCH_MAX_REQUESTS", "0", "max_requests", 50_000),
         ("BATCH_COMPLETION_WINDOW_HOURS", "169", "completion_window_hours", 24),
