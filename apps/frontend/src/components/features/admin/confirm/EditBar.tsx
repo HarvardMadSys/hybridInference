@@ -1,6 +1,6 @@
 'use client';
 
-import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY } from '../adminStyles';
+import { BUTTON_GHOST, BUTTON_PRIMARY } from '../adminStyles';
 
 /**
  * Cancel and Save changes for a section or row being edited, with how many
@@ -100,34 +100,5 @@ export function EditBar({
         </button>
       </div>
     </div>
-  );
-}
-
-/** The Edit button that opens a section or row for editing. */
-export function EditButton({
-  target,
-  onClick,
-  disabled = false,
-  label = 'Edit',
-  title,
-}: {
-  target: string;
-  onClick: () => void;
-  disabled?: boolean;
-  label?: string;
-  /** Why it is disabled, when that is not obvious. */
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-label={`${label} ${target}`}
-      className={BUTTON_SECONDARY}
-    >
-      {label}
-    </button>
   );
 }
