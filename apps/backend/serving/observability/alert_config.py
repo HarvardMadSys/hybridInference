@@ -213,10 +213,11 @@ class ClientErrorBurstConfig(BaseModel):
 
 
 class KeyPoolExhaustionBurstConfig(BaseModel):
-    """Config for ``KeyPoolExhaustionBurstRule``.
+    """Config for ``KeyPoolExhaustionBurstRule``, counted **per endpoint**.
 
     Fires when more than ``threshold_count`` ``key_pool_exhausted_skip_breaker``
-    events arrive within ``window_sec``. With breaker exemption restored, this
+    events arrive for one endpoint within ``window_sec``; each endpoint has its
+    own incident and its own ``cooldown_sec``. With breaker exemption restored, this
     is the alerting surface for provider-wide key exhaustion: upstream 402/403
     responses are also breaker-exempt, so neither the original auth failures nor
     their local exhaustion echo can open the circuit.

@@ -98,8 +98,8 @@ _CALLERS_IN_ALERT = 10
 # then fails with ``KeyPoolExhausted`` — a local precondition refusal (nothing
 # was sent) that endpoint health never counts (see ``record_failure``). The
 # mutes keep the account quiet while they last, every upstream status lands in
-# ``api_logs``, and the key-pool exhaustion burst rule pages when the refusals
-# pile up. So 402/403 keep the client-error exemption, and only the
+# ``api_logs``, and the key-pool exhaustion burst rule pages, per endpoint, when
+# the refusals pile up. So 402/403 keep the client-error exemption, and only the
 # unambiguous credential challenges escalate.
 _AUTH_MISCONFIG_STATUSES = frozenset({401, 407})
 

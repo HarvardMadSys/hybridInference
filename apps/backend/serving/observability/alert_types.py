@@ -85,10 +85,11 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         id="key_pool_exhaustion_burst",
         label="Key-pool exhaustion burst",
         description=(
-            "Key-pool refusals that bypass the circuit breaker piled up within the window."
+            "One endpoint's key-pool refusals, which bypass the circuit breaker, piled up "
+            "within the window."
         ),
         group="Request errors",
-        key_pattern="key_pool_exhaustion_burst",
+        key_pattern="key_pool_exhaustion_burst:<endpoint>",
     ),
     AlertType(
         id="stream_failure_rate",

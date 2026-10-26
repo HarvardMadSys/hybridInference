@@ -147,6 +147,10 @@ class _SlidingWindow:
         self._evict(now)
         return [v for _, v in self._items]
 
+    def is_empty(self, now: float) -> bool:
+        self._evict(now)
+        return not self._items
+
 
 class FailedRequestRateRule:
     """Rule 1: 4xx/5xx error rate over a sliding window."""
@@ -968,58 +972,82 @@ class ClientErrorBurstRule:
 
 
 class KeyPoolExhaustionBurstRule:
-    """Alert when key-pool exhaustion bypassing the breaker piles up.
+    """Alert when one endpoint's key-pool refusals pile up past the breaker.
 
     Fires when more than ``threshold_count`` ``key_pool_exhausted_skip_breaker``
-    events arrive within ``window_sec``. The breaker exemption is intentional:
-    exhaustion happens before an upstream dispatch, so it is not endpoint
-    failure evidence. Provider-wide 402/403 incidents are also exempt as client
-    errors, which makes this rule their alerting surface after the circuit no
-    longer opens on the exhaustion echo.
+    events arrive for a single endpoint within ``window_sec``. The breaker
+    exemption is intentional: exhaustion happens before an upstream dispatch, so
+    it is not endpoint failure evidence. Provider-wide 402/403 incidents are also
+    exempt as client errors, which makes this rule their alerting surface after
+    the circuit no longer opens on the exhaustion echo.
+
+    **Per endpoint**, in both the count and the incident key, because the page it
+    stands in for -- ``circuit_open:<endpoint>`` -- was per endpoint. One shared
+    window and key let an endpoint already in breach spend the cooldown for every
+    other: a second endpoint whose account went dry minutes later joined the open
+    incident and was not reported for up to an hour, and two quiet endpoints
+    could add up to a breach neither had. Scoped to the ``endpoint_id`` the
+    registry logs, not a provider or key-pool identity the record does not carry,
+    so routes sharing one provider's keys page separately.
     """
 
     name = "key_pool_exhaustion_burst"
 
     def __init__(self, cfg: KeyPoolExhaustionBurstConfig) -> None:
         self._cfg = cfg
-        self._window = _SlidingWindow(cfg.window_sec)
+        self._windows: dict[str, _SlidingWindow] = {}
 
     async def on_record(self, record: logging.LogRecord) -> None:
-        """Track breaker-exempt key-pool refusals and alert on a burst."""
+        """Track breaker-exempt key-pool refusals per endpoint and alert on a burst."""
         if not self._cfg.enabled:
             return
         if getattr(record, "event", None) != "key_pool_exhausted_skip_breaker":
             return
+        # ``record_failure`` always names the endpoint; the fallback only keeps a
+        # malformed record from raising or from sharing a key with a real one.
+        endpoint_id = str(getattr(record, "endpoint_id", None) or "unknown")
         now = time.time()
-        self._window.add(now, {"endpoint_id": getattr(record, "endpoint_id", None)})
-        items = self._window.items(now)
+        self._drop_idle_windows(now)
+        win = self._windows.setdefault(endpoint_id, _SlidingWindow(self._cfg.window_sec))
+        win.add(now, {})
+        count = len(win.items(now))
 
         def breach_context() -> dict[str, Any]:
-            endpoint_counts: collections.Counter[str] = collections.Counter(
-                str(item["endpoint_id"]) for item in items if item["endpoint_id"]
-            )
             return {
-                "count": len(items),
+                "endpoint_id": endpoint_id,
+                "count": count,
                 "window_sec": self._cfg.window_sec,
-                "top_endpoints": _top_offenders(endpoint_counts),
                 "note": (
                     "key-pool exhaustion happens before an upstream dispatch and bypasses "
                     "the circuit breaker by design. Provider-wide 402/403 incidents can "
                     "produce these refusals without a circuit-open alert; inspect "
-                    "key-pool mutes and recent upstream statuses in logs"
+                    "key-pool mutes and recent upstream statuses in logs. Endpoints "
+                    "sharing these keys are counted and paged separately"
                 ),
             }
 
         await alert_on_transition(
-            key="key_pool_exhaustion_burst",
-            breached=len(items) > self._cfg.threshold_count,
+            key=f"key_pool_exhaustion_burst:{endpoint_id}",
+            breached=count > self._cfg.threshold_count,
             severity=AlertSeverity.ERROR,
-            title="Key-pool exhaustion burst",
+            title=f"Key-pool exhaustion burst on {endpoint_id}",
             context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
             stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
         )
+
+    def _drop_idle_windows(self, now: float) -> None:
+        """Forget endpoints with nothing left in their window.
+
+        Routes are added and removed at runtime, so a window per endpoint ever
+        seen would only grow. An empty one holds nothing a fresh window would
+        not, and any incident it opened is closed by the next evaluation or by
+        the stale sweep, which tracks the key, not this window.
+        """
+        idle = [key for key, win in self._windows.items() if win.is_empty(now)]
+        for key in idle:
+            del self._windows[key]
 
 
 class StreamFailureRateRule:
