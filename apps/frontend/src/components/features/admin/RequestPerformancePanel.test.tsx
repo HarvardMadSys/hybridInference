@@ -554,9 +554,9 @@ describe('buildTrendPoints', () => {
     expect(points.map((p) => p.ttft_p90)).toEqual([400, null, 440, 8000]);
   });
 
-  it('labels each point with its bucket start time', () => {
+  it('labels each point with its bucket start time in English', () => {
     const points = buildTrendPoints(makeTrend().series[0]);
-    const expected = new Date('2026-06-30T09:00:00.000Z').toLocaleTimeString([], {
+    const expected = new Date('2026-06-30T09:00:00.000Z').toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
     });
@@ -566,13 +566,14 @@ describe('buildTrendPoints', () => {
   });
 });
 
+// Admin labels stay English regardless of the host locale; keep the local time zone.
 describe('bucketLabel', () => {
   const iso = '2026-06-30T15:00:00.000Z';
 
   it('shows a clock time for a one-day window', () => {
     const label = bucketLabel(iso, 60, 1);
     expect(label).toBe(
-      new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
     );
     expect(label).not.toMatch(/[A-Za-z]{3}\s\d/);
   });
@@ -580,17 +581,19 @@ describe('bucketLabel', () => {
   it('adds the date once the window spans days', () => {
     // 7d buckets are 6 hours wide, so four buckets a day would share a label.
     const label = bucketLabel(iso, 360, 7);
-    const date = new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    const date = new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     expect(label).toContain(date);
     expect(label).toContain(
-      new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
     );
   });
 
   it('drops the time for day-wide buckets', () => {
     // Every 30/90d bucket starts at midnight; the time carries no information.
     const label = bucketLabel(iso, 1440, 30);
-    expect(label).toBe(new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' }));
+    expect(label).toBe(
+      new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    );
   });
 
   it('labels every bucket of a 30-day window distinctly', () => {

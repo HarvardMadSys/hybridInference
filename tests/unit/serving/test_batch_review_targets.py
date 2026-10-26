@@ -96,11 +96,7 @@ async def test_responses_rejects_text_options_without_translation(monkeypatch, t
         [{"type": "input_file", "file_id": "file-result"}],
     ],
 )
-async def test_responses_rejects_multimodal_tool_output_instead_of_stringifying(
-    monkeypatch, output
-):
-    from serving.responses_translator import responses_input_to_messages
-
+async def test_responses_rejects_multimodal_tool_output(monkeypatch, output):
     monkeypatch.setattr(targets, "_cached_route_model", AsyncMock(return_value=("model", None)))
     body = {
         "model": "model",
@@ -108,8 +104,5 @@ async def test_responses_rejects_multimodal_tool_output_instead_of_stringifying(
             {"type": "function_call_output", "call_id": "call-review", "output": output},
         ],
     }
-    translated = responses_input_to_messages(body["input"])
-    assert isinstance(translated[0]["content"], str)
-    assert output[0]["type"] in translated[0]["content"]
-    with pytest.raises(targets.ItemRejected):
+    with pytest.raises(targets.ItemRejected, match="only text tool outputs"):
         await targets._admit_responses(body, None)

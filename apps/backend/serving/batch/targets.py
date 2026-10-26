@@ -602,10 +602,9 @@ def _responses_input_problem(value: Any) -> str | None:
         elif kind in (None, "message") and content is not None and not isinstance(content, str):
             return f"input.{index}.content: must be a string or an array"
         if kind == "function_call_output" and not isinstance(item.get("output"), str):
-            return (
-                f"input.{index}.output: only text tool outputs are supported in batches "
-                "(a structured output would be sent as its JSON text)"
-            )
+            # An object would be sent as its JSON text and a file part dropped
+            # (serving.responses_translator); only text is carried as written.
+            return f"input.{index}.output: only text tool outputs are supported in batches"
     return None
 
 

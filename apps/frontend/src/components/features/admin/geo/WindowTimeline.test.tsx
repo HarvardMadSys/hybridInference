@@ -40,48 +40,102 @@ function renderTimeline(
   const data = makeData(hourCount);
   const onHourChange = vi.fn();
   const onTogglePlay = vi.fn();
+  const onReturnToTotal = vi.fn();
   render(
     <WindowTimeline
       data={data}
       metricModel={deriveGeoMetricModel(data, 'n')}
       onHourChange={onHourChange}
+      onReturnToTotal={onReturnToTotal}
       onTogglePlay={onTogglePlay}
       playing={false}
+      selectedCountry={null}
+      selectedCountryName={null}
       selectedHourIndex={hourIndex}
       totalLabel={`${Math.max(1, Math.round(hourCount / 24))}-day total`}
       {...overrides}
     />,
   );
-  return { data, onHourChange, onTogglePlay };
+  return { data, onHourChange, onTogglePlay, onReturnToTotal };
 }
 
 afterEach(cleanup);
 
 describe('WindowTimeline', () => {
-  it('renders one stacked layer per continent with a legend and day gridlines', () => {
+  it('renders the total demand with a title, value ticks and day labels', () => {
     renderTimeline();
 
-    expect(document.querySelector('path[data-continent="NA"]')).toBeInTheDocument();
-    expect(document.querySelector('path[data-continent="AS"]')).toBeInTheDocument();
-    expect(screen.getByText('N. America')).toBeInTheDocument();
-    expect(screen.getByText('Asia')).toBeInTheDocument();
+    expect(document.querySelector('path[data-series="total"]')).toBeInTheDocument();
+    expect(document.querySelector('path[data-series="selected"]')).not.toBeInTheDocument();
+    expect(document.querySelector('path[data-continent]')).not.toBeInTheDocument();
+    expect(screen.getByText('Requests per hour (UTC)')).toBeInTheDocument();
+    expect(screen.getByText('0')).toBeInTheDocument();
     expect(screen.getByText('Jul 15')).toBeInTheDocument();
     expect(screen.getByText('Jul 16 · 00:00 UTC')).toBeInTheDocument();
     expect(screen.queryByText(/p99/)).not.toBeInTheDocument();
   });
 
-  it('seeks with clicks mapped through the plotted area', () => {
+  it('preserves a rare traffic spike on the labeled value axis', () => {
+    const data = makeData(336);
+    data.hours[100].b = [['USA', 'NA', 10000, 100000]];
+    renderTimeline(336, 100, { data, metricModel: deriveGeoMetricModel(data, 'n') });
+
+    expect(screen.getByText('10k')).toBeInTheDocument();
+    expect(screen.queryByText('0.5k')).not.toBeInTheDocument();
+  });
+
+  it('does not round fractional ticks into duplicate counts for sparse traffic', () => {
+    const data = makeData(26);
+    data.hours = data.hours.map(() => ({ b: [['USA', 'NA', 1, 1]] }));
+    renderTimeline(26, 0, { data, metricModel: deriveGeoMetricModel(data, 'n') });
+    expect(screen.getAllByText('1', { selector: 'svg text' })).toHaveLength(1);
+  });
+
+  it('draws in real pixels, so its text is never stretched', () => {
+    renderTimeline();
+    const slider = screen.getByRole('slider', { name: 'Demand timeline for the loaded window' });
+
+    expect(slider).not.toHaveAttribute('preserveAspectRatio');
+    expect(slider).toHaveAttribute('viewBox', '0 0 1000 112');
+  });
+
+  it('overlays the selected country on the total and names it in the title', () => {
+    renderTimeline(26, 25, { selectedCountry: 'CHN', selectedCountryName: 'China' });
+
+    const total = document.querySelector('path[data-series="total"]')!.getAttribute('d');
+    const selected = document.querySelector('path[data-series="selected"]')!.getAttribute('d');
+    expect(selected).toBeTruthy();
+    expect(selected).not.toBe(total);
+    expect(screen.getByText('China')).toBeInTheDocument();
+  });
+
+  it('shows a focus outline for keyboard focus only, never for a pointer scrub', () => {
+    renderTimeline();
+    const classes = screen
+      .getByRole('slider', { name: 'Demand timeline for the loaded window' })
+      .getAttribute('class')
+      ?.split(' ');
+
+    expect(classes).toContain('focus:outline-none');
+    expect(classes).toContain('focus-visible:outline');
+    expect(classes).toContain('focus-visible:outline-sky-300');
+  });
+
+  it('seeks with clicks mapped through the plotted area, not the tick margin', () => {
     const { onHourChange } = renderTimeline();
     const slider = screen.getByRole('slider', { name: 'Demand timeline for the loaded window' });
+    // 960px of plot, then a 40px margin holding the value ticks.
     slider.getBoundingClientRect = () => ({ left: 0, width: 1_000 }) as DOMRect;
 
-    fireEvent.pointerDown(slider, { button: 0, pointerId: 1, clientX: 8 });
+    fireEvent.pointerDown(slider, { button: 0, pointerId: 1, clientX: 0 });
     expect(onHourChange).toHaveBeenLastCalledWith(0);
-    fireEvent.pointerMove(slider, { pointerId: 1, clientX: 992 });
+    fireEvent.pointerMove(slider, { pointerId: 1, clientX: 480 });
+    expect(onHourChange).toHaveBeenLastCalledWith(13);
+    fireEvent.pointerMove(slider, { pointerId: 1, clientX: 990 });
     expect(onHourChange).toHaveBeenLastCalledWith(25);
-    fireEvent.pointerUp(slider, { pointerId: 1, clientX: 992 });
+    fireEvent.pointerUp(slider, { pointerId: 1, clientX: 990 });
     fireEvent.pointerMove(slider, { pointerId: 1, clientX: 500 });
-    expect(onHourChange).toHaveBeenCalledTimes(2);
+    expect(onHourChange).toHaveBeenCalledTimes(3);
   });
 
   it('supports keyboard scrubbing across the whole window', () => {
@@ -137,5 +191,20 @@ describe('WindowTimeline', () => {
 
     fireEvent.keyDown(slider, { key: 'Home' });
     expect(onHourChange).toHaveBeenLastCalledWith(0);
+    expect(screen.queryByRole('button', { name: 'Back to 14-day total' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Back to 14-day total/, { selector: 'button' })).toHaveAttribute(
+      'tabindex',
+      '-1',
+    );
+  });
+
+  it('returns to the window total from the toolbar while an hour is selected', () => {
+    const { onReturnToTotal } = renderTimeline(26, 3, { totalLabel: '14-day total' });
+
+    const back = screen.getByRole('button', { name: 'Back to 14-day total' });
+    expect(back).not.toHaveAttribute('aria-hidden', 'true');
+    expect(back).not.toHaveAttribute('tabindex');
+    fireEvent.click(back);
+    expect(onReturnToTotal).toHaveBeenCalledOnce();
   });
 });

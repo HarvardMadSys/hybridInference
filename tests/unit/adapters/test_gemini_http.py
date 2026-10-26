@@ -14,11 +14,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import aiohttp
 import pytest
 from aiohttp import web
 
 from serving.adapters.base import ModelConfig
 from serving.adapters.gemini import GeminiAdapter
+from serving.adapters.openai_compat import UpstreamStreamError
 from serving.http import AsyncHTTPClient
 
 pytestmark = pytest.mark.asyncio
@@ -39,6 +41,7 @@ class Upstream:
             {
                 "path": request.path,
                 "query": dict(request.query),
+                "headers": dict(request.headers),
                 "json": await request.json(),
             }
         )
@@ -223,7 +226,9 @@ async def test_the_request_names_the_model_and_carries_config_and_tools(upstream
 
     [request] = upstream.requests
     assert request["path"] == f"/v1beta/models/gemini-2.5-pro-001:{method}"
-    assert request["query"]["key"] == "test-upstream-credential"
+    # In a header, not the URL: aiohttp renders the URL into every error it raises.
+    assert "key" not in request["query"]
+    assert request["headers"]["x-goog-api-key"] == "test-upstream-credential"
     assert (request["query"].get("alt") == "sse") is (mode == "stream")
     sent = request["json"]
     assert sent["generationConfig"] == {
@@ -378,6 +383,37 @@ async def test_the_stream_survives_odd_frames_and_stops_at_done(upstream):
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
 
 
+async def test_an_error_frame_mid_stream_raises_with_its_status(upstream):
+    """Gemini reports a failure after some output as a frame of its own, then closes."""
+    upstream.lines = [
+        _frame({"candidates": [_candidate([{"text": "Hel"}], finish="")]}),
+        _frame(
+            {"error": {"code": 503, "message": "The model is overloaded.", "status": "UNAVAILABLE"}}
+        ),
+    ]
+
+    with pytest.raises(UpstreamStreamError) as caught:
+        [c async for c in _adapter(upstream).stream_chat_completion(USER)]
+
+    assert caught.value.status == 503
+    assert "overloaded" in str(caught.value)
+
+
+async def test_a_body_that_ends_without_a_finish_reason_is_a_truncation(upstream):
+    """A clean close is not a finished generation; it must not end as ``stop``."""
+    upstream.lines = [_frame({"candidates": [_candidate([{"text": "Hel"}], finish="")]})]
+
+    with pytest.raises(aiohttp.ClientError):
+        [c async for c in _adapter(upstream).stream_chat_completion(USER)]
+
+
+async def test_a_blocked_prompt_still_ends_the_stream_normally(upstream):
+    """A refused prompt has no candidate and no finish reason, and is no upstream fault."""
+    chunks = await _stream(upstream, [_frame({"promptFeedback": {"blockReason": "SAFETY"}})])
+
+    assert chunks[-1]["choices"][0]["finish_reason"] is not None
+
+
 async def test_without_usage_metadata_the_stream_estimates_usage(upstream):
     chunks = await _stream(
         upstream, [_frame({"candidates": [_candidate([{"text": "four words of text"}])]})]
@@ -398,6 +434,22 @@ async def test_a_stream_refused_upfront_raises(upstream):
         [c async for c in _adapter(upstream).stream_chat_completion(USER)]
 
     assert "429" in str(caught.value)
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_an_upstream_error_does_not_carry_the_credential(upstream, mode):
+    # Its text reaches logs and the request log's metadata (``str(exc)``).
+    upstream.status = 429
+    upstream.reply = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED"}}
+    adapter = _adapter(upstream)
+
+    with pytest.raises(Exception) as caught:
+        if mode == "chat":
+            await adapter.chat_completion(USER)
+        else:
+            [c async for c in adapter.stream_chat_completion(USER)]
+
+    assert "test-upstream-credential" not in str(caught.value)
 
 
 async def test_an_ndjson_stream_is_read_and_stops_at_done(upstream):

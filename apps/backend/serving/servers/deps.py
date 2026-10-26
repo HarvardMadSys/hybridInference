@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving.audit import AuditActor
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
@@ -463,12 +464,18 @@ async def verify_admin_access(
     This dependency allows admin endpoints to be called from both the
     frontend dashboard (JWT) and scripts/legacy admin UI (ADMIN_TOKEN).
     For a JWT admin it also records the account's user id on the request,
-    readable through :func:`get_admin_user_id`.
+    readable through :func:`get_admin_user_id`. Either way it records who
+    was admitted as an immutable :class:`~serving.audit.AuditActor` on this
+    request's state, readable through :func:`get_admin_audit_actor`: an
+    ``admin`` actor with the account's stable user id, or an ``admin_token``
+    actor, which has none. Request state is per request, so concurrent
+    requests never see each other's actor.
 
     Returns:
         Admin identifier string: for JWT auth the admin's email, or its login
         name when the account has no email (the first-run setup
-        administrator); for token auth the client IP.
+        administrator); for token auth the client IP. For display; audit rows
+        take the actor instead.
     """
     from serving.utils.jwt import verify_access_token
 
@@ -506,6 +513,7 @@ async def verify_admin_access(
             if (user_row["role"] or "free") != "admin":
                 raise HTTPException(status_code=403, detail="Admin access required.")
             request.state.admin_user_id = user_id
+            request.state.audit_actor = AuditActor.admin(user_id, get_client_ip(request))
             admin_identity = user_row["email"] or user_row.get("login_name") or user_id
         else:
             # DB unavailable — fail closed.  Admin endpoints require
@@ -539,14 +547,38 @@ async def verify_admin_access(
         )
 
     client_ip = get_client_ip(request)
+    request.state.audit_actor = AuditActor.admin_token(client_ip)
     return client_ip if client_ip != "unknown" else "admin-token"
 
 
 def get_admin_user_id(request: Request) -> str | None:
     """Return the user id of the admin account ``verify_admin_access`` admitted.
 
-    The identity string that dependency returns is for display and audit; use
-    this to compare against a user id (it is None for an ``ADMIN_TOKEN``
-    caller, which has no account).
+    The identity string that dependency returns is for display; use this to
+    compare against a user id (it is None for an ``ADMIN_TOKEN`` caller,
+    which has no account).
     """
     return getattr(request.state, "admin_user_id", None)
+
+
+def get_admin_audit_actor(
+    request: Request,
+    _admin: str = Depends(verify_admin_access),
+) -> AuditActor:
+    """Return who ``verify_admin_access`` admitted on this request, for an audit row.
+
+    Depending on ``verify_admin_access`` makes FastAPI run it first (once per
+    request, shared with the route's own dependency on it). Raises 500 rather
+    than inventing an actor if that dependency did not record one, which
+    only an override that bypasses it can cause.
+    """
+    actor = getattr(request.state, "audit_actor", None)
+    if not isinstance(actor, AuditActor):
+        logger.error("get_admin_audit_actor: no audit actor recorded for this admin request")
+        raise HTTPException(status_code=500, detail="Admin identity was not recorded.")
+    return actor
+
+
+def user_audit_actor(request: Request, current_user: dict[str, Any]) -> AuditActor:
+    """The ``user`` actor for an account acting on itself through its session."""
+    return AuditActor.user(current_user["user_id"], get_client_ip(request))

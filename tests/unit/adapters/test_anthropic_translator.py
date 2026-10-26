@@ -245,6 +245,24 @@ def test_request_stop_sequences_renamed():
     assert params["stop"] == ["END", "STOP"]
 
 
+def test_request_null_sampling_fields_are_left_unset():
+    """A client that serializes unset fields sends them as null, as on the chat surface.
+
+    Passed on as None, they made the adapter's clamp raise TypeError before any
+    upstream call, and that failure was charged to the endpoint's breaker.
+    """
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "temperature": None,
+        "top_p": None,
+        "stop_sequences": None,
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+    _, params = anthropic_request_to_openai(body)
+    assert not {"temperature", "top_p", "stop"} & set(params)
+
+
 def test_request_tool_use_and_tool_result_round_trip():
     body = {
         "model": "glm-4.7",

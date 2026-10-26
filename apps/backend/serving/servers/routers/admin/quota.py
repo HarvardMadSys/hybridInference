@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from serving.config.runtime_settings import (
@@ -14,9 +14,11 @@ from serving.config.runtime_settings import (
     get_runtime_settings,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.servers.deps import get_admin_audit_actor, get_operational_store, verify_admin_access
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+
+if TYPE_CHECKING:
+    from serving.audit import AuditActor
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/admin")
@@ -79,9 +81,8 @@ async def preview_role_apply(
 
 @router.post("/quota/role-apply", response_model=RoleQuotaApplyResult)
 async def apply_role_quota(
-    request: Request,
     payload: RoleQuotaApplyRequest,
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
 ) -> RoleQuotaApplyResult:
@@ -94,10 +95,9 @@ async def apply_role_quota(
     try:
         await log_admin_action(
             op_store,
-            get_client_ip(request),
-            "quota.role_apply",
-            None,
-            {"role": payload.role, "quota": float(quota), "keys_updated": updated},
+            action="quota.role_apply",
+            details={"role": payload.role, "quota": float(quota), "keys_updated": updated},
+            actor=actor,
         )
     except Exception:
         logger.warning(

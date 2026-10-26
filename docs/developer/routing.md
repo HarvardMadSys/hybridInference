@@ -602,6 +602,19 @@ Resource limits used to live in `router_params:`. Those keys are now rejected
 at boot with a message naming their route-level replacement, so a stale
 registry fails loudly rather than silently using defaults.
 
+RouteWise does not read prefill load: the latency estimates used by its LP and
+hedge choice have no backlog penalty, and it takes no prefill lease. The three keys of that
+withdrawn feature — `prefill_load_routing_enabled`,
+`prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are still
+accepted so an older registry keeps starting, but they have no effect whatever
+their value, and the backend logs a warning naming them once per process.
+Remove them from `models.yaml`. FixedRouter's
+[prefill-aware selection](#prefill-aware-selection) is unchanged.
+
+`latency_min_samples` is accepted the same way. Provider selection never read
+it, so it was removed, and a registry that still sets it starts with the same
+warning.
+
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
 exactly against the usage records a provider's quota fetcher returns. RouteWise
@@ -797,7 +810,9 @@ auto:
 Each profile is served as `auto-<name>`. The auto models exist only while the
 `auto_mode_enabled` runtime setting is on, and it is off by default. While it
 is off, a request naming one gets 404 and `/v1/models` does not list them.
-Requests that name a real model are never affected.
+Requests that name a real model are never affected. The admin Settings tab
+offers the switch only once the backend has started with a valid `auto:`
+section; without one it has nothing to serve.
 
 **Which candidate serves.** The first one in the list that can serve the
 request. A candidate is skipped for any of these reasons:

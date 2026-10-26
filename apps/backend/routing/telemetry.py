@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from routing.endpoints import endpoint_id_for_adapter
+from serving.pricing import effective_pricing
 
 if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
@@ -28,6 +29,17 @@ def failed_attempt(
         "error_type": exc.__class__.__name__,
         "error": str(exc),
     }
+
+
+def adapter_pricing_snapshot(adapter: BaseAdapter) -> dict[str, str]:
+    """Copy the executing adapter's price instead of re-reading the live route.
+
+    Runtime edits replace adapters, while in-flight calls retain their original
+    object. Carry its price through settlement, including an empty dict for an
+    unpriced attempt so a later route edit cannot supply a different price.
+    Scheduled pricing uses the request's existing pricing instant and snapshot.
+    """
+    return dict(effective_pricing(adapter.config) or {})
 
 
 def routing_chunk(
@@ -63,6 +75,7 @@ def routing_chunk(
         "provider": adapter.config.provider,
         "base_url": adapter.config.base_url,
         "endpoint_id": getattr(adapter.config, "endpoint_id", None),
+        "pricing": adapter_pricing_snapshot(adapter),
     }
     if fallback:
         routing["fallback"] = True

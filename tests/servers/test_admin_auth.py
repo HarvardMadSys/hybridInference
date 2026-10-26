@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from serving.audit import AuditActor, AuditTarget
 from serving.servers.auth import log_admin_action
 
 
@@ -33,7 +34,7 @@ def test_serialize_for_audit_handles_decimal_and_datetime():
 
 @pytest.mark.asyncio
 async def test_log_admin_action_writes_entry(monkeypatch):
-    """log_admin_action delegates to store.log_admin_action when available."""
+    """The legacy positional form still delegates, with no actor recorded."""
     store = MagicMock()
     store.log_admin_action = AsyncMock()
 
@@ -51,7 +52,26 @@ async def test_log_admin_action_writes_entry(monkeypatch):
         target_user_id="user123",
         details={"quota": 100},
         success=True,
+        actor=None,
+        target=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_log_admin_action_passes_actor_and_target(monkeypatch):
+    store = MagicMock()
+    store.log_admin_action = AsyncMock()
+    actor = AuditActor.admin("u-admin", "198.51.100.7")
+
+    await log_admin_action(
+        store, action="models.concurrency.update", actor=actor, target=AuditTarget.model("m1")
+    )
+
+    kwargs = store.log_admin_action.await_args.kwargs
+    assert kwargs["actor"] is actor
+    assert kwargs["target"] == AuditTarget.model("m1")
+    assert kwargs["admin_ip"] is None
+    assert kwargs["target_user_id"] is None
 
 
 @pytest.mark.asyncio

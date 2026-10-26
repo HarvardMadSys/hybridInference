@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from serving.audit import AuditActor
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
 
@@ -205,7 +206,7 @@ async def complete_setup(
     login_name: str,
     password_hash: str,
     user_name: str,
-    admin_ip: str,
+    source_ip: str | None,
 ) -> bool:
     """Create the first administrator and record that setup is complete.
 
@@ -214,6 +215,10 @@ async def complete_setup(
     deletes the stored setup code in the same transaction. Unless it raises,
     setup is no longer pending afterwards: this call completed it, or the
     store found it already completed.
+
+    The audit row names a ``bootstrap`` actor from *source_ip*, the setup
+    request's client address: no account existed to act, and the setup code
+    that authorized the request belongs to no one.
 
     Returns:
         True when the administrator was created; False when setup had
@@ -227,7 +232,7 @@ async def complete_setup(
         marker_key=SETUP_MARKER_KEY,
         marker_value=_now_iso(),
         code_key=SETUP_CODE_KEY,
-        admin_ip=admin_ip,
+        actor=AuditActor.bootstrap(source_ip),
     )
     mark_setup_completed()
     return created

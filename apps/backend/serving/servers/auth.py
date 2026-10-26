@@ -12,6 +12,7 @@ from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving import grants, quota
+from serving.audit import AuditActor, AuditTarget, audit_columns
 from serving.config.app_config import config_value
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
@@ -1138,26 +1139,39 @@ def _next_utc_midnight() -> datetime:
 
 async def log_admin_action(
     db_logger,
-    admin_ip: str,
-    action: str,
+    admin_ip: str | None = None,
+    action: str | None = None,
     target_user_id: str | None = None,
     details: dict[str, Any] | None = None,
     success: bool = True,
+    *,
+    actor: AuditActor | None = None,
+    target: AuditTarget | None = None,
 ) -> None:
-    """Log admin action to audit trail.
+    """Log an action to the audit trail.
 
     Accepts either an OperationalStore or a legacy DatabaseLogger. Callers
     are migrating to pass the store directly; during transition both are
-    supported.
+    supported, and both write the same row (``serving.storage.audit_schema``).
+
+    New writers pass *actor* and *target* (see :mod:`serving.audit`) and no
+    *admin_ip* / *target_user_id*: the row's source address comes from the
+    actor, and ``target_user_id`` is set only for a user target. The
+    positional legacy form still works and writes a row whose actor is "not
+    recorded".
 
     Args:
         db_logger: OperationalStore or DatabaseLogger instance
-        admin_ip: IP address of admin performing the action
+        admin_ip: Legacy: the value to store raw in ``admin_ip``
         action: Action type (e.g., 'create_key', 'revoke_key')
-        target_user_id: User ID affected by the action (if applicable)
+        target_user_id: Legacy: the value to store raw in ``target_user_id``
         details: Additional context (will be stored as JSONB)
         success: Whether the action succeeded
+        actor: Who acted
+        target: What was acted on
     """
+    if not action:
+        raise ValueError("log_admin_action needs an action")
     if not db_logger:
         return  # Silently skip if logging not configured
 
@@ -1169,6 +1183,8 @@ async def log_admin_action(
             target_user_id=target_user_id,
             details=details,
             success=success,
+            actor=actor,
+            target=target,
         )
         return
 
@@ -1176,17 +1192,12 @@ async def log_admin_action(
     if not getattr(db_logger, "pool", None):
         return
 
-    import json
+    from serving.storage.audit_schema import insert_audit_row
 
+    columns = audit_columns(
+        admin_ip=admin_ip, target_user_id=target_user_id, actor=actor, target=target
+    )
     async with db_logger.pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO admin_audit_log (admin_ip, action, target_user_id, details, success)
-            VALUES ($1, $2, $3, $4::jsonb, $5)
-            """,
-            admin_ip,
-            action,
-            target_user_id,
-            json.dumps(details) if details else None,
-            success,
+        await insert_audit_row(
+            conn, columns=columns, action=action, details=details, success=success
         )

@@ -13,6 +13,7 @@ import {
   BroadcastListItem,
   type BroadcastPreviewRequest,
   type BroadcastPreviewResponse,
+  type Role,
   cancelBroadcast,
   createBroadcast,
   getBroadcastDetail,
@@ -47,6 +48,9 @@ import {
   TABLE_HEAD_CELL,
   TEXT_FIELD,
 } from './adminStyles';
+
+/** Every account role, lowest first. A new broadcast targets all of them. */
+const BROADCAST_ROLES: readonly Role[] = ['free', 'pro', 'internal', 'admin'];
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -112,7 +116,7 @@ export function BroadcastsTab() {
     focusOnToggle.current = true;
     setComposerOpen(open);
   };
-  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
+  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>([...BROADCAST_ROLES]);
   const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
   // Optional spend gate: only email users who have spent more than this many
   // USD today (UTC). Empty string means no spend filter.
@@ -225,7 +229,7 @@ export function BroadcastsTab() {
               ...audienceRows(request),
               {
                 label: 'Delivery',
-                after: later ? new Date(scheduledAt).toLocaleString() : 'Immediately',
+                after: later ? new Date(scheduledAt).toLocaleString('en-US') : 'Immediately',
               },
             ]}
           />
@@ -277,7 +281,7 @@ export function BroadcastsTab() {
       body: (
         <p>
           {`It will not be sent to its ${plural(bc.recipient_count, 'recipient')}${
-            bc.scheduled_at ? ` at ${new Date(bc.scheduled_at).toLocaleString()}` : ''
+            bc.scheduled_at ? ` at ${new Date(bc.scheduled_at).toLocaleString('en-US')}` : ''
           }. This cannot be undone.`}
         </p>
       ),
@@ -539,7 +543,7 @@ export function BroadcastsTab() {
                   <fieldset>
                     <legend className={FORM_LABEL}>Roles</legend>
                     <div className="mt-1 space-y-1">
-                      {['free', 'internal', 'admin'].map((role) => (
+                      {BROADCAST_ROLES.map((role) => (
                         <label
                           key={role}
                           className="flex items-center gap-2 text-[13px] text-gray-700"
@@ -788,11 +792,11 @@ export function BroadcastsTab() {
                           </td>
                           <td className="whitespace-nowrap px-4 py-2.5 align-top text-[12px] text-gray-500">
                             {bc.sent_at ? (
-                              <span title={new Date(bc.sent_at).toLocaleString()}>
+                              <span title={new Date(bc.sent_at).toLocaleString('en-US')}>
                                 Sent {relTime(bc.sent_at)}
                               </span>
                             ) : bc.scheduled_at ? (
-                              <span>For {new Date(bc.scheduled_at).toLocaleString()}</span>
+                              <span>For {new Date(bc.scheduled_at).toLocaleString('en-US')}</span>
                             ) : (
                               '—'
                             )}

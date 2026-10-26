@@ -47,3 +47,16 @@ def test_sse_parser_handles_utf8_boundary_split():
     # Last event should be a valid JSON with the Chinese character
     payloads = [json.loads(e.data) for e in events if e.data and e.data != "[DONE]"]
     assert payloads[-1] == {"text": "中"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029), chr(0x85)])
+def test_sse_parser_keeps_unicode_line_separators_inside_data(separator):
+    """Only CR, LF and CRLF end an SSE line; JSON may carry U+2028/U+2029/U+0085 raw."""
+    parser = SSEParser()
+    text = f"before{separator}after"
+    frame = "data: " + json.dumps({"text": text}, ensure_ascii=False) + "\n\n"
+
+    events = parser.feed(frame.encode())
+
+    assert [json.loads(e.data) for e in events] == [{"text": text}]

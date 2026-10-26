@@ -174,7 +174,6 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
             changes={[
               { label: 'Display name', after: payload.display_name },
               { label: 'Slug', after: payload.provider },
-              { label: 'Adapter', after: 'OpenAI-compatible' },
               { label: 'Base URL', after: payload.default_base_url },
               { label: 'Probe model ID', after: payload.probe_model_id },
               { label: 'API key', after: 'Set (hidden)' },
@@ -240,42 +239,6 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
               </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
-                <label
-                  className="block text-[12px] font-medium text-gray-500"
-                  htmlFor="provider-adapter"
-                >
-                  Adapter
-                </label>
-                <input
-                  id="provider-adapter"
-                  value="OpenAI-compatible"
-                  disabled
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-[13px] text-gray-500"
-                />
-              </div>
-              <div>
-                <label
-                  className="block text-[12px] font-medium text-gray-500"
-                  htmlFor="probe-model-id"
-                >
-                  Probe model ID
-                </label>
-                <input
-                  id="probe-model-id"
-                  value={probeModelId}
-                  onChange={(event) => {
-                    setProbeModelId(event.target.value);
-                    resetProbe();
-                  }}
-                  placeholder="model id the upstream expects"
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-                  required
-                />
-              </div>
-            </div>
-
             <div>
               <label
                 className="block text-[12px] font-medium text-gray-500"
@@ -291,6 +254,30 @@ function AddProviderModal({ open, onClose, onCreated }: AddProviderModalProps) {
                   resetProbe();
                 }}
                 placeholder="https://api.example.com/v1"
+                aria-describedby="provider-base-url-help"
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                required
+              />
+              <p id="provider-base-url-help" className="mt-1 text-[11px] leading-5 text-gray-400">
+                The provider&apos;s OpenAI-compatible API.
+              </p>
+            </div>
+
+            <div>
+              <label
+                className="block text-[12px] font-medium text-gray-500"
+                htmlFor="probe-model-id"
+              >
+                Probe model ID
+              </label>
+              <input
+                id="probe-model-id"
+                value={probeModelId}
+                onChange={(event) => {
+                  setProbeModelId(event.target.value);
+                  resetProbe();
+                }}
+                placeholder="model id the upstream expects"
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                 required
               />

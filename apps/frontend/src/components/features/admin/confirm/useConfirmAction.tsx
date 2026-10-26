@@ -22,6 +22,11 @@ export interface ConfirmRequest {
   tone?: 'default' | 'danger';
   /** A typed confirmation for the most destructive actions: Confirm waits for this exact text. */
   requireText?: string;
+  /**
+   * What the write saves, when several in-place editors share this
+   * confirmation: `savingKey` then tells each one whether the save is its own.
+   */
+  key?: string;
   run: () => Promise<void>;
 }
 
@@ -36,6 +41,8 @@ export interface ConfirmAction {
   dialog: ReactNode;
   /** Whether a confirmed write is running. */
   busy: boolean;
+  /** The `key` of the confirmed write that is running, if it has one. */
+  savingKey: string | null;
   /** Whether a confirmation is open. */
   open: boolean;
 }
@@ -126,5 +133,11 @@ export function useConfirmAction(): ConfirmAction {
     </ConfirmDialog>
   ) : null;
 
-  return { request, dialog, busy, open: pending !== null };
+  return {
+    request,
+    dialog,
+    busy,
+    savingKey: busy ? (pending?.key ?? null) : null,
+    open: pending !== null,
+  };
 }

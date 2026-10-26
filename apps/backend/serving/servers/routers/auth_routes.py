@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
+from serving.audit import AuditActor, AuditTarget
 from serving.auth.browser_sessions import (
     MAX_ACCOUNTS_PER_BROWSER,
     BrowserSession,
@@ -53,7 +54,12 @@ from serving.schemas_auth import (
     VerifyEmailResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
+from serving.servers.deps import (
+    get_current_user,
+    get_db_logger,
+    get_operational_store,
+    user_audit_actor,
+)
 from serving.servers.routers.phone_auth_routes import router as phone_auth_router
 from serving.servers.routers.reauth import account_identifier, confirm_account_owner
 from serving.setup_state import refresh_setup_state
@@ -319,12 +325,14 @@ async def signup(
             )
 
     logger.info(f"New user registered: {user_id} ({body.email}) [status={initial_status}]")
+    # Registration is unauthenticated: the requester is anonymous, and the
+    # account it created is the target.
     await log_admin_action(
         db_logger,
-        client_ip,
-        "create_user",
-        user_id,
-        {
+        action="create_user",
+        actor=AuditActor.anonymous(client_ip),
+        target=AuditTarget.user(user_id),
+        details={
             "email": body.email.lower(),
             "user_name": body.user_name,
             "status": initial_status,
@@ -652,16 +660,14 @@ async def delete_own_account(
         purpose="delete_account",
     )
 
-    client_ip = get_client_ip(request)
     browser = await resolve_browser_session(op_store, request)
     try:
         await op_store.delete_user(
             user_id,
-            admin_ip=client_ip,
-            admin_id=user_id,
             reason="Deleted by the account owner",
             email=user_row.get("email"),
             self_service=True,
+            actor=user_audit_actor(request, current_user),
         )
     except SelfDeleteRefused:
         raise HTTPException(
@@ -921,6 +927,9 @@ async def verify_email(
                 status_code=409,
                 detail="Email address cannot be bound to this account.",
             )
+        # Reset links already sent to the replaced address go with it, as the
+        # notice below tells that address.
+        await op_store.delete_user_reset_tokens(token_row["user_id"])
         if previous_email and previous_email.lower() != pending_email.lower():
             background_tasks.add_task(send_email_changed_email, previous_email, pending_email)
     else:
@@ -1016,8 +1025,9 @@ async def reset_password(
     password_hash_str = password_utils.hash_password(body.new_password)
     await op_store.update_user_fields(token_row["user_id"], password_hash=password_hash_str)
 
-    # Mark token as used
-    await op_store.mark_reset_used(body.token)
+    # The link is spent, and so is every other one the account still holds:
+    # each was sent to reset the password just replaced.
+    await op_store.delete_user_reset_tokens(token_row["user_id"])
 
     # Revoke all existing sessions for security
     await op_store.delete_user_sessions(token_row["user_id"])
@@ -1150,10 +1160,10 @@ async def bind_email(
     )
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "request_bind_email",
-        user_id,
-        {"email": normalized_email},
+        action="request_bind_email",
+        details={"email": normalized_email},
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(user_id),
     )
     return BindEmailResponse(
         message="Verification email sent. Please check your inbox to complete binding.",

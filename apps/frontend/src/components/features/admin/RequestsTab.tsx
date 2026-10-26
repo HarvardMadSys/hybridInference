@@ -456,7 +456,7 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
                 isErrorHeavy ? 'bg-red-400' : 'bg-gray-900'
               }`}
               style={{ height: `${height}%` }}
-              title={`${new Date(bucket.start_time).toLocaleString()}: ${
+              title={`${new Date(bucket.start_time).toLocaleString('en-US')}: ${
                 bucket.request_count
               } requests, ${bucket.error_count} errors, ${bucketDisconnects} client disconnects`}
             />
@@ -1246,7 +1246,7 @@ export function RequestsTab() {
                             : '—'}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-right text-[12px] text-gray-400 pr-4">
-                          <span title={new Date(req.timestamp).toLocaleString()}>
+                          <span title={new Date(req.timestamp).toLocaleString('en-US')}>
                             {relTime(req.timestamp)}
                           </span>
                         </td>

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from routing.endpoints import endpoint_id_for_adapter
+from serving.audit import AuditActor, AuditTarget
 from serving.schemas_admin import (
     ListAllRouteWeightsResponse,
     ListRouteWeightsResponse,
@@ -13,6 +16,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_operational_store,
     get_services,
     model_router_transition_lock,
@@ -190,12 +194,16 @@ async def set_route_weight(
     model_endpoint_path: str,
     payload: UpdateRouteWeightRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> RouteWeightItem:
     """Set a runtime route weight override for one endpoint."""
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
+    # NaN compares false to everything, so it would pass both checks below.
+    if not math.isfinite(payload.weight):
+        raise HTTPException(status_code=400, detail="weight must be a finite number")
     if payload.weight < 0:
         raise HTTPException(status_code=400, detail="weight must be >= 0")
 
@@ -226,10 +234,10 @@ async def set_route_weight(
         _rebuild_routewise_routers(services)
         await log_admin_action(
             op_store,
-            admin_id,
-            "routing.weights.update",
-            None,
-            {
+            action="routing.weights.update",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
                 "model_id": model_id,
                 "endpoint_id": endpoint_id,
                 "old_override_weight": old_override,
@@ -248,7 +256,7 @@ async def set_route_weight(
 @router.delete("/routing/weights/{model_endpoint_path:path}", response_model=RouteWeightItem)
 async def clear_route_weight(
     model_endpoint_path: str,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> RouteWeightItem:
@@ -279,10 +287,10 @@ async def clear_route_weight(
         _rebuild_routewise_routers(services)
         await log_admin_action(
             op_store,
-            admin_id,
-            "routing.weights.clear",
-            None,
-            {
+            action="routing.weights.clear",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
                 "model_id": model_id,
                 "endpoint_id": endpoint_id,
                 "old_override_weight": old_override,

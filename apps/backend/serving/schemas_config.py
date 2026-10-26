@@ -69,7 +69,7 @@ class ConfigEntryItem(BaseModel):
 
 
 class ConfigResponse(BaseModel):
-    """Every setting, grouped by category."""
+    """Every setting the console offers, grouped by category."""
 
     categories: list[ConfigCategory]
     entries: list[ConfigEntryItem]

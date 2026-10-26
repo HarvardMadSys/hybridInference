@@ -206,6 +206,16 @@ def test_crlf_only_events_are_split():
     assert leftover == b"event: x"
 
 
+@pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029), chr(0x85)])
+def test_unicode_line_separators_inside_data_do_not_split_the_line(separator):
+    # Only CR, LF and CRLF end an SSE line; JSON carries these raw inside strings.
+    data = json.dumps({"delta": {"text": f"a{separator}b"}}, ensure_ascii=False)
+
+    events, _ = amod._parse_sse_chunk(b"", f"event: content_block_delta\ndata: {data}\n\n".encode())
+
+    assert events == [("content_block_delta", data)]
+
+
 def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
     events, leftover = amod._parse_sse_chunk(b"", b"data: " + b"x" * (amod._SSE_LEFTOVER_CAP + 1))
 
@@ -232,7 +242,42 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
             json.dumps({"model": NATIVE_MODEL, "messages": []}).encode(),
             "Missing required field: max_tokens",
         ),
+        (
+            "/v1/messages",
+            json.dumps({"model": NATIVE_MODEL, "messages": [], "max_tokens": None}).encode(),
+            "Missing required field: max_tokens",
+        ),
+        ("/v1/messages", b"[]", "Request body must be a JSON object"),
+        (
+            "/v1/messages",
+            json.dumps({"model": OPENAI_MODEL, "messages": "hi", "max_tokens": 5}).encode(),
+            "Invalid field: messages must be an array",
+        ),
+        (
+            "/v1/messages",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}, 1],
+                    "max_tokens": 5,
+                }
+            ).encode(),
+            "Invalid field: messages[1] must be an object",
+        ),
+        (
+            "/v1/messages",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 5,
+                    "metadata": "user-1",
+                }
+            ).encode(),
+            "Invalid field: metadata must be an object",
+        ),
         ("/v1/messages/count_tokens", b"{not json", "Invalid JSON in request body"),
+        ("/v1/messages/count_tokens", b"[]", "Request body must be a JSON object"),
         (
             "/v1/messages/count_tokens",
             json.dumps({"model": NATIVE_MODEL}).encode(),
@@ -244,7 +289,13 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
         "no-model",
         "no-messages",
         "no-max-tokens",
+        "null-max-tokens",
+        "not-an-object",
+        "messages-not-an-array",
+        "message-not-an-object",
+        "metadata-not-an-object",
         "count-not-json",
+        "count-not-an-object",
         "count-no-messages",
     ],
 )

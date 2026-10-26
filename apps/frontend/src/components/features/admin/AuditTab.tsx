@@ -94,11 +94,11 @@ function formatRelative(iso: string): string {
   if (h < 24) return `${h}h ago`;
   const d = Math.floor(h / 24);
   if (d < 7) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function formatShortDate(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  return new Date(iso).toLocaleString('en-US', {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -119,6 +119,52 @@ function fullValue(v: unknown): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'object') return JSON.stringify(v, null, 2);
   return String(v);
+}
+
+const ACTOR_LABELS: Partial<Record<string, string>> = {
+  admin: 'Administrator',
+  user: 'User (self-service)',
+  admin_token: 'Shared admin token',
+  anonymous: 'Anonymous registration',
+  bootstrap: 'Initial setup',
+  system: 'System',
+};
+
+/**
+ * Who made the change, as recorded. An entry without a recorded actor says so:
+ * it is not guessed from the source, the details or the account viewing it.
+ */
+function actorLabel(entry: AuditLogEntry): string {
+  const type = entry.actor_type;
+  if (!type) return 'Not recorded';
+  return ACTOR_LABELS[type] ?? actionLabel(type);
+}
+
+const TARGET_LABELS: Partial<Record<string, string>> = {
+  user: 'User',
+  model: 'Model',
+  provider: 'Provider',
+  provider_key: 'Provider key',
+  setting: 'Setting',
+  config: 'Configuration',
+  alert_type: 'Alert type',
+  auth_block: 'Blocked address',
+  signup_domain: 'Sign-up domain',
+  site_update: 'Site update',
+  broadcast: 'Broadcast',
+};
+
+function targetTypeLabel(type: string): string {
+  return TARGET_LABELS[type] ?? actionLabel(type);
+}
+
+/**
+ * The user ID the "affected user" filter can be set to from this entry: only
+ * an entry that records its target as a user. An untyped (older) entry's
+ * target ID may name something else, and the actor is never the target.
+ */
+function filterableUserId(entry: AuditLogEntry): string | null {
+  return entry.target_type === 'user' && entry.target_user_id ? entry.target_user_id : null;
 }
 
 function detailEntries(entry: AuditLogEntry): [string, unknown][] {
@@ -181,8 +227,8 @@ function DetailSummary({ entry }: { entry: AuditLogEntry }) {
 /** The whole record, every field in full, then the stored JSON. */
 function EntryDetails({ entry }: { entry: AuditLogEntry }) {
   const fields = detailEntries(entry);
-  // The row already reads the local time, the action and the user. Here each
-  // stored field appears once, exactly as recorded.
+  // The row reads the local time, the action and short forms of who, what and
+  // from where. Here each stored field appears once, in full, as recorded.
   const meta: [string, ReactNode, string?][] = [
     ['Action', entry.action, 'font-mono'],
     [
@@ -198,9 +244,47 @@ function EntryDetails({ entry }: { entry: AuditLogEntry }) {
         {entry.success ? 'Succeeded' : 'Failed'}
       </span>,
     ],
-    ['Target user', entry.target_user_id ?? '—', entry.target_user_id ? 'font-mono' : undefined],
-    ['Source', entry.admin_ip, 'font-mono'],
+    [
+      'Actor',
+      <span key="a" className={entry.actor_type ? undefined : 'text-gray-500'}>
+        {actorLabel(entry)}
+      </span>,
+    ],
   ];
+  if (entry.actor_id) meta.push(['Actor ID', entry.actor_id, 'font-mono']);
+  meta.push([
+    'Target',
+    entry.target_type ? (
+      targetTypeLabel(entry.target_type)
+    ) : (
+      <span key="t" className="text-gray-500">
+        {entry.target_user_id ? 'Type not recorded' : '—'}
+      </span>
+    ),
+  ]);
+  if (entry.target_id) meta.push(['Target ID', entry.target_id, 'font-mono']);
+  if (entry.target_user_id) {
+    meta.push([
+      entry.target_type ? 'Affected user' : 'Recorded target ID',
+      entry.target_user_id,
+      'font-mono',
+    ]);
+  }
+  const source = entry.source_ip || null;
+  meta.push([
+    'Source address',
+    source ?? (
+      <span key="s" className="text-gray-500">
+        Not recorded
+      </span>
+    ),
+    source ? 'font-mono' : undefined,
+  ]);
+  // Older entries stored a raw value here, not always an address; it is shown
+  // as stored. Newer ones may repeat the address, which is not shown twice.
+  if (!entry.actor_type && entry.admin_ip && entry.admin_ip !== source) {
+    meta.push(['Legacy source', entry.admin_ip, 'font-mono']);
+  }
   return (
     <div className="animate-admin-reveal space-y-2.5">
       <dl className="flex flex-wrap gap-x-6 gap-y-2">
@@ -239,6 +323,115 @@ function EntryDetails({ entry }: { entry: AuditLogEntry }) {
       ) : null}
     </div>
   );
+}
+
+// A long ID is cut short to fit its column; the whole of it stays in the text,
+// on hover, and in the entry's details.
+const CELL_ID = 'block truncate font-mono text-[11px] leading-4 text-gray-500';
+const CELL_LABEL = 'block truncate text-[12px] leading-5';
+
+function ActorCell({ entry }: { entry: AuditLogEntry }) {
+  if (!entry.actor_type) {
+    return <span className={`${CELL_LABEL} text-gray-400`}>Not recorded</span>;
+  }
+  const label = actorLabel(entry);
+  return (
+    <>
+      <span className={`${CELL_LABEL} text-gray-700`} title={label}>
+        {label}
+      </span>
+      {entry.actor_id ? (
+        <span className={CELL_ID} title={entry.actor_id}>
+          {entry.actor_id}
+        </span>
+      ) : entry.actor_type === 'admin_token' ? (
+        <span className="block truncate text-[11px] leading-4 text-gray-400">No account</span>
+      ) : null}
+    </>
+  );
+}
+
+function TargetCell({
+  entry,
+  onFilterUser,
+}: {
+  entry: AuditLogEntry;
+  onFilterUser: (userId: string) => void;
+}) {
+  const type = entry.target_type;
+  if (!type) {
+    // An older entry's target ID, shown as stored: it is not known to be a
+    // user, so it does not set the user filter.
+    return entry.target_user_id ? (
+      <>
+        <span className={`${CELL_LABEL} text-gray-400`}>Type not recorded</span>
+        <span className={CELL_ID} title={entry.target_user_id}>
+          {entry.target_user_id}
+        </span>
+      </>
+    ) : (
+      <span className="text-gray-300">—</span>
+    );
+  }
+  const label = targetTypeLabel(type);
+  const userId = filterableUserId(entry);
+  const id = entry.target_id ?? (type === 'user' ? entry.target_user_id : null);
+  return (
+    <>
+      <span className={`${CELL_LABEL} text-gray-700`} title={label}>
+        {label}
+      </span>
+      {userId ? (
+        <button
+          type="button"
+          onClick={() => onFilterUser(userId)}
+          title={userId}
+          aria-label={`Show entries affecting user ${userId}`}
+          className="block max-w-full truncate rounded text-left font-mono text-[11px] leading-4 text-gray-600 transition-colors duration-150 hover:text-gray-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+        >
+          {userId}
+        </button>
+      ) : id ? (
+        <span className={CELL_ID} title={id}>
+          {id}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The trusted request address when recorded. Otherwise an older entry's raw
+ * source value, marked as such and not read as an address or an account.
+ */
+function SourceCell({ entry }: { entry: AuditLogEntry }) {
+  const source = entry.source_ip;
+  if (source) {
+    return (
+      <span
+        className={`block truncate font-mono text-[12px] leading-5 ${
+          source === 'unknown' ? 'text-gray-400' : 'text-gray-500'
+        }`}
+        title={source}
+      >
+        {source}
+      </span>
+    );
+  }
+  if (!entry.actor_type && entry.admin_ip) {
+    return (
+      <>
+        <span
+          className="block truncate font-mono text-[12px] leading-5 text-gray-500"
+          title={entry.admin_ip}
+        >
+          {entry.admin_ip}
+        </span>
+        <span className="block text-[11px] leading-4 text-gray-400">Legacy record</span>
+      </>
+    );
+  }
+  return <span className={`${CELL_LABEL} text-gray-400`}>Not recorded</span>;
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -348,9 +541,13 @@ export function AuditTab() {
   const pending = auditLoading || !current;
   const hasPages = current && auditTotal > AUDIT_PAGE_SIZE;
   const clearFilters = () => setQueryParams({ action: null, user_id: null, offset: null });
+  const filterByUser = (userId: string) => setQueryParams({ user_id: userId, offset: null });
 
   return (
-    <AdminSection title="Audit log" description="Changes made by administrators, newest first.">
+    <AdminSection
+      title="Audit log"
+      description="Recorded changes, newest first, with the actor, affected object and source address. Includes administrator actions, self-service and registration."
+    >
       {/* Filters */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <label htmlFor={actionFilterId} className="sr-only">
@@ -381,7 +578,7 @@ export function AuditTab() {
           className="w-48"
         />
         <label htmlFor={userFilterId} className="sr-only">
-          Filter by user ID
+          Filter by affected user ID
         </label>
         <input
           id={userFilterId}
@@ -390,7 +587,7 @@ export function AuditTab() {
           onChange={(e) => {
             setQueryParams({ user_id: e.target.value || null, offset: null });
           }}
-          placeholder="Filter by user ID…"
+          placeholder="Filter by affected user ID…"
           spellCheck={false}
           className={`${CONTROL} w-full min-w-0 font-mono sm:w-72`}
         />
@@ -454,13 +651,14 @@ export function AuditTab() {
               }`}
               aria-busy={pending || undefined}
             >
-              <table className="w-full min-w-[52rem] table-fixed text-[13px]">
+              <table className="w-full min-w-[66rem] table-fixed text-[13px]">
                 <colgroup>
                   <col className="w-[8.5rem]" />
                   <col className="w-[11.5rem]" />
                   <col />
+                  <col className="w-[10.5rem]" />
+                  <col className="w-[10.5rem]" />
                   <col className="w-[8.5rem]" />
-                  <col className="w-[8rem]" />
                   <col className="w-12" />
                 </colgroup>
                 <thead className="bg-gray-50/80">
@@ -468,7 +666,8 @@ export function AuditTab() {
                     <th className={TABLE_HEAD_CELL}>Time</th>
                     <th className={TABLE_HEAD_CELL}>Action</th>
                     <th className={TABLE_HEAD_CELL}>Change</th>
-                    <th className={TABLE_HEAD_CELL}>User</th>
+                    <th className={TABLE_HEAD_CELL}>Actor</th>
+                    <th className={TABLE_HEAD_CELL}>Target</th>
                     <th className={`${TABLE_HEAD_CELL} text-right`}>Source</th>
                     <th className={TABLE_HEAD_CELL}>
                       <span className="sr-only">Details</span>
@@ -481,12 +680,9 @@ export function AuditTab() {
                     const badgeClass = entry.success
                       ? AUDIT_CATEGORY_CLASS[cat]
                       : 'bg-red-50 text-red-700';
-                    const absoluteTs = new Date(entry.timestamp).toLocaleString();
-                    const tid = entry.target_user_id;
-                    const tidDisplay = tid && tid.length > 12 ? `${tid.slice(0, 8)}…` : tid;
+                    const absoluteTs = new Date(entry.timestamp).toLocaleString('en-US');
                     const isOpen = expanded.has(entry.id);
                     const detailsId = `${baseId}-entry-${entry.id}`;
-                    const knownSource = entry.admin_ip && entry.admin_ip !== 'unknown';
                     return (
                       <Fragment key={entry.id}>
                         <tr
@@ -531,30 +727,13 @@ export function AuditTab() {
                             </div>
                           </td>
                           <td className="px-4 py-2.5 align-top">
-                            {tid ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setQueryParams({ user_id: tid, offset: null });
-                                }}
-                                title={tid}
-                                aria-label={`Filter by user ${tid}`}
-                                className="max-w-full truncate rounded font-mono text-[12px] text-gray-700 transition-colors duration-150 hover:text-gray-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
-                              >
-                                <span aria-hidden="true">{tidDisplay}</span>
-                                <span className="sr-only">{tid}</span>
-                              </button>
-                            ) : (
-                              <span className="text-gray-300">—</span>
-                            )}
+                            <ActorCell entry={entry} />
                           </td>
-                          <td
-                            className={`truncate px-4 py-2.5 text-right align-top font-mono text-[12px] ${
-                              knownSource ? 'text-gray-500' : 'text-gray-400'
-                            }`}
-                            title={entry.admin_ip}
-                          >
-                            {entry.admin_ip}
+                          <td className="px-4 py-2.5 align-top">
+                            <TargetCell entry={entry} onFilterUser={filterByUser} />
+                          </td>
+                          <td className="px-4 py-2.5 text-right align-top">
+                            <SourceCell entry={entry} />
                           </td>
                           <td className="py-2 pr-3 text-right align-top">
                             <button
@@ -576,7 +755,7 @@ export function AuditTab() {
                               entry.success ? 'bg-gray-50/60' : 'bg-red-50/50'
                             }`}
                           >
-                            <td colSpan={6} className="px-4 pb-4 pt-1">
+                            <td colSpan={7} className="px-4 pb-4 pt-1">
                               <EntryDetails entry={entry} />
                             </td>
                           </tr>

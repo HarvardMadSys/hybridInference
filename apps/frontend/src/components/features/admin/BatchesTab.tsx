@@ -53,7 +53,7 @@ function usd(value: number): string {
 }
 
 function when(epoch: number | null): string {
-  return epoch ? new Date(epoch * 1000).toLocaleString() : '—';
+  return epoch ? new Date(epoch * 1000).toLocaleString('en-US') : '—';
 }
 
 /** Done / total of a batch, whichever protocol's tallies it has. */

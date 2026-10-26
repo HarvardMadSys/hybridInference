@@ -22,12 +22,14 @@ logger = get_logger(__name__)
 ROUTEWISE_SETTING_FIELDS: dict[str, str] = {
     "routewise_budget_alpha": "budget_alpha",
     "routewise_latency_slo_sec": "latency_slo_sec",
-    "routewise_latency_min_samples": "latency_min_samples",
     "routewise_probe_enabled": "routewise_probe_enabled",
     "routewise_probe_interval_sec": "routewise_probe_interval_sec",
 }
 ROUTEWISE_SETTING_KEYS: tuple[str, ...] = tuple(ROUTEWISE_SETTING_FIELDS)
 MODEL_ROUTEWISE_SETTING_PREFIX = "model_routewise_setting:"
+#: Settings RouteWise no longer has. Their rows may still be stored, globally
+#: or per model; nothing resolves them, and a configuration backup drops them.
+RETIRED_ROUTEWISE_SETTING_KEYS: tuple[str, ...] = ("routewise_latency_min_samples",)
 
 RouteWiseSettingSource = Literal[
     "runtime_override",
@@ -60,6 +62,14 @@ def model_routewise_setting_keys(canonical_model_id: str) -> tuple[str, ...]:
     return tuple(
         model_routewise_setting_key(routewise_key, canonical_model_id)
         for routewise_key in ROUTEWISE_SETTING_KEYS
+    )
+
+
+def is_retired_routewise_setting_row(setting_key: str) -> bool:
+    """Return whether ``site_settings`` row *setting_key* holds a retired RouteWise setting."""
+    return any(
+        setting_key == key or setting_key.startswith(f"{MODEL_ROUTEWISE_SETTING_PREFIX}{key}:")
+        for key in RETIRED_ROUTEWISE_SETTING_KEYS
     )
 
 
@@ -100,7 +110,7 @@ def _coerce_setting_value(key: str, raw: Any) -> bool | int | float:
         value = float(raw)
         if not math.isfinite(value):
             raise ValueError(f"non-finite numeric value for {key}: {raw!r}")
-    else:  # pragma: no cover - registry contract for the five curated keys
+    else:  # pragma: no cover - registry contract for the four curated keys
         raise TypeError(f"unsupported RouteWise setting type: {value_type}")
 
     minimum = entry.get("min")
@@ -317,7 +327,7 @@ class RouteWiseSettingsResolver:
             try:
                 # load_all() already fetched the complete site_settings table;
                 # reuse it so every worker poll is one DB query, not one list
-                # plus five point reads. Direct refresh callers retain the
+                # plus four point reads. Direct refresh callers retain the
                 # point-read path.
                 row = listed_rows.get(key) if listed_rows is not None else None
                 if listed_rows is None:
@@ -357,7 +367,7 @@ async def apply_routewise_settings_to_router(
     *,
     refresh_probe_task: bool = False,
 ) -> dict[str, ResolvedRouteWiseSetting]:
-    """Atomically replace the five effective settings on one RouteWise router."""
+    """Atomically replace the four effective settings on one RouteWise router."""
     canonical_model_id = registry.canonical_model_id(model_id)
     resolved = await resolver.resolve_model(canonical_model_id)
     router.apply_runtime_overrides(
@@ -370,11 +380,13 @@ async def apply_routewise_settings_to_router(
 
 __all__ = [
     "MODEL_ROUTEWISE_SETTING_PREFIX",
+    "RETIRED_ROUTEWISE_SETTING_KEYS",
     "ROUTEWISE_SETTING_FIELDS",
     "ROUTEWISE_SETTING_KEYS",
     "ResolvedRouteWiseSetting",
     "RouteWiseSettingsResolver",
     "apply_routewise_settings_to_router",
+    "is_retired_routewise_setting_row",
     "model_routewise_setting_key",
     "model_routewise_setting_keys",
 ]

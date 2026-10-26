@@ -87,7 +87,7 @@ const BASE_REQUEST = {
   subject: 'Hello',
   body_markdown: 'Hi there',
   body_text: '',
-  target_roles: ['free', 'internal', 'admin'],
+  target_roles: ['free', 'pro', 'internal', 'admin'],
   target_statuses: ['active'],
   min_spend_today_usd: null,
 };
@@ -180,7 +180,11 @@ describe('BroadcastsTab', () => {
       expect(screen.getByLabelText('Subject')).toBeInTheDocument();
       expect(screen.getByLabelText('Body (Markdown)')).toBeInTheDocument();
       expect(screen.getByLabelText('Minimum spend today (USD)')).toBeInTheDocument();
-      expect(screen.getByRole('group', { name: 'Roles' })).toBeInTheDocument();
+      const roles = screen.getByRole('group', { name: 'Roles' });
+      // Every role, pro included, receives the broadcast unless it is unticked.
+      for (const role of ['free', 'pro', 'internal', 'admin']) {
+        expect(within(roles).getByRole('checkbox', { name: role })).toBeChecked();
+      }
       expect(screen.getByRole('group', { name: 'Statuses' })).toBeInTheDocument();
       expect(screen.getByRole('radio', { name: 'Send now' })).toBeChecked();
     });
@@ -332,7 +336,7 @@ describe('BroadcastsTab', () => {
       });
       expect(review).toHaveTextContent('Recipients12 matching right now');
       expect(review).toHaveTextContent('SubjectHello');
-      expect(review).toHaveTextContent('Rolesfree, internal, admin');
+      expect(review).toHaveTextContent('Rolesfree, pro, internal, admin');
       expect(review).toHaveTextContent('Statusesactive');
       expect(review).toHaveTextContent('DeliveryImmediately');
       expect(review).toHaveTextContent('cannot be recalled');
@@ -372,9 +376,9 @@ describe('BroadcastsTab', () => {
       const review = await screen.findByRole('dialog', {
         name: 'Send this broadcast to 7 recipients now?',
       });
-      expect(review).toHaveTextContent('Rolesinternal, admin');
+      expect(review).toHaveTextContent('Rolespro, internal, admin');
       expect(vi.mocked(previewBroadcast).mock.calls[1]).toEqual([
-        { ...BASE_REQUEST, target_roles: ['internal', 'admin'] },
+        { ...BASE_REQUEST, target_roles: ['pro', 'internal', 'admin'] },
       ]);
       expect(createBroadcast).not.toHaveBeenCalled();
     });
@@ -477,7 +481,7 @@ describe('BroadcastsTab', () => {
       const review = await screen.findByRole('dialog', {
         name: 'Schedule this broadcast for 3 recipients?',
       });
-      expect(review).toHaveTextContent(`Delivery${when.toLocaleString()}`);
+      expect(review).toHaveTextContent(`Delivery${when.toLocaleString('en-US')}`);
       expect(review).toHaveTextContent('Spend today (UTC)More than $5');
       expect(review).toHaveTextContent('can be cancelled from Send History');
       expect(createBroadcast).not.toHaveBeenCalled();
@@ -593,7 +597,7 @@ describe('BroadcastsTab', () => {
         name: 'Cancel the scheduled broadcast “November maintenance”?',
       });
       expect(review).toHaveTextContent('It will not be sent to its 42 recipients');
-      expect(review).toHaveTextContent(new Date(SCHEDULED.scheduled_at!).toLocaleString());
+      expect(review).toHaveTextContent(new Date(SCHEDULED.scheduled_at!).toLocaleString('en-US'));
       expect(nativeConfirm).not.toHaveBeenCalled();
       expect(getBroadcastDetail).not.toHaveBeenCalled();
 

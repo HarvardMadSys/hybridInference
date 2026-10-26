@@ -16,7 +16,7 @@ import {
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
 import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import type { AdminModelConcurrencyItem } from '@/lib/api/admin';
@@ -32,8 +32,8 @@ interface ModelConcurrencySectionProps {
 const exemptLabel = (exempt: boolean) => (exempt ? 'Exempt' : 'Not exempt');
 
 /**
- * Per-model exemption from the per-user concurrency limit. Read-only until
- * Edit; the changed models are saved together after confirmation.
+ * Per-model exemption from the per-user concurrency limit. The checkboxes are
+ * edited in place; the changed models are saved together after confirmation.
  */
 export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProps) {
   const queryClient = useQueryClient();
@@ -41,7 +41,6 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
   const [models, setModels] = useState<AdminModelConcurrencyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, boolean>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -75,7 +74,6 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
     if (confirmation.busy) return;
     setDrafts({});
     setSaveError(null);
-    setEditing(false);
   };
 
   const changed = models.filter((model) => model.model_id in drafts);
@@ -122,7 +120,6 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
         void queryClient.invalidateQueries({ queryKey: ['user', 'models'] });
         setSaveError(failure);
         if (failure) return;
-        setEditing(false);
         onToast(
           pending.length === 1
             ? `Updated concurrency exemption for ${pending[0].model.model_id}.`
@@ -136,11 +133,6 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
     <AdminSection
       title={SECTION}
       description="Exempt a model from the per-user concurrency limit. Requests to an exempt model do not count toward a user's normal in-flight request cap, but are still limited to at most 64 concurrent requests per user."
-      actions={
-        !editing && !loading && models.length > 0 ? (
-          <EditButton target={SECTION} onClick={() => setEditing(true)} />
-        ) : null
-      }
     >
       {error && (
         <div className="mb-3">
@@ -162,7 +154,7 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
         <AdminEmptyState title="No models available." />
       ) : (
         <div
-          className={`${PANEL} relative overflow-x-auto ${editing ? 'border-gray-400 shadow-sm' : ''}`}
+          className={`${PANEL} relative overflow-x-auto ${changed.length > 0 ? 'border-gray-400 shadow-sm' : ''}`}
         >
           <table className="w-full min-w-[28rem] text-[13px]">
             <thead className="bg-gray-50/80">
@@ -180,20 +172,14 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
                       {model.model_id}
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      {editing ? (
-                        <input
-                          type="checkbox"
-                          aria-label={`Concurrency exemption for ${model.model_id}`}
-                          className={CHECKBOX}
-                          disabled={confirmation.busy}
-                          checked={exempt}
-                          onChange={(e) => changeDraft(model, e.target.checked)}
-                        />
-                      ) : (
-                        <output aria-label={`Concurrency exemption for ${model.model_id}`}>
-                          {exemptLabel(model.exempt)}
-                        </output>
-                      )}
+                      <input
+                        type="checkbox"
+                        aria-label={`Concurrency exemption for ${model.model_id}`}
+                        className={CHECKBOX}
+                        disabled={confirmation.busy}
+                        checked={exempt}
+                        onChange={(e) => changeDraft(model, e.target.checked)}
+                      />
                     </td>
                   </tr>
                 );
@@ -203,16 +189,15 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
         </div>
       )}
 
-      {editing ? (
-        <EditBar
-          target={SECTION}
-          changeCount={changed.length}
-          onCancel={cancel}
-          onSave={save}
-          busy={confirmation.busy}
-          error={saveError}
-        />
-      ) : null}
+      <EditBar
+        target={SECTION}
+        changeCount={changed.length}
+        onCancel={cancel}
+        onSave={save}
+        busy={confirmation.busy}
+        error={saveError}
+        inPlace
+      />
       {confirmation.dialog}
     </AdminSection>
   );

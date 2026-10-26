@@ -14,6 +14,7 @@ from routing.offload import OffloadPolicy
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.adapters.upstream_limiter import UpstreamConcurrencyLimiter, reset_upstream_limiter
+from serving.audit import AuditTarget
 from serving.config.offload_routes import (
     AppliedOffloadPolicies,
     OffloadRouteResolver,
@@ -219,9 +220,10 @@ async def test_put_stores_the_policy_and_routing_applies_it_at_once(offload_clie
     picks = {router.select_adapter(MODEL).config.provider for _ in range(200)}
     assert picks <= {"primary", "sibling"}
 
-    action = audit.await_args.args[2]
-    details = audit.await_args.args[4]
+    action = audit.await_args.kwargs["action"]
+    details = audit.await_args.kwargs["details"]
     assert action == "routing.offload_routes.update"
+    assert audit.await_args.kwargs["target"] == AuditTarget.model(MODEL)
     assert details["route_id"] == RESERVED_ROUTE_ID
     assert details["old_route_id"] is None
 
@@ -234,7 +236,7 @@ async def test_put_replaces_an_existing_policy_and_audits_the_old_one(offload_cl
 
     assert response.status_code == 200
     assert response.json()["offload"]["route_id"] == SIBLING
-    details = audit.await_args.args[4]
+    details = audit.await_args.kwargs["details"]
     assert details["old_route_id"] == RESERVED_ROUTE_ID
     assert details["old_wait_seconds"] == 4.0
 
@@ -309,7 +311,7 @@ async def test_put_stores_an_engine_queue_limit_and_routing_applies_it(offload_c
         "wait_seconds": 4.0,
     }
     assert resolver.get_offload_policy(MODEL) == OffloadPolicy(RESERVED_ROUTE_ID, 4.0, 3)
-    details = audit.await_args.args[4]
+    details = audit.await_args.kwargs["details"]
     assert details["engine_queue_limit"] == 3
     assert details["old_engine_queue_limit"] is None
 
@@ -329,7 +331,7 @@ async def test_put_without_an_engine_queue_limit_clears_it(offload_client):
     _key, value, _value_type, _updated_by = op_store.set_setting.await_args.args
     assert "engine_queue_limit" not in json.loads(value)
     assert resolver.get_offload_policy(MODEL).engine_queue_limit is None
-    assert audit.await_args.args[4]["old_engine_queue_limit"] == 3
+    assert audit.await_args.kwargs["details"]["old_engine_queue_limit"] == 3
 
 
 @pytest.mark.parametrize("limit", [0, -2, 1.5, True, "3"])
@@ -370,7 +372,7 @@ async def test_put_stores_a_max_input_and_routing_applies_it(offload_client):
     assert resolver.get_offload_policy(MODEL) == OffloadPolicy(
         RESERVED_ROUTE_ID, 4.0, max_input_tokens=32000
     )
-    details = audit.await_args.args[4]
+    details = audit.await_args.kwargs["details"]
     assert details["max_input_tokens"] == 32000
     assert details["old_max_input_tokens"] is None
 
@@ -393,7 +395,7 @@ async def test_put_without_a_max_input_clears_it(offload_client):
     _key, value, _value_type, _updated_by = op_store.set_setting.await_args.args
     assert "max_input_tokens" not in json.loads(value)
     assert resolver.get_offload_policy(MODEL).max_input_tokens is None
-    assert audit.await_args.args[4]["old_max_input_tokens"] == 8000
+    assert audit.await_args.kwargs["details"]["old_max_input_tokens"] == 8000
 
 
 @pytest.mark.parametrize("max_input", [0, -2, 1.5, True, "3"])
@@ -475,7 +477,7 @@ async def test_delete_clears_the_policy_and_is_idempotent(offload_client):
     assert response.json() == {"model_id": MODEL, "offload": None}
     op_store.delete_setting.assert_awaited_with(f"model_offload_route:{MODEL}")
     assert resolver.get_offload_policy(MODEL) is None
-    assert audit.await_args.args[2] == "routing.offload_routes.clear"
+    assert audit.await_args.kwargs["action"] == "routing.offload_routes.clear"
 
     audit.reset_mock()
     op_store.delete_setting.return_value = False
@@ -495,8 +497,8 @@ async def test_delete_audits_the_engine_queue_limit_it_cleared(offload_client):
     response = await client.delete(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
 
     assert response.status_code == 200
-    assert audit.await_args.args[2] == "routing.offload_routes.clear"
-    assert audit.await_args.args[4]["old_engine_queue_limit"] == 2
+    assert audit.await_args.kwargs["action"] == "routing.offload_routes.clear"
+    assert audit.await_args.kwargs["details"]["old_engine_queue_limit"] == 2
 
 
 async def test_delete_audits_the_max_input_it_cleared(offload_client):
@@ -509,8 +511,8 @@ async def test_delete_audits_the_max_input_it_cleared(offload_client):
 
     await client.delete(f"/admin/routing/offload-routes/{MODEL}", headers=AUTH)
 
-    assert audit.await_args.args[2] == "routing.offload_routes.clear"
-    assert audit.await_args.args[4]["old_max_input_tokens"] == 16000
+    assert audit.await_args.kwargs["action"] == "routing.offload_routes.clear"
+    assert audit.await_args.kwargs["details"]["old_max_input_tokens"] == 16000
 
 
 async def test_delete_works_for_a_model_that_no_longer_exists(offload_client):

@@ -80,9 +80,9 @@ function clickInDialog(name: string) {
   fireEvent.click(within(dialog()).getByRole('button', { name }));
 }
 
-async function openTierEditor() {
+async function renderTiers() {
   render(<ProviderKeysTab />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit tiers zai key tiers' }));
+  await screen.findAllByRole('combobox', { name: /^Reserved tier for key / });
 }
 
 function saveTiers() {
@@ -161,37 +161,39 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(screen.getByRole('form', { name: 'Add a new key' })).toBeInTheDocument();
   });
 
-  it('shows reservations read-only until Edit, then as editable selectors', async () => {
+  it('edits reservations in place, with no Edit step and no save bar until a change', async () => {
     render(<ProviderKeysTab />);
 
-    const value = await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
-    expect(value.tagName).toBe('OUTPUT');
-    expect(value).toHaveTextContent('pro+');
-    expect(screen.queryByRole('combobox', { name: /Reserved tier/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit tiers zai key tiers' }));
-    const select = screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+    const select = await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+    expect(screen.queryByRole('button', { name: /^Edit tiers/ })).toBeNull();
     expect(select).toHaveAttribute('data-value', 'pro');
     expect(within(openOptions(select)).getByRole('option', { name: 'shared' })).toBeInTheDocument();
     expect(within(openOptions(select)).getByRole('option', { name: 'pro+' })).toBeInTheDocument();
     fireEvent.keyDown(select, { key: 'Escape' });
-    expect(screen.getByText('No changes yet')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to zai key tiers' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
+    // Nothing is unsaved, so the provider can be switched.
+    expect(screen.getByLabelText('Selected provider')).toBeEnabled();
+
+    chooseValue(select, 'internal');
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Save changes to zai key tiers' })).toBeEnabled();
+    expect(setProviderKeyMinRole).not.toHaveBeenCalled();
     // Drafts belong to this provider's keys, so switching provider waits.
     expect(screen.getByLabelText('Selected provider')).toBeDisabled();
   });
 
-  it('keeps tier changes as drafts: Cancel writes nothing and restores the saved tier', async () => {
-    await openTierEditor();
+  it('keeps tier changes as drafts: Discard writes nothing and restores the saved tier', async () => {
+    await renderTiers();
     chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
     expect(setProviderKeyMinRole).not.toHaveBeenCalled();
     expect(screen.getByText('1 unsaved change')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing zai key tiers' }));
-    expect(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`)).toHaveTextContent(
-      'pro+',
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to zai key tiers' }));
+    expect(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`)).toHaveAttribute(
+      'data-value',
+      'pro',
     );
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
     expect(setProviderKeyMinRole).not.toHaveBeenCalled();
     expect(setProviderEnvKeyMinRole).not.toHaveBeenCalled();
     // With the drafts gone, the provider can be switched again.
@@ -199,15 +201,16 @@ describe('ProviderKeysTab tier reservation', () => {
   });
 
   it('treats a tier changed back to its saved value as no change', async () => {
-    await openTierEditor();
+    await renderTiers();
     const select = screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
     chooseValue(select, 'internal');
     chooseValue(select, 'pro');
-    expect(screen.getByRole('button', { name: 'Save changes to zai key tiers' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes to zai key tiers' })).toBeNull();
+    expect(screen.getByLabelText('Selected provider')).toBeEnabled();
   });
 
   it('re-tiers a key through the endpoint only after the change is confirmed', async () => {
-    await openTierEditor();
+    await renderTiers();
     chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
     saveTiers();
 
@@ -229,13 +232,13 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(vi.mocked(setProviderKeyMinRole).mock.calls).toEqual([['key-1', 'internal']]);
     expect(setProviderEnvKeyMinRole).not.toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith('Key reserved for internal and above');
-    expect(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`).tagName).toBe(
-      'OUTPUT',
-    );
+    // Nothing is left unsaved, so the save bar goes and the provider is free again.
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
+    expect(screen.getByLabelText('Selected provider')).toBeEnabled();
   });
 
   it('drafts a tier only on a deliberate choice of a different tier, and never writes from the select', async () => {
-    await openTierEditor();
+    await renderTiers();
 
     const select = screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
     // Browsing and dismissing changes nothing.
@@ -244,8 +247,7 @@ describe('ProviderKeysTab tier reservation', () => {
     fireEvent.keyDown(select, { key: 'Escape' });
     // Nor does choosing the tier it already has.
     chooseValue(select, 'pro');
-    expect(screen.getByText('No changes yet')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to zai key tiers' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes to zai key tiers' })).toBeNull();
 
     // A different tier is a draft, still not a write.
     chooseValue(select, 'internal');
@@ -259,7 +261,7 @@ describe('ProviderKeysTab tier reservation', () => {
   });
 
   it('re-tiers an env key through the env endpoint', async () => {
-    await openTierEditor();
+    await renderTiers();
     const select = screen.getByLabelText(`Reserved tier for key ${envKey.key_prefix}`);
     expect(select).toHaveAttribute('data-value', 'free');
 
@@ -284,7 +286,7 @@ describe('ProviderKeysTab tier reservation', () => {
       min_role: 'admin',
       pools_updated: 0,
     });
-    await openTierEditor();
+    await renderTiers();
     chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'free');
     chooseValue(screen.getByLabelText(`Reserved tier for key ${envKey.key_prefix}`), 'admin');
     expect(screen.getByText('2 unsaved changes')).toBeVisible();
@@ -309,7 +311,7 @@ describe('ProviderKeysTab tier reservation', () => {
           finish = resolve;
         }),
     );
-    await openTierEditor();
+    await renderTiers();
     chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
     saveTiers();
     clickInDialog('Confirm save');
@@ -328,7 +330,7 @@ describe('ProviderKeysTab tier reservation', () => {
 
   it('keeps the dialog and drafts after a failed tier save, and retries from the dialog', async () => {
     vi.mocked(setProviderKeyMinRole).mockRejectedValueOnce(new Error('write failed'));
-    await openTierEditor();
+    await renderTiers();
     chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
     saveTiers();
     clickInDialog('Confirm save');
@@ -348,7 +350,7 @@ describe('ProviderKeysTab tier reservation', () => {
 
   it('reports a partial tier save and retries only the unsaved key', async () => {
     vi.mocked(setProviderEnvKeyMinRole).mockRejectedValueOnce(new Error('write failed'));
-    await openTierEditor();
+    await renderTiers();
     chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
     chooseValue(screen.getByLabelText(`Reserved tier for key ${envKey.key_prefix}`), 'pro');
     saveTiers();
@@ -378,7 +380,7 @@ describe('ProviderKeysTab tier reservation', () => {
       provider: 'zai',
       keys: [dbKey, { ...envKey, id: null, min_role: 'pro' }],
     });
-    await openTierEditor();
+    await renderTiers();
 
     const row = keyRow(envKey.key_prefix);
     expect(within(row).queryByRole('combobox')).not.toBeInTheDocument();
@@ -393,7 +395,8 @@ describe('ProviderKeysTab tier reservation', () => {
     render(<ProviderKeysTab />);
 
     await screen.findByText(envKey.key_prefix);
-    expect(screen.queryByRole('button', { name: /^Edit tiers/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /^Reserved tier/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument();
   });
 
   it('opens the add form only from Add key, and Cancel closes it without writing', async () => {
@@ -461,10 +464,10 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(addProviderKey).toHaveBeenCalledTimes(2);
   });
 
-  // Adding a key switches the page to the key's provider, which would leave open
-  // tier drafts for the provider shown now with no Save or Cancel.
-  describe('while tier edits are open', () => {
-    const LOCKED = 'Save or cancel the open edit first';
+  // Adding a key switches the page to the key's provider, which would leave
+  // unsaved tier drafts for the provider shown now with no Save or Discard.
+  describe('while tier changes are unsaved', () => {
+    const LOCKED = 'Save or discard the tier changes first';
 
     beforeEach(() => {
       vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['chutes', 'zai'] });
@@ -474,28 +477,33 @@ describe('ProviderKeysTab tier reservation', () => {
       });
     });
 
-    it('holds Add key until the tier edit is saved or cancelled', async () => {
+    it('holds Add key until the tier changes are saved or discarded', async () => {
       render(<ProviderKeysTab initialProvider="zai" />);
-      fireEvent.click(await screen.findByRole('button', { name: 'Edit tiers zai key tiers' }));
-      chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
+      const addKey = await screen.findByRole('button', { name: 'Add key' });
+      expect(addKey).toBeEnabled();
+      chooseValue(
+        await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`),
+        'internal',
+      );
       expect(screen.getByText('1 unsaved change')).toBeVisible();
 
-      const addKey = screen.getByRole('button', { name: 'Add key' });
       expect(addKey).toBeDisabled();
       expect(addKey).toHaveAttribute('title', LOCKED);
 
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing zai key tiers' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Discard changes to zai key tiers' }));
       expect(addKey).toBeEnabled();
       expect(addKey).not.toHaveAttribute('title');
     });
 
-    it('holds the review of a key for another provider while a tier edit opened after it is open', async () => {
+    it('holds the review of a key for another provider while tier changes made after it are unsaved', async () => {
       render(<ProviderKeysTab initialProvider="zai" />);
       const form = await openAddForm();
       chooseValue(screen.getByLabelText('Provider'), 'chutes');
       fireEvent.change(screen.getByLabelText('API key'), { target: { value: NEW_SECRET } });
-      fireEvent.click(screen.getByRole('button', { name: 'Edit tiers zai key tiers' }));
-      chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
+      chooseValue(
+        await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`),
+        'internal',
+      );
 
       const review = screen.getByRole('button', { name: 'Review key' });
       expect(review).toBeDisabled();
@@ -505,8 +513,8 @@ describe('ProviderKeysTab tier reservation', () => {
       expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
       expect(screen.getByText('1 unsaved change')).toBeVisible();
 
-      // Once the tier edit is cancelled, the key is reviewed and added as before.
-      fireEvent.click(screen.getByRole('button', { name: 'Cancel editing zai key tiers' }));
+      // Once the tier changes are discarded, the key is reviewed and added as before.
+      fireEvent.click(screen.getByRole('button', { name: 'Discard changes to zai key tiers' }));
       expect(review).toBeEnabled();
       fireEvent.submit(form);
       clickInDialog('Add key');
@@ -554,6 +562,27 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(vi.mocked(deleteProviderKey).mock.calls).toEqual([['key-1']]);
     expect(toast.success).toHaveBeenCalledWith('Key deleted');
     expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it('brings up no tier save bar while a key action is in flight', async () => {
+    let finish!: (value: Awaited<ReturnType<typeof deleteProviderKey>>) => void;
+    vi.mocked(deleteProviderKey).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<ProviderKeysTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete key ${dbKey.key_prefix}` }));
+    clickInDialog('Delete');
+    expect(within(dialog()).getByRole('button', { name: 'Deleting…' })).toBeDisabled();
+    // The confirmation is shared, but no tier is changed, so there is nothing to save.
+    expect(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`)).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
+
+    finish({ id: 'key-1', provider: 'zai', pools_updated: 1 });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
   it('keeps the delete confirmation open with the error when deleting fails', async () => {
@@ -643,7 +672,7 @@ describe('ProviderKeysTab tier reservation', () => {
       provider: 'zai',
       keys: [{ ...envKey, min_role: 'pro', reservation_only: true }],
     });
-    await openTierEditor();
+    await renderTiers();
 
     const row = keyRow(envKey.key_prefix);
     expect(
@@ -660,14 +689,10 @@ describe('ProviderKeysTab tier reservation', () => {
     });
     render(<ProviderKeysTab />);
 
-    // Read-only, the row shows what it declares...
-    expect(
-      await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`),
-    ).toHaveTextContent('shared');
-    fireEvent.click(screen.getByRole('button', { name: 'Edit tiers zai key tiers' }));
-    const select = screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+    const select = await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
     // The selector shows what this row declares — that is what editing changes.
     expect(select).toHaveAttribute('data-value', 'free');
+    expect(select).toHaveTextContent('shared');
     // ...and the tier actually in force is called out, so the edit does not look
     // like it did nothing.
     expect(screen.getByText('internal+ enforced')).toBeInTheDocument();

@@ -113,6 +113,23 @@ describe('SettingsTab role quota', () => {
     expect(api.applyRoleQuota).toHaveBeenCalledTimes(1);
   });
 
+  it('holds Apply back while its quota has an unsaved change', async () => {
+    const api = await import('@/lib/api/admin');
+    renderSettings();
+
+    // Applying writes the saved quota, not the one being typed.
+    const apply = await screen.findByRole('button', { name: /apply to existing users/i });
+    fireEvent.change(screen.getByLabelText('user_daily_quota_pro value'), {
+      target: { value: '300' },
+    });
+    expect(apply).toBeDisabled();
+    fireEvent.click(apply);
+    expect(api.previewRoleQuotaApply).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Numeric Settings' }));
+    expect(apply).toBeEnabled();
+  });
+
   it('keeps an open Remove confirmation when the quota preview arrives after it', async () => {
     const api = await import('@/lib/api/admin');
     vi.mocked(api.listSignupAllowedDomains).mockResolvedValue({

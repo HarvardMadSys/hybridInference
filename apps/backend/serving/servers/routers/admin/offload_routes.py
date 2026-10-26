@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
 from routing.offload import OffloadPolicy
 from serving.adapters.upstream_limiter import get_upstream_limiter
+from serving.audit import AuditActor, AuditTarget
 from serving.config.offload_routes import (
     OFFLOAD_ROUTE_VALUE_TYPE,
     OffloadRouteRecord,
@@ -42,6 +43,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_operational_store,
     get_services,
     model_router_transition_lock,
@@ -248,6 +250,7 @@ async def set_offload_route(
     model_id: str,
     payload: UpdateOffloadRouteRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ModelOffloadRouteResponse:
@@ -316,10 +319,10 @@ async def set_offload_route(
         )
         await log_admin_action(
             op_store,
-            admin_id,
-            "routing.offload_routes.update",
-            None,
-            {
+            action="routing.offload_routes.update",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
                 "model_id": model_id,
                 "route_id": policy.route_id,
                 "endpoint_id": endpoint_id,
@@ -347,7 +350,7 @@ async def set_offload_route(
 )
 async def clear_offload_route(
     model_id: str,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ModelOffloadRouteResponse:
@@ -372,10 +375,10 @@ async def clear_offload_route(
         if previous is not None or removed:
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.offload_routes.clear",
-                None,
-                {
+                action="routing.offload_routes.clear",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "old_route_id": previous.policy.route_id if previous is not None else None,
                     "old_wait_seconds": (
