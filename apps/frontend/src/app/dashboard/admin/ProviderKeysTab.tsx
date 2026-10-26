@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { ChangeList, plural, shown } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
@@ -31,6 +31,9 @@ interface Props {
 }
 
 const MIN_ROLES: ProviderKeyMinRole[] = ['free', 'pro', 'internal', 'admin'];
+
+// Why adding a key waits: it would switch away from unsaved tier changes.
+const TIERS_LOCKED = 'Save or discard the tier changes first';
 
 // Label for the reservation column. 'free' is the absence of a reservation, so
 // it reads as "shared" rather than as a tier name.
@@ -82,7 +85,6 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   const [verifyingKey, setVerifyingKey] = useState(false);
   const [verifiedKeySignature, setVerifiedKeySignature] = useState<string | null>(null);
 
-  const [editingTiers, setEditingTiers] = useState(false);
   // draftId → the chosen tier; only real changes are kept.
   const [tierDrafts, setTierDrafts] = useState<Record<string, ProviderKeyMinRole>>({});
   const [tierSaveError, setTierSaveError] = useState<string | null>(null);
@@ -133,6 +135,14 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     onProviderChange?.(selectedProvider);
   }, [onProviderChange, selectedProvider]);
 
+  // Tier drafts and their error belong to the provider shown, so a switch drops
+  // what is left of them; it is only possible while no tier change is unsaved.
+  const showProvider = (provider: string) => {
+    setSelectedProvider(provider);
+    setTierDrafts({});
+    setTierSaveError(null);
+  };
+
   const resetAddForm = () => {
     setFormApiKey('');
     setFormLabel('');
@@ -147,7 +157,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   // Review what will be created; only "Add key" in the confirmation writes it.
   const onReviewAdd = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (editingTiers || !providers.includes(formProvider) || !formApiKey.trim()) return;
+    if (tiersChanged || !providers.includes(formProvider) || !formApiKey.trim()) return;
     const provider = formProvider;
     const apiKey = formApiKey.trim();
     const label = formLabel.trim();
@@ -190,7 +200,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
         if (provider === selectedProvider) {
           await loadKeys(selectedProvider);
         } else {
-          setSelectedProvider(provider);
+          showProvider(provider);
         }
       },
     });
@@ -314,8 +324,10 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   );
 
   const tiersTarget = `${selectedProvider} key tiers`;
-  const tierEditable = sortedKeys.some((k) => k.id);
   const changedTiers = sortedKeys.filter((k) => k.id && draftId(k) in tierDrafts);
+  // Unsaved tier changes hold the provider selector and adding a key, which
+  // would switch the page to another provider's keys.
+  const tiersChanged = changedTiers.length > 0;
 
   const changeTierDraft = (key: ProviderApiKeyItem, value: ProviderKeyMinRole) => {
     setTierDrafts((prev) => {
@@ -330,7 +342,6 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     if (confirmation.busy) return;
     setTierDrafts({});
     setTierSaveError(null);
-    setEditingTiers(false);
   };
 
   const saveTiers = () => {
@@ -396,8 +407,6 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
         }
         await loadKeys(provider);
         setTierSaveError(failure);
-        if (failure) return;
-        setEditingTiers(false);
       },
     });
   };
@@ -415,7 +424,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
           id="provider-keys-select"
           value={selectedProvider}
           onValueChange={(next) => {
-            setSelectedProvider(next);
+            showProvider(next);
             setFormProvider(next);
           }}
           options={[
@@ -426,8 +435,8 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
           ]}
           placeholder="(no providers loaded)"
           searchPlaceholder="Search providers…"
-          // Tier drafts belong to this provider's keys; finish or cancel them first.
-          disabled={editingTiers}
+          // Tier drafts belong to this provider's keys; save or discard them first.
+          disabled={tiersChanged}
           size="lg"
           className="mt-1 w-full max-w-xs"
         />
@@ -440,19 +449,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
       )}
 
       <div hidden={!providers.includes(selectedProvider)}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-[14px] font-semibold text-gray-900">Configured keys</h3>
-          {!editingTiers && !loading && tierEditable ? (
-            <EditButton
-              target={tiersTarget}
-              label="Edit tiers"
-              onClick={() => {
-                setTierSaveError(null);
-                setEditingTiers(true);
-              }}
-            />
-          ) : null}
-        </div>
+        <h3 className="text-[14px] font-semibold text-gray-900">Configured keys</h3>
         {loading ? (
           <div className="flex justify-center py-12">
             <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
@@ -519,28 +516,19 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                       <td className="px-3 py-2">
                         {k.id ? (
                           <div className="flex items-center gap-1.5">
-                            {editingTiers ? (
-                              <Select<ProviderKeyMinRole>
-                                aria-label={`Reserved tier for key ${k.key_prefix}`}
-                                value={tierDrafts[draftId(k)] ?? declaredTier(k)}
-                                // A draft only; Save changes reviews it and Confirm writes.
-                                onValueChange={(next) => changeTierDraft(k, next)}
-                                disabled={confirmation.busy}
-                                options={MIN_ROLES.map((r) => ({
-                                  value: r,
-                                  label: minRoleLabel(r),
-                                }))}
-                                size="sm"
-                                className={`w-28 ${drafted ? '!border-amber-400' : ''}`}
-                              />
-                            ) : (
-                              <output
-                                aria-label={`Reserved tier for key ${k.key_prefix}`}
-                                className="text-[12px] text-gray-700"
-                              >
-                                {minRoleLabel(declaredTier(k))}
-                              </output>
-                            )}
+                            <Select<ProviderKeyMinRole>
+                              aria-label={`Reserved tier for key ${k.key_prefix}`}
+                              value={tierDrafts[draftId(k)] ?? declaredTier(k)}
+                              // A draft only; Save changes reviews it and Confirm writes.
+                              onValueChange={(next) => changeTierDraft(k, next)}
+                              disabled={confirmation.busy}
+                              options={MIN_ROLES.map((r) => ({
+                                value: r,
+                                label: minRoleLabel(r),
+                              }))}
+                              size="sm"
+                              className={`w-28 ${drafted ? '!border-amber-400' : ''}`}
+                            />
                             {declaredTier(k) !== k.min_role && (
                               // Another record declares something stricter for this
                               // same credential, and the pool enforces that one — say
@@ -631,16 +619,16 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
             </table>
           </div>
         )}
-        {editingTiers ? (
-          <EditBar
-            target={tiersTarget}
-            changeCount={changedTiers.length}
-            onCancel={cancelTiers}
-            onSave={saveTiers}
-            busy={confirmation.busy}
-            error={tierSaveError}
-          />
-        ) : null}
+        {/* The confirmation also serves the key actions: they must not bring up this bar. */}
+        <EditBar
+          target={tiersTarget}
+          changeCount={changedTiers.length}
+          onCancel={cancelTiers}
+          onSave={saveTiers}
+          busy={confirmation.busy && tiersChanged}
+          error={tierSaveError}
+          inPlace
+        />
       </div>
 
       <div
@@ -653,9 +641,9 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
             <button
               type="button"
               onClick={() => setAddOpen(true)}
-              // Adding a key switches to its provider, away from open tier drafts.
-              disabled={editingTiers}
-              title={editingTiers ? 'Save or cancel the open edit first' : undefined}
+              // Adding a key switches to its provider, away from unsaved tier drafts.
+              disabled={tiersChanged}
+              title={tiersChanged ? TIERS_LOCKED : undefined}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Add key
@@ -769,11 +757,11 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                 disabled={
                   confirmation.busy ||
                   verifyingKey ||
-                  editingTiers ||
+                  tiersChanged ||
                   !formProvider ||
                   !formApiKey.trim()
                 }
-                title={editingTiers ? 'Save or cancel the open edit first' : undefined}
+                title={tiersChanged ? TIERS_LOCKED : undefined}
                 className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Review key

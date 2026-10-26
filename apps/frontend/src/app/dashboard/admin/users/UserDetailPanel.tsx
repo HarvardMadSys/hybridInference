@@ -7,7 +7,7 @@ import {
   shown,
   type Change,
 } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { Select } from '@/components/ui/Select';
@@ -254,20 +254,8 @@ function accountChanges(detail: UserDetail, patch: UpdateUserData): Change[] {
   return changes;
 }
 
-/** A label above a read-only value. */
-function ReadOnlyField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="mb-1 text-[11px] font-medium text-gray-500">{label}</div>
-      <output aria-label={label} className="block truncate text-[13px] text-gray-900">
-        {value}
-      </output>
-    </div>
-  );
-}
-
 /**
- * Role, limits and model access for an active user. Read-only until Edit; the
+ * Role, limits and model access for an active user, edited in place. The
  * changes are drafts until the administrator reviews and confirms them, and
  * then go out as one update.
  */
@@ -284,34 +272,34 @@ function AccountSettings({
   confirmation: ConfirmAction;
   onSave: (patch: UpdateUserData) => Promise<void>;
 }) {
-  const [draft, setDraft] = useState<AccountDraft | null>(null);
+  // Only the fields the administrator has changed; the others show the saved values.
+  const [draft, setDraft] = useState<Partial<AccountDraft>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
-  const saved = savedAccount(detail);
   const busy = confirmation.busy;
-  const patch = draft ? accountPatch(detail, draft) : {};
-  const changes = draft ? accountChanges(detail, patch) : [];
-  const invalidQuota = draft ? quotaError(detail, draft) : null;
+  const current: AccountDraft = { ...savedAccount(detail), ...draft };
+  const patch = accountPatch(detail, current);
+  const changes = accountChanges(detail, patch);
+  const invalidQuota = quotaError(detail, current);
   // An invalid quota is still an unsaved change: Save stays enabled and says why it cannot go.
   const changeCount = changes.length + (invalidQuota ? 1 : 0);
 
   const change = (next: Partial<AccountDraft>) => {
     setSaveError(null);
-    setDraft((prev) => (prev ? { ...prev, ...next } : prev));
+    setDraft((prev) => ({ ...prev, ...next }));
   };
 
   const toggleDisabledModel = (modelId: string) => {
-    if (!draft) return;
     change({
-      disabledModels: draft.disabledModels.includes(modelId)
-        ? draft.disabledModels.filter((value) => value !== modelId)
-        : [...draft.disabledModels, modelId].sort(),
+      disabledModels: current.disabledModels.includes(modelId)
+        ? current.disabledModels.filter((value) => value !== modelId)
+        : [...current.disabledModels, modelId].sort(),
     });
   };
 
   const cancel = () => {
     if (busy) return;
     setSaveError(null);
-    setDraft(null);
+    setDraft({});
   };
 
   const save = () => {
@@ -334,189 +322,153 @@ function AccountSettings({
       ),
       run: async () => {
         await onSave(pendingPatch);
-        setDraft(null);
+        setDraft({});
       },
     });
   };
 
-  const role = draft?.role ?? saved.role;
-  const disabledModels = draft?.disabledModels ?? saved.disabledModels;
-
   return (
     <section
       aria-label="Account settings"
-      className={`${SECTION} space-y-4 ${draft ? 'border-gray-400 shadow-sm' : ''}`}
+      className={`${SECTION} space-y-4 ${changeCount > 0 ? 'border-gray-400 shadow-sm' : ''}`}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className={FIELD_LABEL}>Account settings</div>
-        {!draft ? (
-          <EditButton
-            target="account settings"
-            onClick={() => setDraft(savedAccount(detail))}
+      <div className={FIELD_LABEL}>Account settings</div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="block">
+          <div className="mb-1 text-[11px] font-medium text-gray-500">Role</div>
+          {/* A choice only changes the draft. */}
+          <Select
+            aria-label="Role"
+            value={current.role}
+            onValueChange={(role) => change({ role })}
+            options={ROLE_OPTIONS}
             disabled={busy}
+            className="w-28"
           />
-        ) : null}
+        </label>
+        {detail.has_key && (
+          <label className="block">
+            <div className="mb-1 text-[11px] font-medium text-gray-500">Daily quota (USD)</div>
+            <input
+              type="number"
+              min={0}
+              value={current.quota}
+              onChange={(e) => change({ quota: e.target.value })}
+              disabled={busy}
+              aria-invalid={invalidQuota ? true : undefined}
+              aria-describedby={invalidQuota ? 'account-quota-error' : undefined}
+              className={`${CONTROL} w-28`}
+            />
+            {invalidQuota ? (
+              <p id="account-quota-error" className="mt-1 text-[11px] text-red-600">
+                {invalidQuota}
+              </p>
+            ) : null}
+          </label>
+        )}
+        <label className="block">
+          <div className="mb-1 text-[11px] font-medium text-gray-500">Max concurrent</div>
+          <input
+            type="number"
+            min={1}
+            value={current.maxConcurrent}
+            onChange={(e) => change({ maxConcurrent: e.target.value })}
+            disabled={busy}
+            placeholder="Role default"
+            className={`${CONTROL} w-28`}
+          />
+        </label>
       </div>
 
-      {!draft ? (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <ReadOnlyField label="Role" value={saved.role} />
-          {detail.has_key && <ReadOnlyField label="Daily quota (USD)" value={saved.quota} />}
-          <ReadOnlyField
-            label="Max concurrent"
-            value={concurrencyLabel(detail.max_concurrent_requests)}
-          />
-          {availableModels.length > 0 && (
-            <div className="col-span-2 min-w-0 sm:col-span-3">
-              <div className="mb-1 text-[11px] font-medium text-gray-500">Model access</div>
-              <output
-                aria-label="Disabled models"
-                className="block text-[13px] text-gray-900 [overflow-wrap:anywhere]"
-              >
-                {disabledModels.length > 0
-                  ? `Disabled: ${disabledModels.join(', ')}`
-                  : 'No models disabled'}
-              </output>
-            </div>
-          )}
-        </div>
-      ) : (
-        <>
-          <div className="flex flex-wrap items-end gap-3">
-            <label className="block">
-              <div className="mb-1 text-[11px] font-medium text-gray-500">Role</div>
-              {/* A choice only changes the draft. */}
-              <Select
-                aria-label="Role"
-                value={draft.role}
-                onValueChange={(role) => change({ role })}
-                options={ROLE_OPTIONS}
-                disabled={busy}
-                className="w-28"
-              />
-            </label>
-            {detail.has_key && (
-              <label className="block">
-                <div className="mb-1 text-[11px] font-medium text-gray-500">Daily quota (USD)</div>
-                <input
-                  type="number"
-                  min={0}
-                  value={draft.quota}
-                  onChange={(e) => change({ quota: e.target.value })}
-                  disabled={busy}
-                  aria-invalid={invalidQuota ? true : undefined}
-                  aria-describedby={invalidQuota ? 'account-quota-error' : undefined}
-                  className={`${CONTROL} w-28`}
-                />
-                {invalidQuota ? (
-                  <p id="account-quota-error" className="mt-1 text-[11px] text-red-600">
-                    {invalidQuota}
-                  </p>
-                ) : null}
-              </label>
-            )}
-            <label className="block">
-              <div className="mb-1 text-[11px] font-medium text-gray-500">Max concurrent</div>
-              <input
-                type="number"
-                min={1}
-                value={draft.maxConcurrent}
-                onChange={(e) => change({ maxConcurrent: e.target.value })}
-                disabled={busy}
-                placeholder="Role default"
-                className={`${CONTROL} w-28`}
-              />
-            </label>
+      {availableModels.length > 0 && (
+        <div className="space-y-2" data-testid="disabled-models-panel">
+          <div>
+            <div className="text-[11px] font-medium text-gray-500">Model access</div>
+            <p className="mt-0.5 text-[12px] text-gray-400">
+              Disabled models stay hidden for this user even if their role would normally allow
+              them. Models above the user&apos;s role are locked and cannot be enabled here.
+            </p>
           </div>
-
-          {availableModels.length > 0 && (
-            <div className="space-y-2" data-testid="disabled-models-panel">
-              <div>
-                <div className="text-[11px] font-medium text-gray-500">Model access</div>
-                <p className="mt-0.5 text-[12px] text-gray-400">
-                  Disabled models stay hidden for this user even if their role would normally allow
-                  them. Models above the user&apos;s role are locked and cannot be enabled here.
-                </p>
-              </div>
-              <div className="grid gap-1.5 sm:grid-cols-2">
-                {availableModels.map((model) => {
-                  const roleLocked = !hasRole(role, model.effective_required_role);
-                  const isDisabled = disabledModels.includes(model.model_id);
-                  if (roleLocked) {
-                    return (
-                      <label
-                        key={model.model_id}
-                        className="flex cursor-not-allowed items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-[12px] text-gray-500"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={false}
-                          disabled
-                          readOnly
-                          className="cursor-not-allowed"
-                          aria-label={`${model.model_id} requires ${model.effective_required_role} role`}
-                        />
-                        <span className="truncate font-medium text-gray-500">{model.model_id}</span>
-                        <span className="ml-auto shrink-0 text-[10px] font-semibold text-gray-400">
-                          requires {model.effective_required_role}
-                        </span>
-                      </label>
-                    );
-                  }
-                  return (
-                    <label
-                      key={model.model_id}
-                      className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-[12px] transition ${
-                        isDisabled
-                          ? 'border-red-200 bg-red-50 text-gray-500'
-                          : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={!isDisabled}
-                        onChange={() => toggleDisabledModel(model.model_id)}
-                        disabled={busy}
-                        aria-label={
-                          isDisabled ? `Enable ${model.model_id}` : `Disable ${model.model_id}`
-                        }
-                      />
-                      <span
-                        className={`truncate font-medium ${
-                          isDisabled ? 'text-gray-400 line-through' : 'text-gray-900'
-                        }`}
-                      >
-                        {model.model_id}
-                      </span>
-                      {isDisabled && (
-                        <span className="ml-auto shrink-0 text-[10px] font-semibold text-red-500">
-                          disabled
-                        </span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          <EditBar
-            target="account settings"
-            changeCount={changeCount}
-            onCancel={cancel}
-            onSave={save}
-            busy={busy}
-            error={saveError}
-          />
-        </>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {availableModels.map((model) => {
+              const roleLocked = !hasRole(current.role, model.effective_required_role);
+              const isDisabled = current.disabledModels.includes(model.model_id);
+              if (roleLocked) {
+                return (
+                  <label
+                    key={model.model_id}
+                    className="flex cursor-not-allowed items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-1.5 text-[12px] text-gray-500"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={false}
+                      disabled
+                      readOnly
+                      className="cursor-not-allowed"
+                      aria-label={`${model.model_id} requires ${model.effective_required_role} role`}
+                    />
+                    <span className="truncate font-medium text-gray-500">{model.model_id}</span>
+                    <span className="ml-auto shrink-0 text-[10px] font-semibold text-gray-400">
+                      requires {model.effective_required_role}
+                    </span>
+                  </label>
+                );
+              }
+              return (
+                <label
+                  key={model.model_id}
+                  className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-[12px] transition ${
+                    isDisabled
+                      ? 'border-red-200 bg-red-50 text-gray-500'
+                      : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!isDisabled}
+                    onChange={() => toggleDisabledModel(model.model_id)}
+                    disabled={busy}
+                    aria-label={
+                      isDisabled ? `Enable ${model.model_id}` : `Disable ${model.model_id}`
+                    }
+                  />
+                  <span
+                    className={`truncate font-medium ${
+                      isDisabled ? 'text-gray-400 line-through' : 'text-gray-900'
+                    }`}
+                  >
+                    {model.model_id}
+                  </span>
+                  {isDisabled && (
+                    <span className="ml-auto shrink-0 text-[10px] font-semibold text-red-500">
+                      disabled
+                    </span>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+        </div>
       )}
+
+      {/* The confirmation is the table's: another write must not bring up this bar. */}
+      <EditBar
+        target="account settings"
+        changeCount={changeCount}
+        onCancel={cancel}
+        onSave={save}
+        busy={busy && changeCount > 0}
+        error={saveError}
+        inPlace
+      />
     </section>
   );
 }
 
 /**
- * One free-text setting (the admin note, the suspension message): read-only
- * until Edit, saved after the administrator confirms `old → new`. A value is
+ * One free-text setting (the admin note, the suspension message): edited in
+ * place, saved after the administrator confirms `old → new`. A value is
  * trimmed, and an empty one clears it.
  */
 function TextSetting({
@@ -535,22 +487,25 @@ function TextSetting({
 }: {
   /** The field's name: its label, and the row in the confirmation. */
   name: string;
-  /** What the Edit / Save buttons name, e.g. "admin note". */
+  /** What the Save / Discard buttons name, e.g. "admin note". */
   target: string;
   saved: string | null;
   userLabel: string;
   confirmation: ConfirmAction;
   onSave: (next: string | null) => Promise<void>;
   header: ReactNode;
+  /** What an empty value means, shown under the field while it is empty. */
   emptyText: string;
   placeholder: string;
   rows: number;
   impact: string;
   className: string;
 }) {
+  // `null` until the administrator types; the field then shows the draft.
   const [draft, setDraft] = useState<string | null>(null);
   const busy = confirmation.busy;
-  const next = draft === null ? null : draft.trim() ? draft.trim() : null;
+  const value = draft ?? saved ?? '';
+  const next = value.trim() ? value.trim() : null;
   const changed = draft !== null && next !== (saved ?? null);
 
   const cancel = () => {
@@ -560,7 +515,7 @@ function TextSetting({
 
   const save = () => {
     if (!changed) return;
-    const value = next;
+    const pending = next;
     confirmation.request({
       title: `Save 1 change to the ${target} for ${userLabel}?`,
       confirmLabel: 'Confirm save',
@@ -570,60 +525,45 @@ function TextSetting({
         <>
           <ChangeList
             changes={[
-              { label: name, before: shown(saved, '(none)'), after: shown(value, '(none)') },
+              { label: name, before: shown(saved, '(none)'), after: shown(pending, '(none)') },
             ]}
           />
           <p>{impact}</p>
         </>
       ),
       run: async () => {
-        await onSave(value);
+        await onSave(pending);
         setDraft(null);
       },
     });
   };
 
   return (
-    <section className={`${className} ${draft !== null ? 'shadow-sm' : ''}`}>
-      <div className="flex items-center justify-between gap-2">
-        {header}
-        {draft === null ? (
-          <EditButton target={target} onClick={() => setDraft(saved ?? '')} disabled={busy} />
-        ) : null}
+    <section className={`${className} ${changed ? 'shadow-sm' : ''}`}>
+      {header}
+      <textarea
+        value={value}
+        onChange={(e) => setDraft(e.target.value)}
+        disabled={busy}
+        rows={rows}
+        maxLength={2000}
+        placeholder={placeholder}
+        aria-label={name}
+        className="block w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-[13px] leading-relaxed text-gray-800 placeholder:text-gray-400 focus:border-gray-500 focus:outline-none disabled:opacity-60"
+      />
+      <div className="flex items-start justify-between gap-3 text-[11px] text-gray-400">
+        <span>{next === null ? emptyText : null}</span>
+        <span className="shrink-0 tabular-nums">{value.length} / 2000</span>
       </div>
-      {draft === null ? (
-        <output
-          aria-label={name}
-          className={`block whitespace-pre-wrap text-[13px] leading-relaxed [overflow-wrap:anywhere] ${
-            saved ? 'text-gray-800' : 'text-gray-400'
-          }`}
-        >
-          {saved || emptyText}
-        </output>
-      ) : (
-        <>
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            disabled={busy}
-            rows={rows}
-            maxLength={2000}
-            placeholder={placeholder}
-            aria-label={name}
-            className="block w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-[13px] leading-relaxed text-gray-800 placeholder:text-gray-400 focus:border-gray-500 focus:outline-none disabled:opacity-60"
-          />
-          <div className="text-right text-[11px] tabular-nums text-gray-400">
-            {draft.length} / 2000
-          </div>
-          <EditBar
-            target={target}
-            changeCount={changed ? 1 : 0}
-            onCancel={cancel}
-            onSave={save}
-            busy={busy}
-          />
-        </>
-      )}
+      {/* The confirmation is the table's: another write must not bring up this bar. */}
+      <EditBar
+        target={target}
+        changeCount={changed ? 1 : 0}
+        onCancel={cancel}
+        onSave={save}
+        busy={busy && changed}
+        inPlace
+      />
     </section>
   );
 }
