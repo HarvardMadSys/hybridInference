@@ -37,6 +37,8 @@ from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.batch import config as batch_config_module, webhooks
 from serving.batch.model_limits import BatchModelLimits
 from serving.batch.scheduler import BatchScheduler, SchedulerTimings
+from serving.config.settings import get_settings
+from serving.servers import auth as auth_module
 from serving.servers.auth import decrypt_api_key, verify_api_key, verify_batch_management_identity
 from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
 from serving.servers.deps import AppServices, get_current_user
@@ -155,6 +157,12 @@ def settings(monkeypatch) -> dict[str, str]:
     monkeypatch.setattr(
         batch_config_module, "config_value", lambda key, default=None: values.get(key, default)
     )
+    # The webhook secret is stored encrypted under API_KEY_SECRET: give this
+    # test a synthetic one rather than relying on the ambient environment.
+    synthetic = get_settings().model_copy(
+        update={"api_key_secret": "batch-expansion-test-only-secret"}
+    )
+    monkeypatch.setattr(auth_module, "get_settings", lambda: synthetic)
     return values
 
 
@@ -617,3 +625,14 @@ async def test_the_console_lists_and_downloads_a_users_batches(gateway):
     assert row["cost_usd"] == pytest.approx(0.0002)
     download = await client.get(f"/user/batches/{batch_id}/results", headers=console)
     assert json.loads(download.text.splitlines()[0])["custom_id"] == "c"
+
+
+@pytest.mark.parametrize(
+    "url", ["https://[broken/h", "https://example.com:bad/hook", "https://example.com:99999/h"]
+)
+async def test_a_malformed_webhook_url_is_a_400_not_a_server_error(gateway, url):
+    response = await gateway.client.put("/v1/batch_webhook", headers=KEY, json={"url": url})
+    assert response.status_code == 400, response.text
+    assert (await gateway.client.get("/v1/batch_webhook", headers=KEY)).json() == {
+        "configured": False
+    }

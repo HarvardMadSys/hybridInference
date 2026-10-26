@@ -979,6 +979,226 @@
     "source": "Entered the wrong email? Try another one",
     "text": "邮箱填错了？换一个试试"
   },
+  "batches.action.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "batches.action.delete": {
+    "source": "Delete",
+    "text": "删除"
+  },
+  "batches.action.download": {
+    "source": "Download results",
+    "text": "下载结果"
+  },
+  "batches.action.download_errors": {
+    "source": "Download errors",
+    "text": "下载错误"
+  },
+  "batches.action.download_output": {
+    "source": "Download outputs",
+    "text": "下载输出"
+  },
+  "batches.back": {
+    "source": "Dashboard",
+    "text": "控制台"
+  },
+  "batches.confirm.cancel": {
+    "source": "Cancel this batch? Requests that have not started will not run; running ones finish.",
+    "text": "取消这个批次？尚未开始的请求不会再运行；正在运行的会完成。"
+  },
+  "batches.confirm.delete": {
+    "source": "Delete this batch and its results? This cannot be undone.",
+    "text": "删除这个批次及其结果？此操作无法撤销。"
+  },
+  "batches.empty": {
+    "source": "You have no batches. Submit one through the API to see it here.",
+    "text": "你还没有批次。通过 API 提交后会显示在这里。"
+  },
+  "batches.loading": {
+    "source": "Loading batches…",
+    "text": "正在加载批次…"
+  },
+  "batches.more": {
+    "source": "Show more",
+    "text": "显示更多"
+  },
+  "batches.refresh": {
+    "source": "Refresh",
+    "text": "刷新"
+  },
+  "batches.row.cost": {
+    "source": "Known cost",
+    "text": "已知费用"
+  },
+  "batches.row.created": {
+    "source": "Created",
+    "text": "创建时间"
+  },
+  "batches.row.failed": {
+    "source": "{failed} failed",
+    "text": "{failed} 个失败"
+  },
+  "batches.row.line_problem": {
+    "source": "Line {line}: {message}",
+    "text": "第 {line} 行：{message}"
+  },
+  "batches.row.progress": {
+    "source": "{done} of {total} done",
+    "text": "已完成 {done} / {total}"
+  },
+  "batches.row.requests": {
+    "source": "Requests",
+    "text": "请求"
+  },
+  "batches.row.tokens": {
+    "source": "Tokens",
+    "text": "Token"
+  },
+  "batches.row.tokens_value": {
+    "source": "{input} in · {output} out",
+    "text": "输入 {input} · 输出 {output}"
+  },
+  "batches.row.unknown_cost": {
+    "source": "+ {count} unknown",
+    "text": "另有 {count} 次费用未知"
+  },
+  "batches.row.unknown_cost_hint": {
+    "source": "Attempts whose result was lost after the request was sent; their cost is unknown and not included.",
+    "text": "这些尝试在请求发出后丢失了结果，费用未知，未计入。"
+  },
+  "batches.status.cancelled": {
+    "source": "Cancelled",
+    "text": "已取消"
+  },
+  "batches.status.cancelling": {
+    "source": "Cancelling",
+    "text": "取消中"
+  },
+  "batches.status.completed": {
+    "source": "Completed",
+    "text": "已完成"
+  },
+  "batches.status.ended": {
+    "source": "Ended",
+    "text": "已结束"
+  },
+  "batches.status.expired": {
+    "source": "Expired",
+    "text": "已过期"
+  },
+  "batches.status.failed": {
+    "source": "Failed",
+    "text": "失败"
+  },
+  "batches.status.finalizing": {
+    "source": "Finalizing",
+    "text": "整理结果中"
+  },
+  "batches.status.in_progress": {
+    "source": "In progress",
+    "text": "进行中"
+  },
+  "batches.status.validating": {
+    "source": "Validating",
+    "text": "校验中"
+  },
+  "batches.subtitle": {
+    "source": "Batches you submitted through /v1/batches or /v1/messages/batches. Results are kept for a limited time after a batch ends.",
+    "text": "你通过 /v1/batches 或 /v1/messages/batches 提交的批次。批次结束后，结果只保留一段时间。"
+  },
+  "batches.surface.anthropic": {
+    "source": "Anthropic Message Batch",
+    "text": "Anthropic 消息批次"
+  },
+  "batches.surface.file": {
+    "source": "OpenAI batch (file)",
+    "text": "OpenAI 批次（文件）"
+  },
+  "batches.surface.inline": {
+    "source": "OpenAI batch (inline)",
+    "text": "OpenAI 批次（内联）"
+  },
+  "batches.title": {
+    "source": "Batches",
+    "text": "批次"
+  },
+  "batches.toast.cancelled": {
+    "source": "Batch cancelled.",
+    "text": "批次已取消。"
+  },
+  "batches.toast.deleted": {
+    "source": "Batch deleted.",
+    "text": "批次已删除。"
+  },
+  "batches.webhook.confirm_delete": {
+    "source": "Remove the webhook? Undelivered events are dropped.",
+    "text": "移除 Webhook？未送达的事件将被丢弃。"
+  },
+  "batches.webhook.confirm_rotate": {
+    "source": "Rotate the signing secret? Deliveries are signed with the new secret from now on.",
+    "text": "轮换签名密钥？之后的投递都用新密钥签名。"
+  },
+  "batches.webhook.create": {
+    "source": "Create webhook",
+    "text": "创建 Webhook"
+  },
+  "batches.webhook.deleted": {
+    "source": "Webhook removed.",
+    "text": "Webhook 已移除。"
+  },
+  "batches.webhook.delivered": {
+    "source": "Delivered",
+    "text": "已送达"
+  },
+  "batches.webhook.enabled": {
+    "source": "Send events",
+    "text": "发送事件"
+  },
+  "batches.webhook.events": {
+    "source": "Recent deliveries",
+    "text": "最近的投递"
+  },
+  "batches.webhook.failed": {
+    "source": "Gave up",
+    "text": "已放弃"
+  },
+  "batches.webhook.pending": {
+    "source": "Retrying",
+    "text": "重试中"
+  },
+  "batches.webhook.remove": {
+    "source": "Remove",
+    "text": "移除"
+  },
+  "batches.webhook.rotate": {
+    "source": "Rotate secret",
+    "text": "轮换密钥"
+  },
+  "batches.webhook.saved": {
+    "source": "Webhook saved.",
+    "text": "Webhook 已保存。"
+  },
+  "batches.webhook.secret_once": {
+    "source": "Signing secret — save it now, it is not shown again. Verify the webhook-signature header with it.",
+    "text": "签名密钥——请现在保存，之后不再显示。用它验证 webhook-signature 请求头。"
+  },
+  "batches.webhook.subtitle": {
+    "source": "Get a signed POST when one of your batches ends and its results can be fetched. Events name the batch only; fetch the results with your API key.",
+    "text": "你的批次结束、结果可以获取时，会收到一个签名的 POST。事件只写明批次，结果请用你的 API Key 获取。"
+  },
+  "batches.webhook.title": {
+    "source": "Webhook",
+    "text": "Webhook"
+  },
+  "batches.webhook.update": {
+    "source": "Save",
+    "text": "保存"
+  },
+  "batches.webhook.url": {
+    "source": "Endpoint URL (https)",
+    "text": "接收地址（https）"
+  },
   "chat.empty_hint": {
     "source": "Try one of these to get started:",
     "text": "不知道问什么？可以试试这些："
@@ -1274,6 +1494,10 @@
   "dashboard.internal.admin": {
     "source": "Admin Console",
     "text": "管理后台"
+  },
+  "dashboard.internal.batches": {
+    "source": "Batches",
+    "text": "批次"
   },
   "dashboard.internal.playground": {
     "source": "API Playground",

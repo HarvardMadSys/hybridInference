@@ -382,6 +382,25 @@ def test_webhook_urls_that_reach_inside_are_refused(url):
         webhooks.check_url(url, allow_private=False)
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["https://[broken/h", "https://example.com:bad/hook", "https://example.com:99999/hook"],
+)
+async def test_a_malformed_webhook_url_is_refused_before_any_lookup(monkeypatch, url):
+    loop = asyncio.get_running_loop()
+
+    async def no_lookup(*args, **kwargs):
+        raise AssertionError("a malformed URL must not be resolved")
+
+    monkeypatch.setattr(loop, "getaddrinfo", no_lookup)
+    with pytest.raises(webhooks.WebhookTargetRefused):
+        webhooks.check_url(url, allow_private=False)
+    normalized, problem = webhooks.url_problem(url, allow_private=False)
+    assert normalized is None and problem == "The webhook URL is malformed."
+    with pytest.raises(webhooks.WebhookTargetRefused):
+        await webhooks.check_resolves_public(url, allow_private=False)
+
+
 def test_private_targets_can_be_allowed_for_tests_but_never_metadata():
     assert webhooks.check_url("http://127.0.0.1:9000/h", allow_private=True)
     with pytest.raises(webhooks.WebhookTargetRefused):

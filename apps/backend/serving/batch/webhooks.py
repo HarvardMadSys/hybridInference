@@ -109,18 +109,24 @@ def check_url(url: str, *, allow_private: bool) -> str:
     """Refuse a webhook URL by its form; return it normalized.
 
     Raises:
-        WebhookTargetRefused: Not https (http only with private targets
-            allowed), credentials in it, no host, a metadata host, or an IP
-            literal in a refused range.
+        WebhookTargetRefused: Malformed (including a bad port), not https
+            (http only with private targets allowed), credentials in it, no
+            host, a metadata host, or an IP literal in a refused range.
     """
     if not isinstance(url, str) or len(url) > 2048:
         raise WebhookTargetRefused("The URL must be a string of at most 2048 characters.")
-    parts = urlsplit(url.strip())
+    try:
+        parts = urlsplit(url.strip())
+        hostname = parts.hostname
+        # Reading the port validates it (a non-number or one out of range raises).
+        _port = parts.port
+    except ValueError:
+        raise WebhookTargetRefused("The webhook URL is malformed.") from None
     if parts.scheme != "https" and not (allow_private and parts.scheme == "http"):
         raise WebhookTargetRefused("The webhook URL must use https.")
     if parts.username or parts.password:
         raise WebhookTargetRefused("The webhook URL must not contain credentials.")
-    host = (parts.hostname or "").rstrip(".").lower()
+    host = (hostname or "").rstrip(".").lower()
     if not host:
         raise WebhookTargetRefused("The webhook URL has no host.")
     local_name = host == "localhost" or host.endswith(".localhost")
@@ -143,9 +149,12 @@ async def check_resolves_public(url: str, *, allow_private: bool) -> None:
         WebhookTargetRefused: A resolved address is refused, or the name does
             not resolve.
     """
-    parts = urlsplit(url)
-    host = parts.hostname or ""
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        raise WebhookTargetRefused("The webhook URL is malformed.") from None
     loop = asyncio.get_running_loop()
     try:
         infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
