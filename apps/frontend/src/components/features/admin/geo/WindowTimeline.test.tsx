@@ -84,6 +84,13 @@ describe('WindowTimeline', () => {
     expect(screen.queryByText('0.5k')).not.toBeInTheDocument();
   });
 
+  it('does not round fractional ticks into duplicate counts for sparse traffic', () => {
+    const data = makeData(26);
+    data.hours = data.hours.map(() => ({ b: [['USA', 'NA', 1, 1]] }));
+    renderTimeline(26, 0, { data, metricModel: deriveGeoMetricModel(data, 'n') });
+    expect(screen.getAllByText('1', { selector: 'svg text' })).toHaveLength(1);
+  });
+
   it('draws in real pixels, so its text is never stretched', () => {
     renderTimeline();
     const slider = screen.getByRole('slider', { name: 'Demand timeline for the loaded window' });

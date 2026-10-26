@@ -113,7 +113,7 @@ export function WindowTimeline({
     .x((_, index) => x(index))
     .y((value) => y(value))
     .curve(curveMonotoneX);
-  const ticks = y.ticks(2).filter((tick) => tick > 0);
+  const ticks = y.ticks(2).filter((tick) => tick > 0 && Number.isInteger(tick));
 
   const midnights = useMemo(() => {
     const result: { index: number; timestamp: string }[] = [];
