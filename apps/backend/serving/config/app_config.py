@@ -26,6 +26,17 @@ overlay alike — and :func:`get_config_health` lists it as pending a restart
 until then. Every other setting applies as soon as it is stored: at once in the
 process that served the write, and within :data:`REFRESH_INTERVAL_SECONDS` in
 every other one.
+
+A key a live configuration group owns
+(:data:`~serving.config.app_config_registry.MANAGED_GROUPS`) is applied by
+:mod:`serving.config.live` instead, once its group's contract is active: the
+group validates and prepares the whole group and then publishes it at once.
+For such a key :func:`configured_value` is the saved target and
+:func:`config_value` the value the group published; ``Settings`` mirrors the
+published value only after the publication, and the group's own readers never
+read ``Settings``. :func:`refresh` is the one reader of the table: every read is
+one snapshot of the rows with their source version
+(:mod:`serving.config.revisions`), handed to the groups as well as applied here.
 """
 
 from __future__ import annotations
@@ -36,12 +47,13 @@ import math
 import os
 import secrets
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, TypeVar
 
+import asyncpg
 from pydantic import ValidationError
 
-from serving.config import app_config_registry as registry
+from serving.config import app_config_registry as registry, live, revisions
 from serving.config.app_config_store import RESET_SOURCE, AppConfigStore, ConfigRow, connect
 from serving.config.settings import (
     CONNECTION_FIELDS,
@@ -61,12 +73,18 @@ if TYPE_CHECKING:
 
 logger = logging_utils.get_logger(__name__)
 
+_T = TypeVar("_T")
+
 #: How often every process re-reads ``app_config``, so workers converge after an
 #: administrator's write.
 REFRESH_INTERVAL_SECONDS = 10.0
 
 #: Length of a generated secret, in bytes of randomness.
 _GENERATED_SECRET_BYTES = 48
+
+#: Attempts for a write that the database aborted as a deadlock or a
+#: serialization failure; the whole transaction is retried.
+_WRITE_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -92,12 +110,26 @@ class ConfigUpdateError(Exception):
     Attributes:
         status_code: The HTTP status the admin API answers with.
         detail: Operator-facing reason; never contains a secret's value.
+        current_version: For a version conflict (409), the version now
+            stored, so the caller can reload; ``None`` otherwise.
     """
 
-    def __init__(self, status_code: int, detail: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        *,
+        current_version: revisions.SourceVersion | None = None,
+    ) -> None:
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+        self.current_version = current_version
+
+    @property
+    def version_conflict(self) -> bool:
+        """Whether the write was refused because the configuration changed since it was read."""
+        return self.current_version is not None
 
 
 @dataclass(frozen=True)
@@ -112,6 +144,8 @@ class ConfigChange:
     marked_secret: bool = False
     #: Only the secret flag changed; the value did not.
     flag_only: bool = False
+    #: The source version the write committed; not part of the audit record.
+    version: revisions.SourceVersion | None = None
 
     def audit_details(self) -> dict[str, Any]:
         """Return the audit record; a secret's values are never part of it."""
@@ -155,12 +189,27 @@ class _State:
     overlaid: bool = False
     #: Stored ``Settings``-backed values the boot-time overlay put in force.
     applied_at_boot: frozenset[str] = frozenset()
-    #: Bumped by every apply, so a slower read never replaces a newer one.
+    #: Bumped by every apply.
     generation: int = 0
+    #: Read tickets, taken as each read of the table begins. A read is
+    #: accepted only when no read that began after it has been: a slower,
+    #: older snapshot never replaces a newer one, whether the rows, the
+    #: version or only the contracts changed. A legitimately older state the
+    #: database returns later (a restore) is a later read, and is accepted.
+    read_tickets: int = 0
+    accepted_ticket: int = 0
     store: AppConfigStore | None = None
     refresh_task: asyncio.Task[None] | None = None
     #: ``time.monotonic()`` of the last successful read of the table.
     read_at: float | None = None
+    #: The source version and contracts of the rows in force, and the
+    #: snapshot they came from.
+    snapshot: revisions.SourceSnapshot | None = None
+    version: revisions.SourceVersion | None = None
+    contracts: revisions.Contracts = field(default_factory=revisions.Contracts)
+    #: Raw values a live group published for its keys, which
+    #: :func:`config_value` serves in place of the boot rows.
+    managed: dict[str, str] = field(default_factory=dict)
 
 
 _STATE = _State()
@@ -173,6 +222,28 @@ def config_value(key: str, default: str | None = None) -> str | None:
     Registered extension settings also supply their declared default, including
     before the database loads. Invalid environment values never reach a delivery
     adapter; startup reports them unless a valid database row takes precedence.
+    """
+    managed = _STATE.managed.get(key)
+    if managed is not None:
+        return managed
+    return boot_value(key, default)
+
+
+def boot_raw(key: str) -> str:
+    """Return *key*'s raw value as the process booted with it: row, environment, default.
+
+    Resolved like :func:`project_settings` resolves a live group's target, so
+    a group's baseline and its first projection compare equal when nothing
+    changed.
+    """
+    return _resolve(_STATE.effective, key, registry.static_entry(key)) or ""
+
+
+def boot_value(key: str, default: str | None = None) -> str | None:
+    """Resolve *key* as :func:`config_value` does, without a live group's publication.
+
+    For a live group's baseline: the value the process booted with for a
+    restart-required key, the current value for any other.
     """
     row = _STATE.effective.get(key)
     if row is not None:
@@ -787,8 +858,28 @@ def _requirement_context() -> registry.RequirementContext:
     )
 
 
+def _group_managed(key: str) -> bool:
+    """Whether *key*'s live group applies it in this process now.
+
+    That is decided by the contract in force, active with a schema this build
+    supports, not by whether a publication has succeeded: once activated, a
+    target that fails to apply is retried when it is corrected and saved
+    again, without a restart, and the group's status reports the failure.
+    """
+    name = registry.managed_group(key)
+    group = live.COORDINATOR.groups.get(name) if name is not None else None
+    return group is not None and group.owns(_STATE.contracts)
+
+
 def _restart_pending(key: str, entry: ConfigEntry) -> bool:
-    booted = _resolve(_STATE.boot_rows, key, entry)
+    if _group_managed(key):
+        # Applied live; the group's own status says whether it has.
+        return False
+    # A group that published and was then deactivated keeps what it published
+    # (dormant-frozen) until the restart.
+    booted = _STATE.managed.get(key)
+    if booted is None:
+        booted = _resolve(_STATE.boot_rows, key, entry)
     current = _resolve(_STATE.rows, key, entry)
     return _comparable(entry, booted) != _comparable(entry, current)
 
@@ -844,10 +935,105 @@ def _build_entries(
 
 async def _read(store: AppConfigStore) -> tuple[dict[str, ConfigRow], dict[str, ConfigRow]]:
     """Return the rows that store a value and the reset rows, each keyed by name."""
-    fetched = await store.fetch_all(include_reset=True)
+    return _split(await store.fetch_all(include_reset=True))
+
+
+def _split(
+    fetched: Mapping[str, ConfigRow],
+) -> tuple[dict[str, ConfigRow], dict[str, ConfigRow]]:
     rows = {key: row for key, row in fetched.items() if row.source != RESET_SOURCE}
     resets = {key: row for key, row in fetched.items() if row.source == RESET_SOURCE}
     return rows, resets
+
+
+def is_reset_row(row: ConfigRow) -> bool:
+    """Whether *row* records a reset rather than storing a value."""
+    return row.source == RESET_SOURCE
+
+
+def _remember(snapshot: revisions.SourceSnapshot) -> None:
+    _STATE.version = snapshot.version
+    _STATE.contracts = snapshot.contracts
+    _STATE.snapshot = snapshot
+
+
+def project_settings(
+    stored: Mapping[str, str], keys: Sequence[str]
+) -> tuple[Settings, dict[str, str]]:
+    """Judge a live group's stored values over the environment, as the overlay would.
+
+    The whole group is judged at once: a stored value of one of *keys* that
+    the overlay would refuse, or a rule between settings they break, makes
+    the target invalid instead of quietly applying the environment's value in
+    its place.
+
+    Args:
+        stored: The group's stored ``Settings``-backed values, by key.
+        keys: Every key the group owns.
+
+    Returns:
+        The validated settings, and each key's resolved raw value.
+
+    Raises:
+        live.InvalidConfig: Naming the keys, never their values.
+    """
+    for key, value in stored.items():
+        entry = registry.static_entry(key)
+        if entry is None or entry.field is None:
+            raise live.InvalidConfig("unknown_key", (key,))
+        if _value_problem(entry, value):
+            raise live.InvalidConfig("value_invalid", (key,))
+    ordered = {
+        entry.key: stored[entry.key] for entry in registry.static_entries() if entry.key in stored
+    }
+    in_force = _in_force(ordered)
+    if in_force.settings is None:
+        raise live.InvalidConfig("environment_invalid", ())
+    refused = tuple(key for key in keys if key in in_force.refused)
+    if refused:
+        raise live.InvalidConfig("value_refused", refused)
+    for rule_keys in in_force.broken.values():
+        involved = tuple(key for key in rule_keys if key in keys)
+        if involved:
+            raise live.InvalidConfig("rule_broken", involved)
+    raw: dict[str, str] = {}
+    for key in keys:
+        entry = registry.static_entry(key)
+        if key in stored:
+            raw[key] = stored[key]
+        elif key in in_force.overridden or key in in_force.set_aside:
+            raw[key] = (entry.default if entry is not None else None) or ""
+        else:
+            raw[key] = _resolve({}, key, entry) or ""
+    return in_force.settings, raw
+
+
+def _on_group_published(
+    group: live.LiveGroup[Any, Any], published: live.Published[Any, Any]
+) -> None:
+    """Mirror a live group's publication for the readers outside the group.
+
+    Runs synchronously right after the reference swap: :func:`config_value`
+    serves the published raw values, and the matching ``Settings`` attributes
+    are updated for any older reader. Neither is what the group's own readers
+    use; they hold the published view.
+    """
+    raw = group.component.mirror(published.desired)
+    for key in group.keys:
+        _STATE.managed[key] = raw.get(key, "")
+    settings_fields = getattr(group.component, "settings_fields", None)
+    if settings_fields is not None:
+        try:
+            current = get_settings()
+        except ValidationError:
+            current = None
+        if current is not None:
+            for name, value in settings_fields(published.view).items():
+                object.__setattr__(current, name, value)
+    refresh_health()
+
+
+live.COORDINATOR.on_publish(_on_group_published)
 
 
 def _row_problem(key: str, row: ConfigRow) -> str | None:
@@ -931,10 +1117,15 @@ async def load(
             rows = await transaction.fetch_all()
             rows = await _import_environment(transaction, rows)
             await _generate_secrets(transaction, rows)
-            rows, resets = await _record_secrets(transaction)
+            await _record_secrets(transaction)
+            # Read inside the transaction: its locks hold every writer off, so
+            # the rows and the version are one consistent state.
+            snapshot = await transaction.fetch_snapshot()
     else:
-        rows, resets = await _read(store)
+        snapshot = await store.fetch_snapshot()
+    rows, resets = _split(snapshot.rows)
     _STATE.loaded = True
+    _remember(snapshot)
     _apply(rows, boot=True, resets=resets)
     _STATE.read_at = read_started
     _warn_retired(rows)
@@ -1215,6 +1406,11 @@ def attach(store: AppConfigStore) -> None:
     _STATE.store = store
 
 
+def attached_store() -> AppConfigStore | None:
+    """Return the store :func:`attach` set, or ``None`` without a database."""
+    return _STATE.store
+
+
 async def refresh() -> None:
     """Re-read ``app_config`` and apply it when it changed."""
     store = _STATE.store
@@ -1222,20 +1418,28 @@ async def refresh() -> None:
         return
     if not _STATE.loaded:
         await store.ensure_schema()
-    generation = _STATE.generation
+    ticket = _take_ticket()
     read_started = time.monotonic()
-    rows, resets = await _read(store)
-    if generation != _STATE.generation:
-        return  # A newer read was applied while this one ran.
+    try:
+        snapshot = await store.fetch_snapshot()
+    except Exception:
+        # Every live group keeps what it published; its currency is unknown.
+        live.COORDINATOR.read_failed()
+        raise
+    if not _accept(ticket):
+        return  # A read that began later has been applied already.
+    rows, resets = _split(snapshot.rows)
     if not _STATE.loaded or rows != _STATE.rows or resets != _STATE.resets:
         _STATE.loaded = True
         _apply(rows, boot=False, resets=resets)
     else:
         # Runtime settings (signup, verification) feed the required rules.
         refresh_health()
+    _remember(snapshot)
     # The snapshot in force is now confirmed current as of when this read
     # began; a read whose result was discarded above confirms nothing.
     _STATE.read_at = read_started
+    live.COORDINATOR.submit(snapshot)
 
 
 async def _refresh_loop(interval_seconds: float) -> None:
@@ -1269,15 +1473,33 @@ async def stop_refresh() -> None:
 
 async def _reload(store: AppConfigStore) -> None:
     """Re-read and apply, so a write takes effect in this process at once."""
-    while True:
-        generation = _STATE.generation
-        read_started = time.monotonic()
-        rows, resets = await _read(store)
-        if generation == _STATE.generation:
-            _STATE.loaded = True
-            _apply(rows, boot=False, resets=resets)
-            _STATE.read_at = read_started
-            return
+    ticket = _take_ticket()
+    read_started = time.monotonic()
+    snapshot = await store.fetch_snapshot()
+    if not _accept(ticket):
+        # A read that began after this one — so after the write committed —
+        # has been applied: it includes the write.
+        return
+    rows, resets = _split(snapshot.rows)
+    _STATE.loaded = True
+    _apply(rows, boot=False, resets=resets)
+    _remember(snapshot)
+    _STATE.read_at = read_started
+    # The write's own process applies it at once, groups included.
+    live.COORDINATOR.submit(snapshot)
+
+
+def _take_ticket() -> int:
+    _STATE.read_tickets += 1
+    return _STATE.read_tickets
+
+
+def _accept(ticket: int) -> bool:
+    """Accept the read holding *ticket* unless a later-begun read was accepted first."""
+    if ticket < _STATE.accepted_ticket:
+        return False
+    _STATE.accepted_ticket = ticket
+    return True
 
 
 @contextlib.asynccontextmanager
@@ -1307,6 +1529,7 @@ async def command_line_session() -> AsyncIterator[None]:
 def reset_state() -> None:
     """Forget everything loaded and return to the environment (tests)."""
     global _STATE
+    live.COORDINATOR.reset()
     if _STATE.generation == 0 and _STATE.store is None:
         return
     task = _STATE.refresh_task
@@ -1582,11 +1805,62 @@ async def _writable_store() -> AppConfigStore:
     return store
 
 
+#: Database errors after which the whole write transaction is safe to retry.
+_RETRYABLE_WRITE_ERRORS = (
+    asyncpg.exceptions.DeadlockDetectedError,
+    asyncpg.exceptions.SerializationError,
+)
+
+
+def _conflict(exc: revisions.VersionConflict) -> ConfigUpdateError:
+    current = exc.current
+    where = f" (now {current.epoch}, revision {current.revision})" if current else ""
+    return ConfigUpdateError(
+        409,
+        f"The configuration changed since it was loaded{where}. Reload it and apply your "
+        "change again.",
+        current_version=current,
+    )
+
+
+async def _transact(
+    store: AppConfigStore,
+    expected: revisions.SourceVersion | None,
+    body: Callable[[AppConfigStore], Awaitable[_T]],
+) -> tuple[_T, revisions.SourceVersion | None]:
+    """Run *body* in a write transaction, retried on a deadlock; return its result and version.
+
+    A version conflict is never retried: the caller's change was made against
+    a configuration that has moved on, and overwriting it is the caller's
+    decision. Neither is a refusal from *body*.
+    """
+    for attempt in range(_WRITE_ATTEMPTS):
+        try:
+            async with store.transaction(expected=expected) as transaction:
+                result = await body(transaction)
+                version = await transaction.current_version()
+            return result, version
+        except revisions.VersionConflict as exc:
+            raise _conflict(exc) from None
+        except _RETRYABLE_WRITE_ERRORS as exc:
+            if attempt == _WRITE_ATTEMPTS - 1:
+                raise
+            logger.warning(
+                "Configuration write aborted by the database (%s); retrying (%d/%d)",
+                type(exc).__name__,
+                attempt + 2,
+                _WRITE_ATTEMPTS,
+            )
+            await asyncio.sleep(0.05 * (attempt + 1))
+    raise AssertionError("unreachable")
+
+
 async def update(
     values: Mapping[str, Any],
     new_secrets: Mapping[str, bool] | None = None,
     *,
     updated_by: str,
+    expected_version: revisions.SourceVersion | None = None,
 ) -> list[ConfigChange]:
     """Validate and store a batch of values and secret flags, then apply it.
 
@@ -1601,9 +1875,13 @@ async def update(
             or a reset). A custom variable is secret anyway when its name
             looks like a credential's.
         updated_by: Identity of the administrator.
+        expected_version: Store nothing unless the source is still at this
+            version (the console's ``If-Match``). ``None``, the older
+            clients' form, keeps last-write-wins.
 
     Returns:
-        One change per stored value or flag, for the audit log.
+        One change per stored value or flag, for the audit log, each carrying
+        the version the write committed.
 
     Raises:
         ConfigUpdateError: 400 for an invalid value, for a batch that would
@@ -1611,15 +1889,16 @@ async def update(
             could no longer apply, a rule between settings broken), or for a
             flag alone on a key with no stored row or on a built-in setting
             the registry keeps public; 403 for an environment-only name, 409
-            for an immutable setting already set, 503 without a database.
-            Nothing is stored when any of it fails.
+            for an immutable setting already set or a version conflict, 503
+            without a database. Nothing is stored when any of it fails.
     """
     flags = new_secrets or {}
     marking = [key for key, flag in flags.items() if flag]
     if not values and not marking:
         return []
     store = await _writable_store()
-    async with store.transaction() as transaction:
+
+    async def body(transaction: AppConfigStore) -> list[ConfigChange]:
         rows, resets = await _read(transaction)
         pending: list[ConfigRow] = []
         changes: list[ConfigChange] = []
@@ -1670,11 +1949,19 @@ async def update(
             await transaction.write(pending)
         if flagged:
             await transaction.mark_secret(flagged)
+        return changes
+
+    changes, version = await _transact(store, expected_version, body)
     await _reload(store)
-    return changes
+    return [replace(change, version=version) for change in changes]
 
 
-async def delete(key: str, *, updated_by: str) -> ConfigChange:
+async def delete(
+    key: str,
+    *,
+    updated_by: str,
+    expected_version: revisions.SourceVersion | None = None,
+) -> ConfigChange:
     """Reset *key*: it follows the environment, then its default, from now on.
 
     The stored value is replaced by a reset row, which keeps the next boot from
@@ -1687,14 +1974,17 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
             immutable setting, a generated secret with nothing to fall back
             to, or a reset that would leave the configuration in force worse
             (a stored value that depends on this one, an environment value that
-            is not valid), 404 when nothing is stored, 503 without a database.
+            is not valid) or a version conflict (*expected_version*, as for
+            :func:`update`), 404 when nothing is stored, 503 without a
+            database.
     """
     if registry.is_environment_only(key):
         raise ConfigUpdateError(
             403, f"{key} stays in the environment ({registry.ENVIRONMENT_ONLY[key]})."
         )
     store = await _writable_store()
-    async with store.transaction() as transaction:
+
+    async def body(transaction: AppConfigStore) -> ConfigChange:
         rows, resets = await _read(transaction)
         if registry.is_retired(key):
             # Nothing reads it any more; only an administrator removes what an
@@ -1733,9 +2023,12 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
                 await transaction.delete(key)
             else:
                 await transaction.reset(key, secret=secret, updated_by=updated_by)
+        return change
+
+    change, version = await _transact(store, expected_version, body)
     await _reload(store)
     logger.info("Configuration %s reset by %s", key, updated_by)
-    return change
+    return replace(change, version=version)
 
 
 def describe(*, offered_only: bool = False) -> dict[str, Any]:
@@ -1798,6 +2091,8 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 "used_by": list(entry.used_by),
                 "updated_at": stamped.updated_at if stamped is not None else None,
                 "updated_by": stamped.updated_by if stamped is not None else None,
+                "group": registry.managed_group(key),
+                "apply_mode": registry.apply_mode(entry, group_managed=_group_managed(key)),
             }
         )
     return {
@@ -1808,7 +2103,26 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
         "entries": entries,
         "missing": list(health.missing),
         "pending_restart": list(health.pending_restart),
+        "source_version": state.version.as_dict() if state.version is not None else None,
+        "groups": [
+            {
+                "name": name,
+                "state": group.status.state,
+                "managed": group.owns(state.contracts),
+            }
+            for name, group in live.COORDINATOR.groups.items()
+        ],
     }
+
+
+def source_version() -> revisions.SourceVersion | None:
+    """Return the source version of the configuration this process last read."""
+    return _STATE.version
+
+
+def last_snapshot() -> revisions.SourceSnapshot | None:
+    """Return the snapshot this process last read, for a live group starting up."""
+    return _STATE.snapshot
 
 
 _VALID_ROW_SOURCES = frozenset({"admin", "setup", "env_import", "generated", RESET_SOURCE})

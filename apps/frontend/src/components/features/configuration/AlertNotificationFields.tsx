@@ -51,6 +51,8 @@ export function AlertNotificationFields({
   const entry = selectedWebhookEntry(entries, channel);
   const name = channel === 'wecom' ? 'WeCom' : 'Slack';
   const pending = Object.values(entries).some((candidate) => candidate.pending_restart);
+  // Applied without a restart once the alerts.runtime group is active.
+  const live = Object.values(entries).some((candidate) => candidate.apply_mode === 'managed');
   // Channels turned off by an earlier save keep an empty row, and that row wins
   // over the environment forever. Resetting one removes the row; without that
   // button the only way back to a .env webhook was SQL or the config CLI. Only
@@ -172,6 +174,8 @@ export function AlertNotificationFields({
               <span className="font-medium">Pending restart</span> — saved changes have not taken
               effect.
             </>
+          ) : live ? (
+            'Saved changes apply in every backend process within about ten seconds, without a restart. Alerts already being sent finish on the old channel; the recovery of an incident opened earlier goes to the new one.'
           ) : (
             'Changes apply after saving and restarting the backend.'
           )}

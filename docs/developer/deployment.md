@@ -362,9 +362,13 @@ one webhook can serve both code paths. The console preserves existing dedicated
 Slack settings and uses the fallback key for a new Slack configuration.
 
 Slack and WeCom are mutually exclusive. Saving a channel switch clears the old
-channel in the same update. All webhook changes require a backend restart;
-until then, normal alerts continue using the previous channel. **Pending
-restart** identifies saved changes waiting to take effect.
+channel in the same update. Webhook changes apply after a backend restart until
+an operator activates the `alerts.runtime` live group; from then on they apply
+in every backend process within about ten seconds, without a restart. See
+[Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart).
+Until a change applies, normal alerts continue using the previous channel.
+**Restart pending**, or the **Applied in each backend process** panel once the
+group is active, shows what is still waiting.
 
 **Send test notification** sends a marked test using the URL currently entered,
 or the latest saved URL when no draft is entered. It works before a restart and

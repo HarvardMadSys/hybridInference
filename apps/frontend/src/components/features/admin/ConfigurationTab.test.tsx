@@ -24,6 +24,7 @@ vi.mock('@/lib/api/config', () => ({
   testAlertNotification: vi.fn(),
   restartBackend: vi.fn(),
   waitForBackendRestart: vi.fn(),
+  getLiveConfigStatus: vi.fn(),
 }));
 
 vi.mock('@/lib/utils/navigation', async (importOriginal) => ({
@@ -38,6 +39,7 @@ vi.mock('react-hot-toast', () => ({
 import {
   exportConfigBackup,
   getConfig,
+  getLiveConfigStatus,
   markConfigSecret,
   patchConfig,
   resetConfigKey,
@@ -2178,5 +2180,364 @@ describe('backup and restore', () => {
       ),
     );
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the drafts and reloads when the configuration changed elsewhere', async () => {
+    await renderTab();
+    const email = section('Email (SMTP)');
+    fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    vi.mocked(patchConfig).mockRejectedValueOnce(
+      new APIError(
+        'CONFIG_VERSION_CONFLICT',
+        'The configuration changed since it was loaded.',
+        409,
+      ),
+    );
+    vi.mocked(getConfig).mockClear();
+    saveAndConfirm('Email (SMTP)');
+    expect(
+      await screen.findByText(/changed elsewhere since this page loaded, so this was not saved/),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(1));
+    // The change the administrator typed is still there to review and save again.
+    expect(within(email).getByLabelText('SMTP_PORT')).toHaveValue(2525);
+  });
+
+  it('shows how each process applied a live group beside its settings', async () => {
+    vi.mocked(getLiveConfigStatus).mockResolvedValue({
+      database: true,
+      source: 'app_config',
+      version: { epoch: 'e1', revision: 7 },
+      this_instance: 'p1',
+      stale_after_seconds: 60,
+      read_ok: true,
+      unknown_groups: [],
+      groups: [
+        {
+          name: 'alerts.runtime',
+          keys: ['SLACK_ALERTS_WEBHOOK_URL'],
+          schema_version: 1,
+          contract: { active: true, schema_version: 1 },
+          coverage: {
+            registered: 1,
+            live: 1,
+            converged: 1,
+            applying: 0,
+            failed: 0,
+            unsupported: 0,
+            dormant: 0,
+            unknown: 0,
+            stopped: 0,
+            verified: false,
+          },
+          instances: [
+            {
+              instance_id: 'p1',
+              this_process: true,
+              build: 'b',
+              host: 'h',
+              lifecycle: 'running',
+              started_at: null,
+              heartbeat_age_seconds: 2,
+              stale: false,
+              supports: true,
+              status: { state: 'applied', epoch: 'e1', reconciled_revision: 7 },
+            },
+          ],
+          local: null,
+        },
+      ],
+    });
+    const config = alertConfig();
+    config.entries = config.entries.map((item) =>
+      item.category === 'alerts' && item.key !== 'ALERTS_ENABLED'
+        ? { ...item, group: 'alerts.runtime', apply_mode: 'managed' as const }
+        : item,
+    );
+    config.source_version = { epoch: 'e1', revision: 7 };
+    await renderTab(config);
+    const alerts = section('Alerts');
+    expect(
+      await within(alerts).findByText('1 of 1 registered process has applied revision 7', {
+        exact: false,
+      }),
+    ).toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain(LEAKED_SECRET);
+  });
+});
+
+describe('configuration versions', () => {
+  const v = (revision: number) => ({ epoch: 'e1', revision });
+
+  /** Email and General, both editable, read at revision 41. */
+  function versionedConfig(overrides: Partial<ConfigResponse> = {}): ConfigResponse {
+    return makeConfig({
+      categories: [
+        { id: 'email', label: 'Email (SMTP)', description: 'Outgoing mail.' },
+        { id: 'general', label: 'General', description: 'Site.' },
+      ],
+      entries: [
+        entry({ key: 'SMTP_HOST', category: 'email', value: 'smtp.example.test' }),
+        entry({ key: 'SMTP_PORT', category: 'email', type: 'int', value: 25, default: 587 }),
+        entry({ key: 'SMTP_FROM_NAME', category: 'email', value: 'Ops' }),
+        entry({ key: 'SITE_NAME', category: 'general', value: 'Gateway' }),
+      ],
+      missing: [],
+      pending_restart: [],
+      source_version: v(41),
+      ...overrides,
+    });
+  }
+
+  it('chains each request of one save on the version the one before it committed', async () => {
+    await renderTab(versionedConfig());
+    fireEvent.change(screen.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_FROM_NAME' }));
+    // Each response also reports a newer source_version: a save made elsewhere
+    // in between, which the next request must not silently build on.
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      versionedConfig({ saved_version: v(42), source_version: v(44) }),
+    );
+    vi.mocked(resetConfigKey)
+      .mockResolvedValueOnce(versionedConfig({ saved_version: v(45), source_version: v(47) }))
+      .mockResolvedValueOnce(versionedConfig({ saved_version: v(48), source_version: v(48) }));
+    saveAndConfirm('Email (SMTP)');
+
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledTimes(2));
+    expect(patchConfig).toHaveBeenCalledWith(
+      { values: { SMTP_HOST: 'smtp.new.test' } },
+      { expectedVersion: v(41) },
+    );
+    expect(vi.mocked(resetConfigKey).mock.calls).toEqual([
+      ['SMTP_PORT', { expectedVersion: v(42) }],
+      ['SMTP_FROM_NAME', { expectedVersion: v(45) }],
+    ]);
+  });
+
+  it('carries a draft across this page’s own save in another category, and no further', async () => {
+    await renderTab(versionedConfig());
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    fireEvent.change(screen.getByLabelText('SITE_NAME'), { target: { value: 'Renamed' } });
+    // General's save, conditional on 41, committed 42; by the time it answered
+    // someone else had saved 43.
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      versionedConfig({ saved_version: v(42), source_version: v(43) }),
+    );
+    saveAndConfirm('General');
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByLabelText('SMTP_PORT')).toHaveValue(2525);
+
+    saveAndConfirm('Email (SMTP)');
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    // 41 → 42 was this page's own write; 43 is not, so it is a conflict to review.
+    expect(vi.mocked(patchConfig).mock.calls[1]).toEqual([
+      { values: { SMTP_PORT: 2525 } },
+      { expectedVersion: v(42) },
+    ]);
+  });
+
+  it('never moves an older draft onto a version a later read brought in', async () => {
+    await renderTab(versionedConfig());
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    fireEvent.change(screen.getByLabelText('SITE_NAME'), { target: { value: 'Renamed' } });
+    // General's save conflicts, and the page reads revision 50 to show it.
+    vi.mocked(patchConfig).mockRejectedValueOnce(
+      new APIError(
+        'CONFIG_VERSION_CONFLICT',
+        'The configuration changed since it was loaded.',
+        409,
+      ),
+    );
+    vi.mocked(getConfig).mockClear();
+    vi.mocked(getConfig).mockResolvedValueOnce(versionedConfig({ source_version: v(50) }));
+    saveAndConfirm('General');
+    await screen.findByText(/changed elsewhere since this page loaded/);
+    await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByLabelText('SITE_NAME')).toHaveValue('Renamed'));
+
+    // Email's draft was made on 41 and nobody showed its owner 50.
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      versionedConfig({ saved_version: v(51), source_version: v(51) }),
+    );
+    saveAndConfirm('Email (SMTP)');
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(patchConfig).mock.calls[1][1]).toEqual({ expectedVersion: v(41) });
+
+    // General's owner was shown 50 with the conflict, and saves on it.
+    saveAndConfirm('General');
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(patchConfig).mock.calls[2]).toEqual([
+      { values: { SITE_NAME: 'Renamed' } },
+      { expectedVersion: v(50) },
+    ]);
+  });
+
+  it('saves on the version under review when a read completes while it is open', async () => {
+    await renderTab(versionedConfig());
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    fireEvent.change(screen.getByLabelText('SITE_NAME'), { target: { value: 'Renamed' } });
+    // General's conflict starts a reload that is still in flight...
+    let finishRead: (config: ConfigResponse) => void = () => undefined;
+    vi.mocked(getConfig).mockClear();
+    vi.mocked(getConfig).mockImplementationOnce(
+      () => new Promise<ConfigResponse>((resolve) => (finishRead = resolve)),
+    );
+    vi.mocked(patchConfig).mockRejectedValueOnce(
+      new APIError(
+        'CONFIG_VERSION_CONFLICT',
+        'The configuration changed since it was loaded.',
+        409,
+      ),
+    );
+    saveAndConfirm('General');
+    await screen.findByText(/changed elsewhere since this page loaded/);
+    await waitFor(() => expect(getConfig).toHaveBeenCalledTimes(1));
+    // ...while Email's changes are under review.
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Email (SMTP)' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('25 → 2525');
+    finishRead(
+      versionedConfig({
+        source_version: v(50),
+        entries: versionedConfig().entries.map((item) =>
+          item.key === 'SMTP_PORT' ? { ...item, value: 26 } : item,
+        ),
+      }),
+    );
+    await waitFor(() => expect(screen.getByLabelText('SITE_NAME')).toHaveValue('Renamed'));
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      versionedConfig({ saved_version: v(51), source_version: v(51) }),
+    );
+    confirmSave();
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    // The review showed 25 → 2525 on revision 41; the save must not accept 50's 26 unseen.
+    expect(vi.mocked(patchConfig).mock.calls[1]).toEqual([
+      { values: { SMTP_PORT: 2525 } },
+      { expectedVersion: v(41) },
+    ]);
+  });
+
+  it('keeps two loaded editing views on their own versions', async () => {
+    vi.mocked(getConfig)
+      .mockResolvedValueOnce(versionedConfig({ source_version: v(41) }))
+      .mockResolvedValueOnce(versionedConfig({ source_version: v(42) }));
+    const first = render(<ConfigurationTab />);
+    const firstView = within(first.container);
+    await firstView.findByRole('region', { name: 'Email (SMTP)' });
+    const second = render(<ConfigurationTab />);
+    const secondView = within(second.container);
+    await secondView.findByRole('region', { name: 'Email (SMTP)' });
+
+    fireEvent.change(firstView.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    fireEvent.change(secondView.getByLabelText('SMTP_PORT'), { target: { value: '2626' } });
+    fireEvent.click(secondView.getByRole('button', { name: 'Save changes to Email (SMTP)' }));
+    confirmSave();
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    fireEvent.click(firstView.getByRole('button', { name: 'Save changes to Email (SMTP)' }));
+    confirmSave();
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(patchConfig).mock.calls.map((call) => call[1])).toEqual([
+      { expectedVersion: v(42) },
+      { expectedVersion: v(41) },
+    ]);
+  });
+});
+
+describe('when a saved change applies', () => {
+  /** The alert category with the detector threshold, its group in the given mode. */
+  function groupConfig(applyMode: 'managed' | 'restart', pending: boolean = false): ConfigResponse {
+    const config = alertConfig();
+    config.entries = [
+      ...config.entries,
+      entry({
+        key: 'FAILED_REQUEST_ALERT_THRESHOLD',
+        category: 'alerts',
+        type: 'int',
+        value: 200,
+        default: 200,
+        restart_required: true,
+      }),
+    ].map((item) =>
+      item.category === 'alerts' && item.key !== 'ALERTS_ENABLED'
+        ? {
+            ...item,
+            group: 'alerts.runtime',
+            apply_mode: applyMode,
+            pending_restart: pending && item.key === 'FAILED_REQUEST_ALERT_THRESHOLD',
+          }
+        : item,
+    );
+    config.pending_restart = pending ? ['FAILED_REQUEST_ALERT_THRESHOLD'] : [];
+    return config;
+  }
+
+  it('labels an active group live: no restart badge, note or confirmation', async () => {
+    vi.mocked(getLiveConfigStatus).mockResolvedValue({
+      database: true,
+      source: 'app_config',
+      version: null,
+      this_instance: null,
+      stale_after_seconds: 60,
+      read_ok: true,
+      unknown_groups: [],
+      groups: [],
+    });
+    await renderTab(groupConfig('managed'));
+    const alerts = within(section('Alerts'));
+    expect(alerts.getByText('Applies live')).toBeInTheDocument();
+    expect(alerts.queryByText('Restart required')).toBeNull();
+    expect(alerts.queryByText('Pending restart')).toBeNull();
+    expect(alerts.getByText(/without a restart/)).toBeInTheDocument();
+    expect(alerts.queryByText('Changes apply after saving and restarting the backend.')).toBeNull();
+
+    fireEvent.change(alerts.getByLabelText('FAILED_REQUEST_ALERT_THRESHOLD'), {
+      target: { value: '50' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Alerts' }));
+    expect(screen.getByRole('dialog')).not.toHaveTextContent(
+      'apply only after the backend restarts',
+    );
+  });
+
+  it('labels a dormant group restart-required, and its saved-but-unapplied value pending', async () => {
+    vi.mocked(getLiveConfigStatus).mockResolvedValue({
+      database: true,
+      source: 'app_config',
+      version: null,
+      this_instance: null,
+      stale_after_seconds: 60,
+      read_ok: true,
+      unknown_groups: [],
+      groups: [],
+    });
+    await renderTab(groupConfig('restart'));
+    let alerts = within(section('Alerts'));
+    expect(alerts.getAllByText('Restart required').length).toBeGreaterThan(0);
+    expect(alerts.queryByText('Applies live')).toBeNull();
+    expect(
+      alerts.getByText('Changes apply after saving and restarting the backend.'),
+    ).toBeVisible();
+    fireEvent.change(alerts.getByLabelText('FAILED_REQUEST_ALERT_THRESHOLD'), {
+      target: { value: '50' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Alerts' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('apply only after the backend restarts');
+    cleanup();
+
+    // Deactivated after it applied (dormant-frozen): a later save waits for the restart.
+    await renderTab(groupConfig('restart', true));
+    alerts = within(section('Alerts'));
+    expect(alerts.getAllByText('Pending restart').length).toBeGreaterThan(0);
+    expect(alerts.queryByText('Applies live')).toBeNull();
+  });
+
+  it('says a test send tests the saved webhook, not the channel in use', async () => {
+    await renderTab(groupConfig('managed'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send test notification' }));
+    const dialog = screen.getByRole('dialog', { name: 'Send a test notification to Slack?' });
+    expect(dialog).toHaveTextContent('This tests the saved setting');
+    expect(dialog).toHaveTextContent('not necessarily the channel alerts are delivered to');
   });
 });

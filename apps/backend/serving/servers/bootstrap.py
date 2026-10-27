@@ -26,7 +26,7 @@ from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from serving.auto_mode import AutoMode, load_auto_mode
 from serving.batch.model_limits import BatchModelLimits
-from serving.config import app_config
+from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
@@ -38,6 +38,7 @@ from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
+from serving.observability import alert_runtime
 from serving.observability.alert_history import runtime as alert_history_runtime
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
@@ -780,6 +781,41 @@ async def _load_app_config() -> None:
     app_config.use_environment(database_enabled=True)
 
 
+#: The share of the shutdown the live configuration groups may take.
+_LIVE_CONFIG_STOP_SECONDS = 10.0
+
+
+def _start_live_config(pool: Any) -> None:
+    """Publish every live group's boot baseline, register this process, and apply.
+
+    The baseline is the configuration the process booted with, so a group
+    whose contract is not active behaves exactly as before. With a database,
+    this process registers in ``config_instances`` and the snapshot the boot
+    read is applied at once; later snapshots come from ``app_config``'s
+    refresh. A group that fails to apply never stops the gateway: alerting is
+    degradable, and its failure is reported as the group's state.
+    """
+    live_config.COORDINATOR.install_baselines()
+    if pool is None:
+        return
+    from serving.config import instances
+    from serving.servers import restart
+
+    reporter = instances.InstanceReporter(
+        pool=pool,
+        instance_id=restart.INSTANCE_ID,
+        started_at=dt.datetime.now(dt.UTC),
+        capabilities={
+            **live_config.COORDINATOR.capabilities(),
+            "details": instances.default_details(),
+        },
+    )
+    live_config.COORDINATOR.start(reporter)
+    snapshot = app_config.last_snapshot()
+    if snapshot is not None:
+        live_config.COORDINATOR.submit(snapshot)
+
+
 def _init_db_logger() -> DatabaseLogger | None:
     """Initialize PostgreSQL database logger from environment configuration.
 
@@ -1130,21 +1166,21 @@ async def initialize() -> AppServices:
                             user_usage_rollup.register_rollup_job(sched, db_logger.pool)
                             daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
 
-                            # Failed-request alerter (no-op unless
-                            # SLACK_WEBHOOK_URL or WECOM_ALERTS_WEBHOOK_URL
-                            # is set).
+                            # Failed-request alerter: one job, paused while
+                            # neither SLACK_WEBHOOK_URL nor
+                            # WECOM_ALERTS_WEBHOOK_URL is set.
                             from serving.admin.failed_request_alerter import (
                                 register_alerter_job,
                             )
 
-                            register_alerter_job(db_logger.pool, settings)
-                        elif (
-                            settings.slack_webhook_url.strip()
-                            or settings.wecom_alerts_webhook_url.strip()
-                        ):
-                            logger.warning(
-                                "Failed-request alerter not registered: APScheduler did not start"
-                            )
+                            register_alerter_job(db_logger.pool)
+                        else:
+                            if alert_runtime.current().detector_enabled:
+                                logger.warning(
+                                    "Failed-request alerter not registered: "
+                                    "APScheduler did not start"
+                                )
+                            alert_runtime.set_detector_state("unavailable")
 
                         # Roll up the hours of the last 30 days that
                         # provider_hourly_stats has not covered -- every hour on a
@@ -1275,6 +1311,7 @@ async def initialize() -> AppServices:
     # Administrator writes and the refresh loop use the logger's pool.
     if db_logger and db_logger.pool:
         app_config.attach(AppConfigStore(db_logger.pool))
+    _start_live_config(db_logger.pool if db_logger else None)
 
     # Models into router
     embedding_adapters, model_infos = await _init_router_and_models(router)
@@ -1920,6 +1957,8 @@ async def initialize() -> AppServices:
     # Every worker re-reads the stored configuration and the runtime settings,
     # so a write made through one of them reaches the others.
     app_config.start_refresh()
+    if live_config.COORDINATOR.reporter is not None:
+        live_config.COORDINATOR.reporter.set_lifecycle("running")
     if pricing_sync is not None:
         pricing_sync.start()
     if runtime_settings is not None:
@@ -2057,6 +2096,14 @@ async def shutdown(services: AppServices) -> None:
             await services.routewise_settings_refresh_task
 
     await app_config.stop_refresh()
+    # No snapshot arrives any more: stop applying, retire what was replaced
+    # and report this process stopped. The state in use stays published for
+    # whatever still runs below.
+    try:
+        await live_config.COORDINATOR.stop(timeout=_LIVE_CONFIG_STOP_SECONDS)
+    except Exception as exc:
+        # The class only: a component's exception text can quote a credential.
+        logger.error("Live configuration shutdown failed (%s)", type(exc).__name__)
     if services.runtime_settings is not None:
         with contextlib.suppress(Exception):
             await services.runtime_settings.stop_refresh()

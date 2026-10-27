@@ -6,6 +6,7 @@ import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
 import {
   ConfigEntryField,
+  appliesAfterRestart,
   NOT_A_LOGIN_FIELD,
 } from '@/components/features/configuration/ConfigEntryField';
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
@@ -46,6 +47,14 @@ import {
   type AlertChannelChoice,
 } from '@/components/features/configuration/alertNotificationDrafts';
 import { KeyList } from '@/components/features/configuration/KeyList';
+import { LiveConfigStatus } from '@/components/features/configuration/LiveConfigStatus';
+import {
+  chainVersions,
+  noteEdit,
+  saveBase,
+  withoutVersions,
+  type DraftVersions,
+} from '@/components/features/configuration/draftVersions';
 import { CONFIGURATION_TAB_PATH } from '@/components/features/configuration/paths';
 import {
   ManualRestartHint,
@@ -75,6 +84,7 @@ import {
   type ConfigEntry,
   type ConfigResponse,
   type ConfigScalar,
+  type ConfigSourceVersion,
 } from '@/lib/api/config';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
@@ -110,6 +120,11 @@ interface PendingSave {
   secrets: string[];
   /** Keys whose stored row the save removes, one DELETE each after the PATCH. */
   resets: string[];
+  /**
+   * The version the reviewed changes were made on, pinned when the review
+   * opens: a read that completes while it is open cannot move it.
+   */
+  expectedVersion: ConfigSourceVersion | null;
 }
 
 function shownValue(
@@ -140,6 +155,35 @@ function describeChange(
   }
   if (secrets.includes(key)) lines.push('Mark as secret');
   return lines;
+}
+
+/**
+ * The `If-Match` for a write: the version the category's changes were made on,
+ * or, within one save, the previous request's own `saved_version`. An older
+ * backend reports none, and its writes stay unconditional.
+ */
+function versioned(
+  version: ConfigSourceVersion | null | undefined,
+): [] | [{ expectedVersion: ConfigSourceVersion }] {
+  return version ? [{ expectedVersion: version }] : [];
+}
+
+/**
+ * The version to chain the next request of the same save on: the one this
+ * write committed. Never the response's `source_version`, which can include a
+ * save made elsewhere in the meantime. A write that stored nothing commits no
+ * version, and the chain stays where it was.
+ */
+function committedVersion(
+  next: ConfigResponse,
+  base: ConfigSourceVersion | null,
+): ConfigSourceVersion | null {
+  return next.saved_version ?? base;
+}
+
+/** The live configuration groups a category's settings belong to, once each. */
+function liveGroupNames(group: ConfigGroup): string[] {
+  return [...new Set(group.entries.flatMap((entry) => (entry.group ? [entry.group] : [])))];
 }
 
 /** Keys of `record` that belong to `group`. */
@@ -183,6 +227,29 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
   const saveInFlight = useRef(false);
+  // The version each category's unsaved changes were made on (draftVersions).
+  const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
+  // The version on screen when the administrator acts: set once each render
+  // is committed, so an event handler reads the version its page showed.
+  const shownVersion = useRef<ConfigSourceVersion | null>(null);
+  useEffect(() => {
+    shownVersion.current = config?.source_version ?? null;
+  }, [config]);
+  const categoryOf = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    categoryOf.current = new Map(
+      (config?.entries ?? []).map((entry) => [entry.key, entry.category]),
+    );
+  }, [config]);
+  /** A change is staged in the categories of `keys`: they keep the version shown now. */
+  const noteEdits = useCallback((keys: readonly string[]) => {
+    setDraftVersions((prev) =>
+      keys.reduce((versions, key) => {
+        const groupId = categoryOf.current.get(key);
+        return groupId === undefined ? versions : noteEdit(versions, groupId, shownVersion.current);
+      }, prev),
+    );
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -219,16 +286,20 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     [router],
   );
 
-  const onDraftChange = useCallback((key: string, draft: ConfigDraft | undefined) => {
-    setDrafts((prev) => {
-      const next = { ...prev };
-      if (draft) next[key] = draft;
-      else delete next[key];
-      return next;
-    });
-    setEntryErrors((prev) => withoutKeys(prev, [key]));
-    if (isAlertWebhook(key)) setAlertTestResult(null);
-  }, []);
+  const onDraftChange = useCallback(
+    (key: string, draft: ConfigDraft | undefined) => {
+      if (draft) noteEdits([key]);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        if (draft) next[key] = draft;
+        else delete next[key];
+        return next;
+      });
+      setEntryErrors((prev) => withoutKeys(prev, [key]));
+      if (isAlertWebhook(key)) setAlertTestResult(null);
+    },
+    [noteEdits],
+  );
 
   const webhookEntries = config ? alertWebhookEntries(config.entries) : null;
   const alertChannel =
@@ -236,6 +307,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
   const changeAlertChannel = (channel: AlertChannelChoice) => {
     if (!webhookEntries || alertTestInFlight.current) return;
+    noteEdits(ALERT_WEBHOOK_KEYS);
     setAlertChannelDraft(channel === savedAlertChannel(webhookEntries) ? null : channel);
     setDrafts((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
     setEntryErrors((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
@@ -264,7 +336,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           A test message is posted to the {name} channel{' '}
           {draft?.kind === 'replace'
             ? 'behind the webhook URL you typed. That URL is not saved.'
-            : 'behind the saved webhook.'}{' '}
+            : 'behind the saved webhook. This tests the saved setting, not necessarily the channel alerts are delivered to right now: a backend process keeps using the channel it applied until it applies the save (or, for a setting that needs one, until a restart).'}{' '}
           Settings are not changed.
         </p>
       ),
@@ -374,10 +446,16 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     const secrets = groupKeys(group, pendingSecrets);
     if (Object.keys(values).length + secrets.length + resets.length === 0) return;
     // Nothing is written until the administrator confirms the list of changes.
-    setPendingSave({ group, values, secrets, resets });
+    setPendingSave({
+      group,
+      values,
+      secrets,
+      resets,
+      expectedVersion: saveBase(draftVersions, group.id, config?.source_version),
+    });
   };
 
-  const commitSave = async ({ group, values, secrets, resets }: PendingSave) => {
+  const commitSave = async ({ group, values, secrets, resets, expectedVersion }: PendingSave) => {
     if (saveInFlight.current) return;
     saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
@@ -397,6 +475,14 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     let attempted = keys;
     // What was written before a failure, so the message can say so.
     let written = 0;
+    // The version this category's changes were made on. Each request after the
+    // first is conditional on the one before it committed, never on a version
+    // some other read brought in: anything saved in between is a conflict.
+    let base = expectedVersion;
+    /** Move every draft made on `from` along to what this page's own write committed. */
+    const chain = (from: ConfigSourceVersion | null, to: ConfigSourceVersion | null) => {
+      if (from) setDraftVersions((prev) => chainVersions(prev, from, to));
+    };
     let failedReset: string | null = null;
     try {
       if (keys.length > 0 || secrets.length > 0) {
@@ -405,7 +491,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           secrets.length > 0
             ? { values, secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
             : { values },
+          ...versioned(base),
         );
+        const committed = committedVersion(next, base);
+        chain(base, committed);
+        base = committed;
         // Claim nothing the response does not show: a backend that ignored the
         // flag would answer with the variable unchanged.
         const unmarked = secrets.find(
@@ -424,7 +514,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       for (const key of resets) {
         attempted = [key];
         failedReset = key;
-        applyResponse(await resetConfigKey(key), [key]);
+        const next = await resetConfigKey(key, ...versioned(base));
+        const committed = committedVersion(next, base);
+        chain(base, committed);
+        base = committed;
+        applyResponse(next, [key]);
         failedReset = null;
         written += 1;
       }
@@ -433,11 +527,35 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         setAlertTestResult(null);
       }
       const count = new Set([...keys, ...secrets, ...resets]).size;
+      setDraftVersions((prev) => withoutVersions(prev, [group.id]));
       setPendingSave(null);
       toast.success(
         count === 1 ? `Saved ${group.label}.` : `Saved ${count} changes to ${group.label}.`,
       );
     } catch (e) {
+      if (e instanceof APIError && e.code === 'CONFIG_VERSION_CONFLICT') {
+        // Saved elsewhere since this page read it: nothing of this request was
+        // written. Show the latest values and keep the drafts for a second look.
+        let message =
+          'The configuration was changed elsewhere since this page loaded, so this was not saved. The latest values are shown now; your unsaved changes are kept. Review them and save again.';
+        if (written > 0) {
+          message += ` ${plural(written, 'change')} ${written === 1 ? 'was' : 'were'} saved before that.`;
+        }
+        setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
+        setPendingSave(null);
+        // The one place a draft moves to a version this page did not write:
+        // the administrator has been told, and is shown the newer values.
+        void getConfig()
+          .then((fresh) => {
+            setConfig(fresh);
+            const shown = fresh.source_version;
+            setDraftVersions((prev) =>
+              shown ? { ...prev, [group.id]: shown } : withoutVersions(prev, [group.id]),
+            );
+          })
+          .catch(() => undefined);
+        return;
+      }
       // What was not written stays as a draft, with the reason beside the save.
       const reason = typedSecrets.reduce(
         (message, secret) => withoutSecret(message, secret),
@@ -477,6 +595,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setPendingResets((prev) => withoutKeys(prev, keys));
     setPendingSecrets((prev) => withoutKeys(prev, keys));
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
+    setDraftVersions((prev) => withoutVersions(prev, [group.id]));
   };
 
   const toggleReset = (target: ConfigEntry) => {
@@ -486,6 +605,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       return;
     }
     // The row goes, so an edit to it or a flag on it would be lost: drop them now.
+    noteEdits([key]);
     setPendingResets((prev) => ({ ...prev, [key]: true }));
     setDrafts((prev) => withoutKeys(prev, [key]));
     setEntryErrors((prev) => withoutKeys(prev, [key]));
@@ -495,6 +615,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
   const toggleMarkSecret = (target: ConfigEntry) => {
     const { key } = target;
+    if (!pendingSecrets[key]) noteEdits([key]);
     setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
@@ -592,6 +713,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         const res = await restoreConfigBackup(parsed);
         setConfig(res.config);
         setDrafts({});
+        setDraftVersions({});
         setEntryErrors({});
         setGroupErrors({});
         setPendingResets({});
@@ -785,8 +907,10 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       {adding ? (
         <AddVariableForm
           existingKeys={existingKeys}
+          expectedVersion={config.source_version ?? null}
           onCancel={() => setAdding(false)}
-          onAdded={(next, key) => {
+          onAdded={(next, key, base) => {
+            if (base) setDraftVersions((prev) => chainVersions(prev, base, next.saved_version));
             applyResponse(next, [key]);
             setAdding(false);
             toast.success(`Added ${key}.`);
@@ -855,6 +979,13 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                         Unsaved changes to them are kept and saved with the rest.
                       </p>
                     ) : null}
+                    {liveGroupNames(group).map((name) => (
+                      <LiveConfigStatus
+                        key={name}
+                        groupName={name}
+                        refreshKey={config.source_version?.revision ?? null}
+                      />
+                    ))}
                     <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
                       <div className="divide-y divide-gray-100 px-4">
                         {channelEntries &&
@@ -1005,9 +1136,10 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
             </p>
           ) : null}
           {[...Object.keys(pendingSave.values), ...pendingSave.secrets, ...pendingSave.resets].some(
-            (key) =>
-              pendingSave.group.entries.find((candidate) => candidate.key === key)
-                ?.restart_required,
+            (key) => {
+              const entry = pendingSave.group.entries.find((candidate) => candidate.key === key);
+              return entry ? appliesAfterRestart(entry) : false;
+            },
           ) ? (
             <p>Some of these apply only after the backend restarts.</p>
           ) : null}
@@ -1020,14 +1152,20 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 /** A custom variable: a `${VAR}` reference in models.yaml the registry cannot see. */
 function AddVariableForm({
   existingKeys,
+  expectedVersion,
   onAdded,
   onCancel,
 }: {
   existingKeys: ReadonlySet<string>;
-  onAdded: (next: ConfigResponse, key: string) => void;
+  /** The version of the configuration on screen; the form keeps the one it opened on. */
+  expectedVersion: ConfigSourceVersion | null;
+  onAdded: (next: ConfigResponse, key: string, base: ConfigSourceVersion | null) => void;
   onCancel: () => void;
 }) {
   const baseId = useId();
+  // What the administrator saw when the form opened: a save elsewhere since
+  // then is a conflict to review, not something to write over.
+  const [openedOn] = useState(expectedVersion);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   // The backend's rule: a name that looks like a credential's is secret
@@ -1079,13 +1217,16 @@ function AddVariableForm({
         </>
       ),
       run: async () => {
-        const next = await patchConfig({
-          values: { [key]: value },
-          secrets: { [key]: secret },
-        }).catch((err: unknown) => {
+        const next = await patchConfig(
+          {
+            values: { [key]: value },
+            secrets: { [key]: secret },
+          },
+          ...versioned(openedOn),
+        ).catch((err: unknown) => {
           throw secret ? new Error(withoutSecret(getErrorMessage(err), value)) : err;
         });
-        onAdded(next, key);
+        onAdded(next, key, openedOn);
       },
     });
   };

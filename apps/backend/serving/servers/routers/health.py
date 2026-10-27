@@ -407,6 +407,21 @@ async def deep_health(
         router_exec.get_route_exclusions() if hasattr(router_exec, "get_route_exclusions") else []
     )
 
+    # Live configuration groups, alerting first among them. Like the route
+    # exclusions, deliberately not part of `overall`: a group that failed to
+    # apply keeps its previous state, and alerting is degradable -- its own
+    # state says so, without taking inference out of a load balancer.
+    from serving.config import live
+
+    config_groups = {
+        name: {
+            "state": group.status.state,
+            "reconciled_revision": group.status.reconciled_revision,
+            "error_code": group.status.error_code,
+        }
+        for name, group in live.COORDINATOR.groups.items()
+    }
+
     return {
         "status": overall,
         "routes_configured": routes_count,
@@ -417,6 +432,7 @@ async def deep_health(
         },
         "providers": provider_status,
         "route_exclusions": route_exclusions,
+        "config_groups": config_groups,
     }
 
 

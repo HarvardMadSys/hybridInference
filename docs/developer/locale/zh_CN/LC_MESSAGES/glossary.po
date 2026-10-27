@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-10 14:42-0400\n"
+"POT-Creation-Date: 2026-10-27 05:51-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -329,10 +329,25 @@ msgstr ""
 "the-database)。"
 
 #: ../developer/glossary.md:126
+msgid "Live group"
+msgstr ""
+"实时配置组"
+
+#: ../developer/glossary.md:127
+msgid ""
+"A set of settings the gateway applies together without a restart, once an"
+" operator has activated the group: every backend process validates the "
+"whole set, switches to it at once and reports that it has. "
+"`alerts.runtime` is the first. See [Settings that apply without a "
+"restart](configuration.md#settings-that-apply-without-a-restart)."
+msgstr ""
+"网关一起应用、无需重启的一组设置项，前提是操作者已激活该组：每个后端进程验证整组设置，一次性切换过去，并报告自己已经切换。`alerts.runtime` 是第一个。参见[无需重启即可生效的设置项](configuration.md#settings-that-apply-without-a-restart)。"
+
+#: ../developer/glossary.md:133
 msgid "First-run setup"
 msgstr "首次运行设置（first-run setup）"
 
-#: ../developer/glossary.md:127
+#: ../developer/glossary.md:134
 msgid ""
 "How a new deployment gets its first administrator: the backend prints a "
 "one-time setup code in its log, and whoever enters it on the console's "
@@ -342,21 +357,21 @@ msgstr ""
 "新部署产生第一个管理员的方式：后端在日志里打印一个一次性的设置码，谁在控制台的 `/setup` "
 "页面上输入它，谁就创建这个账号。见[首次运行设置](installation.md#first-run-setup)。"
 
-#: ../developer/glossary.md:132
+#: ../developer/glossary.md:139
 msgid "Runtime model"
 msgstr "运行时模型（runtime model）"
 
-#: ../developer/glossary.md:133
+#: ../developer/glossary.md:140
 msgid ""
 "A model created from the admin console instead of the model registry. It "
 "exists only in the operational store."
 msgstr "在管理控制台里创建、而不是写在模型注册表里的模型。它只存在于运行数据存储中。"
 
-#: ../developer/glossary.md:136
+#: ../developer/glossary.md:143
 msgid "Console"
 msgstr "控制台（console）"
 
-#: ../developer/glossary.md:137
+#: ../developer/glossary.md:144
 msgid ""
 "The Next.js web app: sign-up and sign-in, the user dashboard, the "
 "playground and the admin console. It also forwards API paths to the "
@@ -365,21 +380,21 @@ msgstr ""
 "Next.js 网页应用：注册和登录、用户仪表盘、对话调试页（playground）和管理控制台。它还会把 API 路径转发给网关，见[公开路径表"
 "](public-path-table.md)。"
 
-#: ../developer/glossary.md:141
+#: ../developer/glossary.md:148
 msgid "Site UI module"
 msgstr "Site UI 模块（Site UI module）"
 
-#: ../developer/glossary.md:142
+#: ../developer/glossary.md:149
 msgid ""
 "A distribution's own React components for the public pages, compiled into"
 " its console image. See [Site UI Modules](site-ui-modules.md)."
 msgstr "发行版为公开页面编写的 React 组件，编译进它自己的控制台镜像。见 [Site UI 模块](site-ui-modules.md)。"
 
-#: ../developer/glossary.md:145
+#: ../developer/glossary.md:152
 msgid "Backend extension"
 msgstr "后端扩展（后端 extension）"
 
-#: ../developer/glossary.md:146
+#: ../developer/glossary.md:153
 msgid ""
 "A trusted Python module a deployment loads at startup to add an adapter, "
 "an agent-access rule or a quota source. See [Backend Extensions](backend-"

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 
 from serving.config.app_config import config_value
-from serving.config.settings import get_settings
+from serving.observability import alert_runtime
 from serving.observability.alert_history import hooks as _history
 from serving.observability.alert_history.capture import DeliveryOutcome
 from serving.observability.alert_transitions import (
@@ -671,24 +671,15 @@ def configured_sink() -> AlertSink | None:
     raises instead of fanning out. A blank value — whitespace only — is no
     channel, the same rule the failed-request alerter and bootstrap use, so a
     ``" "`` webhook cannot select a channel that can never deliver.
+
+    The channel comes from the ``alerts.runtime`` configuration in force
+    (:mod:`serving.observability.alert_runtime`): validated as one value, the
+    Slack fallback included, and replaced only as a whole. Each call takes the
+    configuration in force at that moment, so a recovery, or a retry of one,
+    goes to the channel configured then rather than the one its incident
+    opened on.
     """
-    # The overlay may reject a stored value or set aside a conflicting
-    # environment value. Raw config_value() still exposes those candidates;
-    # Settings contains the validated runtime values, including Slack fallback.
-    settings = get_settings()
-    slack_url = settings.slack_alerts_webhook_url.strip()
-    wecom_url = settings.wecom_alerts_webhook_url.strip()
-    if slack_url and wecom_url:
-        raise ValueError(
-            "SLACK_ALERTS_WEBHOOK_URL / SLACK_WEBHOOK_URL and "
-            "WECOM_ALERTS_WEBHOOK_URL are mutually exclusive; "
-            "configure one alert channel"
-        )
-    if slack_url:
-        return SlackSink(slack_url)
-    if wecom_url:
-        return WeComSink(wecom_url)
-    return None
+    return alert_runtime.current().sink()
 
 
 async def _type_muted(key: str) -> bool:
@@ -717,10 +708,20 @@ async def alert_slack(
     cooldown_sec: int = 300,
     status: Literal["firing", "resolved"] = "firing",
     history_episode: str | None = None,
+    fence: Callable[[], bool] | None = None,
 ) -> bool:
     """Send an alert to the one configured channel.
 
     Returns True if the channel accepted the message, False otherwise.
+
+    ``fence``, when given, is checked at the send's admission — synchronously,
+    right before the in-flight marker is registered — and again after the mute
+    and snooze lookups, right before the message is rendered and posted. A
+    false answer at either point drops the send without touching the
+    cooldown: the evaluation that asked for it was made under a configuration
+    that has since been replaced. The channel is read again at admission, so
+    the send uses the configuration in force when it was admitted. A post
+    already under way finishes on the channel it started with.
 
     ``history_episode`` names the alert-history episode a *resolution* belongs
     to; the callers in this module pass it, because by the time a recovery is
@@ -784,6 +785,25 @@ async def alert_slack(
 
     now = _monotonic()
     async with _DEDUPE_LOCK:
+        # Admission. Nothing between here and the in-flight registration
+        # awaits, so the configuration checked is the one the send uses.
+        if fence is not None and not fence():
+            _history.decision(key, episode_id=episode_id, reason="other", resolution=resolution)
+            log.debug("alert %s dropped: its evaluation predates the configuration in force", key)
+            return False
+        try:
+            sink = configured_sink()
+        except ValueError:
+            log.exception("alert channel configuration is invalid; suppressing")
+            _history.decision(
+                key, episode_id=episode_id, reason="channel_config_invalid", resolution=resolution
+            )
+            return False
+        if sink is None:
+            _history.decision(
+                key, episode_id=episode_id, reason="no_channel", resolution=resolution
+            )
+            return False
         last = _LAST_FIRED.get(key, 0.0)
         # Two concurrent sends of the same key would duplicate rather than
         # repeat, so one of them still has to yield.
@@ -833,6 +853,14 @@ async def alert_slack(
                     return False
             except Exception:
                 log.debug("alert snooze check failed; sending alert", exc_info=True)
+        # The final admission: the mute and snooze lookups above awaited, so a
+        # fenced send checks once more, synchronously, before it renders,
+        # records an attempt or posts. Only a post already under way may finish
+        # on a configuration that has since been replaced.
+        if fence is not None and not fence():
+            _history.decision(key, episode_id=episode_id, reason="other", resolution=resolution)
+            log.debug("alert %s dropped: the configuration changed before it was sent", key)
+            return False
         # Name the request that tripped the alert, so the page can be joined to
         # a row in ``api_logs`` instead of to a minute of traffic. Firing only:
         # a resolution's context is just the alert key, and the id of whichever
@@ -1133,6 +1161,7 @@ async def alert_on_transition(
     now: float | None = None,
     resolution_context: Callable[[], dict[str, Any]] | None = None,
     announce_resolution: bool = True,
+    fence: Callable[[], bool] | None = None,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
 
@@ -1173,7 +1202,15 @@ async def alert_on_transition(
     forever nor leaks an entry. Only the message is dropped, which is why such a
     close returns ``False`` — the return says whether a message was sent, not
     whether the incident closed.
+
+    ``fence`` is for an evaluation that read a configuration (a threshold, a
+    window) before awaiting: it is checked before the tracker or any incident
+    state changes, and again at the send's admission (see :func:`alert_slack`).
+    False at either point leaves this call without effect on the tracker it
+    had not yet touched, and no message is sent.
     """
+    if fence is not None and not fence():
+        return False
     tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
     moment = now or time.time()
     transition = tracker.observe(
@@ -1226,6 +1263,7 @@ async def alert_on_transition(
             detail,
             dedupe_key=key,
             cooldown_sec=cooldown_sec,
+            fence=fence,
         )
     if transition != "resolved":
         if not tracker.is_firing(key) and _history.open_episode(key) is not None:
@@ -1260,7 +1298,16 @@ async def alert_on_transition(
         cooldown_sec=cooldown_sec,
         status="resolved",
         history_episode=episode_id,
+        fence=fence,
     )
+    if not sent and fence is not None and not fence():
+        # The healthy reading belongs to a configuration replaced while the
+        # recovery waited to be sent. Neither announce it nor queue it for a
+        # retry: put the incident back as it was, so the next evaluation,
+        # under the configuration now in force, decides whether it is over.
+        if not tracker.is_firing(key):
+            tracker.rearm(key, moment)
+        return False
     if sent:
         # Confirmed close — but only when no re-breach slipped in while the
         # send was in flight. ``observe`` deleted the firing state on the

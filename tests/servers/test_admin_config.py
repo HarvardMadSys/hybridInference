@@ -83,7 +83,16 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"categories", "entries", "missing", "pending_restart", "restart_supported"}
+    assert set(body) == {
+        "categories",
+        "entries",
+        "missing",
+        "pending_restart",
+        "restart_supported",
+        "source_version",
+        "saved_version",
+        "groups",
+    }
     assert body["restart_supported"] is True
     assert {category["id"] for category in body["categories"]} >= {"email", "security"}
     entries = _entries(body)
@@ -117,6 +126,8 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "used_by",
         "updated_at",
         "updated_by",
+        "group",
+        "apply_mode",
     }
     secrets = [
         "env-smtp-password",
