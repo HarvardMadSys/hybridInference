@@ -1007,7 +1007,7 @@ async def _import_environment(
             logger.warning(
                 "Not importing %s from the environment: it breaks a rule with a value stored "
                 "in the database (%s), and the stored value wins, so %s keeps its default. "
-                "Change both on the Configuration tab (or with `python -m "
+                "Change both on the Settings tab (or with `python -m "
                 "serving.config.manage set`), or remove the variable.",
                 key,
                 rule,

@@ -23,13 +23,13 @@ in the environment, from which a new deployment's first start copies them. See
 [Settings stored in the database](configuration.md#settings-stored-in-the-database).
 
 After that first start the stored values win, so change proxy trust on the
-Configuration tab or with `python -m serving.config.manage set`, not in `.env`.
+Settings tab or with `python -m serving.config.manage set`, not in `.env`.
 An environment value that conflicts with a stored one — `TRUST_X_REAL_IP=1`
 while the stored `TRUST_PROXY_HEADERS` is off, say — is set aside with a
 warning in the log, and its default applies. The bundled Compose file passes
 `TRUST_PROXY_HEADERS` and `TRUST_CLOUDFLARE_HEADERS` with a default of `0`, and
 the first start stores what it passes. If every client appears with your
-proxy's address, look at these settings on the Configuration tab first: a
+proxy's address, look at these settings on the Settings tab first: a
 stored `0` outranks a `1` in `.env`.
 
 The rest of this page explains each setting, how the address is resolved, and

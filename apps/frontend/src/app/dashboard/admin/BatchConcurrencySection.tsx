@@ -27,11 +27,14 @@ import {
 import { getErrorMessage } from '@/lib/utils/errors';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
+import { useReportUnsaved } from './useReportUnsaved';
 
 const SECTION = 'Batch Concurrency';
 
 interface BatchConcurrencySectionProps {
   onToast: (msg: string) => void;
+  /** Called with the number of unsaved changes whenever it changes. */
+  onUnsavedChange?: (count: number) => void;
 }
 
 /** A cap as the table shows it; `null` is the default. */
@@ -62,7 +65,10 @@ function parseCap(raw: string): ParsedCap {
  * The caps are edited in place; Save writes the changed models, one request
  * per model.
  */
-export function BatchConcurrencySection({ onToast }: BatchConcurrencySectionProps) {
+export function BatchConcurrencySection({
+  onToast,
+  onUnsavedChange,
+}: BatchConcurrencySectionProps) {
   const writes = useConfirmAction();
   const [models, setModels] = useState<AdminBatchModelLimit[]>([]);
   const [defaultCap, setDefaultCap] = useState(0);
@@ -117,6 +123,7 @@ export function BatchConcurrencySection({ onToast }: BatchConcurrencySectionProp
   );
   // An invalid cap is unsaved too: it keeps the bar up, with Save held back.
   const unsaved = changes.length + invalid.length;
+  useReportUnsaved(unsaved, onUnsavedChange);
   const blocked =
     invalid.length > 0
       ? `Correct the cap for ${invalid.map((model) => model.model_id).join(', ')} before saving.`
@@ -157,7 +164,7 @@ export function BatchConcurrencySection({ onToast }: BatchConcurrencySectionProp
   return (
     <AdminSection
       title={SECTION}
-      description="How many batch requests each model may run at once. A cap is shared by every gateway process and applies within seconds; an empty cap uses the default and 0 pauses batch work on the model. The default, and who may submit batches, are set in Admin → Configuration → Batch inference."
+      description="How many batch requests each model may run at once. A cap is shared by every gateway process and applies within seconds; an empty cap uses the default and 0 pauses batch work on the model. The default, and who may submit batches, are set under Batch inference, above."
     >
       {error && (
         <div className="mb-3">

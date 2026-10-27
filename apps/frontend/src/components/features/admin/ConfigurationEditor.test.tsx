@@ -11,7 +11,7 @@ const navigateToMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: refreshMock, replace: vi.fn(), push: vi.fn() }),
-  usePathname: () => '/dashboard/admin/configuration',
+  usePathname: () => '/dashboard/admin/settings',
 }));
 
 vi.mock('@/lib/api/config', () => ({
@@ -48,8 +48,35 @@ import {
 } from '@/lib/api/config';
 import toast from 'react-hot-toast';
 
-import { ConfigurationTab } from './ConfigurationTab';
-import { escapingScreenReaderText } from './__tests__/layoutContainment';
+import {
+  AddVariableControl,
+  ConfigCategorySection,
+  ConfigurationBackupSection,
+  ConfigurationFilters,
+  ConfigurationNotices,
+  useConfigurationEditor,
+} from './ConfigurationEditor';
+
+/**
+ * Every part of the editor, with every category one after another. Admin →
+ * Settings spreads the same parts over its sub-tabs; how it places them is
+ * tested with the page.
+ */
+function Editor({ initialMissingOnly }: { initialMissingOnly?: boolean }) {
+  const editor = useConfigurationEditor({ initialMissingOnly });
+  return (
+    <>
+      <ConfigurationNotices editor={editor} />
+      {editor.config ? <ConfigurationFilters editor={editor} /> : null}
+      <AddVariableControl editor={editor} />
+      {editor.groups.map((group) => (
+        <ConfigCategorySection key={group.id} editor={editor} categoryId={group.id} />
+      ))}
+      <ConfigurationBackupSection editor={editor} />
+      {editor.backupConfirmation.dialog}
+    </>
+  );
+}
 
 /** What a misbehaving backend might leak; the page must never show it. */
 const LEAKED_SECRET = 'sk-live-should-never-render';
@@ -158,7 +185,7 @@ function section(name: string): HTMLElement {
 
 async function renderTab(config = makeConfig(), props: { initialMissingOnly?: boolean } = {}) {
   vi.mocked(getConfig).mockResolvedValue(config);
-  render(<ConfigurationTab {...props} />);
+  render(<Editor {...props} />);
   await screen.findByRole('region', { name: 'Email (SMTP)' });
 }
 
@@ -1124,10 +1151,6 @@ describe('edit flow edge cases', () => {
     ).toBeVisible();
     expect(email.getByRole('button', { name: 'Discard changes to Email (SMTP)' })).toBeEnabled();
     expect(email.getByRole('button', { name: 'Save changes to Email (SMTP)' })).toBeEnabled();
-    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
-    expect(within(index).getByRole('link', { name: /Email \(SMTP\)/ })).toHaveTextContent(
-      'unsaved changes',
-    );
     // A category with nothing unsaved is still filtered out.
     expect(screen.queryByRole('region', { name: 'Network' })).toBeNull();
 
@@ -1445,7 +1468,7 @@ describe('locked settings', () => {
         entry({ key: 'PINNED', category: 'security', value: 'v1', locked: true }),
       ]),
     );
-    render(<ConfigurationTab />);
+    render(<Editor />);
     const security = await screen.findByRole('region', { name: 'Security' });
 
     const fence = within(security).getByLabelText('ERASURE_FENCE_SECRET');
@@ -1475,7 +1498,7 @@ describe('locked settings', () => {
         }),
       ]),
     );
-    render(<ConfigurationTab />);
+    render(<Editor />);
     const security = await screen.findByRole('region', { name: 'Security' });
 
     expect(within(security).getByLabelText('ERASURE_FENCE_SECRET')).toHaveAttribute(
@@ -1907,56 +1930,9 @@ describe('filters', () => {
     expect(screen.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
   });
 
-  it('indexes the categories the filters leave, and keeps one marked', async () => {
-    await renderTab();
-    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
-    const names = () =>
-      within(index)
-        .getAllByRole('link')
-        .map((link) => link.textContent);
-    expect(names()).toEqual(['Email (SMTP)1 missing', 'Network', 'Providers1 missing', 'Security']);
-    expect(within(index).getByRole('link', { name: 'Network' })).toHaveAttribute(
-      'href',
-      '#config-network',
-    );
-    expect(document.getElementById('config-network')).toBe(
-      screen.getByRole('region', { name: 'Network' }),
-    );
-
-    fireEvent.click(within(index).getByRole('link', { name: 'Network' }));
-    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'glm' } });
-
-    expect(names()).toEqual(['Providers1 missing']);
-    expect(within(index).getByRole('link', { name: /Providers/ })).toHaveAttribute(
-      'aria-current',
-      'location',
-    );
-  });
-
-  it('flags a category with unsaved changes in the index, until they are discarded', async () => {
-    await renderTab();
-    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
-    const link = within(index).getByRole('link', { name: /Email \(SMTP\)/ });
-    expect(link).not.toHaveTextContent('unsaved changes');
-
-    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
-    expect(link).toHaveTextContent('unsaved changes');
-    // Those notes are screen-reader text inside a row that scrolls sideways
-    // on a phone: they must not widen the page.
-    expect(escapingScreenReaderText(index)).toEqual([]);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Email (SMTP)' }));
-    expect(link).not.toHaveTextContent('unsaved changes');
-    expect(patchConfig).not.toHaveBeenCalled();
-  });
-
-  it('counts a staged reset in the index like the edit bar does', async () => {
+  it('counts a staged reset like an edit', async () => {
     await renderTab();
     fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
-    const index = screen.getByRole('navigation', { name: 'Configuration categories' });
-    expect(within(index).getByRole('link', { name: /Email \(SMTP\)/ })).toHaveTextContent(
-      'unsaved changes',
-    );
     expect(within(section('Email (SMTP)')).getByText('1 unsaved change')).toBeVisible();
     expect(resetConfigKey).not.toHaveBeenCalled();
   });
@@ -1982,9 +1958,7 @@ describe('restart', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restart backend' }));
 
     await waitFor(() => expect(restartBackend).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/configuration'),
-    );
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/settings'));
     expect(waitForBackendRestart).toHaveBeenCalled();
   });
 
@@ -2015,9 +1989,7 @@ describe('restart', () => {
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Keep waiting' }));
 
-    await waitFor(() =>
-      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/configuration'),
-    );
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/settings'));
     const [first, second] = vi.mocked(waitForBackendRestart).mock.calls;
     expect(second[0]?.progress).toBe(first[0]?.progress);
     // The process asked to restart, which only a different one ends.
@@ -2052,7 +2024,7 @@ describe('restart', () => {
 describe('loading', () => {
   it('explains a backend without the configuration API', async () => {
     vi.mocked(getConfig).mockRejectedValueOnce(new APIError('HTTP_404', 'Not Found', 404));
-    render(<ConfigurationTab />);
+    render(<Editor />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'does not support database-backed configuration',

@@ -52,13 +52,11 @@ describe('AdminTabNav', () => {
     expect(screen.queryByRole('link', { name: 'Broadcast Email' })).not.toBeInTheDocument();
   });
 
-  it('lists the database-backed Configuration tab beside Settings', () => {
+  it('has one Settings tab for configuration and runtime settings alike', () => {
     render(<AdminTabNav />);
 
-    expect(screen.getByRole('link', { name: 'Configuration' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/configuration',
-    );
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('link', { name: 'Configuration' })).not.toBeInTheDocument();
   });
 
   it('renames the audit tab to a top-level Log tab', () => {
