@@ -2,11 +2,9 @@
 
 import asyncio
 import uuid
-from dataclasses import replace
 
 import pytest
 
-from serving.batch.config import BatchConfig
 from serving.servers.routers import batch_console
 from serving.storage.batch_store import BatchStore
 from serving.storage.batch_webhook_store import BatchWebhookStore
@@ -28,9 +26,6 @@ async def test_webhook_dns_wait_cannot_write_settings_after_owner_erasure(monkey
         await resume.wait()
 
     monkeypatch.setattr(batch_console, "check_resolves_public", paused_dns)
-    monkeypatch.setattr(
-        batch_console, "batch_config", lambda: replace(BatchConfig(), expansion_enabled=True)
-    )
     monkeypatch.setattr(batch_console, "encrypt_api_key", lambda value: "test-encrypted-secret")
     try:
         async with pool.acquire() as conn:

@@ -3,7 +3,9 @@
 **Date:** 2026-10-25
 **Status:** Accepted; implemented with this record. Revised and extended by
 [2026-10-26-batch-api-expansion-design.zh.md](2026-10-26-batch-api-expansion-design.zh.md),
-which implements most of section 13.
+which implements most of section 13, and by
+[2026-10-27-batch-default-availability-amendment.zh.md](2026-10-27-batch-default-availability-amendment.zh.md),
+which makes every batch kind available whenever `BATCH_ENABLED` is on.
 **Related:** #1503 (a general batch endpoint), #1510 (the first draft and its
 spec, `2026-10-10-batch-processing-design.md`, which this record replaces; it was
 not merged), #1509 (completion webhooks, deferred)

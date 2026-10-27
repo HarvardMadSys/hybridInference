@@ -225,8 +225,6 @@ async def _save_webhook(
     webhook_store: Any, user_id: str, settings: WebhookSettings, *, check_owner: bool = True
 ) -> dict:
     config = batch_config()
-    if not config.expansion_enabled:
-        raise HTTPException(400, "Batch webhooks are not enabled on this gateway")
     url, problem = url_problem(settings.url, allow_private=config.webhook_allow_private)
     if problem is None and url is not None:
         problem = await check_resolves_public(url, allow_private=config.webhook_allow_private)

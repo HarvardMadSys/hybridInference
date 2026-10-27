@@ -24,8 +24,8 @@ is refused. Each item runs once through the Messages handler; a tool call in a
 result is for the client to execute and send back in a new request -- the
 gateway never runs user tools. Message Batches belong to the user, as every
 batch here does: there are no workspaces, and an administrator may manage
-anyone's. Creating needs ``BATCH_MIN_ROLE`` and ``BATCH_EXPANSION_ENABLED``;
-everything else works for an owner whatever their role and quota.
+anyone's. Creating needs ``BATCH_MIN_ROLE``; everything else works for an
+owner whatever their role and quota.
 """
 
 from __future__ import annotations
@@ -213,8 +213,6 @@ async def create_message_batch(
             403, f"Creating batches requires the {config.min_role!r} role or higher"
         )
     enforce_daily_quota(request, user_ctx)
-    if not config.expansion_enabled:
-        raise HTTPException(403, "Message Batches are not enabled on this gateway")
     _version(request, creating=True)
     if key is None:
         # With an Idempotency-Key the insert transaction decides the cap, so a
