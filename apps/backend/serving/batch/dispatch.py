@@ -370,6 +370,10 @@ async def _run_embeddings(
         authorization=None,
         user_ctx=caller,
         embedding_adapters=getattr(services, "embedding_adapters", None) or {},
+        # The handler enforces the embedding access gate recorded on the
+        # router (refusing a model without one) and its runtime overrides.
+        router_exec=services.router,
+        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
         log_store=getattr(services, "log_store", None),
         completions_logger=get_completions_logger(services),
         op_store=getattr(services, "operational_store", None),

@@ -32,6 +32,14 @@ def _is_canonical_model(model_id: str, route) -> bool:
     )
 
 
+def _model_routes(router) -> dict[str, object]:
+    """Return chat and embedding gates keyed by their registered names."""
+    return {
+        **getattr(router, "routes", {}),
+        **getattr(router, "embedding_routes", {}),
+    }
+
+
 def _effective_required_role_for_admin_list(baseline: str, override: str | None) -> str:
     if override is None:
         return baseline
@@ -54,8 +62,9 @@ async def list_model_visibility(
     overrides = {row["model_id"]: row["required_role"] for row in override_rows}
     models: list[ModelVisibilityItem] = []
 
-    for model_id in sorted(services.router.routes):
-        route = services.router.routes[model_id]
+    routes = _model_routes(services.router)
+    for model_id in sorted(routes):
+        route = routes[model_id]
         if not _is_canonical_model(model_id, route):
             continue
 
@@ -88,7 +97,7 @@ async def update_model_visibility(
         raise HTTPException(status_code=500, detail="Database not configured")
 
     async with model_router_transition_lock(services, model_id):
-        route = services.router.routes.get(model_id)
+        route = _model_routes(services.router).get(model_id)
         if route is None or not _is_canonical_model(model_id, route):
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
 

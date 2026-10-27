@@ -28,6 +28,7 @@ from serving.adapters.base import validate_deployment_type
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
+from serving.model_access import default_required_role_for_model
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
 if TYPE_CHECKING:
@@ -414,6 +415,36 @@ def _dynamic_key_provider_name(kind: str, adapter_cfg: dict[str, Any]) -> str:
     metadata = adapter_cfg.get("route_metadata") or {}
     canonical = metadata.get("key_provider") or adapter_cfg.get("provider") or kind
     return dynamic_keys.normalize_key_provider(str(canonical))
+
+
+def _parse_role_gate(model: dict[str, Any], model_id: str) -> tuple[bool, str]:
+    """Parse a model entry's access gate: ``(admin_only, required_role)``.
+
+    Shared by the chat and embedding registration branches so both spellings
+    of the model-level tier declaration validate identically: an omitted
+    ``required_role`` reads as the same cost-derived default the registry and
+    the public page apply (:func:`default_required_role_for_model` — paid or
+    unknown-cost models publish as ``pro``; provably free ones as ``free``),
+    an invalid ``required_role`` fails closed to ``admin`` (a typo must gate
+    the model, not open it), and ``admin_only: true`` stays the older
+    spelling of ``required_role: admin``. ``admin_only`` is kept as written:
+    beside an explicit ``free`` it still means admin (the legacy precedence
+    ``register_route`` applies too), beside any other explicit role that
+    role is the gate.
+    """
+    admin_only = bool(model.get("admin_only", False))
+    required_role = default_required_role_for_model(model)
+    # Validate required_role to prevent fail-open on typos
+    from serving.config.settings import VALID_ROLES
+
+    if required_role not in VALID_ROLES:
+        logging.getLogger(__name__).warning(
+            "Model %s has invalid required_role '%s', defaulting to 'admin'",
+            model_id,
+            required_role,
+        )
+        required_role = "admin"
+    return admin_only, required_role
 
 
 def register_from_models_yaml(
@@ -938,23 +969,28 @@ def register_from_models_yaml(
                     embedding_adapters[model_id] = emb_adapter
                     for alias in aliases:
                         embedding_adapters[alias] = emb_adapter
-                count += 1 + len(aliases)
+                    # Embedding models bypass the weighted FixedRouter.
+                    # Record their gate only when an adapter was configured;
+                    # an optional route whose environment is unset is skipped.
+                    admin_only, required_role = _parse_role_gate(m, model_id)
+                    router.register_embedding_route(
+                        model_id,
+                        adapters_with_weights,
+                        aliases=aliases,
+                        admin_only=admin_only,
+                        required_role=required_role,
+                    )
+                    # Every adapter key, including aliases, must have a gate.
+                    _gate = router.embedding_routes
+                    for _key in [model_id, *aliases]:
+                        assert _key in _gate and _key in embedding_adapters, (
+                            f"embedding registration invariant violated for {_key!r}: "
+                            "adapter table and access-gate record must both exist"
+                        )
+                    count += 1 + len(aliases)
             else:
                 # Chat models go through the full FixedRouter
-                admin_only = bool(m.get("admin_only", False))
-                required_role = str(m.get("required_role", "free"))
-                # Validate required_role to prevent fail-open on typos
-                from serving.config.settings import VALID_ROLES
-
-                if required_role not in VALID_ROLES:
-                    import logging as _logging
-
-                    _logging.getLogger(__name__).warning(
-                        "Model %s has invalid required_role '%s', defaulting to 'admin'",
-                        model_id,
-                        required_role,
-                    )
-                    required_role = "admin"
+                admin_only, required_role = _parse_role_gate(m, model_id)
                 router.register_route(
                     model_id,
                     adapters_with_weights,

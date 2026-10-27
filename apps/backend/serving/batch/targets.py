@@ -179,6 +179,9 @@ class AdmissionContext:
     visibility_resolver: Any
     embedding_adapters: dict[str, Any] | None
     profile: AnthropicProfile | None = None
+    #: The router's embedding access gates (``FixedRouter.embedding_routes``).
+    #: An embedding model with no gate here is refused, as /v1/embeddings does.
+    embedding_routes: dict[str, Any] | None = None
     _models: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
@@ -442,7 +445,7 @@ async def admit_item(target: str, body: Any, ctx: AdmissionContext) -> str:
     if target == TARGET_CHAT:
         return await _admit_chat(body, ctx)
     if target == TARGET_EMBEDDINGS:
-        return _admit_embeddings(body, ctx)
+        return await _admit_embeddings(body, ctx)
     if target == TARGET_MESSAGES:
         return await _admit_messages(body, ctx)
     if target == TARGET_RESPONSES:
@@ -486,7 +489,7 @@ async def _admit_chat(body: dict[str, Any], ctx: AdmissionContext) -> str:
     return canonical
 
 
-def _admit_embeddings(body: dict[str, Any], ctx: AdmissionContext) -> str:
+async def _admit_embeddings(body: dict[str, Any], ctx: AdmissionContext) -> str:
     try:
         request = EmbeddingRequest.model_validate(body)
     except ValidationError as exc:
@@ -495,7 +498,20 @@ def _admit_embeddings(body: dict[str, Any], ctx: AdmissionContext) -> str:
         ) from None
     adapters = ctx.embedding_adapters or {}
     adapter = adapters.get(request.model)
-    if adapter is None:
+    gate = (ctx.embedding_routes or {}).get(request.model)
+    if (
+        adapter is None
+        # The gate is mandatory, as on /v1/embeddings: an adapter without one
+        # is refused, never admitted ungated.
+        or gate is None
+        or (
+            await model_access_denial(
+                gate, request.model, ctx.user_ctx, visibility_resolver=ctx.visibility_resolver
+            )
+            is not None
+        )
+    ):
+        # Every reason reads as an unknown model, as on the interactive surface.
         raise ItemRejected(
             "model_not_found",
             model_not_found_detail(request.model, user_ctx=ctx.user_ctx, noun="Embedding model"),
