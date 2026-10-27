@@ -2,8 +2,14 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useState } from 'react';
-import { AdminAnalyticsResponse, AnalyticsPeriod, getAnalytics } from '@/lib/api/admin';
+import {
+  AdminAnalyticsResponse,
+  AnalyticsPeriod,
+  TokenUsageRange,
+  getAnalytics,
+} from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { PerformanceMetricsSection, TokenUsageSection } from './TokenUsageSection';
 
 // The chart cards carry the recharts bundle; loading them dynamically lets the
 // analytics fetch start while that chunk is still downloading.
@@ -12,19 +18,21 @@ const AnalyticsCards = dynamic(() => import('./AnalyticsCards'), {
   loading: () => <AnalyticsSkeleton />,
 });
 
-// Own fetch, own range: the growth series is in whole days and ignores the
-// period selector above, so it must not block on the overview payload.
-const GrowthCard = dynamic(() => import('./GrowthCard'), {
-  ssr: false,
-  loading: () => <SkeletonCard className="sm:col-span-2" />,
-});
-
 const PERIODS: { key: AnalyticsPeriod; label: string }[] = [
   { key: 'hour', label: 'Hour' },
   { key: 'day', label: 'Day' },
   { key: 'week', label: 'Week' },
   { key: 'month', label: 'Month' },
 ];
+
+// The period buttons scope the whole page. Token usage covers the same
+// lookback, in the whole hours its hourly rollup is kept in.
+const TOKEN_USAGE_RANGE: Record<AnalyticsPeriod, TokenUsageRange> = {
+  hour: '1h',
+  day: '24h',
+  week: '7d',
+  month: '30d',
+};
 
 function SkeletonCard({ className = '' }: { className?: string }) {
   return (
@@ -94,13 +102,33 @@ export function AnalyticsTab() {
         ))}
       </div>
 
-      {error && (
-        <div className="mb-4 rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
-      )}
+      <div className="space-y-8">
+        <TokenUsageSection range={TOKEN_USAGE_RANGE[period]} />
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {loading || !data ? <AnalyticsSkeleton /> : <AnalyticsCards data={data} period={period} />}
-        <GrowthCard />
+        <section>
+          <div className="mb-4">
+            <h2 className="text-[14px] font-semibold text-gray-900">Users and requests</h2>
+            <p className="text-[11px] text-gray-400">
+              Who sends requests, and which models and providers serve them.
+            </p>
+          </div>
+
+          {error && (
+            <div className="mb-4 rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">
+              {error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {loading || !data ? (
+              <AnalyticsSkeleton />
+            ) : (
+              <AnalyticsCards data={data} period={period} />
+            )}
+          </div>
+        </section>
+
+        <PerformanceMetricsSection />
       </div>
     </div>
   );

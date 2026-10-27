@@ -3,7 +3,12 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getAnalytics, getGeoAnalytics, getGrowthAnalytics } from '@/lib/api/admin';
+import {
+  getAnalytics,
+  getGeoAnalytics,
+  getPerformanceMetrics,
+  getProviderTokenUsage,
+} from '@/lib/api/admin';
 import { AnalyticsTab } from './AnalyticsTab';
 
 vi.mock('recharts', () => ({
@@ -25,13 +30,20 @@ vi.mock('recharts', () => ({
 vi.mock('@/lib/api/admin', () => ({
   getAnalytics: vi.fn(),
   getGeoAnalytics: vi.fn(),
-  getGrowthAnalytics: vi.fn(),
+  getPerformanceMetrics: vi.fn(),
+  getProviderTokenUsage: vi.fn(),
 }));
+
+/** Token usage and performance metrics fetch on their own; park them. */
+function parkSectionFetches() {
+  vi.mocked(getProviderTokenUsage).mockImplementation(() => new Promise(() => undefined));
+  vi.mocked(getPerformanceMetrics).mockImplementation(() => new Promise(() => undefined));
+}
 
 describe('AnalyticsTab overview', () => {
   beforeEach(() => {
     vi.mocked(getAnalytics).mockImplementation(() => new Promise(() => undefined));
-    vi.mocked(getGrowthAnalytics).mockImplementation(() => new Promise(() => undefined));
+    parkSectionFetches();
     vi.mocked(getGeoAnalytics).mockReset();
   });
 
@@ -49,13 +61,32 @@ describe('AnalyticsTab overview', () => {
     await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith('day'));
     expect(getGeoAnalytics).not.toHaveBeenCalled();
   });
+
+  it('shows token usage first, over the period the overview shows', async () => {
+    render(<AnalyticsTab />);
+
+    const tokenUsage = screen.getByRole('heading', { name: 'Token usage' });
+    const users = screen.getByRole('heading', { name: 'Users and requests' });
+    expect(tokenUsage.compareDocumentPosition(users) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    await waitFor(() => expect(getProviderTokenUsage).toHaveBeenCalledWith('24h'));
+
+    for (const [button, period, range] of [
+      ['Hour', 'hour', '1h'],
+      ['Week', 'week', '7d'],
+      ['Month', 'month', '30d'],
+    ] as const) {
+      fireEvent.click(screen.getByRole('button', { name: button }));
+      await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith(period));
+      expect(getProviderTokenUsage).toHaveBeenLastCalledWith(range);
+    }
+  });
 });
 
 describe('AnalyticsTab top users by model', () => {
   beforeEach(() => {
-    // The growth card fetches on its own; park it so it neither resolves nor
-    // throws while this suite exercises the overview cards.
-    vi.mocked(getGrowthAnalytics).mockImplementation(() => new Promise(() => undefined));
+    parkSectionFetches();
   });
 
   afterEach(() => {

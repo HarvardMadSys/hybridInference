@@ -24,7 +24,7 @@ describe('AnalyticsSectionNav', () => {
     cleanup();
   });
 
-  it('links to the overview, token usage and request origins', () => {
+  it('links to the overview and request origins', () => {
     render(<AnalyticsSectionNav />);
 
     const nav = screen.getByRole('navigation', { name: 'Analytics sections' });
@@ -34,7 +34,6 @@ describe('AnalyticsSectionNav', () => {
         .map((link) => [link.textContent, link.getAttribute('href')]),
     ).toEqual([
       ['Overview', '/dashboard/admin/analytics'],
-      ['Token usage', '/dashboard/admin/analytics/token-usage'],
       ['Request origins', '/dashboard/admin/analytics/geo'],
     ]);
   });
@@ -43,11 +42,6 @@ describe('AnalyticsSectionNav', () => {
     pathname = '/dashboard/admin/analytics';
     render(<AnalyticsSectionNav />);
     expect(current()).toEqual(['Overview']);
-    cleanup();
-
-    pathname = '/dashboard/admin/analytics/token-usage';
-    render(<AnalyticsSectionNav />);
-    expect(current()).toEqual(['Token usage']);
     cleanup();
 
     pathname = '/dashboard/admin/analytics/geo';
