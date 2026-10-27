@@ -12,6 +12,7 @@ import type {
   UserTurnAverages,
 } from '@/lib/api/admin';
 import { getUserDetail, listModelVisibility } from '@/lib/api/admin';
+import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { userAccountLabel, userAccountLabelKind } from '@/lib/utils/userLabel';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
 import { UserRow } from './UserRow';
@@ -32,8 +33,8 @@ interface UserTableProps {
   hiddenColumns?: ColumnId[];
   filterState: FilterState;
   onSortChange: (sortBy: FilterState['sortBy']) => void;
-  // Write handlers. Each runs inside a confirmation the table opens, and
-  // throws on failure so the confirmation stays open with the error.
+  // Write handlers. Each throws on failure: a confirmation the table opens
+  // stays open with the error, and a direct write shows it where it was made.
   onApprove: (userId: string) => Promise<void>;
   onReject: (userId: string, reason: string) => Promise<void>;
   onUpdate: (userId: string, patch: UpdateUserData) => Promise<void>;
@@ -119,6 +120,7 @@ export function UserTable(props: UserTableProps) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [availableModels, setAvailableModels] = useState<AdminModelVisibilityItem[]>([]);
   const confirmation = useConfirmAction();
+  const toast = useAccountToast();
   // The rows on screen now, for a confirmation opened before a refetch.
   const usersRef = useRef(users);
   useEffect(() => {
@@ -191,6 +193,8 @@ export function UserTable(props: UserTableProps) {
   );
 
   const toggleDetail = async (userId: string) => {
+    // A write in flight belongs to the open row: it stays open until the write ends.
+    if (confirmation.busy) return;
     if (expandedId === userId) {
       setExpandedId(null);
       setDetail(null);
@@ -225,14 +229,15 @@ export function UserTable(props: UserTableProps) {
 
   const labelOf = (user: AdminUser | UserRowType) => userAccountLabel(user) || user.id;
 
-  // A reviewed edit from the detail panel: one update, then show what was saved.
+  // An edit saved from the detail panel: one update, then show what was saved.
   const updateDetail = async (patch: UpdateUserData) => {
     if (!expandedId || !detail) return;
     const userId = expandedId;
     await props.onUpdate(userId, patch);
     try {
       const refreshed = await getUserDetail(userId);
-      setDetail(refreshed);
+      // Only onto the same user's detail, should another row be open by now.
+      setDetail((prev) => (prev && prev.id === userId ? refreshed : prev));
     } catch {
       // Saved, but the refetch failed: show the values that were written.
       setDetail((prev) =>
@@ -259,19 +264,14 @@ export function UserTable(props: UserTableProps) {
     }
   };
 
-  const requestApprove = (user: UserRowType) => {
-    const label = labelOf(user);
-    confirmation.request({
-      title: `Approve ${label}?`,
-      body: <p>Their account becomes active and they are notified that they can sign in.</p>,
-      confirmLabel: 'Approve',
-      busyLabel: 'Approving…',
-      run: async () => {
-        ensureListed(user.id, label);
-        await props.onApprove(user.id);
-      },
-    });
+  // Approve, Reactivate and Resume act on the click. A failure is toasted, as
+  // the handler toasts a success.
+  const apply = async (run: () => Promise<void>) => {
+    const failure = await confirmation.perform({ run });
+    if (failure) toast.error(failure);
   };
+
+  const approve = (user: UserRowType) => void apply(() => props.onApprove(user.id));
 
   const requestReject = (user: UserRowType) => {
     const label = labelOf(user);
@@ -334,45 +334,17 @@ export function UserTable(props: UserTableProps) {
     });
   };
 
-  const requestReactivate = (user: AdminUser) => {
-    const label = labelOf(user);
-    confirmation.request({
-      title: `Reactivate ${label}?`,
-      body: (
-        <p>
-          The account changes from suspended to active: the user can sign in and use their API key
-          again.
-        </p>
-      ),
-      confirmLabel: 'Reactivate',
-      busyLabel: 'Reactivating…',
-      run: async () => {
-        ensureListed(user.id, label);
-        await props.onUpdate(user.id, { status: 'active' });
-        collapse();
-      },
+  const reactivate = (user: AdminUser) =>
+    void apply(async () => {
+      await props.onUpdate(user.id, { status: 'active' });
+      collapse();
     });
-  };
 
-  const requestResume = (user: AdminUser) => {
-    const label = labelOf(user);
-    confirmation.request({
-      title: `Resume ${label}?`,
-      body: (
-        <p>
-          The account changes from deleted to active. Its API keys stay revoked; the user must
-          create a new one.
-        </p>
-      ),
-      confirmLabel: 'Resume',
-      busyLabel: 'Resuming…',
-      run: async () => {
-        ensureListed(user.id, label);
-        await props.onResume(user.id);
-        collapse();
-      },
+  const resume = (user: AdminUser) =>
+    void apply(async () => {
+      await props.onResume(user.id);
+      collapse();
     });
-  };
 
   const requestDelete = (user: AdminUser) => {
     const label = labelOf(user);
@@ -593,7 +565,8 @@ export function UserTable(props: UserTableProps) {
                     groupStarts={groupStarts}
                     expanded={isExpanded}
                     onToggleExpanded={() => toggleDetail(u.id)}
-                    onApprove={() => requestApprove(u)}
+                    busy={confirmation.busy}
+                    onApprove={() => approve(u)}
                     onReject={() => requestReject(u)}
                   />
                   {isExpanded && (
@@ -612,8 +585,8 @@ export function UserTable(props: UserTableProps) {
                               confirmation={confirmation}
                               onUpdate={updateDetail}
                               onSuspend={requestSuspend}
-                              onReactivate={requestReactivate}
-                              onResume={requestResume}
+                              onReactivate={reactivate}
+                              onResume={resume}
                               onRequestDelete={requestDelete}
                               onRequestHardDelete={requestHardDelete}
                             />

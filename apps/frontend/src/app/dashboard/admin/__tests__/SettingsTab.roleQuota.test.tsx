@@ -170,7 +170,7 @@ describe('SettingsTab role quota', () => {
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     expect(
       screen.getByRole('dialog', { name: 'Remove example.com from the signup allowlist?' }),
-    ).toHaveTextContent('will require admin approval');
+    ).toHaveTextContent('Existing users keep their current status.');
     expect(remove).toHaveTextContent('Remove');
     fireEvent.click(remove);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());

@@ -80,7 +80,7 @@ function renderSettings() {
   );
 }
 
-/** Press the confirm button of the dialog a change opens. */
+/** Press a button of the open confirmation. */
 function confirm(label: string) {
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: label }));
 }
@@ -116,10 +116,7 @@ describe('SettingsTab and the site configuration', () => {
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
     saveSection('Feature Flags');
-    expect(
-      screen.getByRole('dialog', { name: 'Save 1 change to Feature Flags?' }),
-    ).toHaveTextContent('Signup Require Email VerificationOn → Off');
-    confirm('Confirm save');
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() =>
       expect(updateRuntimeSetting).toHaveBeenCalledWith('signup_require_email_verification', false),
@@ -143,8 +140,6 @@ describe('SettingsTab and the site configuration', () => {
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
     saveSection('Numeric Settings');
-    expect(screen.getByRole('dialog')).toHaveTextContent('3 → 5');
-    confirm('Confirm save');
 
     await waitFor(() =>
       expect(updateRuntimeSetting).toHaveBeenCalledWith('max_concurrent_requests_per_user', 5),
@@ -152,7 +147,7 @@ describe('SettingsTab and the site configuration', () => {
     await waitFor(() => expect(refreshMock).toHaveBeenCalledTimes(1));
   });
 
-  it('edits saved values in place, and changes nothing until the change is confirmed', async () => {
+  it('edits saved values in place, and changes nothing until Save', async () => {
     renderSettings();
 
     // Editable in place: no Edit step, and no save bar until something changes.
@@ -164,30 +159,62 @@ describe('SettingsTab and the site configuration', () => {
     expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
 
+    // A switch is a draft; Discard drops it.
     fireEvent.click(flag);
-    saveSection('Feature Flags');
-    fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Back to editing' }),
-    );
-    // Back keeps the draft; Discard drops it.
     expect(flag).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByRole('button', { name: 'Save changes to Feature Flags' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Feature Flags' }));
     expect(flag).toHaveAttribute('aria-checked', 'true');
     expect(screen.queryByRole('button', { name: 'Save changes to Feature Flags' })).toBeNull();
 
     const input = screen.getByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Back to editing' }),
-    );
     expect(screen.getByLabelText('max_concurrent_requests_per_user value')).toHaveValue(5);
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(updateRuntimeSetting).not.toHaveBeenCalled();
   });
 
-  it('refuses an out-of-range number without asking', async () => {
+  it('saves a number on Enter, once, and holds the section while it saves', async () => {
+    let finish!: (value: Awaited<ReturnType<typeof updateRuntimeSetting>>) => void;
+    vi.mocked(updateRuntimeSetting).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderSettings();
+
+    const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
+    fireEvent.change(input, { target: { value: '5' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(updateRuntimeSetting).toHaveBeenCalledWith('max_concurrent_requests_per_user', 5);
+
+    const save = screen.getByRole('button', { name: 'Save changes to Numeric Settings' });
+    expect(save).toHaveTextContent('Saving…');
+    expect(save).toBeDisabled();
+    expect(input).toBeDisabled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(save);
+    expect(updateRuntimeSetting).toHaveBeenCalledTimes(1);
+
+    finish({
+      key: 'max_concurrent_requests_per_user',
+      value: 5,
+      value_type: 'int',
+      default_value: 3,
+      description: 'Concurrent requests per user',
+      min: 1,
+      max: null,
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Save changes to Numeric Settings' })).toBeNull(),
+    );
+    expect(screen.getByLabelText('max_concurrent_requests_per_user value')).toHaveValue(5);
+  });
+
+  it('refuses an out-of-range number without writing', async () => {
     renderSettings();
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '0' } });
@@ -219,7 +246,7 @@ describe('SettingsTab and the site configuration', () => {
     expect(updateRuntimeSetting).not.toHaveBeenCalled();
   });
 
-  it('leaves it alone when the change is refused, keeping the dialog and the draft', async () => {
+  it('leaves it alone when the change is refused, keeping the draft and saying why', async () => {
     vi.mocked(updateRuntimeSetting).mockRejectedValueOnce(new Error('forbidden'));
     renderSettings();
 
@@ -227,11 +254,11 @@ describe('SettingsTab and the site configuration', () => {
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
     saveSection('Feature Flags');
-    confirm('Confirm save');
 
-    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'signup_require_email_verification could not be saved: forbidden',
     );
+    expect(screen.getByRole('button', { name: 'Save changes to Feature Flags' })).toBeEnabled();
     expect(refreshMock).not.toHaveBeenCalled();
     expect(
       screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
@@ -240,7 +267,7 @@ describe('SettingsTab and the site configuration', () => {
 });
 
 describe('SettingsTab signup allowlist', () => {
-  it('adds a domain only through Add domain and a review', async () => {
+  it('adds a domain from the form opened by Add domain, with no review', async () => {
     vi.mocked(addSignupAllowedDomain).mockResolvedValue(undefined as never);
     renderSettings();
 
@@ -250,26 +277,42 @@ describe('SettingsTab signup allowlist', () => {
     fireEvent.change(screen.getByLabelText('Domain to add'), {
       target: { value: '*.partner.example' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Review and add' }));
-
-    const dialog = screen.getByRole('dialog', {
-      name: 'Add *.partner.example to the signup allowlist?',
-    });
-    expect(dialog).toHaveTextContent('approved automatically');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Back to editing' }));
-    expect(screen.getByLabelText('Domain to add')).toHaveValue('*.partner.example');
     expect(addSignupAllowedDomain).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add domain' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Review and add' }));
-    confirm('Add domain');
+    expect(screen.queryByRole('dialog')).toBeNull();
     await waitFor(() => expect(addSignupAllowedDomain).toHaveBeenCalledWith('*.partner.example'));
     expect(addSignupAllowedDomain).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByLabelText('Domain to add')).toBeNull());
+    expect(await screen.findByText('Added wildcard *.partner.example.')).toBeInTheDocument();
+  });
+
+  it('keeps the typed domain and says why when adding it fails, and adds it on a retry', async () => {
+    vi.mocked(addSignupAllowedDomain)
+      .mockRejectedValueOnce(new Error('Domain already listed'))
+      .mockResolvedValueOnce(undefined as never);
+    renderSettings();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add domain' }));
+    fireEvent.change(screen.getByLabelText('Domain to add'), {
+      target: { value: 'partner.example' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add domain' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Domain already listed');
+    expect(screen.getByLabelText('Domain to add')).toHaveValue('partner.example');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add domain' }));
+    await waitFor(() => expect(screen.queryByLabelText('Domain to add')).toBeNull());
+    expect(addSignupAllowedDomain).toHaveBeenCalledTimes(2);
   });
 
   it('removes a domain only after a confirmation naming it', async () => {
     vi.mocked(listSignupAllowedDomains).mockResolvedValue({
-      domains: [{ domain: 'acme.example', is_wildcard: false, created_at: null }],
+      domains: [
+        { domain: 'acme.example', is_wildcard: false, created_at: null },
+        { domain: 'partner.example', is_wildcard: true, created_at: null },
+      ],
     } as never);
     vi.mocked(removeSignupAllowedDomain).mockResolvedValue(undefined as never);
     renderSettings();
@@ -278,6 +321,9 @@ describe('SettingsTab signup allowlist', () => {
     const dialog = screen.getByRole('dialog', {
       name: 'Remove acme.example from the signup allowlist?',
     });
+    expect(dialog).toHaveTextContent(
+      'Future signups from acme.example will require admin approval.',
+    );
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(removeSignupAllowedDomain).not.toHaveBeenCalled();
 
@@ -287,6 +333,24 @@ describe('SettingsTab signup allowlist', () => {
       expect(removeSignupAllowedDomain).toHaveBeenCalledWith('acme.example', false),
     );
     expect(removeSignupAllowedDomain).toHaveBeenCalledTimes(1);
+  });
+
+  it('says that removing the last domain approves every signup', async () => {
+    vi.mocked(listSignupAllowedDomains).mockResolvedValue({
+      domains: [{ domain: 'acme.example', is_wildcard: false, created_at: null }],
+    } as never);
+    renderSettings();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove acme.example' }));
+    const dialog = screen.getByRole('dialog', {
+      name: 'Remove acme.example from the signup allowlist?',
+    });
+    expect(dialog).toHaveTextContent(
+      'With the list empty, every signup is approved automatically.',
+    );
+    expect(dialog).not.toHaveTextContent('will require admin approval');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(removeSignupAllowedDomain).not.toHaveBeenCalled();
   });
 });
 
@@ -301,12 +365,11 @@ describe('SettingsTab feedback', () => {
     });
     renderSettings();
 
-    // A flag change is reviewed first; its result shows once it is confirmed.
+    // A flag change is a draft; its result shows once it is saved.
     fireEvent.click(
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
     saveSection('Feature Flags');
-    confirm('Confirm save');
 
     const message = await screen.findByText('signup_require_email_verification disabled');
     const feedback = message.closest('[role="status"]') as HTMLElement;

@@ -4,12 +4,17 @@ import { BUTTON_GHOST, BUTTON_PRIMARY } from '../adminStyles';
 
 /**
  * Cancel and Save changes for a section or row being edited, with how many
- * changes are unsaved. Save is disabled for a no-op, while the save is
- * `blocked` and while a write runs.
+ * changes are unsaved. Save writes at once. It is disabled for a no-op, while
+ * the save is `blocked` and while a write runs. A failed save shows its
+ * `error` here, and what it did not write stays as drafts.
+ *
+ * `busy` is this bar's own save, which reads "Saving…". `held` is any other
+ * write on the same write flow: the bar waits for it, since the flow would
+ * ignore a save started meanwhile.
  *
  * `inPlace` is for settings whose fields are always editable: the bar appears
  * with the first change (or an error to show), and its Cancel reads Discard.
- * A busy confirmation alone does not bring it up, as one dialog often serves
+ * A write in flight alone does not bring it up, as one write flow often serves
  * other actions on the screen too.
  * Without it the bar belongs to an editor that was opened, and Cancel closes it.
  *
@@ -22,6 +27,7 @@ export function EditBar({
   onCancel,
   onSave,
   busy = false,
+  held = false,
   error,
   blocked,
   sticky = false,
@@ -35,6 +41,7 @@ export function EditBar({
   /** Omit with `submit`: the Save button then submits its form, so Enter saves too. */
   onSave?: () => void;
   busy?: boolean;
+  held?: boolean;
   error?: string | null;
   /**
    * Why Save is unavailable for now, shown in place of the count: another open
@@ -82,7 +89,7 @@ export function EditBar({
         <button
           type="button"
           onClick={onCancel}
-          disabled={busy}
+          disabled={busy || held}
           aria-label={inPlace ? `Discard changes to ${target}` : `Cancel editing ${target}`}
           className={BUTTON_GHOST}
         >
@@ -91,7 +98,7 @@ export function EditBar({
         <button
           type={submit ? 'submit' : 'button'}
           onClick={submit ? undefined : onSave}
-          disabled={busy || changeCount === 0 || Boolean(blocked)}
+          disabled={busy || held || changeCount === 0 || Boolean(blocked)}
           aria-busy={busy || undefined}
           aria-label={`Save changes to ${target}`}
           className={BUTTON_PRIMARY}

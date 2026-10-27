@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
-import { ChangeList, plural, type Change } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { useReportEditing } from '@/components/features/admin/confirm/useReportEditing';
@@ -34,7 +33,10 @@ interface OffloadRoutePanelProps {
   loadError?: string | null;
   routeLabel: (route: ProviderRoute) => string;
   onChange: (modelId: string, offload: OffloadRoute | null) => void;
-  /** Whether a change is unsaved or a confirmation open, so the parent can hold the model selection. */
+  /**
+   * Whether a change is unsaved, a confirmation open or a write running, so the
+   * parent can hold the model selection.
+   */
   onEditingChange?: (active: boolean) => void;
 }
 
@@ -45,10 +47,6 @@ type ValidatedLimit = { ok: true; value: number | null } | { ok: false; error: s
 
 function storedLimitText(limit: number | null | undefined): string {
   return limit === null || limit === undefined ? '' : String(limit);
-}
-
-function limitLabel(limit: number | null | undefined, none: string): string {
-  return limit === null || limit === undefined ? none : String(limit);
 }
 
 // Blank is no limit: for the engine queue limit every streaming request goes
@@ -131,45 +129,18 @@ export function OffloadRoutePanel({
     return route ? routeLabel(route) : `${routeId} (no longer a route)`;
   };
 
-  // The fields that differ from what is stored, `old → new`. A field typed
-  // back to its stored value is no change. An invalid field counts as one, so
-  // Save can say what to fix instead of doing nothing.
-  const changes: Change[] = [];
-  if (editable && draftRouteId !== '') {
-    if (draftRouteId !== (offload?.route_id ?? '')) {
-      changes.push({
-        label: 'Offload route',
-        before: offload ? routeName(offload.route_id) : 'None',
-        after: routeName(draftRouteId),
-      });
-    }
-    const waitBefore = offload ? offload.wait_seconds : null;
-    if (!validatedWait.ok || validatedWait.value !== waitBefore) {
-      changes.push({
-        label: 'Wait before offloading',
-        before: waitBefore === null ? 'None' : `${waitBefore}s`,
-        after: validatedWait.ok ? `${validatedWait.value}s` : draftWait || '(empty)',
-      });
-    }
-    const limitBefore = offload?.engine_queue_limit ?? null;
-    if (!validatedLimit.ok || validatedLimit.value !== limitBefore) {
-      changes.push({
-        label: 'Engine queue limit',
-        before: limitLabel(limitBefore, 'Off'),
-        after: validatedLimit.ok ? limitLabel(validatedLimit.value, 'Off') : draftLimit,
-      });
-    }
-    const maxInputBefore = offload?.max_input_tokens ?? null;
-    if (!validatedMaxInput.ok || validatedMaxInput.value !== maxInputBefore) {
-      changes.push({
-        label: 'Max offload input',
-        before: limitLabel(maxInputBefore, 'No limit'),
-        after: validatedMaxInput.ok
-          ? limitLabel(validatedMaxInput.value, 'No limit')
-          : draftMaxInput,
-      });
-    }
-  }
+  // The fields of a stored route that differ from what is stored. A field
+  // typed back to its stored value is no change. An invalid field counts as
+  // one, so Save can say what to fix instead of doing nothing.
+  const changedFields =
+    offload === null || !editable || draftRouteId === ''
+      ? 0
+      : [
+          draftRouteId !== offload.route_id,
+          !validatedWait.ok || validatedWait.value !== offload.wait_seconds,
+          !validatedLimit.ok || validatedLimit.value !== (offload.engine_queue_limit ?? null),
+          !validatedMaxInput.ok || validatedMaxInput.value !== (offload.max_input_tokens ?? null),
+        ].filter(Boolean).length;
   // A new offload route is one change, whatever its prefilled settings. Its
   // other fields can be filled in first, but it can be saved only with a route.
   const newRouteTouched =
@@ -179,10 +150,10 @@ export function OffloadRoutePanel({
       draftWait !== stored.wait ||
       draftLimit !== stored.limit ||
       draftMaxInput !== stored.maxInput);
-  const changeCount = offload === null ? (newRouteTouched ? 1 : 0) : changes.length;
+  const changeCount = offload === null ? (newRouteTouched ? 1 : 0) : changedFields;
   const changed = changeCount > 0;
   const routeMissing = newRouteTouched && draftRouteId === '';
-  useReportEditing(changed || confirmation.open, onEditingChange);
+  useReportEditing(changed || confirmation.open || confirmation.busy, onEditingChange);
 
   const status = offload === null ? null : offload.active ? 'Active' : 'Inactive';
 
@@ -192,7 +163,8 @@ export function OffloadRoutePanel({
     setSaveError(null);
   };
 
-  const onSave = () => {
+  // Save writes at once. A failure shows on the bar, and the drafts stay.
+  const onSave = async () => {
     if (changeCount === 0) return;
     if (!validatedWait.ok || !validatedLimit.ok || !validatedMaxInput.ok) {
       setSaveError('Fix the values marked below before saving.');
@@ -206,24 +178,7 @@ export function OffloadRoutePanel({
       engineQueueLimit: validatedLimit.value,
       maxInputTokens: validatedMaxInput.value,
     };
-    const listed = changes;
-    confirmation.request({
-      title:
-        offload === null
-          ? `Set up the offload route for ${modelId}?`
-          : `Save ${plural(listed.length, 'change')} to the ${modelId} offload route?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList changes={listed} />
-          <p>
-            The offload route gets no ordinary traffic; requests that wait longer than this are sent
-            to it as soon as it is saved.
-          </p>
-        </>
-      ),
+    const failure = await confirmation.perform({
       run: async () => {
         const updated = await setOffloadRoute(modelId, routeId, wait, limits);
         onChange(modelId, updated.offload);
@@ -231,6 +186,7 @@ export function OffloadRoutePanel({
         toast.success('Offload route saved');
       },
     });
+    setSaveError(failure);
   };
 
   const onClear = () => {
@@ -323,7 +279,7 @@ export function OffloadRoutePanel({
         <div className="mt-3 flex flex-wrap items-end gap-2">
           <label className="flex min-w-[240px] flex-col gap-1 text-[12px] font-medium text-gray-500">
             Offload route
-            {/* A choice only changes the draft; nothing is written before Confirm. */}
+            {/* A choice only changes the draft; nothing is written before Save. */}
             <Select
               aria-label="Offload route"
               value={draftRouteId}
@@ -450,7 +406,7 @@ export function OffloadRoutePanel({
           target={SECTION}
           changeCount={changeCount}
           onCancel={discard}
-          onSave={onSave}
+          onSave={() => void onSave()}
           busy={busy}
           error={saveError}
           blocked={routeMissing ? 'Choose the offload route to save these settings' : null}

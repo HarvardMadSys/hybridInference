@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
@@ -68,10 +68,6 @@ function setting(overrides: Partial<RoutewiseSettingItem> = {}): RoutewiseSettin
 
 function saveParameters() {
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to RouteWise parameters' }));
-}
-
-function confirmIn(label: string) {
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: label }));
 }
 
 const probeSetting: RoutewiseSettingItem = {
@@ -251,7 +247,6 @@ describe('RoutewiseSettingsPanel probe table', () => {
       />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
-    confirmIn('Run probe');
     await waitFor(() => expect(runRoutewiseProbe).toHaveBeenCalled());
 
     view.rerender(
@@ -285,7 +280,7 @@ describe('RoutewiseSettingsPanel probe table', () => {
 });
 
 describe('RoutewiseSettingsPanel model settings', () => {
-  it('saves an override for only the selected model after confirmation', async () => {
+  it('saves an override for only the selected model on Save, with no confirmation', async () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
       settings: [setting()],
@@ -301,17 +296,11 @@ describe('RoutewiseSettingsPanel model settings', () => {
     fireEvent.change(screen.getByLabelText('Cost budget alpha value'), {
       target: { value: '0.4' },
     });
+    expect(updateRoutewiseSetting).not.toHaveBeenCalled();
     saveParameters();
 
-    const dialog = screen.getByRole('dialog', {
-      name: 'Save 1 change to model-a RouteWise parameters?',
-    });
-    expect(dialog).toHaveTextContent('Cost budget alpha0.55 → 0.4');
-    expect(updateRoutewiseSetting).not.toHaveBeenCalled();
-    confirmIn('Confirm save');
-
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(updateRoutewiseSetting).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(updateRoutewiseSetting).toHaveBeenCalledTimes(1));
     expect(updateRoutewiseSetting).toHaveBeenCalledWith('model-a', 'routewise_budget_alpha', 0.4);
     expect(await screen.findByText('Source: Override')).toBeInTheDocument();
     expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
@@ -350,11 +339,17 @@ describe('RoutewiseSettingsPanel model settings', () => {
     expect(updateRoutewiseSetting).not.toHaveBeenCalled();
   });
 
-  it('reports only unsaved changes or an open confirmation to the parent', async () => {
+  it('reports only unsaved changes or a write in flight to the parent', async () => {
+    let finishProbe!: (value: RunRoutewiseProbeResponse) => void;
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
       settings: [setting()],
     });
+    vi.mocked(runRoutewiseProbe).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishProbe = resolve;
+      }),
+    );
     const onEditingChange = vi.fn();
 
     render(<RoutewiseSettingsPanel modelId="model-a" onEditingChange={onEditingChange} />);
@@ -368,11 +363,11 @@ describe('RoutewiseSettingsPanel model settings', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
     expect(onEditingChange).toHaveBeenLastCalledWith(true);
-    confirmIn('Cancel');
-    expect(onEditingChange).toHaveBeenLastCalledWith(false);
+    finishProbe({ results: [] });
+    await waitFor(() => expect(onEditingChange).toHaveBeenLastCalledWith(false));
   });
 
-  it('refuses to review an invalid value', async () => {
+  it('refuses to save an invalid value', async () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
       settings: [setting()],
@@ -387,12 +382,11 @@ describe('RoutewiseSettingsPanel model settings', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Must be ≤ 1.');
     saveParameters();
 
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByText('Cost budget alpha: Must be ≤ 1.')).toBeVisible();
     expect(updateRoutewiseSetting).not.toHaveBeenCalled();
   });
 
-  it('keeps drafts on Back, and saves each changed setting once on Confirm', async () => {
+  it('saves each changed setting once on Save', async () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
       settings: [setting(), probeSetting],
@@ -411,29 +405,22 @@ describe('RoutewiseSettingsPanel model settings', () => {
       target: { value: '0.4' },
     });
     fireEvent.click(screen.getByLabelText('Background probes enabled'));
-    saveParameters();
-
-    const dialog = screen.getByRole('dialog', {
-      name: 'Save 2 changes to model-a RouteWise parameters?',
-    });
-    expect(dialog).toHaveTextContent('Background probesOff → On');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Back to editing' }));
-    expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
-    expect(screen.getByLabelText('Background probes enabled')).toBeChecked();
+    expect(screen.getByText('2 unsaved changes')).toBeVisible();
     expect(updateRoutewiseSetting).not.toHaveBeenCalled();
-
     saveParameters();
-    confirmIn('Confirm save');
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument(),
+    );
     expect(vi.mocked(updateRoutewiseSetting).mock.calls).toEqual([
       ['model-a', 'routewise_budget_alpha', 0.4],
       ['model-a', 'routewise_probe_enabled', true],
     ]);
     expect(screen.getByLabelText('Background probes enabled')).toBeChecked();
-    expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith('Updated 2 RouteWise parameters.');
   });
 
-  it('blocks a second Confirm and closing while the save is in flight', async () => {
+  it('holds a second Save, Discard, the fields and the probe while the save is in flight', async () => {
     let finish!: (value: RoutewiseSettingItem) => void;
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
@@ -453,22 +440,27 @@ describe('RoutewiseSettingsPanel model settings', () => {
       target: { value: '0.4' },
     });
     saveParameters();
-    confirmIn('Confirm save');
 
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: 'Back to editing' })).toBeDisabled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Saving…' }));
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const saving = screen.getByRole('button', { name: 'Save changes to RouteWise parameters' });
+    expect(saving).toHaveTextContent('Saving…');
+    expect(saving).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Discard changes to RouteWise parameters' }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText('Cost budget alpha value')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Run probe' })).toBeDisabled();
+    fireEvent.click(saving);
     expect(updateRoutewiseSetting).toHaveBeenCalledTimes(1);
 
     finish(setting({ value: 0.4, source: 'runtime_override', overridden: true }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument(),
+    );
     expect(updateRoutewiseSetting).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Cost budget alpha value')).toBeEnabled();
   });
 
-  it('keeps the dialog and drafts after a failure, and retries from the dialog', async () => {
+  it('keeps the drafts and shows the error after a failure, and saves them again', async () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
       settings: [setting()],
@@ -484,17 +476,20 @@ describe('RoutewiseSettingsPanel model settings', () => {
       target: { value: '0.4' },
     });
     saveParameters();
-    confirmIn('Confirm save');
 
-    const dialog = screen.getByRole('dialog');
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'Cost budget alpha could not be saved: write failed',
     );
     expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
 
-    confirmIn('Confirm save');
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    saveParameters();
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(updateRoutewiseSetting).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
   });
 
   it('reports a partial save and retries only the unsaved setting', async () => {
@@ -514,13 +509,13 @@ describe('RoutewiseSettingsPanel model settings', () => {
     });
     fireEvent.click(screen.getByLabelText('Background probes enabled'));
     saveParameters();
-    confirmIn('Confirm save');
 
     expect(
       await screen.findByText(/Background probes could not be saved: write failed/),
     ).toHaveTextContent('1 change was saved; the rest are still unsaved.');
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.getByText('1 unsaved change')).toBeVisible();
+    expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
+    expect(screen.getByLabelText('Background probes enabled')).toBeChecked();
 
     vi.mocked(updateRoutewiseSetting).mockResolvedValueOnce({
       ...probeSetting,
@@ -529,11 +524,9 @@ describe('RoutewiseSettingsPanel model settings', () => {
       overridden: true,
     });
     saveParameters();
-    expect(
-      screen.getByRole('dialog', { name: 'Save 1 change to model-a RouteWise parameters?' }),
-    ).not.toHaveTextContent('Cost budget alpha');
-    confirmIn('Confirm save');
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^Save changes/ })).not.toBeInTheDocument(),
+    );
     expect(vi.mocked(updateRoutewiseSetting).mock.calls.map(([, key]) => key)).toEqual([
       'routewise_budget_alpha',
       'routewise_probe_enabled',
@@ -541,7 +534,8 @@ describe('RoutewiseSettingsPanel model settings', () => {
     ]);
   });
 
-  it('resets only an explicit override, after confirmation, and shows the inherited source', async () => {
+  it('resets only an explicit override, once, on the click, and shows the inherited source', async () => {
+    let finish!: (value: RoutewiseSettingItem) => void;
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       model_id: 'model-a',
       settings: [
@@ -553,26 +547,62 @@ describe('RoutewiseSettingsPanel model settings', () => {
         }),
       ],
     });
-    vi.mocked(resetRoutewiseSetting).mockResolvedValue(setting());
+    vi.mocked(resetRoutewiseSetting).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
 
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Reset Cost budget alpha' }));
-    const dialog = screen.getByRole('dialog', { name: 'Reset Cost budget alpha for model-a?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    expect(resetRoutewiseSetting).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Reset Cost budget alpha' }));
-    confirmIn('Reset');
-
-    await waitFor(() => {
-      expect(resetRoutewiseSetting).toHaveBeenCalledWith('model-a', 'routewise_budget_alpha');
-    });
+    const reset = await screen.findByRole('button', { name: 'Reset Cost budget alpha' });
+    fireEvent.click(reset);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(resetRoutewiseSetting).toHaveBeenCalledWith('model-a', 'routewise_budget_alpha');
+    // While it runs, the button and the field are held, and a second click resets nothing.
+    expect(reset).toBeDisabled();
+    expect(screen.getByLabelText('Cost budget alpha value')).toBeDisabled();
+    fireEvent.click(reset);
     expect(resetRoutewiseSetting).toHaveBeenCalledTimes(1);
+
+    finish(setting());
     expect(await screen.findByText('Source: models.yaml')).toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Reset Cost budget alpha' }),
     ).not.toBeInTheDocument();
+    expect(toast.success).toHaveBeenCalledWith('Reset Cost budget alpha to its inherited value.');
+  });
+
+  it('says why a reset failed and keeps the override, which can be reset again', async () => {
+    vi.mocked(listRoutewiseSettings).mockResolvedValue({
+      model_id: 'model-a',
+      settings: [
+        setting({
+          value: 0.4,
+          default_value: 0.55,
+          source: 'runtime_override',
+          overridden: true,
+        }),
+      ],
+    });
+    vi.mocked(resetRoutewiseSetting)
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce(setting());
+
+    render(<RoutewiseSettingsPanel modelId="model-a" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset Cost budget alpha' }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        'Failed to reset Cost budget alpha: backend unavailable',
+      ),
+    );
+    expect(screen.getByText('Source: Override')).toBeInTheDocument();
+    expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.4);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Cost budget alpha' }));
+    expect(await screen.findByText('Source: models.yaml')).toBeInTheDocument();
+    expect(resetRoutewiseSetting).toHaveBeenCalledTimes(2);
   });
 
   it('holds Reset while that setting has an unsaved change', async () => {
@@ -666,7 +696,6 @@ describe('RoutewiseSettingsPanel model settings', () => {
       target: { value: '0.4' },
     });
     saveParameters();
-    confirmIn('Confirm save');
     await waitFor(() => expect(updateRoutewiseSetting).toHaveBeenCalled());
 
     view.rerender(<RoutewiseSettingsPanel modelId="model-b" />);
@@ -683,15 +712,18 @@ describe('RoutewiseSettingsPanel model settings', () => {
       }),
     );
 
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    // The old write ends: the fields are free again, and nothing of it reaches this view.
+    await waitFor(() => expect(screen.getByLabelText('Cost budget alpha value')).toBeEnabled());
     expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.7);
     expect(screen.getByText('Source: models.yaml')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
     expect(updateRoutewiseSetting).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('RoutewiseSettingsPanel probe run', () => {
-  it('asks before sending live probe traffic and names the endpoint', async () => {
+  it('runs a probe for the chosen endpoint on the click, with no confirmation', async () => {
     vi.mocked(runRoutewiseProbe).mockResolvedValue({
       results: [
         { model_id: 'model-a', endpoint_id: LIVE_ENDPOINT, ok: true, ttft_ms: 100, error: null },
@@ -704,20 +736,15 @@ describe('RoutewiseSettingsPanel probe run', () => {
       />,
     );
 
+    // The panel says what a run costs before it is clicked.
+    expect(screen.getByText(/counts against the providers' quotas/)).toBeInTheDocument();
     chooseValue(screen.getByLabelText('Endpoint'), LIVE_ENDPOINT);
     // Choosing the endpoint is a filter, not a probe.
     expect(runRoutewiseProbe).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
-    const dialog = screen.getByRole('dialog', { name: 'Run a RouteWise probe for model-a?' });
-    expect(dialog).toHaveTextContent('Sends a short live request to live provider');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    expect(runRoutewiseProbe).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
-    confirmIn('Run probe');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
     expect(await screen.findByText('Probe succeeded')).toBeInTheDocument();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(runRoutewiseProbe).toHaveBeenCalledTimes(1);
     expect(runRoutewiseProbe).toHaveBeenCalledWith({
       model_id: 'model-a',
@@ -726,21 +753,28 @@ describe('RoutewiseSettingsPanel probe run', () => {
     });
   });
 
-  it('keeps a failed probe run in the dialog so it can be retried', async () => {
+  it('shows why a probe run failed, and runs it again on the next click', async () => {
     vi.mocked(runRoutewiseProbe)
       .mockRejectedValueOnce(new Error('No RouteWise router found'))
-      .mockResolvedValueOnce({ results: [] });
+      .mockResolvedValueOnce({
+        results: [
+          { model_id: 'model-a', endpoint_id: LIVE_ENDPOINT, ok: true, ttft_ms: 100, error: null },
+        ],
+      });
     render(<RoutewiseSettingsPanel modelId="model-a" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
-    expect(screen.getByRole('dialog')).toHaveTextContent('every endpoint of model-a');
-    confirmIn('Run probe');
+    expect(await screen.findByText('No RouteWise router found')).toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalledWith('Probe failed: No RouteWise router found');
+    expect(runRoutewiseProbe).toHaveBeenCalledWith({
+      model_id: 'model-a',
+      endpoint_id: null,
+      idle_only: false,
+    });
 
-    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent(
-      'No RouteWise router found',
-    );
-    confirmIn('Run probe');
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    fireEvent.click(await screen.findByRole('button', { name: 'Run probe' }));
+    expect(await screen.findByText('Probe succeeded')).toBeInTheDocument();
+    expect(screen.queryByText('No RouteWise router found')).not.toBeInTheDocument();
     expect(runRoutewiseProbe).toHaveBeenCalledTimes(2);
   });
 });

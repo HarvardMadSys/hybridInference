@@ -17,7 +17,7 @@ export interface ConfirmRequest {
   body: ReactNode;
   confirmLabel: string;
   busyLabel?: string;
-  /** "Back to editing" for a reviewed edit; "Cancel" for a discrete action. */
+  /** "Cancel" unless what is kept has a better name ("Keep running", "Keep my changes"). */
   cancelLabel?: string;
   tone?: 'default' | 'danger';
   /** A typed confirmation for the most destructive actions: Confirm waits for this exact text. */
@@ -30,30 +30,49 @@ export interface ConfirmRequest {
   run: () => Promise<void>;
 }
 
+/**
+ * One write made by the click that asks for it, with no confirmation: a save,
+ * a create, or an action as easy to undo as it is to do.
+ */
+export interface DirectWrite {
+  /** What the write saves, as for a confirmation: `savingKey` names it while it runs. */
+  key?: string;
+  run: () => Promise<void>;
+}
+
 export interface ConfirmAction {
   /**
    * Open the confirmation. Ignored, and `false`, while another confirmation is
-   * open (in flight or not): it is never replaced, and nothing is queued
-   * behind it. Ask again once it is cancelled or confirmed.
+   * open (in flight or not) or a write runs: it is never replaced, and nothing
+   * is queued behind it. Ask again once it is cancelled or confirmed.
    */
   request: (request: ConfirmRequest) => boolean;
+  /**
+   * Make the write at once. The same guard holds it: ignored while another
+   * write runs or a confirmation is open, and nothing is queued. Resolves to
+   * the failure's message, for the caller to show where the write was asked
+   * for, or to `null` once the write succeeded or was ignored.
+   */
+  perform: (write: DirectWrite) => Promise<string | null>;
   /** Render this once; it is `null` while nothing waits for confirmation. */
   dialog: ReactNode;
-  /** Whether a confirmed write is running. */
+  /** Whether a write runs, confirmed or direct. */
   busy: boolean;
-  /** The `key` of the confirmed write that is running, if it has one. */
+  /** The `key` of the write that is running, if it has one. */
   savingKey: string | null;
   /** Whether a confirmation is open. */
   open: boolean;
 }
 
 /**
- * The shared confirmation flow for every admin write: one dialog, a busy state
- * that blocks a second submission and closing, and failures kept in the dialog.
+ * The shared flow for every admin write: one busy state that blocks a second
+ * submission, and one dialog for the writes confirmed first, which keeps their
+ * failures inside it.
  */
 export function useConfirmAction(): ConfirmAction {
   const [pending, setPending] = useState<ConfirmRequest | null>(null);
   const [busy, setBusy] = useState(false);
+  const [savingKey, setSavingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState('');
   const inFlight = useRef(false);
@@ -81,26 +100,48 @@ export function useConfirmAction(): ConfirmAction {
     setTyped('');
   }, []);
 
+  /** Run one write as the busy one; the caller has checked that none runs. */
+  const runWrite = useCallback(async (key: string | undefined, run: () => Promise<void>) => {
+    inFlight.current = true;
+    setBusy(true);
+    setSavingKey(key ?? null);
+    try {
+      await run();
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+      setSavingKey(null);
+    }
+  }, []);
+
+  const perform = useCallback(
+    async (write: DirectWrite) => {
+      if (inFlight.current || openRef.current) return null;
+      try {
+        await runWrite(write.key, write.run);
+        return null;
+      } catch (e) {
+        return getErrorMessage(e);
+      }
+    },
+    [runWrite],
+  );
+
   const confirm = useCallback(async () => {
     const current = openRef.current;
     if (!current || inFlight.current) return;
     if (current.requireText !== undefined && typed !== current.requireText) return;
-    inFlight.current = true;
-    setBusy(true);
     setError(null);
     try {
-      await current.run();
+      await runWrite(current.key, current.run);
       openRef.current = null;
       setPending(null);
       setTyped('');
     } catch (e) {
       // Still open, with the error: it stays the confirmation until retried or cancelled.
       setError(getErrorMessage(e));
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
     }
-  }, [typed]);
+  }, [typed, runWrite]);
 
   const dialog = pending ? (
     <ConfirmDialog
@@ -135,9 +176,10 @@ export function useConfirmAction(): ConfirmAction {
 
   return {
     request,
+    perform,
     dialog,
     busy,
-    savingKey: busy ? (pending?.key ?? null) : null,
+    savingKey,
     open: pending !== null,
   };
 }

@@ -71,26 +71,17 @@ describe('UsageInsightsSettingsSection', () => {
     expect(saveButton()).toBeNull();
   });
 
-  it('confirms old -> new without the key, keeps drafts on Back, and saves once', async () => {
+  it('saves the model and a typed key once on Save, with no confirmation', async () => {
     vi.mocked(updateUsageInsightsSettings).mockResolvedValue({ ...SAVED, model: 'glm-6' });
     const onToast = await renderSection();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
     fireEvent.change(screen.getByLabelText('Gateway API key'), { target: { value: TYPED_KEY } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
-
-    const dialog = screen.getByRole('dialog', { name: 'Save 2 changes to Usage Insights?' });
-    expect(dialog).toHaveTextContent('Modelglm-5.1 → glm-6');
-    expect(dialog).toHaveTextContent('Gateway API keySet → Replace');
-    expect(document.body.textContent).not.toContain(TYPED_KEY);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Back to editing' }));
-    expect(screen.getByLabelText('Model')).toHaveValue('glm-6');
+    expect(screen.getByText('2 unsaved changes')).toBeVisible();
     expect(updateUsageInsightsSettings).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
-    fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
-    );
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(saveButton()).toBeNull());
     expect(updateUsageInsightsSettings).toHaveBeenCalledTimes(1);
     expect(updateUsageInsightsSettings).toHaveBeenCalledWith({
       api_key: TYPED_KEY,
@@ -103,16 +94,46 @@ describe('UsageInsightsSettingsSection', () => {
     expect(saveButton()).toBeNull();
   });
 
-  it('keeps the dialog and the drafts when the save fails', async () => {
+  it('keeps the drafts and shows the error when the save fails, and Discard clears both', async () => {
     vi.mocked(updateUsageInsightsSettings).mockRejectedValueOnce(new Error('upstream down'));
     await renderSection();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
-    const dialog = screen.getByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent('upstream down');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Back to editing' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('upstream down');
     expect(screen.getByLabelText('Model')).toHaveValue('glm-6');
+    expect(saveButton()).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Usage Insights' }));
+    expect(screen.getByLabelText('Model')).toHaveValue('glm-5.1');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(saveButton()).toBeNull();
+  });
+
+  it('holds Save, Discard and the fields while the save is in flight', async () => {
+    let finish!: (value: typeof SAVED) => void;
+    vi.mocked(updateUsageInsightsSettings).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderSection();
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'glm-6' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
+
+    expect(saveButton()).toHaveTextContent('Saving…');
+    expect(saveButton()).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Discard changes to Usage Insights' }),
+    ).toBeDisabled();
+    expect(screen.getByLabelText('Model')).toBeDisabled();
+    expect(screen.getByLabelText('Gateway API key')).toBeDisabled();
+    fireEvent.click(saveButton() as HTMLElement);
+    expect(updateUsageInsightsSettings).toHaveBeenCalledTimes(1);
+
+    finish({ ...SAVED, model: 'glm-6' });
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(updateUsageInsightsSettings).toHaveBeenCalledTimes(1);
   });
 
   it('masks the typed key in a failed save, and keeps it for the retry', async () => {
@@ -124,21 +145,20 @@ describe('UsageInsightsSettingsSection', () => {
       target: { value: ` ${TYPED_KEY} ` },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
-    const dialog = screen.getByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
 
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent('api_key •••• was rejected');
+    expect(await screen.findByRole('alert')).toHaveTextContent('api_key •••• was rejected');
     expect(document.body.textContent).not.toContain(TYPED_KEY);
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Usage Insights' }));
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(vi.mocked(updateUsageInsightsSettings).mock.calls).toEqual([
       [{ api_key: TYPED_KEY }],
       [{ api_key: TYPED_KEY }],
     ]);
   });
 
-  it('refuses an empty model without asking or writing', async () => {
+  it('refuses an empty model without writing', async () => {
     await renderSection();
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: '  ' } });
     // An emptied model alone still shows the bar, with Save held back and the reason.

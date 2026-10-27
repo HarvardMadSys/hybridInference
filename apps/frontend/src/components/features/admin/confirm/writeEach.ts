@@ -3,23 +3,19 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { plural } from './ChangeList';
 
 /**
- * Run a confirmed save that needs one request per item, in order.
+ * Run a save that needs one request per item, in order, and stop at the first
+ * one that fails.
  *
- * - When the first request fails nothing was written, so this throws: the
- *   confirmation stays open with the error and Confirm can safely retry.
- * - When a later one fails, the earlier writes stand. This returns a message
- *   that names the failed item and says how many were saved, and stops: the
- *   caller closes the review and keeps only the unsaved drafts, so a retry is
- *   reviewed afresh and never replays a write that already succeeded.
- * - `null` means every request succeeded.
- *
- * `write` must itself drop the item's draft once its request succeeds.
+ * `write` must itself drop the item's draft once its request succeeds: what is
+ * left after a failure is then exactly what is unsaved, and saving again never
+ * replays a write that already succeeded. The error thrown names the failed
+ * item and, when earlier ones were written, how many were saved.
  */
 export async function writeEach<T>(
   items: readonly T[],
   name: (item: T) => string,
   write: (item: T) => Promise<void>,
-): Promise<string | null> {
+): Promise<void> {
   let saved = 0;
   for (const item of items) {
     try {
@@ -27,9 +23,11 @@ export async function writeEach<T>(
       saved += 1;
     } catch (e) {
       const reason = `${name(item)} could not be saved: ${getErrorMessage(e)}`;
-      if (saved === 0) throw new Error(reason);
-      return `${reason} ${plural(saved, 'change')} ${saved === 1 ? 'was' : 'were'} saved; the rest are still unsaved.`;
+      throw new Error(
+        saved === 0
+          ? reason
+          : `${reason} ${plural(saved, 'change')} ${saved === 1 ? 'was' : 'were'} saved; the rest are still unsaved.`,
+      );
     }
   }
-  return null;
 }

@@ -2,7 +2,6 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
-import { ChangeList, plural, shown } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
@@ -51,7 +50,7 @@ function draftId(key: ProviderApiKeyItem): string {
   return `${key.source}:${key.id}`;
 }
 
-// How a key is named in confirmations: its masked prefix, never the secret.
+// How a key is named in messages: its masked prefix, never the secret.
 function keyName(key: ProviderApiKeyItem): string {
   return key.label ? `${key.key_prefix} (${key.label})` : key.key_prefix;
 }
@@ -84,6 +83,8 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   const [formMinRole, setFormMinRole] = useState<ProviderKeyMinRole>('free');
   const [verifyingKey, setVerifyingKey] = useState(false);
   const [verifiedKeySignature, setVerifiedKeySignature] = useState<string | null>(null);
+
+  const [addError, setAddError] = useState<string | null>(null);
 
   // draftId → the chosen tier; only real changes are kept.
   const [tierDrafts, setTierDrafts] = useState<Record<string, ProviderKeyMinRole>>({});
@@ -148,39 +149,25 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     setFormLabel('');
     setFormMinRole('free');
     setVerifiedKeySignature(null);
+    setAddError(null);
   };
 
   const formKeySignature =
     formProvider && formApiKey.trim() ? `${formProvider}\u0000${formApiKey.trim()}` : null;
   const keyVerified = verifiedKeySignature != null && verifiedKeySignature === formKeySignature;
 
-  // Review what will be created; only "Add key" in the confirmation writes it.
-  const onReviewAdd = (e: FormEvent<HTMLFormElement>) => {
+  // The form is what is added: Add key writes it, and a failure stays in the
+  // form with the typed key masked out.
+  const onAdd = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (tiersChanged || !providers.includes(formProvider) || !formApiKey.trim()) return;
     const provider = formProvider;
     const apiKey = formApiKey.trim();
     const label = formLabel.trim();
     const minRole = formMinRole;
-    confirmation.request({
-      title: `Add a key to ${provider}?`,
-      confirmLabel: 'Add key',
-      busyLabel: 'Adding…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={[
-              { label: 'Provider', after: provider },
-              { label: 'Label', after: shown(label, '(none)') },
-              { label: 'Reserved for', after: minRoleLabel(minRole) },
-              { label: 'API key', after: 'Set (hidden)' },
-              { label: 'Verified', after: keyVerified ? 'Yes' : 'Not verified' },
-            ]}
-          />
-          <p>The key joins the {provider} pool and can serve traffic as soon as it is added.</p>
-        </>
-      ),
+    setAddError(null);
+    const failure = await confirmation.perform({
+      key: 'add key',
       run: async () => {
         const resp = await addProviderKey(provider, apiKey, label || undefined, minRole).catch(
           (err: unknown) => {
@@ -204,6 +191,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
         }
       },
     });
+    if (failure) setAddError(failure);
   };
 
   const cancelAdd = () => {
@@ -212,7 +200,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     setAddOpen(false);
   };
 
-  // A check against the upstream that stores nothing: no confirmation.
+  // A check against the upstream that stores nothing.
   const onVerifyKey = async () => {
     if (!providers.includes(formProvider) || !formApiKey.trim() || !formKeySignature) return;
     const apiKey = formApiKey.trim();
@@ -252,25 +240,12 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     });
   };
 
-  const requestEnvStatus = (key: ProviderApiKeyItem, enable: boolean) => {
+  // Enable and Disable act on the click: each undoes the other.
+  const setEnvStatus = async (key: ProviderApiKeyItem, enable: boolean) => {
     const id = key.id;
     if (!id) return;
     const provider = selectedProvider;
-    confirmation.request({
-      title: `${enable ? 'Enable' : 'Disable'} env key ${key.key_prefix}?`,
-      confirmLabel: enable ? 'Enable' : 'Disable',
-      busyLabel: enable ? 'Enabling…' : 'Disabling…',
-      body: enable ? (
-        <p>
-          The {key.provider} env key {keyName(key)} is re-added to its pools and serves traffic
-          again.
-        </p>
-      ) : (
-        <p>
-          The {key.provider} env key {keyName(key)} stops being used immediately. You can enable it
-          again later.
-        </p>
-      ),
+    const failure = await confirmation.perform({
       run: async () => {
         if (enable) {
           const resp = await enableProviderEnvKey(key.provider, id);
@@ -286,26 +261,14 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
         await loadKeys(provider);
       },
     });
+    if (failure) toast.error(`${enable ? 'Enable' : 'Disable'} failed: ${failure}`);
   };
 
-  const requestDbStatus = (key: ProviderApiKeyItem, enable: boolean) => {
+  const setDbStatus = async (key: ProviderApiKeyItem, enable: boolean) => {
     const id = key.id;
     if (!id) return;
     const provider = selectedProvider;
-    confirmation.request({
-      title: `${enable ? 'Enable' : 'Disable'} key ${key.key_prefix}?`,
-      confirmLabel: enable ? 'Enable' : 'Disable',
-      busyLabel: enable ? 'Enabling…' : 'Disabling…',
-      body: enable ? (
-        <p>
-          The {key.provider} key {keyName(key)} rejoins its pools and serves traffic again.
-        </p>
-      ) : (
-        <p>
-          The {key.provider} key {keyName(key)} stops serving traffic immediately. You can enable it
-          again later.
-        </p>
-      ),
+    const failure = await confirmation.perform({
       run: async () => {
         const resp = await setProviderKeyStatus(id, enable);
         if (enable && resp.pools_updated === 0) {
@@ -316,6 +279,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
         await loadKeys(provider);
       },
     });
+    if (failure) toast.error(`${enable ? 'Enable' : 'Disable'} failed: ${failure}`);
   };
 
   const sortedKeys = useMemo(
@@ -344,52 +308,36 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
     setTierSaveError(null);
   };
 
-  const saveTiers = () => {
+  const saveTiers = async () => {
     if (changedTiers.length === 0) return;
     const provider = selectedProvider;
     const pending = changedTiers.map((key) => ({ key, minRole: tierDrafts[draftId(key)] }));
-    confirmation.request({
+    setTierSaveError(null);
+    const failure = await confirmation.perform({
       key: 'tiers',
-      title: `Save ${plural(pending.length, 'tier change')} for ${provider} keys?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={pending.map(({ key, minRole }) => ({
-              label: keyName(key),
-              before: minRoleLabel(declaredTier(key)),
-              after: minRoleLabel(minRole),
-            }))}
-          />
-          <p>
-            A reserved key is hidden from lower tiers as soon as this is saved; &quot;shared&quot;
-            lets every tier spend it.
-          </p>
-        </>
-      ),
       run: async () => {
         const unpooled: string[] = [];
-        const failure = await writeEach(
-          pending,
-          ({ key }) => keyName(key),
-          async ({ key, minRole }) => {
-            const id = key.id as string;
-            // Env keys carry no row id, so they are addressed by provider + env id.
-            const resp =
-              key.source === 'env'
-                ? await setProviderEnvKeyMinRole(key.provider, id, minRole)
-                : await setProviderKeyMinRole(id, minRole);
-            if (resp.pools_updated === 0) unpooled.push(keyName(key));
-            setTierDrafts((prev) => {
-              const next = { ...prev };
-              delete next[draftId(key)];
-              return next;
-            });
-          },
-        );
-        if (!failure) {
+        let wrote = false;
+        try {
+          await writeEach(
+            pending,
+            ({ key }) => keyName(key),
+            async ({ key, minRole }) => {
+              const id = key.id as string;
+              // Env keys carry no row id, so they are addressed by provider + env id.
+              const resp =
+                key.source === 'env'
+                  ? await setProviderEnvKeyMinRole(key.provider, id, minRole)
+                  : await setProviderKeyMinRole(id, minRole);
+              wrote = true;
+              if (resp.pools_updated === 0) unpooled.push(keyName(key));
+              setTierDrafts((prev) => {
+                const next = { ...prev };
+                delete next[draftId(key)];
+                return next;
+              });
+            },
+          );
           const only = pending[0].minRole;
           toast.success(
             pending.length > 1
@@ -398,18 +346,20 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                 ? 'Key shared with every tier'
                 : `Key reserved for ${only} and above`,
           );
+        } finally {
+          // What was written stands even when a later key failed.
+          if (unpooled.length > 0) {
+            toast.error(
+              `Saved, but no live pool holds ${
+                pending.length === 1 ? 'this key' : unpooled.join(', ')
+              } right now — the new tier applies once it is back in rotation.`,
+            );
+          }
+          if (wrote) await loadKeys(provider);
         }
-        if (unpooled.length > 0) {
-          toast.error(
-            `Saved, but no live pool holds ${
-              pending.length === 1 ? 'this key' : unpooled.join(', ')
-            } right now — the new tier applies once it is back in rotation.`,
-          );
-        }
-        await loadKeys(provider);
-        setTierSaveError(failure);
       },
     });
+    setTierSaveError(failure);
   };
 
   return (
@@ -436,8 +386,9 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
           ]}
           placeholder="(no providers loaded)"
           searchPlaceholder="Search providers…"
-          // Tier drafts belong to this provider's keys; save or discard them first.
-          disabled={tiersChanged}
+          // Tier drafts belong to this provider's keys, and a write in flight
+          // reloads them: save or discard the drafts, and wait for the write.
+          disabled={tiersChanged || confirmation.busy}
           size="lg"
           className="mt-1 w-full max-w-xs"
         />
@@ -520,7 +471,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                             <Select<ProviderKeyMinRole>
                               aria-label={`Reserved tier for key ${k.key_prefix}`}
                               value={tierDrafts[draftId(k)] ?? declaredTier(k)}
-                              // A draft only; Save changes reviews it and Confirm writes.
+                              // A draft only; Save changes writes it.
                               onValueChange={(next) => changeTierDraft(k, next)}
                               disabled={confirmation.busy}
                               options={MIN_ROLES.map((r) => ({
@@ -567,8 +518,8 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                             disabled ? (
                               <button
                                 type="button"
-                                onClick={() => requestEnvStatus(k, true)}
-                                disabled={!k.id}
+                                onClick={() => void setEnvStatus(k, true)}
+                                disabled={!k.id || confirmation.busy}
                                 aria-label={`Enable key ${k.key_prefix}`}
                                 className="rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
@@ -577,8 +528,8 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => requestEnvStatus(k, false)}
-                                disabled={!k.id}
+                                onClick={() => void setEnvStatus(k, false)}
+                                disabled={!k.id || confirmation.busy}
                                 aria-label={`Disable key ${k.key_prefix}`}
                                 className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
@@ -589,8 +540,8 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                             <>
                               <button
                                 type="button"
-                                onClick={() => requestDbStatus(k, disabled)}
-                                disabled={!k.id}
+                                onClick={() => void setDbStatus(k, disabled)}
+                                disabled={!k.id || confirmation.busy}
                                 aria-label={`${disabled ? 'Enable' : 'Disable'} key ${k.key_prefix}`}
                                 className={
                                   disabled
@@ -603,7 +554,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                               <button
                                 type="button"
                                 onClick={() => requestDelete(k)}
-                                disabled={!k.id}
+                                disabled={!k.id || confirmation.busy}
                                 aria-label={`Delete key ${k.key_prefix}`}
                                 className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
@@ -620,13 +571,14 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
             </table>
           </div>
         )}
-        {/* The confirmation also serves the key actions: only the tier save makes the bar busy. */}
+        {/* The write flow also serves the key actions: only the tier save makes the bar busy. */}
         <EditBar
           target={tiersTarget}
           changeCount={changedTiers.length}
           onCancel={cancelTiers}
-          onSave={saveTiers}
+          onSave={() => void saveTiers()}
           busy={confirmation.savingKey === 'tiers'}
+          held={confirmation.busy}
           error={tierSaveError}
           inPlace
         />
@@ -652,7 +604,7 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
           ) : null}
         </div>
         {addOpen ? (
-          <form aria-label="Add a new key" onSubmit={onReviewAdd} className="space-y-3">
+          <form aria-label="Add a new key" onSubmit={(e) => void onAdd(e)} className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <label
@@ -732,6 +684,14 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                 required
               />
             </div>
+            {addError ? (
+              <p
+                className="rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600 [overflow-wrap:anywhere]"
+                role="alert"
+              >
+                {addError}
+              </p>
+            ) : null}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -763,9 +723,10 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                   !formApiKey.trim()
                 }
                 title={tiersChanged ? TIERS_LOCKED : undefined}
+                aria-busy={confirmation.savingKey === 'add key' || undefined}
                 className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Review key
+                {confirmation.savingKey === 'add key' ? 'Adding…' : 'Add key'}
               </button>
             </div>
           </form>

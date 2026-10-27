@@ -11,10 +11,7 @@ import {
   setProviderQuotaKeyDisabled,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
-import {
-  type ConfirmRequest,
-  useConfirmAction,
-} from '@/components/features/admin/confirm/useConfirmAction';
+import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { PerformanceTab } from '@/components/features/admin/PerformanceTab';
 import { ProviderKeysTab } from '@/app/dashboard/admin/ProviderKeysTab';
 import { ProviderOverviewTab } from '@/app/dashboard/admin/ProviderOverviewTab';
@@ -268,29 +265,6 @@ function ProviderCard({
   );
 }
 
-/** The confirmation for turning a whole provider off or back on for routing. */
-function providerToggleRequest(
-  provider: string,
-  disable: boolean,
-  run: () => Promise<void>,
-): ConfirmRequest {
-  return {
-    title: `${disable ? 'Disable' : 'Enable'} provider ${provider}?`,
-    confirmLabel: disable ? 'Disable provider' : 'Enable provider',
-    busyLabel: disable ? 'Disabling…' : 'Enabling…',
-    body: disable ? (
-      <p>
-        {provider} is removed from routing for every model, for every key it has. Requests fall back
-        to each model&apos;s remaining providers; models with no other route fail until it is
-        re-enabled.
-      </p>
-    ) : (
-      <p>{provider} returns to routing for every model that lists it.</p>
-    ),
-    run,
-  };
-}
-
 function QuotasSection() {
   const toast = useAccountToast();
   // Deployment docs may describe an operator's service, not backend extensions.
@@ -298,7 +272,7 @@ function QuotasSection() {
     'https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/developer/backend-extensions.md#quota-reporting';
   const [providerQuotas, setProviderQuotas] = useState<ProviderQuotaResult[]>([]);
   const [providerQuotasLoading, setProviderQuotasLoading] = useState(false);
-  const confirmation = useConfirmAction();
+  const writes = useConfirmAction();
 
   const loadProviderQuotas = useCallback(async () => {
     setProviderQuotasLoading(true);
@@ -312,13 +286,14 @@ function QuotasSection() {
     }
   }, [toast]);
 
-  const { request } = confirmation;
+  const { perform } = writes;
 
+  // Both switches act on the click: switching back undoes either one.
   const handleToggle = useCallback(
-    (provider: ProviderQuotaResult) => {
+    async (provider: ProviderQuotaResult) => {
       const next = !provider.disabled;
-      request(
-        providerToggleRequest(provider.name, next, async () => {
+      const failure = await perform({
+        run: async () => {
           await setProviderDisabled(provider.name, next);
           // Reflect the new state on every card sharing this provider label.
           setProviderQuotas((prev) =>
@@ -327,30 +302,19 @@ function QuotasSection() {
           toast.success(
             `${provider.display_name} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
           );
-        }),
-      );
+        },
+      });
+      if (failure) toast.error(failure);
     },
-    [request, toast],
+    [perform, toast],
   );
 
   const handleToggleKey = useCallback(
-    (provider: ProviderQuotaResult) => {
+    async (provider: ProviderQuotaResult) => {
       const keyRef = provider.key_ref;
       if (!keyRef) return;
       const next = !provider.key_disabled;
-      // Only the masked hint the card already shows names the key.
-      const keyName = provider.key_masked ?? provider.display_name;
-      request({
-        title: `${next ? 'Disable' : 'Enable'} key ${keyName} for ${provider.name}?`,
-        confirmLabel: next ? 'Disable key' : 'Enable key',
-        busyLabel: next ? 'Disabling…' : 'Enabling…',
-        body: (
-          <p>
-            {next
-              ? 'It is removed from the rotation pool and stops serving traffic immediately.'
-              : 'It returns to the rotation pool and serves traffic again.'}
-          </p>
-        ),
+      const failure = await perform({
         run: async () => {
           const res = await setProviderQuotaKeyDisabled(provider.name, keyRef, next);
           if (!next && res.pools_updated === 0) {
@@ -363,8 +327,9 @@ function QuotasSection() {
           await loadProviderQuotas();
         },
       });
+      if (failure) toast.error(failure);
     },
-    [loadProviderQuotas, request, toast],
+    [loadProviderQuotas, perform, toast],
   );
 
   useEffect(() => {
@@ -411,15 +376,14 @@ function QuotasSection() {
             <ProviderCard
               key={`${p.name}-${p.key_index ?? 'single'}-${p.key_ref ?? p.key_masked ?? index}`}
               provider={p}
-              busy={confirmation.busy}
-              keyBusy={confirmation.busy}
-              onToggleDisabled={() => handleToggle(p)}
-              onToggleKeyDisabled={() => handleToggleKey(p)}
+              busy={writes.busy}
+              keyBusy={writes.busy}
+              onToggleDisabled={() => void handleToggle(p)}
+              onToggleKeyDisabled={() => void handleToggleKey(p)}
             />
           ))}
         </div>
       )}
-      {confirmation.dialog}
     </div>
   );
 }
@@ -428,8 +392,8 @@ function AvailabilitySection() {
   const toast = useAccountToast();
   const [providers, setProviders] = useState<RoutableProvider[]>([]);
   const [loading, setLoading] = useState(false);
-  const confirmation = useConfirmAction();
-  const { request } = confirmation;
+  const writes = useConfirmAction();
+  const { perform } = writes;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -443,11 +407,12 @@ function AvailabilitySection() {
     }
   }, [toast]);
 
+  // The switch acts on the click: switching it back undoes it.
   const handleToggle = useCallback(
-    (provider: RoutableProvider) => {
+    async (provider: RoutableProvider) => {
       const next = !provider.disabled;
-      request(
-        providerToggleRequest(provider.provider, next, async () => {
+      const failure = await perform({
+        run: async () => {
           await setProviderDisabled(provider.provider, next);
           setProviders((prev) =>
             prev.map((p) => (p.provider === provider.provider ? { ...p, disabled: next } : p)),
@@ -455,10 +420,11 @@ function AvailabilitySection() {
           toast.success(
             `${provider.provider} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
           );
-        }),
-      );
+        },
+      });
+      if (failure) toast.error(failure);
     },
-    [request, toast],
+    [perform, toast],
   );
 
   useEffect(() => {
@@ -541,8 +507,8 @@ function AvailabilitySection() {
                     <div className="flex justify-end">
                       <ProviderToggle
                         disabled={p.disabled}
-                        busy={confirmation.busy}
-                        onToggle={() => handleToggle(p)}
+                        busy={writes.busy}
+                        onToggle={() => void handleToggle(p)}
                         label={p.provider}
                       />
                     </div>
@@ -553,7 +519,6 @@ function AvailabilitySection() {
           </table>
         </div>
       )}
-      {confirmation.dialog}
     </div>
   );
 }

@@ -507,28 +507,50 @@ describe('BroadcastsTab', () => {
   });
 
   describe('test send', () => {
-    it('names the recipient; Cancel sends nothing; Confirm sends one test', async () => {
+    it('sends one test on the click, to the recipient the button names', async () => {
       vi.mocked(sendTestBroadcastEmail).mockResolvedValue(undefined);
       await renderComposed();
-      fireEvent.click(screen.getByRole('button', { name: 'Send Test to Me' }));
-      const review = screen.getByRole('dialog', {
-        name: 'Send a test email to ops@example.test?',
-      });
-      expect(review).toHaveTextContent('Only ops@example.test receives it');
-      clickInDialog('Cancel');
-      expect(sendTestBroadcastEmail).not.toHaveBeenCalled();
+      const button = screen.getByRole('button', { name: 'Send Test to Me' });
+      expect(button).toHaveAttribute(
+        'title',
+        'Only ops@example.test receives it, with [TEST] before the subject.',
+      );
 
-      fireEvent.click(screen.getByRole('button', { name: 'Send Test to Me' }));
-      clickInDialog('Send test');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      fireEvent.click(button);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      await waitFor(() =>
+        expect(toast.success).toHaveBeenCalledWith('Test email sent to your address'),
+      );
       expect(vi.mocked(sendTestBroadcastEmail).mock.calls).toEqual([[BASE_REQUEST]]);
-      expect(toast.success).toHaveBeenCalledWith('Test email sent to your address');
       expect(createBroadcast).not.toHaveBeenCalled();
     });
 
-    it('keeps an open test-send confirmation when a Send Now count arrives after it', async () => {
+    it('holds the sends while a test is sent, and a second click sends nothing', async () => {
+      let finish!: () => void;
+      vi.mocked(sendTestBroadcastEmail).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve(undefined);
+          }),
+      );
+      await renderComposed();
+      fireEvent.click(screen.getByRole('button', { name: 'Send Test to Me' }));
+
+      const sending = screen.getByRole('button', { name: 'Sending…' });
+      expect(sending).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Send Now' })).toBeDisabled();
+      fireEvent.click(sending);
+      expect(sendTestBroadcastEmail).toHaveBeenCalledTimes(1);
+
+      await act(async () => finish());
+      expect(screen.getByRole('button', { name: 'Send Test to Me' })).toBeEnabled();
+      expect(sendTestBroadcastEmail).toHaveBeenCalledTimes(1);
+      expect(createBroadcast).not.toHaveBeenCalled();
+    });
+
+    it('opens no send review when a Send Now count lands while a test is sent, and queues none', async () => {
       // Send Now counts the recipients first; the count is still out when the
-      // test send is asked for, and lands while its confirmation is open.
+      // test is sent, and lands while the test send runs.
       let finishCount!: (value: BroadcastPreviewResponse) => void;
       vi.mocked(previewBroadcast).mockImplementationOnce(
         () =>
@@ -536,29 +558,25 @@ describe('BroadcastsTab', () => {
             finishCount = resolve;
           }),
       );
-      vi.mocked(sendTestBroadcastEmail).mockResolvedValue(undefined);
+      let finishTest!: () => void;
+      vi.mocked(sendTestBroadcastEmail).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishTest = () => resolve(undefined);
+          }),
+      );
       await renderComposed();
       fireEvent.click(screen.getByRole('button', { name: 'Send Now' }));
       fireEvent.click(screen.getByRole('button', { name: 'Send Test to Me' }));
-      const review = screen.getByRole('dialog', {
-        name: 'Send a test email to ops@example.test?',
-      });
-      const sendTest = within(review).getByRole('button', { name: 'Send test' });
+      expect(sendTestBroadcastEmail).toHaveBeenCalledTimes(1);
 
+      // The broadcast's review does not open over the running test send…
       await act(async () => finishCount(previewOf(1234)));
-
-      // Same dialog, same action: nothing about the broadcast replaced it.
-      expect(screen.getAllByRole('dialog')).toHaveLength(1);
-      expect(
-        screen.getByRole('dialog', { name: 'Send a test email to ops@example.test?' }),
-      ).toHaveTextContent('Only ops@example.test receives it');
-      expect(sendTest).toHaveTextContent('Send test');
-      fireEvent.click(sendTest);
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(screen.queryByRole('dialog')).toBeNull();
+      await act(async () => finishTest());
       expect(vi.mocked(sendTestBroadcastEmail).mock.calls).toEqual([[BASE_REQUEST]]);
-      expect(createBroadcast).not.toHaveBeenCalled();
 
-      // The send was not queued behind it: it needs Send Now and its own review.
+      // …nor after it: the send needs Send Now and its own review.
       expect(screen.queryByRole('dialog')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: 'Send Now' }));
       expect(
@@ -567,23 +585,57 @@ describe('BroadcastsTab', () => {
       expect(createBroadcast).not.toHaveBeenCalled();
     });
 
-    it('says so when the account has no email, and shows the server refusal in place', async () => {
+    it('says so when the account has no email, and shows the server refusal', async () => {
       adminEmail = null;
       vi.mocked(sendTestBroadcastEmail).mockRejectedValueOnce(
         new Error('Your account has no email address'),
       );
       await renderComposed();
-      fireEvent.click(screen.getByRole('button', { name: 'Send Test to Me' }));
-      const review = screen.getByRole('dialog', { name: 'Send a test email to your account?' });
-      expect(review).toHaveTextContent('Your account has no email address');
-      clickInDialog('Send test');
-      expect(await within(dialog()).findByRole('alert')).toHaveTextContent(
-        'Your account has no email address',
+      const button = screen.getByRole('button', { name: 'Send Test to Me' });
+      expect(button).toHaveAttribute(
+        'title',
+        'Your account has no email address, so the server has nowhere to send a test.',
       );
+
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith('Your account has no email address'),
+      );
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Send Test to Me' })).toBeEnabled();
     });
   });
 
   describe('cancel scheduled delivery', () => {
+    it('holds Cancel while a test is sent, then opens its confirmation', async () => {
+      vi.mocked(listBroadcasts).mockResolvedValue({ total: 1, broadcasts: [SCHEDULED] });
+      let finish!: () => void;
+      vi.mocked(sendTestBroadcastEmail).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve(undefined);
+          }),
+      );
+      await renderComposed();
+      const cancel = await screen.findByRole('button', {
+        name: 'Cancel scheduled broadcast November maintenance',
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Send Test to Me' }));
+      // The write flow would ignore a Cancel now, so it waits instead.
+      expect(cancel).toBeDisabled();
+
+      await act(async () => finish());
+      expect(cancel).toBeEnabled();
+      fireEvent.click(cancel);
+      expect(
+        screen.getByRole('dialog', {
+          name: 'Cancel the scheduled broadcast “November maintenance”?',
+        }),
+      ).toBeInTheDocument();
+      expect(cancelBroadcast).not.toHaveBeenCalled();
+    });
+
     it('replaces window.confirm, names the broadcast, and cancels once on Confirm', async () => {
       vi.mocked(listBroadcasts).mockResolvedValue({ total: 1, broadcasts: [SCHEDULED] });
       vi.mocked(cancelBroadcast).mockResolvedValue(undefined);

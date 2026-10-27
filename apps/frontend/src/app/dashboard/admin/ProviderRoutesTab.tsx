@@ -49,7 +49,6 @@ import {
   RouteCapabilityFields,
   capabilityChanges,
   capabilityDraftFrom,
-  capabilityRows,
   describeCapabilities,
   emptyCapabilityDraft,
   readCapabilityDraft,
@@ -700,13 +699,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [createKeysLoading, setCreateKeysLoading] = useState(false);
   const confirmation = useConfirmAction();
   // Fixed weights, the routing policy and a concurrency limit are edited in
-  // place; their drafts are written only after the confirmation.
+  // place; Save writes their drafts.
   const [weightsError, setWeightsError] = useState<string | null>(null);
   // The policy chosen for the selected model; null while it is the saved one.
   const [draftStrategy, setDraftStrategy] = useState<ProviderRouteStrategy | null>(null);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
   // Route key → why that row's concurrency limit could not be saved.
   const [concurrencyErrors, setConcurrencyErrors] = useState<Record<string, string>>({});
   const [routeEditError, setRouteEditError] = useState<string | null>(null);
+  // Why a create or a capability save failed, shown in its dialog with the values kept.
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [capabilityError, setCapabilityError] = useState<string | null>(null);
   const [verifyingKey, setVerifyingKey] = useState<string | null>(null);
   const [verifyingCreateRoute, setVerifyingCreateRoute] = useState(false);
   const [verifiedEditSignature, setVerifiedEditSignature] = useState<string | null>(null);
@@ -1388,6 +1391,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     });
     setCreateKeyOptions([]);
     setVerifiedCreateSignature(null);
+    setCreateError(null);
     setAddingRoute(true);
     setCreatingModel(false);
     setEditingRoute(null);
@@ -1423,6 +1427,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setNewModelRequiredRole('admin');
     setCreateKeyOptions([]);
     setVerifiedCreateSignature(null);
+    setCreateError(null);
     setCreatingModel(true);
     setAddingRoute(false);
     setEditingRoute(null);
@@ -1482,7 +1487,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setEditingRoute(null);
   };
 
-  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editingRoute || !editRoutePayload || routeEditChanges.length === 0) return;
     if (!editFormValid) {
@@ -1500,21 +1505,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setRouteEditError(null);
     const target = editingRoute;
     const payload = editRoutePayload;
-    const changes = routeEditChanges;
-    confirmation.request({
-      title: `Save ${plural(changes.length, 'change')} to ${target.model_id} / ${target.provider}?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList changes={changes} />
-          <p>
-            The gateway checks the new target with one short upstream request, then routes new
-            requests through it.
-          </p>
-        </>
-      ),
+    // The editor closes once the route is saved; a failure keeps it, and its drafts, open.
+    const failure = await confirmation.perform({
       run: async () => {
         let updated: ProviderRoute;
         try {
@@ -1531,6 +1523,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         toast.success('Provider route updated');
       },
     });
+    if (failure) setRouteEditError(failure);
   };
 
   const onVerify = async () => {
@@ -1549,81 +1542,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     }
   };
 
-  // What a Create/Add will register, for the review before the write.
-  const createReview = (): Change[] => {
-    const review: Change[] = [];
-    if (creatingModel) {
-      review.push(
-        { label: 'Model ID', after: newModelIdValue },
-        { label: 'Routing policy', after: newModelStrategy },
-        {
-          label: 'Visibility',
-          after:
-            MODEL_ROLE_OPTIONS.find((option) => option.value === newModelRequiredRole)?.label ??
-            newModelRequiredRole,
-        },
-        { label: 'Prompt $/M', after: runtimePricing.prompt },
-        { label: 'Completion $/M', after: runtimePricing.completion },
-      );
-      if (runtimePricing.input_cache_reads) {
-        review.push({ label: 'Cache read $/M', after: runtimePricing.input_cache_reads });
-      }
-      if (runtimePricing.input_cache_writes) {
-        review.push({ label: 'Cache write $/M', after: runtimePricing.input_cache_writes });
-      }
-    }
-    if (runtimeCapabilities) {
-      // A new model and an added route both declare their own.
-      review.push(...capabilityRows(runtimeCapabilities));
-    }
-    review.push(
-      { label: 'Route type', after: createRoutePayload.route_type },
-      {
-        label: 'Provider',
-        after: providerLabel(createProviderOptions, createRoutePayload.upstream_provider),
-      },
-    );
-    if (createRoutePayload.upstream_provider === 'openrouter') {
-      review.push({
-        label: 'OpenRouter routing',
-        after: createRoutePayload.openrouter_provider
-          ? `Provider: ${openRouterProviderLabel(
-              createOpenRouterSelectOptions,
-              createRoutePayload.openrouter_provider,
-            )}`
-          : createRoutePayload.openrouter_sort
-            ? `Sort by ${createRoutePayload.openrouter_sort}`
-            : 'Auto',
-      });
-    }
-    const apiKey = createKeyOptions.find((key) => key.id === createRoutePayload.api_key_id);
-    review.push(
-      { label: 'Base URL', after: createRoutePayload.base_url },
-      { label: 'Deployment', after: createRoutePayload.deployment_type },
-      {
-        label: 'API key',
-        after: apiKey
-          ? `${apiKey.label ? `${apiKey.label} · ` : ''}${apiKey.key_prefix}`
-          : defaultKeyOptionLabel(createKeyProvider),
-      },
-      { label: 'Provider model ID', after: createRoutePayload.provider_model_id },
-    );
-    if (createRoutePayload.quota_limit !== null) {
-      review.push({ label: 'Local daily quota', after: String(createRoutePayload.quota_limit) });
-    }
-    if (createRoutePayload.concurrency_limit !== null) {
-      review.push({
-        label: 'Concurrency limit',
-        after: String(createRoutePayload.concurrency_limit),
-      });
-    }
-    if (showCreateWeight) {
-      review.push({ label: 'Fixed weight', after: String(createRoutePayload.weight) });
-    }
-    return review;
-  };
-
-  const onCreateSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const onCreateSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     // createFormValid already requires it; this check narrows the type.
     if (!createFormValid || !runtimeCapabilities) return;
@@ -1642,21 +1561,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         }
       : null;
     const targetModel = selectedModel;
-    confirmation.request({
-      title: model ? `Create model ${newModelIdValue}?` : `Add a provider route to ${targetModel}?`,
-      confirmLabel: model ? 'Create' : 'Add',
-      busyLabel: model ? 'Creating…' : 'Adding…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList changes={createReview()} />
-          <p>
-            {model
-              ? 'The gateway checks the route with one short upstream request, then registers the model and starts routing to it.'
-              : 'The gateway checks the route with one short upstream request, then routes new requests through it.'}
-          </p>
-        </>
-      ),
+    setCreateError(null);
+    // The form closes once the model or route exists; a failure keeps it, and its values, open.
+    const failure = await confirmation.perform({
       run: async () => {
         const created = modelPayload
           ? await createProviderRouteModel(modelPayload)
@@ -1672,6 +1579,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         toast.success(model ? 'Model created' : 'Provider route added');
       },
     });
+    if (failure) setCreateError(failure);
   };
 
   const onCreateVerify = async () => {
@@ -1732,6 +1640,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   // once none of them is a change, so this drops nothing unsaved.
   const resetInlineDrafts = () => {
     setDraftStrategy(null);
+    setStrategyError(null);
     setDraftWeights({});
     setWeightsError(null);
     setDraftConcurrencyLimits({});
@@ -1773,7 +1682,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const strategyChanged = draftStrategy !== null && draftStrategy !== strategy;
   const inlineChanged = weightsChanged || strategyChanged || limitsChanged;
   // The offload and RouteWise panels keep drafts for the selected model too, and
-  // drop them when it changes; they report whether a draft or confirmation is open.
+  // drop them when it changes; they report whether a draft is unsaved, a
+  // confirmation open or a write running.
   const [panelEditing, setPanelEditing] = useState({ offload: false, routewise: false });
   const onOffloadEditingChange = useCallback(
     (active: boolean) => setPanelEditing((prev) => ({ ...prev, offload: active })),
@@ -1786,22 +1696,24 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const panelOpen = panelEditing.offload || panelEditing.routewise;
   // Switching model, directly or by creating one, would drop any unsaved draft.
   // The route, capability and create dialogs are modal, but their drafts belong
-  // to this model too, as does any open confirmation. Unchanged fields hold
-  // nothing back.
+  // to this model too, as do an open confirmation and a write still running.
+  // Unchanged fields hold nothing back.
   const modelLocked =
     inlineChanged ||
     panelOpen ||
     editingRoute !== null ||
     capabilityRoute !== null ||
     createFormOpen ||
-    confirmation.open;
+    confirmation.open ||
+    confirmation.busy;
   // So would switching the routing policy: it unmounts the panel of the current
   // policy (Queue offload for fixed, RouteWise parameters for routewise) and
   // swaps the table's weights for limits or back.
   const policyHeld = weightsChanged || limitsChanged || panelOpen;
 
-  // Discrete row actions. Each `run` throws on failure, so the confirmation
-  // stays open with the error and the same action can be retried.
+  // Reset config and Delete discard what the route had, so they ask first. Each
+  // `run` throws on failure, so the confirmation stays open with the error and
+  // the same action can be retried.
   const confirmResetYaml = (route: ProviderRoute) =>
     confirmation.request({
       title: `Reset ${routeTarget(route)}?`,
@@ -1883,19 +1795,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     });
   };
 
-  const confirmSetRouteDisabled = (route: ProviderRoute, disabled: boolean) =>
-    confirmation.request({
-      title: `${disabled ? 'Disable' : 'Enable'} ${routeTarget(route)}?`,
-      body: (
-        <p>
-          {disabled
-            ? 'The route receives no new requests. Its configuration and weight are preserved.'
-            : 'The route is enabled again. A runtime weight override of 0 is cleared.'}
-        </p>
-      ),
-      confirmLabel: disabled ? 'Disable' : 'Enable',
-      busyLabel: disabled ? 'Disabling…' : 'Enabling…',
-      tone: disabled ? 'danger' : 'default',
+  // Disable, Enable, Restore and a weight Reset act on the click: each is undone
+  // from the same row. A failure shows in a toast.
+  const setRouteDisabled = async (route: ProviderRoute, disabled: boolean) => {
+    const failure = await confirmation.perform({
       run: async () => {
         setTogglingKey(routeKey(route));
         try {
@@ -1912,15 +1815,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         }
       },
     });
+    if (failure) toast.error(`${disabled ? 'Disable' : 'Enable'} failed: ${failure}`);
+  };
 
-  const confirmRestoreRoute = (route: ProviderRoute) =>
-    confirmation.request({
-      title: `Restore ${routeTarget(route)}?`,
-      body: (
-        <p>The config route is restored together with its saved edits, weight and enabled state.</p>
-      ),
-      confirmLabel: 'Restore',
-      busyLabel: 'Restoring…',
+  const restoreRoute = async (route: ProviderRoute) => {
+    const failure = await confirmation.perform({
       run: async () => {
         setDeletingKey(routeKey(route));
         try {
@@ -1935,29 +1834,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         }
       },
     });
+    if (failure) toast.error(`Restore failed: ${failure}`);
+  };
 
-  const confirmClearWeight = (route: ProviderRoute) => {
+  // The runtime override goes, and the route is back on its configured weight.
+  const resetWeight = async (route: ProviderRoute) => {
     const key = weightKeyFor(route);
-    const yamlWeight = routeWeightByKey.get(key)?.yaml_weight ?? route.yaml_weight;
-    confirmation.request({
-      title: `Reset ${route.endpoint_id} weight?`,
-      body: (
-        <>
-          <ChangeList
-            changes={[
-              {
-                label: 'Weight',
-                before: formatWeight(effectiveWeightFor(route)),
-                after: `${formatWeight(yamlWeight)} (configured)`,
-              },
-            ]}
-          />
-          <p>The runtime override is removed and the route goes back to its configured weight.</p>
-        </>
-      ),
-      confirmLabel: 'Reset',
-      busyLabel: 'Resetting…',
-      tone: 'danger',
+    const failure = await confirmation.perform({
       run: async () => {
         setSavingWeightKey(key);
         try {
@@ -1971,14 +1854,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         }
       },
     });
+    if (failure) toast.error(`Weight reset failed: ${failure}`);
   };
 
-  // A route's capabilities: the dialog's fields are a draft, Save reviews
-  // `old → new`, and only Confirm writes.
+  // A route's capabilities: the dialog's fields are a draft, and Save writes it.
   const openCapabilityEditor = (route: ProviderRoute) => {
     if (!route.capabilities) return;
     setCapabilityRoute(route);
     setCapabilityDraft(capabilityDraftFrom(route.capabilities));
+    setCapabilityError(null);
     setEditingRoute(null);
     setAddingRoute(false);
     setCreatingModel(false);
@@ -1995,28 +1879,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       ? capabilityChanges(capabilityRoute.capabilities, capabilityReading.payload)
       : [];
 
-  const onSaveCapabilities = (event: FormEvent<HTMLFormElement>) => {
+  const onSaveCapabilities = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!capabilityRoute || !capabilityReading.payload || capabilityEditChanges.length === 0) {
       return;
     }
     const target = capabilityRoute;
     const payload = capabilityReading.payload;
-    const changes = capabilityEditChanges;
-    confirmation.request({
-      title: `Save ${plural(changes.length, 'change')} to ${target.endpoint_id} capabilities?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList changes={changes} />
-          <p>
-            Requests through this route follow the new values from the next request on, until they
-            are reset to config.
-          </p>
-        </>
-      ),
+    setCapabilityError(null);
+    const failure = await confirmation.perform({
       run: async () => {
         const updated = await updateProviderRouteCapabilities(
           target.model_id,
@@ -2030,6 +1901,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         toast.success('Route capabilities updated');
       },
     });
+    if (failure) setCapabilityError(failure);
   };
 
   const confirmResetCapabilities = () => {
@@ -2067,29 +1939,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     });
   };
 
-  // Routing policy: chosen in place, then one reviewed change.
+  // Routing policy: chosen in place, written on Save.
   const discardStrategy = () => {
     if (confirmation.busy) return;
     setDraftStrategy(null);
+    setStrategyError(null);
   };
 
-  const saveStrategy = () => {
+  const saveStrategy = async () => {
     const model = selectedModel;
-    const before = strategy;
     const next = draftStrategy;
-    if (!model || next === null || next === before || policyHeld) return;
-    confirmation.request({
+    if (!model || next === null || next === strategy || policyHeld) return;
+    setStrategyError(null);
+    const failure = await confirmation.perform({
       key: `${model} routing policy`,
-      title: `Save 1 change to ${model} routing policy?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList changes={[{ label: 'Routing policy', before, after: next }]} />
-          <p>New requests for {model} are routed by the new policy as soon as it is saved.</p>
-        </>
-      ),
       run: async () => {
         const updated = await updateProviderRouteStrategy(model, next);
         replaceModelRoutes(updated.model_id ?? model, updated.routes);
@@ -2101,6 +1964,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         void loadOffloadRoutes();
       },
     });
+    if (failure) setStrategyError(failure);
   };
 
   const discardWeights = () => {
@@ -2109,7 +1973,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setWeightsError(null);
   };
 
-  const saveWeights = () => {
+  const saveWeights = async () => {
     if (weightChanges.length === 0) return;
     if (weightChanges.some((change) => change.parsed === null)) {
       setWeightsError('Weight must be a non-negative number.');
@@ -2118,39 +1982,23 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setWeightsError(null);
     const model = selectedModel;
     const pending = weightChanges.map((change) => ({ ...change, weight: change.parsed as number }));
-    confirmation.request({
+    // One request per route: a failure keeps only the weights still unsaved.
+    const failure = await confirmation.perform({
       key: `${model} weights`,
-      title: `Save ${plural(pending.length, 'change')} to ${model} weights?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={pending.map(({ route, before, weight }) => ({
-              label: route.endpoint_id,
-              before: formatWeight(before),
-              after: formatWeight(weight),
-            }))}
-          />
-          <p>
-            Each route&apos;s share of new requests follows its weight; a weight of 0 sends it none.
-          </p>
-        </>
-      ),
       run: async () => {
-        const failure = await writeEach(
-          pending,
-          ({ route }) => route.endpoint_id,
-          async ({ route, key, weight }) => {
-            const updated = await setRouteWeight(route.model_id, route.endpoint_id, weight);
-            replaceRouteWeight(updated);
-            dropWeightDraft(key);
-          },
-        );
-        void loadOffloadRoutes();
-        setWeightsError(failure);
-        if (failure) return;
+        try {
+          await writeEach(
+            pending,
+            ({ route }) => route.endpoint_id,
+            async ({ route, key, weight }) => {
+              const updated = await setRouteWeight(route.model_id, route.endpoint_id, weight);
+              replaceRouteWeight(updated);
+              dropWeightDraft(key);
+            },
+          );
+        } finally {
+          void loadOffloadRoutes();
+        }
         toast.success(
           pending.length === 1
             ? `Updated ${pending[0].route.endpoint_id} weight.`
@@ -2158,6 +2006,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         );
       },
     });
+    setWeightsError(failure);
   };
 
   // Each row's limit is saved, or discarded, on its own; another row's draft is
@@ -2167,7 +2016,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     dropConcurrencyDraft(routeKey(route));
   };
 
-  const saveConcurrencyLimit = (route: ProviderRoute) => {
+  const saveConcurrencyLimit = async (route: ProviderRoute) => {
     const key = routeKey(route);
     const { changed, parsed } = concurrencyDraftFor(route);
     if (!changed) return;
@@ -2183,26 +2032,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       delete next[key];
       return next;
     });
-    confirmation.request({
+    const failure = await confirmation.perform({
       key: `${route.endpoint_id} concurrency limit`,
-      title: `Save 1 change to ${route.endpoint_id} concurrency limit?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={[
-              {
-                label: 'Concurrency limit',
-                before: shownRouteValue(route.concurrency_limit),
-                after: String(parsed),
-              },
-            ]}
-          />
-          <p>RouteWise keeps at most this many requests open on the route at once.</p>
-        </>
-      ),
       run: async () => {
         const updated = await updateProviderRouteCandidate(route.model_id, route.route_id, {
           concurrency_limit: parsed,
@@ -2212,6 +2043,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         toast.success('Concurrency limit updated');
       },
     });
+    if (failure) setConcurrencyErrors((current) => ({ ...current, [key]: failure }));
   };
 
   return (
@@ -2255,8 +2087,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           <Select<ProviderRouteStrategy>
             id="provider-route-strategy"
             value={draftStrategy ?? (strategy === 'routewise' ? 'routewise' : 'fixed')}
-            // A draft only; Save changes reviews it and Confirm writes.
-            onValueChange={(next) => setDraftStrategy(next === strategy ? null : next)}
+            // A draft only; Save changes writes it.
+            onValueChange={(next) => {
+              setDraftStrategy(next === strategy ? null : next);
+              setStrategyError(null);
+            }}
             // Held while another routing draft is unsaved, since a switch would
             // drop it. A policy chosen first stays changeable; its Save waits.
             disabled={
@@ -2273,7 +2108,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           <button
             type="button"
             onClick={openAddForm}
-            disabled={!selectedModel || loading || providerOptions.length === 0}
+            disabled={
+              !selectedModel || loading || providerOptions.length === 0 || confirmation.busy
+            }
             className="rounded-lg border border-gray-900 bg-gray-900 px-3 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Add provider
@@ -2295,9 +2132,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           target={`${selectedModel} routing policy`}
           changeCount={strategyChanged ? 1 : 0}
           onCancel={discardStrategy}
-          onSave={saveStrategy}
-          // Several bars can be up at once; only the one being saved reads "Saving…".
+          onSave={() => void saveStrategy()}
+          // Several bars can be up at once; only the one being saved reads "Saving…",
+          // and the others wait for it.
           busy={confirmation.savingKey === `${selectedModel} routing policy`}
+          held={confirmation.busy}
+          error={strategyError}
           // A weight, limit or panel draft made after the policy was chosen
           // would be dropped by the switch.
           blocked={
@@ -2499,10 +2339,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             target={`${route.endpoint_id} concurrency limit`}
                             changeCount={concurrencyLimitChanged ? 1 : 0}
                             onCancel={() => discardConcurrencyLimit(route)}
-                            onSave={() => saveConcurrencyLimit(route)}
+                            onSave={() => void saveConcurrencyLimit(route)}
                             busy={
                               confirmation.savingKey === `${route.endpoint_id} concurrency limit`
                             }
+                            held={confirmation.busy}
                             error={concurrencyErrors[key] ?? null}
                             inPlace
                           />
@@ -2554,12 +2395,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                               <button
                                 aria-label={`Clear ${route.endpoint_id} weight override`}
                                 type="button"
-                                disabled={isSavingWeight || weightChanged}
+                                disabled={confirmation.busy || weightChanged}
                                 title={weightChanged ? HELD_FOR_DRAFTS : undefined}
-                                onClick={() => confirmClearWeight(route)}
+                                onClick={() => void resetWeight(route)}
                                 className="h-8 rounded-md border border-gray-300 px-2 text-[12px] font-medium text-gray-600 disabled:opacity-50"
                               >
-                                Reset
+                                {isSavingWeight ? 'Resetting…' : 'Reset'}
                               </button>
                             ) : null}
                           </div>
@@ -2652,7 +2493,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     {routeRemoved ? (
                       <button
                         type="button"
-                        onClick={() => confirmRestoreRoute(route)}
+                        onClick={() => void restoreRoute(route)}
                         disabled={confirmation.busy}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
                       >
@@ -2679,14 +2520,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             setCreatingModel(false);
                             setCapabilityRoute(null);
                           }}
-                          className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                          disabled={confirmation.busy}
+                          className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
                         >
                           Edit
                         </button>
                         {canDisableRoute && (
                           <button
                             type="button"
-                            onClick={() => confirmSetRouteDisabled(route, true)}
+                            onClick={() => void setRouteDisabled(route, true)}
                             disabled={confirmation.busy}
                             className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
                           >
@@ -2696,7 +2538,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         {canEnableRoute && (
                           <button
                             type="button"
-                            onClick={() => confirmSetRouteDisabled(route, false)}
+                            onClick={() => void setRouteDisabled(route, false)}
                             disabled={confirmation.busy}
                             className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
                           >
@@ -2709,7 +2551,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             aria-label={`Edit ${route.endpoint_id} capabilities`}
                             title={describeCapabilities(route.capabilities)}
                             onClick={() => openCapabilityEditor(route)}
-                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                            disabled={confirmation.busy}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
                           >
                             Capabilities
                           </button>
@@ -2737,8 +2580,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           target={`${selectedModel} weights`}
           changeCount={weightChanges.length}
           onCancel={discardWeights}
-          onSave={saveWeights}
+          onSave={() => void saveWeights()}
           busy={confirmation.savingKey === `${selectedModel} weights`}
+          held={confirmation.busy}
           error={weightsError}
           sticky
           inPlace
@@ -2753,7 +2597,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             aria-labelledby="create-provider-route-title"
             className="mx-auto w-full max-w-5xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
           >
-            <form onSubmit={onCreateSubmit}>
+            <form onSubmit={(event) => void onCreateSubmit(event)}>
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <h3
@@ -2796,6 +2640,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                       placeholder="deepseek-v4-flash"
                       required
+                      disabled={confirmation.busy}
                     />
                     {!newModelIdAvailable && (
                       <p className="mt-1 text-[11px] leading-5 text-red-600">
@@ -2823,6 +2668,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       ]}
                       size="lg"
                       className="mt-1 w-full"
+                      disabled={confirmation.busy}
                     />
                   </div>
                   <div>
@@ -2842,6 +2688,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       options={MODEL_ROLE_OPTIONS}
                       size="lg"
                       className="mt-1 w-full"
+                      disabled={confirmation.busy}
                     />
                   </div>
                 </div>
@@ -2871,6 +2718,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       }}
                       className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                       required
+                      disabled={confirmation.busy}
                     />
                   </div>
                   <div>
@@ -2895,6 +2743,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       }}
                       className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                       required
+                      disabled={confirmation.busy}
                     />
                   </div>
                   <div>
@@ -2918,6 +2767,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         setVerifiedCreateSignature(null);
                       }}
                       className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                      disabled={confirmation.busy}
                     />
                   </div>
                   <div>
@@ -2941,6 +2791,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         setVerifiedCreateSignature(null);
                       }}
                       className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                      disabled={confirmation.busy}
                     />
                   </div>
                 </div>
@@ -2960,6 +2811,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       ? "Take these from the provider's model page. Requests follow them: tool definitions are dropped without tool calling, max_tokens is capped at the max output, and images reach the model only if it accepts them."
                       : "This route's own values, started from the model's first route. Providers can serve the same model with a smaller window or without images or tools; set what this one serves."
                   }
+                  disabled={confirmation.busy}
                 />
               </div>
 
@@ -2976,6 +2828,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       options={createRouteTypeOptions}
                       size="lg"
                       className="mt-1 w-full"
+                      disabled={confirmation.busy}
                     />
                   ) : (
                     // Fixed routing takes on_demand routes only: nothing to choose.
@@ -3017,6 +2870,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     aria-required
                     size="lg"
                     className="mt-1 w-full"
+                    disabled={confirmation.busy}
                   />
                   {createProviderOptions.length === 0 && (
                     <p className="mt-1 text-[11px] leading-5 text-gray-400">
@@ -3037,7 +2891,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     onValueChange={(apiKeyId) =>
                       setCreateForm((current) => ({ ...current, apiKeyId }))
                     }
-                    disabled={createKeysLoading}
+                    disabled={createKeysLoading || confirmation.busy}
                     options={[
                       { value: '', label: defaultKeyOptionLabel(createKeyProvider) },
                       ...createKeyOptions.map((key) => ({
@@ -3065,6 +2919,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     }
                     className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                     required
+                    disabled={confirmation.busy}
                   />
                 </div>
                 <div>
@@ -3086,6 +2941,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     }
                     className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                     required
+                    disabled={confirmation.busy}
                   />
                 </div>
               </div>
@@ -3096,6 +2952,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 onChange={(deploymentType) =>
                   setCreateForm((current) => ({ ...current, deploymentType }))
                 }
+                disabled={confirmation.busy}
               />
 
               {createForm.upstreamProvider === 'openrouter' && (
@@ -3134,6 +2991,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       searchPlaceholder="Search OpenRouter providers…"
                       size="lg"
                       className="mt-1 w-full"
+                      disabled={confirmation.busy}
                     />
                   </div>
                   {createForm.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
@@ -3157,6 +3015,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                         placeholder="provider-slug"
                         required
+                        disabled={confirmation.busy}
                       />
                     </div>
                   )}
@@ -3187,6 +3046,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         }
                         className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                         required
+                        disabled={confirmation.busy}
                       />
                     </div>
                   )}
@@ -3212,6 +3072,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         }
                         className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                         required
+                        disabled={confirmation.busy}
                       />
                     </div>
                   )}
@@ -3234,12 +3095,21 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         }
                         className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                         required
+                        disabled={confirmation.busy}
                       />
                     </div>
                   )}
                 </div>
               )}
 
+              {createError ? (
+                <p
+                  className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600 [overflow-wrap:anywhere]"
+                  role="alert"
+                >
+                  {createError}
+                </p>
+              ) : null}
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   type="button"
@@ -3284,7 +3154,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             aria-labelledby="route-capabilities-title"
             className="mx-auto w-full max-w-3xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
           >
-            <form onSubmit={onSaveCapabilities}>
+            <form onSubmit={(event) => void onSaveCapabilities(event)}>
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <h3
@@ -3312,6 +3182,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 reading={capabilityReading}
                 onChange={(change) => setCapabilityDraft((current) => ({ ...current, ...change }))}
                 help="Requests through this route follow these values from the next request on, and they hold across restarts. Tool definitions are dropped without tool calling, max_tokens is capped at the max output, and images reach this route only if it accepts them."
+                disabled={confirmation.busy}
               />
               {capabilityRoute.capabilities_baseline && (
                 <p className="mt-3 text-[12px] text-gray-500">
@@ -3319,6 +3190,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   From config: {describeCapabilities(capabilityRoute.capabilities_baseline)}
                 </p>
               )}
+              {capabilityError ? (
+                <p
+                  className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600 [overflow-wrap:anywhere]"
+                  role="alert"
+                >
+                  {capabilityError}
+                </p>
+              ) : null}
               <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 pt-3">
                 <span
                   className={`mr-auto text-[12px] ${
@@ -3355,7 +3234,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 </button>
                 <button
                   type="submit"
-                  // Disabled for a no-op and while a value is invalid; Confirm writes.
+                  // Disabled for a no-op and while a value is invalid.
                   disabled={
                     confirmation.busy ||
                     capabilityReading.payload === null ||
@@ -3379,7 +3258,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             aria-labelledby="edit-provider-route-title"
             className="mx-auto w-full max-w-5xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
           >
-            <form onSubmit={onSubmit}>
+            <form onSubmit={(event) => void onSubmit(event)}>
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <h3
@@ -3419,6 +3298,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     aria-required
                     size="lg"
                     className="mt-1 w-full"
+                    disabled={confirmation.busy}
                   />
                 </div>
                 <div>
@@ -3429,7 +3309,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     id="route-api-key"
                     value={form.apiKeyId}
                     onValueChange={(apiKeyId) => setForm((current) => ({ ...current, apiKeyId }))}
-                    disabled={keysLoading}
+                    disabled={keysLoading || confirmation.busy}
                     options={[
                       { value: '', label: defaultKeyOptionLabel(keyProvider) },
                       ...keyOptions.map((key) => ({
@@ -3460,6 +3340,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   }
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                   required
+                  disabled={confirmation.busy}
                 />
               </div>
 
@@ -3469,6 +3350,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 onChange={(deploymentType) =>
                   setForm((current) => ({ ...current, deploymentType }))
                 }
+                disabled={confirmation.busy}
               />
 
               <div className="mt-3">
@@ -3487,6 +3369,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   }
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                   required
+                  disabled={confirmation.busy}
                 />
               </div>
 
@@ -3523,6 +3406,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       searchPlaceholder="Search OpenRouter providers…"
                       size="lg"
                       className="mt-1 w-full"
+                      disabled={confirmation.busy}
                     />
                   </div>
                   {form.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
@@ -3546,6 +3430,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
                         placeholder="provider-slug"
                         required
+                        disabled={confirmation.busy}
                       />
                     </div>
                   )}
@@ -3571,6 +3456,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     }
                     className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                     required
+                    disabled={confirmation.busy}
                   />
                 </div>
               )}
@@ -3597,6 +3483,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     }
                     className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                     required
+                    disabled={confirmation.busy}
                   />
                 </div>
               )}
@@ -3634,7 +3521,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       )}
 
-      {/* Last, so it stacks over the route and create dialogs it confirms. */}
+      {/* Last, so it stacks over the capabilities dialog whose reset it confirms. */}
       {confirmation.dialog}
     </div>
   );
