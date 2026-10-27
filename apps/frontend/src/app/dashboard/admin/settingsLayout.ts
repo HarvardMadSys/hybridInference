@@ -1,22 +1,28 @@
 /**
- * How Admin → Settings is organised: its sub-tabs, by topic, and what each
- * one holds. A topic's settings sit together whatever stores them: the
- * database-backed configuration (one section per category), the runtime
- * settings (in groups), and the sections with an API of their own.
+ * How Admin → Settings is organised: its sub-tabs and what each one holds.
  *
- * Anything the backend adds later still has a place: a configuration
- * category no sub-tab names, and a runtime setting no group takes, are listed
- * at the end of General.
+ * Common comes first, and opens by default: the settings changed most often,
+ * the runtime switches and limits the Settings tab held before the
+ * configuration moved in. The sub-tabs of a topic follow, each with that
+ * topic's settings together whatever stores them: the database-backed
+ * configuration (one section per category) and the sections with an API of
+ * their own. Setup, near the end, holds what is usually set once, when the
+ * gateway is deployed; and within any category the configuration lists such
+ * settings after the others (`ConfigEntry.one_time`).
+ *
+ * Anything the backend adds later still has a place: a runtime setting no
+ * group takes is listed at the end of Common, and a configuration category no
+ * sub-tab names at the end of Setup.
  */
 
 export type SettingsTabKey =
-  | 'general'
+  | 'common'
   | 'access'
   | 'providers'
   | 'models'
-  | 'limits'
   | 'batch'
   | 'alerts'
+  | 'setup'
   | 'backup';
 
 /** A group of runtime settings, edited together with one Save. */
@@ -50,6 +56,8 @@ export type SettingsBlock =
 export interface SettingsTabDefinition {
   key: SettingsTabKey;
   label: string;
+  /** What the sub-tab holds, above its sections, where its name alone does not say. */
+  description?: string;
   /** The tab's sections, top to bottom. */
   blocks: readonly SettingsBlock[];
 }
@@ -60,46 +68,34 @@ const panel = (key: SettingsPanelKey): SettingsBlock => ({ kind: 'panel', panel:
 
 export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   {
-    key: 'general',
-    label: 'General',
+    key: 'common',
+    label: 'Common',
+    description:
+      'The settings changed most often. The other sub-tabs hold the rest by topic, and Setup what is usually set once.',
     blocks: [
-      config('general'),
+      runtime('access'),
+      runtime('concurrency'),
+      runtime('quotas'),
+      runtime('requests'),
       runtime('logging'),
-      config('network'),
-      config('privacy'),
-      config('integrations'),
-      panel('usage-insights'),
-      { kind: 'unnamed-categories' },
       runtime('other'),
     ],
   },
   {
     key: 'access',
     label: 'Access',
-    blocks: [
-      runtime('access'),
-      config('signup'),
-      panel('signup-policy'),
-      config('email'),
-      config('phone'),
-      config('security'),
-    ],
+    blocks: [panel('signup-policy'), config('signup'), config('security'), config('phone')],
   },
   {
     key: 'providers',
     label: 'Providers & Routing',
-    // Added variables are listed under Providers, so the form that adds one is here.
-    blocks: [panel('add-variable'), config('providers'), config('routing')],
+    // Added variables are listed under Providers, so the form that adds one follows it.
+    blocks: [config('providers'), panel('add-variable'), config('routing')],
   },
   {
     key: 'models',
     label: 'Models',
-    blocks: [runtime('requests'), panel('model-visibility')],
-  },
-  {
-    key: 'limits',
-    label: 'Limits',
-    blocks: [runtime('concurrency'), panel('model-concurrency'), runtime('quotas')],
+    blocks: [panel('model-visibility'), panel('model-concurrency')],
   },
   {
     key: 'batch',
@@ -109,7 +105,23 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   {
     key: 'alerts',
     label: 'Alerts',
-    blocks: [config('alerts'), panel('alert-snooze'), panel('alert-mutes')],
+    // Muting is what an incident calls for; the channel and thresholds are set beforehand.
+    blocks: [panel('alert-snooze'), panel('alert-mutes'), config('alerts')],
+  },
+  {
+    key: 'setup',
+    label: 'Setup',
+    description:
+      'Settings usually set once, when the gateway is deployed: its addresses, name and logging, outgoing mail, the network in front of it, privacy and integrations.',
+    blocks: [
+      config('general'),
+      config('email'),
+      config('network'),
+      config('privacy'),
+      config('integrations'),
+      panel('usage-insights'),
+      { kind: 'unnamed-categories' },
+    ],
   },
   {
     key: 'backup',
@@ -118,7 +130,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   },
 ];
 
-export const DEFAULT_SETTINGS_TAB: SettingsTabKey = 'general';
+export const DEFAULT_SETTINGS_TAB: SettingsTabKey = 'common';
 
 /** The sub-tab a `?tab=` value names, or the default for anything else. */
 export function settingsTabKey(value: string | undefined | null): SettingsTabKey {
@@ -134,14 +146,19 @@ const NAMED_CATEGORIES: ReadonlyMap<string, SettingsTabKey> = new Map(
   ),
 );
 
-/** Whether a sub-tab names the category; one that none names is listed on General. */
+/** The sub-tab that lists the configuration categories no sub-tab names. */
+const UNNAMED_CATEGORIES_TAB: SettingsTabKey =
+  SETTINGS_TABS.find((tab) => tab.blocks.some((block) => block.kind === 'unnamed-categories'))
+    ?.key ?? DEFAULT_SETTINGS_TAB;
+
+/** Whether a sub-tab names the category; one that none names is listed on Setup. */
 export function isNamedCategory(category: string): boolean {
   return NAMED_CATEGORIES.has(category);
 }
 
 /** The sub-tab a configuration category is listed on. */
 export function tabOfCategory(category: string): SettingsTabKey {
-  return NAMED_CATEGORIES.get(category) ?? 'general';
+  return NAMED_CATEGORIES.get(category) ?? UNNAMED_CATEGORIES_TAB;
 }
 
 export const RUNTIME_GROUPS: Readonly<

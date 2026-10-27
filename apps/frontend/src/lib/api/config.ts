@@ -64,6 +64,11 @@ export interface ConfigEntry {
   locked?: boolean;
   /** Shown on the first-run configuration step. */
   setup: boolean;
+  /**
+   * Usually set once, when the gateway is deployed: listed after the settings
+   * changed more often. An older backend omits it, and its order stays.
+   */
+  one_time?: boolean;
   /** Absent from an older backend, which cannot mark a stored variable secret. */
   origin?: ConfigOrigin;
   /** Added by an administrator (`origin` is `custom`); removed by a reset. */

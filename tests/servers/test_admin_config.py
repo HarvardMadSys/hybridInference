@@ -93,6 +93,7 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
     assert smtp["default"] is None
     assert smtp["is_set"] is True
     assert smtp["source"] == "database"  # imported from the environment at boot
+    assert smtp["one_time"] is True  # as is every Email setting
     assert set(smtp) == {
         "key",
         "category",
@@ -111,6 +112,7 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "immutable",
         "locked",
         "setup",
+        "one_time",
         "origin",
         "custom",
         "invalid",

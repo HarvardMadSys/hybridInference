@@ -53,6 +53,11 @@ class ConfigEntryItem(BaseModel):
         "no value can be stored now",
     )
     setup: bool = Field(..., description="Shown on the first-run configuration step")
+    one_time: bool = Field(
+        ...,
+        description="Usually set once, when the gateway is deployed: the console lists it "
+        "after the settings changed more often",
+    )
     origin: Literal["static", "discovered", "numbered", "custom"] = Field(
         ...,
         description="Where the entry comes from: built in (static), a ${VAR} reference in a "
