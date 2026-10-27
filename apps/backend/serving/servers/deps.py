@@ -152,129 +152,129 @@ def model_router_transition_lock(
     )
 
 
-def get_services(request: Request) -> AppServices:
+async def get_services(request: Request) -> AppServices:
     """Return the shared services object from the application state."""
     return request.app.state.services  # type: ignore[attr-defined]
 
 
-def get_router(services: AppServices = Depends(get_services)) -> FixedRouter:
+async def get_router(services: AppServices = Depends(get_services)) -> FixedRouter:
     """Dependency to obtain the FixedRouter."""
     return services.router
 
 
-def get_embedding_adapters(
+async def get_embedding_adapters(
     services: AppServices = Depends(get_services),
 ) -> dict[str, Any]:
     """Dependency to obtain the embedding adapters dict."""
     return services.embedding_adapters or {}
 
 
-def get_db_logger(
+async def get_db_logger(
     services: AppServices = Depends(get_services),
 ) -> DatabaseLogger | None:
     """Dependency to obtain the database logger (if configured)."""
     return services.db_logger
 
 
-def get_operational_store(
+async def get_operational_store(
     services: AppServices = Depends(get_services),
 ) -> OperationalStore | None:
     """Dependency to obtain the operational store (if configured)."""
     return services.operational_store
 
 
-def get_log_store(
+async def get_log_store(
     services: AppServices = Depends(get_services),
 ) -> LogStore | None:
     """Dependency to obtain the log store (if configured)."""
     return services.log_store
 
 
-def get_response_store(
+async def get_response_store(
     services: AppServices = Depends(get_services),
 ) -> ResponseStore | None:
     """Dependency to obtain the Responses API store (if configured)."""
     return getattr(services, "responses_store", None)
 
 
-def get_batch_store(
+async def get_batch_store(
     services: AppServices = Depends(get_services),
 ) -> BatchStore | None:
     """Dependency to obtain the batch job store (if configured)."""
     return getattr(services, "batch_store", None)
 
 
-def get_batch_file_store(
+async def get_batch_file_store(
     services: AppServices = Depends(get_services),
 ) -> BatchFileStore | None:
     """Dependency to obtain the batch file store (if configured)."""
     return getattr(services, "batch_file_store", None)
 
 
-def get_batch_webhook_store(
+async def get_batch_webhook_store(
     services: AppServices = Depends(get_services),
 ) -> BatchWebhookStore | None:
     """Dependency to obtain the batch webhook store (if configured)."""
     return getattr(services, "batch_webhook_store", None)
 
 
-def get_batch_store_for_purge(
+async def get_batch_store_for_purge(
     services: AppServices = Depends(get_services),
 ) -> BatchStore | None:
     """Dependency to obtain the batch store an erasure must purge, ready or not."""
     return getattr(services, "batch_store", None) or getattr(services, "batch_store_pending", None)
 
 
-def get_batch_model_limits(
+async def get_batch_model_limits(
     services: AppServices = Depends(get_services),
 ) -> BatchModelLimits | None:
     """Dependency to obtain the per-model batch concurrency caps (if configured)."""
     return getattr(services, "batch_model_limits", None)
 
 
-def get_batch_scheduler(
+async def get_batch_scheduler(
     services: AppServices = Depends(get_services),
 ) -> BatchScheduler | None:
     """Dependency to obtain the in-process batch worker (if running)."""
     return getattr(services, "batch_scheduler", None)
 
 
-def get_user_concurrency_limiter(
+async def get_user_concurrency_limiter(
     services: AppServices = Depends(get_services),
 ) -> UserConcurrencyLimiter | None:
     """Dependency to obtain the per-user concurrency limiter."""
     return services.user_concurrency_limiter
 
 
-def get_model_router_registry(
+async def get_model_router_registry(
     services: AppServices = Depends(get_services),
 ) -> ModelRouterRegistry | None:
     """Dependency to obtain the ModelRouterRegistry (if configured)."""
     return services.model_router_registry
 
 
-def get_model_visibility_resolver(
+async def get_model_visibility_resolver(
     services: AppServices = Depends(get_services),
 ) -> ModelVisibilityResolver | None:
     """Dependency to obtain the ModelVisibilityResolver (if configured)."""
     return getattr(services, "model_visibility_resolver", None)
 
 
-def get_auto_mode(
+async def get_auto_mode(
     services: AppServices = Depends(get_services),
 ) -> AutoMode | None:
     """Dependency to obtain the loaded auto mode (if configured)."""
     return getattr(services, "auto_mode", None)
 
 
-def get_model_concurrency_resolver(
+async def get_model_concurrency_resolver(
     services: AppServices = Depends(get_services),
 ) -> ModelConcurrencyResolver | None:
     """Dependency to obtain the ModelConcurrencyResolver (if configured)."""
     return getattr(services, "model_concurrency_resolver", None)
 
 
-def get_completions_logger(
+async def get_completions_logger(
     services: AppServices = Depends(get_services),
 ) -> CompletionsLogger:
     """Dependency to obtain the ``CompletionsLogger``.
@@ -292,7 +292,7 @@ def get_completions_logger(
     return services.completions_logger
 
 
-def get_pricing_lookup(
+async def get_pricing_lookup(
     services: AppServices = Depends(get_services),
 ) -> PricingLookup:
     """Dependency to obtain the shared ``PricingLookup``.
@@ -308,7 +308,7 @@ def get_pricing_lookup(
     return _PL(router=services.router)
 
 
-def get_cost_tracker(
+async def get_cost_tracker(
     services: AppServices = Depends(get_services),
 ) -> CostTracker:
     """Dependency to obtain the shared ``CostTracker``.
