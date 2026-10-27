@@ -25,14 +25,20 @@ describe('AdminTabNav', () => {
       'href',
       '/dashboard/admin/routing',
     );
-    expect(screen.getByRole('link', { name: 'Token Usage' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/token-usage',
-    );
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute(
       'href',
       '/dashboard/admin/settings',
     );
+  });
+
+  it('keeps Token Usage under Analytics, not as a tab of its own', () => {
+    render(<AdminTabNav />);
+
+    expect(screen.getByRole('link', { name: 'Analytics' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/analytics',
+    );
+    expect(screen.queryByRole('link', { name: 'Token Usage' })).not.toBeInTheDocument();
   });
 
   it('consolidates updates and broadcast email under an Announcements tab', () => {

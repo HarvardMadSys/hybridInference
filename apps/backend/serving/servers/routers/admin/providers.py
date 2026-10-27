@@ -567,7 +567,7 @@ async def admin_provider_observability(
 
 
 # ============================================================
-# Token Usage tab — per (provider, model_id) totals over a fixed-window
+# Analytics → Token usage — per (provider, model_id) totals over a fixed-window
 # selector (1h | 24h | 7d | 30d). Reads pre-aggregated rows from
 # provider_hourly_stats; no scan of api_logs.
 # ============================================================

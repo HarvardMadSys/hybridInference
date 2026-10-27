@@ -1,7 +1,6 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { AdminAnalyticsResponse, AnalyticsPeriod, getAnalytics } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -78,28 +77,7 @@ export function AnalyticsTab() {
   };
 
   return (
-    <div className="mt-6">
-      <div
-        aria-label="Analytics section"
-        className="mb-4 inline-flex overflow-hidden rounded-lg border border-gray-200 bg-white"
-        role="group"
-      >
-        <span
-          aria-current="page"
-          className="bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white"
-        >
-          Overview
-        </span>
-        {/* prefetch off: the geo page carries the d3/topojson bundle. */}
-        <Link
-          className="px-3.5 py-1.5 text-[13px] font-medium text-gray-600 transition hover:bg-gray-50"
-          href="/dashboard/admin/analytics/geo"
-          prefetch={false}
-        >
-          Request origins
-        </Link>
-      </div>
-
+    <div>
       <div className="mb-5 flex gap-2">
         {PERIODS.map(({ key, label }) => (
           <button

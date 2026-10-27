@@ -1,7 +1,6 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { TokenUsageTab } from '../../TokenUsageTab';
-
-export default function Page() {
-  return <TokenUsageTab />;
+// Token Usage moved into Analytics; an old link still lands on it.
+export default function TokenUsageAdminPage() {
+  redirect('/dashboard/admin/analytics/token-usage');
 }
