@@ -162,10 +162,10 @@ export function DashboardView() {
 
       <RecentRequests />
 
-      {(showAgents || showPlayground || showBatches) && (
+      {(showAgents || showPlayground || showBatches || isAdmin) && (
         <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
           <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
-            {t('dashboard.tools.user_title', 'User Tools')}
+            {t('dashboard.tools.title', 'Tools')}
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {showAgents && (
@@ -207,38 +207,42 @@ export function DashboardView() {
                 {t('dashboard.internal.batches', 'Batches')}
               </Link>
             )}
-          </div>
-        </div>
-      )}
-
-      {isAdmin && (
-        <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
-          <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
-            {t('dashboard.tools.admin_title', 'Admin Tools')}
-          </h2>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <Link href="/dashboard/admin/users" className={TOOL_LINK}>
-              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
-                />
-              </svg>
-              {t('dashboard.internal.admin', 'Admin Console')}
-            </Link>
-            <a href="/pgadmin/" target="_blank" rel="noopener noreferrer" className={TOOL_LINK}>
-              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"
-                />
-              </svg>
-              pgAdmin
-            </a>
+            {isAdmin && (
+              <>
+                <Link href="/dashboard/admin/users" className={TOOL_LINK}>
+                  <svg
+                    className="mr-2 h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
+                    />
+                  </svg>
+                  {t('dashboard.internal.admin', 'Admin Console')}
+                </Link>
+                <a href="/pgadmin/" target="_blank" rel="noopener noreferrer" className={TOOL_LINK}>
+                  <svg
+                    className="mr-2 h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"
+                    />
+                  </svg>
+                  pgAdmin
+                </a>
+              </>
+            )}
           </div>
         </div>
       )}

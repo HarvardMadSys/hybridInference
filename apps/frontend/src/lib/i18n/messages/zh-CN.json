@@ -1887,13 +1887,9 @@
     "source": "Dashboard",
     "text": "控制台"
   },
-  "dashboard.tools.admin_title": {
-    "source": "Admin Tools",
-    "text": "管理工具"
-  },
-  "dashboard.tools.user_title": {
-    "source": "User Tools",
-    "text": "用户工具"
+  "dashboard.tools.title": {
+    "source": "Tools",
+    "text": "工具"
   },
   "dashboard.usage.cost": {
     "source": "Estimated cost",

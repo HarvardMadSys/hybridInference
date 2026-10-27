@@ -145,32 +145,33 @@ describe('DashboardView tools', () => {
     identity = { email: 'user@example.test', user_name: 'User' };
   });
 
-  function tools(section: string): string[] {
-    const heading = screen.queryByRole('heading', { name: section });
+  function tools(): string[] {
+    const heading = screen.queryByRole('heading', { name: 'Tools' });
     if (!heading) return [];
     const box = heading.parentElement as HTMLElement;
     return Array.from(box.querySelectorAll('a')).map((link) => link.textContent?.trim() ?? '');
   }
 
   it.each([
-    ['free', false, [], []],
-    ['free', true, ['Batches'], []],
-    ['pro', true, ['Batches'], []],
-    ['internal', false, ['Agents', 'API Playground'], []],
-    ['internal', true, ['Agents', 'API Playground', 'Batches'], []],
-    ['admin', true, ['Agents', 'API Playground', 'Batches'], ['Admin Console', 'pgAdmin']],
-    ['admin', false, ['Agents', 'API Playground'], ['Admin Console', 'pgAdmin']],
+    ['free', false, []],
+    ['free', true, ['Batches']],
+    ['pro', true, ['Batches']],
+    ['internal', false, ['Agents', 'API Playground']],
+    ['internal', true, ['Agents', 'API Playground', 'Batches']],
+    ['admin', true, ['Agents', 'API Playground', 'Batches', 'Admin Console', 'pgAdmin']],
+    ['admin', false, ['Agents', 'API Playground', 'Admin Console', 'pgAdmin']],
   ])(
     'a %s user with the Batches entry %s sees only the tools each permits',
-    (userRole, entry, userTools, adminTools) => {
+    (userRole, entry, visibleTools) => {
       role = userRole;
       batchEntry = entry;
 
       render(<DashboardView />);
 
-      expect(tools('User Tools')).toEqual(userTools);
-      expect(tools('Admin Tools')).toEqual(adminTools);
-      expect(screen.queryByRole('heading', { name: 'Internal Tools' })).not.toBeInTheDocument();
+      expect(tools()).toEqual(visibleTools);
+      expect(screen.queryAllByRole('heading', { name: /tools/i })).toHaveLength(
+        visibleTools.length ? 1 : 0,
+      );
     },
   );
 
@@ -223,6 +224,6 @@ describe('DashboardView tools', () => {
 
     render(<DashboardView />);
 
-    expect(tools('User Tools')).toEqual(['API Playground', 'Batches']);
+    expect(tools()).toEqual(['API Playground', 'Batches']);
   });
 });

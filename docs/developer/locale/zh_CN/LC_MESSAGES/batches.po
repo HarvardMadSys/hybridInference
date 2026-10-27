@@ -871,14 +871,14 @@ msgstr ""
 
 #: ../developer/batches.md:519
 msgid ""
-"The dashboard's **User Tools** link to it while `BATCH_ENABLED` is on and"
+"The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and"
 " either your role reaches `BATCH_MIN_ROLE` or you have batches or a "
 "webhook of your own. With `BATCH_ENABLED` off there is no link, and the "
 "page says that Batch is not available. Quotas and API keys play no part "
 "in either."
 msgstr ""
 "当 `BATCH_ENABLED` 开启，且你的角色达到 `BATCH_MIN_ROLE` 或你有自己的批次或 webhook 时，仪表盘的 "
-"**User Tools** 会链接到这个页面。`BATCH_ENABLED` 关闭时没有链接，页面会说明批量推理不可用。配额和 API "
+"**工具** 会链接到这个页面。`BATCH_ENABLED` 关闭时没有链接，页面会说明批量推理不可用。配额和 API "
 "密钥不影响这两者。"
 
 #: ../developer/batches.md:524

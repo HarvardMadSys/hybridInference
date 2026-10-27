@@ -516,7 +516,7 @@ The **Batches** page of the console (from the dashboard) lists your batches
 across all three APIs with their progress, tokens and known cost, and lets you
 cancel, delete and download results, and set up your webhook.
 
-The dashboard's **User Tools** link to it while `BATCH_ENABLED` is on and
+The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and
 either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
 your own. With `BATCH_ENABLED` off there is no link, and the page says that
 Batch is not available. Quotas and API keys play no part in either.

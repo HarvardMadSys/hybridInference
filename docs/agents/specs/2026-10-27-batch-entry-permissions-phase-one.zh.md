@@ -28,8 +28,9 @@ UI 创建批次属于后续阶段，不在此记录内。
   `BatchWebhookStore.has_webhook`（主键 `EXISTS`，不读 URL/密钥），各自独立处理失败；
   任一为真即有历史，否则任一失败则为 `null`，入口保留。无新表、无新索引。
 - 前端：`useBatchCapabilities` 按账号缓存，丢弃 `user_id` 不符的应答，刷新失败时保留
-  该账号上次结果；聚焦时及页面可见时每分钟刷新。仪表盘分为 User Tools（Agents：internal
-  + 功能开关；Playground：internal；Batches：`show_entry`）与 Admin Tools（仅 admin）。
+  该账号上次结果；聚焦时及页面可见时每分钟刷新。仪表盘统一使用 Tools 区块，各入口
+  独立判断：Agents 为 internal + 功能开关；Playground 为 internal；Batches 为
+  `show_entry`；Admin Console 和 pgAdmin 仅 admin 可见。没有可见工具时隐藏整个区块。
 - 首次查询失败且没有本账号结果时，internal/admin 沿用原入口；已知关闭结果优先，
   不因刷新失败重新开放。错账号响应按查询失败处理，不让页面无限加载。
 - 用户角色沿用现有账户缓存；Admin API 修改角色会清除缓存。直接修改数据库的角色
