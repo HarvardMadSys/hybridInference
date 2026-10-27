@@ -40,6 +40,7 @@ async def test_webhook_dns_wait_cannot_write_settings_after_owner_erasure(monkey
                 webhooks,
                 owner,
                 batch_console.WebhookSettings(url="https://webhook.example.com/events"),
+                role="internal",
             )
         )
         await asyncio.wait_for(entered.wait(), timeout=2)

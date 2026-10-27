@@ -467,6 +467,13 @@ page. The answer carries the signing secret, `whsec_…`, once; send
 webhook, `DELETE /v1/batch_webhook` removes it, and `GET
 /v1/batch_webhook/events` lists recent deliveries.
 
+Setting up a webhook, changing its URL, rotating its secret or turning it back
+on needs the same role as creating a batch (`BATCH_MIN_ROLE`); below it, `PUT`
+answers `403` and nothing is stored or looked up. The check uses your role at
+the time of the request. If your role is lowered, you can still read your
+webhook, list its deliveries and delete it, and events for your existing
+batches are still delivered while it stays enabled.
+
 When a batch ends, after its results can be read, the gateway POSTs an event:
 `batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled` for an
 OpenAI batch, `message_batch.ended` for a Message Batch. The body names the
@@ -544,7 +551,7 @@ and to the worker's next round.
 | Setting | Default | Meaning |
 |---|---|---|
 | `BATCH_ENABLED` | on | Serve batch inference, every kind of it. Off, every batch, file and webhook route answers `404` and no queued request starts; stored batches are kept |
-| `BATCH_MIN_ROLE` | `internal` | Lowest role that may create batches (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it |
+| `BATCH_MIN_ROLE` | `internal` | Lowest role that may create batches and set up a batch webhook (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it |
 | `BATCH_MODEL_CONCURRENCY` | 64 | Batch requests a model runs at once, across the whole deployment, when it has no cap of its own. `0` pauses batch work on those models |
 | `BATCH_YIELD_TO_INTERACTIVE` | on | Interactive requests in flight on a model take batch slots from its cap |
 | `BATCH_MAX_REQUESTS` | 50000 | Requests one batch may hold |

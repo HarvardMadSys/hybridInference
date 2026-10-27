@@ -9,7 +9,12 @@ lets them cancel, delete and download results. Nothing here creates a batch.
 Webhook settings exist twice over the same store: ``/user/batch-webhook`` for
 the console and ``/v1/batch_webhook`` for an API key. A user has at most one
 webhook; its signing secret is generated here and shown once, when the webhook
-is created or the secret rotated, and is stored encrypted.
+is created or the secret rotated, and is stored encrypted. Writing one (create,
+update, rotate, re-enable) needs the role that may create batches,
+``BATCH_MIN_ROLE``, checked on the caller's current role before the URL is
+resolved or the store touched. Reading, listing events and deleting stay open
+to the owner, so a user whose role was lowered can still see and remove theirs.
+Every route writes only the caller's own webhook.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from serving.batch.config import batch_config
+from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import stream_lines
 from serving.batch.renderers import (
     anthropic_processing_status,
@@ -222,9 +227,20 @@ def _require_webhooks(webhook_store: Any) -> Any:
 
 
 async def _save_webhook(
-    webhook_store: Any, user_id: str, settings: WebhookSettings, *, check_owner: bool = True
+    webhook_store: Any,
+    user_id: str,
+    settings: WebhookSettings,
+    *,
+    role: str | None,
+    check_owner: bool = True,
 ) -> dict:
     config = batch_config()
+    # Before the URL is resolved or the store read: a caller who may not
+    # create batches learns nothing and changes nothing here.
+    if not may_use_batch(role, config):
+        raise HTTPException(
+            403, f"Configuring a batch webhook requires the {config.min_role!r} role or higher"
+        )
     url, problem = url_problem(settings.url, allow_private=config.webhook_allow_private)
     if problem is None and url is not None:
         problem = await check_resolves_public(url, allow_private=config.webhook_allow_private)
@@ -288,7 +304,9 @@ async def put_my_webhook(
 ) -> dict[str, Any]:
     """Create or change the user's webhook; a new or rotated secret is returned once."""
     webhook_store = _require_webhooks(webhook_store)
-    return await _save_webhook(webhook_store, current_user["user_id"], settings)
+    return await _save_webhook(
+        webhook_store, current_user["user_id"], settings, role=current_user.get("role")
+    )
 
 
 @router.delete("/user/batch-webhook")
@@ -337,6 +355,7 @@ async def put_webhook(
         webhook_store,
         _key_owner(user_ctx),
         settings,
+        role=user_ctx.get("role"),
         check_owner=bool(user_ctx.get("authenticated")),
     )
 

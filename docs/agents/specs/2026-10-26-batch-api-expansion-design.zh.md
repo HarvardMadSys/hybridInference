@@ -2,7 +2,7 @@
 
 日期：2026-10-26。状态：已批准并在本分支实现（单个PR，未合并、未部署）。基线：dev `fcd7a660`。
 
-> **历史记录。** 第11节中 `BATCH_EXPANSION_ENABLED` 的决定（新种类默认关闭、需单独开启）及其升级与回滚步骤已被 [2026-10-27 Batch 默认可用修订](2026-10-27-batch-default-availability-amendment.zh.md) 取代：该开关已移除，不再控制任何功能。本记录其余内容保留为当时的设计。
+> **历史记录。** 第11节中 `BATCH_EXPANSION_ENABLED` 的决定（新种类默认关闭、需单独开启）及其升级与回滚步骤已被 [2026-10-27 Batch 默认可用修订](2026-10-27-batch-default-availability-amendment.zh.md) 取代：该开关已移除，不再控制任何功能。该修订第5节也取代了本记录对 Webhook 设置未作角色限制的做法：设置 Webhook 现在需要 `BATCH_MIN_ROLE`。本记录其余内容保留为当时的设计。
 
 本记录修订并扩展 [2026-10-25 批处理设计](2026-10-25-batch-inference-design.md)。该记录“13. Deferred”中的 Embeddings/Responses 目标、Files API 与输出文件、完成Webhook、原子的活跃批次上限、按用户而非按批次的公平性、配额用尽时读取自己的批次、跨进程让位、管理员全用户总览和批次token统计，均由本设计实现；批处理折扣与auto模型仍不在范围内。用户文档见 [docs/developer/batches.md](../../developer/batches.md)。
 
