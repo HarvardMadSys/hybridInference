@@ -46,7 +46,10 @@ is documented rather than persisted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 Transition = Literal["firing", "resolved"]
 
@@ -74,6 +77,15 @@ class _KeyState:
     #: has to be the longest rule's, which would hold a 60-second rule's
     #: incident open for as long as an hour-long rule's.
     stale_after: float | None = None
+
+
+@dataclass(frozen=True, eq=False)
+class StaleMark:
+    """A firing key's state and the observation it was at, from :meth:`ThresholdTransitionTracker.mark`."""
+
+    state: _KeyState
+    last_observed_at: float
+    clear_started_at: float | None
 
 
 @dataclass
@@ -154,23 +166,66 @@ class ThresholdTransitionTracker:
             return "resolved"
         return None
 
-    def sweep(self, now: float) -> list[str]:
+    def sweep(self, now: float, *, held: Callable[[str], bool] | None = None) -> list[str]:
         """Resolve firing keys whose rule has stopped producing evaluations.
 
         Rules are driven by request records, so a breach followed by silence —
         traffic stopping, the process draining — leaves an incident that
         ``observe`` will never be called to close. Returns the keys closed, for
-        the caller to emit resolutions for.
+        the caller to emit resolutions for. A key ``held`` names is left as it
+        is, however long unobserved: its producer is paused, not silent.
         """
-        stale = [
+        stale = self.stale(now, held=held)
+        for key in stale:
+            del self._firing[key]
+        return stale
+
+    def stale(self, now: float, *, held: Callable[[str], bool] | None = None) -> list[str]:
+        """The keys :meth:`sweep` would close now, left firing."""
+        return sorted(
             key
             for key, state in self._firing.items()
             if self._stale_after(state) is not None
             and now - state.last_observed_at >= self._stale_after(state)
-        ]
-        for key in stale:
-            del self._firing[key]
-        return sorted(stale)
+            and not (held is not None and held(key))
+        )
+
+    def mark(self, key: str) -> StaleMark | None:
+        """The observation ``key`` is at now, for a later :meth:`claim`; ``None`` if not firing."""
+        state = self._firing.get(key)
+        if state is None:
+            return None
+        return StaleMark(state, state.last_observed_at, state.clear_started_at)
+
+    def claim(self, key: str, mark: StaleMark | None) -> bool:
+        """Close ``key`` as :meth:`sweep` would, if nothing has touched it since ``mark``.
+
+        For a caller that awaits between choosing a stale key and closing it.
+        An observation — healthy or breached — a re-arm, or a close and a new
+        incident in between each mean it is no longer the key that was chosen,
+        so it is left exactly as that change left it.
+        """
+        state = self._firing.get(key)
+        if (
+            mark is None
+            or state is not mark.state
+            or state.last_observed_at != mark.last_observed_at
+            or state.clear_started_at != mark.clear_started_at
+        ):
+            return False
+        del self._firing[key]
+        return True
+
+    def reinstate(self, key: str, mark: StaleMark) -> None:
+        """Put back a key :meth:`claim` closed whose close then did not happen.
+
+        Not over a key firing again, which belongs to a new incident. Its
+        liveness clock is kept; its settling starts afresh.
+        """
+        if key in self._firing:
+            return
+        mark.state.clear_started_at = None
+        self._firing[key] = mark.state
 
     def _stale_after(self, state: _KeyState) -> float | None:
         """This key's staleness bound, falling back to the tracker's default."""
@@ -203,6 +258,16 @@ class ThresholdTransitionTracker:
             clear_started_at=None,
             stale_after=stale_after,
         )
+
+    def restart_settling(self, key: str) -> None:
+        """Make an open incident's settling period start again at its next healthy observation.
+
+        For a producer whose earlier healthy observations no longer count: it
+        was paused, or its configuration changed, in between.
+        """
+        state = self._firing.get(key)
+        if state is not None:
+            state.clear_started_at = None
 
     def forget(self, key: str) -> None:
         """Drop state without emitting a transition.

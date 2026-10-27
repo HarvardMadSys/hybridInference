@@ -19,6 +19,7 @@ import socket
 import threading
 import time
 import traceback
+import weakref
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
@@ -698,6 +699,27 @@ async def _type_muted(key: str) -> bool:
         return False
 
 
+async def _wait_for_in_flight(key: str) -> bool:
+    """Wait, within the resolution bound, for a send already running on ``key`` to finish.
+
+    True once none is; False if the bound ran out with one still running.
+    """
+    for _ in range(_RESOLUTION_WAIT_ATTEMPTS):
+        async with _DEDUPE_LOCK:
+            done = _IN_FLIGHT.get(key)
+        if done is None:
+            return True
+        try:
+            await asyncio.wait_for(done.wait(), timeout=_RESOLUTION_WAIT_SEC)
+        except TimeoutError:
+            # Keep waiting up to the attempt bound. A firing send that tries the
+            # relay and then falls back to the webhook takes both timeouts, so
+            # giving up on the first would drop exactly the resolution this
+            # wait exists to save.
+            continue
+    return key not in _IN_FLIGHT
+
+
 @_tracked
 async def alert_slack(
     severity: AlertSeverity,
@@ -769,19 +791,8 @@ async def alert_slack(
     # recovery it precedes, opening an incident whose only healthy edge is
     # already spent. That is why the snooze lookup runs *after* the
     # registration rather than here.
-    for _ in range(_RESOLUTION_WAIT_ATTEMPTS):
-        async with _DEDUPE_LOCK:
-            done = _IN_FLIGHT.get(key)
-        if done is None or not resolution:
-            break
-        try:
-            await asyncio.wait_for(done.wait(), timeout=_RESOLUTION_WAIT_SEC)
-        except TimeoutError:
-            # Keep waiting up to the attempt bound. A firing send that tries the
-            # relay and then falls back to the webhook takes both timeouts, so
-            # giving up on the first would drop exactly the resolution this
-            # wait exists to save.
-            continue
+    if resolution:
+        await _wait_for_in_flight(key)
 
     now = _monotonic()
     async with _DEDUPE_LOCK:
@@ -1132,6 +1143,58 @@ _PENDING_RESOLUTION_MAX_AGE_SEC = 900.0
 #: what increments this, so attempts and elapsed time are the same clock.
 _STALE_RETRY_ATTEMPTS: dict[str, int] = {}
 
+#: Metric incidents a producer holds open while it is not evaluating them, by
+#: key: the producer's own answer, asked at each sweep. A paused producer is
+#: not a silent rule, so its incident is neither swept ("no recent samples")
+#: nor its queued recovery retried, aged or dropped on its behalf; both wait
+#: for the producer to evaluate again. Held weakly, so a replaced producer
+#: releases its keys.
+_HOLDS: dict[str, weakref.WeakMethod[Callable[[], bool]]] = {}
+
+
+def hold_while(key: str, held: Callable[[], bool]) -> None:
+    """Keep the sweep off ``key``'s incident while the bound method ``held`` says so.
+
+    ``held`` is asked synchronously at every sweep, so it must read the
+    producer's state in force then, not rely on the producer having run.
+    """
+    _HOLDS[key] = weakref.WeakMethod(held)  # type: ignore[arg-type]
+
+
+def _hold_of(key: str) -> Callable[[], bool] | None:
+    reference = _HOLDS.get(key)
+    return reference() if reference is not None else None
+
+
+def _held(key: str) -> bool:
+    held = _hold_of(key)
+    if held is None:
+        return False
+    try:
+        return bool(held())
+    except Exception:
+        log.debug("alert hold check failed for %s; sweeping", key, exc_info=True)
+        return False
+
+
+def _hold_fence(key: str, published: Any) -> Callable[[], bool] | None:
+    """The fence for a send the sweep makes on behalf of a held key, or ``None``.
+
+    True while the configuration *published* — read when the sweep began — is
+    still in force and the producer does not hold the key. The generation is
+    what catches a pause and a resumption, and a check under the resumed
+    configuration, all inside one await: the hold alone reads clear again by
+    then. A key nothing holds is not fenced, so other rules sweep as before.
+    """
+    if _hold_of(key) is None:
+        return None
+    return lambda: alert_runtime.is_current(published) and not _held(key)
+
+
+def restart_settling(key: str) -> None:
+    """Make the metric incident on ``key`` settle afresh from its next healthy observation."""
+    _TRANSITIONS.restart_settling(key)
+
 
 def reset_transition_state() -> None:
     """Drop all open-breach state. For tests and for a clean engine restart."""
@@ -1349,9 +1412,15 @@ async def sweep_stale_breaches() -> None:
 
     Only metric alerts are swept. For a state alert silence means nothing was
     observed, not that the condition cleared, so sweeping one would report an
-    ongoing outage as recovered.
+    ongoing outage as recovered. For the same reason a metric incident whose
+    producer holds it (:func:`hold_while`) is skipped, with its queued recovery:
+    neither is sent, retried, aged or dropped until the producer evaluates again.
+    A held key is fenced against the configuration in force when the sweep
+    began: one that changes during any of the sweep's awaits leaves such a key,
+    or its queued recovery, as it was for the next sweep.
     """
     now = time.time()
+    published = alert_runtime.acquire()
 
     # First, retry resolutions whose delivery failed on their transition edge.
     # This runs off observations entirely: for a state alert it is the only
@@ -1361,6 +1430,21 @@ async def sweep_stale_breaches() -> None:
         if _PENDING_RESOLUTIONS.get(key) is not pending:
             # A re-breach cancelled this entry after the snapshot: the breach
             # is live again and this recovery would announce it as over.
+            continue
+        fence = _hold_fence(key, published) if pending.kind == "metric" else None
+        if fence is not None and not fence():
+            # Its producer is paused, or its configuration changed during an
+            # earlier send: the recovery waits, untouched, for it to evaluate
+            # again, which either confirms it or supersedes it.
+            continue
+        if fence is not None and not await _wait_for_in_flight(key):
+            # A send still running on the key outlasted the wait: try again
+            # next sweep, rather than let the send's own wait run a second
+            # bound. Nothing about the entry has changed.
+            continue
+        if fence is not None and (_PENDING_RESOLUTIONS.get(key) is not pending or not fence()):
+            # Superseded, paused or reconfigured during the wait. With no send
+            # running on the key, nothing awaits between here and admission.
             continue
         tracker = _TRANSITIONS if pending.kind == "metric" else _STATE_TRANSITIONS
         retry_episode = pending.history_episode
@@ -1392,6 +1476,7 @@ async def sweep_stale_breaches() -> None:
                 cooldown_sec=0,
                 status="resolved",
                 history_episode=retry_episode,
+                fence=fence,
             )
         except Exception:
             # One stuck resolution must not strand every other pending one.
@@ -1405,6 +1490,11 @@ async def sweep_stale_breaches() -> None:
         # and eventually closes properly. The check is race-free because no
         # await sits between the send returning and this line.
         if _PENDING_RESOLUTIONS.get(key) is not pending:
+            continue
+        if not sent and fence is not None and not fence():
+            # Paused or reconfigured while the send was prepared: nothing was
+            # delivered for it, so it costs no attempt and waits as it was.
+            pending.attempts -= 1
             continue
         if sent:
             _PENDING_RESOLUTIONS.pop(key, None)
@@ -1443,7 +1533,34 @@ async def sweep_stale_breaches() -> None:
                 pending.attempts,
             )
 
-    for key in _TRANSITIONS.sweep(now):
+    # A key whose producer can hold it is chosen here but stays firing until it
+    # is claimed, right before its own close: the sweep awaits each send in
+    # turn, and an observation the producer makes meanwhile must land on the
+    # incident, not on a key the sweep has already taken. Every other key is
+    # taken now, as it always was.
+    marks = {
+        key: _TRANSITIONS.mark(key)
+        for key in _TRANSITIONS.stale(now, held=_held)
+        if _hold_of(key) is not None
+    }
+    swept = _TRANSITIONS.sweep(now, held=lambda key: _hold_of(key) is not None)
+    for key in sorted([*swept, *marks]):
+        fence = _hold_fence(key, published) if key in marks else None
+        if fence is not None:
+            # The send would wait for this anyway. Waiting first leaves no await
+            # between the checks below, the episode's end and the send's
+            # admission, so a close stopped by any of them records nothing.
+            # A wait that runs out defers the key to the next sweep as it is.
+            if not await _wait_for_in_flight(key):
+                continue
+            if not fence() or not _TRANSITIONS.claim(key, marks[key]):
+                # Paused or reconfigured, or the producer observed the
+                # incident (or a new one opened) since it was chosen.
+                continue
+        elif _TRANSITIONS.is_firing(key):
+            # A breach during an earlier send opened a new incident: it is not
+            # this sweep's to close.
+            continue
         # A rule that opted out of announcing its close opts out of this card
         # above all: "no recent samples" is the most misleading thing that can
         # be said about a key whose rule only ever speaks on a transition, since
@@ -1481,6 +1598,7 @@ async def sweep_stale_breaches() -> None:
                     cooldown_sec=0,
                     status="resolved",
                     history_episode=episode_id,
+                    fence=fence,
                 )
             except Exception:
                 # One stuck resolution must not strand every other open incident.
@@ -1491,6 +1609,11 @@ async def sweep_stale_breaches() -> None:
             # just set) alone. Forgetting would untrack the live breach;
             # re-arming would overwrite its liveness clock with a backdated one
             # and set up a premature no-samples close.
+            continue
+        if not sent and fence is not None and not fence():
+            # Paused or reconfigured during the post itself, which was refused:
+            # the incident stays open, and no retry is counted.
+            _TRANSITIONS.reinstate(key, marks[key])
             continue
         if sent or silent:
             # Confirmed close: without this, dynamic keys (per-user cost,

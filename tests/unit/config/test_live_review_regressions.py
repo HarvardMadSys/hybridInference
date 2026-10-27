@@ -36,7 +36,9 @@ def test_reset_clears_a_publication_without_loading_database(monkeypatch):
 
     # Delivery tests can publish directly, without ever loading a config store.
     publish(AlertRuntimeConfig())
-    assert app_config.config_value("FAILED_REQUEST_ALERT_THRESHOLD") == ""
+    # Published without raw values: every key is unset, served the caller's default.
+    assert app_config.config_value("FAILED_REQUEST_ALERT_THRESHOLD") is None
+    assert app_config.config_value("FAILED_REQUEST_ALERT_THRESHOLD", "9") == "9"
 
     app_config.reset_state()
 

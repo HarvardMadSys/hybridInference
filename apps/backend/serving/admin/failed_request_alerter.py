@@ -4,7 +4,11 @@ Counts rows in ``api_logs`` where ``status_code >= 500`` or ``error IS NOT NULL`
 over a sliding window and raises an alert when the count exceeds a configured
 threshold. A cooldown prevents duplicate alerts during sustained incidents.
 With both ``SLACK_WEBHOOK_URL`` and ``WECOM_ALERTS_WEBHOOK_URL`` empty, the
-detector is paused: it queries nothing, changes no incident and sends nothing.
+detector is paused: it queries nothing, changes no incident and sends nothing,
+and the stale sweep leaves its incident and any queued recovery alone (a
+paused detector is not a silent one). Once it resumes they stay held until a
+check has evaluated under the configuration in force, and that check settles
+afresh: healthy readings from before the pause do not count.
 
 The webhooks and the five parameters are the ``alerts.runtime`` configuration
 group (:mod:`serving.observability.alert_runtime`). One job is registered
@@ -27,7 +31,12 @@ from typing import TYPE_CHECKING, Any
 
 from serving.observability import alert_runtime
 from serving.observability.alert_history import hooks as alert_history
-from serving.observability.alerts import AlertSeverity, alert_on_transition
+from serving.observability.alerts import (
+    AlertSeverity,
+    alert_on_transition,
+    hold_while,
+    restart_settling,
+)
 from serving.utils.email_scheduler import get_scheduler
 from serving.utils.logging import get_logger
 
@@ -40,6 +49,9 @@ if TYPE_CHECKING:
     from serving.observability.alert_runtime import AlertRuntimeConfig
 
 logger = get_logger(__name__)
+
+#: The detector's incident key, as its alert call sites spell it.
+ALERT_KEY = "failed_request_rate_db"
 
 
 # Predicate shared by the count and breakdown queries.
@@ -277,6 +289,34 @@ class FailedRequestAlerter:
         self.superseded_checks = 0
         #: The configuration of the last check, or ``None`` before the first.
         self.last_state: str | None = None
+        #: The configuration generation the incident was last observed under.
+        self._observed_generation: int | None = None
+        if self._fixed is None:
+            hold_while(ALERT_KEY, self._holds_incident)
+
+    def _holds_incident(self) -> bool:
+        """Whether the sweep must leave this detector's incident alone, now.
+
+        While the configuration in force pauses the detector, and after that
+        until a check has observed the incident under it. Read at the sweep
+        itself, so it holds from the moment of the change, whether or not a
+        paused check has run since.
+        """
+        published = alert_runtime.acquire()
+        if not published.view.detector_enabled:
+            return True
+        return self._observed_generation != published.generation
+
+    def _observe(self, published: Any) -> None:
+        """Note that a check is about to observe the incident under *published*.
+
+        Called synchronously right before the tracker is observed. The first
+        observation under a configuration settles afresh: healthy readings
+        under an earlier one, or before a pause, are no evidence under this one.
+        """
+        if self._observed_generation != published.generation:
+            restart_settling(ALERT_KEY)
+        self._observed_generation = published.generation
 
     def _acquire(self) -> Any:
         if self._fixed is not None:
@@ -366,6 +406,7 @@ class FailedRequestAlerter:
             # tracker changes; the cooldown is cleared only if it passed.
             if not fence():
                 return
+            self._observe(published)
             await alert_on_transition(
                 key="failed_request_rate_db",
                 breached=False,
@@ -417,6 +458,7 @@ class FailedRequestAlerter:
             context["failure_rate"] = round(rate, 4)
             context["rate_threshold"] = rate_threshold
         context.update(breakdown)
+        self._observe(published)
         ok = await alert_on_transition(
             key="failed_request_rate_db",
             breached=True,

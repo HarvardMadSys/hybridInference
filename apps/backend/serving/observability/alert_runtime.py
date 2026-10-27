@@ -134,9 +134,11 @@ class AlertRuntimeTarget:
     """A target for the group: the typed configuration and each key's raw value."""
 
     config: AlertRuntimeConfig
-    #: Raw resolved values by key, for the compatibility readers. Compared by
-    #: the typed configuration only, so a respelling rebuilds nothing.
-    raw: Mapping[str, str] = field(default_factory=dict, compare=False, repr=False)
+    #: Raw values by key, for the compatibility readers; ``None`` where no row
+    #: or environment value sets the key, so a reader's own default applies.
+    #: Compared by the typed configuration only, so a respelling rebuilds
+    #: nothing; the group still publishes a changed mirror (:meth:`live.LiveGroup._adopt`).
+    raw: Mapping[str, str | None] = field(default_factory=dict, compare=False, repr=False)
 
 
 class DetectorState:
@@ -208,8 +210,8 @@ class AlertRuntimeComponent:
     async def retire(self, previous: AlertRuntimeConfig) -> None:
         """Nothing to release: a send already started keeps its own sink to the end."""
 
-    def mirror(self, desired: AlertRuntimeTarget) -> Mapping[str, str]:
-        """Each key's raw value."""
+    def mirror(self, desired: AlertRuntimeTarget) -> Mapping[str, str | None]:
+        """Each key's raw value; ``None`` for a key nothing sets."""
         return desired.raw
 
     def describe(self, view: AlertRuntimeConfig) -> dict[str, Any]:

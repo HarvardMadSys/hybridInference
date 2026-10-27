@@ -149,6 +149,18 @@ function committedVersion(
   return next.saved_version ?? base;
 }
 
+/** Whether a write was refused because the configuration changed since it was read. */
+function isVersionConflict(error: unknown): boolean {
+  return error instanceof APIError && error.code === 'CONFIG_VERSION_CONFLICT';
+}
+
+/**
+ * The Add variable form's entry in `draftVersions`: the version it opened on,
+ * moved like a category's by this page's own writes and by a reload after a
+ * conflict. Not a category id.
+ */
+const ADD_VARIABLE_DRAFT = '\u0000add-variable';
+
 /** The live configuration groups a category's settings belong to, once each. */
 function liveGroupNames(group: ConfigGroup): string[] {
   return [...new Set(group.entries.flatMap((entry) => (entry.group ? [entry.group] : [])))];
@@ -483,7 +495,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         count === 1 ? `Saved ${group.label}.` : `Saved ${count} changes to ${group.label}.`,
       );
     } catch (e) {
-      if (e instanceof APIError && e.code === 'CONFIG_VERSION_CONFLICT') {
+      if (isVersionConflict(e)) {
         // Saved elsewhere since this page read it: nothing of this request was
         // written. Show the latest values and keep the drafts for a second look.
         let message =
@@ -559,6 +571,51 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setEntryErrors((prev) => withoutKeys(prev, [key]));
     setPendingSecrets((prev) => withoutKeys(prev, [key]));
     if (isAlertWebhook(key)) setAlertTestResult(null);
+  };
+
+  // Bumped as the Add variable form opens and closes: a reload it asked for
+  // that completes after it closed moves nothing.
+  const addSession = useRef(0);
+
+  /** Open the Add variable form on the version shown now. */
+  const openAddForm = () => {
+    addSession.current += 1;
+    const shown = shownVersion.current;
+    setDraftVersions((prev) => {
+      const rest = withoutVersions(prev, [ADD_VARIABLE_DRAFT]);
+      return shown ? { ...rest, [ADD_VARIABLE_DRAFT]: shown } : rest;
+    });
+    setAdding(true);
+  };
+
+  const closeAddForm = () => {
+    addSession.current += 1;
+    setDraftVersions((prev) => withoutVersions(prev, [ADD_VARIABLE_DRAFT]));
+    setAdding(false);
+  };
+
+  /**
+   * After the form's add met a conflict: show the latest configuration, and
+   * move the form onto it, for the administrator to review and add again.
+   * `null`, and the form's version left where it was, when the read fails.
+   */
+  const reloadForAdd = async (): Promise<ConfigResponse | null> => {
+    const session = addSession.current;
+    let fresh: ConfigResponse;
+    try {
+      fresh = await getConfig();
+    } catch {
+      return null;
+    }
+    if (session !== addSession.current) return null;
+    setConfig(fresh);
+    const shown = fresh.source_version;
+    setDraftVersions((prev) =>
+      shown
+        ? { ...prev, [ADD_VARIABLE_DRAFT]: shown }
+        : withoutVersions(prev, [ADD_VARIABLE_DRAFT]),
+    );
+    return fresh;
   };
 
   const toggleMarkSecret = (target: ConfigEntry) => {
@@ -805,12 +862,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           />
           Missing only
         </label>
-        <button
-          type="button"
-          onClick={() => setAdding(true)}
-          disabled={adding}
-          className={BUTTON_SECONDARY}
-        >
+        <button type="button" onClick={openAddForm} disabled={adding} className={BUTTON_SECONDARY}>
           Add variable
         </button>
         <button
@@ -843,12 +895,13 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       {adding ? (
         <AddVariableForm
           existingKeys={existingKeys}
-          expectedVersion={config.source_version ?? null}
-          onCancel={() => setAdding(false)}
+          expectedVersion={saveBase(draftVersions, ADD_VARIABLE_DRAFT, config.source_version)}
+          onCancel={closeAddForm}
+          onConflict={reloadForAdd}
           onAdded={(next, key, base) => {
             if (base) setDraftVersions((prev) => chainVersions(prev, base, next.saved_version));
             applyResponse(next, [key]);
-            setAdding(false);
+            closeAddForm();
             toast.success(`Added ${key}.`);
           }}
         />
@@ -1022,17 +1075,25 @@ function AddVariableForm({
   expectedVersion,
   onAdded,
   onCancel,
+  onConflict,
 }: {
   existingKeys: ReadonlySet<string>;
-  /** The version of the configuration on screen; the form keeps the one it opened on. */
+  /**
+   * The version the add is conditional on: the one the form opened on, moved
+   * only by this page's own writes and by `onConflict`. A save elsewhere since
+   * is a conflict to review, not something to write over.
+   */
   expectedVersion: ConfigSourceVersion | null;
   onAdded: (next: ConfigResponse, key: string, base: ConfigSourceVersion | null) => void;
   onCancel: () => void;
+  /** Show the latest configuration after a conflict; `null` when it could not be read. */
+  onConflict: () => Promise<ConfigResponse | null>;
 }) {
   const baseId = useId();
-  // What the administrator saw when the form opened: a save elsewhere since
-  // then is a conflict to review, not something to write over.
-  const [openedOn] = useState(expectedVersion);
+  // After a conflict: the latest configuration is being read, then the
+  // administrator reviews it and adds again. Nothing is retried for them.
+  const [reloading, setReloading] = useState(false);
+  const [conflicted, setConflicted] = useState(false);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   // The backend's rule: a name that looks like a credential's is secret
@@ -1045,8 +1106,38 @@ function AddVariableForm({
   const secretByName = looksSecret(name);
   const secret = secretByName || secretChoice;
 
+  /** A conflict: nothing was written. Read the latest values and say what to do next. */
+  const reviewConflict = async (key: string) => {
+    setReloading(true);
+    setConflicted(true);
+    setError(null);
+    const fresh = await onConflict();
+    setReloading(false);
+    if (fresh === null) {
+      // The form's version stays: adding again meets the same conflict, and reads again.
+      setError(
+        'The configuration was changed elsewhere since this form opened, so the variable was not added, and the latest configuration could not be loaded. Your entry is kept; try adding it again.',
+      );
+      return;
+    }
+    const existing = fresh.entries.find((candidate) => candidate.key === key);
+    if (existing) {
+      const category =
+        fresh.categories.find((candidate) => candidate.id === existing.category)?.label ??
+        existing.category;
+      setError(
+        `${key} was added elsewhere in the meantime, so it was not added here. Edit it in its category (${category}).`,
+      );
+      return;
+    }
+    setError(
+      'The configuration was changed elsewhere since this form opened, so the variable was not added. The latest configuration is shown now and your entry is kept. Review it, then add it again.',
+    );
+  };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (reloading) return;
     const key = name.trim();
     if (!CUSTOM_KEY_PATTERN.test(key)) {
       setError(
@@ -1059,6 +1150,10 @@ function AddVariableForm({
       return;
     }
     setError(null);
+    // Taken now: the version this attempt is conditional on, whatever a read
+    // brings in while it is in flight.
+    const base = expectedVersion;
+    let conflict = false;
     // A refusal that echoes a secret's value shows it masked; the form keeps what was typed.
     const failure = await writes.perform({
       run: async () => {
@@ -1067,13 +1162,20 @@ function AddVariableForm({
             values: { [key]: value },
             secrets: { [key]: secret },
           },
-          ...versioned(openedOn),
+          ...versioned(base),
         ).catch((err: unknown) => {
+          // Told apart here, while the error still has its type: the message
+          // the write flow returns, and the masking below, lose it.
+          if (isVersionConflict(err)) conflict = true;
           throw secret ? new Error(withoutSecret(getErrorMessage(err), value)) : err;
         });
-        onAdded(next, key, openedOn);
+        onAdded(next, key, base);
       },
     });
+    if (conflict) {
+      await reviewConflict(key);
+      return;
+    }
     if (failure) setError(failure);
   };
 
@@ -1155,11 +1257,17 @@ function AddVariableForm({
         </button>
         <button
           type="submit"
-          disabled={saving}
-          aria-busy={saving || undefined}
+          disabled={saving || reloading}
+          aria-busy={saving || reloading || undefined}
           className={BUTTON_PRIMARY}
         >
-          {saving ? 'Adding…' : 'Add variable'}
+          {saving
+            ? 'Adding…'
+            : reloading
+              ? 'Loading latest…'
+              : conflicted
+                ? 'Add again'
+                : 'Add variable'}
         </button>
       </div>
     </form>

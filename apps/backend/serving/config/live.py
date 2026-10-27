@@ -144,8 +144,13 @@ class GroupComponent(Protocol[D, V]):
         """Release a state that has been replaced, once its users are done."""
         ...
 
-    def mirror(self, desired: D) -> Mapping[str, str]:
-        """Return each key's resolved raw value, for the compatibility readers."""
+    def mirror(self, desired: D) -> Mapping[str, str | None]:
+        """Return each key's raw value, for the compatibility readers.
+
+        ``None`` for a key the target leaves unset, so its reader's default
+        applies. Two targets the component calls the same may still differ
+        here (a key set to its default), and the published target follows.
+        """
         ...
 
     def describe(self, view: V) -> dict[str, Any]:
@@ -379,13 +384,24 @@ class LiveGroup(Generic[D, V]):
                 _log_failure("publication observer", self.name, exc)
         return previous
 
-    def _adopt(self, version: SourceVersion | None) -> None:
-        """Mark the state in use as managed without replacing it (same target)."""
+    def _adopt(self, desired: D, version: SourceVersion | None) -> None:
+        """Make *desired* the target of the state in use without replacing the state.
+
+        For a target the component calls the same as the one in use. The view
+        and its generation stay, so nothing is rebuilt and no reader's fence
+        moves; the target is swapped when its mirror differs (a key set to its
+        default, or reset), so the compatibility readers follow it.
+        """
         with self._lock:
             current = self._published
-            if current is None or current.managed:
-                return
-            adopted = replace(current, managed=True, version=version)
+        if current is None:
+            return
+        if current.managed and self._same_mirror(desired, current.desired):
+            return
+        adopted = replace(current, desired=desired, managed=True, version=version)
+        with self._lock:
+            if self._published is not current:
+                return  # Only the applier publishes; never undo a newer state.
             self._published = adopted
         self._managed_ever = True
         if self._on_publish is not None:
@@ -538,6 +554,12 @@ class LiveGroup(Generic[D, V]):
         status.read_stale = False
         status.checked_at = time.time()
 
+    def _same_mirror(self, desired: D, active: D) -> bool:
+        try:
+            return dict(self.component.mirror(desired)) == dict(self.component.mirror(active))
+        except Exception:
+            return False
+
     def _pending_keys(self, desired: Any, active: Published[D, V]) -> tuple[str, ...]:
         try:
             target = self.component.mirror(desired)
@@ -588,7 +610,7 @@ class LiveGroup(Generic[D, V]):
             return
         active = self.acquire()
         if self.component.same(desired, active.desired):
-            self._adopt(snapshot.version)
+            self._adopt(desired, snapshot.version)
             self._clear_backoff()
             self._mark_applied(snapshot.version)
             return
@@ -634,19 +656,23 @@ class LiveGroup(Generic[D, V]):
             stale = (latest.version and latest.version.epoch) != (
                 snapshot.version and snapshot.version.epoch
             )
+            newer = desired
             if not stale:
                 ok, _ = self._contract(latest)
                 if not ok:
                     stale = True
                 else:
                     try:
-                        stale = not self.component.same(self.component.project(latest), desired)
+                        newer = self.component.project(latest)
+                        stale = not self.component.same(newer, desired)
                     except InvalidConfig:
                         stale = True
             if stale:
                 await self._discard(candidate)
                 raise _Superseded
-            snapshot = latest
+            # The same state, but published with the newer target: its mirror
+            # may differ (a key set to its default meanwhile).
+            snapshot, desired = latest, newer
             self._track_version(snapshot)
         if self._stopping:
             await self._discard(candidate)

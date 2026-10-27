@@ -208,8 +208,10 @@ class _State:
     version: revisions.SourceVersion | None = None
     contracts: revisions.Contracts = field(default_factory=revisions.Contracts)
     #: Raw values a live group published for its keys, which
-    #: :func:`config_value` serves in place of the boot rows.
-    managed: dict[str, str] = field(default_factory=dict)
+    #: :func:`config_value` serves in place of the boot rows. ``None`` for a
+    #: key the published target leaves unset (no row, no environment value):
+    #: the caller's default applies to it, as it did before the group applied.
+    managed: dict[str, str | None] = field(default_factory=dict)
 
 
 _STATE = _State()
@@ -223,20 +225,28 @@ def config_value(key: str, default: str | None = None) -> str | None:
     before the database loads. Invalid environment values never reach a delivery
     adapter; startup reports them unless a valid database row takes precedence.
     """
-    managed = _STATE.managed.get(key)
-    if managed is not None:
-        return managed
+    if key in _STATE.managed:
+        # A live group's publication, never the boot rows or the latest read.
+        # A key it leaves unset resolves to *default*, as before it applied.
+        managed = _STATE.managed[key]
+        return managed if managed is not None else default
     return boot_value(key, default)
 
 
-def boot_raw(key: str) -> str:
-    """Return *key*'s raw value as the process booted with it: row, environment, default.
+def boot_raw(key: str) -> str | None:
+    """Return *key*'s raw value as the process booted with it: row, then environment.
 
-    Resolved like :func:`project_settings` resolves a live group's target, so
-    a group's baseline and its first projection compare equal when nothing
-    changed.
+    ``None`` when neither sets it, so its default applies. Resolved like
+    :func:`project_settings` resolves a live group's target, so a group's
+    baseline and its first projection compare equal when nothing changed.
     """
-    return _resolve(_STATE.effective, key, registry.static_entry(key)) or ""
+    entry = registry.static_entry(key)
+    row = _STATE.effective.get(key)
+    if row is not None:
+        return row.value
+    if key in _STATE.environment_aside:
+        return None
+    return _environ_value(key, entry)
 
 
 def boot_value(key: str, default: str | None = None) -> str | None:
@@ -877,11 +887,23 @@ def _restart_pending(key: str, entry: ConfigEntry) -> bool:
         return False
     # A group that published and was then deactivated keeps what it published
     # (dormant-frozen) until the restart.
-    booted = _STATE.managed.get(key)
-    if booted is None:
+    if key in _STATE.managed:
+        published = _STATE.managed[key]
+        booted = published if published is not None else entry.default
+        booted_set = published is not None
+    else:
         booted = _resolve(_STATE.boot_rows, key, entry)
+        booted_set = key in _STATE.boot_rows or _environ_value(key, entry) is not None
     current = _resolve(_STATE.rows, key, entry)
-    return _comparable(entry, booted) != _comparable(entry, current)
+    if _comparable(entry, booted) != _comparable(entry, current):
+        return True
+    if registry.managed_group(key) is None:
+        return False
+    # A group's key serves its caller's default while unset (config_value), so
+    # setting it to the registered default, or resetting it, changes what a
+    # restart serves even though the typed value is the same.
+    current_set = key in _STATE.rows or _environ_value(key, entry) is not None
+    return booted_set != current_set
 
 
 def _compute_health() -> ConfigHealth:
@@ -959,7 +981,7 @@ def _remember(snapshot: revisions.SourceSnapshot) -> None:
 
 def project_settings(
     stored: Mapping[str, str], keys: Sequence[str]
-) -> tuple[Settings, dict[str, str]]:
+) -> tuple[Settings, dict[str, str | None]]:
     """Judge a live group's stored values over the environment, as the overlay would.
 
     The whole group is judged at once: a stored value of one of *keys* that
@@ -972,7 +994,9 @@ def project_settings(
         keys: Every key the group owns.
 
     Returns:
-        The validated settings, and each key's resolved raw value.
+        The validated settings, and each key's raw value: the stored one, else
+        the environment's, else ``None`` where the default applies (nothing
+        sets it, or the environment's value is set aside).
 
     Raises:
         live.InvalidConfig: Naming the keys, never their values.
@@ -996,15 +1020,14 @@ def project_settings(
         involved = tuple(key for key in rule_keys if key in keys)
         if involved:
             raise live.InvalidConfig("rule_broken", involved)
-    raw: dict[str, str] = {}
+    raw: dict[str, str | None] = {}
     for key in keys:
-        entry = registry.static_entry(key)
         if key in stored:
             raw[key] = stored[key]
         elif key in in_force.overridden or key in in_force.set_aside:
-            raw[key] = (entry.default if entry is not None else None) or ""
+            raw[key] = None
         else:
-            raw[key] = _resolve({}, key, entry) or ""
+            raw[key] = _environ_value(key, registry.static_entry(key))
     return in_force.settings, raw
 
 
@@ -1020,7 +1043,7 @@ def _on_group_published(
     """
     raw = group.component.mirror(published.desired)
     for key in group.keys:
-        _STATE.managed[key] = raw.get(key, "")
+        _STATE.managed[key] = raw.get(key)
     settings_fields = getattr(group.component, "settings_fields", None)
     if settings_fields is not None:
         try:

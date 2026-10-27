@@ -2648,3 +2648,206 @@ describe('when a saved change applies', () => {
     expect(patchConfig).not.toHaveBeenCalled();
   });
 });
+
+describe('adding a variable after a save elsewhere', () => {
+  const v = (revision: number) => ({ epoch: 'e1', revision });
+
+  function addConfig(overrides: Partial<ConfigResponse> = {}): ConfigResponse {
+    return makeConfig({ missing: [], pending_restart: [], source_version: v(1), ...overrides });
+  }
+
+  function conflict() {
+    // The type the API client throws for a 409 on `If-Match`.
+    return new APIError(
+      'CONFIG_VERSION_CONFLICT',
+      'The configuration changed since it was loaded.',
+      409,
+    );
+  }
+
+  function openForm(name: string, value: string): HTMLElement {
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    const form = screen.getByRole('form', { name: 'Add variable' });
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: name } });
+    fireEvent.change(within(form).getByLabelText('Value'), { target: { value } });
+    return form;
+  }
+
+  it.each([
+    ['a plain', 'MY_REGION', 'eu-west', false],
+    ['a secret', 'MY_PROVIDER_API_KEY', 'k-typed-secret', true],
+  ])(
+    'keeps %s draft through a conflict and adds it on the newer version only when asked',
+    async (_label, name, value, secret) => {
+      await renderTab(addConfig());
+      const form = openForm(name, value);
+      vi.mocked(patchConfig).mockRejectedValueOnce(conflict());
+      vi.mocked(getConfig).mockClear();
+      vi.mocked(getConfig).mockResolvedValueOnce(addConfig({ source_version: v(2) }));
+
+      fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+
+      expect(await within(form).findByRole('alert')).toHaveTextContent(
+        /changed elsewhere since this form opened, so the variable was not added\. The latest configuration is shown now/,
+      );
+      expect(getConfig).toHaveBeenCalledTimes(1);
+      expect(patchConfig).toHaveBeenCalledTimes(1);
+      expect(patchConfig).toHaveBeenCalledWith(
+        { values: { [name]: value }, secrets: { [name]: secret } },
+        { expectedVersion: v(1) },
+      );
+      // Kept: the name, the value and the secrecy, and nothing retried for them.
+      expect(within(form).getByLabelText('Name')).toHaveValue(name);
+      expect(within(form).getByLabelText('Value')).toHaveValue(value);
+      expect(within(form).getByRole('checkbox')).toHaveProperty('checked', secret);
+      if (secret) {
+        expect(within(form).getByLabelText('Value')).toHaveAttribute('type', 'password');
+        expect(document.body.textContent).not.toContain(value);
+      }
+
+      vi.mocked(patchConfig).mockResolvedValueOnce(
+        addConfig({ source_version: v(3), saved_version: v(3) }),
+      );
+      fireEvent.click(within(form).getByRole('button', { name: 'Add again' }));
+      await waitFor(() => expect(screen.queryByRole('form', { name: 'Add variable' })).toBeNull());
+      expect(vi.mocked(patchConfig).mock.calls[1]).toEqual([
+        { values: { [name]: value }, secrets: { [name]: secret } },
+        { expectedVersion: v(2) },
+      ]);
+      expect(toast.success).toHaveBeenCalledWith(`Added ${name}.`);
+    },
+  );
+
+  it('blocks an add once the reload shows the same name added elsewhere', async () => {
+    await renderTab(addConfig());
+    const form = openForm('MY_REGION', 'eu-west');
+    vi.mocked(patchConfig).mockRejectedValueOnce(conflict());
+    const base = addConfig();
+    vi.mocked(getConfig).mockResolvedValueOnce(
+      addConfig({
+        source_version: v(2),
+        entries: [
+          ...base.entries,
+          entry({ key: 'MY_REGION', category: 'network', custom: true, value: 'us-east' }),
+        ],
+      }),
+    );
+
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+
+    expect(await within(form).findByRole('alert')).toHaveTextContent(
+      'MY_REGION was added elsewhere in the meantime, so it was not added here. Edit it in its category (Network).',
+    );
+    // The page shows it where it is edited.
+    expect(await within(section('Network')).findByLabelText('MY_REGION')).toHaveValue('us-east');
+    fireEvent.click(within(form).getByRole('button', { name: 'Add again' }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent(
+      'MY_REGION is already listed. Edit it in its category.',
+    );
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the version when the reload fails, so adding again conflicts again', async () => {
+    await renderTab(addConfig());
+    const form = openForm('MY_REGION', 'eu-west');
+    vi.mocked(patchConfig).mockRejectedValueOnce(conflict());
+    vi.mocked(getConfig).mockRejectedValueOnce(new Error('network down'));
+
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+
+    expect(await within(form).findByRole('alert')).toHaveTextContent(
+      /the latest configuration could not be loaded\. Your entry is kept; try adding it again\./,
+    );
+    expect(within(form).getByLabelText('Value')).toHaveValue('eu-west');
+
+    vi.mocked(patchConfig).mockRejectedValueOnce(conflict());
+    vi.mocked(getConfig).mockResolvedValueOnce(addConfig({ source_version: v(2) }));
+    fireEvent.click(within(form).getByRole('button', { name: 'Add again' }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent(
+      /The latest configuration is shown now/,
+    );
+    expect(vi.mocked(patchConfig).mock.calls.map((call) => call[1])).toEqual([
+      { expectedVersion: v(1) },
+      { expectedVersion: v(1) },
+    ]);
+  });
+
+  it('waits for the reload before it can be added again', async () => {
+    await renderTab(addConfig());
+    const form = openForm('MY_REGION', 'eu-west');
+    vi.mocked(patchConfig).mockRejectedValueOnce(conflict());
+    let land: (config: ConfigResponse) => void = () => undefined;
+    vi.mocked(getConfig).mockReturnValueOnce(
+      new Promise((resolve) => {
+        land = resolve;
+      }),
+    );
+
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+    const pending = await within(form).findByRole('button', { name: 'Loading latest…' });
+    expect(pending).toBeDisabled();
+    fireEvent.submit(form);
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+
+    land(addConfig({ source_version: v(2) }));
+    await within(form).findByRole('button', { name: 'Add again' });
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves along with this page's own save of a category while it is open", async () => {
+    await renderTab(addConfig());
+    const form = openForm('MY_REGION', 'eu-west');
+    const email = section('Email (SMTP)');
+    fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      addConfig({ source_version: v(2), saved_version: v(2) }),
+    );
+    save('Email (SMTP)');
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(patchConfig).mock.calls[0][1]).toEqual({ expectedVersion: v(1) });
+    await waitFor(() => expect(saveButton('Email (SMTP)')).toBeNull());
+
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      addConfig({ source_version: v(3), saved_version: v(3) }),
+    );
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+    await waitFor(() => expect(screen.queryByRole('form', { name: 'Add variable' })).toBeNull());
+    // Conditional on what the page's own save committed, not on what it opened on.
+    expect(vi.mocked(patchConfig).mock.calls[1][1]).toEqual({ expectedVersion: v(2) });
+  });
+
+  it('does not move along with a save that only reports a newer version', async () => {
+    await renderTab(addConfig());
+    const form = openForm('MY_REGION', 'eu-west');
+    const email = section('Email (SMTP)');
+    fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    // Saved as revision 2; revision 3 is someone else's.
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      addConfig({ source_version: v(3), saved_version: v(2) }),
+    );
+    save('Email (SMTP)');
+    await waitFor(() => expect(saveButton('Email (SMTP)')).toBeNull());
+
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(patchConfig).mock.calls[1][1]).toEqual({ expectedVersion: v(2) });
+  });
+
+  it('opens on the version shown when it opens, after closing on another', async () => {
+    await renderTab(addConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const email = section('Email (SMTP)');
+    fireEvent.change(within(email).getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      addConfig({ source_version: v(5), saved_version: v(2) }),
+    );
+    save('Email (SMTP)');
+    await waitFor(() => expect(saveButton('Email (SMTP)')).toBeNull());
+
+    const form = openForm('MY_REGION', 'eu-west');
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(patchConfig).mock.calls[1][1]).toEqual({ expectedVersion: v(5) });
+  });
+});
