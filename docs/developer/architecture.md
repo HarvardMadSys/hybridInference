@@ -463,7 +463,8 @@ The gateway reports through these; it has no Prometheus exporter:
   on `circuit_open` transitions and on upstream-credential rejections, with
   per-endpoint cooldowns so a persistent fault re-pages on a fixed cadence
   instead of flooding.
-- **Alert history** (off by default). The same alert path records what it did
+- **Alert history** (on with a database; `ALERT_HISTORY_ENABLED=false` turns
+  it off). The same alert path records what it did
   — breaches, recoveries, suppression decisions, deliveries and their results —
   into PostgreSQL through a bounded buffer and one writer per process
   (`serving/observability/alert_history/`). It never changes what is sent. See
