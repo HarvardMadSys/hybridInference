@@ -1,7 +1,7 @@
 'use client';
 
 import { KeyList } from '@/components/features/configuration/KeyList';
-import { CONFIGURATION_TAB_PATH } from '@/components/features/configuration/paths';
+import { ADMIN_SETTINGS_PATH } from '@/components/features/configuration/paths';
 import {
   ManualRestartHint,
   RestartBackendButton,
@@ -11,22 +11,22 @@ import type { ConfigResponse } from '@/lib/api/config';
 import { navigateTo } from '@/lib/utils/navigation';
 
 /**
- * Step 3: restart if anything saved needs it, then leave for the admin
- * Configuration tab.
+ * Step 3: restart if anything saved needs it, then leave for Admin →
+ * Settings.
  *
  * Both ways out are full page loads. The console read its site configuration
  * when this page loaded, while setup was still pending; only a fresh load reads
  * the configuration that says it is done.
  */
 export function FinishStep({ config }: { config: ConfigResponse }) {
-  const finish = () => navigateTo(CONFIGURATION_TAB_PATH);
+  const finish = () => navigateTo(ADMIN_SETTINGS_PATH);
   const restartPending = config.pending_restart.length > 0;
 
   return (
     <div className="space-y-5">
       <p className="text-sm text-gray-700">
         The administrator account is ready and you are signed in. Everything here can be changed
-        later on the Configuration tab.
+        later on the admin Settings tab.
       </p>
 
       {config.missing.length > 0 ? (

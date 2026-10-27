@@ -594,7 +594,7 @@ describe('step 3: finish', () => {
     await screen.findByRole('button', { name: 'Finish' });
   }
 
-  it('restarts the backend when a saved setting needs it, then opens Configuration', async () => {
+  it('restarts the backend when a saved setting needs it, then opens Settings', async () => {
     await reachFinish({ pending_restart: ['CORS_ALLOWED_ORIGINS'], missing: [] });
 
     expect(screen.getByRole('region', { name: 'Restart to apply' })).toHaveTextContent(
@@ -605,9 +605,7 @@ describe('step 3: finish', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restart backend' }));
 
     await waitFor(() => expect(restartBackend).toHaveBeenCalled());
-    await waitFor(() =>
-      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/configuration'),
-    );
+    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/settings'));
   });
 
   it('gives the manual command when the backend cannot restart itself', async () => {
@@ -624,6 +622,6 @@ describe('step 3: finish', () => {
       'ZAI_API_KEY',
     );
     fireEvent.click(screen.getByRole('button', { name: 'Finish' }));
-    expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/configuration');
+    expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/settings');
   });
 });

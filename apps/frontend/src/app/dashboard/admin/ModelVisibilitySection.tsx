@@ -18,6 +18,8 @@ import type { AdminModelVisibilityItem, Role } from '@/lib/api/admin';
 import { listModelVisibility, updateModelVisibility } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
+import { useReportUnsaved } from './useReportUnsaved';
+
 const DEFAULT_VALUE = '__default__';
 const SECTION = 'Model Visibility';
 
@@ -31,13 +33,15 @@ const ROLE_OPTIONS: SelectOption[] = [
 
 interface ModelVisibilitySectionProps {
   onToast: (msg: string) => void;
+  /** Called with the number of unsaved changes whenever it changes. */
+  onUnsavedChange?: (count: number) => void;
 }
 
 /**
  * Runtime required-role overrides, edited in place; Save writes the changed
  * models together.
  */
-export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps) {
+export function ModelVisibilitySection({ onToast, onUnsavedChange }: ModelVisibilitySectionProps) {
   const queryClient = useQueryClient();
   const writes = useConfirmAction();
   const [models, setModels] = useState<AdminModelVisibilityItem[]>([]);
@@ -83,6 +87,7 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
   };
 
   const changed = models.filter((model) => model.model_id in drafts);
+  useReportUnsaved(changed.length, onUnsavedChange);
 
   const save = async () => {
     if (changed.length === 0) return;

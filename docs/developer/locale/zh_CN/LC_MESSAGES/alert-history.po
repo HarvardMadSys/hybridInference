@@ -113,9 +113,9 @@ msgstr ""
 
 #: ../developer/alert-history.md:38
 msgid ""
-"Settings, under **Alerts** on the admin console's Configuration tab (or the "
+"Settings, under **Alerts** on the admin console's Settings tab (or the "
 "environment):"
-msgstr "设置位于管理控制台 Configuration 标签页的 **Alerts** 下（也可以用环境变量）："
+msgstr "设置位于管理控制台 Settings 标签页的 **Alerts** 下（也可以用环境变量）："
 
 #: ../developer/alert-history.md
 msgid "Setting"

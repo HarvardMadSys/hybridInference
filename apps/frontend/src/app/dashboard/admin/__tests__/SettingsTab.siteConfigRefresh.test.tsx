@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { SettingsTab } from '../SettingsTab';
+import { EMPTY_CONFIG, openSettingsTab, renderSettings } from './settingsTabHarness';
 
 const refreshMock = vi.fn();
 
@@ -62,23 +61,18 @@ vi.mock('@/lib/api/admin', async () => {
   };
 });
 
+vi.mock('@/lib/api/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/config')>()),
+  // The page also holds the configuration; these tests need none of it.
+  getConfig: vi.fn(async () => EMPTY_CONFIG),
+}));
+
 import {
   addSignupAllowedDomain,
   listSignupAllowedDomains,
   removeSignupAllowedDomain,
   updateRuntimeSetting,
 } from '@/lib/api/admin';
-
-function renderSettings() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <SettingsTab />
-    </QueryClientProvider>,
-  );
-}
 
 /** Press a button of the open confirmation. */
 function confirm(label: string) {
@@ -110,12 +104,12 @@ describe('SettingsTab and the site configuration', () => {
       default_value: true,
       description: 'Require email verification for new signups',
     });
-    renderSettings();
+    await renderSettings('Access');
 
     fireEvent.click(
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
-    saveSection('Feature Flags');
+    saveSection('Access Controls');
     expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() =>
@@ -135,11 +129,11 @@ describe('SettingsTab and the site configuration', () => {
       min: 1,
       max: null,
     });
-    renderSettings();
+    await renderSettings();
 
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
-    saveSection('Numeric Settings');
+    saveSection('Other Runtime Settings');
 
     await waitFor(() =>
       expect(updateRuntimeSetting).toHaveBeenCalledWith('max_concurrent_requests_per_user', 5),
@@ -148,26 +142,27 @@ describe('SettingsTab and the site configuration', () => {
   });
 
   it('edits saved values in place, and changes nothing until Save', async () => {
-    renderSettings();
+    await renderSettings('Access');
 
     // Editable in place: no Edit step, and no save bar until something changes.
     const flag = await screen.findByRole('switch', {
       name: 'Toggle signup require email verification',
     });
     expect(flag).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByLabelText('max_concurrent_requests_per_user value')).toHaveValue(3);
     expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
 
     // A switch is a draft; Discard drops it.
     fireEvent.click(flag);
     expect(flag).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByRole('button', { name: 'Save changes to Feature Flags' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Feature Flags' }));
+    expect(screen.getByRole('button', { name: 'Save changes to Access Controls' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Access Controls' }));
     expect(flag).toHaveAttribute('aria-checked', 'true');
-    expect(screen.queryByRole('button', { name: 'Save changes to Feature Flags' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save changes to Access Controls' })).toBeNull();
 
+    await openSettingsTab('General');
     const input = screen.getByLabelText('max_concurrent_requests_per_user value');
+    expect(input).toHaveValue(3);
     fireEvent.change(input, { target: { value: '5' } });
     expect(screen.getByLabelText('max_concurrent_requests_per_user value')).toHaveValue(5);
 
@@ -183,7 +178,7 @@ describe('SettingsTab and the site configuration', () => {
           finish = resolve;
         }),
     );
-    renderSettings();
+    await renderSettings();
 
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
@@ -191,7 +186,7 @@ describe('SettingsTab and the site configuration', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(updateRuntimeSetting).toHaveBeenCalledWith('max_concurrent_requests_per_user', 5);
 
-    const save = screen.getByRole('button', { name: 'Save changes to Numeric Settings' });
+    const save = screen.getByRole('button', { name: 'Save changes to Other Runtime Settings' });
     expect(save).toHaveTextContent('Saving…');
     expect(save).toBeDisabled();
     expect(input).toBeDisabled();
@@ -209,17 +204,21 @@ describe('SettingsTab and the site configuration', () => {
       max: null,
     });
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Save changes to Numeric Settings' })).toBeNull(),
+      expect(
+        screen.queryByRole('button', { name: 'Save changes to Other Runtime Settings' }),
+      ).toBeNull(),
     );
     expect(screen.getByLabelText('max_concurrent_requests_per_user value')).toHaveValue(5);
   });
 
   it('refuses an out-of-range number without writing', async () => {
-    renderSettings();
+    await renderSettings();
     const input = await screen.findByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '0' } });
     // The bar shows for the invalid draft, with Save held back and the reason.
-    expect(screen.getByRole('button', { name: 'Save changes to Numeric Settings' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Save changes to Other Runtime Settings' }),
+    ).toBeDisabled();
     expect(
       screen.getByText('Correct max_concurrent_requests_per_user before saving.'),
     ).toBeVisible();
@@ -229,36 +228,39 @@ describe('SettingsTab and the site configuration', () => {
   });
 
   it('hides the save bar again once a change is undone by hand', async () => {
-    renderSettings();
+    await renderSettings('Access');
     const flag = await screen.findByRole('switch', {
       name: 'Toggle signup require email verification',
     });
     fireEvent.click(flag);
-    expect(screen.getByRole('button', { name: 'Save changes to Feature Flags' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Save changes to Access Controls' })).toBeEnabled();
     fireEvent.click(flag);
-    expect(screen.queryByRole('button', { name: 'Save changes to Feature Flags' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save changes to Access Controls' })).toBeNull();
 
+    await openSettingsTab('General');
     const input = screen.getByLabelText('max_concurrent_requests_per_user value');
     fireEvent.change(input, { target: { value: '5' } });
     expect(screen.getByText('1 unsaved change')).toBeVisible();
     fireEvent.change(input, { target: { value: '3' } });
-    expect(screen.queryByRole('button', { name: 'Save changes to Numeric Settings' })).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Save changes to Other Runtime Settings' }),
+    ).toBeNull();
     expect(updateRuntimeSetting).not.toHaveBeenCalled();
   });
 
   it('leaves it alone when the change is refused, keeping the draft and saying why', async () => {
     vi.mocked(updateRuntimeSetting).mockRejectedValueOnce(new Error('forbidden'));
-    renderSettings();
+    await renderSettings('Access');
 
     fireEvent.click(
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
-    saveSection('Feature Flags');
+    saveSection('Access Controls');
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'signup_require_email_verification could not be saved: forbidden',
     );
-    expect(screen.getByRole('button', { name: 'Save changes to Feature Flags' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Save changes to Access Controls' })).toBeEnabled();
     expect(refreshMock).not.toHaveBeenCalled();
     expect(
       screen.getByRole('switch', { name: 'Toggle signup require email verification' }),
@@ -269,7 +271,7 @@ describe('SettingsTab and the site configuration', () => {
 describe('SettingsTab signup allowlist', () => {
   it('adds a domain from the form opened by Add domain, with no review', async () => {
     vi.mocked(addSignupAllowedDomain).mockResolvedValue(undefined as never);
-    renderSettings();
+    await renderSettings('Access');
 
     // No input until Add domain is chosen.
     expect(screen.queryByLabelText('Domain to add')).toBeNull();
@@ -291,7 +293,7 @@ describe('SettingsTab signup allowlist', () => {
     vi.mocked(addSignupAllowedDomain)
       .mockRejectedValueOnce(new Error('Domain already listed'))
       .mockResolvedValueOnce(undefined as never);
-    renderSettings();
+    await renderSettings('Access');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add domain' }));
     fireEvent.change(screen.getByLabelText('Domain to add'), {
@@ -315,7 +317,7 @@ describe('SettingsTab signup allowlist', () => {
       ],
     } as never);
     vi.mocked(removeSignupAllowedDomain).mockResolvedValue(undefined as never);
-    renderSettings();
+    await renderSettings('Access');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove acme.example' }));
     const dialog = screen.getByRole('dialog', {
@@ -339,7 +341,7 @@ describe('SettingsTab signup allowlist', () => {
     vi.mocked(listSignupAllowedDomains).mockResolvedValue({
       domains: [{ domain: 'acme.example', is_wildcard: false, created_at: null }],
     } as never);
-    renderSettings();
+    await renderSettings('Access');
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove acme.example' }));
     const dialog = screen.getByRole('dialog', {
@@ -363,13 +365,13 @@ describe('SettingsTab feedback', () => {
       default_value: true,
       description: 'Require email verification for new signups',
     });
-    renderSettings();
+    await renderSettings('Access');
 
     // A flag change is a draft; its result shows once it is saved.
     fireEvent.click(
       await screen.findByRole('switch', { name: 'Toggle signup require email verification' }),
     );
-    saveSection('Feature Flags');
+    saveSection('Access Controls');
 
     const message = await screen.findByText('signup_require_email_verification disabled');
     const feedback = message.closest('[role="status"]') as HTMLElement;
@@ -380,22 +382,7 @@ describe('SettingsTab feedback', () => {
     const signupPolicy = screen.getByRole('region', { name: 'Signup Policy' });
     expect(feedback.compareDocumentPosition(signupPolicy)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(
-      feedback.compareDocumentPosition(screen.getByRole('region', { name: 'Feature Flags' })),
+      feedback.compareDocumentPosition(screen.getByRole('region', { name: 'Access Controls' })),
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-  });
-});
-
-describe('SettingsTab section index', () => {
-  it('links to every section on the page', async () => {
-    renderSettings();
-    // Once the settings have loaded.
-    await screen.findByLabelText('Toggle signup require email verification');
-
-    const index = screen.getByRole('navigation', { name: 'Settings sections' });
-    for (const link of within(index).getAllByRole('link')) {
-      const id = link.getAttribute('href')!.slice(1);
-      expect(document.getElementById(id), id).not.toBeNull();
-    }
-    expect(within(index).getAllByRole('link')).toHaveLength(9);
   });
 });

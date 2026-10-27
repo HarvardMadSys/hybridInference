@@ -146,7 +146,7 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
       setSaving(false);
       // The server-rendered site configuration carries sign-up and whether
       // required settings are missing; re-read it after any write, even one
-      // followed by a failure, as the Configuration tab does.
+      // followed by a failure, as the admin Settings tab does.
       if (wrote) router.refresh();
     }
   };

@@ -25,14 +25,20 @@ describe('AdminTabNav', () => {
       'href',
       '/dashboard/admin/routing',
     );
-    expect(screen.getByRole('link', { name: 'Token Usage' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/token-usage',
-    );
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute(
       'href',
       '/dashboard/admin/settings',
     );
+  });
+
+  it('keeps Token Usage under Analytics, not as a tab of its own', () => {
+    render(<AdminTabNav />);
+
+    expect(screen.getByRole('link', { name: 'Analytics' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/analytics',
+    );
+    expect(screen.queryByRole('link', { name: 'Token Usage' })).not.toBeInTheDocument();
   });
 
   it('consolidates updates and broadcast email under an Announcements tab', () => {
@@ -46,13 +52,11 @@ describe('AdminTabNav', () => {
     expect(screen.queryByRole('link', { name: 'Broadcast Email' })).not.toBeInTheDocument();
   });
 
-  it('lists the database-backed Configuration tab beside Settings', () => {
+  it('has one Settings tab for configuration and runtime settings alike', () => {
     render(<AdminTabNav />);
 
-    expect(screen.getByRole('link', { name: 'Configuration' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/configuration',
-    );
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('link', { name: 'Configuration' })).not.toBeInTheDocument();
   });
 
   it('renames the audit tab to a top-level Log tab', () => {

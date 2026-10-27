@@ -43,7 +43,7 @@ credentials and the deployment id do not decide whether the gateway records
 its own history: they only scope who may read it and which sources may submit
 to it.
 
-Settings, under **Alerts** on the admin console's Configuration tab (or the
+Settings, under **Alerts** on the admin console's Settings tab (or the
 environment):
 
 | Setting | Default | Meaning |

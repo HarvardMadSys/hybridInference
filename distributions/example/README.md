@@ -58,7 +58,7 @@ the code — it stays the same, and is printed again at every start, until setup
 is done — and create the administrator with the username `admin` and a
 demo-only password that you do not reuse elsewhere. After that the normal UI supports signup,
 login, API-key creation, the Playground, request history, and the application
-Admin Console, whose Configuration tab now holds the example's settings. Other
+Admin Console, whose Settings tab now holds the example's settings. Other
 accounts come from public signup and are not administrators. Email
 verification is deliberately disabled for this loopback-only demo.
 

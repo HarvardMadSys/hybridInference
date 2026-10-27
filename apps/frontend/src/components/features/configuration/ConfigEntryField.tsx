@@ -90,7 +90,7 @@ const LINK_BUTTON_CLASS =
  * Render it inside a `<form autoComplete="off">`, so that browsers do not
  * offer to save a secret typed here as a password for the console.
  *
- * In the admin Configuration tab, Reset and "Mark as secret" are staged like
+ * In Admin → Settings, Reset and "Mark as secret" are staged like
  * any other edit (`resetPending`, `markSecretPending`) and written only when
  * the category is saved.
  */

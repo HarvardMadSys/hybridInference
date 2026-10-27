@@ -105,7 +105,7 @@ export function TokenUsageTab({ perfRefreshNonce }: { perfRefreshNonce?: number 
   const groups = useMemo(() => groupByProvider(data?.rows ?? []), [data]);
 
   return (
-    <div className="space-y-6 mt-6">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-end gap-4">
         <label className="text-sm">
           <span className="block text-gray-500 mb-1">Range</span>

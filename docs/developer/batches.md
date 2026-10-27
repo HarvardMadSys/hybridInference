@@ -604,7 +604,7 @@ and to the worker's next round.
 `BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file
 batches, Message Batches, embedding and Responses batches and webhooks, no
 longer controls anything. A value left in the environment or the database
-changes nothing, is not listed on the Configuration tab and cannot be set
+changes nothing, is not listed on the Settings tab and cannot be set
 there; the gateway keeps it, so that a rollback reads it again, and warns about
 it once at startup. Once no earlier version will run, delete the stored row
 (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or
@@ -648,7 +648,7 @@ as chat completions. New code cannot change what an old process already
 running does, so before upgrading from one of those versions, make sure no old
 worker is running alongside the new version:
 
-1. On the old version, turn `BATCH_ENABLED` off (Configuration tab, or
+1. On the old version, turn `BATCH_ENABLED` off (Settings tab, or
    `python -m serving.config.manage set BATCH_ENABLED false`). Within about ten
    seconds every old process stops claiming and sweeping, and logs that its
    batch worker is disabled. A request it was already running finishes or is

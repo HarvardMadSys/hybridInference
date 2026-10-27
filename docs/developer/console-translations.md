@@ -90,8 +90,8 @@ prune in the same change that edits the English.
 ## What stays in English
 
 - What only the people running the deployment see: administration
-  (`/dashboard/admin`), first-run setup (`/setup`), the Configuration tab, and
-  the API Playground, which only internal accounts can open.
+  (`/dashboard/admin`), first-run setup (`/setup`), and the API Playground,
+  which only internal accounts can open.
 - The last-resort error screens (`global-error` and the boundary around the
   whole application), which render outside the language provider.
 - Error messages from the gateway, model names, and Markdown written by

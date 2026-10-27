@@ -4,7 +4,7 @@ An administrator caps how many batch requests each model runs at once across
 the whole deployment: the worker enforces the cap in the query that claims
 work (``serving.batch.scheduler``), however many gateway processes run. A model
 without a cap of its own takes ``BATCH_MODEL_CONCURRENCY``, set with the other
-batch settings in Admin -> Configuration -> Batch inference; a cap of 0 pauses
+batch settings in Admin -> Settings -> Batch; a cap of 0 pauses
 batch work on the model. Every process reads the caps through
 ``BatchModelLimits``: the process that serves a write sees it at once, the
 others within seconds.

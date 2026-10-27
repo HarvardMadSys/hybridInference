@@ -66,14 +66,14 @@ describe('ConfigurationBanner', () => {
 
     const banner = screen.getByRole('status');
     expect(banner).toHaveTextContent('Required settings are missing.');
-    expect(screen.getByRole('link', { name: 'Open Configuration' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open Settings' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/configuration?missing=1',
+      '/dashboard/admin/settings?missing=1',
     );
   });
 
-  it('leaves the Configuration tab to list the missing settings itself', () => {
-    renderBanner({ pathname: '/dashboard/admin/configuration' });
+  it('leaves the Settings tab to list the missing settings itself', () => {
+    renderBanner({ pathname: '/dashboard/admin/settings' });
 
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });

@@ -1382,8 +1382,8 @@ msgid ""
 msgstr "允许 webhook 访问私有地址和回环地址。仅用于隔离的测试部署"
 
 #: ../developer/batches.md:604
-msgid "`BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file batches, Message Batches, embedding and Responses batches and webhooks, no longer controls anything. A value left in the environment or the database changes nothing, is not listed on the Configuration tab and cannot be set there; the gateway keeps it, so that a rollback reads it again, and warns about it once at startup. Once no earlier version will run, delete the stored row (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the variable."
-msgstr "早期版本用 `BATCH_EXPANSION_ENABLED` 控制文件批次、Message Batches、嵌入和 Responses 批次以及 webhook，现在它已不再生效。环境变量或数据库中遗留的值不会改变任何行为，也不会在 Configuration 页列出，且不能再通过该页设置；网关会保留它以便回滚后的旧版本重新读取，并在启动时发出一次警告。确认不再运行任何早期版本后，删除已存储的记录（`DELETE /admin/config/BATCH_EXPANSION_ENABLED`，或 `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`），并移除对应环境变量。"
+msgid "`BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file batches, Message Batches, embedding and Responses batches and webhooks, no longer controls anything. A value left in the environment or the database changes nothing, is not listed on the Settings tab and cannot be set there; the gateway keeps it, so that a rollback reads it again, and warns about it once at startup. Once no earlier version will run, delete the stored row (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the variable."
+msgstr "早期版本用 `BATCH_EXPANSION_ENABLED` 控制文件批次、Message Batches、嵌入和 Responses 批次以及 webhook，现在它已不再生效。环境变量或数据库中遗留的值不会改变任何行为，也不会在 Settings 页列出，且不能再通过该页设置；网关会保留它以便回滚后的旧版本重新读取，并在启动时发出一次警告。确认不再运行任何早期版本后，删除已存储的记录（`DELETE /admin/config/BATCH_EXPANSION_ENABLED`，或 `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`），并移除对应环境变量。"
 
 #: ../developer/batches.md:610
 #, python-brace-format
@@ -1447,8 +1447,8 @@ msgid "A worker only runs the kinds of batch it knows: claims, expiry, finalizin
 msgstr "worker 只处理自己认识的批次类型：领取请求、过期处理、最终处理、校验、封存和清理，都会跳过 API 类型、请求目标或 schema 版本比自身更新的批次。但旧 worker 不具备这种能力：在文件批次和 Message Batches 加入之前（#1660 之前）的网关没有这层过滤，会把这些请求当成聊天补全来执行。新代码无法改变已经运行的旧进程的行为，因此从这些版本升级前，必须确保旧 worker 不会与新版本同时运行："
 
 #: ../developer/batches.md:651
-msgid "On the old version, turn `BATCH_ENABLED` off (Configuration tab, or `python -m serving.config.manage set BATCH_ENABLED false`). Within about ten seconds every old process stops claiming and sweeping, and logs that its batch worker is disabled. A request it was already running finishes or is handed back; those are chat batches, which the new version runs too."
-msgstr "在旧版本上关闭 `BATCH_ENABLED`（通过 Configuration 页，或 `python -m serving.config.manage set BATCH_ENABLED false`）。约十秒内，每个旧进程都会停止领取和扫描批次，并记录 batch worker 已停用。已经运行的请求会完成或交还；这些都是聊天批次，新版本也能处理。"
+msgid "On the old version, turn `BATCH_ENABLED` off (Settings tab, or `python -m serving.config.manage set BATCH_ENABLED false`). Within about ten seconds every old process stops claiming and sweeping, and logs that its batch worker is disabled. A request it was already running finishes or is handed back; those are chat batches, which the new version runs too."
+msgstr "在旧版本上关闭 `BATCH_ENABLED`（通过 Settings 页，或 `python -m serving.config.manage set BATCH_ENABLED false`）。约十秒内，每个旧进程都会停止领取和扫描批次，并记录 batch worker 已停用。已经运行的请求会完成或交还；这些都是聊天批次，新版本也能处理。"
 
 #: ../developer/batches.md:656
 msgid "Upgrade every gateway process. The new processes start with `BATCH_ENABLED` still off."

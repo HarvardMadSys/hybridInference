@@ -28,7 +28,7 @@ vi.mock('@/lib/api/admin', () => ({
   getGrowthAnalytics: vi.fn(),
 }));
 
-describe('AnalyticsTab request-origins entry', () => {
+describe('AnalyticsTab overview', () => {
   beforeEach(() => {
     vi.mocked(getAnalytics).mockImplementation(() => new Promise(() => undefined));
     vi.mocked(getGrowthAnalytics).mockImplementation(() => new Promise(() => undefined));
@@ -40,15 +40,9 @@ describe('AnalyticsTab request-origins entry', () => {
     vi.clearAllMocks();
   });
 
-  it('links to Request origins without fetching its payload from the overview', async () => {
+  it('loads the overview without fetching the Request origins payload', async () => {
     render(<AnalyticsTab />);
 
-    const section = screen.getByRole('group', { name: 'Analytics section' });
-    expect(section).toHaveTextContent('Overview');
-    expect(screen.getByRole('link', { name: 'Request origins' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/analytics/geo',
-    );
     // The Hour/Day/Week/Month period control scopes the overview only; the
     // Request origins page carries its own range control.
     expect(screen.getByRole('button', { name: 'Day' })).toBeInTheDocument();

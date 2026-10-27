@@ -49,7 +49,7 @@ Origin = Literal["static", "discovered", "numbered", "custom"]
 
 @dataclass(frozen=True)
 class Category:
-    """A group of entries in the admin Configuration tab."""
+    """A group of entries on the admin Settings tab."""
 
     id: str
     label: str

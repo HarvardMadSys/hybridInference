@@ -119,7 +119,7 @@ Operational store
 Setting
 : A value the gateway reads by name, such as `SMTP_PASSWORD` or a `${VAR}` the
   model registry names. A gateway with a database stores its settings there,
-  and an administrator edits them on the admin console's Configuration tab;
+  and an administrator edits them on the admin console's Settings tab;
   the environment only supplies their starting values. See
   [Settings stored in the database](configuration.md#settings-stored-in-the-database).
 

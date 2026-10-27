@@ -2,7 +2,7 @@
 
 Every value resolves through :func:`serving.config.app_config.config_value`
 (database row, then environment, then the default here) on each call, so an
-administrator's change in Admin -> Configuration applies to the next request
+administrator's change in Admin -> Settings applies to the next request
 and the next worker round without a restart. The entries themselves are
 registered in ``serving.config.app_config_registry`` under the ``batch``
 category.

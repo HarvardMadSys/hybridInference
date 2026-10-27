@@ -156,11 +156,11 @@ msgstr "保留英文的内容"
 #: ../developer/console-translations.md:87
 msgid ""
 "What only the people running the deployment see: administration "
-"(`/dashboard/admin`), first-run setup (`/setup`), the Configuration tab, "
-"and the API Playground, which only internal accounts can open."
+"(`/dashboard/admin`), first-run setup (`/setup`), and the API Playground,"
+" which only internal accounts can open."
 msgstr ""
-"只有运维和内部人员会看到的页面：管理后台（`/dashboard/admin`）、首次运行设置（`/setup`）、配置页，以及只有 "
-"internal 账户能打开的 API 调试台。"
+"只有运维和内部人员会看到的页面：管理后台（`/dashboard/admin`）、"
+"首次运行设置（`/setup`），以及只有 internal 账户能打开的 API 调试台。"
 
 #: ../developer/console-translations.md:90
 msgid ""

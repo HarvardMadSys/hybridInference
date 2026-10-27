@@ -428,7 +428,7 @@ connection or container wiring is a *setting*: provider keys, SMTP, Slack
 webhooks, proxy trust, browser origins, logging, routing and timeout tuning,
 the cloud-agent contract, and the secrets that sign sessions and protect API
 keys. A gateway with a database keeps them in its `app_config` table, and an
-administrator edits them on the admin console's **Configuration** tab. A
+administrator edits them on the admin console's **Settings** tab. A
 gateway with `DB_ENABLED=false` has no stored settings and reads the
 environment and the built-in defaults only.
 
@@ -472,7 +472,7 @@ its default applies, the next start does not copy it in, and the log says so
 with a warning. With `TRUST_X_REAL_IP=1` in the environment and
 `TRUST_PROXY_HEADERS` stored as off, for example, the gateway runs with
 `TRUST_X_REAL_IP` off; to turn both on, change them together on the
-Configuration tab or with `python -m serving.config.manage set`. Only a rule
+Settings tab or with `python -m serving.config.manage set`. Only a rule
 the environment breaks on its own, with no stored value involved, stops the
 backend, which names the rule.
 
@@ -484,10 +484,14 @@ them; see [Database](database.md#secrets-for-deleting-accounts). The backend
 refuses to start rather than generate `API_KEY_SECRET` for a database that
 already holds API keys, since a new secret would invalidate every one of them.
 
-### The Configuration tab
+### On the Settings tab
 
-The tab groups the settings by category, describes each one and shows where
-its value comes from. Besides every setting the gateway reads itself, it lists:
+The tab groups the settings by category and lists each category on the
+sub-tab of its topic, beside the runtime switches of that topic: **Access**
+holds the sign-up settings, the sign-up switches and the signup allowlist, for
+instance. It describes each setting and shows where its value comes from. A
+search, or **Missing only**, looks through every sub-tab at once. Besides
+every setting the gateway reads itself, it lists:
 
 - every `${VAR}` the active model registry and routing file name, under
   **Providers**, with the models that use it, and those of the alert rules
@@ -591,7 +595,7 @@ Some settings are required: the two generated secrets, every variable a model
 route needs to load (unless the route is `optional: true`), and `SMTP_USER`
 and `SMTP_PASSWORD` while public signup requires email verification. When one
 of them has no value, the console shows a banner to signed-in users.
-Administrators get a link to the Configuration tab, where **Missing only**
+Administrators get a link to the Settings tab, where **Missing only**
 lists what to fill in; everyone else is told that some features may not work
 and to contact the administrator. A model whose credential is missing is not
 loaded, and a request for it is answered with a `404`. When an administrator

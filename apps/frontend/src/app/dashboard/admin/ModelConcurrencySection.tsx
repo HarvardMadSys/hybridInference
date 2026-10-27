@@ -22,17 +22,24 @@ import type { AdminModelConcurrencyItem } from '@/lib/api/admin';
 import { listModelConcurrency, updateModelConcurrency } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
+import { useReportUnsaved } from './useReportUnsaved';
+
 const SECTION = 'Model Concurrency Limit';
 
 interface ModelConcurrencySectionProps {
   onToast: (msg: string) => void;
+  /** Called with the number of unsaved changes whenever it changes. */
+  onUnsavedChange?: (count: number) => void;
 }
 
 /**
  * Per-model exemption from the per-user concurrency limit. The checkboxes are
  * edited in place; Save writes the changed models together.
  */
-export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProps) {
+export function ModelConcurrencySection({
+  onToast,
+  onUnsavedChange,
+}: ModelConcurrencySectionProps) {
   const queryClient = useQueryClient();
   const writes = useConfirmAction();
   const [models, setModels] = useState<AdminModelConcurrencyItem[]>([]);
@@ -74,6 +81,7 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
   };
 
   const changed = models.filter((model) => model.model_id in drafts);
+  useReportUnsaved(changed.length, onUnsavedChange);
 
   const save = async () => {
     if (changed.length === 0) return;

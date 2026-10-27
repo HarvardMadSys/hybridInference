@@ -89,7 +89,7 @@ def _template_var(value: object) -> str | None:
 
 
 def resolve_reference(name: str) -> str | None:
-    """Resolve the setting a ``${VAR}`` reference names, as the Configuration tab reports it.
+    """Resolve the setting a ``${VAR}`` reference names, as the Settings tab reports it.
 
     The stored setting, then the environment (``config_value``), then the
     registered default of a static setting that has one — ``${CHUTES_BASE_URL}``

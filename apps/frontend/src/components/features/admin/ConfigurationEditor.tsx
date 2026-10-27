@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
@@ -12,10 +12,9 @@ import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
-  AdminEmptyState,
   AdminLoading,
   AdminNotice,
-  AdminSectionNav,
+  AdminSection,
 } from '@/components/features/admin/AdminPrimitives';
 import {
   BUTTON_GHOST,
@@ -24,7 +23,6 @@ import {
   CHECKBOX,
   CONTROL,
   FORM_LABEL,
-  INDEXED_LAYOUT,
   NOTICE_ACTION,
   PANEL,
   TEXT_FIELD,
@@ -45,7 +43,7 @@ import {
   type AlertChannelChoice,
 } from '@/components/features/configuration/alertNotificationDrafts';
 import { KeyList } from '@/components/features/configuration/KeyList';
-import { CONFIGURATION_TAB_PATH } from '@/components/features/configuration/paths';
+import { ADMIN_SETTINGS_PATH } from '@/components/features/configuration/paths';
 import {
   ManualRestartHint,
   RestartBackendButton,
@@ -117,21 +115,30 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
 }
 
 /**
- * Admin → Configuration: every database-backed setting, grouped by category.
+ * The configuration on Admin → Settings: every database-backed setting,
+ * grouped by category, with the categories spread over the page's sub-tabs.
  *
- * Settings are edited in place, and several categories can hold unsaved
- * changes at once. Each category's Save writes its own changes as one batch
- * (the backend validates a batch together, so related settings can change in
- * one save). After any write the page asks the server
- * components to re-render, which re-reads the public site configuration and
- * so updates the "required settings are missing" banner.
+ * One editor holds every category's state, so a change waits unsaved while
+ * the administrator looks at another sub-tab. Settings are edited in place,
+ * and several categories can hold unsaved changes at once. Each category's
+ * Save writes its own changes as one batch (the backend validates a batch
+ * together, so related settings can change in one save). After any write the
+ * page asks the server components to re-render, which re-reads the public site
+ * configuration and so updates the "required settings are missing" banner.
+ *
+ * The components below draw the editor's parts: its notices, its filters, a
+ * category, the Add variable form and the backup.
  */
-export function ConfigurationTab({ initialMissingOnly = false }: { initialMissingOnly?: boolean }) {
+export function useConfigurationEditor({
+  initialMissingOnly = false,
+}: { initialMissingOnly?: boolean } = {}) {
   const toast = useAccountToast();
   const router = useRouter();
-  const searchId = useId();
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // Whether the first load has answered, successfully or not: until then the
+  // page has nothing to place in its sub-tabs.
+  const [settled, setSettled] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<ConfigDrafts>({});
   const [entryErrors, setEntryErrors] = useState<Record<string, string>>({});
@@ -142,14 +149,12 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   // Staged like drafts: nothing is written until the category is saved.
   const [pendingResets, setPendingResets] = useState<Record<string, true>>({});
   const [pendingSecrets, setPendingSecrets] = useState<Record<string, true>>({});
-  const [adding, setAdding] = useState(false);
   const [alertChannelDraft, setAlertChannelDraft] = useState<AlertChannelChoice | null>(null);
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
   // Restoring a backup overwrites everything, so it is confirmed; a download is not.
   const backupConfirmation = useConfirmAction();
-  const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const saveInFlight = useRef(false);
 
   const load = useCallback(async () => {
@@ -165,6 +170,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       );
     } finally {
       setLoading(false);
+      setSettled(true);
     }
   }, []);
 
@@ -273,6 +279,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     },
     [drafts, pendingResets, pendingSecrets, alertChannel, alertChannelDraft],
   );
+
+  const filtering = missingOnly || query.trim() !== '';
 
   const visibleGroups = useMemo(
     () =>
@@ -460,11 +468,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     if (failure) toast.error(`The backup could not be downloaded: ${failure}`);
   };
 
-  const onRestoreFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-
+  const restoreFromFile = async (file: File) => {
     let parsed: ConfigBackupPayload;
     try {
       const text = await file.text();
@@ -545,67 +549,79 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     });
   };
 
-  if (loading && !config) {
-    return (
-      <div className="mt-6">
-        <AdminLoading />
-      </div>
-    );
-  }
+  return {
+    config,
+    loading,
+    settled,
+    loadError,
+    load,
+    query,
+    setQuery,
+    missingOnly,
+    setMissingOnly,
+    /** Whether a search or Missing only narrows the categories. */
+    filtering,
+    groups,
+    /** The categories the filters leave, each with the entries they leave. */
+    visibleGroups,
+    dirtyCount,
+    drafts,
+    entryErrors,
+    groupErrors,
+    savingGroup,
+    pendingResets,
+    pendingSecrets,
+    alertChannel,
+    testingAlert,
+    alertTestResult,
+    onDraftChange,
+    changeAlertChannel,
+    sendAlertTest,
+    saveGroup,
+    discardGroup,
+    toggleReset,
+    toggleMarkSecret,
+    applyResponse,
+    downloadBackup,
+    restoreFromFile,
+    /** Render its `dialog` once, where no sub-tab can hide it. */
+    backupConfirmation,
+  };
+}
+
+export type ConfigurationEditor = ReturnType<typeof useConfigurationEditor>;
+
+/** How many settings the filters leave, across every category. */
+export function matchingSettingCount(editor: ConfigurationEditor): number {
+  return editor.visibleGroups.reduce((total, group) => total + group.entries.length, 0);
+}
+
+/**
+ * What needs attention whatever sub-tab is open: a configuration that could
+ * not be loaded, a restart a saved setting waits for, and required settings
+ * that have no value.
+ */
+export function ConfigurationNotices({ editor }: { editor: ConfigurationEditor }) {
+  const { config, missingOnly, setMissingOnly } = editor;
 
   if (!config) {
+    if (editor.loading) return <AdminLoading size="sm" label="Loading configuration..." />;
     return (
-      <div className="mt-6">
-        <AdminNotice
-          role="alert"
-          action={
-            <button type="button" onClick={() => void load()} className={NOTICE_ACTION}>
-              Retry
-            </button>
-          }
-        >
-          {loadError ?? 'Configuration could not be loaded.'}
-        </AdminNotice>
-      </div>
+      <AdminNotice
+        role="alert"
+        action={
+          <button type="button" onClick={() => void editor.load()} className={NOTICE_ACTION}>
+            Retry
+          </button>
+        }
+      >
+        {editor.loadError ?? 'Configuration could not be loaded.'}
+      </AdminNotice>
     );
   }
 
-  const existingKeys = new Set(config.entries.map((entry) => entry.key));
-  const resetKeys = new Set(Object.keys(pendingResets));
-
-  const fullGroup = (visible: ConfigGroup) =>
-    groups.find((candidate) => candidate.id === visible.id) ?? visible;
-  const sectionAnchor = (group: ConfigGroup) => `config-${group.id.replace(/[^\w-]/g, '-')}`;
-
-  // The index lists the categories the filters leave, and flags those with a
-  // missing required setting or unsaved changes.
-  const navItems = visibleGroups.map((visible) => {
-    const group = fullGroup(visible);
-    const missing = group.entries.filter((entry) => entry.missing).length;
-    const dirty = dirtyCount(group);
-    return {
-      id: sectionAnchor(group),
-      label: group.label,
-      meta:
-        missing > 0 || dirty > 0 ? (
-          <span className="flex shrink-0 items-center gap-1.5">
-            {dirty > 0 ? (
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
-            ) : null}
-            {dirty > 0 ? <span className="sr-only">, unsaved changes</span> : null}
-            {missing > 0 ? (
-              <span className="rounded bg-red-50 px-1 text-[11px] font-medium tabular-nums text-red-700">
-                {missing}
-                <span className="sr-only"> missing</span>
-              </span>
-            ) : null}
-          </span>
-        ) : undefined,
-    };
-  });
-
   return (
-    <div className="mt-6 space-y-4">
+    <>
       {config.pending_restart.length > 0 ? (
         <section
           aria-label="Restart pending"
@@ -618,7 +634,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           </p>
           <div className="mt-3">
             {config.restart_supported ? (
-              <RestartBackendButton onRestarted={() => navigateTo(CONFIGURATION_TAB_PATH)} />
+              <RestartBackendButton onRestarted={() => navigateTo(ADMIN_SETTINGS_PATH)} />
             ) : (
               <ManualRestartHint />
             )}
@@ -647,54 +663,267 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           ) : null}
         </div>
       ) : null}
+    </>
+  );
+}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor={searchId} className="sr-only">
-          Search settings
-        </label>
-        <div className="relative min-w-[14rem] flex-1">
-          <svg
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              fillRule="evenodd"
-              d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
-              clipRule="evenodd"
-            />
-          </svg>
-          <input
-            id={searchId}
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search by name, description or model"
-            className={`${CONTROL} w-full pl-8`}
-          />
-        </div>
-        <label className="flex h-8 items-center gap-1.5 px-1 text-[13px] text-gray-700">
-          <input
-            type="checkbox"
-            checked={missingOnly}
-            onChange={(event) => setMissingOnly(event.target.checked)}
-            className={CHECKBOX}
-          />
-          Missing only
-        </label>
-        <button
-          type="button"
-          onClick={() => setAdding(true)}
-          disabled={adding}
-          className={BUTTON_SECONDARY}
+/** The search and the Missing only filter. They look through every category, whatever its sub-tab. */
+export function ConfigurationFilters({ editor }: { editor: ConfigurationEditor }) {
+  const searchId = useId();
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor={searchId} className="sr-only">
+        Search settings
+      </label>
+      <div className="relative min-w-[14rem] flex-1">
+        <svg
+          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
         >
-          Add variable
-        </button>
+          <path
+            fillRule="evenodd"
+            d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+            clipRule="evenodd"
+          />
+        </svg>
+        <input
+          id={searchId}
+          type="search"
+          value={editor.query}
+          onChange={(event) => editor.setQuery(event.target.value)}
+          placeholder="Search by name, description or model"
+          className={`${CONTROL} w-full pl-8`}
+        />
+      </div>
+      <label className="flex h-8 items-center gap-1.5 px-1 text-[13px] text-gray-700">
+        <input
+          type="checkbox"
+          checked={editor.missingOnly}
+          onChange={(event) => editor.setMissingOnly(event.target.checked)}
+          className={CHECKBOX}
+        />
+        Missing only
+      </label>
+    </div>
+  );
+}
+
+/** The anchor of a category's section. */
+export function configSectionId(categoryId: string): string {
+  return `config-${categoryId.replace(/[^\w-]/g, '-')}`;
+}
+
+/**
+ * One configuration category, edited in place, with its own Save. Nothing
+ * when the backend has no such category or the filters leave nothing of it.
+ */
+export function ConfigCategorySection({
+  editor,
+  categoryId,
+  tag,
+}: {
+  editor: ConfigurationEditor;
+  categoryId: string;
+  /** Shown beside the title: the sub-tab the category belongs to, while a filter lists every tab's. */
+  tag?: ReactNode;
+}) {
+  const headingId = `${useId()}-title`;
+  const visible = editor.visibleGroups.find((candidate) => candidate.id === categoryId);
+  if (!visible) return null;
+
+  const {
+    drafts,
+    entryErrors,
+    pendingResets,
+    pendingSecrets,
+    savingGroup,
+    testingAlert,
+    onDraftChange,
+    toggleReset,
+    toggleMarkSecret,
+  } = editor;
+  // The whole category, including entries a filter is hiding.
+  const group = editor.groups.find((candidate) => candidate.id === visible.id) ?? visible;
+  const channelEntries = alertWebhookEntries(group.entries);
+  const dirty = editor.dirtyCount(group);
+  const hidden = group.entries.length - visible.entries.length;
+  const saving = savingGroup === group.id;
+  const busy = saving || Boolean(channelEntries && testingAlert);
+  // One save at a time: while any category saves, every bar waits.
+  const barHeld = busy || savingGroup !== null;
+  const groupError = editor.groupErrors[group.id];
+
+  return (
+    <section
+      id={configSectionId(group.id)}
+      aria-labelledby={headingId}
+      className="scroll-mt-4 focus:outline-none"
+    >
+      <div className="mb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
+            {group.label}
+          </h2>
+          {tag ? (
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">
+              {tag}
+            </span>
+          ) : null}
+        </div>
+        {group.description ? (
+          <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">{group.description}</p>
+        ) : null}
+      </div>
+
+      {/* A form, so Enter saves the category, and one browsers do not
+          offer to remember: a secret typed here is not a login. The
+          console checks the values itself, so the browser does not. */}
+      <form
+        autoComplete="off"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!barHeld && dirty > 0) editor.saveGroup(group);
+        }}
+      >
+        {dirty > 0 && hidden > 0 ? (
+          <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
+            {hidden === group.entries.length
+              ? 'Every setting in this category is hidden by the current filter.'
+              : `${plural(hidden, 'setting')} in this category ${hidden === 1 ? 'is' : 'are'} hidden by the current filter.`}{' '}
+            Unsaved changes to them are kept and saved with the rest.
+          </p>
+        ) : null}
+        <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
+          <div className="divide-y divide-gray-100 px-4">
+            {channelEntries && visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
+              <AlertNotificationFields
+                entries={channelEntries}
+                channel={editor.alertChannel}
+                onChannelChange={editor.changeAlertChannel}
+                drafts={drafts}
+                onDraftChange={onDraftChange}
+                errors={entryErrors}
+                disabled={busy}
+                testing={testingAlert}
+                testResult={editor.alertTestResult}
+                onTest={() => void editor.sendAlertTest()}
+                onReset={toggleReset}
+                pendingResets={new Set(Object.keys(pendingResets))}
+              />
+            ) : null}
+            {visible.entries
+              .filter((entry) => !channelEntries || !isAlertWebhook(entry.key))
+              .map((entry) => (
+                <ConfigEntryField
+                  key={entry.key}
+                  entry={entry}
+                  draft={drafts[entry.key]}
+                  onChange={onDraftChange}
+                  serverError={entryErrors[entry.key]}
+                  onReset={toggleReset}
+                  onMarkSecret={toggleMarkSecret}
+                  layout="split"
+                  resetPending={Boolean(pendingResets[entry.key])}
+                  markSecretPending={Boolean(pendingSecrets[entry.key])}
+                  disabled={busy}
+                />
+              ))}
+          </div>
+
+          {/* Appears with the first change, or a reason to show, and stays
+              at the bottom of the window while its category is on screen.
+              Not the shared EditBar, whose busy state reads "Saving…": a
+              test notification also holds the Alerts category, and saves
+              nothing. */}
+          {dirty > 0 || groupError || saving ? (
+            <div className="animate-admin-reveal sticky bottom-0 z-10 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
+              {groupError ? (
+                <div className="mb-2">
+                  <AdminNotice role="alert">{groupError}</AdminNotice>
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <span
+                  className={`mr-auto text-[12px] ${dirty > 0 ? 'font-medium text-amber-700' : 'text-gray-500'}`}
+                  role="status"
+                >
+                  {dirty > 0 ? plural(dirty, 'unsaved change') : 'No changes yet'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => editor.discardGroup(group)}
+                  disabled={barHeld}
+                  aria-label={`Discard changes to ${group.label}`}
+                  className={BUTTON_GHOST}
+                >
+                  Discard
+                </button>
+                <button
+                  type="submit"
+                  disabled={barHeld || dirty === 0}
+                  aria-busy={saving || undefined}
+                  aria-label={`Save changes to ${group.label}`}
+                  className={BUTTON_PRIMARY}
+                >
+                  {saving ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+/** Add variable, and the form it opens: for a variable no category lists yet. */
+export function AddVariableControl({ editor }: { editor: ConfigurationEditor }) {
+  const toast = useAccountToast();
+  const [adding, setAdding] = useState(false);
+  if (!editor.config) return null;
+  if (adding) {
+    return (
+      <AddVariableForm
+        existingKeys={new Set(editor.config.entries.map((entry) => entry.key))}
+        onCancel={() => setAdding(false)}
+        onAdded={(next, key) => {
+          editor.applyResponse(next, [key]);
+          setAdding(false);
+          toast.success(`Added ${key}.`);
+        }}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2">
+      <p className="text-[12px] text-gray-600">
+        A <code className="rounded bg-gray-100 px-1">{'${VAR}'}</code> reference in a configuration
+        file that is not listed here needs a variable of its own.
+      </p>
+      <button type="button" onClick={() => setAdding(true)} className={BUTTON_SECONDARY}>
+        Add variable
+      </button>
+    </div>
+  );
+}
+
+/** Download every setting as a file, or replace them all from one. */
+export function ConfigurationBackupSection({ editor }: { editor: ConfigurationEditor }) {
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
+  const busy = editor.backupConfirmation.busy;
+  return (
+    <AdminSection
+      title="Backup & Restore"
+      description="A backup holds the configuration, custom providers and their API keys, routes and runtime settings. Restoring one replaces all of them. The file holds API keys and secrets in plain text: store it securely."
+    >
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => void downloadBackup()}
-          disabled={backupConfirmation.busy}
+          onClick={() => void editor.downloadBackup()}
+          disabled={busy}
           title="Downloads every setting and provider key as JSON, with secrets in plain text"
           className={BUTTON_SECONDARY}
         >
@@ -703,7 +932,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         <button
           type="button"
           onClick={() => restoreInputRef.current?.click()}
-          disabled={backupConfirmation.busy}
+          disabled={busy}
           className={BUTTON_SECONDARY}
         >
           Restore
@@ -713,175 +942,15 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           type="file"
           accept=".json,application/json"
           aria-label="Select configuration backup file"
-          onChange={(event) => void onRestoreFileSelected(event)}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (file) void editor.restoreFromFile(file);
+          }}
           className="sr-only"
         />
       </div>
-
-      {adding ? (
-        <AddVariableForm
-          existingKeys={existingKeys}
-          onCancel={() => setAdding(false)}
-          onAdded={(next, key) => {
-            applyResponse(next, [key]);
-            setAdding(false);
-            toast.success(`Added ${key}.`);
-          }}
-        />
-      ) : null}
-
-      {visibleGroups.length === 0 ? (
-        <AdminEmptyState
-          title={
-            missingOnly && config.missing.length === 0 && !query.trim()
-              ? 'No required settings are missing.'
-              : 'No settings match.'
-          }
-        />
-      ) : null}
-
-      {navItems.length > 0 ? (
-        // A category index beside full-width categories, one after another.
-        <div className={INDEXED_LAYOUT}>
-          <AdminSectionNav label="Configuration categories" items={navItems} />
-          <div className="min-w-0 space-y-8">
-            {visibleGroups.map((visible) => {
-              const group = fullGroup(visible);
-              const channelEntries = alertWebhookEntries(group.entries);
-              const dirty = dirtyCount(group);
-              const hidden = group.entries.length - visible.entries.length;
-              const saving = savingGroup === group.id;
-              const busy = saving || Boolean(channelEntries && testingAlert);
-              // One save at a time: while any category saves, every bar waits.
-              const barHeld = busy || savingGroup !== null;
-              const groupError = groupErrors[group.id];
-              const headingId = `${searchId}-${group.id}`;
-              return (
-                <section
-                  key={group.id}
-                  id={sectionAnchor(group)}
-                  aria-labelledby={headingId}
-                  className="scroll-mt-4 focus:outline-none"
-                >
-                  <div className="mb-3">
-                    <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
-                      {group.label}
-                    </h2>
-                    {group.description ? (
-                      <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
-                        {group.description}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {/* A form, so Enter saves the category, and one browsers do not
-                      offer to remember: a secret typed here is not a login. The
-                      console checks the values itself, so the browser does not. */}
-                  <form
-                    autoComplete="off"
-                    noValidate
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (!barHeld && dirty > 0) saveGroup(group);
-                    }}
-                  >
-                    {dirty > 0 && hidden > 0 ? (
-                      <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
-                        {hidden === group.entries.length
-                          ? 'Every setting in this category is hidden by the current filter.'
-                          : `${plural(hidden, 'setting')} in this category ${hidden === 1 ? 'is' : 'are'} hidden by the current filter.`}{' '}
-                        Unsaved changes to them are kept and saved with the rest.
-                      </p>
-                    ) : null}
-                    <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
-                      <div className="divide-y divide-gray-100 px-4">
-                        {channelEntries &&
-                        visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
-                          <AlertNotificationFields
-                            entries={channelEntries}
-                            channel={alertChannel}
-                            onChannelChange={changeAlertChannel}
-                            drafts={drafts}
-                            onDraftChange={onDraftChange}
-                            errors={entryErrors}
-                            disabled={busy}
-                            testing={testingAlert}
-                            testResult={alertTestResult}
-                            onTest={() => void sendAlertTest()}
-                            onReset={toggleReset}
-                            pendingResets={resetKeys}
-                          />
-                        ) : null}
-                        {visible.entries
-                          .filter((entry) => !channelEntries || !isAlertWebhook(entry.key))
-                          .map((entry) => (
-                            <ConfigEntryField
-                              key={entry.key}
-                              entry={entry}
-                              draft={drafts[entry.key]}
-                              onChange={onDraftChange}
-                              serverError={entryErrors[entry.key]}
-                              onReset={toggleReset}
-                              onMarkSecret={toggleMarkSecret}
-                              layout="split"
-                              resetPending={Boolean(pendingResets[entry.key])}
-                              markSecretPending={Boolean(pendingSecrets[entry.key])}
-                              disabled={busy}
-                            />
-                          ))}
-                      </div>
-
-                      {/* Appears with the first change, or a reason to show, and stays
-                          at the bottom of the window while its category is on screen.
-                          Not the shared EditBar, whose busy state reads "Saving…": a
-                          test notification also holds the Alerts category, and saves
-                          nothing. */}
-                      {dirty > 0 || groupError || saving ? (
-                        <div className="animate-admin-reveal sticky bottom-0 z-10 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
-                          {groupError ? (
-                            <div className="mb-2">
-                              <AdminNotice role="alert">{groupError}</AdminNotice>
-                            </div>
-                          ) : null}
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            <span
-                              className={`mr-auto text-[12px] ${dirty > 0 ? 'font-medium text-amber-700' : 'text-gray-500'}`}
-                              role="status"
-                            >
-                              {dirty > 0 ? plural(dirty, 'unsaved change') : 'No changes yet'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => discardGroup(group)}
-                              disabled={barHeld}
-                              aria-label={`Discard changes to ${group.label}`}
-                              className={BUTTON_GHOST}
-                            >
-                              Discard
-                            </button>
-                            <button
-                              type="submit"
-                              disabled={barHeld || dirty === 0}
-                              aria-busy={saving || undefined}
-                              aria-label={`Save changes to ${group.label}`}
-                              className={BUTTON_PRIMARY}
-                            >
-                              {saving ? 'Saving…' : 'Save changes'}
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </form>
-                </section>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-
-      {backupConfirmation.dialog}
-    </div>
+    </AdminSection>
   );
 }
 
