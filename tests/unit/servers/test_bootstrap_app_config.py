@@ -8,6 +8,10 @@ import pytest
 
 from serving.config import app_config
 from serving.config.settings import get_settings
+from serving.observability.alert_history import (
+    hooks as alert_history_hooks,
+    runtime as alert_history_runtime,
+)
 from serving.servers import bootstrap
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
@@ -155,6 +159,64 @@ async def test_boot_wires_runtime_import_setup_state_and_refresh_loops(
 
     assert app_config._STATE.refresh_task is None
     assert services.runtime_settings._refresh_task is None
+
+
+def _boot_with_stored(monkeypatch, store: FakeAppConfigStore) -> None:
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda conn: store)
+    monkeypatch.setattr(bootstrap, "_init_db_logger", MagicMock(return_value=None))
+    monkeypatch.setattr(bootstrap, "_init_router_and_models", AsyncMock(return_value=({}, [])))
+    monkeypatch.setattr(bootstrap, "_apply_routing_manager", MagicMock(return_value=None))
+    monkeypatch.setattr(bootstrap, "init_setup_state", AsyncMock())
+
+    async def no_database(self):
+        raise alert_history_runtime.HistoryUnavailable("database_unavailable")
+
+    monkeypatch.setattr(alert_history_runtime.AlertHistoryRuntime, "_get_pool", no_database)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored,captures",
+    [([], True), ([row("ALERT_HISTORY_ENABLED", "false")], False)],
+    ids=["nothing-configured", "stored-false"],
+)
+async def test_boot_with_a_database_records_alert_history_unless_turned_off(
+    boot_env, monkeypatch, stored, captures
+) -> None:
+    for key in (
+        "ALERT_HISTORY_ENABLED",
+        "ALERT_HISTORY_READ_CREDENTIALS",
+        "ALERT_HISTORY_WRITER_CREDENTIALS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    _boot_with_stored(monkeypatch, FakeAppConfigStore(stored))
+
+    services = await bootstrap.initialize()
+    try:
+        history = alert_history_runtime.get_runtime()
+        assert history is not None and history.has_database
+        assert history.enabled is captures
+        assert (alert_history_hooks.active() is not None) is captures
+    finally:
+        await bootstrap.shutdown(services)
+
+    assert alert_history_runtime.get_runtime() is None
+    assert alert_history_hooks.active() is None
+
+
+@pytest.mark.asyncio
+async def test_database_free_boot_records_no_alert_history(boot_env, monkeypatch) -> None:
+    monkeypatch.setenv("DB_ENABLED", "false")
+    monkeypatch.setenv("ALERT_HISTORY_ENABLED", "true")
+    _boot_with_stored(monkeypatch, FakeAppConfigStore())
+
+    services = await bootstrap.initialize()
+    try:
+        assert alert_history_runtime.get_runtime() is None
+        assert alert_history_hooks.active() is None
+    finally:
+        await bootstrap.shutdown(services)
 
 
 @pytest.mark.asyncio

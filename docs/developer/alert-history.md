@@ -8,7 +8,8 @@ the status monitor first — submit their own history through an authenticated
 ingestion endpoint. People and agents read it back through a scoped, read-only
 API.
 
-It is **off by default** and changes nothing about what is sent: thresholds,
+It is **on whenever the gateway has a database** (see
+[Turning it off](#turning-it-off)) and changes nothing about what is sent: thresholds,
 cooldowns, mutes, snoozes, retries, routing and the `bool` that
 `alert_slack()` / `AlertSink.post()` return are exactly as before. It is a
 record, not an alert-noise feature.
@@ -25,36 +26,80 @@ record, not an alert-noise feature.
   therefore carries `completeness: best_effort`, `unknown_gaps_possible: true`
   and `late_arrivals_possible: true`. An empty gap list never proves the
   history is complete.
-- **History starts when capture is enabled.** Past channel messages are not
-  turned into history.
+- **History starts when capture starts**: the first gateway start with a
+  database and capture on. Past channel messages are not turned into history.
 - **No automatic deletion.** Nothing deletes history on a timer. Plan database
   capacity and backups for it, and see [Erasure](#erasure).
 
 PostgreSQL is the only store. There is no local file, disk spool, SQLite
 buffer or message broker.
 
-## Turning it on
+## Turning it off
+
+A gateway with a database records its own alert history from startup; there
+is nothing to switch on. Without a database (`DB_ENABLED=false`) nothing is
+recorded and the read API answers "not configured". Reader and writer
+credentials and the deployment id do not decide whether the gateway records
+its own history: they only scope who may read it and which sources may submit
+to it.
 
 Settings, under **Alerts** on the admin console's Configuration tab (or the
 environment):
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `ALERT_HISTORY_ENABLED` | `false` | Capture backend history and accept history from configured sources. Applies after a restart. |
+| `ALERT_HISTORY_ENABLED` | `true` | Capture backend history and accept history from sources with a writer credential. `false` turns both off. Applies after a restart. |
 | `ALERT_HISTORY_DEPLOYMENT_ID` | `default` | This deployment's id on every history row; reader credentials are scoped by it. Applies after a restart. |
 | `ALERT_HISTORY_READ_CREDENTIALS` | empty | JSON list of read-only credentials (see below). |
 | `ALERT_HISTORY_WRITER_CREDENTIALS` | empty | JSON list of source credentials (see below). |
 
+`ALERT_HISTORY_ENABLED` is a deployment-level opt-out, read once at startup:
+
+- **Not set anywhere** (no stored value, no environment variable): capture is
+  on.
+- **`false`** (or `0`, `no`, `off`): capture is off. A value stored in the
+  console wins over the environment, so a stored `false` stays off whatever the
+  environment says, and an environment `false` stays off while nothing is
+  stored. The built-in default is never written to the database, so a stored
+  `false` stays in force until someone changes it.
+- **Blank**, stored or in the environment: capture stays off, and the gateway
+  logs a warning. A blank stored value is in force like any other stored
+  value. Remove the value to return to the default.
+- **Not a boolean in the environment**: capture stays off, with a warning.
+- **Not a boolean in the database**: the stored value is ignored with a
+  warning, as for every setting, and the environment value applies — or, with
+  none, the default: capture on.
+
+With capture off, the history already stored stays readable through the read
+API, its status reports the backend as `disabled`, and the ingestion endpoint
+answers `404` even to a valid writer credential.
+
 The observed environment comes from `DEPLOYMENT_ENV` (or is inferred from
 `BASE_URL`, as for alert cards).
 
-When enabled, the gateway creates two tables at startup (`CREATE TABLE IF NOT
-EXISTS`, catalog-gated, like the rest of the schema): `alert_history_sources`
+With capture on, the gateway creates two tables on first use (`CREATE TABLE IF
+NOT EXISTS`, catalog-gated, like the rest of the schema): `alert_history_sources`
 and `alert_history_events`. History uses **its own small connection pool**
 (at most four connections, created lazily), so it never takes a connection the
 request path needs, and a database that is down at boot only delays history.
 Neither a missing schema nor an unreachable database stops the gateway from
 starting or alerting.
+
+### What it costs
+
+Recording uses database and process resources; plan for them:
+
+- **Connections.** Each gateway process may hold up to four more PostgreSQL
+  connections. Count them against the server's connection limit.
+- **Writes.** Each process writes its source row every 30 seconds even when
+  nothing happens, and one row per recorded fact, in batches flushed every
+  second.
+- **Storage.** Nothing is deleted automatically (see
+  [What "kept" means](#what-kept-means)): the tables grow with alert activity
+  until you delete rows yourself.
+- **Shutdown.** Stopping a process waits up to about 10 seconds for history
+  (see [Buffer, writer and shutdown](#buffer-writer-and-shutdown)). A process
+  manager that kills the gateway sooner loses what was still queued.
 
 ## What a record holds
 
@@ -447,7 +492,9 @@ result), then writes its open summary windows, closes the buffer and drains it
 and closing the pool all inside a 5-second budget. What is left is reported in
 the instance's stop record (`lost_at_stop`) and logged, and is lost. A new
 process is a new source instance; an instance with no stop record is shown as
-`unknown`, never as cleanly stopped.
+`unknown`, never as cleanly stopped. Each wait ends as soon as its work is
+done, but together they can add about 10 seconds to a shutdown; give the
+process manager's stop timeout room for that.
 
 ## Erasure
 

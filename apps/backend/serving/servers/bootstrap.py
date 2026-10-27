@@ -1062,8 +1062,9 @@ async def initialize() -> AppServices:
         raise
 
     # Alert history goes in before anything that can raise an alert, so the
-    # first breach of this process is recorded. Off by default; it never stops
-    # startup, and a database that is down only delays its writes.
+    # first breach of this process is recorded. On whenever there is a database,
+    # unless ALERT_HISTORY_ENABLED turns it off; it never stops startup, and a
+    # database that is down only delays its writes.
     alert_history_runtime.start_runtime(
         db_config=_alert_history_db_config(),
         fence_secret=_alert_history_fence_secret(),

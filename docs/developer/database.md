@@ -68,7 +68,7 @@ below overlap harmlessly where two of them define the same table:
 | `PostgresOperationalStore.initialize` in `apps/backend/serving/storage/postgres_operational.py` | The operational tables (settings, overrides, provider registry) |
 | `ResponseStore.initialize` in `apps/backend/serving/storage/responses_store.py` | `openai_responses` |
 | `apps/backend/serving/grants.py` and `apps/backend/serving/admin/geo_demand_rollup.py` | `agent_grants`; the `geo_hourly_*` rollup tables |
-| `ensure_schema` in `apps/backend/serving/storage/alert_history_store.py` | `alert_history_sources` and `alert_history_events`, only when `ALERT_HISTORY_ENABLED` is on (see [Alert history](alert-history.md)) |
+| `ensure_schema` in `apps/backend/serving/storage/alert_history_store.py` | `alert_history_sources` and `alert_history_events`, unless `ALERT_HISTORY_ENABLED` turns capture off (see [Alert history](alert-history.md)) |
 
 Pointing a gateway at an empty database is therefore all the "migration" there
 is: start it and the tables appear.

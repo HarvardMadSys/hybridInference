@@ -49,6 +49,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ENABLED_SETTING = "ALERT_HISTORY_ENABLED"
+#: Capture with a database unless ``ALERT_HISTORY_ENABLED`` says otherwise.
+DEFAULT_ENABLED = True
 DEPLOYMENT_SETTING = "ALERT_HISTORY_DEPLOYMENT_ID"
 POOL_MAX_SIZE = 4
 POOL_ACQUIRE_TIMEOUT_SEC = 3.0
@@ -72,13 +74,27 @@ def normalize_label(value: str, *, default: str) -> str:
 
 
 def history_enabled() -> bool:
-    """Whether capture is switched on (``ALERT_HISTORY_ENABLED``)."""
+    """Whether capture is switched on (``ALERT_HISTORY_ENABLED``).
+
+    On unless the setting says otherwise. The built-in default is applied here:
+    :func:`config_value` supplies a registry default only for extension
+    settings. It applies only when :func:`config_value` resolves nothing — no
+    stored row in force, no environment variable. (A stored row the registry
+    refuses is passed over there, with its own warning, as for any setting.) A
+    value that resolves is read as written: blank or not a boolean keeps
+    capture off, as before.
+    """
     from serving.config.app_config import config_value
     from serving.config.app_config_registry import parse_bool
 
-    raw = config_value(ENABLED_SETTING) or ""
+    raw = config_value(ENABLED_SETTING)
+    if raw is None:
+        return DEFAULT_ENABLED
+    if not raw.strip():
+        logger.warning("%s is set but empty; alert history stays off", ENABLED_SETTING)
+        return False
     try:
-        return parse_bool(raw) if raw.strip() else False
+        return parse_bool(raw)
     except ValueError:
         logger.warning("%s is not a boolean; alert history stays off", ENABLED_SETTING)
         return False
@@ -437,7 +453,7 @@ def start_runtime(
         set_runtime(runtime)
         runtime.start()
         if not runtime.enabled:
-            logger.info("alert history capture disabled (%s=false)", ENABLED_SETTING)
+            logger.info("alert history capture turned off by %s", ENABLED_SETTING)
         return runtime
     except Exception:
         logger.exception("alert history could not start; alerting continues without it")

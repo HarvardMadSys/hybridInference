@@ -1270,9 +1270,11 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "ALERT_HISTORY_ENABLED",
         "alerts",
         "Keep a history of every backend alert, suppression and delivery result in the "
-        "database, and accept history from configured sources. Off by default.",
+        "gateway database, and accept history from sources with a writer credential. On "
+        "whenever the gateway has a database; false turns capture off, and history already "
+        "stored stays readable. Nothing is deleted automatically.",
         type="bool",
-        default="false",
+        default="true",
         restart_required=True,
     ),
     ConfigEntry(

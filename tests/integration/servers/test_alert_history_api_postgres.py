@@ -825,3 +825,81 @@ async def test_an_end_in_a_generation_past_the_group_list_is_still_reported(api)
     assert summary["records"] == 102 and summary["generation_count"] == 101
     assert summary["trigger_recorded"] is True
     assert "not commit order" in timeline["pagination"]
+
+
+# -- on by default, off on request -------------------------------------------------
+
+
+async def test_startup_with_nothing_configured_records_to_postgres(api, monkeypatch):
+    """The real start path: no setting, no reader or writer, a non-default deployment."""
+    client, rt, pool = api
+    monkeypatch.delenv(auth.READ_SETTING)
+    monkeypatch.delenv(auth.WRITE_SETTING)
+    auth._CACHE.clear()
+    monkeypatch.setenv(runtime_mod.DEPLOYMENT_SETTING, "ahtest-default-on")
+    started = runtime_mod.start_runtime(
+        db_config=postgres.target().connect_kwargs(), fence_secret=postgres.FENCE_SECRET
+    )
+    try:
+        assert started is not None and started.enabled
+        assert hooks.active() is started.capture
+        await alerts.alert_on_transition(
+            key="fivexx_rate",
+            breached=True,
+            severity=alerts.AlertSeverity.ERROR,
+            title="5xx rate exceeded",
+            context=lambda: {"rate": "9.0%"},
+            cooldown_sec=300,
+        )
+        # Ingestion still needs a writer credential.
+        assert (await ingest(client, [trigger()])).status_code == 404
+    finally:
+        await runtime_mod.stop_runtime()
+        runtime_mod.set_runtime(rt)
+        hooks.install(rt.capture)
+    async with pool.acquire() as conn:
+        kinds = {
+            row["kind"]
+            for row in await conn.fetch(
+                "SELECT kind FROM alert_history_events WHERE deployment_id = 'ahtest-default-on'"
+            )
+        }
+        source = await conn.fetchrow(
+            "SELECT stop_reason, lost_at_stop FROM alert_history_sources "
+            "WHERE source_instance_id = $1",
+            started.identity.source_instance_id,
+        )
+    assert {"condition_triggered", "delivery_attempt", "delivery_result"} <= kinds
+    assert dict(source) == {"stop_reason": "shutdown", "lost_at_stop": 0}
+
+
+async def test_capture_turned_off_keeps_stored_history_readable(api, monkeypatch):
+    client, rt, pool = api
+    assert (await ingest(client, [trigger()])).status_code == 200
+    monkeypatch.setenv(runtime_mod.ENABLED_SETTING, "false")
+    hooks.install(None)  # a fresh process: the fixture's recorder is not there
+    off = runtime_mod.start_runtime(
+        db_config=postgres.target().connect_kwargs(), fence_secret=postgres.FENCE_SECRET
+    )
+    try:
+        assert off is not None and not off.enabled and hooks.active() is None
+        for headers in (ADMIN, bearer(READER)):
+            events = await client.get(
+                "/admin/alert-history/events", headers=headers, params={"deployment_id": DEP}
+            )
+            assert events.status_code == 200
+            assert [e["origin_record_id"] for e in events.json()["events"]] == [
+                "inc:i1:g1:triggered"
+            ]
+        status = (await client.get("/admin/alert-history/status", headers=ADMIN)).json()
+        assert status["capture"]["enabled"] is False
+        backend = next(s for s in status["sources"] if s["source"] == "backend")
+        assert backend["connection"] == "disabled"
+        # A valid writer is refused while capture is off.
+        refused = await ingest(client, [trigger("inc:i2:g1:triggered")])
+        assert refused.status_code == 404
+    finally:
+        await runtime_mod.stop_runtime()
+        runtime_mod.set_runtime(rt)
+        hooks.install(rt.capture)
+    assert await stored(pool) == 1

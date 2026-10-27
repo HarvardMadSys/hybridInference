@@ -1280,13 +1280,14 @@ msgstr "API key；创建批次需要 `BATCH_MIN_ROLE` 角色，默认为 `intern
 
 #: ../developer/architecture.md:466
 msgid ""
-"**Alert history** (off by default). The same alert path records what it did "
+"**Alert history** (on with a database; `ALERT_HISTORY_ENABLED=false` turns "
+"it off). The same alert path records what it did "
 "— breaches, recoveries, suppression decisions, deliveries and their results "
 "— into PostgreSQL through a bounded buffer and one writer per process "
 "(`serving/observability/alert_history/`). It never changes what is sent. See"
 " [Alert history](alert-history.md)."
 msgstr ""
-"**告警历史**（默认关闭）。同一条告警路径会把自己做过的事——越限、恢复、抑制决定、投递及其结果——通过一个有上限的缓冲区和每个进程一个写入器记录到 "
+"**告警历史**（有数据库时开启；`ALERT_HISTORY_ENABLED=false` 可关闭）。同一条告警路径会把自己做过的事——越限、恢复、抑制决定、投递及其结果——通过一个有上限的缓冲区和每个进程一个写入器记录到 "
 "PostgreSQL 中（`serving/observability/alert_history/`）。它从不改变发送的内容。参见 "
 "[告警历史](alert-history.md)。"
 
