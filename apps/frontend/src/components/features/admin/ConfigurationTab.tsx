@@ -6,13 +6,11 @@ import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
 import {
   ConfigEntryField,
-  appliesAfterRestart,
   NOT_A_LOGIN_FIELD,
 } from '@/components/features/configuration/ConfigEntryField';
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
-import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import {
   AdminEmptyState,
   AdminLoading,
@@ -112,8 +110,8 @@ function downloadBackupJson(payload: ConfigBackupPayload): void {
   }
 }
 
-/** A category's validated changes, waiting for the administrator to confirm them. */
-interface PendingSave {
+/** A category's validated changes, as its save sends them. */
+interface CategorySave {
   group: ConfigGroup;
   values: Record<string, ConfigScalar>;
   /** Keys the save marks secret, in the same PATCH as `values`. */
@@ -121,40 +119,10 @@ interface PendingSave {
   /** Keys whose stored row the save removes, one DELETE each after the PATCH. */
   resets: string[];
   /**
-   * The version the reviewed changes were made on, pinned when the review
-   * opens: a read that completes while it is open cannot move it.
+   * The version the category's changes were made on, pinned when the save
+   * starts: a read that completes while it is in flight cannot move it.
    */
   expectedVersion: ConfigSourceVersion | null;
-}
-
-function shownValue(
-  entry: ConfigEntry | undefined,
-  value: ConfigScalar | null | undefined,
-): string {
-  if (value === null || value === undefined || value === '') return '(empty)';
-  if (entry?.type === 'bool') return value === true ? 'On' : 'Off';
-  return String(value);
-}
-
-/** One line of the confirmation: what the save does to `key`. Never a secret's value. */
-function describeChange(
-  entry: ConfigEntry | undefined,
-  key: string,
-  { values, secrets, resets }: PendingSave,
-): string[] {
-  const lines: string[] = [];
-  if (resets.includes(key)) {
-    if (entry?.custom) lines.push('Delete the variable');
-    else if (entry?.secret) lines.push('Reset to the environment or default');
-    else lines.push(`${shownValue(entry, entry?.value)} → environment or default`);
-  }
-  if (key in values) {
-    const value = values[key];
-    if (entry?.secret) lines.push(value === '' ? 'Clear' : 'Replace');
-    else lines.push(`${shownValue(entry, entry?.value)} → ${shownValue(entry, value)}`);
-  }
-  if (secrets.includes(key)) lines.push('Mark as secret');
-  return lines;
 }
 
 /**
@@ -195,9 +163,9 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
  * Admin → Configuration: every database-backed setting, grouped by category.
  *
  * Settings are edited in place, and several categories can hold unsaved
- * changes at once. Each category saves its own changes as one batch, after a
- * confirmation (the backend validates a batch together, so related settings
- * can change in one save). After any write the page asks the server
+ * changes at once. Each category's Save writes its own changes as one batch
+ * (the backend validates a batch together, so related settings can change in
+ * one save). After any write the page asks the server
  * components to re-render, which re-reads the public site configuration and
  * so updates the "required settings are missing" banner.
  */
@@ -214,7 +182,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [savingGroup, setSavingGroup] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [missingOnly, setMissingOnly] = useState(initialMissingOnly);
-  // Staged like drafts: nothing is written until the category's save is confirmed.
+  // Staged like drafts: nothing is written until the category is saved.
   const [pendingResets, setPendingResets] = useState<Record<string, true>>({});
   const [pendingSecrets, setPendingSecrets] = useState<Record<string, true>>({});
   const [adding, setAdding] = useState(false);
@@ -222,10 +190,9 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
-  const testConfirmation = useConfirmAction();
+  // Restoring a backup overwrites everything, so it is confirmed; a download is not.
   const backupConfirmation = useConfirmAction();
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
-  const [pendingSave, setPendingSave] = useState<PendingSave | null>(null);
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
   const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
@@ -317,47 +284,30 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setAlertTestResult(null);
   };
 
-  // A test send posts a real message, so it is confirmed like any other action.
-  // Its outcome is shown beside the button, never in the dialog: only the
-  // console's own sanitized message may describe a webhook failure.
-  const sendAlertTest = () => {
+  // A test send posts a message but changes no setting, so it goes on the
+  // click. Its outcome is shown beside the button: only the console's own
+  // sanitized message may describe a webhook failure.
+  const sendAlertTest = async () => {
     if (!webhookEntries || alertChannel === 'none' || alertTestInFlight.current) return;
     const entry = selectedWebhookEntry(webhookEntries, alertChannel);
     if (!entry || alertWebhookError(entry, drafts)) return;
     const draft = drafts[entry.key];
     const channel = alertChannel;
-    const name = channel === 'wecom' ? 'WeCom' : 'Slack';
-    testConfirmation.request({
-      title: `Send a test notification to ${name}?`,
-      confirmLabel: 'Send test',
-      busyLabel: 'Sending…',
-      body: (
-        <p>
-          A test message is posted to the {name} channel{' '}
-          {draft?.kind === 'replace'
-            ? 'behind the webhook URL you typed. That URL is not saved.'
-            : 'behind the saved webhook. This tests the saved setting, not necessarily the channel alerts are delivered to right now: a backend process keeps using the channel it applied until it applies the save (or, for a setting that needs one, until a restart).'}{' '}
-          Settings are not changed.
-        </p>
-      ),
-      run: async () => {
-        alertTestInFlight.current = true;
-        setTestingAlert(true);
-        setAlertTestResult(null);
-        try {
-          const result = await testAlertNotification({
-            channel,
-            ...(draft?.kind === 'replace' ? { webhook_url: draft.value.trim() } : {}),
-          });
-          setAlertTestResult({ sent: true, testId: result.test_id });
-        } catch (e) {
-          setAlertTestResult({ sent: false, message: alertTestFailureMessage(e) });
-        } finally {
-          alertTestInFlight.current = false;
-          setTestingAlert(false);
-        }
-      },
-    });
+    alertTestInFlight.current = true;
+    setTestingAlert(true);
+    setAlertTestResult(null);
+    try {
+      const result = await testAlertNotification({
+        channel,
+        ...(draft?.kind === 'replace' ? { webhook_url: draft.value.trim() } : {}),
+      });
+      setAlertTestResult({ sent: true, testId: result.test_id });
+    } catch (e) {
+      setAlertTestResult({ sent: false, message: alertTestFailureMessage(e) });
+    } finally {
+      alertTestInFlight.current = false;
+      setTestingAlert(false);
+    }
   };
 
   const groups = useMemo(
@@ -367,8 +317,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
   /**
    * Unsaved changes in a whole category, including entries a filter hides.
-   * Each variable counts once, however many things the save does to it, as the
-   * confirmation counts them; the alert channel choice counts as one.
+   * Each variable counts once, however many things the save does to it; the
+   * alert channel choice counts as one.
    */
   const dirtyCount = useCallback(
     (group: ConfigGroup) => {
@@ -412,8 +362,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   );
 
   const saveGroup = (group: ConfigGroup) => {
-    // One review at a time: an open one, or a save in flight, is never replaced.
-    if (pendingSave || saveInFlight.current) return;
+    // One save at a time: a Save while another category's is in flight does nothing.
+    if (saveInFlight.current) return;
     // The whole category, including entries a filter is hiding: a change the
     // administrator made stays part of the save it was made for.
     const channelEntries = alertWebhookEntries(group.entries);
@@ -445,17 +395,18 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     for (const key of resets) delete values[key];
     const secrets = groupKeys(group, pendingSecrets);
     if (Object.keys(values).length + secrets.length + resets.length === 0) return;
-    // Nothing is written until the administrator confirms the list of changes.
-    setPendingSave({
+    void commitSave({
       group,
       values,
       secrets,
       resets,
+      // Taken now, from the version this category's changes were made on: a read
+      // that completes while the save is in flight cannot move it.
       expectedVersion: saveBase(draftVersions, group.id, config?.source_version),
     });
   };
 
-  const commitSave = async ({ group, values, secrets, resets, expectedVersion }: PendingSave) => {
+  const commitSave = async ({ group, values, secrets, resets, expectedVersion }: CategorySave) => {
     if (saveInFlight.current) return;
     saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
@@ -528,7 +479,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       }
       const count = new Set([...keys, ...secrets, ...resets]).size;
       setDraftVersions((prev) => withoutVersions(prev, [group.id]));
-      setPendingSave(null);
       toast.success(
         count === 1 ? `Saved ${group.label}.` : `Saved ${count} changes to ${group.label}.`,
       );
@@ -542,7 +492,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           message += ` ${plural(written, 'change')} ${written === 1 ? 'was' : 'were'} saved before that.`;
         }
         setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
-        setPendingSave(null);
         // The one place a draft moves to a version this page did not write:
         // the administrator has been told, and is shown the newer values.
         void getConfig()
@@ -574,7 +523,6 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         } not reset: resets are sent after the value changes, one request each. If this change needs a reset, save the reset on its own first.`;
       }
       setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
-      setPendingSave(null);
     } finally {
       saveInFlight.current = false;
       setSavingGroup(null);
@@ -619,31 +567,18 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
-  const requestBackupDownload = () => {
-    backupConfirmation.request({
-      title: 'Download configuration backup?',
-      confirmLabel: 'Download backup',
-      busyLabel: 'Downloading…',
-      body: (
-        <div className="space-y-2">
-          <p>
-            Exports all administrator-configurable state as a portable JSON file, including
-            application settings, runtime settings, custom providers, provider API keys, route
-            overrides, model visibility, concurrency exemptions, batch limits, and allowed signup
-            domains.
-          </p>
-          <p className="font-medium text-amber-800">
-            This backup file includes API keys and secrets in plain text. Store it securely and
-            never share it publicly.
-          </p>
-        </div>
-      ),
+  // A download changes nothing, so it goes on the click. The file holds every
+  // secret in plain text: the button's title says so before, the toast after.
+  const downloadBackup = async () => {
+    const failure = await backupConfirmation.perform({
       run: async () => {
-        const payload = await exportConfigBackup();
-        downloadBackupJson(payload);
-        toast.success('Downloaded configuration backup.');
+        downloadBackupJson(await exportConfigBackup());
+        toast.success(
+          'Downloaded configuration backup. It holds API keys and secrets in plain text: store it securely.',
+        );
       },
     });
+    if (failure) toast.error(`The backup could not be downloaded: ${failure}`);
   };
 
   const onRestoreFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -880,8 +815,9 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         </button>
         <button
           type="button"
-          onClick={requestBackupDownload}
+          onClick={() => void downloadBackup()}
           disabled={backupConfirmation.busy}
+          title="Downloads every setting and provider key as JSON, with secrets in plain text"
           className={BUTTON_SECONDARY}
         >
           Backup
@@ -940,6 +876,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
               const hidden = group.entries.length - visible.entries.length;
               const saving = savingGroup === group.id;
               const busy = saving || Boolean(channelEntries && testingAlert);
+              // One save at a time: while any category saves, every bar waits.
+              const barHeld = busy || savingGroup !== null;
               const groupError = groupErrors[group.id];
               const headingId = `${searchId}-${group.id}`;
               return (
@@ -968,7 +906,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                     noValidate
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (!busy && dirty > 0) saveGroup(group);
+                      if (!barHeld && dirty > 0) saveGroup(group);
                     }}
                   >
                     {dirty > 0 && hidden > 0 ? (
@@ -1000,7 +938,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                             disabled={busy}
                             testing={testingAlert}
                             testResult={alertTestResult}
-                            onTest={sendAlertTest}
+                            onTest={() => void sendAlertTest()}
                             onReset={toggleReset}
                             pendingResets={resetKeys}
                           />
@@ -1046,7 +984,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                             <button
                               type="button"
                               onClick={() => discardGroup(group)}
-                              disabled={busy}
+                              disabled={barHeld}
                               aria-label={`Discard changes to ${group.label}`}
                               className={BUTTON_GHOST}
                             >
@@ -1054,7 +992,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
                             </button>
                             <button
                               type="submit"
-                              disabled={busy || dirty === 0}
+                              disabled={barHeld || dirty === 0}
                               aria-busy={saving || undefined}
                               aria-label={`Save changes to ${group.label}`}
                               className={BUTTON_PRIMARY}
@@ -1073,78 +1011,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         </div>
       ) : null}
 
-      {testConfirmation.dialog}
       {backupConfirmation.dialog}
-
-      {pendingSave ? (
-        <ConfirmDialog
-          title={`Save ${plural(
-            new Set([
-              ...Object.keys(pendingSave.values),
-              ...pendingSave.secrets,
-              ...pendingSave.resets,
-            ]).size,
-            'change',
-          )} to ${pendingSave.group.label}?`}
-          confirmLabel="Confirm save"
-          cancelLabel="Back to editing"
-          busyLabel="Saving…"
-          busy={savingGroup === pendingSave.group.id}
-          onConfirm={() => void commitSave(pendingSave)}
-          onCancel={() => setPendingSave(null)}
-        >
-          <ul className="space-y-1.5">
-            {pendingSave.group.entries
-              .filter(
-                (entry) =>
-                  entry.key in pendingSave.values ||
-                  pendingSave.secrets.includes(entry.key) ||
-                  pendingSave.resets.includes(entry.key),
-              )
-              .map((entry) => (
-                <li key={entry.key} className="break-all">
-                  <span className="font-mono font-medium text-gray-900">{entry.key}</span>
-                  {describeChange(entry, entry.key, pendingSave).map((line) => (
-                    <span key={line} className="block font-mono text-[12px]">
-                      {line}
-                    </span>
-                  ))}
-                </li>
-              ))}
-          </ul>
-          {pendingSave.resets.length > 0 ? (
-            <p>
-              A reset removes the stored value: the setting falls back to the environment, then to
-              its default. A custom variable is deleted.
-            </p>
-          ) : null}
-          {/* Each request is validated alone (PATCH, then one DELETE per reset). */}
-          {pendingSave.resets.length > 0 &&
-          (pendingSave.resets.length > 1 ||
-            Object.keys(pendingSave.values).length + pendingSave.secrets.length > 0) ? (
-            <p>
-              {Object.keys(pendingSave.values).length + pendingSave.secrets.length > 0
-                ? 'The value changes are sent first, in one request; then each reset, on its own.'
-                : 'Each reset is sent on its own, in the order listed.'}{' '}
-              The backend checks each request by itself, so a change that is valid only together
-              with one of these resets can be refused; if so, save that reset on its own first.
-            </p>
-          ) : null}
-          {pendingSave.secrets.length > 0 ? (
-            <p className="font-medium text-gray-800">
-              Marking a variable secret cannot be undone from the console.
-            </p>
-          ) : null}
-          {[...Object.keys(pendingSave.values), ...pendingSave.secrets, ...pendingSave.resets].some(
-            (key) => {
-              const entry = pendingSave.group.entries.find((candidate) => candidate.key === key);
-              return entry ? appliesAfterRestart(entry) : false;
-            },
-          ) ? (
-            <p>Some of these apply only after the backend restarts.</p>
-          ) : null}
-        </ConfirmDialog>
-      ) : null}
     </div>
   );
 }
@@ -1173,12 +1040,12 @@ function AddVariableForm({
   // is the administrator's choice.
   const [secretChoice, setSecretChoice] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const confirmation = useConfirmAction();
-  const saving = confirmation.busy;
+  const writes = useConfirmAction();
+  const saving = writes.busy;
   const secretByName = looksSecret(name);
   const secret = secretByName || secretChoice;
 
-  const submit = (event: React.FormEvent) => {
+  const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     const key = name.trim();
     if (!CUSTOM_KEY_PATTERN.test(key)) {
@@ -1192,30 +1059,8 @@ function AddVariableForm({
       return;
     }
     setError(null);
-    // A new variable is reviewed before it is written; a secret's value is never shown.
-    confirmation.request({
-      title: `Add ${key}?`,
-      confirmLabel: 'Add variable',
-      busyLabel: 'Adding…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={[
-              {
-                label: key,
-                after: secret ? (value ? 'Set (hidden)' : '(empty)') : value || '(empty)',
-              },
-              { label: 'Secret', after: secret ? 'Yes, write-only from now on' : 'No' },
-            ]}
-          />
-          <p>
-            It is stored in the database, where a{' '}
-            <code className="rounded bg-gray-100 px-1">{`$\{${key}}`}</code> reference in a
-            configuration file can read it.
-          </p>
-        </>
-      ),
+    // A refusal that echoes a secret's value shows it masked; the form keeps what was typed.
+    const failure = await writes.perform({
       run: async () => {
         const next = await patchConfig(
           {
@@ -1229,6 +1074,7 @@ function AddVariableForm({
         onAdded(next, key, openedOn);
       },
     });
+    if (failure) setError(failure);
   };
 
   return (
@@ -1256,6 +1102,7 @@ function AddVariableForm({
             id={`${baseId}-name`}
             value={name}
             onChange={(event) => setName(event.target.value.toUpperCase())}
+            disabled={saving}
             placeholder="MY_PROVIDER_API_KEY"
             spellCheck={false}
             autoComplete="off"
@@ -1273,6 +1120,7 @@ function AddVariableForm({
             type={secret ? 'password' : 'text'}
             value={value}
             onChange={(event) => setValue(event.target.value)}
+            disabled={saving}
             spellCheck={false}
             autoComplete={secret ? 'new-password' : 'off'}
             {...NOT_A_LOGIN_FIELD}
@@ -1284,7 +1132,7 @@ function AddVariableForm({
         <input
           type="checkbox"
           checked={secret}
-          disabled={secretByName}
+          disabled={secretByName || saving}
           aria-describedby={secretByName ? `${baseId}-secret-note` : undefined}
           onChange={(event) => setSecretChoice(event.target.checked)}
           className={CHECKBOX}
@@ -1311,10 +1159,9 @@ function AddVariableForm({
           aria-busy={saving || undefined}
           className={BUTTON_PRIMARY}
         >
-          {saving ? 'Adding…' : 'Review and add'}
+          {saving ? 'Adding…' : 'Add variable'}
         </button>
       </div>
-      {confirmation.dialog}
     </form>
   );
 }

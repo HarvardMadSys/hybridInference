@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
-import { ChangeList, type Change } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
@@ -31,14 +30,15 @@ interface UsageInsightsSettingsSectionProps {
 /**
  * Configures the provider used by the admin Usage Insights analysis: a
  * gateway API key (stored server-side, never returned in full) and the
- * model to run the report with, both edited in place and saved after
- * confirmation. The Analyze action lives on each user's detail panel; this
- * section only manages credentials.
+ * model to run the report with, both edited in place and saved together. The
+ * Analyze action lives on each user's detail panel; this section only manages
+ * credentials.
  */
 export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsSectionProps) {
   const [settings, setSettings] = useState<UsageInsightsSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const confirmation = useConfirmAction();
   const busy = confirmation.busy;
   const baseId = useId();
@@ -78,52 +78,41 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
 
   const trimmedModel = model.trim();
   const modelChanged = settings !== null && trimmedModel !== settings.model;
-  const changes: Change[] = [];
-  if (settings && trimmedModel && modelChanged) {
-    changes.push({ label: 'Model', before: settings.model, after: trimmedModel });
-  }
-  // The key is write-only: the summary says what happens to it, never what it is.
-  if (apiKey.trim()) {
-    changes.push({
-      label: 'Gateway API key',
-      before: settings?.configured ? 'Set' : 'Not set',
-      after: 'Replace',
-    });
-  }
+  const keyTyped = apiKey.trim() !== '';
 
   // An emptied model is unsaved too: it keeps the bar up, with Save held back.
-  const unsaved = changes.length + (modelChanged && !trimmedModel ? 1 : 0);
+  const unsaved = Number(modelChanged) + Number(keyTyped);
   const blocked = unsaved > 0 && !trimmedModel ? 'Model name cannot be empty.' : null;
-  // Clear key shares the confirmation, but runs only with nothing unsaved.
+  // Clear key shares the write flow, but runs only with nothing unsaved.
   const saving = busy && unsaved > 0;
 
   const cancel = () => {
     if (busy) return;
     setApiKey('');
     setModel(settings?.model ?? '');
+    setSaveError(null);
   };
 
-  const onSave = () => {
-    if (blocked || changes.length === 0) return;
+  const onSave = async () => {
+    if (blocked || unsaved === 0) return;
     const patch: { api_key?: string; model?: string } = {};
-    if (apiKey.trim()) patch.api_key = apiKey.trim();
-    if (trimmedModel !== settings?.model) patch.model = trimmedModel;
-    confirmation.request({
-      title: `Save ${changes.length === 1 ? '1 change' : `${changes.length} changes`} to Usage Insights?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: <ChangeList changes={changes} />,
+    if (keyTyped) patch.api_key = apiKey.trim();
+    if (modelChanged) patch.model = trimmedModel;
+    setSaveError(null);
+    const failure = await confirmation.perform({
       run: async () => {
+        // The key is write-only: a refusal that echoes it back shows it masked.
         const updated = await updateUsageInsightsSettings(patch).catch((err: unknown) => {
           throw new Error(withoutSecret(getErrorMessage(err), patch.api_key ?? ''));
         });
+        if (!mounted.current) return;
         setSettings(updated);
         setModel(updated.model);
         setApiKey('');
         onToast('Usage Insights provider saved');
       },
     });
+    if (mounted.current) setSaveError(failure);
   };
 
   const onClearKey = () => {
@@ -236,8 +225,9 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
             target="Usage Insights"
             changeCount={unsaved}
             onCancel={cancel}
-            onSave={onSave}
+            onSave={() => void onSave()}
             busy={saving}
+            error={saveError}
             blocked={blocked}
             inPlace
           />

@@ -68,10 +68,14 @@ function relTime(s: string | null): string {
 /** A recipient preview, with the request it was computed for. */
 type CountedPreview = BroadcastPreviewResponse & { key: string };
 
+/** The `key` of a test send, which names it while it runs. */
+const TEST_SEND = 'test send';
+
 /**
- * Email broadcasts. Preview & Count is a direct read; Send Now / Schedule,
- * Send Test to Me and cancelling a scheduled broadcast each open a
- * confirmation first, and only its Confirm sends anything.
+ * Email broadcasts. Preview & Count is a direct read, and Send Test to Me sends
+ * at once, to the signed-in administrator only. Send Now / Schedule and
+ * cancelling a scheduled broadcast each open a confirmation first, and only its
+ * Confirm sends or cancels anything.
  */
 export function BroadcastsTab() {
   const toast = useAccountToast();
@@ -151,6 +155,7 @@ export function BroadcastsTab() {
   // A count is shown and confirmed only for the content and filters it was computed for.
   const freshPreview = bcPreview?.key === previewKey ? bcPreview : null;
   const busy = confirmation.busy;
+  const testSending = confirmation.savingKey === TEST_SEND;
 
   const loadBroadcasts = useCallback(async () => {
     setBroadcastLoading(true);
@@ -248,27 +253,19 @@ export function BroadcastsTab() {
     });
   }
 
-  function reviewTestSend() {
+  // A test reaches nobody in the audience, only the signed-in administrator, so
+  // it is sent on the click.
+  async function sendTest() {
     if (busy || isSpendInvalid) return;
     const request = previewRequest;
-    confirmation.request({
-      title: adminEmail
-        ? `Send a test email to ${adminEmail}?`
-        : 'Send a test email to your account?',
-      confirmLabel: 'Send test',
-      busyLabel: 'Sending…',
-      body: (
-        <p className="[overflow-wrap:anywhere]">
-          {adminEmail
-            ? `Only ${adminEmail} receives it, with [TEST] before the subject. Nobody in the audience is emailed.`
-            : 'Your account has no email address, so the server has nowhere to send a test.'}
-        </p>
-      ),
+    const failure = await confirmation.perform({
+      key: TEST_SEND,
       run: async () => {
         await sendTestBroadcastEmail(request);
         toast.success('Test email sent to your address');
       },
     });
+    if (failure) toast.error(failure);
   }
 
   function confirmCancel(bc: BroadcastListItem) {
@@ -685,10 +682,16 @@ export function BroadcastsTab() {
                 <button
                   type="button"
                   disabled={busy || isSpendInvalid}
-                  onClick={reviewTestSend}
+                  onClick={() => void sendTest()}
+                  aria-busy={testSending || undefined}
+                  title={
+                    adminEmail
+                      ? `Only ${adminEmail} receives it, with [TEST] before the subject.`
+                      : 'Your account has no email address, so the server has nowhere to send a test.'
+                  }
                   className={BUTTON_SECONDARY}
                 >
-                  Send Test to Me
+                  {testSending ? 'Sending…' : 'Send Test to Me'}
                 </button>
 
                 <button
@@ -811,6 +814,8 @@ export function BroadcastsTab() {
                                     e.stopPropagation();
                                     confirmCancel(bc);
                                   }}
+                                  // A test send in flight holds it, as it holds the sends.
+                                  disabled={busy}
                                   className={ROW_ACTION_DANGER}
                                 >
                                   Cancel

@@ -1,7 +1,9 @@
 # 统一配置热更新设计
 
-日期：2026-10-27  
-状态：实施基线；本次首版范围为 P0–P2，验收待完成  
+日期：2026-10-27
+
+状态：实施基线；本次首版范围为 P0–P2，验收结果见 PR 说明。
+
 设计基线：HybridInference `a94aa9d838ca947ae45b2c1b55148f16e19cecf3`
 
 建议建设一套统一的配置应用协议，首批接入告警渠道和失败请求检测参数。统一管理配置版本、刷新、准备与发布、失败重试以及各实例的生效状态；业务组件负责自己的类型校验和资源准备。
@@ -227,4 +229,3 @@ provider 阶段不能只复用现有整表重建函数：请求及 fallback 必�
 - [配置备份恢复入口](https://github.com/HarvardMadSys/hybridInference/blob/a94aa9d838ca947ae45b2c1b55148f16e19cecf3/apps/backend/serving/servers/routers/admin/config_backup.py#L1105)
 - [失败请求检测器与实例冷却状态](https://github.com/HarvardMadSys/hybridInference/blob/a94aa9d838ca947ae45b2c1b55148f16e19cecf3/apps/backend/serving/admin/failed_request_alerter.py#L196)
 - [渠道选择和模块级 incident 跟踪器](https://github.com/HarvardMadSys/hybridInference/blob/a94aa9d838ca947ae45b2c1b55148f16e19cecf3/apps/backend/serving/observability/alerts.py#L664)
-

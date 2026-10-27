@@ -53,6 +53,8 @@ export function AlertNotificationFields({
   const pending = Object.values(entries).some((candidate) => candidate.pending_restart);
   // Applied without a restart once the alerts.runtime group is active.
   const live = Object.values(entries).some((candidate) => candidate.apply_mode === 'managed');
+  // A test of a typed address uses it; otherwise the saved webhook.
+  const typedUrl = entry ? drafts[entry.key]?.kind === 'replace' : false;
   // Channels turned off by an earlier save keep an empty row, and that row wins
   // over the environment forever. Resetting one removes the row; without that
   // button the only way back to a .env webhook was SQL or the config CLI. Only
@@ -109,11 +111,18 @@ export function AlertNotificationFields({
                 onClick={onTest}
                 disabled={disabled || Boolean(alertWebhookError(entry, drafts))}
                 aria-busy={testing || undefined}
+                aria-describedby={`${id}-test-target`}
                 className={BUTTON_SECONDARY}
               >
                 {testing ? 'Sending test…' : 'Send test notification'}
               </button>
-              <p className="text-[11px] text-gray-500">Sends a test without saving changes.</p>
+              {/* The test goes where the button says, at once: the saved webhook
+                  is not necessarily the one a backend process alerts through. */}
+              <p id={`${id}-test-target`} className="min-w-0 flex-1 text-[11px] text-gray-500">
+                {typedUrl
+                  ? 'Sends a test to the address you typed, without saving it.'
+                  : `Sends a test to the saved ${name} webhook, without saving changes. It tests the saved setting, not necessarily the channel alerts go to now: a backend process keeps the channel it applied until it applies the save${live ? '' : ', after a restart'}.`}
+              </p>
             </div>
             {testResult ? (
               <p

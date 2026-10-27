@@ -5,12 +5,7 @@ import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { Select } from '@/components/ui/Select';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import {
-  ChangeList,
-  diffFields,
-  plural,
-  shown,
-} from '@/components/features/admin/confirm/ChangeList';
+import { diffFields } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import {
@@ -55,27 +50,18 @@ const PLACEMENT_LABEL: Record<SiteUpdatePlacement, string> = {
 /** The same fields as a plain record, which `diffFields` compares. */
 type UpdateFields = Pick<SiteUpdateInput, keyof SiteUpdateInput>;
 
-/** The fields of an update, in form order, as they read in a confirmation. */
-const FIELDS: ReadonlyArray<{
-  key: keyof UpdateFields;
-  label: string;
-  format?: (value: UpdateFields[keyof UpdateFields]) => string;
-}> = [
+/** The fields of an update, in form order: what a save compares and sends. */
+const FIELDS: ReadonlyArray<{ key: keyof UpdateFields; label: string }> = [
   { key: 'title', label: 'Title' },
-  {
-    key: 'placement',
-    label: 'Placement',
-    format: (value) => PLACEMENT_LABEL[value as SiteUpdatePlacement] ?? shown(value),
-  },
+  { key: 'placement', label: 'Placement' },
   { key: 'body', label: 'Body' },
   { key: 'link_url', label: 'Link URL' },
   { key: 'link_label', label: 'Link label' },
-  {
-    key: 'published',
-    label: 'Visibility',
-    format: (value) => (value ? 'Published' : 'Draft'),
-  },
+  { key: 'published', label: 'Visibility' },
 ];
+
+/** The `key` of the editor's own writes, a create or a save. */
+const EDITOR_WRITE = 'editor';
 
 /** A saved update's fields, as the editor holds them. */
 function formOf(u: SiteUpdateItem): SiteUpdateInput {
@@ -95,10 +81,6 @@ function fmtDate(s: string): string {
     day: 'numeric',
     year: 'numeric',
   });
-}
-
-function where(placement: SiteUpdatePlacement): string {
-  return placement === 'banner' ? 'as the homepage banner' : 'in the homepage Updates section';
 }
 
 /**
@@ -138,11 +120,11 @@ function linkHost(url: string): string {
 const MD_CLASSES = MARKDOWN_PROSE;
 
 /**
- * Homepage updates. The list is read-only; New update opens a form that is
- * reviewed before it is created, Edit opens one update's fields as drafts that
- * are saved after the administrator confirms `old → new`, and Publish /
- * Unpublish / Delete are each confirmed on their own. Hiding the editor keeps
- * its drafts; opening another update for editing asks before discarding them.
+ * Homepage updates. The list is read-only; New update opens a form whose
+ * button creates the update, published or as a draft, and Edit opens one
+ * update's fields as drafts that Save changes writes. Publish and Unpublish act
+ * at once; Delete is confirmed. Hiding the editor keeps its drafts; opening
+ * another update for editing asks before discarding them.
  */
 export function SiteUpdatesTab() {
   const toast = useAccountToast();
@@ -153,8 +135,10 @@ export function SiteUpdatesTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SiteUpdateInput>(EMPTY_FORM);
   // The editor opens on demand. Hiding it keeps the draft; only Cancel or a
-  // confirmed create or save clears it.
+  // create or save that succeeded clears it.
   const [composerOpen, setComposerOpen] = useState(false);
+  // Why the editor's last create or save failed; its draft is kept for another try.
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Updates whose full Markdown is shown in the list.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const toggleBody = (id: string) =>
@@ -217,12 +201,14 @@ export function SiteUpdatesTab() {
   }, [load]);
 
   const busy = confirmation.busy;
+  const editorSaving = confirmation.savingKey === EDITOR_WRITE;
 
   /** Clear the draft and close the editor; `refocus` returns to the opener. */
   function resetForm(refocus = false) {
     returnFocus.current = refocus;
     setEditingId(null);
     setForm(EMPTY_FORM);
+    setSaveError(null);
     setComposerOpen(false);
   }
 
@@ -247,6 +233,7 @@ export function SiteUpdatesTab() {
   function switchTo(u: SiteUpdateItem) {
     setEditingId(u.id);
     setForm(formOf(u));
+    setSaveError(null);
     openComposer();
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -283,101 +270,57 @@ export function SiteUpdatesTab() {
     openComposer();
   }
 
-  function reviewCreate() {
+  /** The editor's create or save; a failure stays in the editor with the draft. */
+  async function writeFromEditor(run: () => Promise<void>) {
+    setSaveError(null);
+    setSaveError(await confirmation.perform({ key: EDITOR_WRITE, run }));
+  }
+
+  function create() {
     if (!form.title.trim()) {
       toast.error('Title is required');
       return;
     }
     const input = form;
-    confirmation.request({
-      title: input.published ? 'Create and publish this update?' : 'Create this update as a draft?',
-      confirmLabel: input.published ? 'Create and publish' : 'Create draft',
-      busyLabel: 'Creating…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={FIELDS.map((field) => ({
-              label: field.label,
-              after: (field.format ?? ((value) => shown(value as never)))(input[field.key]),
-            }))}
-          />
-          <p>
-            {input.published
-              ? `It appears ${where(input.placement)} as soon as it is created.`
-              : 'Nobody sees it until it is published.'}
-            {input.published && input.placement === 'banner'
-              ? ' Only the most recent published banner is shown.'
-              : ''}
-          </p>
-        </>
-      ),
-      run: async () => {
-        await createSiteUpdate(input);
-        toast.success('Update created');
-        resetForm(true);
-        await load();
-      },
+    void writeFromEditor(async () => {
+      await createSiteUpdate(input);
+      toast.success('Update created');
+      resetForm(true);
+      await load();
     });
   }
 
-  function reviewEdit() {
+  function save() {
     if (!editing || changes.length === 0) return;
     if (!form.title.trim()) {
       toast.error('Title is required');
       return;
     }
     const target = editing;
-    const pending = changes;
-    // Only the changed fields are sent: what is confirmed is exactly what is written.
+    // Only the changed fields are sent.
     const patch: Partial<SiteUpdateInput> = {};
     for (const field of FIELDS) {
       if (JSON.stringify(target[field.key]) !== JSON.stringify(form[field.key])) {
         Object.assign(patch, { [field.key]: form[field.key] });
       }
     }
-    confirmation.request({
-      title: `Save ${plural(pending.length, 'change')} to “${target.title}”?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList changes={pending} />
-          {target.published || form.published ? (
-            <p>The homepage reflects this as soon as it is saved.</p>
-          ) : null}
-        </>
-      ),
-      run: async () => {
-        await updateSiteUpdate(target.id, patch);
-        toast.success('Update saved');
-        resetForm(true);
-        await load();
-      },
+    void writeFromEditor(async () => {
+      await updateSiteUpdate(target.id, patch);
+      toast.success('Update saved');
+      resetForm(true);
+      await load();
     });
   }
 
-  function confirmTogglePublished(u: SiteUpdateItem) {
-    const publish = !u.published;
-    confirmation.request({
-      title: publish ? `Publish “${u.title}”?` : `Unpublish “${u.title}”?`,
-      confirmLabel: publish ? 'Publish' : 'Unpublish',
-      busyLabel: publish ? 'Publishing…' : 'Unpublishing…',
-      body: (
-        <p>
-          {publish
-            ? `It appears ${where(u.placement)} right away.${
-                u.placement === 'banner' ? ' Only the most recent published banner is shown.' : ''
-              }`
-            : `It disappears from the homepage and stays here as a draft.`}
-        </p>
-      ),
+  // Publish and Unpublish undo each other, so either acts on the click.
+  async function togglePublished(u: SiteUpdateItem) {
+    const failure = await confirmation.perform({
       run: async () => {
-        await updateSiteUpdate(u.id, { published: publish });
+        await updateSiteUpdate(u.id, { published: !u.published });
         await load();
       },
     });
+    if (failure) toast.error(failure);
   }
 
   function confirmRemove(u: SiteUpdateItem) {
@@ -424,7 +367,7 @@ export function SiteUpdatesTab() {
       }
     >
       {/* Composer. Only its buttons act: Enter in a field submits the form,
-          and a title alone must not open a review of a half-written update. */}
+          and a title alone must not create or save a half-written update. */}
       {composerVisible && (
         <form
           aria-labelledby={fieldId('composer-title')}
@@ -606,13 +549,19 @@ export function SiteUpdatesTab() {
                   >
                     Cancel
                   </button>
+                  {/* Says what the click does: publish at once, or keep a draft. */}
                   <button
                     type="button"
-                    onClick={reviewCreate}
+                    onClick={create}
                     disabled={busy}
+                    aria-busy={editorSaving || undefined}
                     className={BUTTON_PRIMARY}
                   >
-                    Create Update
+                    {editorSaving
+                      ? 'Creating…'
+                      : form.published
+                        ? 'Create and publish'
+                        : 'Create draft'}
                   </button>
                 </div>
               )}
@@ -622,9 +571,18 @@ export function SiteUpdatesTab() {
                 target={editing.title}
                 changeCount={changes.length}
                 onCancel={closeEditor}
-                onSave={reviewEdit}
-                busy={busy}
+                onSave={save}
+                busy={editorSaving}
+                held={busy}
+                error={saveError}
               />
+            ) : saveError ? (
+              <p
+                className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600 [overflow-wrap:anywhere]"
+                role="alert"
+              >
+                {saveError}
+              </p>
             ) : null}
           </div>
         </form>
@@ -641,6 +599,7 @@ export function SiteUpdatesTab() {
             {updates.map((u) => {
               // The update being edited keeps its Publish and Delete until the
               // editor closes: either would leave its drafts stale or orphaned.
+              // No row action starts while a write runs.
               const isEditing = editing?.id === u.id;
               const isOpen = expanded.has(u.id);
               const excerpt = u.body ? plainExcerpt(u.body) : '';
@@ -746,6 +705,7 @@ export function SiteUpdatesTab() {
                     <button
                       type="button"
                       onClick={() => startEdit(u)}
+                      disabled={busy}
                       aria-label={`Edit ${u.title}`}
                       className={ROW_ACTION}
                     >
@@ -753,8 +713,8 @@ export function SiteUpdatesTab() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => confirmTogglePublished(u)}
-                      disabled={isEditing}
+                      onClick={() => void togglePublished(u)}
+                      disabled={isEditing || busy}
                       aria-label={`${u.published ? 'Unpublish' : 'Publish'} ${u.title}`}
                       className={ROW_ACTION}
                     >
@@ -763,7 +723,7 @@ export function SiteUpdatesTab() {
                     <button
                       type="button"
                       onClick={() => confirmRemove(u)}
-                      disabled={isEditing}
+                      disabled={isEditing || busy}
                       aria-label={`Delete ${u.title}`}
                       className={ROW_ACTION_DANGER}
                     >

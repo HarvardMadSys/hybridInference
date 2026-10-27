@@ -228,9 +228,9 @@ export default function UsersTab() {
     if (view) applyFilterState(view.filterState);
   };
 
-  // Write handlers — wrap the admin API fns and refetch on success. UserTable
-  // runs each one inside a confirmation it owns, so a failure is thrown, not
-  // toasted: the confirmation stays open with the error and can be retried.
+  // Write handlers — wrap the admin API fns and refetch on success. A failure
+  // is thrown, not toasted: UserTable shows it in the confirmation that asked
+  // for the write or beside the save that made it, and toasts it otherwise.
   const labelOf = (id: string) => userAccountLabel(users.find((u) => u.id === id)) || id;
   const handlers = {
     onApprove: async (id: string) => {
