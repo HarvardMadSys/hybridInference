@@ -162,17 +162,17 @@ class KeyPoolExhausted(Exception):
 class KeyPoolRoleRestricted(KeyPoolExhausted):
     """No key for *this caller*, though the pool can still serve someone else.
 
-    Split out from plain ``KeyPoolExhausted`` because the two mean opposite
-    things to endpoint health. A pool with nothing usable by anyone is an
-    endpoint problem worth counting against it; a pool that simply holds no key
-    this caller's tier may spend is not — the request never reached the upstream,
-    and the endpoint is happily serving the tiers that own those keys. Counting
-    it would let a burst of lower-tier traffic open the circuit and take reserved
-    capacity away from the callers it was reserved for.
+    Split out from plain ``KeyPoolExhausted`` so operators can tell the two
+    apart in health logs. Neither subtype is counted against endpoint health:
+    both are raised by ``acquire()`` before anything is sent, so neither is
+    evidence about the endpoint (see ``EndpointHealthRegistry.record_failure``).
+    The distinction is diagnostic only — "reserved above this caller's tier"
+    (the endpoint is happily serving the tiers that own those keys) versus
+    "every key muted or removed" (the tail of a provider 429/auth storm).
 
     Subclasses ``KeyPoolExhausted`` so existing handlers (the 429 mapping on the
     Anthropic surface, the router's fallback chain) keep their behavior without
-    change; only health accounting looks for the distinction.
+    change; only the health-accounting log label looks for the distinction.
     """
 
 
