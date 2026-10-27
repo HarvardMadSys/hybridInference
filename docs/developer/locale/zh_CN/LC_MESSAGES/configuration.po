@@ -2036,8 +2036,8 @@ msgstr ""
 
 #: ../developer/configuration.md
 #, python-brace-format
-msgid "`PATCH /admin/batch/models/{model_id}` sets or clears a model's cap; `GET /admin/batch/models` lists the caps with each model's running and queued batch requests"
-msgstr "`PATCH /admin/batch/models/{model_id}` 设置或清除某个模型的上限；`GET /admin/batch/models` 列出各模型的上限及其正在运行和排队的批量请求"
+msgid "`PATCH /admin/batch/models/{model_id}` sets or clears a model's cap; `GET /admin/batch/models` lists the caps with each model's running and queued batch requests. The other batch settings are in [Running batch inference](batches.md#running-batch-inference)"
+msgstr "`PATCH /admin/batch/models/{model_id}` 设置或清除某个模型的上限；`GET /admin/batch/models` 列出各模型的上限及其正在运行和排队的批量请求。其他批量设置项见[运行批量推理](batches.md#running-batch-inference)"
 
 #: ../developer/configuration.md
 msgid "`batch_model_limits`"

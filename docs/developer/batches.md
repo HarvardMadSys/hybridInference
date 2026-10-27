@@ -18,29 +18,51 @@ A batch request can be a chat completion (`/v1/chat/completions`), an embedding
 Anthropic message. The shapes follow OpenAI's Batch API and Anthropic's Message
 Batches API; the differences are listed at the end of this page.
 
+The official OpenAI and Anthropic SDKs work against these routes: point the
+SDK's base URL at the gateway — `https://your-gateway.example/v1` for OpenAI's,
+`https://your-gateway.example` for Anthropic's — and pass your gateway API key.
+There is no HybridInference SDK of its own, and the gateway does not offer every
+batch feature of either provider. The inline form and the results pages are
+this gateway's own, so the SDKs have no methods for them; call them over HTTP,
+as the examples below do.
+
 ```{note}
 Only **internal** users and administrators can create batches unless the
 operator opens them to other roles. A gateway with batch inference turned off,
 or without a database, answers every batch route with `404`. File batches,
-Anthropic Message Batches, embeddings, Responses requests and webhooks are
-available once the operator turns on `BATCH_EXPANSION_ENABLED`.
+Anthropic Message Batches, embeddings, Responses requests and webhooks can be
+created only once the operator turns on `BATCH_EXPANSION_ENABLED`, which is off
+by default.
 ```
 
 ## How it works
 
-Creating a batch validates every request in it and stores them. Nothing runs
-during that call: the batch starts as `validating`, and the gateway's worker
-starts its requests as soon as their models have room.
+Creating a batch stores its requests; nothing runs during that call. When the
+requests are checked depends on the API: an inline batch is checked whole before
+the call answers ([Create a batch](#create-a-batch)), a file batch is checked
+whole in the background ([Batches from a file](#batches-from-a-file)), and a
+Message Batch's requests are checked one by one, each invalid one becoming an
+error result ([Anthropic Message Batches](#anthropic-message-batches)). An
+OpenAI batch starts as `validating`, and the gateway's worker starts the
+requests of any batch as soon as their models have room.
 
 Each request then runs exactly as if you had sent it to its endpoint yourself:
 the same models, routing and fallback, the same price, logged under your
-account. It counts toward your daily cost quota. It does **not** use your
-concurrent-request limit: batch work has a separate quota per role, so a
-running batch never blocks your own interactive requests, and they never hold
-up the batch. Requests run in no particular order, and a request that fails for
-a reason that may pass — a timeout, a `429`, a `5xx` — is retried with backoff,
-up to eight attempts in all. A request the model rejects (any other `4xx`)
-fails at once.
+account. It counts toward your daily cost quota. It does **not** take a slot of
+your concurrent-request limit: batch work has a separate quota per role, so a
+running batch does not use up the slots your interactive requests need, and
+they do not use up the batch's.
+
+Batch and interactive requests still share the models and the upstream servers
+behind them. By default a model runs fewer batch requests while interactive
+requests are in flight on it, so a batch gives way to interactive traffic on
+the same model and may slow down while that traffic is heavy (see
+[Running batch inference](#running-batch-inference)).
+
+Requests run in no particular order, and a request that fails for a reason
+that may pass — a timeout, a `429`, a `5xx` — is retried with backoff, up to
+eight attempts in all. A request the model rejects (any other `4xx`) fails at
+once.
 
 Before each request runs, the gateway checks the API key that created the batch
 again:
@@ -164,7 +186,7 @@ one of the four final ones:
 | `in_progress` | Requests are running |
 | `finalizing` | A file batch: every request has finished and its output files are being written |
 | `completed` | Every request has finished, successfully or not. Read each one's outcome in the results |
-| `failed` | The batch stopped because the key or account that created it is no longer valid; `error` says so (`owner_unauthorized`). Requests that had not started are `failed` with `batch_failed` |
+| `failed` | The batch stopped because its creating key or account is no longer valid; `error` says so (`owner_unauthorized`), and unstarted requests fail with `batch_failed`. A file batch also fails if its input cannot be validated; no request runs and `errors` lists the problems |
 | `expired` | The completion window (`completion_window`, from `created_at` to `expires_at`) closed first. Requests that had not started are `expired` with `batch_expired`; finished ones keep their results |
 | `cancelling` | Cancelled while requests were running; they are finishing |
 | `cancelled` | Cancelled. Requests that had not started never will |
@@ -226,9 +248,9 @@ curl -s "https://your-gateway.example/v1/batches/$BATCH_ID/results?limit=100" \
 
 `limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the next
 page with `after` set to the page's `last_id`. Every request of the batch is
-listed, finished or not: one still `queued` or `running` has neither `response`
-nor `error` yet, so read the results once the batch is in a final status, or
-read them again later.
+listed, finished or not. A request still `queued` or `running` has no
+`response` yet, but may retain its last `error` while being retried. Read the
+results once the batch is in a final status, or read them again later.
 
 A finished request has a `status` of `completed`, with the chat completion in
 `response.body`, or `failed`, with an `error` instead. A request that never ran
@@ -494,11 +516,11 @@ cancel, delete and download results, and set up your webhook.
 |---|---|
 | Size of the create request's body | 32 MiB (`413` above it) |
 | Requests per batch | 50,000 |
-| Batches you may have unfinished at once (`validating`, `in_progress` or `cancelling`) | 10 (`429` above it) |
+| Batches you may have unfinished at once (`validating`, `in_progress`, `finalizing` or `cancelling`) | 10 (`429` above it) |
 | Unfinished requests across all your batches | 100,000 (`429` above it) |
 | Size of an input file, and of one of its lines | 32 MiB; 4 MiB per line |
 | Input files you may keep, and upload per hour | 512 MiB; 60 |
-| Time a batch has to finish (`completion_window`) | 24 hours (always 24 hours for file batches and Message Batches) |
+| Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches and Message Batches) |
 | Time a finished batch is kept | 7 days |
 
 The operator may have changed any of them. A larger job is several batches.
@@ -511,8 +533,28 @@ The operator may have changed any of them. A larger job is several batches.
 | `401` | The API key is invalid or expired when authentication runs, or the account becomes unavailable before the batch is stored |
 | `403` | Your role may not create batches |
 | `404` | Batch inference is not available on this gateway |
+| `409` | The `Idempotency-Key` was already used with a different request |
+| `410` | The `Idempotency-Key`'s batch has been deleted |
 | `413` | The body is larger than the size limit |
-| `429` | You have the most unfinished batches allowed, or your daily quota is used up |
+| `429` | You have the most unfinished batches allowed, the batch would take your unfinished requests over their limit, or your daily quota is used up |
+
+A file batch is counted against the limit on unfinished requests while its file
+is read, after the create call has answered: over the limit, the batch is
+`failed` with `queued_request_limit` in `errors`.
+
+While `BATCH_EXPANSION_ENABLED` is off, creating a kind of batch it governs is
+refused, with a status that depends on the API:
+
+| Call | Status |
+|---|---|
+| `POST /v1/batches` with an `input_file_id`, or with an embeddings or Responses `url` | `400` |
+| `POST /v1/files` | `400` |
+| `PUT /v1/batch_webhook` | `400` |
+| `POST /v1/messages/batches` | `403` |
+
+Batches already accepted can still be read, downloaded, cancelled and deleted.
+Message Batch routes answer every error in Anthropic's shape: a top-level
+`"type": "error"` and an `error` object with its own `type` and `message`.
 
 ## Compared with OpenAI's and Anthropic's batch APIs
 
@@ -546,7 +588,7 @@ and to the worker's next round.
 | `BATCH_ENABLED` | on | Serve batch inference. Off, every `/v1/batches` route answers `404` and no queued request starts; stored batches are kept |
 | `BATCH_MIN_ROLE` | `internal` | Lowest role that may create batches (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it |
 | `BATCH_MODEL_CONCURRENCY` | 64 | Batch requests a model runs at once, across the whole deployment, when it has no cap of its own. `0` pauses batch work on those models |
-| `BATCH_YIELD_TO_INTERACTIVE` | on | Interactive requests in flight on a model take batch slots from its cap |
+| `BATCH_YIELD_TO_INTERACTIVE` | on | Interactive requests in flight on a model take batch slots from its cap, so batch work gives way to interactive traffic on the same model. Off, batch work fills the cap whatever the interactive load, and `BATCH_SHARED_INTERACTIVE_LOAD` and `BATCH_INTERACTIVE_RESERVE` have no effect |
 | `BATCH_MAX_REQUESTS` | 50000 | Requests one batch may hold |
 | `BATCH_MAX_BODY_MB` | 32 | Largest create request, in MiB |
 | `BATCH_MAX_ACTIVE_PER_USER` | 10 | Unfinished batches one user may have |
@@ -554,9 +596,9 @@ and to the worker's next round.
 | `BATCH_RETENTION_DAYS` | 7 | Days a finished batch and its results are kept. A batch keeps the value it was created with |
 | `BATCH_EXPANSION_ENABLED` | off | Allow creating file batches, Message Batches, embedding and Responses batches, and webhooks. Off, batches already accepted keep running and stay readable, downloadable, cancellable and deletable |
 | `BATCH_MAX_QUEUED_REQUESTS_PER_USER` | 100000 | Unfinished requests one user may have across all their batches |
-| `BATCH_ROLE_CONCURRENCY_FREE` / `_PRO` / `_INTERNAL` / `_ADMIN` | 8 / 16 / 64 / 64 | Batch requests one user of that role may have running at once, across every model. Counted per gateway process (deployments run one). Separate from the role's interactive concurrency limit (`user_concurrency_<role>` and a user's own override apply to interactive requests only); `0` removes this cap |
-| `BATCH_SHARED_INTERACTIVE_LOAD` | on | Yield to the interactive requests of every gateway process, not only the worker's own |
-| `BATCH_INTERACTIVE_RESERVE` | 0 | Slots of every model's batch cap kept free for interactive requests, on top of those in flight |
+| `BATCH_ROLE_CONCURRENCY_FREE` / `_PRO` / `_INTERNAL` / `_ADMIN` | 8 / 16 / 64 / 64 | Batch requests one user of that role may have running at once, across every model. Counted in each gateway process on its own, so with several processes a user may run up to this many in each; a model's cap, by contrast, is counted in the database across every process. Separate from the role's interactive concurrency limit (`user_concurrency_<role>` and a user's own override apply to interactive requests only); `0` removes this cap |
+| `BATCH_SHARED_INTERACTIVE_LOAD` | on | Yield to the interactive requests of every gateway process, not only the worker's own. While the shared counts cannot be read from the database, no new batch request starts; running ones continue. Applies only while `BATCH_YIELD_TO_INTERACTIVE` is on |
+| `BATCH_INTERACTIVE_RESERVE` | 0 | Slots of every model's batch cap kept free for interactive requests, on top of those in flight. Applies only while `BATCH_YIELD_TO_INTERACTIVE` is on |
 | `BATCH_MAX_LINE_KB` | 4096 | Largest line of an input file |
 | `BATCH_MAX_RESULT_KB` | 4096 | Largest response one batch request may store |
 | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` | 512 | Uploaded input files one user may keep |
@@ -582,8 +624,9 @@ minutes later.
 The batches live in the operational database: `batch_jobs`, `batch_items`,
 `batch_attempts` (one row per attempt, with what it was billed),
 `batch_idempotency`, `batch_files` and `batch_file_chunks`, `batch_webhooks`
-and `batch_webhook_events`, `batch_model_limits` and a few tables of scheduling
-state. Each request a batch runs is a row in `api_logs` with `batch_job_id` set,
+and `batch_webhook_events`, `batch_model_limits`, the worker's scheduling state
+in `batch_user_state` and `batch_interactive_load`, and download leases in
+`batch_read_leases`. Each request a batch runs is a row in `api_logs` with `batch_job_id` set,
 and its item and attempt in the row's metadata. Permanently deleting a user
 deletes their batches, files, idempotency records and webhook too.
 
@@ -597,6 +640,17 @@ worker that would run their requests as chat completions. So keep
 `BATCH_EXPANSION_ENABLED` off until every gateway process runs the new version,
 then turn it on. Turning it off again later stops new batches of those kinds and
 nothing else.
+
+Upgrading from a version without `BATCH_ROLE_CONCURRENCY_<ROLE>` changes three
+things:
+
+- `BATCH_MODEL_CONCURRENCY` now defaults to 64, but a value stored for it on
+  the **Configuration** tab still applies. A deployment that saved the old
+  default of 4 keeps 4 until an administrator changes it.
+- `BATCH_USER_MAX_CONCURRENCY` no longer exists. A value stored for it is
+  ignored; `BATCH_ROLE_CONCURRENCY_<ROLE>` is the per-user batch limit.
+- `user_concurrency_<role>` and a user's own concurrency override no longer
+  limit batch requests.
 
 To roll back to an older version after batches of the new kinds were accepted,
 do it while the new version is still running, since only it can manage them:

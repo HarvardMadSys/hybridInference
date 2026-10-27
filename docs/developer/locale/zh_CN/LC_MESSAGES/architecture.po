@@ -1271,12 +1271,42 @@ msgstr "[批量推理](batches.md)"
 
 #: ../developer/architecture.md
 #, python-brace-format
-msgid "`POST /v1/batches`, `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results`"
-msgstr "`POST /v1/batches`、`GET /v1/batches`、`GET` 和 `DELETE /v1/batches/{id}`、`POST /v1/batches/{id}/cancel`、`GET /v1/batches/{id}/results`"
+msgid "`POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl` (JSONL export)"
+msgstr "`POST` 和 `GET /v1/batches`、`GET` 和 `DELETE /v1/batches/{id}`、`POST /v1/batches/{id}/cancel`、`GET /v1/batches/{id}/results`、`GET /v1/batches/{id}/output.jsonl`（JSONL 导出）"
 
 #: ../developer/architecture.md
 msgid "API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default"
 msgstr "API key；创建批次需要 `BATCH_MIN_ROLE` 角色，默认为 `internal`"
+
+#: ../developer/architecture.md
+msgid "[Batch files](batches.md#batches-from-a-file)"
+msgstr "[批次文件](batches.md#batches-from-a-file)"
+
+#: ../developer/architecture.md
+#, python-brace-format
+msgid "`POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content`"
+msgstr "`POST` 和 `GET /v1/files`、`GET` 和 `DELETE /v1/files/{id}`、`GET /v1/files/{id}/content`"
+
+#: ../developer/architecture.md
+msgid "[Message Batches](batches.md#anthropic-message-batches)"
+msgstr "[Message Batches](batches.md#anthropic-message-batches)"
+
+#: ../developer/architecture.md
+#, python-brace-format
+msgid "`POST` and `GET /v1/messages/batches`, `GET` and `DELETE …/{id}`, `POST …/{id}/cancel`, `GET …/{id}/results`; the same under `/anthropic`"
+msgstr "`POST` 和 `GET /v1/messages/batches`、`GET` 和 `DELETE …/{id}`、`POST …/{id}/cancel`、`GET …/{id}/results`；`/anthropic` 下同样提供"
+
+#: ../developer/architecture.md
+msgid "[Batch webhooks](batches.md#webhooks)"
+msgstr "[批次 webhook](batches.md#webhooks)"
+
+#: ../developer/architecture.md
+msgid "`GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events`"
+msgstr "`GET`、`PUT` 和 `DELETE /v1/batch_webhook`、`GET /v1/batch_webhook/events`"
+
+#: ../developer/architecture.md
+msgid "While `BATCH_EXPANSION_ENABLED` is off (the default), the gateway refuses to create file batches, Message Batches and embedding or Responses batches, to upload files and to save a batch webhook. Existing batches, files and webhooks stay readable and deletable, and existing batches can still be cancelled."
+msgstr "`BATCH_EXPANSION_ENABLED` 关闭时（默认），网关拒绝创建文件批次、Message Batches 以及 embedding 或 Responses 批次，也拒绝上传文件和保存批次 webhook。已有的批次、文件和 webhook 仍可读取和删除，已有的批次仍可取消。"
 
 #: ../developer/architecture.md:466
 msgid ""

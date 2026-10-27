@@ -477,12 +477,20 @@ Client-facing groups, all served by the same app:
 | --- | --- | --- |
 | OpenAI-compatible inference | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, `POST /v1/embeddings`, `POST /v1/responses` | API key |
 | Anthropic-compatible inference | `POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens` | API key |
-| [Batch inference](batches.md) | `POST /v1/batches`, `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results` | API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default |
+| [Batch inference](batches.md) | `POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl` (JSONL export) | API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default |
+| [Batch files](batches.md#batches-from-a-file) | `POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | API key |
+| [Message Batches](batches.md#anthropic-message-batches) | `POST` and `GET /v1/messages/batches`, `GET` and `DELETE …/{id}`, `POST …/{id}/cancel`, `GET …/{id}/results`; the same under `/anthropic` | API key |
+| [Batch webhooks](batches.md#webhooks) | `GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events` | API key |
 | Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
 | Health | `GET /health`, `/health/ready`, `/health/deep` | None |
 | Public routing disclosure | `GET /routing` | None |
 | Admin | `GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*` | Admin |
 | Accounts and console APIs | `/auth/*`, `/user/*`, `/site-config` | Mixed |
+
+While `BATCH_EXPANSION_ENABLED` is off (the default), the gateway refuses to
+create file batches, Message Batches and embedding or Responses batches, to
+upload files and to save a batch webhook. Existing batches, files and webhooks
+stay readable and deletable, and existing batches can still be cancelled.
 
 ```{warning}
 `GET /routing` requires no authentication and returns each published route's

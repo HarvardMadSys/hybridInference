@@ -1029,12 +1029,12 @@ msgid "Batch inference"
 msgstr "批量推理"
 
 #: ../developer/database.md
-msgid "`batch_jobs`, `batch_items`, `batch_model_limits`"
+msgid "`batch_jobs`, `batch_items`, `batch_attempts`, `batch_idempotency`, `batch_files`, `batch_file_chunks`, `batch_webhooks`, `batch_webhook_events`, `batch_model_limits`, `batch_user_state`, `batch_interactive_load`, `batch_read_leases`"
 msgstr ""
 
 #: ../developer/database.md
-msgid "Batches submitted to `/v1/batches`, with their requests and results until `BATCH_RETENTION_DAYS` after they finish, and the per-model batch concurrency caps; see [Batch Inference](batches.md)"
-msgstr "提交到 `/v1/batches` 的批次及其请求和结果（保留到批次结束后 `BATCH_RETENTION_DAYS` 天），以及每个模型的批量并发上限；见[批量推理](batches.md)"
+msgid "Batches of all three batch APIs with their requests, attempts and results until `BATCH_RETENTION_DAYS` after they finish; uploaded input files and result files; idempotency keys; webhooks and their deliveries; the per-model batch concurrency caps; and the worker's scheduling state and download leases. See [Running batch inference](batches.md#running-batch-inference)"
+msgstr "三种批量 API 的批次及其请求、尝试和结果（保留到批次结束后 `BATCH_RETENTION_DAYS` 天）；上传的输入文件和结果文件；幂等 key；webhook 及其投递记录；每个模型的批量并发上限；以及 worker 的调度状态和下载租约。见[运行批量推理](batches.md#running-batch-inference)"
 
 #: ../developer/database.md
 msgid ""
