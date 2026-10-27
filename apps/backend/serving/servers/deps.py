@@ -431,6 +431,8 @@ async def get_current_user(
         "phone": user_row.get("phone"),
         "phone_verified": user_row.get("phone_verified", False),
         "status": user_row["status"],
+        # Per-user override of the role's concurrency cap (None: the role's).
+        "max_concurrent_requests": user_row.get("max_concurrent_requests"),
         # The auth session this token was issued for; ``auth_sessions.sid``.
         "sid": payload.get("sid"),
     }
