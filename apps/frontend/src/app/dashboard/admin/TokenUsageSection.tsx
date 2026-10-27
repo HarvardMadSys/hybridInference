@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AdminMetricDistribution,
   AdminPerformanceMetricsWindow,
@@ -13,14 +13,6 @@ import {
 import { ComputedAt } from '@/components/features/admin/ComputedAt';
 import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { Select } from '@/components/ui/Select';
-
-const RANGES: { key: TokenUsageRange; label: string }[] = [
-  { key: '1h', label: 'Last 1h' },
-  { key: '24h', label: 'Last 24h' },
-  { key: '7d', label: 'Last 7d' },
-  { key: '30d', label: 'Last 30d' },
-];
 
 const compact = new Intl.NumberFormat('en-US', {
   notation: 'compact',
@@ -79,66 +71,67 @@ function groupByProvider(
   return out;
 }
 
-export function TokenUsageTab({ perfRefreshNonce }: { perfRefreshNonce?: number }) {
-  const [range, setRange] = useState<TokenUsageRange>('24h');
+/** Token totals per provider and model; the Analytics overview picks the range. */
+export function TokenUsageSection({ range }: { range: TokenUsageRange }) {
   const [data, setData] = useState<ProviderTokenUsageResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  // The overview's period buttons can be clicked faster than the server
+  // answers: a superseded range must not land its rows, or clear `loading`,
+  // over the one now selected.
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    try {
-      const resp = await getProviderTokenUsage(range);
-      setData(resp);
-    } catch (exc) {
-      setError(getErrorMessage(exc));
-    } finally {
-      setLoading(false);
-    }
+    (async () => {
+      try {
+        const resp = await getProviderTokenUsage(range);
+        if (!cancelled) setData(resp);
+      } catch (exc) {
+        if (!cancelled) setError(getErrorMessage(exc));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [range]);
 
-  useEffect(() => {
-    void load();
-  }, [load, perfRefreshNonce]);
-
   const groups = useMemo(() => groupByProvider(data?.rows ?? []), [data]);
+  const shown = !loading && !error ? data : null;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end gap-4">
-        <label className="text-sm">
-          <span className="block text-gray-500 mb-1">Range</span>
-          <Select<TokenUsageRange>
-            value={range}
-            onValueChange={setRange}
-            options={RANGES.map((r) => ({ value: r.key, label: r.label }))}
-            aria-label="Range"
-            className="w-40"
-          />
-        </label>
-        {data ? (
-          <div className="text-[12px] text-gray-500 pb-1">
-            <div>Updated at {fmtUtcHour(data.refreshed_at)} (hourly refresh)</div>
-            {range === '1h' ? (
-              <div>showing hour {fmtUtcRange(data.window.from, data.window.to)}</div>
+    <section className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1">
+        <div>
+          <h2 className="text-[14px] font-semibold text-gray-900">Token usage</h2>
+          <p className="text-[11px] text-gray-400">Tokens and cost per provider and model.</p>
+        </div>
+        {shown ? (
+          <div className="text-[11px] text-gray-400 sm:text-right">
+            <div>Updated at {fmtUtcHour(shown.refreshed_at)} (hourly refresh)</div>
+            {shown.range === '1h' ? (
+              <div>showing hour {fmtUtcRange(shown.window.from, shown.window.to)}</div>
             ) : null}
           </div>
         ) : null}
       </div>
 
-      {error ? <div className="text-red-600 text-sm">{error}</div> : null}
-      {loading ? <div className="text-gray-500 text-sm">Loading…</div> : null}
+      {error ? (
+        <div className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
+      ) : null}
 
-      {data ? (
+      {shown ? (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <Kpi label="Input" value={fmtCount(data.totals.input_tokens)} />
-            <Kpi label="Output" value={fmtCount(data.totals.output_tokens)} />
-            <Kpi label="Cached" value={fmtCount(data.totals.cached_tokens)} />
-            <Kpi label="Reasoning" value={fmtCount(data.totals.reasoning_tokens)} />
-            <Kpi label="Requests" value={fmtCount(data.totals.request_count)} />
-            <Kpi label="Cost USD" value={fmtCost(data.totals.cost_usd)} />
+            <Kpi label="Input" value={fmtCount(shown.totals.input_tokens)} />
+            <Kpi label="Output" value={fmtCount(shown.totals.output_tokens)} />
+            <Kpi label="Cached" value={fmtCount(shown.totals.cached_tokens)} />
+            <Kpi label="Reasoning" value={fmtCount(shown.totals.reasoning_tokens)} />
+            <Kpi label="Requests" value={fmtCount(shown.totals.request_count)} />
+            <Kpi label="Cost USD" value={fmtCost(shown.totals.cost_usd)} />
           </div>
 
           {groups.length === 0 ? (
@@ -153,9 +146,22 @@ export function TokenUsageTab({ perfRefreshNonce }: { perfRefreshNonce?: number 
             </div>
           )}
         </>
+      ) : !error ? (
+        <KpiSkeleton />
       ) : null}
+    </section>
+  );
+}
 
-      <PerformanceMetricsSection refreshKey={perfRefreshNonce} />
+function KpiSkeleton() {
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      {Array.from({ length: 6 }, (_, i) => (
+        <div key={i} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+          <div className="h-2.5 w-12 animate-pulse rounded bg-gray-200" />
+          <div className="mt-2 h-5 w-16 animate-pulse rounded bg-gray-200" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -264,7 +270,7 @@ function PerformanceMetricsCard({ metric }: { metric: AdminPerformanceMetricsWin
   );
 }
 
-function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
+export function PerformanceMetricsSection({ refreshKey }: { refreshKey?: number }) {
   const {
     data,
     busy: perfMetricsLoading,

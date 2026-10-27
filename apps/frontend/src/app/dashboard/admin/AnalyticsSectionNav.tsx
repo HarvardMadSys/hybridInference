@@ -8,7 +8,6 @@ const ANALYTICS_PATH = '/dashboard/admin/analytics';
 /** The Analytics tab's pages. Each has its own address, so a link opens it. */
 const SECTIONS = [
   { href: ANALYTICS_PATH, label: 'Overview' },
-  { href: `${ANALYTICS_PATH}/token-usage`, label: 'Token usage' },
   { href: `${ANALYTICS_PATH}/geo`, label: 'Request origins' },
 ] as const;
 

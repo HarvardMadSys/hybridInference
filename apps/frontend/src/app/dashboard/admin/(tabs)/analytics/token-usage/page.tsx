@@ -1,7 +1,6 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { TokenUsageTab } from '../../../TokenUsageTab';
-
-export default function Page() {
-  return <TokenUsageTab />;
+// Token usage is now the top of the Analytics overview; an old link still lands on it.
+export default function TokenUsageAnalyticsPage() {
+  redirect('/dashboard/admin/analytics');
 }
