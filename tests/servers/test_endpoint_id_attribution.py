@@ -31,6 +31,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.endpoints import endpoint_id_for_adapter, endpoint_id_for_config
+from routing.routers import FixedRouter
 from serving.config.runtime_settings import get_runtime_settings
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
@@ -38,7 +39,9 @@ from serving.servers.deps import (
     get_completions_logger,
     get_embedding_adapters,
     get_log_store,
+    get_model_visibility_resolver,
     get_operational_store,
+    get_router,
 )
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 from serving.servers.routers import embeddings
@@ -281,6 +284,7 @@ class _FakeEmbeddingAdapter:
         raises: Exception | None = None,
     ) -> None:
         self.config = SimpleNamespace(
+            id="emb-model",
             provider=provider,
             endpoint_id=endpoint_id,
             pricing=_EMB_PRICING,
@@ -314,6 +318,11 @@ def _build_embeddings_app(adapter, logger: _CapturingLogger) -> FastAPI:
         "authenticated": True,
     }
     app.dependency_overrides[enforce_user_concurrency] = lambda: None
+    # Register the access gate the surface now requires (fail-closed).
+    router_exec = FixedRouter()
+    router_exec.register_embedding_route("emb-model", [(adapter, 1.0)], required_role="free")
+    app.dependency_overrides[get_router] = lambda: router_exec
+    app.dependency_overrides[get_model_visibility_resolver] = lambda: None
     app.dependency_overrides[get_embedding_adapters] = lambda: {"emb-model": adapter}
     app.dependency_overrides[get_log_store] = lambda: object()  # truthy → logging enabled
     app.dependency_overrides[get_completions_logger] = lambda: logger

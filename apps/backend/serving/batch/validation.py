@@ -225,6 +225,7 @@ async def validate_file_batch(
         services=services,
         visibility_resolver=getattr(services, "model_visibility_resolver", None),
         embedding_adapters=getattr(services, "embedding_adapters", None),
+        embedding_routes=getattr(router, "embedding_routes", None),
     )
     errors: list[dict[str, Any]] = []
     seen: set[bytes] = set()

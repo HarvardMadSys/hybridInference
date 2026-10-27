@@ -4,8 +4,10 @@ Each target runs the handler behind its endpoint; only the upstream adapters
 are stand-ins. What is held here: every argument FastAPI would inject reaches
 the handler explicitly (never a ``Depends`` marker), each target's own billing
 point charges exactly once and the attempt observes exactly that charge, an
-error a handler answers with (rather than raises) is read by its status, and a
-Messages item never reaches an adapter that would drop one of its parameters.
+error a handler answers with (rather than raises) is read by its status, a
+Messages item never reaches an adapter that would drop one of its parameters,
+and an embeddings item is held to the model's access gate (role, visibility
+override, the owner's denylist, a missing gate) at admission and at dispatch.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from serving.servers.deps import AppServices
 
 MODEL = "target-model"
 EMBED = "embed-model"
+EMBED_ALIAS = "embed-alias"
 PRICING = {
     "prompt": "1.00",
     "completion": "2.00",
@@ -83,10 +86,23 @@ class _Embedder:
         }
 
 
-def _setup() -> tuple[FastAPI, AppServices, _Upstream, _Embedder]:
+def _setup(
+    *, embed_role: str | None = "free", visibility_resolver: Any = None
+) -> tuple[FastAPI, AppServices, _Upstream, _Embedder]:
+    """The services as the registry leaves them.
+
+    An embedding model is registered the way ``register_from_models_yaml``
+    registers one: its adapter under the canonical id and each alias, and its
+    access gate on the router under the same names. ``embed_role=None`` leaves
+    the gate out, the inconsistency /v1/embeddings must refuse.
+    """
     upstream, embedder = _Upstream(), _Embedder()
     router = FixedRouter()
     router.register_route(MODEL, [(upstream, 1.0)])
+    if embed_role is not None:
+        router.register_embedding_route(
+            EMBED, [(embedder, 1.0)], aliases=[EMBED_ALIAS], required_role=embed_role
+        )
     log_store = MagicMock()
     log_store.log_request = AsyncMock()
     op_store = MagicMock()
@@ -95,7 +111,8 @@ def _setup() -> tuple[FastAPI, AppServices, _Upstream, _Embedder]:
         router=router,
         log_store=log_store,
         operational_store=op_store,
-        embedding_adapters={EMBED: embedder},
+        embedding_adapters={EMBED: embedder, EMBED_ALIAS: embedder},
+        model_visibility_resolver=visibility_resolver,
     )
     app = FastAPI()
     app.state.services = services
@@ -227,6 +244,152 @@ async def test_every_injected_argument_reaches_the_handler_explicitly(monkeypatc
     for name in injected:
         assert name in seen, f"{function_name}: {name} was left to its default"
         assert not isinstance(seen[name], (fastapi_params.Depends, fastapi_params.Param))
+
+
+# -- embeddings: the access gate holds on the batch path --------------------------
+
+
+class _Visibility:
+    """A runtime visibility override for the canonical embedding model."""
+
+    def __init__(self, role: str) -> None:
+        self._role = role
+        self.asked: list[str] = []
+
+    async def get_effective_required_role(self, model_id: str, default_role: str) -> str:
+        self.asked.append(model_id)
+        return self._role if model_id == EMBED else default_role
+
+
+async def _embed(services: AppServices, app: FastAPI, *, model: str = EMBED, **owner: Any):
+    return await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx={**_owner(), **owner},
+        body={"model": model, "input": "hello"},
+        batch_id="b",
+        target="embeddings",
+    )
+
+
+async def _assert_refused_before_upstream(result, services: AppServices, embedder: _Embedder):
+    # Refused exactly as an unknown model, and nothing ran or was charged.
+    assert (result.status_code, result.retryable) == (404, False), result
+    assert result.error["code"] == "model_not_found"
+    assert result.response is None
+    assert result.cost_status == "not_billed"
+    assert embedder.calls == []
+    assert await _increments(services) == []
+
+
+@pytest.mark.parametrize("model", [EMBED, EMBED_ALIAS])
+async def test_an_allowed_embedding_item_runs_by_canonical_id_or_alias(model):
+    app, services, _upstream, embedder = _setup(embed_role="pro")
+
+    result = await _embed(services, app, model=model, role="pro")
+
+    assert result.error is None, result
+    assert len(embedder.calls) == 1
+    assert result.cost_status == "billed"
+
+
+async def test_an_embedding_item_below_the_models_role_never_reaches_upstream():
+    app, services, _upstream, embedder = _setup(embed_role="admin")
+
+    result = await _embed(services, app, role="internal")
+
+    await _assert_refused_before_upstream(result, services, embedder)
+
+
+async def test_a_visibility_override_closes_an_embedding_model_for_the_batch():
+    visibility = _Visibility("admin")
+    app, services, _upstream, embedder = _setup(embed_role="free", visibility_resolver=visibility)
+
+    result = await _embed(services, app, model=EMBED_ALIAS, role="internal")
+
+    await _assert_refused_before_upstream(result, services, embedder)
+    # The override is keyed by the canonical id, whichever name the item used.
+    assert visibility.asked == [EMBED]
+
+
+async def test_a_visibility_override_opens_an_embedding_model_for_the_batch():
+    # The resolver the batch path passes is the application's own: without it
+    # the pro baseline would refuse this free owner.
+    visibility = _Visibility("free")
+    app, services, _upstream, embedder = _setup(embed_role="pro", visibility_resolver=visibility)
+
+    result = await _embed(services, app, role="free")
+
+    assert result.error is None, result
+    assert len(embedder.calls) == 1
+
+
+@pytest.mark.parametrize("model", [EMBED, EMBED_ALIAS])
+async def test_an_owner_denylisted_embedding_model_never_reaches_upstream(model):
+    # The denylist holds canonical ids; an alias is held to its model's entry.
+    app, services, _upstream, embedder = _setup(embed_role="free")
+
+    result = await _embed(services, app, model=model, disabled_models=[EMBED])
+
+    await _assert_refused_before_upstream(result, services, embedder)
+
+
+async def test_an_embedding_adapter_without_an_access_gate_is_refused():
+    app, services, _upstream, embedder = _setup(embed_role=None)
+    assert services.router.embedding_routes == {}
+
+    result = await _embed(services, app)
+
+    await _assert_refused_before_upstream(result, services, embedder)
+
+
+async def _admit_embedding(services: AppServices, *, model: str = EMBED, **owner: Any):
+    """Admit one embeddings item through the context /v1/batches builds."""
+    from serving.batch.targets import check_item
+    from serving.servers.routers.batches import _admission_context
+
+    ctx = _admission_context(
+        {**_owner(), **owner},
+        services=services,
+        router_exec=services.router,
+        visibility_resolver=services.model_visibility_resolver,
+    )
+    return await check_item("embeddings", {"model": model, "input": "hello"}, ctx)
+
+
+@pytest.mark.parametrize("model", [EMBED, EMBED_ALIAS])
+async def test_admission_admits_an_allowed_embedding_model_under_its_canonical_id(model):
+    _app, services, _upstream, _embedder = _setup(embed_role="pro")
+
+    assert await _admit_embedding(services, model=model, role="pro") == (EMBED, None)
+
+
+@pytest.mark.parametrize(
+    ("embed_role", "visibility", "owner"),
+    [
+        pytest.param("admin", None, {"role": "internal"}, id="role"),
+        pytest.param("free", _Visibility("admin"), {"role": "internal"}, id="visibility"),
+        pytest.param("free", None, {"disabled_models": [EMBED]}, id="denylist"),
+        pytest.param(None, None, {}, id="missing-gate"),
+    ],
+)
+@pytest.mark.parametrize("model", [EMBED, EMBED_ALIAS])
+async def test_admission_refuses_an_embedding_model_the_owner_may_not_use(
+    embed_role, visibility, owner, model
+):
+    # Refused at upload exactly like an unknown model, as chat items are, so a
+    # batch neither queues work that cannot run nor reveals the model exists.
+    _app, services, _upstream, _embedder = _setup(
+        embed_role=embed_role, visibility_resolver=visibility
+    )
+
+    canonical, problem = await _admit_embedding(services, model=model, **owner)
+
+    assert canonical is None
+    assert (problem.code, problem.status, problem.param) == ("model_not_found", 404, "model")
+    unknown_canonical, unknown = await _admit_embedding(services, model="no-such-embedding")
+    assert unknown is not None and unknown_canonical is None
+    assert problem.message == unknown.message.replace("no-such-embedding", model)
 
 
 def test_call_handler_refuses_a_missing_injected_argument():

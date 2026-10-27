@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from routing.routers import FixedRouter
 from serving.batch import multipart, profiles, renderers, targets, webhooks
 from serving.batch.config import KNOWN_ANTHROPIC_VERSIONS
 
@@ -652,13 +653,18 @@ def _replaced(value: Any, path: tuple, replacement: Any) -> Any:
 
 
 def _admission_context(profile: Any) -> targets.AdmissionContext:
+    embedder = SimpleNamespace(config=SimpleNamespace(id="e"))
+    # Registered as the registry registers an embedding model: adapter and gate.
+    router = FixedRouter()
+    router.register_embedding_route("e", [(embedder, 1.0)], required_role="free")
     return targets.AdmissionContext(
         user_ctx={},
         routes={},
         services=None,
         visibility_resolver=None,
-        embedding_adapters={"e": SimpleNamespace(config=SimpleNamespace(id="e"))},
+        embedding_adapters={"e": embedder},
         profile=profile,
+        embedding_routes=router.embedding_routes,
     )
 
 

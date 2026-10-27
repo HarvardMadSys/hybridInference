@@ -30,6 +30,22 @@ from tests.unit.observability.test_alert_runtime import (
 )
 
 
+@pytest.mark.usefixtures("config_env")
+def test_reset_clears_a_publication_without_loading_database(monkeypatch):
+    from serving.observability.alert_config import _expand_env
+
+    # Delivery tests can publish directly, without ever loading a config store.
+    publish(AlertRuntimeConfig())
+    assert app_config.config_value("FAILED_REQUEST_ALERT_THRESHOLD") == ""
+
+    app_config.reset_state()
+
+    assert _expand_env("${FAILED_REQUEST_ALERT_THRESHOLD}") == "200"
+    assert _expand_env("${FAILED_REQUEST_ALERT_THRESHOLD:-9}") == "9"
+    monkeypatch.setenv("FAILED_REQUEST_ALERT_THRESHOLD", "40")
+    assert _expand_env("${FAILED_REQUEST_ALERT_THRESHOLD}") == "40"
+
+
 @pytest.mark.asyncio
 async def test_unexpected_projection_exception_does_not_log_its_secret(caplog):
     secret = "SYNTHETIC-SECRET-IN-PROJECTION"

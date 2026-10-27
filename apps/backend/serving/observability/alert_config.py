@@ -212,6 +212,23 @@ class ClientErrorBurstConfig(BaseModel):
     cooldown_sec: int = 3600
 
 
+class KeyPoolExhaustionBurstConfig(BaseModel):
+    """Config for ``KeyPoolExhaustionBurstRule``, counted **per endpoint**.
+
+    Fires when more than ``threshold_count`` ``key_pool_exhausted_skip_breaker``
+    events arrive for one endpoint within ``window_sec``; each endpoint has its
+    own incident and its own ``cooldown_sec``. With breaker exemption restored, this
+    is the alerting surface for provider-wide key exhaustion: upstream 402/403
+    responses are also breaker-exempt, so neither the original auth failures nor
+    their local exhaustion echo can open the circuit.
+    """
+
+    enabled: bool = True
+    window_sec: int = 600
+    threshold_count: int = 12
+    cooldown_sec: int = 3600
+
+
 class StreamFailureRateConfig(BaseModel):
     """Config for ``StreamFailureRateRule``, counted **per model**.
 
@@ -274,6 +291,9 @@ class Rules(BaseModel):
     # in front of a user, and nothing else in this file can see either symptom.
     # See ClientErrorBurstConfig and StreamFailureRateConfig.
     client_error_burst: ClientErrorBurstConfig = Field(default_factory=ClientErrorBurstConfig)
+    key_pool_exhaustion_burst: KeyPoolExhaustionBurstConfig = Field(
+        default_factory=KeyPoolExhaustionBurstConfig
+    )
     stream_failure_rate: StreamFailureRateConfig = Field(default_factory=StreamFailureRateConfig)
 
 

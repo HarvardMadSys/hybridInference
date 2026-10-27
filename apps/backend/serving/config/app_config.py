@@ -1530,7 +1530,8 @@ def reset_state() -> None:
     """Forget everything loaded and return to the environment (tests)."""
     global _STATE
     live.COORDINATOR.reset()
-    if _STATE.generation == 0 and _STATE.store is None:
+    # A test can publish a group's compatibility values without loading a store.
+    if _STATE.generation == 0 and _STATE.store is None and not _STATE.managed:
         return
     task = _STATE.refresh_task
     if task is not None:

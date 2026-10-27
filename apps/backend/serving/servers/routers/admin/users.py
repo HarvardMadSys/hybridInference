@@ -868,9 +868,14 @@ async def update_user(
         updated.extend(key_fields)
 
     if "disabled_models" in payload_dict:
+        # Embedding models are gated by the same denylist (the embeddings
+        # surface reads it through model_access_denial) and listed by the
+        # model visibility catalog the admin UI picks from, so their
+        # canonical ids are as known as the chat routes'.
         known_model_ids = {
             adapter.config.id
-            for route in router_exec.routes.values()
+            for routes in (router_exec.routes, getattr(router_exec, "embedding_routes", {}))
+            for route in routes.values()
             for adapter, _weight in route.adapters
             if getattr(adapter, "config", None) is not None
         }

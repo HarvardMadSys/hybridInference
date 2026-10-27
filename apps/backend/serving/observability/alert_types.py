@@ -82,6 +82,16 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="client_error_burst",
     ),
     AlertType(
+        id="key_pool_exhaustion_burst",
+        label="Key-pool exhaustion burst",
+        description=(
+            "One endpoint's key-pool refusals, which bypass the circuit breaker, piled up "
+            "within the window."
+        ),
+        group="Request errors",
+        key_pattern="key_pool_exhaustion_burst:<endpoint>",
+    ),
+    AlertType(
         id="stream_failure_rate",
         label="Streaming failures for a model",
         description="One model's streams keep dying mid-flight.",

@@ -1537,6 +1537,29 @@ msgid "Automatically follow a supported provider: `{provider: deepseek, model: d
 msgstr "自动跟随已支持的 provider：`{provider: deepseek, model: deepseek-flash}` 或 `deepseek-v4-pro`。需要 PostgreSQL；不能与 `pricing_schedule` 同时使用。在路由中设为 `null` 可使用该路由自己的价格"
 
 
+#: ../developer/adding-models.md:199
+msgid ""
+"When `required_role` is omitted, entries marked `admin_only: true` "
+"default to `admin`. Otherwise, models with known or uncertain provider "
+"costs default to `pro`; this includes unpriced LAN or cluster-DNS routes, "
+"environment-variable endpoints that cannot be classified at load time, "
+"and `openai_compat` routes even when their base URL is local. Zero user-"
+"facing prices do not prove that the upstream provider is free. Add "
+"`required_role: free` to keep such a model free-tier; set it explicitly "
+"whenever a route should be available at a different tier, and that value "
+"remains authoritative. Unpriced local `sglang`, `vllm`, and `ollama` "
+"engine routes can retain the `free` default when their local endpoint is "
+"identifiable from configuration."
+msgstr "未填写 `required_role` 时，标记为 `admin_only: true` 的条目默认要求 `admin`。其他模型如果已知或无法确定 provider 成本，则默认要求 `pro`；这包括未标价的 LAN 或集群 DNS 路由、加载时无法分类的环境变量端点，以及即使 base URL 是本地地址的 `openai_compat` 路由。面向用户的价格为零，并不能证明上游 provider 不收费。若要将此类模型保持在 free 等级，请添加 `required_role: free`；路由应对其他等级开放时也请显式设置该值，显式值始终优先。未标价的本地 `sglang`、`vllm` 和 `ollama` 引擎路由，如果能从配置确认其本地端点，则仍可默认要求 `free`。"
+
+#: ../developer/adding-models.md:210
+msgid ""
+"An explicit `required_role` also takes the place of `admin_only: true`, "
+"with one exception kept from earlier releases: `admin_only: true` "
+"together with `required_role: free` stays admin-only. To open such a "
+"model to the free tier, remove `admin_only`."
+msgstr "显式的 `required_role` 同样会取代 `admin_only: true`，但保留了早期版本的一个例外：`admin_only: true` 与 `required_role: free` 同时出现时，模型仍仅限管理员使用。若要向 free 等级开放此类模型，请删除 `admin_only`。"
+
 #: ../developer/adding-models.md
 msgid "Automatic DeepSeek prices"
 msgstr "自动同步 DeepSeek 价格"

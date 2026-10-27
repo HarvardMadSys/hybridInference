@@ -2181,8 +2181,9 @@ async def anthropic_messages(
                 stream_error_message = scrub_error_for_user(None, request_id, 429)
                 stream_error_operator = operator_safe_error(exc)
                 logger.warning(f"[{request_id}] Streaming dispatch failed: key pool exhausted")
-                # Carries no HTTP status, so it is never exempt: every key for
-                # this endpoint is muted and nothing it is sent can succeed.
+                # The registry filters this pre-dispatch refusal out of the
+                # breaker and emits key_pool_exhausted_skip_breaker; nothing was
+                # sent upstream.
                 _record_dispatch_failure(
                     dispatch_endpoint_id,
                     reason="messages_stream_exception",
@@ -2337,7 +2338,7 @@ async def anthropic_messages(
         # ``exc=`` throughout: HTTPException/ClientResponseError carry a status,
         # and the registry drops 4xx client errors on that basis so one caller's
         # malformed request cannot open the circuit for everyone. The
-        # status-less failures below (key pool, timeout) are never exempt.
+        # status-less key-pool refusals below are breaker-exempt; timeouts are not.
         _record_dispatch_failure(
             dispatch_endpoint_id,
             reason="messages_exception",
