@@ -106,7 +106,7 @@ export function describeCapabilities(capabilities: RouteCapabilities) {
   ].join(' · ');
 }
 
-/** One review row per capability, as the form names them. */
+/** One row per capability, as the form names them, for listing changes. */
 export function capabilityRows(capabilities: RouteCapabilities): Change[] {
   const others = capabilities.input_modalities.filter(
     (modality) => modality !== 'text' && modality !== 'image',
@@ -157,12 +157,15 @@ export function RouteCapabilityFields({
   reading,
   onChange,
   help,
+  disabled = false,
 }: {
   idPrefix: string;
   draft: CapabilityDraft;
   reading: CapabilityDraftReading;
   onChange: (change: Partial<CapabilityDraft>) => void;
   help: string;
+  /** While the values are being written: they stay what was saved. */
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -181,6 +184,7 @@ export function RouteCapabilityFields({
             step="1"
             value={draft.contextLength}
             onChange={(event) => onChange({ contextLength: event.target.value })}
+            disabled={disabled}
             className={FIELD_CLASS}
             required
           />
@@ -202,6 +206,7 @@ export function RouteCapabilityFields({
             step="1"
             value={draft.maxOutputLength}
             onChange={(event) => onChange({ maxOutputLength: event.target.value })}
+            disabled={disabled}
             className={FIELD_CLASS}
             required
           />
@@ -222,6 +227,7 @@ export function RouteCapabilityFields({
             id={`${idPrefix}-image-input`}
             value={draft.imageInput}
             onValueChange={(imageInput) => onChange({ imageInput })}
+            disabled={disabled}
             // "" is unanswered, not "no": the form stays invalid until one is chosen.
             options={[
               { value: '', label: 'Choose…' },
@@ -244,6 +250,7 @@ export function RouteCapabilityFields({
             id={`${idPrefix}-tool-calling`}
             value={draft.toolCalling}
             onValueChange={(toolCalling) => onChange({ toolCalling })}
+            disabled={disabled}
             options={[
               { value: '', label: 'Choose…' },
               { value: 'no', label: 'Not supported' },

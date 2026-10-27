@@ -1,12 +1,6 @@
 'use client';
 
 import { useState, type ReactNode } from 'react';
-import {
-  ChangeList,
-  plural,
-  shown,
-  type Change,
-} from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { hasRole } from '@/components/providers/AuthProvider';
@@ -18,7 +12,6 @@ import type {
   UpdateUserData,
   UserDetail,
 } from '@/lib/api/admin';
-import { userAccountLabel } from '@/lib/utils/userLabel';
 import { UserAutomationPanel } from './UserAutomationPanel';
 import { UserRecentRequests } from './UserRecentRequests';
 import { UserUsageInsights } from './UserUsageInsights';
@@ -216,59 +209,32 @@ function accountPatch(detail: UserDetail, draft: AccountDraft): UpdateUserData {
   return patch;
 }
 
-const concurrencyLabel = (value: number | null | undefined) =>
-  value === null || value === undefined ? 'Role default' : String(value);
-
-/** One `old → new` row per changed field, showing the values that will be sent. */
-function accountChanges(detail: UserDetail, patch: UpdateUserData): Change[] {
-  const saved = savedAccount(detail);
-  const changes: Change[] = [];
-  if (patch.role !== undefined)
-    changes.push({ label: 'Role', before: saved.role, after: patch.role });
-  if (patch.quota_daily_cost_usd !== undefined) {
-    changes.push({
-      label: 'Daily quota (USD)',
-      before: shown(saved.quota),
-      after: String(patch.quota_daily_cost_usd),
-    });
-  }
-  if (patch.max_concurrent_requests !== undefined) {
-    changes.push({
-      label: 'Max concurrent',
-      before: concurrencyLabel(detail.max_concurrent_requests),
-      after: concurrencyLabel(patch.max_concurrent_requests),
-    });
-  }
-  if (patch.disabled_models !== undefined) {
-    const before = new Set(saved.disabledModels);
-    const after = new Set(patch.disabled_models);
-    for (const modelId of [...new Set([...before, ...after])].sort()) {
-      if (before.has(modelId) === after.has(modelId)) continue;
-      changes.push({
-        label: `Model access: ${modelId}`,
-        before: before.has(modelId) ? 'Disabled' : 'Enabled',
-        after: after.has(modelId) ? 'Disabled' : 'Enabled',
-      });
-    }
-  }
-  return changes;
+/** How many changes a patch makes: each field once, and each model whose access changes. */
+function countChanges(detail: UserDetail, patch: UpdateUserData): number {
+  const fields = [patch.role, patch.quota_daily_cost_usd, patch.max_concurrent_requests].filter(
+    (value) => value !== undefined,
+  ).length;
+  if (patch.disabled_models === undefined) return fields;
+  const before = new Set(savedAccount(detail).disabledModels);
+  const after = new Set(patch.disabled_models);
+  const models = [...new Set([...before, ...after])].filter(
+    (modelId) => before.has(modelId) !== after.has(modelId),
+  );
+  return fields + models.length;
 }
 
 /**
  * Role, limits and model access for an active user, edited in place. The
- * changes are drafts until the administrator reviews and confirms them, and
- * then go out as one update.
+ * changes are drafts until Save sends them as one update.
  */
 function AccountSettings({
   detail,
   availableModels,
-  userLabel,
   confirmation,
   onSave,
 }: {
   detail: UserDetail;
   availableModels: AdminModelVisibilityItem[];
-  userLabel: string;
   confirmation: ConfirmAction;
   onSave: (patch: UpdateUserData) => Promise<void>;
 }) {
@@ -278,10 +244,10 @@ function AccountSettings({
   const busy = confirmation.busy;
   const current: AccountDraft = { ...savedAccount(detail), ...draft };
   const patch = accountPatch(detail, current);
-  const changes = accountChanges(detail, patch);
+  const changes = countChanges(detail, patch);
   const invalidQuota = quotaError(detail, current);
   // An invalid quota is still an unsaved change: Save stays enabled and says why it cannot go.
-  const changeCount = changes.length + (invalidQuota ? 1 : 0);
+  const changeCount = changes + (invalidQuota ? 1 : 0);
 
   const change = (next: Partial<AccountDraft>) => {
     setSaveError(null);
@@ -310,30 +276,22 @@ function AccountSettings({
     setDraft({});
   };
 
-  const save = () => {
+  const save = async () => {
     if (invalidQuota) {
       setSaveError(`Correct the daily quota before saving: ${invalidQuota}`);
       return;
     }
-    if (changes.length === 0) return;
+    if (changes === 0) return;
     const pendingPatch = patch;
-    confirmation.request({
+    setSaveError(null);
+    const failure = await confirmation.perform({
       key: 'account settings',
-      title: `Save ${plural(changes.length, 'change')} to account settings for ${userLabel}?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList changes={changes} />
-          <p>The new limits and model access apply to this user&apos;s next request.</p>
-        </>
-      ),
       run: async () => {
         await onSave(pendingPatch);
         setDraft({});
       },
     });
+    setSaveError(failure);
   };
 
   return (
@@ -461,13 +419,14 @@ function AccountSettings({
         </div>
       )}
 
-      {/* The confirmation is the table's: only this save makes the bar busy. */}
+      {/* The write flow is the table's: only this save makes the bar busy. */}
       <EditBar
         target="account settings"
         changeCount={changeCount}
         onCancel={cancel}
-        onSave={save}
+        onSave={() => void save()}
         busy={confirmation.savingKey === 'account settings'}
+        held={confirmation.busy}
         error={saveError}
         inPlace
       />
@@ -477,29 +436,25 @@ function AccountSettings({
 
 /**
  * One free-text setting (the admin note, the suspension message): edited in
- * place, saved after the administrator confirms `old → new`. A value is
- * trimmed, and an empty one clears it.
+ * place and written by Save. A value is trimmed, and an empty one clears it.
  */
 function TextSetting({
   name,
   target,
   saved,
-  userLabel,
   confirmation,
   onSave,
   header,
   emptyText,
   placeholder,
   rows,
-  impact,
   className,
 }: {
-  /** The field's name: its label, and the row in the confirmation. */
+  /** The field's name, as its label. */
   name: string;
   /** What the Save / Discard buttons name, e.g. "admin note". */
   target: string;
   saved: string | null;
-  userLabel: string;
   confirmation: ConfirmAction;
   onSave: (next: string | null) => Promise<void>;
   header: ReactNode;
@@ -507,11 +462,11 @@ function TextSetting({
   emptyText: string;
   placeholder: string;
   rows: number;
-  impact: string;
   className: string;
 }) {
   // `null` until the administrator types; the field then shows the draft.
   const [draft, setDraft] = useState<{ value: string; saved: string | null } | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const busy = confirmation.busy;
   // Keep typed whitespace so a word can be appended, but a reverted draft must
   // stop shadowing the saved value when another section refreshes the detail.
@@ -523,32 +478,21 @@ function TextSetting({
   const cancel = () => {
     if (busy) return;
     setDraft(null);
+    setSaveError(null);
   };
 
-  const save = () => {
+  const save = async () => {
     if (!changed) return;
     const pending = next;
-    confirmation.request({
+    setSaveError(null);
+    const failure = await confirmation.perform({
       key: target,
-      title: `Save 1 change to the ${target} for ${userLabel}?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={[
-              { label: name, before: shown(saved, '(none)'), after: shown(pending, '(none)') },
-            ]}
-          />
-          <p>{impact}</p>
-        </>
-      ),
       run: async () => {
         await onSave(pending);
         setDraft(null);
       },
     });
+    setSaveError(failure);
   };
 
   return (
@@ -556,7 +500,10 @@ function TextSetting({
       {header}
       <textarea
         value={value}
-        onChange={(e) => setDraft({ value: e.target.value, saved })}
+        onChange={(e) => {
+          setDraft({ value: e.target.value, saved });
+          setSaveError(null);
+        }}
         disabled={busy}
         rows={rows}
         maxLength={2000}
@@ -568,13 +515,15 @@ function TextSetting({
         <span>{next === null ? emptyText : null}</span>
         <span className="shrink-0 tabular-nums">{value.length} / 2000</span>
       </div>
-      {/* The confirmation is the table's: only this save makes the bar busy. */}
+      {/* The write flow is the table's: only this save makes the bar busy. */}
       <EditBar
         target={target}
         changeCount={changed ? 1 : 0}
         onCancel={cancel}
-        onSave={save}
+        onSave={() => void save()}
         busy={confirmation.savingKey === target}
+        held={confirmation.busy}
+        error={saveError}
         inPlace
       />
     </section>
@@ -585,11 +534,11 @@ export interface UserDetailPanelProps {
   user: AdminUser;
   detail: UserDetail;
   availableModels: AdminModelVisibilityItem[];
-  /** The table's one confirmation; every write in this panel goes through it. */
+  /** The table's one write flow; every write in this panel goes through it. */
   confirmation: ConfirmAction;
-  /** Write a reviewed change to this user, then show the saved values. Throws on failure. */
+  /** Write a change to this user, then show the saved values. Throws on failure. */
   onUpdate: (patch: UpdateUserData) => Promise<void>;
-  // Lifecycle actions: each opens its own confirmation.
+  // Lifecycle actions: Suspend and the deletes ask first; Reactivate and Resume act at once.
   onSuspend: (user: AdminUser) => void;
   onReactivate: (user: AdminUser) => void;
   onResume: (user: AdminUser) => void;
@@ -610,7 +559,6 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     onRequestDelete,
     onRequestHardDelete,
   } = props;
-  const userLabel = userAccountLabel(u) || u.id;
   const busy = confirmation.busy;
 
   // Account facts the list row has no room for.
@@ -694,7 +642,6 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             <AccountSettings
               detail={detail}
               availableModels={availableModels}
-              userLabel={userLabel}
               confirmation={confirmation}
               onSave={onUpdate}
             />
@@ -706,7 +653,6 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
               name="Suspension message"
               target="suspension message"
               saved={detail.suspension_message ?? null}
-              userLabel={userLabel}
               confirmation={confirmation}
               onSave={(next) => onUpdate({ suspension_message: next })}
               header={
@@ -718,7 +664,6 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
               emptyText="No message. The user sees the default suspension notice."
               placeholder="Explain why the account is suspended and what the user can do…"
               rows={2}
-              impact="The user sees the new message the next time they try to sign in."
               className="space-y-2 rounded-lg border border-red-200 bg-red-50/60 p-4"
             />
           )}
@@ -777,7 +722,9 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           )}
           {u.status === 'deleted' && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3">
-              <span className="text-[13px] text-gray-400">This user has been deleted.</span>
+              <span className="text-[13px] text-gray-400">
+                This user has been deleted. Resume restores the account; its API keys stay revoked.
+              </span>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -806,7 +753,6 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             name="Admin note"
             target="admin note"
             saved={detail.admin_note ?? null}
-            userLabel={userLabel}
             confirmation={confirmation}
             onSave={(next) => onUpdate({ admin_note: next })}
             header={
@@ -835,7 +781,6 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             emptyText="No note yet. Context for other admins, e.g. why a quota was raised."
             placeholder="Add an internal note about this user…"
             rows={4}
-            impact="Only administrators see this note."
             className={`${SECTION} space-y-3`}
           />
         </div>
@@ -850,7 +795,7 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
       {/* On-demand automation score. */}
       <UserAutomationPanel key={`automation-${u.id}`} userId={u.id} />
       {/* LLM analysis of this user's requests. */}
-      <UserUsageInsights key={`insights-${u.id}`} userId={u.id} userLabel={userLabel} />
+      <UserUsageInsights key={`insights-${u.id}`} userId={u.id} />
       {/* Recent requests made by this user. */}
       <UserRecentRequests key={`recent-${u.id}`} userId={u.id} />
     </div>

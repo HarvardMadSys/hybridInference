@@ -28,6 +28,8 @@ interface UserRowProps {
   groupStarts: Set<ColumnId>;
   expanded: boolean;
   onToggleExpanded: () => void;
+  /** A write is running: Approve, Reject and opening another row wait for it. */
+  busy?: boolean;
   onApprove: () => void;
   onReject: () => void;
 }
@@ -72,6 +74,7 @@ export function UserRow({
   groupStarts,
   expanded,
   onToggleExpanded,
+  busy = false,
   onApprove,
   onReject,
 }: UserRowProps) {
@@ -101,7 +104,7 @@ export function UserRow({
     <tr
       onClick={onToggleExpanded}
       aria-expanded={expanded}
-      className={`${rowHeight} group cursor-pointer border-b border-gray-100 transition-colors hover:bg-gray-50 ${expanded ? 'bg-gray-50' : ''}`}
+      className={`${rowHeight} group ${busy ? 'cursor-progress' : 'cursor-pointer'} border-b border-gray-100 transition-colors hover:bg-gray-50 ${expanded ? 'bg-gray-50' : ''}`}
     >
       <td className={`sticky left-0 z-10 max-w-[12.5rem] py-1.5 pl-3 pr-2.5 ${stickyBg}`}>
         <div className="flex items-center gap-2">
@@ -181,9 +184,10 @@ export function UserRow({
                 e.stopPropagation();
                 onApprove();
               }}
+              disabled={busy}
               aria-label="Approve"
               title="Approve"
-              className="rounded-md bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white transition hover:bg-emerald-700"
+              className="rounded-md bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {compact ? '✓' : 'Approve'}
             </button>
@@ -192,9 +196,10 @@ export function UserRow({
                 e.stopPropagation();
                 onReject();
               }}
+              disabled={busy}
               aria-label="Reject"
               title="Reject"
-              className="rounded-md border border-red-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-red-600 transition hover:bg-red-50"
+              className="rounded-md border border-red-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {compact ? '✕' : 'Reject'}
             </button>

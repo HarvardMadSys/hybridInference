@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
-import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { useReportEditing } from '@/components/features/admin/confirm/useReportEditing';
@@ -48,7 +47,7 @@ const PROBE_STALE_LOOKBEHIND_MS = 60 * 60 * 1000;
 interface RoutewiseSettingsPanelProps {
   modelId?: string;
   endpoints?: ProbeEndpointOption[];
-  /** Whether a change is unsaved or a confirmation open, so the parent can hold the model selection. */
+  /** Whether a change is unsaved or a write running, so the parent can hold the model selection. */
   onEditingChange?: (active: boolean) => void;
 }
 
@@ -64,11 +63,6 @@ function settingDraft(setting: RoutewiseSettingItem) {
 }
 
 const SECTION = 'RouteWise parameters';
-
-function settingValueLabel(setting: RoutewiseSettingItem, draft: string) {
-  if (setting.value_type === 'bool') return draft === 'true' ? 'On' : 'Off';
-  return draft === '' ? '(empty)' : draft;
-}
 
 function validateSettingDraft(setting: RoutewiseSettingItem, draft: string) {
   if (setting.value_type === 'int' || setting.value_type === 'float') {
@@ -158,10 +152,10 @@ export function RoutewiseSettingsPanel({
   onEditingChange,
 }: RoutewiseSettingsPanelProps) {
   const toast = useAccountToast();
-  const confirmation = useConfirmAction();
+  const writes = useConfirmAction();
   const [settings, setSettings] = useState<RoutewiseSettingItem[]>([]);
   // Setting key → the value typed in place, kept only while it differs from the
-  // stored one; written only after Confirm.
+  // stored one; written only on Save.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -344,7 +338,7 @@ export function RoutewiseSettingsPanel({
     settingChanged(setting, drafts[setting.key]),
   );
   const hasChanges = changedSettings.length > 0;
-  useReportEditing(hasChanges || confirmation.open, onEditingChange);
+  useReportEditing(hasChanges || writes.busy, onEditingChange);
 
   const changeDraft = (setting: RoutewiseSettingItem, value: string) => {
     setDrafts((prev) => {
@@ -356,54 +350,32 @@ export function RoutewiseSettingsPanel({
   };
 
   const discard = () => {
-    if (confirmation.busy) return;
+    if (writes.busy) return;
     setDrafts({});
     setSaveError(null);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!modelId || changedSettings.length === 0) return;
-    const pending: Array<{
-      setting: RoutewiseSettingItem;
-      draft: string;
-      value: string | number | boolean;
-    }> = [];
+    const pending: Array<{ setting: RoutewiseSettingItem; value: string | number | boolean }> = [];
     for (const setting of changedSettings) {
-      const draft = drafts[setting.key] ?? '';
-      const payload = settingPayload(setting, draft);
+      const payload = settingPayload(setting, drafts[setting.key] ?? '');
       if (!payload.ok) {
         setSaveError(`${displayKey(setting)}: ${payload.error}`);
         return;
       }
-      pending.push({ setting, draft, value: payload.value });
+      pending.push({ setting, value: payload.value });
     }
     setSaveError(null);
     const requestedModelId = modelId;
     const requestedEpoch = modelIdentity.current.epoch;
     // A response for a model no longer shown is dropped, not applied to this one.
     const stale = () => modelIdentity.current.epoch !== requestedEpoch;
-    confirmation.request({
-      title: `Save ${plural(pending.length, 'change')} to ${requestedModelId} RouteWise parameters?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={pending.map(({ setting, draft }) => ({
-              label: displayKey(setting),
-              before: settingValueLabel(setting, settingDraft(setting)),
-              after: settingValueLabel(setting, draft),
-            }))}
-          />
-          <p>
-            Each value becomes an override for {requestedModelId} only, and RouteWise uses it for
-            its next decisions.
-          </p>
-        </>
-      ),
+    // Each value becomes an override for this model only. A failure shows on
+    // the bar, and the settings it did not write stay as drafts.
+    const failure = await writes.perform({
       run: async () => {
-        const failure = await writeEach(
+        await writeEach(
           pending,
           ({ setting }) => displayKey(setting),
           async ({ setting, value }) => {
@@ -418,8 +390,6 @@ export function RoutewiseSettingsPanel({
           },
         );
         if (stale()) return;
-        setSaveError(failure);
-        if (failure) return;
         toast.success(
           pending.length === 1
             ? `Updated ${displayKey(pending[0].setting)}.`
@@ -427,41 +397,24 @@ export function RoutewiseSettingsPanel({
         );
       },
     });
+    if (!stale()) setSaveError(failure);
   };
 
-  const handleResetSetting = (setting: RoutewiseSettingItem) => {
+  // One value back to what models.yaml or the global default gives it.
+  const handleResetSetting = async (setting: RoutewiseSettingItem) => {
     if (!modelId) return;
     const requestedModelId = modelId;
     const requestedEpoch = modelIdentity.current.epoch;
-    confirmation.request({
-      title: `Reset ${displayKey(setting)} for ${requestedModelId}?`,
-      body: (
-        <>
-          <ChangeList
-            changes={[
-              {
-                label: displayKey(setting),
-                before: settingValueLabel(setting, settingDraft(setting)),
-                after: 'Inherited value',
-              },
-            ]}
-          />
-          <p>
-            The override is removed, and {requestedModelId} goes back to the value from models.yaml
-            or the global default.
-          </p>
-        </>
-      ),
-      confirmLabel: 'Reset',
-      busyLabel: 'Resetting…',
-      tone: 'danger',
+    const stale = () => modelIdentity.current.epoch !== requestedEpoch;
+    const failure = await writes.perform({
       run: async () => {
         const updated = await resetRoutewiseSetting(requestedModelId, setting.key);
-        if (modelIdentity.current.epoch !== requestedEpoch) return;
+        if (stale()) return;
         setSettings((prev) => prev.map((item) => (item.key === updated.key ? updated : item)));
         toast.success(`Reset ${displayKey(updated)} to its inherited value.`);
       },
     });
+    if (failure && !stale()) toast.error(`Failed to reset ${displayKey(setting)}: ${failure}`);
   };
 
   const runProbe = useCallback(async () => {
@@ -499,38 +452,17 @@ export function RoutewiseSettingsPanel({
       }
       void loadProbeSamples();
     } catch (e) {
-      // Kept in the confirmation, so the probe can be retried from there.
-      if (current()) throw e;
+      if (!current()) return;
+      const message = getErrorMessage(e);
+      setProbeBanner({ kind: 'error', text: message });
+      toast.error(`Probe failed: ${message}`);
     } finally {
       if (current()) setProbeRunning(false);
     }
   }, [loadProbeSamples, modelId, toast]);
 
-  // A probe sends live requests to the providers and records what it measured,
-  // so it runs only after the administrator confirms it.
-  const handleRunProbe = () => {
-    if (!modelId) return;
-    const endpointId =
-      probeSelection.current.modelId === modelId ? probeSelection.current.endpointId : '';
-    const target = endpointId
-      ? (probeEndpointLabelById.get(endpointId) ?? endpointId)
-      : `every endpoint of ${modelId}`;
-    confirmation.request({
-      title: `Run a RouteWise probe for ${modelId}?`,
-      body: (
-        <>
-          <p className="[overflow-wrap:anywhere]">
-            Sends a short live request to {target} and records the measured time to first token,
-            which RouteWise uses in its next decisions.
-          </p>
-          <p>The requests use the providers&apos; keys and count against their quotas.</p>
-        </>
-      ),
-      confirmLabel: 'Run probe',
-      busyLabel: 'Probing…',
-      run: runProbe,
-    });
-  };
+  // A run reports its own outcome in the banner, a failure included.
+  const handleRunProbe = () => void writes.perform({ run: runProbe });
 
   return (
     <section
@@ -606,7 +538,7 @@ export function RoutewiseSettingsPanel({
                       <input
                         aria-label={`${displayKey(setting)} enabled`}
                         className="h-4 w-4 rounded border-gray-300 text-gray-900"
-                        disabled={confirmation.busy}
+                        disabled={writes.busy}
                         type="checkbox"
                         checked={draft === 'true'}
                         onChange={(e) => changeDraft(setting, String(e.target.checked))}
@@ -619,7 +551,7 @@ export function RoutewiseSettingsPanel({
                       className={`w-28 rounded-md border px-2 py-1 text-right text-[13px] text-gray-900 ${
                         changed ? 'border-amber-400' : 'border-gray-300'
                       }`}
-                      disabled={confirmation.busy}
+                      disabled={writes.busy}
                       max={setting.max ?? undefined}
                       min={setting.min ?? undefined}
                       step={setting.value_type === 'int' ? 1 : 'any'}
@@ -634,9 +566,9 @@ export function RoutewiseSettingsPanel({
                     <button
                       type="button"
                       aria-label={`Reset ${displayKey(setting)}`}
-                      disabled={confirmation.busy || changed}
+                      disabled={writes.busy || changed}
                       title={changed ? 'Save or discard the unsaved change first' : undefined}
-                      onClick={() => handleResetSetting(setting)}
+                      onClick={() => void handleResetSetting(setting)}
                       className="rounded-md border border-gray-200 px-3 py-1 text-[12px] font-medium text-gray-700 disabled:opacity-40"
                     >
                       Reset
@@ -653,8 +585,8 @@ export function RoutewiseSettingsPanel({
         target={SECTION}
         changeCount={changedSettings.length}
         onCancel={discard}
-        onSave={handleSave}
-        busy={confirmation.busy}
+        onSave={() => void handleSave()}
+        busy={writes.busy}
         error={saveError}
         inPlace
       />
@@ -664,7 +596,9 @@ export function RoutewiseSettingsPanel({
           <div>
             <h3 className="text-[13px] font-semibold text-gray-900">Active probes</h3>
             <p className="mt-1 text-[12px] text-gray-500">
-              Warm RouteWise TTFT state for this model without waiting for user traffic.
+              Warm RouteWise TTFT state for this model without waiting for user traffic. Run probe
+              sends a short live request to the chosen endpoint, or to each one, and counts against
+              the providers&apos; quotas.
             </p>
           </div>
           <div className="flex w-full flex-wrap items-end gap-3 lg:w-auto">
@@ -697,7 +631,7 @@ export function RoutewiseSettingsPanel({
             </div>
             <button
               type="button"
-              disabled={!modelId || probeRunning || confirmation.busy}
+              disabled={!modelId || probeRunning || writes.busy}
               onClick={handleRunProbe}
               className={
                 probeBanner?.kind === 'success'
@@ -791,7 +725,6 @@ export function RoutewiseSettingsPanel({
           </div>
         </div>
       </div>
-      {confirmation.dialog}
     </section>
   );
 }

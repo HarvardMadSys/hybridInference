@@ -24,52 +24,27 @@ const SAMPLE_LIMIT = 100;
  * points the admin there. "View user turns" returns the same random sample
  * without calling the model.
  *
- * Analyze usage is confirmed first: it sends this user's request text to an
- * LLM, a paid call on the configured analysis key. View user turns is a read
- * (the backend only records an audit entry), so it runs directly.
+ * Both run on the click. Analyze usage sends this user's request text to an
+ * LLM, a paid call on the configured analysis key that the audit log records,
+ * as the panel says beside the buttons. View user turns is a read (the backend
+ * only records an audit entry).
  */
-export function UserUsageInsights({
-  userId,
-  userLabel = userId,
-}: {
-  userId: string;
-  /** How the confirmation names the user; the id when omitted. */
-  userLabel?: string;
-}) {
-  const confirmation = useConfirmAction();
-  const [analyzing, setAnalyzing] = useState(false);
+export function UserUsageInsights({ userId }: { userId: string }) {
+  const writes = useConfirmAction();
+  const analyzing = writes.busy;
   const [sampling, setSampling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UsageInsightsResponse | null>(null);
   const [samples, setSamples] = useState<UsageInsightsSamplesResponse | null>(null);
 
-  const analyze = () => {
-    confirmation.request({
-      title: `${result ? 'Re-analyze' : 'Analyze'} usage for ${userLabel}?`,
-      body: (
-        <>
-          <p>
-            The user-turn text of a random sample of up to {SAMPLE_LIMIT} of {userLabel}&apos;s
-            requests is sent to the analysis model set in Admin → Settings → Usage Insights.
-          </p>
-          <p>
-            The model call runs on that analysis API key and counts toward its usage and cost. The
-            run is recorded in the audit log.
-          </p>
-        </>
-      ),
-      confirmLabel: result ? 'Re-analyze' : 'Analyze',
-      busyLabel: 'Analyzing…',
+  const analyze = async () => {
+    setError(null);
+    const failure = await writes.perform({
       run: async () => {
-        setAnalyzing(true);
-        setError(null);
-        try {
-          setResult(await analyzeUsageInsights({ user_id: userId, limit: SAMPLE_LIMIT }));
-        } finally {
-          setAnalyzing(false);
-        }
+        setResult(await analyzeUsageInsights({ user_id: userId, limit: SAMPLE_LIMIT }));
       },
     });
+    if (failure) setError(failure);
   };
 
   const viewTurns = useCallback(async () => {
@@ -104,7 +79,7 @@ export function UserUsageInsights({
           </button>
           <button
             type="button"
-            onClick={analyze}
+            onClick={() => void analyze()}
             disabled={busy}
             className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -115,8 +90,9 @@ export function UserUsageInsights({
 
       <p className="text-[12px] text-gray-500">
         Random sample of up to {SAMPLE_LIMIT} of this user&apos;s requests. Analyze usage sends each
-        request&apos;s user-turn text (not assistant/tool turns) to an LLM; View user turns shows
-        those same turns without calling the model.
+        request&apos;s user-turn text (not assistant/tool turns) to an LLM, a paid call on the Usage
+        Insights analysis key that is recorded in the audit log; View user turns shows those same
+        turns without calling the model.
       </p>
 
       {error && (
@@ -128,7 +104,6 @@ export function UserUsageInsights({
 
       {analyzing && <UsageInsightsReportSkeleton />}
       {result && !analyzing && <UsageInsightsReport result={result} />}
-      {confirmation.dialog}
     </div>
   );
 }

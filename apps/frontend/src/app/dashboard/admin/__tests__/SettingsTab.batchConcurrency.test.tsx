@@ -79,9 +79,6 @@ describe('SettingsTab batch concurrency', () => {
       target: { value: '2' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Batch Concurrency' }));
-    fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
-    );
 
     await waitFor(() => {
       expect(api.updateBatchModelLimit).toHaveBeenCalledWith('glm-4.7', 2);

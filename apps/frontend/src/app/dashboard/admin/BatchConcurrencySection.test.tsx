@@ -49,11 +49,6 @@ function clickSave() {
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to Batch Concurrency' }));
 }
 
-function saveAndConfirm() {
-  clickSave();
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));
-}
-
 describe('BatchConcurrencySection', () => {
   const onToast = vi.fn();
 
@@ -91,7 +86,7 @@ describe('BatchConcurrencySection', () => {
     expect(saveButton()).toBeNull();
   });
 
-  it('sets a cap after the administrator confirms the change', async () => {
+  it('sets a cap on Save, with no confirmation', async () => {
     vi.mocked(listBatchModelLimits).mockResolvedValue(listing(row({ model_id: 'glm-4.7' })));
     vi.mocked(updateBatchModelLimit).mockResolvedValue(
       row({ model_id: 'glm-4.7', max_concurrency: 6, effective_concurrency: 6, running: 2 }),
@@ -103,10 +98,7 @@ describe('BatchConcurrencySection', () => {
     fireEvent.change(capOf('glm-4.7'), { target: { value: '6' } });
     expect(updateBatchModelLimit).not.toHaveBeenCalled();
     clickSave();
-    const dialog = screen.getByRole('dialog', { name: 'Save 1 batch concurrency change?' });
-    expect(dialog).toHaveTextContent('glm-4.7Default (4) → 6');
-    expect(updateBatchModelLimit).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() =>
       expect(onToast).toHaveBeenCalledWith('Updated batch concurrency for glm-4.7.'),
@@ -131,12 +123,10 @@ describe('BatchConcurrencySection', () => {
     await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '' } });
     clickSave();
-    expect(screen.getByRole('dialog')).toHaveTextContent('glm-4.72 → Default (4)');
-    fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
-    );
 
     await waitFor(() => expect(updateBatchModelLimit).toHaveBeenCalledWith('glm-4.7', null));
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(capOf('glm-4.7')).toHaveValue(null);
   });
 
   it('pauses a model with a cap of 0', async () => {
@@ -150,10 +140,6 @@ describe('BatchConcurrencySection', () => {
     await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '0' } });
     clickSave();
-    expect(screen.getByRole('dialog')).toHaveTextContent('glm-4.7Default (4) → 0 (paused)');
-    fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
-    );
 
     await waitFor(() => expect(saveButton()).toBeNull());
     expect(capOf('glm-4.7')).toHaveValue(0);
@@ -220,7 +206,7 @@ describe('BatchConcurrencySection', () => {
     fireEvent.change(capOf('glm-4.7'), { target: { value: '1' } });
     fireEvent.change(capOf('qwen3.6-35b'), { target: { value: '' } });
     expect(screen.getByText('2 unsaved changes')).toBeVisible();
-    saveAndConfirm();
+    clickSave();
 
     await waitFor(() =>
       expect(onToast).toHaveBeenCalledWith('Updated batch concurrency for 2 models.'),
@@ -245,7 +231,7 @@ describe('BatchConcurrencySection', () => {
     expect(listBatchModelLimits).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps the draft and the dialog when an update fails, and retries from it', async () => {
+  it('keeps the draft and shows the error when an update fails, and saves it again', async () => {
     vi.mocked(listBatchModelLimits).mockResolvedValue(listing(row({ model_id: 'glm-4.7' })));
     vi.mocked(updateBatchModelLimit)
       .mockRejectedValueOnce(new Error('write failed'))
@@ -257,17 +243,53 @@ describe('BatchConcurrencySection', () => {
 
     await loaded();
     fireEvent.change(capOf('glm-4.7'), { target: { value: '2' } });
-    saveAndConfirm();
+    clickSave();
 
-    const dialog = screen.getByRole('dialog');
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'glm-4.7 could not be saved: write failed',
     );
     expect(capOf('glm-4.7')).toHaveValue(2);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm save' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    clickSave();
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(updateBatchModelLimit).toHaveBeenCalledTimes(2);
     expect(onToast).toHaveBeenCalledWith('Updated batch concurrency for glm-4.7.');
+  });
+
+  it('saves on Enter in a cap, once, and holds the caps while it saves', async () => {
+    let finish!: (value: AdminBatchModelLimit) => void;
+    vi.mocked(listBatchModelLimits).mockResolvedValue(
+      listing(row({ model_id: 'glm-4.7' }), row({ model_id: 'qwen3.6-35b' })),
+    );
+    vi.mocked(updateBatchModelLimit).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+
+    render(<BatchConcurrencySection onToast={onToast} />);
+
+    await loaded();
+    fireEvent.change(capOf('glm-4.7'), { target: { value: '3' } });
+    fireEvent.keyDown(capOf('glm-4.7'), { key: 'Enter' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(updateBatchModelLimit).toHaveBeenCalledWith('glm-4.7', 3);
+
+    expect(saveButton()).toHaveTextContent('Saving…');
+    expect(saveButton()).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Discard changes to Batch Concurrency' }),
+    ).toBeDisabled();
+    expect(capOf('qwen3.6-35b')).toBeDisabled();
+    fireEvent.keyDown(capOf('glm-4.7'), { key: 'Enter' });
+    clickSave();
+    expect(updateBatchModelLimit).toHaveBeenCalledTimes(1);
+
+    finish(row({ model_id: 'glm-4.7', max_concurrency: 3, effective_concurrency: 3 }));
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(updateBatchModelLimit).toHaveBeenCalledTimes(1);
   });
 
   it('discards drafts on Discard without writing', async () => {

@@ -6,10 +6,12 @@ export function RouteDeploymentField({
   id,
   value,
   onChange,
+  disabled = false,
 }: {
   id: string;
   value: RouteDeploymentType;
   onChange: (value: RouteDeploymentType) => void;
+  disabled?: boolean;
 }) {
   const t = useT();
   return (
@@ -22,6 +24,7 @@ export function RouteDeploymentField({
         value={value}
         aria-describedby={`${id}-help`}
         onValueChange={onChange}
+        disabled={disabled}
         options={[
           {
             value: 'auto',

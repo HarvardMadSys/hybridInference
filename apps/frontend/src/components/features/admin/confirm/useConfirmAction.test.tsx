@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChangeList } from './ChangeList';
@@ -324,8 +325,124 @@ describe('ChangeList', () => {
   });
 });
 
+/**
+ * A direct save beside a confirmed delete, on one write flow, with the saved
+ * key and the failure shown the way an edit bar shows them.
+ */
+function DirectHarness({
+  save,
+  remove,
+}: {
+  save: () => Promise<void>;
+  remove?: () => Promise<void>;
+}) {
+  const confirmation = useConfirmAction();
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <>
+      <button
+        type="button"
+        disabled={confirmation.busy}
+        onClick={async () => setError(await confirmation.perform({ key: 'alpha', run: save }))}
+      >
+        Save alpha
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          confirmation.request({
+            title: 'Delete "alpha"?',
+            confirmLabel: 'Delete',
+            body: null,
+            run: remove ?? (async () => {}),
+          })
+        }
+      >
+        Delete alpha
+      </button>
+      <output aria-label="Saving key">{confirmation.savingKey ?? 'none'}</output>
+      {error ? <p role="alert">{error}</p> : null}
+      {confirmation.dialog}
+    </>
+  );
+}
+
+describe('useConfirmAction: direct writes', () => {
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  it('writes on the first click, with no dialog, busy and keyed until it ends', async () => {
+    const write = deferred();
+    const save = vi.fn(() => write.promise);
+    render(<DirectHarness save={save} />);
+    const button = screen.getByRole('button', { name: 'Save alpha' });
+
+    fireEvent.click(button);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(button).toBeDisabled();
+    expect(screen.getByLabelText('Saving key')).toHaveTextContent('alpha');
+
+    await act(async () => write.resolve());
+    expect(button).toBeEnabled();
+    expect(screen.getByLabelText('Saving key')).toHaveTextContent('none');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('resolves to the failure, so it can be shown and saved again', async () => {
+    const save = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce();
+    render(<DirectHarness save={save} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save alpha' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('backend unavailable');
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save alpha' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens no confirmation while a direct write runs', async () => {
+    const write = deferred();
+    const save = vi.fn(() => write.promise);
+    render(<DirectHarness save={save} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save alpha' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    await act(async () => write.resolve());
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes nothing directly while a confirmation is open', async () => {
+    const save = vi.fn(async () => {});
+    const remove = vi.fn(async () => {});
+    render(<DirectHarness save={save} remove={remove} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete alpha' }));
+    // The dialog is modal; a click that still reaches the page writes nothing.
+    fireEvent.click(screen.getByRole('button', { name: 'Save alpha' }));
+    expect(save).not.toHaveBeenCalled();
+
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(remove).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Save alpha' }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  });
+});
+
 describe('writeEach', () => {
-  it('throws when the first write fails, so nothing is reported as saved', async () => {
+  it('names the item when the first write fails, and nothing as saved', async () => {
     await expect(
       writeEach(
         ['a', 'b'],
@@ -334,32 +451,35 @@ describe('writeEach', () => {
           throw new Error('down');
         },
       ),
-    ).rejects.toThrow('a could not be saved: down');
+    ).rejects.toThrow(/^a could not be saved: down$/);
   });
 
   it('stops at a later failure and names what was saved', async () => {
     const written: string[] = [];
-    const message = await writeEach(
-      ['a', 'b', 'c'],
+    await expect(
+      writeEach(
+        ['a', 'b', 'c'],
+        (item) => item,
+        async (item) => {
+          if (item === 'b') throw new Error('down');
+          written.push(item);
+        },
+      ),
+    ).rejects.toThrow(
+      /^b could not be saved: down 1 change was saved; the rest are still unsaved\.$/,
+    );
+    expect(written).toEqual(['a']);
+  });
+
+  it('resolves when every write succeeds', async () => {
+    const written: string[] = [];
+    await writeEach(
+      ['a', 'b'],
       (item) => item,
       async (item) => {
-        if (item === 'b') throw new Error('down');
         written.push(item);
       },
     );
-    expect(written).toEqual(['a']);
-    expect(message).toBe(
-      'b could not be saved: down 1 change was saved; the rest are still unsaved.',
-    );
-  });
-
-  it('returns null when every write succeeds', async () => {
-    expect(
-      await writeEach(
-        ['a'],
-        (item) => item,
-        async () => {},
-      ),
-    ).toBeNull();
+    expect(written).toEqual(['a', 'b']);
   });
 });

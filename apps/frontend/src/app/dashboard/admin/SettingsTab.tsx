@@ -32,7 +32,6 @@ import {
   ROW_ACTION_DANGER,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
-import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
@@ -46,6 +45,9 @@ import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
 import { BatchConcurrencySection } from './BatchConcurrencySection';
+
+/** The write key of Add domain, so only its button reads "Adding…". */
+const ADD_DOMAIN = 'add domain';
 
 /** The page's sections, in order, for its section index. */
 const SECTIONS = [
@@ -98,8 +100,6 @@ function validateNumeric(setting: RuntimeSettingItem, draft: string) {
   });
 }
 
-const flagText = (value: unknown) => (value ? 'On' : 'Off');
-
 /** A changed runtime setting: what is saved, and the value the save would write. */
 interface SettingChange {
   setting: RuntimeSettingItem;
@@ -108,8 +108,8 @@ interface SettingChange {
 
 /**
  * A group of runtime settings of one type (feature flags or numbers), edited in
- * place. The edited values are drafts until the administrator confirms the list
- * of changes; each changed setting is one request.
+ * place. The edited values are drafts until Save; each changed setting is one
+ * request.
  */
 function RuntimeSettingsSection({
   id,
@@ -142,7 +142,7 @@ function RuntimeSettingsSection({
    */
   renderExtra?: (setting: RuntimeSettingItem, unsaved: boolean) => React.ReactNode;
 }) {
-  const confirmation = useConfirmAction();
+  const writes = useConfirmAction();
   const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -189,40 +189,20 @@ function RuntimeSettingsSection({
       : null;
 
   const cancel = () => {
-    if (confirmation.busy) return;
+    if (writes.busy) return;
     setDrafts({});
     setSaveError(null);
   };
 
-  const save = () => {
+  const save = async () => {
     // Enter in a field reaches here too; the bar already says what to correct.
     if (blocked || changes.length === 0) return;
     setSaveError(null);
     const pending = changes;
-    const format = (value: unknown) => (kind === 'flag' ? flagText(value) : String(value));
-    confirmation.request({
-      title: `Save ${plural(pending.length, 'change')} to ${title}?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={pending.map(({ setting, value }) => ({
-              label: settingLabel(setting.key),
-              before: format(setting.value),
-              after: format(value),
-            }))}
-          />
-          {pending.length === 1 && pending[0].setting.description ? (
-            <p>{pending[0].setting.description}</p>
-          ) : null}
-          <p>This takes effect immediately.</p>
-        </>
-      ),
+    const failure = await writes.perform({
       run: async () => {
         let wrote = false;
-        const failure = await writeEach(
+        await writeEach(
           pending,
           ({ setting }) => setting.key,
           async ({ setting, value }) => {
@@ -238,8 +218,6 @@ function RuntimeSettingsSection({
         ).finally(() => {
           if (wrote) onAfterWrite();
         });
-        setSaveError(failure);
-        if (failure) return;
         onToast(
           pending.length === 1
             ? kind === 'flag'
@@ -249,6 +227,7 @@ function RuntimeSettingsSection({
         );
       },
     });
+    setSaveError(failure);
   };
 
   return (
@@ -306,7 +285,7 @@ function RuntimeSettingsSection({
                       role="switch"
                       aria-checked={draft === true}
                       aria-label={name}
-                      disabled={confirmation.busy}
+                      disabled={writes.busy}
                       onClick={() => changeDraft(setting, !(draft === true))}
                       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
                         draft === true ? 'bg-gray-900' : 'bg-gray-200'
@@ -325,12 +304,12 @@ function RuntimeSettingsSection({
                       min={setting.min ?? undefined}
                       max={setting.max ?? undefined}
                       value={String(draft)}
-                      disabled={confirmation.busy}
+                      disabled={writes.busy}
                       onChange={(e) => changeDraft(setting, e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          save();
+                          void save();
                         }
                       }}
                       aria-label={name}
@@ -349,13 +328,12 @@ function RuntimeSettingsSection({
         target={title}
         changeCount={unsavedKeys.size}
         onCancel={cancel}
-        onSave={save}
-        busy={confirmation.busy}
+        onSave={() => void save()}
+        busy={writes.busy}
         error={saveError}
         blocked={blocked}
         inPlace
       />
-      {confirmation.dialog}
     </AdminSection>
   );
 }
@@ -363,6 +341,7 @@ function RuntimeSettingsSection({
 export function SettingsTab() {
   const router = useRouter();
   const confirmation = useConfirmAction();
+  const addingNow = confirmation.savingKey === ADD_DOMAIN;
   const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -447,26 +426,16 @@ export function SettingsTab() {
   const replaceSetting = (setList: typeof setFeatureFlags) => (updated: RuntimeSettingItem) =>
     setList((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
 
-  const onAddDomain = () => {
+  // A domain the administrator typed is added at once; a failure stays under the input.
+  const onAddDomain = async () => {
     setInputError(null);
     const validated = validateSignupDomainInput(input);
     if (!validated.ok) {
       setInputError(validated.error);
       return;
     }
-    const shownDomain = validated.isWildcard ? `*.${validated.domain}` : validated.domain;
-    confirmation.request({
-      title: `Add ${shownDomain} to the signup allowlist?`,
-      confirmLabel: 'Add domain',
-      busyLabel: 'Adding…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <p className="[overflow-wrap:anywhere]">
-          Future signups from <code className="rounded bg-gray-100 px-1">{shownDomain}</code>{' '}
-          {validated.isWildcard ? '(any subdomain, not the bare suffix) ' : ''}are approved
-          automatically.
-        </p>
-      ),
+    const failure = await confirmation.perform({
+      key: ADD_DOMAIN,
       run: async () => {
         await addSignupAllowedDomain(input.trim());
         setInput('');
@@ -479,10 +448,13 @@ export function SettingsTab() {
         await loadDomains();
       },
     });
+    if (failure) setInputError(failure);
   };
 
   const onRemove = (row: SignupAllowedDomain) => {
     const shownDomain = row.is_wildcard ? `*.${row.domain}` : row.domain;
+    // The last domain empties the list, and an empty list approves every signup.
+    const last = domains.length === 1;
     confirmation.request({
       title: `Remove ${shownDomain} from the signup allowlist?`,
       confirmLabel: 'Remove',
@@ -490,8 +462,18 @@ export function SettingsTab() {
       tone: 'danger',
       body: (
         <p className="[overflow-wrap:anywhere]">
-          Future signups from <code className="rounded bg-gray-100 px-1">{shownDomain}</code> will
-          require admin approval. Existing users keep their current status.
+          {last ? (
+            <>
+              It is the last allowed domain. With the list empty, every signup is approved
+              automatically.
+            </>
+          ) : (
+            <>
+              Future signups from <code className="rounded bg-gray-100 px-1">{shownDomain}</code>{' '}
+              will require admin approval.
+            </>
+          )}{' '}
+          Existing users keep their current status.
         </p>
       ),
       run: async () => {
@@ -650,13 +632,13 @@ export function SettingsTab() {
               )
             }
           >
-            {/* Add form: opened explicitly, reviewed before anything is written. */}
+            {/* Add form: opened explicitly; its Add domain writes the domain. */}
             {addingDomain ? (
               <form
                 className="mb-4 flex max-w-xl flex-col gap-1.5"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  if (!confirmation.busy) onAddDomain();
+                  if (!confirmation.busy) void onAddDomain();
                 }}
               >
                 <div className="flex flex-wrap items-center gap-2">
@@ -688,9 +670,10 @@ export function SettingsTab() {
                   <button
                     type="submit"
                     disabled={confirmation.busy || !input.trim()}
+                    aria-busy={addingNow || undefined}
                     className={BUTTON_PRIMARY}
                   >
-                    Review and add
+                    {addingNow ? 'Adding…' : 'Add domain'}
                   </button>
                 </div>
                 <p className="text-[11px] text-gray-400">

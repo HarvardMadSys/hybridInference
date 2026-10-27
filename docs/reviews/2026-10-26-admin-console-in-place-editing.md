@@ -5,6 +5,10 @@ Supersedes the **edit** rule of
 Its **action**, **create** and **read-exempt** rules, its bypass review and its inventory of API calls
 are unchanged. This record covers what was changed and verified on this date. It is not a design spec.
 
+> **Superseded in part (2026-10-27).** Save changes writes at once: the `old → new` review and
+> **Confirm save** are gone. In-place editing, the save bar and the locks below are unchanged. See
+> [2026-10-27-admin-console-fewer-confirmations.md](2026-10-27-admin-console-fewer-confirmations.md).
+
 ## The rule now
 
 | Rule | Applies to | Behaviour |

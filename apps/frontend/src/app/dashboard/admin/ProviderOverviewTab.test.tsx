@@ -226,11 +226,12 @@ describe('ProviderOverviewTab', () => {
       fireEvent.change(screen.getByLabelText('API key'), { target: { value: SECRET } });
     }
 
-    it('probes directly, then reviews the new provider without its key before creating it', async () => {
+    it('probes directly, then adds the provider on Add provider, with no confirmation', async () => {
       vi.mocked(probeProviderDefinition).mockResolvedValue(PROBE_OK);
       vi.mocked(createProviderDefinition).mockResolvedValue({ ...ACME, provider: 'new_co' });
       await fillAddForm();
-      expect(screen.getByRole('button', { name: 'Review provider' })).toBeDisabled();
+      // Nothing is added before the probe has checked the form.
+      expect(screen.getByRole('button', { name: 'Add provider' })).toBeDisabled();
       // Every added provider is OpenAI-compatible: said once, not offered as a choice.
       expect(screen.queryByLabelText('Adapter')).toBeNull();
       expect(screen.getByLabelText('Base URL')).toHaveAccessibleDescription(
@@ -247,24 +248,10 @@ describe('ProviderOverviewTab', () => {
         probe_model_id: 'm-1',
       });
 
-      fireEvent.click(screen.getByRole('button', { name: 'Review provider' }));
-      const review = screen.getByRole('dialog', { name: 'Add provider “New Co”?' });
-      expect(review).toHaveTextContent('Slugnew_co');
-      expect(review).not.toHaveTextContent('Adapter');
-      expect(review).toHaveTextContent('Base URLhttps://api.new.test/v1');
-      expect(review).toHaveTextContent('Probe model IDm-1');
-      expect(review).toHaveTextContent('API keySet (hidden)');
-      expect(review).toHaveTextContent('Key label(none)');
-      expect(review).not.toHaveTextContent(SECRET);
       expect(createProviderDefinition).not.toHaveBeenCalled();
 
-      clickInDialog('Back to editing');
+      fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
       expect(screen.queryByRole('dialog')).toBeNull();
-      expect(screen.getByLabelText('Display name')).toHaveValue('New Co');
-      expect(createProviderDefinition).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole('button', { name: 'Review provider' }));
-      clickInDialog('Add provider');
       await waitFor(() => expect(screen.queryByLabelText('Display name')).toBeNull());
       expect(vi.mocked(createProviderDefinition).mock.calls).toEqual([
         [
@@ -282,23 +269,54 @@ describe('ProviderOverviewTab', () => {
       expect(toast.success).toHaveBeenCalledWith('Provider added');
     });
 
-    it('keeps the review open with a masked error when creating fails', async () => {
+    it('holds the form while the provider is being added, and adds it once', async () => {
+      let finish!: (value: ProviderDefinitionItem) => void;
       vi.mocked(probeProviderDefinition).mockResolvedValue(PROBE_OK);
-      vi.mocked(createProviderDefinition).mockRejectedValueOnce(
-        new Error(`upstream refused ${SECRET}`),
+      vi.mocked(createProviderDefinition).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
       );
       await fillAddForm();
       fireEvent.click(screen.getByRole('button', { name: 'Probe' }));
       await screen.findByText('Probe successful');
-      fireEvent.click(screen.getByRole('button', { name: 'Review provider' }));
-      clickInDialog('Add provider');
+      fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
 
-      expect(await within(confirmDialog()).findByRole('alert')).toHaveTextContent(
-        'upstream refused ••••',
-      );
-      expect(confirmDialog()).not.toHaveTextContent(SECRET);
+      const adding = screen.getByRole('button', { name: 'Adding…' });
+      expect(adding).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+      expect(screen.getByLabelText('Display name')).toBeDisabled();
+      expect(screen.getByLabelText('API key')).toBeDisabled();
+      fireEvent.click(adding);
+      expect(createProviderDefinition).toHaveBeenCalledTimes(1);
+
+      finish({ ...ACME, provider: 'new_co' });
+      await waitFor(() => expect(screen.queryByLabelText('Display name')).toBeNull());
+      expect(createProviderDefinition).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the form with a masked error when creating fails, and adds it on a retry', async () => {
+      vi.mocked(probeProviderDefinition).mockResolvedValue(PROBE_OK);
+      vi.mocked(createProviderDefinition)
+        .mockRejectedValueOnce(new Error(`upstream refused ${SECRET}`))
+        .mockResolvedValueOnce({ ...ACME, provider: 'new_co' });
+      await fillAddForm();
+      fireEvent.click(screen.getByRole('button', { name: 'Probe' }));
+      await screen.findByText('Probe successful');
+      fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('upstream refused ••••');
+      expect(alert).not.toHaveTextContent(SECRET);
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(screen.getByLabelText('Display name')).toHaveValue('New Co');
       expect(createProviderDefinition).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Add provider' }));
+      await waitFor(() => expect(screen.queryByLabelText('Display name')).toBeNull());
+      expect(createProviderDefinition).toHaveBeenCalledTimes(2);
+      expect(toast.success).toHaveBeenCalledWith('Provider added');
     });
   });
 
@@ -348,22 +366,14 @@ describe('ProviderOverviewTab', () => {
       expect(screen.getByLabelText('Display name')).toHaveValue('Acme');
     });
 
-    it('lists old -> new, keeps drafts on Back, and saves once on Confirm', async () => {
+    it('saves the changed fields once on Save, with no confirmation', async () => {
       vi.mocked(updateProviderDefinition).mockResolvedValue({ ...ACME, display_name: 'Acme Corp' });
       await openEditor();
       fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Acme Corp' } });
-      save();
-
-      const review = screen.getByRole('dialog', { name: 'Save 1 change to Acme?' });
-      expect(review).toHaveTextContent('Display nameAcme → Acme Corp');
-      expect(updateProviderDefinition).not.toHaveBeenCalled();
-
-      clickInDialog('Back to editing');
-      expect(screen.getByLabelText('Display name')).toHaveValue('Acme Corp');
       expect(updateProviderDefinition).not.toHaveBeenCalled();
 
       save();
-      clickInDialog('Confirm save');
+      expect(screen.queryByRole('dialog')).toBeNull();
       await waitFor(() => expect(screen.queryByLabelText('Display name')).toBeNull());
       expect(vi.mocked(updateProviderDefinition).mock.calls).toEqual([
         ['acme', { display_name: 'Acme Corp' }],
@@ -371,7 +381,7 @@ describe('ProviderOverviewTab', () => {
       expect(toast.success).toHaveBeenCalledWith('Provider updated');
     });
 
-    it('blocks a second Confirm and closing while the save is in flight', async () => {
+    it('holds a second Save, Cancel and the fields while the save is in flight', async () => {
       let finish!: (value: ProviderDefinitionItem) => void;
       vi.mocked(updateProviderDefinition).mockImplementationOnce(
         () =>
@@ -382,41 +392,59 @@ describe('ProviderOverviewTab', () => {
       await openEditor();
       fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Acme Corp' } });
       save();
-      clickInDialog('Confirm save');
 
-      expect(within(confirmDialog()).getByRole('button', { name: 'Saving…' })).toBeDisabled();
-      expect(
-        within(confirmDialog()).getByRole('button', { name: 'Back to editing' }),
-      ).toBeDisabled();
-      fireEvent.click(within(confirmDialog()).getByRole('button', { name: 'Saving…' }));
-      fireEvent.keyDown(window, { key: 'Escape' });
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      const saving = screen.getByRole('button', { name: 'Save changes to Acme' });
+      expect(saving).toHaveTextContent('Saving…');
+      expect(saving).toBeDisabled();
       expect(screen.getByRole('button', { name: 'Cancel editing Acme' })).toBeDisabled();
+      expect(screen.getByLabelText('Display name')).toBeDisabled();
+      fireEvent.submit(screen.getByRole('form', { name: 'Edit provider Acme' }));
       expect(updateProviderDefinition).toHaveBeenCalledTimes(1);
 
       finish({ ...ACME, display_name: 'Acme Corp' });
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitFor(() => expect(screen.queryByLabelText('Display name')).toBeNull());
       expect(updateProviderDefinition).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps the dialog and drafts after a failure, and retries from the dialog', async () => {
+    it('keeps the editor and drafts after a failure, says why, and saves on a retry', async () => {
       vi.mocked(updateProviderDefinition)
         .mockRejectedValueOnce(new Error('write failed'))
         .mockResolvedValueOnce({ ...ACME, display_name: 'Acme Corp' });
       await openEditor();
       fireEvent.change(screen.getByLabelText('Display name'), { target: { value: 'Acme Corp' } });
       save();
-      clickInDialog('Confirm save');
 
-      expect(await within(confirmDialog()).findByRole('alert')).toHaveTextContent('write failed');
+      expect(await screen.findByRole('alert')).toHaveTextContent('write failed');
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(screen.getByLabelText('Display name')).toHaveValue('Acme Corp');
 
-      clickInDialog('Confirm save');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      save();
+      await waitFor(() => expect(screen.queryByLabelText('Display name')).toBeNull());
       expect(updateProviderDefinition).toHaveBeenCalledTimes(2);
     });
 
-    it('requires a probe for a new Base URL and never shows the probe key in the review', async () => {
+    it('masks the probe key in a failed save of a new Base URL', async () => {
+      vi.mocked(probeProviderDefinition).mockResolvedValue(PROBE_OK);
+      vi.mocked(updateProviderDefinition).mockRejectedValueOnce(
+        new Error(`upstream refused ${SECRET}`),
+      );
+      await openEditor();
+      fireEvent.change(screen.getByLabelText('Base URL'), {
+        target: { value: 'https://api2.acme.test/v1' },
+      });
+      fireEvent.change(screen.getByLabelText('API key'), { target: { value: SECRET } });
+      fireEvent.change(screen.getByLabelText('Probe model ID'), { target: { value: 'm-1' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Probe' }));
+      await screen.findByText('Probe successful');
+      save();
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('upstream refused ••••');
+      expect(alert).not.toHaveTextContent(SECRET);
+      expect(screen.getByLabelText('API key')).toHaveValue(SECRET);
+    });
+
+    it('requires a probe for a new Base URL, then saves it with the probe key and model', async () => {
       vi.mocked(probeProviderDefinition).mockResolvedValue(PROBE_OK);
       vi.mocked(updateProviderDefinition).mockResolvedValue({
         ...ACME,
@@ -429,24 +457,22 @@ describe('ProviderOverviewTab', () => {
       fireEvent.change(screen.getByLabelText('API key'), { target: { value: SECRET } });
       fireEvent.change(screen.getByLabelText('Probe model ID'), { target: { value: 'm-1' } });
 
+      // The key and model only check the new Base URL, and the editor says so.
+      expect(
+        screen.getByText('The new Base URL is probed with this key and model; neither is stored.'),
+      ).toBeInTheDocument();
+
       save();
-      expect(screen.queryByRole('dialog')).toBeNull();
       expect(screen.getByRole('alert')).toHaveTextContent('Probe the new Base URL');
+      expect(updateProviderDefinition).not.toHaveBeenCalled();
 
       fireEvent.click(screen.getByRole('button', { name: 'Probe' }));
       expect(await screen.findByText('Probe successful')).toBeInTheDocument();
       expect(screen.queryByRole('dialog')).toBeNull();
 
       save();
-      const review = screen.getByRole('dialog', { name: 'Save 1 change to Acme?' });
-      expect(review).toHaveTextContent(
-        'Base URLhttps://api.acme.test/v1 → https://api2.acme.test/v1',
-      );
-      expect(review).toHaveTextContent('probed with model m-1');
-      expect(review).not.toHaveTextContent(SECRET);
-      clickInDialog('Confirm save');
-
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitFor(() => expect(screen.queryByLabelText('Base URL')).toBeNull());
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(vi.mocked(updateProviderDefinition).mock.calls).toEqual([
         [
           'acme',

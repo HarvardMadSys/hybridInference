@@ -10,6 +10,12 @@ tests check it. It is evidence of what was implemented and verified on this date
 > unchanged. See [2026-10-26-admin-console-in-place-editing.md](2026-10-26-admin-console-in-place-editing.md),
 > which also maps the tests renamed since.
 
+> **Superseded in part (2026-10-27).** The review before a save or a create, and the confirmation of
+> most actions, are gone: they write on the first click. Deletes, bulk overwrites, email to the
+> audience and dialogs that collect input still ask. See
+> [2026-10-27-admin-console-fewer-confirmations.md](2026-10-27-admin-console-fewer-confirmations.md),
+> which also maps the tests renamed since.
+
 ## Rules applied
 
 | Rule | Applies to | Behaviour |

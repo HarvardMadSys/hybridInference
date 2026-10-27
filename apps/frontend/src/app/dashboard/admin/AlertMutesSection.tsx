@@ -66,7 +66,8 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
   const [types, setTypes] = useState<AlertTypeMute[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const confirmation = useConfirmAction();
+  const [writeError, setWriteError] = useState<string | null>(null);
+  const writes = useConfirmAction();
 
   // Same guard as AlertSnoozeSection: a reload still in flight when the
   // section unmounts must not land its setState on a torn-down tree.
@@ -115,57 +116,36 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
     );
   };
 
-  // Choosing a duration picks the action; nothing is written until it is confirmed.
+  // Muting and unmuting undo each other, so each writes on its choice. A
+  // failure shows above the table, apart from a load error and its Retry.
+  const apply = async (run: () => Promise<void>) => {
+    setWriteError(null);
+    const failure = await writes.perform({ run });
+    if (failure && mounted.current) setWriteError(failure);
+  };
+
   const onMute = (type: AlertTypeMute, optionValue: string) => {
     const option = MUTE_OPTIONS.find((o) => o.value === optionValue);
     if (!option) return;
-    confirmation.request({
-      title:
+    void apply(async () => {
+      const updated = await muteAlertType(type.alert_type, option.seconds);
+      if (!mounted.current) return;
+      replaceRow(updated);
+      onToast(
         option.seconds === null
-          ? `Mute "${type.label}" until unmuted?`
-          : `Mute "${type.label}" for ${option.label}?`,
-      confirmLabel: 'Mute',
-      busyLabel: 'Muting…',
-      body: (
-        <>
-          <p>
-            {type.muted ? `Now: ${statusText(type)}. ` : ''}No &ldquo;{type.label}&rdquo; alert is
-            sent{' '}
-            {option.seconds === null
-              ? 'until an admin unmutes it'
-              : `until ${formatUntil(Math.round(Date.now() / 1000) + option.seconds)}`}
-            . An incident that opens meanwhile also closes without a recovery message.
-          </p>
-          <p className="font-mono text-[12px] [overflow-wrap:anywhere]">{type.key_pattern}</p>
-        </>
-      ),
-      run: async () => {
-        const updated = await muteAlertType(type.alert_type, option.seconds);
-        if (!mounted.current) return;
-        replaceRow(updated);
-        onToast(
-          option.seconds === null
-            ? `Muted "${type.label}" until unmuted`
-            : `Muted "${type.label}" for ${option.label}`,
-        );
-      },
+          ? `Muted "${type.label}" until unmuted`
+          : `Muted "${type.label}" for ${option.label}`,
+      );
     });
   };
 
-  const onUnmute = (type: AlertTypeMute) => {
-    confirmation.request({
-      title: `Unmute "${type.label}"?`,
-      confirmLabel: 'Unmute',
-      busyLabel: 'Unmuting…',
-      body: <p>&ldquo;{type.label}&rdquo; alerts are sent again from now on.</p>,
-      run: async () => {
-        const updated = await unmuteAlertType(type.alert_type);
-        if (!mounted.current) return;
-        replaceRow(updated);
-        onToast(`Unmuted "${type.label}"`);
-      },
+  const onUnmute = (type: AlertTypeMute) =>
+    void apply(async () => {
+      const updated = await unmuteAlertType(type.alert_type);
+      if (!mounted.current) return;
+      replaceRow(updated);
+      onToast(`Unmuted "${type.label}"`);
     });
-  };
 
   const mutedCount = types.filter((type) => type.muted).length;
 
@@ -189,6 +169,13 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
             }
           >
             {error}
+          </AdminNotice>
+        </div>
+      )}
+      {writeError && (
+        <div className="mb-3">
+          <AdminNotice role="alert" onDismiss={() => setWriteError(null)}>
+            {writeError}
           </AdminNotice>
         </div>
       )}
@@ -220,7 +207,7 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                     </th>
                   </tr>
                   {members.map((type) => {
-                    const isSaving = confirmation.busy;
+                    const isSaving = writes.busy;
                     return (
                       <tr key={type.alert_type} className="bg-white align-top">
                         <td className="px-4 py-2.5">
@@ -255,7 +242,6 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
                               placeholder={type.muted ? 'Change…' : 'Mute for…'}
                               options={MUTE_OPTIONS}
                               disabled={isSaving}
-                              // Choosing a duration opens its confirmation; nothing is muted yet.
                               onValueChange={(value) => onMute(type, value)}
                               className="w-36"
                             />
@@ -280,7 +266,6 @@ export function AlertMutesSection({ onToast }: AlertMutesSectionProps) {
           </table>
         </div>
       )}
-      {confirmation.dialog}
     </AdminSection>
   );
 }
