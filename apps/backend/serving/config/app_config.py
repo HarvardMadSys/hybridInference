@@ -1792,6 +1792,7 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 # Immutable and already settled: no value can be stored now.
                 "locked": _immutable_reason(entry, state.rows) is not None,
                 "setup": entry.setup,
+                "one_time": registry.is_one_time(entry),
                 "origin": entry.origin,
                 "custom": entry.origin == "custom",
                 "invalid": invalid,

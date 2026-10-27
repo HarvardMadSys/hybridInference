@@ -22,6 +22,7 @@ import {
   BUTTON_SECONDARY,
   CHECKBOX,
   CONTROL,
+  FIELD_LABEL,
   FORM_LABEL,
   NOTICE_ACTION,
   PANEL,
@@ -755,6 +756,52 @@ export function ConfigCategorySection({
   const barHeld = busy || savingGroup !== null;
   const groupError = editor.groupErrors[group.id];
 
+  // What is usually set once follows the rest, under a heading of its own
+  // when the category has both. The alert channel stands in for its webhooks,
+  // and leads the category unless they are set once.
+  const webhooks = channelEntries
+    ? visible.entries.filter((entry) => isAlertWebhook(entry.key))
+    : [];
+  const fields = visible.entries.filter((entry) => !channelEntries || !isAlertWebhook(entry.key));
+  const everyday = fields.filter((entry) => entry.one_time !== true);
+  const oneTime = fields.filter((entry) => entry.one_time === true);
+  const channel =
+    channelEntries && webhooks.length > 0 ? (
+      <AlertNotificationFields
+        entries={channelEntries}
+        channel={editor.alertChannel}
+        onChannelChange={editor.changeAlertChannel}
+        drafts={drafts}
+        onDraftChange={onDraftChange}
+        errors={entryErrors}
+        disabled={busy}
+        testing={testingAlert}
+        testResult={editor.alertTestResult}
+        onTest={() => void editor.sendAlertTest()}
+        onReset={toggleReset}
+        pendingResets={new Set(Object.keys(pendingResets))}
+      />
+    ) : null;
+  const channelOneTime = webhooks.some((entry) => entry.one_time === true);
+  const channelFirst = channel !== null && !channelOneTime;
+  const oneTimeHeading =
+    (everyday.length > 0 || channelFirst) && (oneTime.length > 0 || channelOneTime);
+  const field = (entry: ConfigEntry) => (
+    <ConfigEntryField
+      key={entry.key}
+      entry={entry}
+      draft={drafts[entry.key]}
+      onChange={onDraftChange}
+      serverError={entryErrors[entry.key]}
+      onReset={toggleReset}
+      onMarkSecret={toggleMarkSecret}
+      layout="split"
+      resetPending={Boolean(pendingResets[entry.key])}
+      markSecretPending={Boolean(pendingSecrets[entry.key])}
+      disabled={busy}
+    />
+  );
+
   return (
     <section
       id={configSectionId(group.id)}
@@ -798,39 +845,13 @@ export function ConfigCategorySection({
         ) : null}
         <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
           <div className="divide-y divide-gray-100 px-4">
-            {channelEntries && visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
-              <AlertNotificationFields
-                entries={channelEntries}
-                channel={editor.alertChannel}
-                onChannelChange={editor.changeAlertChannel}
-                drafts={drafts}
-                onDraftChange={onDraftChange}
-                errors={entryErrors}
-                disabled={busy}
-                testing={testingAlert}
-                testResult={editor.alertTestResult}
-                onTest={() => void editor.sendAlertTest()}
-                onReset={toggleReset}
-                pendingResets={new Set(Object.keys(pendingResets))}
-              />
+            {channelFirst ? channel : null}
+            {everyday.map(field)}
+            {oneTimeHeading ? (
+              <h3 className={`-mx-4 bg-gray-50 px-4 py-1.5 ${FIELD_LABEL}`}>Usually set once</h3>
             ) : null}
-            {visible.entries
-              .filter((entry) => !channelEntries || !isAlertWebhook(entry.key))
-              .map((entry) => (
-                <ConfigEntryField
-                  key={entry.key}
-                  entry={entry}
-                  draft={drafts[entry.key]}
-                  onChange={onDraftChange}
-                  serverError={entryErrors[entry.key]}
-                  onReset={toggleReset}
-                  onMarkSecret={toggleMarkSecret}
-                  layout="split"
-                  resetPending={Boolean(pendingResets[entry.key])}
-                  markSecretPending={Boolean(pendingSecrets[entry.key])}
-                  disabled={busy}
-                />
-              ))}
+            {channelFirst ? null : channel}
+            {oneTime.map(field)}
           </div>
 
           {/* Appears with the first change, or a reason to show, and stays

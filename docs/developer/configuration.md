@@ -486,12 +486,16 @@ already holds API keys, since a new secret would invalidate every one of them.
 
 ### On the Settings tab
 
-The tab groups the settings by category and lists each category on the
-sub-tab of its topic, beside the runtime switches of that topic: **Access**
-holds the sign-up settings, the sign-up switches and the signup allowlist, for
-instance. It describes each setting and shows where its value comes from. A
-search, or **Missing only**, looks through every sub-tab at once. Besides
-every setting the gateway reads itself, it lists:
+The tab opens on **Common**, with the switches and limits changed most often:
+sign-up, per-user concurrency and the daily quotas among them. The rest is
+grouped by category, and each category is listed on the sub-tab of its topic:
+**Access** holds the sign-up settings and the signup allowlist, for instance.
+**Setup**, near the end, holds the categories usually set once, when the
+gateway is deployed: its addresses and name, email, network, privacy and
+integrations. Within any category, the settings usually set once come last,
+under **Usually set once**. The tab describes each setting and shows where its
+value comes from. A search, or **Missing only**, looks through every sub-tab at
+once. Besides every setting the gateway reads itself, it lists:
 
 - every `${VAR}` the active model registry and routing file name, under
   **Providers**, with the models that use it, and those of the alert rules

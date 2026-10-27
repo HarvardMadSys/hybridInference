@@ -75,7 +75,7 @@ afterEach(() => {
 describe('SettingsTab role quota', () => {
   it('renders Apply button only on quota settings and runs the confirm flow', async () => {
     const api = await import('@/lib/api/admin');
-    await renderSettings('Limits');
+    await renderSettings('Common');
 
     const applyBtn = await screen.findByRole('button', { name: /apply to existing users/i });
     fireEvent.click(applyBtn);
@@ -95,7 +95,7 @@ describe('SettingsTab role quota', () => {
 
   it('holds Apply back while its quota has an unsaved change', async () => {
     const api = await import('@/lib/api/admin');
-    await renderSettings('Limits');
+    await renderSettings('Common');
 
     // Applying writes the saved quota, not the one being typed.
     const apply = await screen.findByRole('button', { name: /apply to existing users/i });
@@ -132,7 +132,7 @@ describe('SettingsTab role quota', () => {
           finishPreview = resolve;
         }),
     );
-    await renderSettings('Limits');
+    await renderSettings('Common');
 
     fireEvent.click(await screen.findByRole('button', { name: /apply to existing users/i }));
     await waitFor(() => expect(api.previewRoleQuotaApply).toHaveBeenCalledWith('pro'));
@@ -160,7 +160,7 @@ describe('SettingsTab role quota', () => {
 
     // Applying was not queued behind it: it needs its own click and review.
     expect(screen.queryByRole('dialog')).toBeNull();
-    await openSettingsTab('Limits');
+    await openSettingsTab('Common');
     fireEvent.click(screen.getByRole('button', { name: /apply to existing users/i }));
     expect(
       await screen.findByRole('dialog', { name: 'Apply the pro quota to existing keys?' }),

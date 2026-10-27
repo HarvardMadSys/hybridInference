@@ -96,9 +96,11 @@ function TabMeta({ dirty, missing }: { dirty: number; missing: number }) {
 
 /**
  * Admin → Settings: every setting an administrator changes in the console, in
- * sub-tabs by topic (see `settingsLayout`). A topic's sections sit together
- * whatever stores them: the database-backed configuration, the runtime
- * settings, and the sections with an API of their own.
+ * sub-tabs (see `settingsLayout`): Common, with the settings changed most
+ * often, then one sub-tab per topic, then Setup, with what is usually set
+ * once. A topic's sections sit together whatever stores them: the
+ * database-backed configuration, the runtime settings, and the sections with
+ * an API of their own.
  *
  * Every sub-tab stays mounted while another is shown, so a change waits
  * unsaved, wherever it was made, until it is saved or discarded. A search or
@@ -455,6 +457,12 @@ export function SettingsTab({
               aria-labelledby={filtering ? undefined : tabId(tab.key)}
               hidden={!shown}
             >
+              {/* While a filter lists every sub-tab's categories, each is tagged instead. */}
+              {tab.description && !filtering ? (
+                <p className="mb-6 max-w-3xl text-[12px] leading-relaxed text-gray-500">
+                  {tab.description}
+                </p>
+              ) : null}
               {/* A section with nothing to show leaves an empty wrapper: no gap for it. */}
               <div className="flex flex-col gap-8 [&>div:empty]:hidden">
                 {tab.blocks.map((block) => renderBlock(tab, block))}

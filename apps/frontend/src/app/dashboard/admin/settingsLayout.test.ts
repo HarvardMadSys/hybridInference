@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { SETTINGS_TABS, runtimeGroupOf, settingsTabKey, tabOfCategory } from './settingsLayout';
+import {
+  DEFAULT_SETTINGS_TAB,
+  SETTINGS_TABS,
+  runtimeGroupOf,
+  settingsTabKey,
+  tabOfCategory,
+  type RuntimeGroupKey,
+} from './settingsLayout';
 
 describe('settingsLayout', () => {
   it('names each configuration category on one sub-tab only', () => {
@@ -29,20 +36,39 @@ describe('settingsLayout', () => {
         ].map((category) => [category, tabOfCategory(category)]),
       ),
     ).toEqual({
-      general: 'general',
+      general: 'setup',
       security: 'access',
       signup: 'access',
-      email: 'access',
+      email: 'setup',
       phone: 'access',
       providers: 'providers',
       routing: 'providers',
       batch: 'batch',
-      network: 'general',
+      network: 'setup',
       alerts: 'alerts',
-      integrations: 'general',
-      privacy: 'general',
+      integrations: 'setup',
+      privacy: 'setup',
     });
-    expect(tabOfCategory('added-later')).toBe('general');
+    expect(tabOfCategory('added-later')).toBe('setup');
+  });
+
+  it('opens on Common, which holds every runtime setting, and keeps Setup and Backup last', () => {
+    expect(SETTINGS_TABS[0].key).toBe('common');
+    expect(DEFAULT_SETTINGS_TAB).toBe('common');
+    expect(SETTINGS_TABS.slice(-2).map((tab) => tab.key)).toEqual(['setup', 'backup']);
+
+    const groups: RuntimeGroupKey[] = [
+      'access',
+      'concurrency',
+      'quotas',
+      'requests',
+      'logging',
+      'other',
+    ];
+    const runtimeBlocks = SETTINGS_TABS.flatMap((tab) =>
+      tab.blocks.flatMap((block) => (block.kind === 'runtime' ? [[tab.key, block.group]] : [])),
+    );
+    expect(runtimeBlocks).toEqual(groups.map((group) => ['common', group]));
   });
 
   it('puts each runtime setting in the group of its topic', () => {
@@ -84,8 +110,9 @@ describe('settingsLayout', () => {
   });
 
   it('reads a sub-tab from the address, and the default from anything else', () => {
-    expect(settingsTabKey('limits')).toBe('limits');
-    expect(settingsTabKey('nonsense')).toBe('general');
-    expect(settingsTabKey(undefined)).toBe('general');
+    expect(settingsTabKey('models')).toBe('models');
+    expect(settingsTabKey('setup')).toBe('setup');
+    expect(settingsTabKey('nonsense')).toBe('common');
+    expect(settingsTabKey(undefined)).toBe('common');
   });
 });

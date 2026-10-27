@@ -80,7 +80,7 @@ describe('SettingsTab model concurrency', () => {
 
   it('renders the section inside Admin Settings and shows update toasts', async () => {
     const api = await import('@/lib/api/admin');
-    await renderSettings('Limits');
+    await renderSettings('Models');
 
     expect(await screen.findByText('Model Concurrency Limit')).toBeInTheDocument();
     fireEvent.click(await screen.findByLabelText('Concurrency exemption for gpt-4o-mini'));

@@ -93,7 +93,7 @@ describe('SettingsTab model visibility', () => {
   });
 
   it('does not render routing subtabs inside Settings', async () => {
-    await renderSettings();
+    await renderSettings('Setup');
 
     expect(await screen.findByRole('heading', { name: 'Usage Insights' })).toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Routing' })).not.toBeInTheDocument();
