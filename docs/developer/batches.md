@@ -631,13 +631,14 @@ later), roll back as usual. That version reads `BATCH_EXPANSION_ENABLED` again,
 off by default, so new batches of the newer kinds are refused until it is on;
 those already accepted keep running.
 
-To an older version, do it while this version is still running, since only it
-can manage the newer batches:
+To an older version, drain the newer batches with this version, which alone
+can manage them, and start the older version only once every process of this
+version has stopped and the database shows none left:
 
 1. Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches. Other
    users' queued requests then stop starting too, so their batches have to be
    cancelled rather than waited for. To let them finish instead, skip this
-   step; step 3 still catches a batch created meanwhile.
+   step; step 6 still catches a batch created meanwhile.
 2. Cancel (or let finish) every batch that is not an inline chat batch: the
    admin **Batches** tab lists and cancels anyone's. A cancelled file batch
    still needs a moment to seal. Wait until this returns no rows:
@@ -649,12 +650,49 @@ can manage the newer batches:
    GROUP BY 1, 2, 3, 4;
    ```
 
-3. Turn `BATCH_ENABLED` off, then run the query once more: it catches a batch
-   created between steps 2 and 3. If it returns a row, turn `BATCH_ENABLED`
-   back on and repeat step 2.
-4. Stop every gateway process, then start the older version. It keeps
-   `BATCH_ENABLED` off; turn it on, and set `BATCH_MIN_ROLE` back, once only
-   the older version runs.
+3. Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a
+   request that had already passed its checks may still be on its way to the
+   database, so an empty result at this point proves nothing yet.
+4. Stop every gateway process of this version, every replica and worker, and
+   keep them stopped: turn off whatever would start one again on its own
+   (restart policies, autoscaling, health-check replacement, deploy jobs) for
+   as long as the final check takes. Do not start any process of the older
+   version yet.
+5. Confirm the database has finished with them: no session of the gateway's
+   database user is left, so every transaction those processes opened has
+   committed or rolled back. Run this as a different user, or in your own
+   session, which the query leaves out; it must return no rows:
+
+   ```sql
+   SELECT pid, client_addr, state, xact_start
+   FROM pg_stat_activity
+   WHERE datname = current_database()
+     AND usename = '<the gateway database user>'
+     AND pid <> pg_backend_pid();
+   ```
+
+   A session can outlive its process: the server may still be finishing a
+   query or commit that was already sent, or not yet have noticed that the
+   connection is gone. Wait for it to end. If a session stays and you have
+   confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)`
+   ends it and rolls back its open transaction.
+6. Only then run the batch query from step 2 again. Only if it returns no
+   rows, start the older version. It keeps `BATCH_ENABLED` off; turn it on,
+   and set `BATCH_MIN_ROLE` back, once only the older version runs.
+
+Why the last check waits until the database is quiet: turning `BATCH_ENABLED`
+off refuses new requests, but it does not stop a create that was admitted a
+moment earlier; that create still stores its batch, however long its body or
+the database takes. A process having exited is not enough either, since a
+commit it sent may still be in progress on the server. Each create is one
+transaction and only gateway processes write batches, so once no gateway
+session is left and none can start, every create has either committed or
+rolled back, and the query sees everything that will ever be there.
+
+If step 6 returns rows, do not start the older version: it would run them as
+chat completions. Start this version again, and only this version, turn
+`BATCH_ENABLED` on so its worker can run or seal those batches, cancel them or
+let them finish (step 2), then repeat steps 3 to 6.
 
 Finished batches of the newer kinds stay in the database; the older version
 lists and purges them as if they were inline chat batches. Uploaded files and

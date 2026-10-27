@@ -1872,8 +1872,8 @@ async def restore_rows(
                 raise ConfigUpdateError(400, f"{key}: duplicate entry in backup.")
             seen_keys.add(key)
             if registry.is_retired(key):
-                # A backup from an earlier version: nothing reads the setting,
-                # and the row the deployment has (if any) is kept below.
+                # Nothing reads it; the deployment's own row or reset marker
+                # is left exactly as it is (see ``to_delete`` below).
                 continue
 
             entry = _writable_entry(key, current_rows, current_resets)
@@ -1964,10 +1964,6 @@ async def restore_rows(
         for key, existing_row in current_rows.items():
             if key in target_rows or key in target_resets:
                 continue
-            if registry.is_retired(key):
-                # Kept for a rollback to the version that reads it.
-                target_rows[key] = existing_row
-                continue
             entry = all_entries.get(key)
             if entry is None:
                 continue
@@ -1983,9 +1979,16 @@ async def restore_rows(
             if damage is not None:
                 raise ConfigUpdateError(400, damage.saving())
 
-        to_delete = (set(current_rows) | set(current_resets)) - (
-            set(target_rows) | set(target_resets)
-        )
+        # A retired setting's row or reset marker (with its secret flag) is
+        # never touched: a rollback to the version that reads it depends on
+        # it, and a lost reset marker would let that version's boot import the
+        # environment value and freeze it.
+        to_delete = {
+            key
+            for key in (set(current_rows) | set(current_resets))
+            - (set(target_rows) | set(target_resets))
+            if not registry.is_retired(key)
+        }
         for key in sorted(to_delete):
             await transaction.delete(key)
         if target_rows:

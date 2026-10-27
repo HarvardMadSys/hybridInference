@@ -174,3 +174,41 @@ async def test_a_restore_keeps_the_deployments_row_and_ignores_the_backups(confi
 
     assert store.rows["SITE_NAME"].value == "After"
     assert store.rows[RETIRED].value == "1"
+
+
+def _retired_reset() -> object:
+    return row(RETIRED, "", secret=True, source=RESET_SOURCE)
+
+
+@pytest.mark.asyncio
+async def test_a_restore_omitting_it_keeps_a_reset_marker_and_its_secret_flag(config_env) -> None:
+    """The reset marker is what keeps a rollback following the environment.
+
+    Without it, the version that still reads the setting imports the
+    environment value at boot and freezes it into a stored row.
+    """
+    store = FakeAppConfigStore([_retired_reset(), row("SITE_NAME", "Before")])
+    await _boot(store)
+
+    await app_config.restore_rows(
+        [{"key": "SITE_NAME", "value": "After", "source": "admin"}], updated_by="admin"
+    )
+
+    kept = store.rows[RETIRED]
+    assert (kept.source, kept.secret, kept.value) == (RESET_SOURCE, True, "")
+    assert RETIRED not in store.deleted
+
+
+@pytest.mark.asyncio
+async def test_an_export_restore_roundtrip_keeps_a_reset_marker(config_env) -> None:
+    store = FakeAppConfigStore([_retired_reset(), row("SITE_NAME", "Before")])
+    await _boot(store)
+    exported = await app_config.export_rows()
+    assert {"key": RETIRED, "value": "", "secret": True, "source": RESET_SOURCE} in exported
+
+    await app_config.restore_rows(exported, updated_by="admin")
+
+    kept = store.rows[RETIRED]
+    assert (kept.source, kept.secret, kept.value) == (RESET_SOURCE, True, "")
+    assert app_config.describe()["entries"]
+    assert RETIRED not in {entry["key"] for entry in app_config.describe()["entries"]}
