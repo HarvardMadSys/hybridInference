@@ -173,6 +173,12 @@ def _find(key: str) -> dict[str, Any]:
         )
     if registry.is_runtime_setting_name(key):
         raise ManageError(f"{key} is a runtime setting; change it on the console's Settings tab.")
+    if registry.is_retired(key):
+        raise ManageError(
+            f"{key} is retired and no longer controls anything: "
+            f"{registry.RETIRED_SETTINGS[key]}. It cannot be set; `reset` removes a value an "
+            "earlier version stored."
+        )
     raise ManageError(f"{key} is not a known setting; `set` adds it as a custom variable.")
 
 

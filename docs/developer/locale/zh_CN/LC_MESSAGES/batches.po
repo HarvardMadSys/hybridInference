@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-26 19:44+0000\n"
+"POT-Creation-Date: 2026-10-26 23:31-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -101,10 +101,10 @@ msgstr ""
 msgid ""
 "Only **internal** users and administrators can create batches unless the "
 "operator opens them to other roles. A gateway with batch inference turned"
-" off, or without a database, answers every batch route with `404`. File "
-"batches, Anthropic Message Batches, embeddings, Responses requests and "
-"webhooks are available once the operator turns on "
-"`BATCH_EXPANSION_ENABLED`."
+" off, or without a database, answers every batch route with `404`. "
+"Otherwise every way in on this page is available: inline and file "
+"batches, Anthropic Message Batches, chat, embedding and Responses "
+"requests, and webhooks."
 msgstr ""
 
 #: ../developer/batches.md:29
@@ -714,6 +714,17 @@ msgid ""
 msgstr ""
 
 #: ../developer/batches.md:470
+msgid ""
+"Setting up a webhook, changing its URL, rotating its secret or turning it"
+" back on needs the same role as creating a batch (`BATCH_MIN_ROLE`); "
+"below it, `PUT` answers `403` and nothing is stored or looked up. The "
+"check uses your role at the time of the request. If your role is lowered,"
+" you can still read your webhook, list its deliveries and delete it, and "
+"events for your existing batches are still delivered while it stays "
+"enabled."
+msgstr ""
+
+#: ../developer/batches.md:477
 #, python-brace-format
 msgid ""
 "When a batch ends, after its results can be read, the gateway POSTs an "
@@ -729,18 +740,18 @@ msgid ""
 "once, so deduplicate on `webhook-id`."
 msgstr ""
 
-#: ../developer/batches.md:481
+#: ../developer/batches.md:488
 msgid ""
 "A webhook URL must be HTTPS and reach a public address. Private, "
 "loopback, link-local and cloud-metadata addresses are refused when the "
 "URL is saved, again on every redirect, and again on every connection."
 msgstr ""
 
-#: ../developer/batches.md:485
+#: ../developer/batches.md:492
 msgid "Batches in the console"
 msgstr ""
 
-#: ../developer/batches.md:487
+#: ../developer/batches.md:494
 msgid ""
 "The **Batches** page of the console (from the dashboard) lists your "
 "batches across all three APIs with their progress, tokens and known cost,"
@@ -748,7 +759,7 @@ msgid ""
 "webhook."
 msgstr ""
 
-#: ../developer/batches.md:491
+#: ../developer/batches.md:498
 msgid "Limits"
 msgstr ""
 
@@ -826,13 +837,13 @@ msgstr ""
 msgid "7 days"
 msgstr ""
 
-#: ../developer/batches.md:504
+#: ../developer/batches.md:511
 msgid ""
 "The operator may have changed any of them. A larger job is several "
 "batches."
 msgstr ""
 
-#: ../developer/batches.md:506
+#: ../developer/batches.md:513
 msgid "Errors from the create call"
 msgstr ""
 
@@ -895,31 +906,31 @@ msgid ""
 " up"
 msgstr ""
 
-#: ../developer/batches.md:517
+#: ../developer/batches.md:524
 msgid "Compared with OpenAI's and Anthropic's batch APIs"
 msgstr ""
 
-#: ../developer/batches.md:519
+#: ../developer/batches.md:526
 msgid ""
 "Batch requests cost the same as interactive ones: there is no batch "
 "discount, and the gateway runs each request itself rather than handing "
 "the batch to a provider's own batch service."
 msgstr ""
 
-#: ../developer/batches.md:522
+#: ../developer/batches.md:529
 msgid ""
 "The limits are the deployment's (see [Limits](#limits)), lower than the "
 "providers' own: 50,000 requests and 32 MiB per batch by default."
 msgstr ""
 
-#: ../developer/batches.md:524
+#: ../developer/batches.md:531
 msgid ""
 "The 24-hour window of file batches and Message Batches is when the "
 "gateway stops *starting* requests. Requests already running when it ends "
 "finish, so a batch may reach its final status after `expires_at`."
 msgstr ""
 
-#: ../developer/batches.md:527
+#: ../developer/batches.md:534
 #, python-brace-format
 msgid ""
 "The inline form, `GET /v1/batches/{id}/results`, the JSONL export, "
@@ -927,29 +938,29 @@ msgid ""
 " gateway's own."
 msgstr ""
 
-#: ../developer/batches.md:530
+#: ../developer/batches.md:537
 msgid "Only `purpose=batch` files exist, and they serve batches only."
 msgstr ""
 
-#: ../developer/batches.md:531
+#: ../developer/batches.md:538
 msgid ""
 "Responses requests in a batch are independent: `store: true`, "
 "`previous_response_id`, `conversation`, `background` and hosted tools are"
 " refused."
 msgstr ""
 
-#: ../developer/batches.md:534
+#: ../developer/batches.md:541
 msgid ""
 "Message Batches belong to your account; there are no workspaces. "
 "`anthropic-beta` is refused, and so are server tools, Files API sources, "
 "MCP servers and containers."
 msgstr ""
 
-#: ../developer/batches.md:538
+#: ../developer/batches.md:545
 msgid "Running batch inference"
 msgstr ""
 
-#: ../developer/batches.md:540
+#: ../developer/batches.md:547
 msgid ""
 "These settings are on the admin console's **Configuration** tab, under "
 "**Batch inference**. None needs a restart: a change applies to the next "
@@ -970,8 +981,9 @@ msgstr ""
 
 #: ../developer/batches.md:21
 msgid ""
-"Serve batch inference. Off, every `/v1/batches` route answers `404` and "
-"no queued request starts; stored batches are kept"
+"Serve batch inference, every kind of it. Off, every batch, file and "
+"webhook route answers `404` and no queued request starts; stored batches "
+"are kept"
 msgstr ""
 
 #: ../developer/batches.md:21
@@ -984,8 +996,9 @@ msgstr ""
 
 #: ../developer/batches.md:21
 msgid ""
-"Lowest role that may create batches (`free`, `pro`, `internal`, `admin`)."
-" A queued request also waits while its owner's role is below it"
+"Lowest role that may create batches and set up a batch webhook (`free`, "
+"`pro`, `internal`, `admin`). A queued request also waits while its "
+"owner's role is below it"
 msgstr ""
 
 #: ../developer/batches.md:21
@@ -1070,21 +1083,6 @@ msgstr ""
 msgid ""
 "Days a finished batch and its results are kept. A batch keeps the value "
 "it was created with"
-msgstr ""
-
-#: ../developer/batches.md:21
-msgid "`BATCH_EXPANSION_ENABLED`"
-msgstr ""
-
-#: ../developer/batches.md:21
-msgid "off"
-msgstr ""
-
-#: ../developer/batches.md:21
-msgid ""
-"Allow creating file batches, Message Batches, embedding and Responses "
-"batches, and webhooks. Off, batches already accepted keep running and "
-"stay readable, downloadable, cancellable and deletable"
 msgstr ""
 
 #: ../developer/batches.md:21
@@ -1213,12 +1211,30 @@ msgid "`BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS`"
 msgstr ""
 
 #: ../developer/batches.md:21
+msgid "off"
+msgstr ""
+
+#: ../developer/batches.md:21
 msgid ""
 "Let webhooks reach private and loopback addresses. For isolated test "
 "deployments only"
 msgstr ""
 
-#: ../developer/batches.md:568
+#: ../developer/batches.md:574
+msgid ""
+"`BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file "
+"batches, Message Batches, embedding and Responses batches and webhooks, "
+"no longer controls anything. A value left in the environment or the "
+"database changes nothing, is not listed on the Configuration tab and "
+"cannot be set there; the gateway keeps it, so that a rollback reads it "
+"again, and warns about it once at startup. Once no earlier version will "
+"run, delete the stored row (`DELETE "
+"/admin/config/BATCH_EXPANSION_ENABLED`, or `python -m "
+"serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the "
+"variable."
+msgstr ""
+
+#: ../developer/batches.md:584
 #, python-brace-format
 msgid ""
 "A model's own cap is set in **Batch Concurrency** on the admin Settings "
@@ -1231,7 +1247,7 @@ msgid ""
 " limit, so it does not grow with the number of processes."
 msgstr ""
 
-#: ../developer/batches.md:577
+#: ../developer/batches.md:593
 msgid ""
 "Every gateway process runs a worker; requests of one batch may run in "
 "several of them. A process that stops hands its unfinished requests back,"
@@ -1239,7 +1255,7 @@ msgid ""
 "lease runs out, a few minutes later."
 msgstr ""
 
-#: ../developer/batches.md:582
+#: ../developer/batches.md:598
 msgid ""
 "The batches live in the operational database: `batch_jobs`, "
 "`batch_items`, `batch_attempts` (one row per attempt, with what it was "
@@ -1251,36 +1267,161 @@ msgid ""
 "idempotency records and webhook too."
 msgstr ""
 
-#: ../developer/batches.md:590
+#: ../developer/batches.md:606
 msgid ""
 "The admin console's **Batches** tab lists every user's batches, totals "
 "them per user and lets an administrator cancel one."
 msgstr ""
 
-#: ../developer/batches.md:593
+#: ../developer/batches.md:609
 msgid "Upgrading a deployment"
 msgstr ""
 
-#: ../developer/batches.md:595
+#: ../developer/batches.md:611
 msgid ""
-"A gateway older than the one that added file batches and Message Batches "
-"has a worker that would run their requests as chat completions. So keep "
-"`BATCH_EXPANSION_ENABLED` off until every gateway process runs the new "
-"version, then turn it on. Turning it off again later stops new batches of"
-" those kinds and nothing else."
+"A worker only runs the kinds of batch it knows: claims, expiry, "
+"finalizing, validation, sealing and cleanup all skip a batch whose "
+"surface, target or schema version is newer than the worker's. The workers"
+" that do not know this are the old ones: a gateway older than the one "
+"that added file batches and Message Batches (before #1660) has no such "
+"filter and would run their requests as chat completions. New code cannot "
+"change what an old process already running does, so before upgrading from"
+" one of those versions, make sure no old worker is running alongside the "
+"new version:"
 msgstr ""
 
-#: ../developer/batches.md:601
+#: ../developer/batches.md:620
 msgid ""
-"To roll back to an older version after batches of the new kinds were "
-"accepted, do it while the new version is still running, since only it can"
-" manage them: turn `BATCH_EXPANSION_ENABLED` off, then cancel (or let "
-"finish) every file batch, Message Batch and embedding or Responses batch "
-"until none is queued, running, validating or finalizing, and delete those"
-" you no longer need. Then stop every gateway process before any process "
-"of the older version starts. An older worker cannot tell these batches "
-"apart, and turning `BATCH_ENABLED` off does not make it safe: it only "
-"hides the batch routes."
+"On the old version, turn `BATCH_ENABLED` off (Configuration tab, or "
+"`python -m serving.config.manage set BATCH_ENABLED false`). Within about "
+"ten seconds every old process stops claiming and sweeping, and logs that "
+"its batch worker is disabled. A request it was already running finishes "
+"or is handed back; those are chat batches, which the new version runs "
+"too."
+msgstr ""
+
+#: ../developer/batches.md:625
+msgid ""
+"Upgrade every gateway process. The new processes start with "
+"`BATCH_ENABLED` still off."
+msgstr ""
+
+#: ../developer/batches.md:627
+msgid ""
+"Once no process of the old version is left (check your process manager or"
+" orchestrator, not only the health endpoint), turn `BATCH_ENABLED` on."
+msgstr ""
+
+#: ../developer/batches.md:630
+msgid ""
+"Stopping every old process before any new one starts is equally safe. "
+"From a version that already has file batches and Message Batches (#1660 "
+"or later), a rolling upgrade needs none of this: its workers know every "
+"kind."
+msgstr ""
+
+#: ../developer/batches.md:634
+msgid "Rolling back"
+msgstr ""
+
+#: ../developer/batches.md:636
+msgid ""
+"To a version that already has file batches and Message Batches (#1660 or "
+"later), roll back as usual. That version reads `BATCH_EXPANSION_ENABLED` "
+"again, off by default, so new batches of the newer kinds are refused "
+"until it is on; those already accepted keep running."
+msgstr ""
+
+#: ../developer/batches.md:641
+msgid ""
+"To an older version, drain the newer batches with this version, which "
+"alone can manage them, and start the older version only once every "
+"process of this version has stopped and the database shows none left:"
+msgstr ""
+
+#: ../developer/batches.md:645
+msgid ""
+"Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches. Other"
+" users' queued requests then stop starting too, so their batches have to "
+"be cancelled rather than waited for. To let them finish instead, skip "
+"this step; step 6 still catches a batch created meanwhile."
+msgstr ""
+
+#: ../developer/batches.md:649
+msgid ""
+"Cancel (or let finish) every batch that is not an inline chat batch: the "
+"admin **Batches** tab lists and cancels anyone's. A cancelled file batch "
+"still needs a moment to seal. Wait until this returns no rows:"
+msgstr ""
+
+#: ../developer/batches.md:660
+msgid ""
+"Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a "
+"request that had already passed its checks may still be on its way to the"
+" database, so an empty result at this point proves nothing yet."
+msgstr ""
+
+#: ../developer/batches.md:663
+msgid ""
+"Stop every gateway process of this version, every replica and worker, and"
+" keep them stopped: turn off whatever would start one again on its own "
+"(restart policies, autoscaling, health-check replacement, deploy jobs) "
+"for as long as the final check takes. Do not start any process of the "
+"older version yet."
+msgstr ""
+
+#: ../developer/batches.md:668
+msgid ""
+"Confirm the database has finished with them: no session of the gateway's "
+"database user is left, so every transaction those processes opened has "
+"committed or rolled back. Run this as a different user, or in your own "
+"session, which the query leaves out; it must return no rows:"
+msgstr ""
+
+#: ../developer/batches.md:681
+msgid ""
+"A session can outlive its process: the server may still be finishing a "
+"query or commit that was already sent, or not yet have noticed that the "
+"connection is gone. Wait for it to end. If a session stays and you have "
+"confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)` "
+"ends it and rolls back its open transaction."
+msgstr ""
+
+#: ../developer/batches.md:686
+msgid ""
+"Only then run the batch query from step 2 again. Only if it returns no "
+"rows, start the older version. It keeps `BATCH_ENABLED` off; turn it on, "
+"and set `BATCH_MIN_ROLE` back, once only the older version runs."
+msgstr ""
+
+#: ../developer/batches.md:690
+msgid ""
+"Why the last check waits until the database is quiet: turning "
+"`BATCH_ENABLED` off refuses new requests, but it does not stop a create "
+"that was admitted a moment earlier; that create still stores its batch, "
+"however long its body or the database takes. A process having exited is "
+"not enough either, since a commit it sent may still be in progress on the"
+" server. Each create is one transaction and only gateway processes write "
+"batches, so once no gateway session is left and none can start, every "
+"create has either committed or rolled back, and the query sees everything"
+" that will ever be there."
+msgstr ""
+
+#: ../developer/batches.md:699
+msgid ""
+"If step 6 returns rows, do not start the older version: it would run them"
+" as chat completions. Start this version again, and only this version, "
+"turn `BATCH_ENABLED` on so its worker can run or seal those batches, "
+"cancel them or let them finish (step 2), then repeat steps 3 to 6."
+msgstr ""
+
+#: ../developer/batches.md:704
+msgid ""
+"Finished batches of the newer kinds stay in the database; the older "
+"version lists and purges them as if they were inline chat batches. "
+"Uploaded files and webhooks stay unread until the next upgrade. Turning "
+"`BATCH_ENABLED` off is not enough on its own: it stops the newer "
+"version's worker too, so the newer batches would never drain."
 msgstr ""
 
 #~ msgid ""
@@ -1319,3 +1460,185 @@ msgstr ""
 #~ " cap"
 #~ msgstr ""
 
+#~ msgid ""
+#~ "Only **internal** users and administrators "
+#~ "can create batches unless the operator"
+#~ " opens them to other roles. A "
+#~ "gateway with batch inference turned off,"
+#~ " or without a database, answers every"
+#~ " batch route with `404`. File "
+#~ "batches, Anthropic Message Batches, "
+#~ "embeddings, Responses requests and webhooks"
+#~ " are available once the operator "
+#~ "turns on `BATCH_EXPANSION_ENABLED`."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Serve batch inference. Off, every "
+#~ "`/v1/batches` route answers `404` and no"
+#~ " queued request starts; stored batches "
+#~ "are kept"
+#~ msgstr ""
+
+#~ msgid "`BATCH_EXPANSION_ENABLED`"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Allow creating file batches, Message "
+#~ "Batches, embedding and Responses batches, "
+#~ "and webhooks. Off, batches already "
+#~ "accepted keep running and stay readable,"
+#~ " downloadable, cancellable and deletable"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "A gateway older than the one that"
+#~ " added file batches and Message "
+#~ "Batches has a worker that would "
+#~ "run their requests as chat completions."
+#~ " So keep `BATCH_EXPANSION_ENABLED` off "
+#~ "until every gateway process runs the "
+#~ "new version, then turn it on. "
+#~ "Turning it off again later stops "
+#~ "new batches of those kinds and "
+#~ "nothing else."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "To roll back to an older version"
+#~ " after batches of the new kinds "
+#~ "were accepted, do it while the new"
+#~ " version is still running, since only"
+#~ " it can manage them: turn "
+#~ "`BATCH_EXPANSION_ENABLED` off, then cancel (or"
+#~ " let finish) every file batch, "
+#~ "Message Batch and embedding or Responses"
+#~ " batch until none is queued, running,"
+#~ " validating or finalizing, and delete "
+#~ "those you no longer need. Then "
+#~ "stop every gateway process before any"
+#~ " process of the older version starts."
+#~ " An older worker cannot tell these"
+#~ " batches apart, and turning `BATCH_ENABLED`"
+#~ " off does not make it safe: it"
+#~ " only hides the batch routes."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "`BATCH_EXPANSION_ENABLED`, which earlier versions"
+#~ " used to hold back file batches, "
+#~ "Message Batches, embedding and Responses "
+#~ "batches and webhooks, no longer controls"
+#~ " anything. A value left in the "
+#~ "environment or the database changes "
+#~ "nothing, is not listed on the "
+#~ "Configuration tab and cannot be set "
+#~ "there; the gateway keeps it, so "
+#~ "that a rollback reads it again, "
+#~ "and warns about it once at "
+#~ "startup. Delete the stored row (`DELETE"
+#~ " /admin/config/BATCH_EXPANSION_ENABLED`, or `python "
+#~ "-m serving.config.manage reset "
+#~ "BATCH_EXPANSION_ENABLED`) and the variable "
+#~ "once no earlier version will run."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "To an older version, do it while"
+#~ " this version is still running, since"
+#~ " only it can manage the newer "
+#~ "batches:"
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Set `BATCH_MIN_ROLE` to `admin`, so no"
+#~ " one else can create batches. Other"
+#~ " users' queued requests then stop "
+#~ "starting too, so their batches have "
+#~ "to be cancelled rather than waited "
+#~ "for. To let them finish instead, "
+#~ "skip this step; step 3 still "
+#~ "catches a batch created meanwhile."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Turn `BATCH_ENABLED` off, then run the"
+#~ " query once more: it catches a "
+#~ "batch created between steps 2 and "
+#~ "3. If it returns a row, turn "
+#~ "`BATCH_ENABLED` back on and repeat step"
+#~ " 2."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Stop every gateway process, then start"
+#~ " the older version. It keeps "
+#~ "`BATCH_ENABLED` off; turn it on, and "
+#~ "set `BATCH_MIN_ROLE` back, once only the"
+#~ " older version runs."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Set `BATCH_MIN_ROLE` to `admin`, so no"
+#~ " one else can create batches. Other"
+#~ " users' queued requests then stop "
+#~ "starting too, so their batches have "
+#~ "to be cancelled rather than waited "
+#~ "for. To let them finish instead, "
+#~ "skip this step; step 5 still "
+#~ "catches a batch created meanwhile."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Stop every gateway process of this "
+#~ "version, every replica and worker, and"
+#~ " wait until each one has exited, "
+#~ "not merely stopped receiving traffic. Do"
+#~ " not start any process of the "
+#~ "older version yet."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "With no gateway process running, run "
+#~ "the query again. Only if it "
+#~ "returns no rows, start the older "
+#~ "version. It keeps `BATCH_ENABLED` off; "
+#~ "turn it on, and set `BATCH_MIN_ROLE` "
+#~ "back, once only the older version "
+#~ "runs."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Why the last check waits for the"
+#~ " shutdown: turning `BATCH_ENABLED` off "
+#~ "refuses new requests, but it does "
+#~ "not stop a create that was "
+#~ "admitted a moment earlier; that create"
+#~ " still stores its batch, however long"
+#~ " its body or the database takes. "
+#~ "Each create is one transaction, and "
+#~ "only gateway processes write batches, so"
+#~ " once every process has exited each"
+#~ " create has either committed or "
+#~ "rolled back, and the query sees "
+#~ "everything that will ever be there."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "If step 5 returns rows, do not "
+#~ "start the older version: it would "
+#~ "run them as chat completions. Start "
+#~ "this version again, and only this "
+#~ "version, turn `BATCH_ENABLED` on so its"
+#~ " worker can run or seal those "
+#~ "batches, cancel them or let them "
+#~ "finish (step 2), then repeat steps "
+#~ "3 to 5."
+#~ msgstr ""
+
+#~ msgid ""
+#~ "Lowest role that may create batches "
+#~ "(`free`, `pro`, `internal`, `admin`). A "
+#~ "queued request also waits while its "
+#~ "owner's role is below it"
+#~ msgstr ""

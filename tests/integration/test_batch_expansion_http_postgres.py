@@ -155,7 +155,9 @@ async def owner(pool):
 @pytest.fixture
 def settings(monkeypatch) -> dict[str, str]:
     values = {
-        "BATCH_EXPANSION_ENABLED": "1",
+        # Left over from a version that held the newer kinds back: it controls
+        # nothing now, so everything below runs with it off.
+        "BATCH_EXPANSION_ENABLED": "0",
         "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS": "1",
         "BATCH_SHARED_INTERACTIVE_LOAD": "0",
     }
@@ -752,3 +754,61 @@ async def test_a_file_responses_batch_with_a_malformed_line_runs_nothing(gateway
     assert problem["line"] == 2 and "input item type" in problem["message"]
     assert final["request_counts"]["total"] == 0
     assert model.calls == []
+
+
+async def test_batch_enabled_alone_switches_every_surface(gateway, settings):
+    """Off, every batch surface is 404; on, all of them work with nothing else to turn on.
+
+    ``settings`` keeps the retired BATCH_EXPANSION_ENABLED at "0" throughout.
+    """
+    client, model = gateway.client, gateway.model
+    payload = _lines(model.config.id, 1)
+    message = {
+        "custom_id": "one",
+        "params": {
+            "model": model.config.id,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "x"}],
+        },
+    }
+    body, content_type = _multipart(payload)
+    hook = {"url": "http://127.0.0.1:9/hook"}
+
+    settings["BATCH_ENABLED"] = "0"
+    off = [
+        await client.post("/v1/files", headers={**KEY, "content-type": content_type}, content=body),
+        await client.get("/v1/files", headers=KEY),
+        await client.post(
+            "/v1/batches",
+            headers=KEY,
+            json={
+                "input_file_id": "file-x",
+                "endpoint": "/v1/chat/completions",
+                "completion_window": "24h",
+            },
+        ),
+        await client.post("/v1/messages/batches", headers=ANTHROPIC, json={"requests": [message]}),
+        await client.put("/v1/batch_webhook", headers=KEY, json=hook),
+    ]
+    assert [response.status_code for response in off] == [404] * len(off)
+
+    del settings["BATCH_ENABLED"]
+    uploaded = await _upload(client, payload)
+    created = await client.post(
+        "/v1/batches",
+        headers=KEY,
+        json={
+            "input_file_id": uploaded["id"],
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+        },
+    )
+    messages = await client.post(
+        "/v1/messages/batches", headers=ANTHROPIC, json={"requests": [message]}
+    )
+    saved = await client.put("/v1/batch_webhook", headers=KEY, json=hook)
+    assert (created.status_code, messages.status_code, saved.status_code) == (200, 200, 200), (
+        created.text,
+        messages.text,
+        saved.text,
+    )

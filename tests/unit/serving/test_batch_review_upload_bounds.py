@@ -15,7 +15,6 @@ async def test_chunked_upload_enforces_total_body_limit(monkeypatch, padding_loc
     config = SimpleNamespace(
         enabled=True,
         min_role="internal",
-        expansion_enabled=True,
         max_body_bytes=1024,
         files_max_total_bytes=1024 * 1024,
         file_uploads_per_hour=10,

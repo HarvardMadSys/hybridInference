@@ -157,6 +157,20 @@ def test_get_explains_names_it_cannot_show(store, capsys) -> None:
     assert "NOT_A_SETTING is not a known setting" in err
 
 
+def test_get_explains_a_retired_setting_instead_of_offering_it_as_custom(store, capsys) -> None:
+    store.rows["BATCH_EXPANSION_ENABLED"] = row(
+        "BATCH_EXPANSION_ENABLED", "synthetic-retired-value", secret=True
+    )
+
+    assert manage.main(["get", "BATCH_EXPANSION_ENABLED"]) == 1
+
+    err = capsys.readouterr().err
+    assert "BATCH_EXPANSION_ENABLED is retired and no longer controls anything" in err
+    assert "BATCH_ENABLED is on" in err
+    assert "custom variable" not in err
+    assert "synthetic-retired-value" not in err
+
+
 @pytest.mark.parametrize(
     "argv",
     [[], ["set", "SMTP_PORT"], ["get"], ["frobnicate"], ["reset", "A", "B"]],

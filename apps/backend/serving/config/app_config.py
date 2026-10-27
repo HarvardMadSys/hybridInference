@@ -937,6 +937,28 @@ async def load(
     _STATE.loaded = True
     _apply(rows, boot=True, resets=resets)
     _STATE.read_at = read_started
+    _warn_retired(rows)
+
+
+def _warn_retired(rows: Mapping[str, ConfigRow]) -> None:
+    """Say once, at boot, which retired settings are still stored or set, and that they do nothing."""
+    for key, replacement in registry.RETIRED_SETTINGS.items():
+        where = [
+            name
+            for name, present in (
+                ("the database", key in rows),
+                ("the environment", bool((os.environ.get(key) or "").strip())),
+            )
+            if present
+        ]
+        if where:
+            logger.warning(
+                "%s is set in %s but no longer controls anything: %s. It is left as it is "
+                "for a rollback; remove it once no earlier version will run.",
+                key,
+                " and ".join(where),
+                replacement,
+            )
 
 
 async def _import_environment(
@@ -1324,6 +1346,12 @@ def _writable_entry(
         )
     if registry.is_runtime_setting_name(key):
         raise ConfigUpdateError(400, f"{key}: change it on the Settings tab.")
+    if registry.is_retired(key):
+        raise ConfigUpdateError(
+            400,
+            f"{key} no longer controls anything ({registry.RETIRED_SETTINGS[key]}); "
+            "it cannot be set.",
+        )
     entry = _entry_for(key, rows, resets)
     if entry is not None:
         return entry
@@ -1651,7 +1679,8 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
 
     The stored value is replaced by a reset row, which keeps the next boot from
     importing the environment value as if it had been set here, so a later
-    change to the environment still applies. A custom variable is removed.
+    change to the environment still applies. A custom variable is removed, and
+    so is the row of a retired setting (``RETIRED_SETTINGS``).
 
     Raises:
         ConfigUpdateError: 403 for an environment-only name, 409 for an
@@ -1667,31 +1696,43 @@ async def delete(key: str, *, updated_by: str) -> ConfigChange:
     store = await _writable_store()
     async with store.transaction() as transaction:
         rows, resets = await _read(transaction)
-        entry = _entry_for(key, rows, resets)
-        if entry is not None and entry.immutable:
-            raise ConfigUpdateError(409, f"{key} cannot be changed.")
-        row = rows.get(key)
-        if row is None or entry is None:
-            raise ConfigUpdateError(404, f"{key} has no stored value.")
-        if entry.generated and not (_environ_value(key, entry) or "").strip():
-            raise ConfigUpdateError(
-                409, f"{key} has no environment value to fall back to; replace it instead."
+        if registry.is_retired(key):
+            # Nothing reads it any more; only an administrator removes what an
+            # earlier version stored.
+            row, reset = rows.get(key), resets.get(key)
+            if row is None and reset is None:
+                raise ConfigUpdateError(404, f"{key} has no stored value.")
+            secret = (row is not None and row.secret) or (reset is not None and reset.secret)
+            change = ConfigChange(
+                key, secret, old_value=None if secret or row is None else row.value
             )
-        secret = entry.secret or row.secret
-        remaining = {name: stored for name, stored in rows.items() if name != key}
-        damage = _damage(rows, remaining, [key])
-        if damage is not None:
-            raise ConfigUpdateError(409, damage.resetting())
-        change = ConfigChange(
-            key,
-            secret,
-            old_value=None if secret else _typed(entry, row.value),
-            new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
-        )
-        if entry.origin == "custom":
             await transaction.delete(key)
         else:
-            await transaction.reset(key, secret=secret, updated_by=updated_by)
+            entry = _entry_for(key, rows, resets)
+            if entry is not None and entry.immutable:
+                raise ConfigUpdateError(409, f"{key} cannot be changed.")
+            row = rows.get(key)
+            if row is None or entry is None:
+                raise ConfigUpdateError(404, f"{key} has no stored value.")
+            if entry.generated and not (_environ_value(key, entry) or "").strip():
+                raise ConfigUpdateError(
+                    409, f"{key} has no environment value to fall back to; replace it instead."
+                )
+            secret = entry.secret or row.secret
+            remaining = {name: stored for name, stored in rows.items() if name != key}
+            damage = _damage(rows, remaining, [key])
+            if damage is not None:
+                raise ConfigUpdateError(409, damage.resetting())
+            change = ConfigChange(
+                key,
+                secret,
+                old_value=None if secret else _typed(entry, row.value),
+                new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
+            )
+            if entry.origin == "custom":
+                await transaction.delete(key)
+            else:
+                await transaction.reset(key, secret=secret, updated_by=updated_by)
     await _reload(store)
     logger.info("Configuration %s reset by %s", key, updated_by)
     return change
@@ -1830,6 +1871,10 @@ async def restore_rows(
             if key in seen_keys:
                 raise ConfigUpdateError(400, f"{key}: duplicate entry in backup.")
             seen_keys.add(key)
+            if registry.is_retired(key):
+                # Nothing reads it; the deployment's own row or reset marker
+                # is left exactly as it is (see ``to_delete`` below).
+                continue
 
             entry = _writable_entry(key, current_rows, current_resets)
             raw_source = str(item.get("source") or "admin").strip()
@@ -1934,9 +1979,16 @@ async def restore_rows(
             if damage is not None:
                 raise ConfigUpdateError(400, damage.saving())
 
-        to_delete = (set(current_rows) | set(current_resets)) - (
-            set(target_rows) | set(target_resets)
-        )
+        # A retired setting's row or reset marker (with its secret flag) is
+        # never touched: a rollback to the version that reads it depends on
+        # it, and a lost reset marker would let that version's boot import the
+        # environment value and freeze it.
+        to_delete = {
+            key
+            for key in (set(current_rows) | set(current_resets))
+            - (set(target_rows) | set(target_resets))
+            if not registry.is_retired(key)
+        }
         for key in sorted(to_delete):
             await transaction.delete(key)
         if target_rows:

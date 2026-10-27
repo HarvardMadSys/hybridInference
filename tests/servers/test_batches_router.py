@@ -970,6 +970,52 @@ async def test_a_worker_that_cannot_be_woken_does_not_fail_the_create(client, sc
     assert len(store.created) == 1
 
 
+# --- every target is a standard batch target -------------------------------------
+
+_TARGET_BODIES = {
+    "/v1/chat/completions": _chat(),
+    "/v1/embeddings": {"model": MODEL, "input": "hello"},
+    "/v1/responses": {"model": MODEL, "input": "hello"},
+}
+
+
+@pytest.mark.parametrize("retired_flag", [None, "0", "false", "1"])
+@pytest.mark.parametrize("url", sorted(_TARGET_BODIES))
+async def test_every_target_is_accepted_without_any_opt_in(
+    client, services, settings, store, url, retired_flag
+):
+    """BATCH_EXPANSION_ENABLED is retired: a value left behind, off or on, changes nothing."""
+    services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    if retired_flag is not None:
+        settings["BATCH_EXPANSION_ENABLED"] = retired_flag
+    body = {"requests": [_request("only", _TARGET_BODIES[url], url=url)]}
+
+    batch = await _create(client, body=body)
+
+    assert batch["endpoint"] == url
+    assert store.created[-1]["endpoint"] == url
+
+
+@pytest.mark.parametrize("url", sorted(_TARGET_BODIES))
+async def test_turning_batches_off_still_refuses_every_target(client, services, settings, url):
+    services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    settings["BATCH_ENABLED"] = "0"
+    body = {"requests": [_request("only", _TARGET_BODIES[url], url=url)]}
+
+    response = await client.post("/v1/batches", json=body, headers=_auth())
+
+    assert response.status_code == 404
+
+
+async def test_the_min_role_still_applies_to_every_target(client, services, store):
+    services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    for url, request_body in _TARGET_BODIES.items():
+        body = {"requests": [_request("only", request_body, url=url)]}
+        response = await client.post("/v1/batches", json=body, headers=_auth("key-carol"))
+        assert response.status_code == 403, url
+    assert store.created == []
+
+
 # --- ownership --------------------------------------------------------------------
 
 

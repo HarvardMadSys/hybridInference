@@ -1026,17 +1026,6 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     ConfigEntry(
-        "BATCH_EXPANSION_ENABLED",
-        "batch",
-        "Allow creating the newer batch kinds: Anthropic Message Batches, file batches "
-        "with the Files upload, and Embeddings and Responses requests. Turn on only once "
-        "every gateway process runs a version that supports them. Off, batches already "
-        "accepted still run and can still be read, downloaded, cancelled and deleted.",
-        type="bool",
-        default="0",
-        flag=True,
-    ),
-    ConfigEntry(
         "BATCH_SHARED_INTERACTIVE_LOAD",
         "batch",
         "Count the interactive requests in flight on every gateway process, not only "
@@ -1482,6 +1471,15 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "REFRESH_TOKEN_COOKIE_NAME": "process wiring: the console container reads the same name",
 }
 
+#: Settings an earlier version read that no longer control anything, with what
+#: replaced each. A row or environment value left behind is kept as it is -- a
+#: rollback to that version reads it again -- but it is neither listed, imported
+#: nor written here, and every boot that finds one warns about it once. An
+#: administrator may still delete the row.
+RETIRED_SETTINGS: Mapping[str, str] = {
+    "BATCH_EXPANSION_ENABLED": "every batch kind is available whenever BATCH_ENABLED is on",
+}
+
 #: ``Settings`` fields deliberately left out of the registry, and why.
 UNREGISTERED_SETTINGS_FIELDS: Mapping[str, str] = {
     "turnstile_site_key": "The console renders the captcha with its own site key; the "
@@ -1645,6 +1643,11 @@ def is_offered(entry: ConfigEntry) -> bool:
 def is_environment_only(key: str) -> bool:
     """Return whether *key* stays in the environment."""
     return key in ENVIRONMENT_ONLY
+
+
+def is_retired(key: str) -> bool:
+    """Return whether *key* is a setting no code reads any more (:data:`RETIRED_SETTINGS`)."""
+    return key in RETIRED_SETTINGS
 
 
 def is_runtime_setting_name(key: str) -> bool:
@@ -1929,7 +1932,7 @@ def build_entries(
     entries: dict[str, ConfigEntry] = {entry.key: entry for entry in static_entries()}
 
     for key, reference in discovered.items():
-        if is_environment_only(key) or is_runtime_setting_name(key):
+        if is_environment_only(key) or is_runtime_setting_name(key) or is_retired(key):
             continue
         requirement = _discovered_requirement(reference)
         used_by = tuple(sorted(reference.used_by))
@@ -1969,7 +1972,12 @@ def build_entries(
             entries[key] = numbered
 
     for key in sorted(stored):
-        if key in entries or is_environment_only(key) or is_runtime_setting_name(key):
+        if (
+            key in entries
+            or is_environment_only(key)
+            or is_runtime_setting_name(key)
+            or is_retired(key)
+        ):
             continue
         entries[key] = custom_entry(key)
 
