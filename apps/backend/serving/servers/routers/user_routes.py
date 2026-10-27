@@ -757,15 +757,20 @@ async def get_usage(
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Resolve per-user concurrency cap (applies regardless of API-key state).
-    try:
-        rt = get_runtime_settings_instance()
-    except RuntimeError:
-        rt = None
-    max_concurrency = await get_user_concurrency_for_role(
-        current_user.get("role") or "free",
-        rt,
-        is_admin=bool(current_user.get("is_admin", False)),
-    )
+    # A per-user override wins over the role's cap, as in
+    # ``UserConcurrencyLimiter.try_acquire``, so the dashboard shows the cap
+    # the limiter enforces.
+    max_concurrency = current_user.get("max_concurrent_requests")
+    if max_concurrency is None:
+        try:
+            rt = get_runtime_settings_instance()
+        except RuntimeError:
+            rt = None
+        max_concurrency = await get_user_concurrency_for_role(
+            current_user.get("role") or "free",
+            rt,
+            is_admin=bool(current_user.get("is_admin", False)),
+        )
 
     # Get user's quota
     key_row = await op_store.get_active_key_by_account(current_user["user_id"])
