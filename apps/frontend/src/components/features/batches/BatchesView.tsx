@@ -12,11 +12,14 @@ import {
   downloadMyResults,
   isCancellable,
   listMyBatches,
+  type BatchCapabilities,
   type ConsoleBatch,
   type ResultKind,
 } from '@/lib/api/batches';
+import { useBatchCapabilities } from '@/lib/hooks/queries/useBatchCapabilities';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
+import { roleLabel } from '@/lib/utils/roleLabel';
 
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
@@ -222,18 +225,100 @@ function BatchRow({
   );
 }
 
+function PageHeader({ subtitle, children }: { subtitle?: string; children?: React.ReactNode }) {
+  const t = useT();
+  return (
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <Link href="/dashboard" className="text-sm text-gray-500 hover:text-gray-900">
+          ← {t('batches.back', 'Dashboard')}
+        </Link>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">
+          {t('batches.title', 'Batches')}
+        </h1>
+        {subtitle && <p className="mt-1 text-sm text-gray-500">{subtitle}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Batch is switched off, or not ready on this gateway: nothing to load or manage. */
+function Unavailable({ status }: { status: BatchCapabilities['status'] }) {
+  const t = useT();
+  return (
+    <section
+      role="status"
+      className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200"
+      data-testid="batches-unavailable"
+    >
+      <h2 className="text-base font-semibold text-gray-900">
+        {t('batches.unavailable.title', 'Batch is not available')}
+      </h2>
+      <p className="mt-1 text-sm text-gray-500">
+        {status === 'disabled'
+          ? t(
+              'batches.unavailable.disabled',
+              'Batch inference is turned off on this gateway. Batches you submitted before are kept and show here again when it is turned back on.',
+            )
+          : t(
+              'batches.unavailable.not_ready',
+              'Batch inference is temporarily unavailable on this gateway. Try again in a moment.',
+            )}
+      </p>
+    </section>
+  );
+}
+
 /**
- * The signed-in user's batches across every API, with what each has done and
- * cost so far, the actions an owner has (cancel, delete, download results) and
- * their webhook settings. Batches are created through the API, not here.
+ * The signed-in user's batches and webhook, or why Batch is not offered.
+ *
+ * Whether the user may submit comes from the gateway (their current role
+ * against `BATCH_MIN_ROLE`); one who may not still manages what they have.
+ * When that cannot be looked up, the page works as before and the gateway's
+ * own checks answer each action.
  */
 export function BatchesView() {
+  const t = useT();
+  const { capabilities, loading, error } = useBatchCapabilities();
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <PageHeader />
+        <p className="text-sm text-gray-500">{t('batches.loading', 'Loading batches…')}</p>
+      </div>
+    );
+  }
+  if (capabilities && capabilities.status !== 'enabled') {
+    return (
+      <div className="space-y-6">
+        <PageHeader />
+        <Unavailable status={capabilities.status} />
+      </div>
+    );
+  }
+  return <BatchesManager capabilities={capabilities} capabilitiesError={error} />;
+}
+
+/**
+ * The user's batches across every API, with what each has done and cost so
+ * far, the actions an owner has (cancel, delete, download results) and their
+ * webhook settings. Batches are created through the API, not here.
+ */
+function BatchesManager({
+  capabilities,
+  capabilitiesError,
+}: {
+  capabilities: BatchCapabilities | null;
+  capabilitiesError: string | null;
+}) {
   const t = useT();
   const toast = useAccountToast();
   const [busyId, setBusyId] = useState<string | null>(null);
   const { batches, hasMore, loading, loadingMore, error, reload, loadMore, replace, remove } =
     usePagedBatches((after) => listMyBatches(after), 'mine');
-
+  // Only a known "no": without an answer the gateway decides each action.
+  const cannotSubmit = capabilities?.role_may_submit === false;
   async function handleCancel(batch: ConsoleBatch) {
     const message = t(
       'batches.confirm.cancel',
@@ -282,25 +367,42 @@ export function BatchesView() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <Link href="/dashboard" className="text-sm text-gray-500 hover:text-gray-900">
-            ← {t('batches.back', 'Dashboard')}
-          </Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">
-            {t('batches.title', 'Batches')}
-          </h1>
-          <p className="mt-1 text-sm text-gray-500">
-            {t(
-              'batches.subtitle',
-              'Batches you submitted through /v1/batches or /v1/messages/batches. Results are kept for a limited time after a batch ends.',
-            )}
-          </p>
-        </div>
+      <PageHeader
+        subtitle={t(
+          'batches.subtitle',
+          'Batches you submitted through /v1/batches or /v1/messages/batches. Results are kept for a limited time after a batch ends.',
+        )}
+      >
         <Button variant="secondary" onClick={() => void reload()} disabled={loading}>
           {t('batches.refresh', 'Refresh')}
         </Button>
-      </div>
+      </PageHeader>
+
+      {cannotSubmit && capabilities && (
+        <div
+          role="note"
+          className="rounded-lg bg-amber-50 p-4 text-sm text-amber-900 ring-1 ring-inset ring-amber-200"
+        >
+          {fill(
+            t(
+              'batches.notice.cannot_submit',
+              'Your plan cannot submit new batches: that needs the {role} plan or higher. Your existing batches stay manageable here: download their results, cancel or delete them, and view or remove your webhook.',
+            ),
+            { role: roleLabel(capabilities.min_role, t) },
+          )}
+        </div>
+      )}
+      {capabilitiesError && !capabilities && (
+        <p role="alert" className="text-sm text-amber-800">
+          {fill(
+            t(
+              'batches.notice.capabilities_error',
+              'Could not check what Batch offers your account ({error}). Your batches are listed below.',
+            ),
+            { error: capabilitiesError },
+          )}
+        </p>
+      )}
 
       <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
         {error && (
@@ -312,7 +414,12 @@ export function BatchesView() {
           <p className="text-sm text-gray-500">{t('batches.loading', 'Loading batches…')}</p>
         ) : batches.length === 0 && !error ? (
           <p className="text-sm text-gray-500">
-            {t('batches.empty', 'You have no batches. Submit one through the API to see it here.')}
+            {cannotSubmit
+              ? t('batches.empty_existing', 'You have no batches.')
+              : t(
+                  'batches.empty',
+                  'You have no batches. Submit one through the API to see it here.',
+                )}
           </p>
         ) : (
           <ul className="divide-y divide-gray-100">
@@ -342,7 +449,7 @@ export function BatchesView() {
         )}
       </section>
 
-      <WebhookSettings />
+      <WebhookSettings canEdit={!cannotSubmit} />
     </div>
   );
 }

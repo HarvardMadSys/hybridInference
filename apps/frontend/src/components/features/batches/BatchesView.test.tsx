@@ -5,16 +5,39 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BatchesView, progress } from './BatchesView';
 import { WebhookSettings } from './WebhookSettings';
+import type { BatchAccess } from '@/lib/hooks/queries/useBatchCapabilities';
 import {
   cancelMyBatch,
   deleteMyBatch,
+  deleteMyWebhook,
+  downloadMyResults,
   getMyWebhook,
   listMyBatches,
   listMyWebhookEvents,
   saveMyWebhook,
+  type BatchCapabilities,
   type ConsoleBatch,
   type ConsoleBatchPage,
 } from '@/lib/api/batches';
+
+function caps(overrides: Partial<BatchCapabilities> = {}): BatchCapabilities {
+  return {
+    user_id: 'me',
+    status: 'enabled',
+    enabled: true,
+    min_role: 'internal',
+    role_may_submit: true,
+    has_history: true,
+    history_error: false,
+    show_entry: true,
+    ...overrides,
+  };
+}
+
+let access: BatchAccess = { capabilities: caps(), loading: false, error: null };
+vi.mock('@/lib/hooks/queries/useBatchCapabilities', () => ({
+  useBatchCapabilities: () => access,
+}));
 
 vi.mock('@/lib/api/batches', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/batches')>();
@@ -85,6 +108,7 @@ function page(rows: ConsoleBatch[], hasMore = false): ConsoleBatchPage {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  access = { capabilities: caps(), loading: false, error: null };
   vi.mocked(getMyWebhook).mockResolvedValue({ configured: false });
   vi.mocked(listMyWebhookEvents).mockResolvedValue({ data: [] });
 });
@@ -176,7 +200,108 @@ describe('BatchesView', () => {
   });
 });
 
+describe('BatchesView capabilities', () => {
+  it.each(['disabled', 'unavailable'] as const)(
+    'when Batch is %s, explains so and loads no batch data',
+    async (status) => {
+      access = {
+        capabilities: caps({ status, enabled: status !== 'disabled', show_entry: false }),
+        loading: false,
+        error: null,
+      };
+      render(<BatchesView />);
+
+      expect(screen.getByTestId('batches-unavailable')).toHaveTextContent('Batch is not available');
+      expect(
+        screen.getByText(status === 'disabled' ? /turned off on this gateway/ : /temporarily/),
+      ).toBeInTheDocument();
+      expect(listMyBatches).not.toHaveBeenCalled();
+      expect(getMyWebhook).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull();
+    },
+  );
+
+  it('loads nothing until the capabilities are known', () => {
+    access = { capabilities: null, loading: true, error: null };
+    render(<BatchesView />);
+
+    expect(screen.getByText('Loading batches…')).toBeInTheDocument();
+    expect(listMyBatches).not.toHaveBeenCalled();
+  });
+
+  it('below the submission role, says so and keeps every owner action', async () => {
+    access = {
+      capabilities: caps({ role_may_submit: false, min_role: 'pro' }),
+      loading: false,
+      error: null,
+    };
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_run'),
+        batch('batch_done', { status: 'completed', phase: 'sealed', results_available: true }),
+      ]),
+    );
+    vi.mocked(downloadMyResults).mockResolvedValue();
+    render(<BatchesView />);
+
+    expect(await screen.findByText('batch_run')).toBeInTheDocument();
+    expect(screen.getByText(/cannot submit new batches: that needs the pro plan/)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+    expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Download results' }));
+    expect(downloadMyResults).toHaveBeenCalledWith('batch_done', 'all');
+    expect(screen.queryByRole('button', { name: /create|new batch|submit/i })).toBeNull();
+  });
+
+  it('below the submission role with no batches, does not invite a submission', async () => {
+    access = {
+      capabilities: caps({ role_may_submit: false, has_history: false, show_entry: false }),
+      loading: false,
+      error: null,
+    };
+    vi.mocked(listMyBatches).mockResolvedValue(page([]));
+    render(<BatchesView />);
+
+    expect(await screen.findByText('You have no batches.')).toBeInTheDocument();
+    expect(screen.getByText('Your plan cannot set up a webhook.')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Endpoint URL (https)')).toBeNull();
+  });
+
+  it('when the capabilities cannot be loaded, still lists the batches and says why', async () => {
+    access = { capabilities: null, loading: false, error: 'Gateway timeout' };
+    vi.mocked(listMyBatches).mockResolvedValue(page([batch('batch_x')]));
+    render(<BatchesView />);
+
+    expect(await screen.findByText('batch_x')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Gateway timeout');
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled();
+  });
+});
+
 describe('WebhookSettings', () => {
+  it('below the submission role, shows the webhook read-only and lets it be removed', async () => {
+    vi.mocked(getMyWebhook).mockResolvedValue({
+      configured: true,
+      url: 'https://old.example.com/h',
+      enabled: true,
+    });
+    vi.mocked(deleteMyWebhook).mockResolvedValue({ deleted: true });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<WebhookSettings canEdit={false} />);
+
+    const field = await screen.findByDisplayValue('https://old.example.com/h');
+    expect(field).toBeDisabled();
+    expect(screen.getByText(/cannot change webhook settings/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Rotate secret' })).toBeNull();
+    fireEvent.submit(field.closest('form') as HTMLFormElement);
+    expect(saveMyWebhook).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(deleteMyWebhook).toHaveBeenCalled());
+    confirm.mockRestore();
+  });
+
   it('keeps the form read-only until the stored settings have loaded', async () => {
     const initial = deferred<Awaited<ReturnType<typeof getMyWebhook>>>();
     vi.mocked(getMyWebhook).mockReturnValue(initial.promise);

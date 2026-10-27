@@ -869,6 +869,41 @@ msgstr ""
 "控制台的 **Batches** 页面（从仪表盘进入）列出你在三种 API 下的所有批次，以及它们的进度、token "
 "数和已知费用；你可以在这里取消、删除批次，下载结果，并设置 webhook。"
 
+#: ../developer/batches.md:519
+msgid ""
+"The dashboard's **User Tools** link to it while `BATCH_ENABLED` is on and"
+" either your role reaches `BATCH_MIN_ROLE` or you have batches or a "
+"webhook of your own. With `BATCH_ENABLED` off there is no link, and the "
+"page says that Batch is not available. Quotas and API keys play no part "
+"in either."
+msgstr ""
+"当 `BATCH_ENABLED` 开启，且你的角色达到 `BATCH_MIN_ROLE` 或你有自己的批次或 webhook 时，仪表盘的 "
+"**User Tools** 会链接到这个页面。`BATCH_ENABLED` 关闭时没有链接，页面会说明批量推理不可用。配额和 API "
+"密钥不影响这两者。"
+
+#: ../developer/batches.md:524
+msgid ""
+"Below `BATCH_MIN_ROLE` you cannot submit batches or change your webhook, "
+"and the page says so; what you already have stays yours to manage: list "
+"your batches, download their results, cancel and delete them, and read "
+"and remove your webhook. Batches are submitted through the API; the page "
+"has no create button."
+msgstr ""
+"角色低于 `BATCH_MIN_ROLE` 时，你不能提交批次或修改 webhook，页面会说明这一点；已有的内容仍归你管理：列出批次、下载结果、取消和删除批次，以及查看和移除"
+" webhook。批次通过 API 提交；页面上没有创建按钮。"
+
+#: ../developer/batches.md:529
+msgid ""
+"The console asks `GET /user/batch-capabilities` (signed-in session) for "
+"this: `status` (`enabled`, `disabled`, or `unavailable` while the batch "
+"store is not ready), `min_role`, `role_may_submit` (your role only, not "
+"your quotas), `has_history` (null when it could not be checked; the link "
+"then stays) and `show_entry`."
+msgstr ""
+"控制台通过 `GET /user/batch-capabilities`（已登录会话）获取这些信息：`status`（`enabled`、`disabled`，或批次存储尚未就绪时的"
+" `unavailable`）、`min_role`、`role_may_submit`（只看你的角色，不看配额）、`has_history`（无法检查时为"
+" null，此时链接保留）和 `show_entry`。"
+
 #: ../developer/batches.md:513
 msgid "Limits"
 msgstr "限制"

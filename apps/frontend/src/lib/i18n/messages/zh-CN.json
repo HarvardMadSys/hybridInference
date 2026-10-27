@@ -1015,6 +1015,10 @@
     "source": "You have no batches. Submit one through the API to see it here.",
     "text": "你还没有批次。通过 API 提交后会显示在这里。"
   },
+  "batches.empty_existing": {
+    "source": "You have no batches.",
+    "text": "你还没有批次。"
+  },
   "batches.loading": {
     "source": "Loading batches…",
     "text": "正在加载批次…"
@@ -1022,6 +1026,14 @@
   "batches.more": {
     "source": "Show more",
     "text": "显示更多"
+  },
+  "batches.notice.cannot_submit": {
+    "source": "Your plan cannot submit new batches: that needs the {role} plan or higher. Your existing batches stay manageable here: download their results, cancel or delete them, and view or remove your webhook.",
+    "text": "你的套餐不能提交新批次：需要{role}或更高的套餐。已有的批次仍可在这里管理：下载结果、取消或删除，以及查看或移除你的 Webhook。"
+  },
+  "batches.notice.capabilities_error": {
+    "source": "Could not check what Batch offers your account ({error}). Your batches are listed below.",
+    "text": "无法确认你的账号可用的批量功能（{error}）。你的批次列在下方。"
   },
   "batches.refresh": {
     "source": "Refresh",
@@ -1131,6 +1143,22 @@
     "source": "Batch deleted.",
     "text": "批次已删除。"
   },
+  "batches.unavailable.disabled": {
+    "source": "Batch inference is turned off on this gateway. Batches you submitted before are kept and show here again when it is turned back on.",
+    "text": "此网关已关闭批量推理。之前提交的批次会保留，重新开启后会再次显示在这里。"
+  },
+  "batches.unavailable.not_ready": {
+    "source": "Batch inference is temporarily unavailable on this gateway. Try again in a moment.",
+    "text": "此网关的批量推理暂时不可用，请稍后再试。"
+  },
+  "batches.unavailable.title": {
+    "source": "Batch is not available",
+    "text": "批量推理不可用"
+  },
+  "batches.webhook.cannot_create": {
+    "source": "Your plan cannot set up a webhook.",
+    "text": "你的套餐不能设置 Webhook。"
+  },
   "batches.webhook.confirm_delete": {
     "source": "Remove the webhook? Undelivered events are dropped.",
     "text": "移除 Webhook？未送达的事件将被丢弃。"
@@ -1166,6 +1194,10 @@
   "batches.webhook.pending": {
     "source": "Retrying",
     "text": "重试中"
+  },
+  "batches.webhook.read_only": {
+    "source": "Your plan cannot change webhook settings. You can still view and remove your webhook.",
+    "text": "你的套餐不能修改 Webhook 设置，但仍可以查看和移除已有的 Webhook。"
   },
   "batches.webhook.remove": {
     "source": "Remove",
@@ -1506,10 +1538,6 @@
   "dashboard.internal.playground": {
     "source": "API Playground",
     "text": "API 调试台"
-  },
-  "dashboard.internal.title": {
-    "source": "Internal Tools",
-    "text": "内部工具"
   },
   "dashboard.keys.col_actions": {
     "source": "Actions",
@@ -1858,6 +1886,14 @@
   "dashboard.title": {
     "source": "Dashboard",
     "text": "控制台"
+  },
+  "dashboard.tools.admin_title": {
+    "source": "Admin Tools",
+    "text": "管理工具"
+  },
+  "dashboard.tools.user_title": {
+    "source": "User Tools",
+    "text": "用户工具"
   },
   "dashboard.usage.cost": {
     "source": "Estimated cost",

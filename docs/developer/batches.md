@@ -516,6 +516,22 @@ The **Batches** page of the console (from the dashboard) lists your batches
 across all three APIs with their progress, tokens and known cost, and lets you
 cancel, delete and download results, and set up your webhook.
 
+The dashboard's **User Tools** link to it while `BATCH_ENABLED` is on and
+either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
+your own. With `BATCH_ENABLED` off there is no link, and the page says that
+Batch is not available. Quotas and API keys play no part in either.
+
+Below `BATCH_MIN_ROLE` you cannot submit batches or change your webhook, and the
+page says so; what you already have stays yours to manage: list your batches,
+download their results, cancel and delete them, and read and remove your
+webhook. Batches are submitted through the API; the page has no create button.
+
+The console asks `GET /user/batch-capabilities` (signed-in session) for this:
+`status` (`enabled`, `disabled`, or `unavailable` while the batch store is not
+ready), `min_role`, `role_may_submit` (your role only, not your quotas),
+`has_history` (null when it could not be checked; the link then stays) and
+`show_entry`.
+
 ## Limits
 
 | Limit | Default |

@@ -53,6 +53,31 @@ export interface ConsoleBatchPage {
   last_id: string | null;
 }
 
+/**
+ * What the console offers the signed-in user for Batch.
+ *
+ * `status` is `disabled` when `BATCH_ENABLED` is off and `unavailable` when it
+ * is on but the gateway's batch store is not ready. `role_may_submit` says only
+ * whether the user's role reaches `min_role`, not whether a submission would
+ * pass quotas. `has_history` is null when it could not be looked up (and when
+ * Batch is not enabled); `show_entry` then still holds for a possible history.
+ */
+export interface BatchCapabilities {
+  user_id: string;
+  status: 'enabled' | 'disabled' | 'unavailable';
+  enabled: boolean;
+  min_role: string;
+  role_may_submit: boolean;
+  has_history: boolean | null;
+  history_error: boolean;
+  show_entry: boolean;
+}
+
+export async function getMyBatchCapabilities(): Promise<BatchCapabilities> {
+  const resp = await fetchWithAuth(API_BASE, '/user/batch-capabilities');
+  return jsonOrThrow<BatchCapabilities>(resp);
+}
+
 /** The signed-in user's batches, newest first. */
 export async function listMyBatches(after?: string | null, limit = 20): Promise<ConsoleBatchPage> {
   const params = new URLSearchParams({ limit: String(limit) });

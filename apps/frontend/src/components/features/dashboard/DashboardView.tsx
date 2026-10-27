@@ -10,10 +10,14 @@ import { UserAvatar } from '@/components/ui/UserAvatar';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
+import { useBatchCapabilities } from '@/lib/hooks/queries/useBatchCapabilities';
 import { userDisplayName } from '@/lib/utils/userLabel';
 import { useT } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
 import { roleLabel } from '@/lib/utils/roleLabel';
+
+const TOOL_LINK =
+  'inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800';
 
 /**
  * The Agents link, naming the account this console tab is using.
@@ -34,6 +38,14 @@ export function DashboardView() {
   const displayName = userDisplayName(state.user);
   const t = useT();
   const notSet = t('dashboard.account.not_set', 'Not set');
+  const { capabilities: batch, error: batchError } = useBatchCapabilities();
+  // Each tool is offered on its own condition; Batch history never brings
+  // the other tools along.
+  const isInternal = hasRole(state.user?.role, 'internal');
+  const isAdmin = state.user?.role === 'admin';
+  const showAgents = isInternal && features.agents;
+  const showPlayground = isInternal;
+  const showBatches = batch ? batch.show_entry : Boolean(batchError && isInternal);
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-8">
@@ -150,17 +162,14 @@ export function DashboardView() {
 
       <RecentRequests />
 
-      {hasRole(state.user?.role, 'internal') && (
+      {(showAgents || showPlayground || showBatches) && (
         <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
           <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
-            {t('dashboard.internal.title', 'Internal Tools')}
+            {t('dashboard.tools.user_title', 'User Tools')}
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {features.agents && (
-              <a
-                href={agentsEntryUrl(agentsUrl, state.user?.id)}
-                className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-              >
+            {showAgents && (
+              <a href={agentsEntryUrl(agentsUrl, state.user?.id)} className={TOOL_LINK}>
                 <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path
                     strokeLinecap="round"
@@ -172,80 +181,64 @@ export function DashboardView() {
                 Agents
               </a>
             )}
-            <Link
-              href="/dashboard/playground"
-              prefetch={false}
-              className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-            >
-              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                />
-              </svg>
-              {t('dashboard.internal.playground', 'API Playground')}
-            </Link>
-            <Link
-              href="/dashboard/batches"
-              prefetch={false}
-              className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-            >
-              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 6h16M4 12h16M4 18h10"
-                />
-              </svg>
-              {t('dashboard.internal.batches', 'Batches')}
-            </Link>
-            {state.user?.role === 'admin' && (
-              <>
-                <Link
-                  href="/dashboard/admin/users"
-                  className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-                >
-                  <svg
-                    className="mr-2 h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
-                    />
-                  </svg>
-                  {t('dashboard.internal.admin', 'Admin Console')}
-                </Link>
-                <a
-                  href="/pgadmin/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex min-h-11 items-center justify-center rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-                >
-                  <svg
-                    className="mr-2 h-4 w-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"
-                    />
-                  </svg>
-                  pgAdmin
-                </a>
-              </>
+            {showPlayground && (
+              <Link href="/dashboard/playground" prefetch={false} className={TOOL_LINK}>
+                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                  />
+                </svg>
+                {t('dashboard.internal.playground', 'API Playground')}
+              </Link>
             )}
+            {showBatches && (
+              <Link href="/dashboard/batches" prefetch={false} className={TOOL_LINK}>
+                <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 6h16M4 12h16M4 18h10"
+                  />
+                </svg>
+                {t('dashboard.internal.batches', 'Batches')}
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+          <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-4">
+            {t('dashboard.tools.admin_title', 'Admin Tools')}
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            <Link href="/dashboard/admin/users" className={TOOL_LINK}>
+              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"
+                />
+              </svg>
+              {t('dashboard.internal.admin', 'Admin Console')}
+            </Link>
+            <a href="/pgadmin/" target="_blank" rel="noopener noreferrer" className={TOOL_LINK}>
+              <svg className="mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"
+                />
+              </svg>
+              pgAdmin
+            </a>
           </div>
         </div>
       )}
