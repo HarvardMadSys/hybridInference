@@ -140,6 +140,55 @@ async def test_a_validating_batch_is_never_claimed_settled_or_listed_as_model_wo
     assert (row["status"], row["phase"], row["request_count"]) == ("validating", "validating", 3)
 
 
+@pytest.mark.parametrize(
+    "future",
+    [{"schema_version": 3}, {"api_surface": "future_surface"}, {"target": "future_target"}],
+    ids=["schema_version", "api_surface", "target"],
+)
+async def test_a_batch_of_a_kind_this_worker_does_not_support_is_never_touched(pool, store, future):
+    """With every kind available by default, a newer version's batch still belongs to it alone.
+
+    The kind filter is what keeps this version's worker off whatever a later
+    version adds; there is no flag in front of it any more.
+    """
+    user, model = _user(store), _model()
+    batch = await _create(store, user, _items(model, 2))
+    (column, value), batch_id = next(iter(future.items())), batch["id"]
+    async with pool.acquire() as conn:
+        await conn.execute(f"UPDATE batch_jobs SET {column} = $2 WHERE id = $1", batch_id, value)
+
+    assert model not in await store.active_models()
+    assert await _claim(store, model) == []
+
+    # Past its window, with nothing open: still neither expired nor finalized.
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE batch_jobs SET expires_at = now() - interval '1 minute' WHERE id = $1",
+            batch_id,
+        )
+    await store.sweep(retention_days=7)
+    row = await store.get_batch(batch_id)
+    assert (row["status"], row["phase"]) == ("validating", "runnable")
+    statuses = await _fetch(pool, "SELECT status FROM batch_items WHERE batch_id = $1", batch_id)
+    assert {r["status"] for r in statuses} == {"queued"}
+
+    # Nor validated or sealed: those leases are restricted to the same kinds.
+    for phase, status in (("validating", "validating"), ("sealing", "in_progress")):
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE batch_jobs SET phase = $2, status = $3, expires_at = now() + "
+                "interval '1 hour' WHERE id = $1",
+                batch_id,
+                phase,
+                status,
+            )
+        taken = await store.claim_batch_work(
+            phase=phase, worker_id="w-old", lease_seconds=60, limit=100
+        )
+        assert batch_id not in {b["id"] for b in taken}, phase
+    assert batch_id not in await store.stale_validations()
+
+
 async def test_publishing_flips_the_phase_and_makes_the_items_claimable(store):
     user, model = _user(store), _model()
     batch = await _create(store, user, [], api_surface="openai_file", phase="validating")

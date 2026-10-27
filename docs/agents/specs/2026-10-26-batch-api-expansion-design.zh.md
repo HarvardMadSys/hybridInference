@@ -2,6 +2,8 @@
 
 日期：2026-10-26。状态：已批准并在本分支实现（单个PR，未合并、未部署）。基线：dev `fcd7a660`。
 
+> **历史记录。** 第11节中 `BATCH_EXPANSION_ENABLED` 的决定（新种类默认关闭、需单独开启）及其升级与回滚步骤已被 [2026-10-27 Batch 默认可用修订](2026-10-27-batch-default-availability-amendment.zh.md) 取代：该开关已移除，不再控制任何功能。该修订第5节也取代了本记录对 Webhook 设置未作角色限制的做法：设置 Webhook 现在需要 `BATCH_MIN_ROLE`。本记录其余内容保留为当时的设计。
+
 本记录修订并扩展 [2026-10-25 批处理设计](2026-10-25-batch-inference-design.md)。该记录“13. Deferred”中的 Embeddings/Responses 目标、Files API 与输出文件、完成Webhook、原子的活跃批次上限、按用户而非按批次的公平性、配额用尽时读取自己的批次、跨进程让位、管理员全用户总览和批次token统计，均由本设计实现；批处理折扣与auto模型仍不在范围内。用户文档见 [docs/developer/batches.md](../../developer/batches.md)。
 
 ## 1 范围
@@ -106,6 +108,8 @@ Router/adapter 的路由、fallback、健康状态与费用计算仍归现有路
 - 原方案中可选的“每日金额预算”经评审不纳入：Batch 用户预算由上述并发上限与保留量体现，金额仍受既有日配额约束。
 
 ## 11 开关、升级与回滚
+
+（已被 [2026-10-27 修订](2026-10-27-batch-default-availability-amendment.zh.md) 取代，以下保留原文。）
 
 - `BATCH_ENABLED`：整个面与 worker，关闭时所有批处理路由404（既有行为）。
 - `BATCH_EXPANSION_ENABLED`（默认关闭）：只控制新种类的创建（文件批次、Message Batches、Embeddings/Responses、Webhook设置）；已接受的任务继续执行，结果管理不受影响。

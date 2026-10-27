@@ -14,9 +14,9 @@ results. Two ways in, exclusive of each other on ``POST /v1/batches``:
   (status ``validating``); one bad line fails the batch before anything runs.
   Results arrive as ``output_file_id`` / ``error_file_id``.
 
-Targets: ``/v1/chat/completions`` always; ``/v1/embeddings`` and
-``/v1/responses`` (independent, unstored requests only) and the file mode while
-``BATCH_EXPANSION_ENABLED`` is on. Running the requests is the in-process
+Targets: ``/v1/chat/completions``, ``/v1/embeddings`` and ``/v1/responses``
+(independent, unstored requests only), inline or from a file, whenever
+``BATCH_ENABLED`` is on. Running the requests is the in-process
 worker's job (``serving.batch.scheduler``): it re-authenticates the owner's key
 before each one, so a stored batch never outlives the access its owner had.
 
@@ -35,8 +35,9 @@ This router owns admission and the HTTP shapes:
   caller's own OpenAI-shaped batches; an Anthropic Message Batch is not found
   here, as an OpenAI batch is not found on the Anthropic routes.
 
-Design records: ``docs/agents/specs/2026-10-25-batch-inference-design.md`` and
-``docs/agents/specs/2026-10-26-batch-api-expansion-design.zh.md``.
+Design records: ``docs/agents/specs/2026-10-25-batch-inference-design.md``,
+``docs/agents/specs/2026-10-26-batch-api-expansion-design.zh.md`` and
+``docs/agents/specs/2026-10-27-batch-default-availability-amendment.zh.md``.
 """
 
 from __future__ import annotations
@@ -88,7 +89,6 @@ from serving.storage.batch_store import (
     PHASE_VALIDATING,
     SURFACE_OPENAI_FILE,
     SURFACE_OPENAI_INLINE,
-    TARGET_CHAT,
     TERMINAL_BATCH_STATUSES,
     BatchDeleteInProgress,
 )
@@ -330,12 +330,6 @@ async def _validate_inline(
             f"{_item_label(0, requests[0].custom_id)}: url must be one of "
             f"{', '.join(sorted(OPENAI_TARGET_URLS))}",
         )
-    if target != TARGET_CHAT and not config.expansion_enabled:
-        raise HTTPException(
-            400,
-            f"{_item_label(0, requests[0].custom_id)}: url must be {CHAT_COMPLETIONS_URL}, "
-            "the only endpoint batches serve on this gateway",
-        )
     seen: set[str] = set()
     items: list[dict[str, Any]] = []
     models: set[str] = set()
@@ -440,10 +434,6 @@ async def create_batch(
         return batch_object(replay, config)
 
     _may_create(request, user_ctx, config)
-    if file_mode and not config.expansion_enabled:
-        raise HTTPException(
-            400, "File batches are not enabled on this gateway; send the requests inline"
-        )
     if key is None:
         # Checked before the requests are validated, so a caller at the limit is
         # not made to wait for it; enforced again, atomically, by the insert.

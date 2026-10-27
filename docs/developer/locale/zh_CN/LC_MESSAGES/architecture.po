@@ -1304,9 +1304,9 @@ msgstr "[批次 webhook](batches.md#webhooks)"
 msgid "`GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events`"
 msgstr "`GET`、`PUT` 和 `DELETE /v1/batch_webhook`、`GET /v1/batch_webhook/events`"
 
-#: ../developer/architecture.md
-msgid "While `BATCH_EXPANSION_ENABLED` is off (the default), the gateway refuses to create file batches, Message Batches and embedding or Responses batches, to upload files and to save a batch webhook. Existing batches, files and webhooks stay readable and deletable, and existing batches can still be cancelled."
-msgstr "`BATCH_EXPANSION_ENABLED` 关闭时（默认），网关拒绝创建文件批次、Message Batches 以及 embedding 或 Responses 批次，也拒绝上传文件和保存批次 webhook。已有的批次、文件和 webhook 仍可读取和删除，已有的批次仍可取消。"
+#: ../developer/architecture.md:490
+msgid "`BATCH_ENABLED` controls all batch, file and webhook routes together; when it is off, even management and result routes answer `404`, and no queued request starts. With it on, all batch kinds are available. `BATCH_MIN_ROLE` controls creating batches, uploading files and setting up or changing a webhook. An owner whose role is lowered can still manage existing batches and files, read or delete their webhook, and receive its deliveries."
+msgstr "`BATCH_ENABLED` 统一控制所有批次、文件和 webhook 路由；关闭时，管理和结果路由也会返回 `404`，排队中的请求不会开始执行。开启时，所有批次类型都可用。`BATCH_MIN_ROLE` 控制创建批次、上传文件以及设置或修改 webhook 的权限。所有者的角色降低后，仍可管理已有批次和文件，读取或删除自己的 webhook，并接收其事件投递。"
 
 #: ../developer/architecture.md:466
 msgid ""
@@ -1772,3 +1772,15 @@ msgstr ""
 #~ "There is no Prometheus exporter; it "
 #~ "was removed. The supported surfaces are:"
 #~ msgstr "没有 Prometheus exporter，它已经被移除。受支持的观测面是："
+
+#: ../developer/architecture.md:0
+msgid "API key; uploading a file needs `BATCH_MIN_ROLE`"
+msgstr "API 密钥；上传文件需要达到 `BATCH_MIN_ROLE`"
+
+#: ../developer/architecture.md:0
+msgid "API key; creating a batch needs `BATCH_MIN_ROLE`"
+msgstr "API 密钥；创建批次需要达到 `BATCH_MIN_ROLE`"
+
+#: ../developer/architecture.md:0
+msgid "API key; setting up or changing a webhook needs `BATCH_MIN_ROLE`"
+msgstr "API 密钥；设置或修改 webhook 需要达到 `BATCH_MIN_ROLE`"

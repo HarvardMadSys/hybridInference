@@ -10,8 +10,8 @@ An upload streams into the database in chunks while its size and SHA-256 are
 computed (``serving.batch.multipart``); it is usable only once its last byte
 is stored and the upload committed. Uploads count against the owner's
 storage cap (``BATCH_FILES_MAX_TOTAL_MB_PER_USER``) and upload rate
-(``BATCH_FILE_UPLOADS_PER_HOUR``), and need the role ``BATCH_MIN_ROLE`` and
-``BATCH_EXPANSION_ENABLED``; reading and deleting do not, and are not held to
+(``BATCH_FILE_UPLOADS_PER_HOUR``), and need the role ``BATCH_MIN_ROLE``;
+reading and deleting do not, and are not held to
 the daily cost quota. Deleting a file hides it at once; an input still being
 validated keeps its bytes until validation ends, and a deleted output file is
 never re-created.
@@ -185,8 +185,6 @@ async def upload_file(
         raise HTTPException(
             403, f"Uploading batch files requires the {config.min_role!r} role or higher"
         )
-    if not config.expansion_enabled:
-        raise HTTPException(400, "File batches are not enabled on this gateway")
     try:
         boundary = boundary_of(request.headers.get("content-type"))
     except MultipartError:

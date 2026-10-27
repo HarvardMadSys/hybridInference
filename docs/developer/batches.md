@@ -29,10 +29,9 @@ as the examples below do.
 ```{note}
 Only **internal** users and administrators can create batches unless the
 operator opens them to other roles. A gateway with batch inference turned off,
-or without a database, answers every batch route with `404`. File batches,
-Anthropic Message Batches, embeddings, Responses requests and webhooks can be
-created only once the operator turns on `BATCH_EXPANSION_ENABLED`, which is off
-by default.
+or without a database, answers every batch route with `404`. Otherwise every
+way in on this page is available: inline and file batches, Anthropic Message
+Batches, chat, embedding and Responses requests, and webhooks.
 ```
 
 ## How it works
@@ -489,6 +488,13 @@ page. The answer carries the signing secret, `whsec_…`, once; send
 webhook, `DELETE /v1/batch_webhook` removes it, and `GET
 /v1/batch_webhook/events` lists recent deliveries.
 
+Setting up a webhook, changing its URL, rotating its secret or turning it back
+on needs the same role as creating a batch (`BATCH_MIN_ROLE`); below it, `PUT`
+answers `403` and nothing is stored or looked up. The check uses your role at
+the time of the request. If your role is lowered, you can still read your
+webhook, list its deliveries and delete it, and events for your existing
+batches are still delivered while it stays enabled.
+
 When a batch ends, after its results can be read, the gateway POSTs an event:
 `batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled` for an
 OpenAI batch, `message_batch.ended` for a Message Batch. The body names the
@@ -542,17 +548,6 @@ A file batch is counted against the limit on unfinished requests while its file
 is read, after the create call has answered: over the limit, the batch is
 `failed` with `queued_request_limit` in `errors`.
 
-While `BATCH_EXPANSION_ENABLED` is off, creating a kind of batch it governs is
-refused, with a status that depends on the API:
-
-| Call | Status |
-|---|---|
-| `POST /v1/batches` with an `input_file_id`, or with an embeddings or Responses `url` | `400` |
-| `POST /v1/files` | `400` |
-| `PUT /v1/batch_webhook` | `400` |
-| `POST /v1/messages/batches` | `403` |
-
-Batches already accepted can still be read, downloaded, cancelled and deleted.
 Message Batch routes answer every error in Anthropic's shape: a top-level
 `"type": "error"` and an `error` object with its own `type` and `message`.
 
@@ -585,8 +580,8 @@ and to the worker's next round.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `BATCH_ENABLED` | on | Serve batch inference. Off, every `/v1/batches` route answers `404` and no queued request starts; stored batches are kept |
-| `BATCH_MIN_ROLE` | `internal` | Lowest role that may create batches (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it |
+| `BATCH_ENABLED` | on | Serve batch inference, every kind of it. Off, every batch, file and webhook route answers `404` and no queued request starts; stored batches are kept |
+| `BATCH_MIN_ROLE` | `internal` | Lowest role that may create batches, upload files and set up a batch webhook (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it |
 | `BATCH_MODEL_CONCURRENCY` | 64 | Batch requests a model runs at once, across the whole deployment, when it has no cap of its own. `0` pauses batch work on those models |
 | `BATCH_YIELD_TO_INTERACTIVE` | on | Interactive requests in flight on a model take batch slots from its cap, so batch work gives way to interactive traffic on the same model. Off, batch work fills the cap whatever the interactive load, and `BATCH_SHARED_INTERACTIVE_LOAD` and `BATCH_INTERACTIVE_RESERVE` have no effect |
 | `BATCH_MAX_REQUESTS` | 50000 | Requests one batch may hold |
@@ -594,7 +589,6 @@ and to the worker's next round.
 | `BATCH_MAX_ACTIVE_PER_USER` | 10 | Unfinished batches one user may have |
 | `BATCH_COMPLETION_WINDOW_HOURS` | 24 | Hours a new batch has before its unstarted requests expire, 1–168 |
 | `BATCH_RETENTION_DAYS` | 7 | Days a finished batch and its results are kept. A batch keeps the value it was created with |
-| `BATCH_EXPANSION_ENABLED` | off | Allow creating file batches, Message Batches, embedding and Responses batches, and webhooks. Off, batches already accepted keep running and stay readable, downloadable, cancellable and deletable |
 | `BATCH_MAX_QUEUED_REQUESTS_PER_USER` | 100000 | Unfinished requests one user may have across all their batches |
 | `BATCH_ROLE_CONCURRENCY_FREE` / `_PRO` / `_INTERNAL` / `_ADMIN` | 8 / 16 / 64 / 64 | Batch requests one user of that role may have running at once, across every model. Counted in each gateway process on its own, so with several processes a user may run up to this many in each; a model's cap, by contrast, is counted in the database across every process. Separate from the role's interactive concurrency limit (`user_concurrency_<role>` and a user's own override apply to interactive requests only); `0` removes this cap |
 | `BATCH_SHARED_INTERACTIVE_LOAD` | on | Yield to the interactive requests of every gateway process, not only the worker's own. While the shared counts cannot be read from the database, no new batch request starts; running ones continue. Applies only while `BATCH_YIELD_TO_INTERACTIVE` is on |
@@ -606,6 +600,16 @@ and to the worker's next round.
 | `BATCH_FILE_RETENTION_DAYS` | 30 | Days an uploaded input file is kept |
 | `BATCH_ANTHROPIC_VERSIONS` | `2023-06-01,2026-10-21` | `anthropic-version` values a Message Batch may be created under |
 | `BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS` | off | Let webhooks reach private and loopback addresses. For isolated test deployments only |
+
+`BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file
+batches, Message Batches, embedding and Responses batches and webhooks, no
+longer controls anything. A value left in the environment or the database
+changes nothing, is not listed on the Configuration tab and cannot be set
+there; the gateway keeps it, so that a rollback reads it again, and warns about
+it once at startup. Once no earlier version will run, delete the stored row
+(`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or
+`python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the
+variable.
 
 A model's own cap is set in **Batch Concurrency** on the admin Settings tab:
 empty takes `BATCH_MODEL_CONCURRENCY`, `0` pauses that model's batch work, and
@@ -635,11 +639,28 @@ user and lets an administrator cancel one.
 
 ### Upgrading a deployment
 
-A gateway older than the one that added file batches and Message Batches has a
-worker that would run their requests as chat completions. So keep
-`BATCH_EXPANSION_ENABLED` off until every gateway process runs the new version,
-then turn it on. Turning it off again later stops new batches of those kinds and
-nothing else.
+A worker only runs the kinds of batch it knows: claims, expiry, finalizing,
+validation, sealing and cleanup all skip a batch whose surface, target or
+schema version is newer than the worker's. The workers that do not know this
+are the old ones: a gateway older than the one that added file batches and
+Message Batches (before #1660) has no such filter and would run their requests
+as chat completions. New code cannot change what an old process already
+running does, so before upgrading from one of those versions, make sure no old
+worker is running alongside the new version:
+
+1. On the old version, turn `BATCH_ENABLED` off (Configuration tab, or
+   `python -m serving.config.manage set BATCH_ENABLED false`). Within about ten
+   seconds every old process stops claiming and sweeping, and logs that its
+   batch worker is disabled. A request it was already running finishes or is
+   handed back; those are chat batches, which the new version runs too.
+2. Upgrade every gateway process. The new processes start with
+   `BATCH_ENABLED` still off.
+3. Once no process of the old version is left (check your process manager or
+   orchestrator, not only the health endpoint), turn `BATCH_ENABLED` on.
+
+Stopping every old process before any new one starts is equally safe. From a
+version that already has file batches and Message Batches (#1660 or later), a
+rolling upgrade needs none of this: its workers know every kind.
 
 Upgrading from a version without `BATCH_ROLE_CONCURRENCY_<ROLE>` changes three
 things:
@@ -652,11 +673,78 @@ things:
 - `user_concurrency_<role>` and a user's own concurrency override no longer
   limit batch requests.
 
-To roll back to an older version after batches of the new kinds were accepted,
-do it while the new version is still running, since only it can manage them:
-turn `BATCH_EXPANSION_ENABLED` off, then cancel (or let finish) every file
-batch, Message Batch and embedding or Responses batch until none is queued,
-running, validating or finalizing, and delete those you no longer need. Then
-stop every gateway process before any process of the older version starts. An
-older worker cannot tell these batches apart, and turning `BATCH_ENABLED` off
-does not make it safe: it only hides the batch routes.
+### Rolling back
+
+To a version that already has file batches and Message Batches (#1660 or
+later), roll back as usual. That version reads `BATCH_EXPANSION_ENABLED` again,
+off by default, so new batches of the newer kinds are refused until it is on;
+those already accepted keep running.
+
+To an older version, drain the newer batches with this version, which alone
+can manage them, and start the older version only once every process of this
+version has stopped and the database shows none left:
+
+1. Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches. Other
+   users' queued requests then stop starting too, so their batches have to be
+   cancelled rather than waited for. To let them finish instead, skip this
+   step; step 6 still catches a batch created meanwhile.
+2. Cancel (or let finish) every batch that is not an inline chat batch: the
+   admin **Batches** tab lists and cancels anyone's. A cancelled file batch
+   still needs a moment to seal. Wait until this returns no rows:
+
+   ```sql
+   SELECT api_surface, target, phase, status, count(*)
+   FROM batch_jobs
+   WHERE (api_surface, target) <> ('openai_inline', 'chat') AND phase <> 'sealed'
+   GROUP BY 1, 2, 3, 4;
+   ```
+
+3. Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a
+   request that had already passed its checks may still be on its way to the
+   database, so an empty result at this point proves nothing yet.
+4. Stop every gateway process of this version, every replica and worker, and
+   keep them stopped: turn off whatever would start one again on its own
+   (restart policies, autoscaling, health-check replacement, deploy jobs) for
+   as long as the final check takes. Do not start any process of the older
+   version yet.
+5. Confirm the database has finished with them: no session of the gateway's
+   database user is left, so every transaction those processes opened has
+   committed or rolled back. Run this as a different user, or in your own
+   session, which the query leaves out; it must return no rows:
+
+   ```sql
+   SELECT pid, client_addr, state, xact_start
+   FROM pg_stat_activity
+   WHERE datname = current_database()
+     AND usename = '<the gateway database user>'
+     AND pid <> pg_backend_pid();
+   ```
+
+   A session can outlive its process: the server may still be finishing a
+   query or commit that was already sent, or not yet have noticed that the
+   connection is gone. Wait for it to end. If a session stays and you have
+   confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)`
+   ends it and rolls back its open transaction.
+6. Only then run the batch query from step 2 again. Only if it returns no
+   rows, start the older version. It keeps `BATCH_ENABLED` off; turn it on,
+   and set `BATCH_MIN_ROLE` back, once only the older version runs.
+
+Why the last check waits until the database is quiet: turning `BATCH_ENABLED`
+off refuses new requests, but it does not stop a create that was admitted a
+moment earlier; that create still stores its batch, however long its body or
+the database takes. A process having exited is not enough either, since a
+commit it sent may still be in progress on the server. Each create is one
+transaction and only gateway processes write batches, so once no gateway
+session is left and none can start, every create has either committed or
+rolled back, and the query sees everything that will ever be there.
+
+If step 6 returns rows, do not start the older version: it would run them as
+chat completions. Start this version again, and only this version, turn
+`BATCH_ENABLED` on so its worker can run or seal those batches, cancel them or
+let them finish (step 2), then repeat steps 3 to 6.
+
+Finished batches of the newer kinds stay in the database; the older version
+lists and purges them as if they were inline chat batches. Uploaded files and
+webhooks stay unread until the next upgrade. Turning `BATCH_ENABLED` off is
+not enough on its own: it stops the newer version's worker too, so the
+newer batches would never drain.

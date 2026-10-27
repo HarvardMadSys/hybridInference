@@ -118,17 +118,8 @@ msgstr ""
 "调用。"
 
 #: ../developer/batches.md:30
-msgid ""
-"Only **internal** users and administrators can create batches unless the "
-"operator opens them to other roles. A gateway with batch inference turned"
-" off, or without a database, answers every batch route with `404`. File "
-"batches, Anthropic Message Batches, embeddings, Responses requests and "
-"webhooks can be created only once the operator turns on "
-"`BATCH_EXPANSION_ENABLED`, which is off by default."
-msgstr ""
-"除非运营方向其他角色开放，只有 **internal** 用户和管理员可以创建批次。关闭了批量推理或没有数据库的网关，对所有批量路由都返回 "
-"`404`。文件批次、Anthropic Message Batches、embedding、Responses 请求和 webhook "
-"只有在运营方打开 `BATCH_EXPANSION_ENABLED` 之后才能创建，该开关默认关闭。"
+msgid "Only **internal** users and administrators can create batches unless the operator opens them to other roles. A gateway with batch inference turned off, or without a database, answers every batch route with `404`. Otherwise every way in on this page is available: inline and file batches, Anthropic Message Batches, chat, embedding and Responses requests, and webhooks."
+msgstr "默认只有 **internal** 用户和管理员可以创建批次，除非运营者向其他角色开放。网关关闭批量推理或没有数据库时，所有批次路由都返回 `404`。否则，本页介绍的所有入口均可用：内联批次和文件批次、Anthropic Message Batches、聊天、嵌入和 Responses 请求，以及 webhook。"
 
 #: ../developer/batches.md:38
 msgid "How it works"
@@ -827,6 +818,10 @@ msgstr ""
 "webhook，`DELETE /v1/batch_webhook` 删除它，`GET /v1/batch_webhook/events` "
 "列出最近的投递记录。"
 
+#: ../developer/batches.md:491
+msgid "Setting up a webhook, changing its URL, rotating its secret or turning it back on needs the same role as creating a batch (`BATCH_MIN_ROLE`); below it, `PUT` answers `403` and nothing is stored or looked up. The check uses your role at the time of the request. If your role is lowered, you can still read your webhook, list its deliveries and delete it, and events for your existing batches are still delivered while it stays enabled."
+msgstr "设置 webhook、修改其 URL、轮换密钥或重新启用，都需要达到创建批次所需的角色（`BATCH_MIN_ROLE`）；角色不足时，`PUT` 返回 `403`，不会存储配置或进行地址查询。检查使用请求时的当前角色。角色降低后，你仍可读取自己的 webhook、查看投递记录和删除它；只要它仍启用，已有批次的事件也会继续投递。"
+
 #: ../developer/batches.md:492
 #, python-brace-format
 msgid ""
@@ -1046,43 +1041,9 @@ msgstr ""
 "文件批次在创建调用返回之后、读取文件期间才计入未完成请求上限：超出上限时，批次会 `failed`，`errors` 中带有 "
 "`queued_request_limit`。"
 
-#: ../developer/batches.md:545
-msgid ""
-"While `BATCH_EXPANSION_ENABLED` is off, creating a kind of batch it "
-"governs is refused, with a status that depends on the API:"
-msgstr "`BATCH_EXPANSION_ENABLED` 关闭时，创建由它控制的批次类型会被拒绝，返回的状态码因 API 而异："
-
-#: ../developer/batches.md:29
-msgid "Call"
-msgstr "调用"
-
-#: ../developer/batches.md:29
-msgid ""
-"`POST /v1/batches` with an `input_file_id`, or with an embeddings or "
-"Responses `url`"
-msgstr "带 `input_file_id`，或 `url` 为 embedding 或 Responses 的 `POST /v1/batches`"
-
-#: ../developer/batches.md:29
-msgid "`POST /v1/files`"
-msgstr ""
-
-#: ../developer/batches.md:29
-msgid "`PUT /v1/batch_webhook`"
-msgstr ""
-
-#: ../developer/batches.md:29
-msgid "`POST /v1/messages/batches`"
-msgstr ""
-
-#: ../developer/batches.md:555
-msgid ""
-"Batches already accepted can still be read, downloaded, cancelled and "
-"deleted. Message Batch routes answer every error in Anthropic's shape: a "
-"top-level `\"type\": \"error\"` and an `error` object with its own `type`"
-" and `message`."
-msgstr ""
-"已接受的批次仍然可以读取、下载、取消和删除。Message Batch 路由的所有错误都采用 Anthropic 的格式：顶层为 "
-"`\"type\": \"error\"`，另有一个 `error` 对象，带有自己的 `type` 和 `message`。"
+#: ../developer/batches.md:551
+msgid "Message Batch routes answer every error in Anthropic's shape: a top-level `\"type\": \"error\"` and an `error` object with its own `type` and `message`."
+msgstr "Message Batch 路由的所有错误都使用 Anthropic 格式：顶层有 `\"type\": \"error\"`，另有一个 `error` 对象，其中包含自己的 `type` 和 `message`。"
 
 #: ../developer/batches.md:559
 msgid "Compared with OpenAI's and Anthropic's batch APIs"
@@ -1168,10 +1129,8 @@ msgid "on"
 msgstr "开"
 
 #: ../developer/batches.md:29
-msgid ""
-"Serve batch inference. Off, every `/v1/batches` route answers `404` and "
-"no queued request starts; stored batches are kept"
-msgstr "提供批量推理服务。关闭后，所有 `/v1/batches` 路由返回 `404`，排队中的请求不会开始；已存储的批次会保留"
+msgid "Serve batch inference, every kind of it. Off, every batch, file and webhook route answers `404` and no queued request starts; stored batches are kept"
+msgstr "提供所有类型的批量推理。关闭时，所有批次、文件和 webhook 路由都返回 `404`，排队中的请求不会开始执行；已存储的批次会保留"
 
 #: ../developer/batches.md:29
 msgid "`BATCH_MIN_ROLE`"
@@ -1182,10 +1141,8 @@ msgid "`internal`"
 msgstr ""
 
 #: ../developer/batches.md:29
-msgid ""
-"Lowest role that may create batches (`free`, `pro`, `internal`, `admin`)."
-" A queued request also waits while its owner's role is below it"
-msgstr "可以创建批次的最低角色（`free`、`pro`、`internal`、`admin`）。所有者的角色低于它时，排队中的请求也会等待"
+msgid "Lowest role that may create batches, upload files and set up a batch webhook (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it"
+msgstr "允许创建批次、上传文件和设置批次 webhook 的最低角色（`free`、`pro`、`internal`、`admin`）。排队中的请求在其所有者的角色低于该门槛时也会等待"
 
 #: ../developer/batches.md:29
 msgid "`BATCH_MODEL_CONCURRENCY`"
@@ -1277,23 +1234,6 @@ msgid ""
 "Days a finished batch and its results are kept. A batch keeps the value "
 "it was created with"
 msgstr "已结束批次及其结果的保留天数。批次保留创建时的取值"
-
-#: ../developer/batches.md:29
-msgid "`BATCH_EXPANSION_ENABLED`"
-msgstr ""
-
-#: ../developer/batches.md:29
-msgid "off"
-msgstr "关"
-
-#: ../developer/batches.md:29
-msgid ""
-"Allow creating file batches, Message Batches, embedding and Responses "
-"batches, and webhooks. Off, batches already accepted keep running and "
-"stay readable, downloadable, cancellable and deletable"
-msgstr ""
-"允许创建文件批次、Message Batches、embedding 和 Responses 批次，以及 "
-"webhook。关闭后，已接受的批次继续运行，并且仍可读取、下载、取消和删除"
 
 #: ../developer/batches.md:29
 msgid "`BATCH_MAX_QUEUED_REQUESTS_PER_USER`"
@@ -1432,10 +1372,18 @@ msgid "`BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS`"
 msgstr ""
 
 #: ../developer/batches.md:29
+msgid "off"
+msgstr "关"
+
+#: ../developer/batches.md:29
 msgid ""
 "Let webhooks reach private and loopback addresses. For isolated test "
 "deployments only"
 msgstr "允许 webhook 访问私有地址和回环地址。仅用于隔离的测试部署"
+
+#: ../developer/batches.md:604
+msgid "`BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file batches, Message Batches, embedding and Responses batches and webhooks, no longer controls anything. A value left in the environment or the database changes nothing, is not listed on the Configuration tab and cannot be set there; the gateway keeps it, so that a rollback reads it again, and warns about it once at startup. Once no earlier version will run, delete the stored row (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the variable."
+msgstr "早期版本用 `BATCH_EXPANSION_ENABLED` 控制文件批次、Message Batches、嵌入和 Responses 批次以及 webhook，现在它已不再生效。环境变量或数据库中遗留的值不会改变任何行为，也不会在 Configuration 页列出，且不能再通过该页设置；网关会保留它以便回滚后的旧版本重新读取，并在启动时发出一次警告。确认不再运行任何早期版本后，删除已存储的记录（`DELETE /admin/config/BATCH_EXPANSION_ENABLED`，或 `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`），并移除对应环境变量。"
 
 #: ../developer/batches.md:610
 #, python-brace-format
@@ -1494,17 +1442,25 @@ msgstr "管理控制台的 **Batches** 标签页列出所有用户的批次，�
 msgid "Upgrading a deployment"
 msgstr "升级部署"
 
-#: ../developer/batches.md:638
-msgid ""
-"A gateway older than the one that added file batches and Message Batches "
-"has a worker that would run their requests as chat completions. So keep "
-"`BATCH_EXPANSION_ENABLED` off until every gateway process runs the new "
-"version, then turn it on. Turning it off again later stops new batches of"
-" those kinds and nothing else."
-msgstr ""
-"早于新增文件批次和 Message Batches 的网关版本，其 worker 会把这些请求当作 chat completion "
-"运行。所以在所有网关进程都运行新版本之前，请保持 `BATCH_EXPANSION_ENABLED` "
-"关闭，之后再打开。以后再把它关闭，只会阻止创建这些类型的新批次，不影响其他任何东西。"
+#: ../developer/batches.md:642
+msgid "A worker only runs the kinds of batch it knows: claims, expiry, finalizing, validation, sealing and cleanup all skip a batch whose surface, target or schema version is newer than the worker's. The workers that do not know this are the old ones: a gateway older than the one that added file batches and Message Batches (before #1660) has no such filter and would run their requests as chat completions. New code cannot change what an old process already running does, so before upgrading from one of those versions, make sure no old worker is running alongside the new version:"
+msgstr "worker 只处理自己认识的批次类型：领取请求、过期处理、最终处理、校验、封存和清理，都会跳过 API 类型、请求目标或 schema 版本比自身更新的批次。但旧 worker 不具备这种能力：在文件批次和 Message Batches 加入之前（#1660 之前）的网关没有这层过滤，会把这些请求当成聊天补全来执行。新代码无法改变已经运行的旧进程的行为，因此从这些版本升级前，必须确保旧 worker 不会与新版本同时运行："
+
+#: ../developer/batches.md:651
+msgid "On the old version, turn `BATCH_ENABLED` off (Configuration tab, or `python -m serving.config.manage set BATCH_ENABLED false`). Within about ten seconds every old process stops claiming and sweeping, and logs that its batch worker is disabled. A request it was already running finishes or is handed back; those are chat batches, which the new version runs too."
+msgstr "在旧版本上关闭 `BATCH_ENABLED`（通过 Configuration 页，或 `python -m serving.config.manage set BATCH_ENABLED false`）。约十秒内，每个旧进程都会停止领取和扫描批次，并记录 batch worker 已停用。已经运行的请求会完成或交还；这些都是聊天批次，新版本也能处理。"
+
+#: ../developer/batches.md:656
+msgid "Upgrade every gateway process. The new processes start with `BATCH_ENABLED` still off."
+msgstr "升级每个网关进程。新进程启动时，`BATCH_ENABLED` 仍保持关闭。"
+
+#: ../developer/batches.md:658
+msgid "Once no process of the old version is left (check your process manager or orchestrator, not only the health endpoint), turn `BATCH_ENABLED` on."
+msgstr "确认没有任何旧版本进程后（检查进程管理器或编排器，不能只看健康检查接口），再开启 `BATCH_ENABLED`。"
+
+#: ../developer/batches.md:661
+msgid "Stopping every old process before any new one starts is equally safe. From a version that already has file batches and Message Batches (#1660 or later), a rolling upgrade needs none of this: its workers know every kind."
+msgstr "在启动任何新进程之前先停止所有旧进程，也同样安全。如果原版本已支持文件批次和 Message Batches（#1660 或之后），滚动升级不需要这些步骤：其 worker 已认识所有类型。"
 
 #: ../developer/batches.md:644
 msgid ""
@@ -1535,20 +1491,54 @@ msgid ""
 " limit batch requests."
 msgstr "`user_concurrency_<role>` 和用户自己的并发覆盖值不再限制批量请求。"
 
-#: ../developer/batches.md:655
-msgid ""
-"To roll back to an older version after batches of the new kinds were "
-"accepted, do it while the new version is still running, since only it can"
-" manage them: turn `BATCH_EXPANSION_ENABLED` off, then cancel (or let "
-"finish) every file batch, Message Batch and embedding or Responses batch "
-"until none is queued, running, validating or finalizing, and delete those"
-" you no longer need. Then stop every gateway process before any process "
-"of the older version starts. An older worker cannot tell these batches "
-"apart, and turning `BATCH_ENABLED` off does not make it safe: it only "
-"hides the batch routes."
-msgstr ""
-"如果在接受了新类型的批次之后要回滚到旧版本，请趁新版本仍在运行时操作，因为只有它能管理这些批次：关闭 "
-"`BATCH_EXPANSION_ENABLED`，然后取消（或等待完成）每个文件批次、Message Batch 以及 embedding 或 "
-"Responses 批次，直到没有批次处于排队、运行、校验或收尾中，并删除不再需要的批次。然后停止所有网关进程，再启动任何旧版本的进程。旧版 "
-"worker 无法区分这些批次，而关闭 `BATCH_ENABLED` 也不能让它变得安全：那只会隐藏批量路由。"
+#: ../developer/batches.md:676
+msgid "Rolling back"
+msgstr "回滚"
 
+#: ../developer/batches.md:678
+msgid "To a version that already has file batches and Message Batches (#1660 or later), roll back as usual. That version reads `BATCH_EXPANSION_ENABLED` again, off by default, so new batches of the newer kinds are refused until it is on; those already accepted keep running."
+msgstr "如果回滚到已支持文件批次和 Message Batches 的版本（#1660 或之后），按常规步骤回滚即可。该版本会再次读取 `BATCH_EXPANSION_ENABLED`，其默认值为关闭，因此开启它之前无法创建这些较新类型的批次；已经接收的批次会继续运行。"
+
+#: ../developer/batches.md:683
+msgid "To an older version, drain the newer batches with this version, which alone can manage them, and start the older version only once every process of this version has stopped and the database shows none left:"
+msgstr "如果回滚到更早的版本，需要先由当前版本处理完较新类型的批次，因为只有当前版本能管理它们。必须等当前版本的所有进程都停止，且数据库确认没有剩余任务后，才能启动旧版本："
+
+#: ../developer/batches.md:687
+msgid "Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches. Other users' queued requests then stop starting too, so their batches have to be cancelled rather than waited for. To let them finish instead, skip this step; step 6 still catches a batch created meanwhile."
+msgstr "将 `BATCH_MIN_ROLE` 设为 `admin`，阻止其他用户创建批次。其他用户排队中的请求也会停止启动，因此必须取消这些批次，不能只是等待它们完成。如果希望它们正常完成，可以跳过这一步；第 6 步仍会发现期间新建的批次。"
+
+#: ../developer/batches.md:691
+msgid "Cancel (or let finish) every batch that is not an inline chat batch: the admin **Batches** tab lists and cancels anyone's. A cancelled file batch still needs a moment to seal. Wait until this returns no rows:"
+msgstr "取消所有非内联聊天批次，或等待它们完成：管理后台的 **Batches** 页可以列出并取消任何用户的批次。文件批次取消后仍需要一点时间完成封存。等待以下查询不再返回任何行："
+
+#: ../developer/batches.md:702
+msgid "Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a request that had already passed its checks may still be on its way to the database, so an empty result at this point proves nothing yet."
+msgstr "关闭 `BATCH_ENABLED`。新的批次请求现在会返回 `404`，但已经通过检查的请求仍可能正在写入数据库，因此此时查询为空还不足以证明安全。"
+
+#: ../developer/batches.md:705
+msgid "Stop every gateway process of this version, every replica and worker, and keep them stopped: turn off whatever would start one again on its own (restart policies, autoscaling, health-check replacement, deploy jobs) for as long as the final check takes. Do not start any process of the older version yet."
+msgstr "停止当前版本的所有网关进程、所有副本和 worker，并保持停止状态：在最终检查完成前，关闭所有可能自动拉起进程的机制（重启策略、自动扩缩容、健康检查替换和部署任务）。此时不要启动任何旧版本进程。"
+
+#: ../developer/batches.md:710
+msgid "Confirm the database has finished with them: no session of the gateway's database user is left, so every transaction those processes opened has committed or rolled back. Run this as a different user, or in your own session, which the query leaves out; it must return no rows:"
+msgstr "确认数据库已完成这些进程留下的工作：网关数据库用户的会话必须全部退出，这样这些进程开启的所有事务才都已提交或回滚。用另一个用户执行以下查询，或在自己的会话中执行（查询会排除该会话）；结果必须为空："
+
+#: ../developer/batches.md:723
+msgid "A session can outlive its process: the server may still be finishing a query or commit that was already sent, or not yet have noticed that the connection is gone. Wait for it to end. If a session stays and you have confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)` ends it and rolls back its open transaction."
+msgstr "会话可能比进程存活得更久：数据库服务端可能仍在完成已发送的查询或提交，也可能尚未发现连接已断开。应等待会话结束。如果某个会话一直存在，且已确认其所在主机不再运行网关，可用 `pg_terminate_backend(pid)` 终止它并回滚尚未完成的事务。"
+
+#: ../developer/batches.md:728
+msgid "Only then run the batch query from step 2 again. Only if it returns no rows, start the older version. It keeps `BATCH_ENABLED` off; turn it on, and set `BATCH_MIN_ROLE` back, once only the older version runs."
+msgstr "只有这时，才再次执行第 2 步的批次查询。只有结果为空，才能启动旧版本。旧版本仍会保持 `BATCH_ENABLED` 关闭；确认只剩旧版本运行后，再开启它，并恢复 `BATCH_MIN_ROLE`。"
+
+#: ../developer/batches.md:732
+msgid "Why the last check waits until the database is quiet: turning `BATCH_ENABLED` off refuses new requests, but it does not stop a create that was admitted a moment earlier; that create still stores its batch, however long its body or the database takes. A process having exited is not enough either, since a commit it sent may still be in progress on the server. Each create is one transaction and only gateway processes write batches, so once no gateway session is left and none can start, every create has either committed or rolled back, and the query sees everything that will ever be there."
+msgstr "最终检查必须等数据库活动结束，是因为关闭 `BATCH_ENABLED` 只会拒绝新请求，不会阻止刚刚通过准入检查的创建请求；无论读取请求体或访问数据库耗时多久，该请求仍会存储批次。仅确认进程已退出也不够，因为它之前发送的提交可能仍在服务端执行。每次创建都在一个事务内完成，而且只有网关进程会写入批次；因此，当所有网关会话都已退出且不会再启动时，每次创建必定已经提交或回滚，查询才能看到全部最终写入的数据。"
+
+#: ../developer/batches.md:741
+msgid "If step 6 returns rows, do not start the older version: it would run them as chat completions. Start this version again, and only this version, turn `BATCH_ENABLED` on so its worker can run or seal those batches, cancel them or let them finish (step 2), then repeat steps 3 to 6."
+msgstr "如果第 6 步仍返回记录，不要启动旧版本，否则它会把这些任务当成聊天补全执行。重新启动当前版本，且只运行当前版本；开启 `BATCH_ENABLED`，让 worker 能够执行或封存这些批次，取消它们或等待它们完成（第 2 步），再重复第 3 至第 6 步。"
+
+#: ../developer/batches.md:746
+msgid "Finished batches of the newer kinds stay in the database; the older version lists and purges them as if they were inline chat batches. Uploaded files and webhooks stay unread until the next upgrade. Turning `BATCH_ENABLED` off is not enough on its own: it stops the newer version's worker too, so the newer batches would never drain."
+msgstr "已经完成的较新类型批次会保留在数据库中；旧版本会把它们当成内联聊天批次列出和清理。已上传的文件和 webhook 在下次升级前不会被读取。单独关闭 `BATCH_ENABLED` 并不够：它也会停止新版本的 worker，导致这些较新类型的批次永远无法处理完。"

@@ -63,6 +63,15 @@ def test_stored_values_apply_on_the_next_read(stored):
     assert config.role_concurrency == {"free": 8, "pro": 16, "internal": 12, "admin": 0}
 
 
+@pytest.mark.parametrize("raw", ["0", "false", "1", ""])
+def test_the_retired_expansion_flag_changes_nothing(stored, raw):
+    """Every batch kind is available while BATCH_ENABLED is on, whatever an old value says."""
+    stored["BATCH_EXPANSION_ENABLED"] = raw
+
+    assert batch_config() == BatchConfig()
+    assert not hasattr(batch_config(), "expansion_enabled")
+
+
 @pytest.mark.parametrize(
     ("key", "raw", "field", "expected"),
     [
