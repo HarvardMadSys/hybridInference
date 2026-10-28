@@ -1048,6 +1048,17 @@ msgid ""
 "has no email address and signs in with the username."
 msgstr "输入设置码，再选一个用户名和密码。这个管理员没有邮箱地址，用用户名登录。"
 
+#: ../developer/deployment.md:469
+msgid ""
+"Once email delivery is configured, this administrator can bind an email "
+"in **Account Settings → Email Address**. Confirm the current password and"
+" follow the verification link sent to the new address. The username "
+"continues to work after binding; the same settings section also lets you "
+"change a bound email."
+msgstr ""
+"配置好邮件发送之后，这个管理员可以在 **Account Settings → Email Address**（账户设置 → "
+"邮箱地址）中绑定邮箱：先确认当前密码，再打开发到新地址的验证链接。绑定之后，用户名仍然可以用来登录；在同一个设置区域里也可以更换已绑定的邮箱。"
+
 #: ../developer/deployment.md:443
 msgid ""
 "Whoever can read the backend log, or the database that holds the code, "
