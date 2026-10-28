@@ -26,7 +26,7 @@ from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import UserConcurrencyLimiter
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
-from serving.servers.routers import completions, embeddings, responses
+from serving.servers.routers import anthropic_messages, completions, embeddings, responses
 from serving.servers.routers.completions_cost import CostTracker
 from serving.servers.routers.completions_logging import CompletionsLogger
 
@@ -658,3 +658,149 @@ async def test_compat_routes_reach_chat_with_their_runtime_settings_and_shapes(g
             "stream": False,
             "max_tokens": 8000,
         }
+
+
+# -- Messages execution, called directly ------------------------------------------
+
+
+def _direct_context() -> Any:
+    from serving.surfaces.context import UNTRACKED, ClientOrigin, ExecutionContext
+    from serving.utils.request_ip import ClientIpInfo
+
+    ip = ClientIpInfo(
+        client_ip="unknown",
+        peer_ip="unknown",
+        source="test",
+        trusted_proxy_headers=False,
+        resolved=False,
+    )
+    return ExecutionContext(
+        user_ctx={"user_id": "user-1", "role": "free", "authenticated": True},
+        origin=ClientOrigin.for_batch(path="/v1/messages", ip=ip, user_agent="test"),
+        admission=UNTRACKED,
+        batch=None,
+        timeout_probe=None,
+    )
+
+
+def _messages_services(gateway: _Gateway) -> Any:
+    return anthropic_messages.MessagesServices(
+        router=gateway.router,
+        log_store=None,
+        op_store=None,
+        visibility=None,
+        completions_logger=None,
+        app_services=gateway.app.state.services,
+    )
+
+
+def _count_end_dispatch(gateway: _Gateway, monkeypatch) -> list[Any]:
+    registry = gateway.router.endpoint_health_registry
+    ended: list[Any] = []
+    real_end = registry.end_dispatch
+
+    def counting_end(claim):
+        ended.append(claim)
+        return real_end(claim)
+
+    monkeypatch.setattr(registry, "end_dispatch", counting_end)
+    return ended
+
+
+@pytest.mark.asyncio
+async def test_a_messages_stream_closed_before_it_starts_releases_its_claim_once(
+    gateway, monkeypatch
+):
+    ended = _count_end_dispatch(gateway, monkeypatch)
+    called: list[Any] = []
+    monkeypatch.setattr(
+        gateway.adapters[MID], "stream_chat_completion", lambda *a, **k: called.append(a)
+    )
+
+    outcome = await anthropic_messages.execute_messages(
+        _anthropic(MID, stream=True),
+        _direct_context(),
+        _messages_services(gateway),
+        anthropic_messages.MessagesConstraints.online(),
+    )
+
+    assert isinstance(outcome, anthropic_messages.MessagesStream)
+    assert ended == []  # held by the stream
+    await outcome.aclose()
+    assert len(ended) == 1
+    assert called == []  # the upstream was never contacted
+
+
+@pytest.mark.asyncio
+async def test_a_messages_stream_closed_after_it_starts_releases_its_claim_once(
+    gateway, monkeypatch
+):
+    ended = _count_end_dispatch(gateway, monkeypatch)
+
+    outcome = await anthropic_messages.execute_messages(
+        _anthropic(MID, stream=True),
+        _direct_context(),
+        _messages_services(gateway),
+        anthropic_messages.MessagesConstraints.online(),
+    )
+    first = await outcome.frames.__anext__()
+    await outcome.aclose()
+
+    assert first.startswith(b"event: message_start")
+    assert len(ended) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_unary_messages_request_is_served_within_the_call(gateway, monkeypatch):
+    ended = _count_end_dispatch(gateway, monkeypatch)
+
+    outcome = await anthropic_messages.execute_messages(
+        _anthropic(MID),
+        _direct_context(),
+        _messages_services(gateway),
+        anthropic_messages.MessagesConstraints.online(),
+    )
+
+    assert isinstance(outcome, anthropic_messages.MessagesResponse)
+    assert outcome.body["type"] == "message"
+    assert len(ended) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_messages_body_is_a_400_after_the_request_id(gateway):
+    outcome = await anthropic_messages.execute_messages(
+        anthropic_messages.MALFORMED_BODY,
+        _direct_context(),
+        _messages_services(gateway),
+        anthropic_messages.MessagesConstraints.online(),
+    )
+
+    assert isinstance(outcome, anthropic_messages.MessagesError)
+    assert (outcome.status, outcome.error_type) == (400, "invalid_request_error")
+    assert outcome.message == "Invalid JSON in request body"
+
+
+def test_messages_constraints_narrow_only_a_batch_item():
+    online = anthropic_messages.MessagesConstraints.online()
+    body = {"model": MID, "messages": [], "max_tokens": 1}
+    item = anthropic_messages.MessagesConstraints.for_batch_item(body, "2026-10-21")
+
+    assert (online.adapter_requirement, online.pin_model, online.anthropic_version) == (
+        None,
+        False,
+        None,
+    )
+    assert item.adapter_requirement.body is body
+    assert (item.pin_model, item.anthropic_version) == (True, "2026-10-21")
+    assert (
+        anthropic_messages.MessagesConstraints.for_batch_item(body, None).anthropic_version is None
+    )
+
+
+def test_no_batch_policy_travels_through_the_request_scope():
+    import inspect
+
+    from serving.batch import dispatch
+
+    for module in (anthropic_messages, dispatch):
+        assert "BATCH_EXECUTION" not in inspect.getsource(module)

@@ -22,6 +22,7 @@ import contextlib
 import copy
 import json
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -49,7 +50,8 @@ from serving.auto_mode import (
     session_key,
     strip_foreign_thinking,
 )
-from serving.batch.attempts import batch_log_attribution, note_request_id, observe_billing
+from serving.batch.attempts import note_request_id, observe_billing
+from serving.batch.targets import AdapterRequirement
 from serving.config.app_config import config_value, on_change
 from serving.exceptions import (
     conceal_served_model,
@@ -60,7 +62,7 @@ from serving.exceptions import (
 )
 from serving.grant_auth import ledger_attribution
 from serving.model_access import model_access_denial, route_canonical_model_id
-from serving.observability.rejection_log import log_rejection
+from serving.observability.rejection_log import RejectionSource, log_rejection_from
 from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, require_source_pricing
 from serving.servers.auth import (
@@ -68,7 +70,7 @@ from serving.servers.auth import (
     verify_api_key,
     verify_api_key_for_balance,
 )
-from serving.servers.concurrency import enforce_user_concurrency, retarget_interactive_load
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_completions_logger,
     get_log_store,
@@ -77,18 +79,22 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.model_availability import model_not_found_detail
+from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import calculate_cost
+from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
+from serving.utils.request_ip import derive_affinity_key
 from serving.utils.session_identity import consume_session_fields, session_identity
+from serving.utils.synthetic_probe import probe_marker_in
 from serving.utils.token_utils import optional_token_count, usage_count
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncGenerator, Callable, Mapping
 
     from fastapi.exceptions import RequestValidationError
+    from fastapi.responses import StreamingResponse
 
     from serving.auto_mode import AutoSelection
 
@@ -193,6 +199,26 @@ def _anthropic_error(
                 "message": message,
             },
         },
+        headers=headers,
+    )
+
+
+def _messages_error(
+    status: int,
+    message: str,
+    *,
+    error_type: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> MessagesError:
+    """:func:`_anthropic_error` as a value, for the execution function.
+
+    Concealed here, where ``_anthropic_error`` conceals, while the request
+    scope still says which model an auto request is not to name.
+    """
+    return MessagesError(
+        status=status,
+        message=conceal_served_model(message),
+        error_type=error_type or _ERROR_TYPE_BY_STATUS.get(status, "api_error"),
         headers=headers,
     )
 
@@ -516,6 +542,8 @@ def _pick_dispatch_adapter(
     router_exec,
     user_role: str,
     size_prompt: Callable[[Any], int] | None = None,
+    *,
+    requirement: AdapterRequirement | None = None,
 ):
     """Return the route adapter this request may actually be dispatched to.
 
@@ -545,9 +573,10 @@ def _pick_dispatch_adapter(
 
     ``size_prompt`` sizes the request for the model's offload route, which a
     prompt over its max input may not be sent (``eligible_adapters``).
+    ``requirement`` narrows the candidates of a batch item to the adapters that
+    serve it as written (:class:`MessagesConstraints`); None for online traffic.
     """
     eligible = router_exec.eligible_adapters(canonical, size_prompt=size_prompt)
-    requirement = req_ctx.get().get(req_ctx.BATCH_EXECUTION)
     if requirement is not None and eligible:
         # A batch item may only go to an adapter that serves it as written
         # (serving/batch/targets.py): never one that would drop a parameter.
@@ -581,6 +610,7 @@ async def _resolve(
     *,
     for_dispatch: bool = True,
     size_prompt: Callable[[Any], int] | None = None,
+    requirement: AdapterRequirement | None = None,
 ):
     """Return (canonical_model_id, route, adapter).
 
@@ -591,7 +621,8 @@ async def _resolve(
     and never reaches an upstream, so a provider outage must not stop it.
     ``size_prompt`` returns the request's estimated prompt tokens as a given
     adapter would be sent them, for an offload route with a max input
-    (``_pick_dispatch_adapter``).
+    (``_pick_dispatch_adapter``). ``requirement`` narrows the candidates of a
+    batch item (``_pick_dispatch_adapter``).
     """
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -617,7 +648,9 @@ async def _resolve(
         adapter, _ = route.adapters[0]
         return canonical, route, adapter
     user_role = (user_ctx or {}).get("role", "free")
-    adapter = _pick_dispatch_adapter(model_id, canonical, router_exec, user_role, size_prompt)
+    adapter = _pick_dispatch_adapter(
+        model_id, canonical, router_exec, user_role, size_prompt, requirement=requirement
+    )
     require_source_pricing(adapter.config)
     return (
         canonical,
@@ -773,15 +806,18 @@ async def _maybe_reroute_small_reasoning_call(
     user_ctx: dict | None,
     model_visibility_resolver,
     request_id: str,
+    *,
+    pin_model: bool = False,
 ):
     """Reroute a tiny-``max_tokens`` call aimed at a reasoning model to a fast model.
 
     Returns a possibly-updated ``(canonical, route, adapter)``. When a reroute
     applies, ``body["model"]`` and ``body["max_tokens"]`` are mutated in place.
-    Any failure to resolve the target leaves everything unchanged.
+    Any failure to resolve the target leaves everything unchanged. ``pin_model``
+    (a batch item) leaves the request on its model.
     """
     max_tokens = body.get("max_tokens")
-    if req_ctx.get().get(req_ctx.BATCH_EXECUTION) is not None:
+    if pin_model:
         # A batch item runs on the model it was admitted for, never another.
         return canonical, route, adapter
     # Cheap, in-memory gates first (so ordinary traffic never reads the toggle):
@@ -826,8 +862,10 @@ async def _maybe_reroute_small_reasoning_call(
 _FORWARDED_HEADERS = ("anthropic-beta",)
 
 
-def _extract_forwarded_headers(request: Request) -> dict[str, str]:
+def _extract_forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Extract allowlisted Anthropic headers from the inbound request to forward upstream.
+
+    *headers* are the request's, looked up as Starlette's ``Headers`` are.
 
     Only headers in ``_FORWARDED_HEADERS`` are forwarded; auth-related headers
     (``x-api-key``, ``authorization``) are never forwarded because the adapter
@@ -835,7 +873,7 @@ def _extract_forwarded_headers(request: Request) -> dict[str, str]:
     """
     out: dict[str, str] = {}
     for k in _FORWARDED_HEADERS:
-        v = request.headers.get(k)
+        v = headers.get(k)
         if v:
             out[k] = v
     return out
@@ -1547,6 +1585,152 @@ def _shape_error(body: dict[str, Any]) -> str | None:
 # --- Route handler ---------------------------------------------------------
 
 
+# --- Protocol execution, shared with the batch worker (issue #1690) ----------
+
+#: The body of a request that was not valid JSON. ``execute_messages`` answers
+#: it with a 400, after the steps that precede body validation (the request id,
+#: the caller's upstream-key affinity), as the route always has.
+MALFORMED_BODY: Any = object()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MessagesConstraints:
+    """What a caller's own arrangement narrows a Messages request to.
+
+    ``adapter_requirement`` and ``pin_model`` only ever narrow: a batch item
+    may go only to an adapter that serves it as written, and is never rerouted
+    to another model. ``anthropic_version`` is not a narrowing but a frozen
+    protocol option: the ``anthropic-version`` a Messages batch was created
+    under, validated and stored then, sent to a native upstream so the item
+    keeps that version's semantics. Built by :meth:`online` or
+    :meth:`for_batch_item`; nothing here can relax access, billing, logging,
+    health or admission.
+    """
+
+    adapter_requirement: AdapterRequirement | None
+    pin_model: bool
+    anthropic_version: str | None
+
+    @classmethod
+    def online(cls) -> MessagesConstraints:
+        """An online request: no narrowing, the adapter's own version."""
+        return cls(adapter_requirement=None, pin_model=False, anthropic_version=None)
+
+    @classmethod
+    def for_batch_item(
+        cls, body: dict[str, Any], protocol_profile: str | None
+    ) -> MessagesConstraints:
+        """A batch item: served as written, on its model, under its stored version."""
+        return cls(
+            adapter_requirement=AdapterRequirement(body=body),
+            pin_model=True,
+            anthropic_version=protocol_profile or None,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MessagesServices:
+    """What :func:`execute_messages` serves a request with."""
+
+    router: Any
+    log_store: Any
+    op_store: Any
+    visibility: Any
+    completions_logger: Any
+    #: The application's services: the auto-mode configuration, and the log
+    #: store and runtime settings a rejection row is written under.
+    app_services: Any
+
+
+@dataclass(frozen=True, slots=True)
+class MessagesResponse:
+    """A served request: the Messages response body, as the upstream returned it."""
+
+    body: Any
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MessagesError:
+    """A request answered with an Anthropic error before any byte of a response."""
+
+    status: int
+    #: Already scrubbed and concealed for the caller.
+    message: str
+    error_type: str
+    headers: dict[str, str] | None = field(default=None)
+
+    def body(self) -> dict[str, Any]:
+        """The Anthropic error envelope."""
+        return {"type": "error", "error": {"type": self.error_type, "message": self.message}}
+
+
+class MessagesStream:
+    """A request past every check, as SSE frames not yet started.
+
+    ``frames`` is the stream itself, unbuffered; nothing upstream has been
+    contacted until it is first iterated. It holds the endpoint's health claim:
+    iterating it to the end, or closing it once started, releases the claim in
+    its own ``finally``. :meth:`aclose` on a stream never started releases the
+    claim here instead, since an unstarted generator runs no ``finally``.
+    """
+
+    __slots__ = ("_release_unstarted", "_started", "frames", "headers")
+
+    def __init__(
+        self,
+        frames: AsyncGenerator[bytes, None],
+        *,
+        headers: dict[str, str],
+        started: Callable[[], bool],
+        release_unstarted: Callable[[], None],
+    ) -> None:
+        """Hold *frames* and how to release what an unstarted stream holds."""
+        self.frames = frames
+        self.headers = headers
+        self._started = started
+        self._release_unstarted = release_unstarted
+
+    async def aclose(self) -> None:
+        """Close the stream, releasing the claim whether or not it ever started."""
+        if not self._started():
+            self._release_unstarted()
+        await self.frames.aclose()
+
+
+MessagesOutcome = MessagesResponse | MessagesError | MessagesStream
+
+
+def render_messages_http(outcome: MessagesOutcome) -> JSONResponse | StreamingResponse:
+    """The HTTP response the Messages routes answer *outcome* with."""
+    if isinstance(outcome, MessagesStream):
+        # Looked up on use, as the handler always did, not bound at import.
+        from fastapi.responses import StreamingResponse
+
+        return StreamingResponse(
+            outcome.frames, media_type="text/event-stream", headers=outcome.headers
+        )
+    if isinstance(outcome, MessagesError):
+        return JSONResponse(
+            status_code=outcome.status, content=outcome.body(), headers=outcome.headers
+        )
+    return JSONResponse(content=outcome.body)
+
+
+def _rejection_source(ctx: ExecutionContext, services: MessagesServices) -> RejectionSource:
+    """Where a rejection row of this request is written, as the request said."""
+    app_services = services.app_services
+    return RejectionSource(
+        route_path=ctx.origin.route_path,
+        client_ip=lambda: ctx.origin.ip.client_ip,
+        probe_marker=probe_marker_in(ctx.origin.headers),
+        log_store=getattr(app_services, "log_store", None) if app_services else None,
+        runtime_settings=getattr(app_services, "runtime_settings", None) if app_services else None,
+    )
+
+
+# --- Route handler ---------------------------------------------------------
+
+
 @router.post("/v1/messages", response_model=None)
 @router.post("/anthropic/v1/messages", response_model=None)
 async def anthropic_messages(
@@ -1559,11 +1743,62 @@ async def anthropic_messages(
     completions_logger=Depends(get_completions_logger),
     _conc=Depends(enforce_user_concurrency),
 ):
-    """Handle Anthropic Messages API requests (non-streaming)."""
+    """Handle Anthropic Messages API requests, served by :func:`execute_messages`."""
+    try:
+        body: Any = await request.json()
+    except Exception:
+        body = MALFORMED_BODY
+    outcome = await execute_messages(
+        body,
+        ExecutionContext(
+            user_ctx=read_only(user_ctx),
+            origin=client_origin(request),
+            admission=admission_from(_conc),
+            batch=None,
+            timeout_probe=timeout_probe(request),
+        ),
+        MessagesServices(
+            router=router_exec,
+            log_store=log_store,
+            op_store=op_store,
+            visibility=model_visibility_resolver,
+            completions_logger=completions_logger,
+            app_services=getattr(request.app.state, "services", None),
+        ),
+        MessagesConstraints.online(),
+    )
+    return render_messages_http(outcome)
+
+
+async def execute_messages(
+    body: Any,
+    ctx: ExecutionContext,
+    services: MessagesServices,
+    constraints: MessagesConstraints,
+) -> MessagesOutcome:
+    """Serve one Messages request, online or as a batch item.
+
+    *body* is the decoded request body, or :data:`MALFORMED_BODY`. Every check
+    that answers with an HTTP status happens before this returns: a
+    :class:`MessagesError` means nothing was sent upstream, and a
+    :class:`MessagesStream` has not contacted the upstream yet. A non-streaming
+    request is served, logged and billed within this call. The request scope
+    is the caller's; nothing here opens or closes one.
+    """
+    user_ctx = ctx.user_ctx
+    router_exec = services.router
+    log_store = services.log_store
+    op_store = services.op_store
+    model_visibility_resolver = services.visibility
+    completions_logger = services.completions_logger
     request_id = f"amsg_{int(time.time() * 1_000_000)}"
     start = time.time()
     # The log row's id, for a batch attempt running this request.
     note_request_id(request_id)
+    if constraints.anthropic_version:
+        # The version a batch was created under, for the native adapter to send
+        # (``AnthropicAdapter._api_version``); online requests keep its default.
+        req_ctx.update({req_ctx.ANTHROPIC_VERSION: constraints.anthropic_version})
 
     # Per-caller identity for multi-key rotation, published before any dispatch.
     # Pinned to the specific hyi-xxx key in use (not user_id — a user may hold
@@ -1572,36 +1807,35 @@ async def anthropic_messages(
     # process-wide ``_anon`` binding, so nobody kept a stable upstream key and
     # provider-side prompt-cache locality was lost — worst here, where the
     # traffic is prefill-dominated Claude Code sessions.
-    ip_info = get_client_ip_info(request)
+    ip_info = ctx.origin.ip
     auth_key_hash = user_ctx.get("auth_key_hash")
+    affinity_key = derive_affinity_key(
+        auth_key_hash,
+        ip_info,
+        grant_id=user_ctx.get("agent_grant_id"),
+    )
     req_ctx.update(
         {
             "auth_key_hash": auth_key_hash or "_anon",
-            "affinity_key": derive_affinity_key(
-                auth_key_hash,
-                ip_info,
-                grant_id=user_ctx.get("agent_grant_id"),
-            ),
+            "affinity_key": affinity_key,
         }
     )
 
-    try:
-        body = await request.json()
-    except Exception:
-        return _anthropic_error(400, "Invalid JSON in request body")
+    if body is MALFORMED_BODY:
+        return _messages_error(400, "Invalid JSON in request body")
     if not isinstance(body, dict):
-        return _anthropic_error(400, "Request body must be a JSON object")
+        return _messages_error(400, "Request body must be a JSON object")
 
     model_id = body.get("model")
     if not model_id:
-        return _anthropic_error(400, "Missing required field: model")
+        return _messages_error(400, "Missing required field: model")
     if "messages" not in body:
-        return _anthropic_error(400, "Missing required field: messages")
+        return _messages_error(400, "Missing required field: messages")
     if body.get("max_tokens") is None:
-        return _anthropic_error(400, "Missing required field: max_tokens")
+        return _messages_error(400, "Missing required field: max_tokens")
     shape_error = _shape_error(body)
     if shape_error is not None:
-        return _anthropic_error(400, shape_error)
+        return _messages_error(400, shape_error)
 
     # Before dispatch, so this covers the native passthrough as well as the
     # translated path. A native Anthropic upstream is forwarded this body
@@ -1620,7 +1854,7 @@ async def anthropic_messages(
     auto_selection: AutoSelection | None = None
     # What the client sent, for the log, taken before the rewrite below.
     client_request: dict[str, Any] | None = None
-    auto_mode = await auto_mode_for(model_id, getattr(request.app.state, "services", None))
+    auto_mode = await auto_mode_for(model_id, services.app_services)
     if auto_mode is not None:
         prompt_messages, prompt_tools = _prefill_inputs(body)
         features = anthropic_features(
@@ -1637,14 +1871,14 @@ async def anthropic_messages(
                 visibility_resolver=model_visibility_resolver,
                 session=session_key(
                     user_ctx,
-                    session_identity(request.headers, body),
+                    session_identity(ctx.origin.headers, body),
                     conversation_fingerprint(prompt_messages),
                 ),
             )
         except AutoModelUnavailable as exc:
             asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
-                log_rejection(
-                    request=request,
+                log_rejection_from(
+                    source=_rejection_source(ctx, services),
                     status_code=exc.status_code,
                     error_code=(
                         "model_not_found"
@@ -1661,8 +1895,8 @@ async def anthropic_messages(
             )
             if exc.status_code == 404:
                 req_ctx.mark_model_not_found()
-                return _anthropic_error(404, model_not_found_detail(model_id, user_ctx=user_ctx))
-            return _anthropic_error(exc.status_code, exc.detail or "")
+                return _messages_error(404, model_not_found_detail(model_id, user_ctx=user_ctx))
+            return _messages_error(exc.status_code, exc.detail or "")
         client_request = copy.deepcopy(body)
         apply_to_anthropic_body(auto_selection, body)
         hide_served_model(auto_selection)
@@ -1678,11 +1912,12 @@ async def anthropic_messages(
             # Anthropic-only fields from it, and only when the model's offload
             # route has a max input to hold it to.
             size_prompt=lambda adapter: _prompt_tokens(body, adapter),
+            requirement=constraints.adapter_requirement,
         )
     except HTTPException as exc:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
-            log_rejection(
-                request=request,
+            log_rejection_from(
+                source=_rejection_source(ctx, services),
                 status_code=exc.status_code,
                 # _resolve rejects for two different reasons now: the model is
                 # not visible to this caller (404), or none of its providers can
@@ -1708,7 +1943,7 @@ async def anthropic_messages(
         # that message is the whole answer for the client. safe_detail_text
         # only draws the line at a non-string detail. The rejection log above
         # keeps the raw detail server-side either way.
-        return _anthropic_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
+        return _messages_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
     request_payload_for_log = client_request if client_request is not None else copy.deepcopy(body)
 
@@ -1719,7 +1954,7 @@ async def anthropic_messages(
     # nothing downstream can put one session's rows back together. Resolved from
     # the pristine copy above rather than ``body``, which dispatch rewrites from
     # here on; recorded into the log metadata further down.
-    declared_session = session_identity(request.headers, request_payload_for_log)
+    declared_session = session_identity(ctx.origin.headers, request_payload_for_log)
     # The body declarations are for the gateway, not for any provider:
     # Anthropic's Messages metadata admits ``user_id`` alone, and the native path
     # forwards this body verbatim, so leaving one in would turn a labelled
@@ -1744,6 +1979,7 @@ async def anthropic_messages(
         user_ctx,
         model_visibility_resolver,
         request_id,
+        pin_model=constraints.pin_model,
     )
     reroute_info = (
         {
@@ -1763,9 +1999,9 @@ async def anthropic_messages(
     # Auto selection (and the small-budget reroute above) happen after the
     # concurrency dependency admitted the virtual model. Count the request on
     # the final concrete canonical model for the remainder of its lifetime.
-    retarget_interactive_load(request, route_canonical_model_id(_route, canonical))
+    ctx.admission.retarget(route_canonical_model_id(_route, canonical))
 
-    forwarded_headers = _extract_forwarded_headers(request)
+    forwarded_headers = _extract_forwarded_headers(ctx.origin.headers)
 
     # Endpoint health is read on the way in (adapter admission) but, until this
     # surface recorded its own outcomes, was written only by the chat path. An
@@ -1791,7 +2027,7 @@ async def anthropic_messages(
         # filtered on the same rule a moment ago, so this is the lost race, not
         # the common case -- and it gets the same 503 the empty-eligible path
         # above gives, which this surface renders as overloaded_error.
-        return _anthropic_error(503, f"No provider is currently available for model '{model_id}'")
+        return _messages_error(503, f"No provider is currently available for model '{model_id}'")
 
     # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
     # (strips cache_control blocks). The log must preserve the original client payload.
@@ -1843,7 +2079,7 @@ async def anthropic_messages(
     prefill_fingerprint = conversation_fingerprint(prefill_messages, tools=prefill_tools)
     prefill_anchor = prompt_anchor(prefill_messages)
     prefill_load = router_exec.prefill_load
-    prefill_affinity = req_ctx.get().get("affinity_key")
+    prefill_affinity = affinity_key
 
     def _record_dispatch_failure(endpoint_id: str, **kwargs: Any) -> None:
         """Record an endpoint failure and drop its warm-prefix hints.
@@ -1893,8 +2129,8 @@ async def anthropic_messages(
         )
 
     metadata = {
-        "user_agent": request.headers.get("user-agent"),
-        "referer": request.headers.get("referer"),
+        "user_agent": ctx.origin.user_agent,
+        "referer": ctx.origin.referer,
         "ip": ip_info.client_ip,
         "peer_ip": ip_info.peer_ip,
         "ip_source": ip_info.source,
@@ -1933,7 +2169,7 @@ async def anthropic_messages(
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
-    metadata.update(batch_log_attribution(user_ctx))
+    metadata.update(ctx.batch_log_metadata())
     # The usage window query needs the grant itself and the real start time;
     # ``ledger_attribution`` says why the insert timestamp is not enough.
     metadata.update(ledger_attribution(user_ctx, started_at=start))
@@ -1948,8 +2184,6 @@ async def anthropic_messages(
 
     is_streaming = bool(body.get("stream"))
     if is_streaming:
-        from fastapi.responses import StreamingResponse
-
         sse_headers = {
             # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from
             # buffering the stream to compress it, which collapses TTFT.
@@ -1958,7 +2192,11 @@ async def anthropic_messages(
             "X-Accel-Buffering": "no",
         }
 
+        gen_started = False
+
         async def _gen():
+            nonlocal gen_started
+            gen_started = True
             # Bound to this generator's execution: see _begin_prefill.
             prefill_lease = _begin_prefill()
             request_usage = {
@@ -2344,7 +2582,12 @@ async def anthropic_messages(
                         completions_logger=completions_logger,
                     )
 
-        return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
+        return MessagesStream(
+            _gen(),
+            headers=sse_headers,
+            started=lambda: gen_started,
+            release_unstarted=lambda: health_registry.end_dispatch(dispatch_claim),
+        )
 
     prefill_lease = _begin_prefill()
     try:
@@ -2385,7 +2628,7 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
             completions_logger=completions_logger,
         )
-        return _anthropic_error(exc.status_code, error_message)
+        return _messages_error(exc.status_code, error_message)
     except aiohttp.ClientResponseError as exc:
         client_status, err_type = _map_upstream_status(exc.status)
         # For a remapped upstream auth/permission failure, suppress the
@@ -2417,7 +2660,7 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
             completions_logger=completions_logger,
         )
-        return _anthropic_error(client_status, error_message, error_type=err_type)
+        return _messages_error(client_status, error_message, error_type=err_type)
     except KeyPoolExhausted as exc:
         # Every upstream key is in cooldown (typically after provider 429/401
         # muted them). This is a rate-limit condition, not an internal error:
@@ -2446,7 +2689,7 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
             completions_logger=completions_logger,
         )
-        return _anthropic_error(
+        return _messages_error(
             429, error_message, headers={"retry-after": str(int(KeyPool.MUTE_SECONDS))}
         )
     except UpstreamSaturated as exc:
@@ -2480,7 +2723,7 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
             completions_logger=completions_logger,
         )
-        return _anthropic_error(429, error_message, headers={"retry-after": "1"})
+        return _messages_error(429, error_message, headers={"retry-after": "1"})
     except TimeoutError as exc:
         # Upstream exceeded the (generous) completion timeout. Surface a 504
         # gateway-timeout rather than a generic 502 "Internal server error" so
@@ -2508,7 +2751,7 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
             completions_logger=completions_logger,
         )
-        return _anthropic_error(504, error_message)
+        return _messages_error(504, error_message)
     except Exception as exc:
         # Not BaseException: a client disconnect cancels this coroutine, and
         # CancelledError must propagate uncounted -- the upstream did not fail.
@@ -2535,7 +2778,7 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
             completions_logger=completions_logger,
         )
-        return _anthropic_error(502, error_message)
+        return _messages_error(502, error_message)
 
     finally:
         # Every except arm above returns its own error response, so this is the
@@ -2589,7 +2832,7 @@ async def anthropic_messages(
             user_id=user_ctx.get("user_id"),
             completions_logger=completions_logger,
         )
-    return JSONResponse(content=resp)
+    return MessagesResponse(resp)
 
 
 @router.post("/v1/messages/count_tokens", response_model=None)

@@ -420,18 +420,15 @@ async def test_a_messages_item_never_reaches_an_adapter_that_would_drop_a_parame
 
 
 async def test_a_native_error_response_is_read_by_its_status(monkeypatch):
-    from fastapi.responses import JSONResponse
-
     from serving.servers.routers import anthropic_messages
 
     app, services, _upstream, _embedder = _setup()
     monkeypatch.setattr(
         anthropic_messages,
-        "anthropic_messages",
+        "execute_messages",
         AsyncMock(
-            return_value=JSONResponse(
-                {"type": "error", "error": {"type": "overloaded_error", "message": "busy"}},
-                status_code=529,
+            return_value=anthropic_messages.MessagesError(
+                status=529, message="busy", error_type="overloaded_error"
             )
         ),
     )

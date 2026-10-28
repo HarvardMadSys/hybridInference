@@ -60,7 +60,7 @@ from starlette.requests import Request
 from starlette.responses import Response as StarletteResponse
 
 from serving.batch.attempts import observing
-from serving.batch.targets import TARGET_PATHS, AdapterRequirement
+from serving.batch.targets import TARGET_PATHS
 from serving.exceptions import safe_detail_text, scrub_error_for_user
 from serving.pricing import get_pricing_snapshot
 from serving.schemas import ChatCompletionResponse, EmbeddingRequest
@@ -263,10 +263,6 @@ async def _dispatch(
         "pricing_time": dt.datetime.now(dt.UTC),
         "pricing_snapshot": get_pricing_snapshot(),
     }
-    if target == TARGET_MESSAGES:
-        seed[req_ctx.BATCH_EXECUTION] = AdapterRequirement(body=request_body)
-        if protocol_profile:
-            seed[req_ctx.ANTHROPIC_VERSION] = protocol_profile
     result: Any = None
     # The upstream may have run, and charged, without the handler reporting it:
     # an attempt abandoned at its deadline, or one that crashed.
@@ -298,11 +294,11 @@ async def _dispatch(
             core = _CORE_EXECUTORS.get(target)
             with deadline:
                 if core is not None:
-                    result = await core(services, ctx, request_body)
-                else:
-                    request = _request(
-                        app, raw, scope_request_id, TARGET_PATHS[target], protocol_profile
+                    result = await core(
+                        services, ctx, request_body, app=app, protocol_profile=protocol_profile
                     )
+                else:
+                    request = _request(app, raw, scope_request_id, TARGET_PATHS[target])
                     result = await _HANDLER_EXECUTORS[target](
                         services, request, caller, request_body
                     )
@@ -379,7 +375,9 @@ async def _run_chat(services: Any, request: Request, caller: dict[str, Any], bod
     )
 
 
-async def _run_embeddings(services: Any, ctx: ExecutionContext, body: dict) -> Any:
+async def _run_embeddings(
+    services: Any, ctx: ExecutionContext, body: dict, *, app: Any, protocol_profile: str | None
+) -> Any:
     from serving.servers.routers.embeddings import EmbeddingServices, execute_embeddings
 
     try:
@@ -404,19 +402,31 @@ async def _run_embeddings(services: Any, ctx: ExecutionContext, body: dict) -> A
     )
 
 
-async def _run_messages(services: Any, request: Request, caller: dict[str, Any], body: dict) -> Any:
-    from serving.servers.routers.anthropic_messages import anthropic_messages
+async def _run_messages(
+    services: Any, ctx: ExecutionContext, body: dict, *, app: Any, protocol_profile: str | None
+) -> Any:
+    from serving.servers.routers.anthropic_messages import (
+        MessagesConstraints,
+        MessagesServices,
+        execute_messages,
+    )
 
-    return await call_handler(
-        anthropic_messages,
-        request,
-        user_ctx=caller,
-        router_exec=services.router,
-        log_store=getattr(services, "log_store", None),
-        op_store=getattr(services, "operational_store", None),
-        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
-        completions_logger=await get_completions_logger(services),
-        _conc=None,
+    return await execute_messages(
+        body,
+        ctx,
+        MessagesServices(
+            router=services.router,
+            log_store=getattr(services, "log_store", None),
+            op_store=getattr(services, "operational_store", None),
+            visibility=getattr(services, "model_visibility_resolver", None),
+            completions_logger=await get_completions_logger(services),
+            # The services the Messages route reads off its application: the
+            # auto-mode configuration and where a rejection row is written.
+            app_services=getattr(getattr(app, "state", None), "services", None),
+        ),
+        # Served only by an adapter that takes the item as written, never
+        # rerouted, under the anthropic-version the batch was created with.
+        MessagesConstraints.for_batch_item(body, protocol_profile),
     )
 
 
@@ -447,12 +457,12 @@ async def _run_responses(
 #: Targets run through their protocol's execution function, with no request.
 _CORE_EXECUTORS = {
     TARGET_EMBEDDINGS: _run_embeddings,
+    TARGET_MESSAGES: _run_messages,
 }
 
 #: Targets still run through their route's handler (transitional, issue #1690).
 _HANDLER_EXECUTORS = {
     TARGET_CHAT: _run_chat,
-    TARGET_MESSAGES: _run_messages,
     TARGET_RESPONSES: _run_responses,
 }
 
@@ -460,14 +470,11 @@ _HANDLER_EXECUTORS = {
 #: injected parameter of each to a supplied argument.
 HANDLERS: dict[str, tuple[str, str]] = {
     TARGET_CHAT: ("serving.servers.routers.completions", "chat_completions"),
-    TARGET_MESSAGES: ("serving.servers.routers.anthropic_messages", "anthropic_messages"),
     TARGET_RESPONSES: ("serving.servers.routers.responses", "create_response"),
 }
 
 
-def _request(
-    app: Any, raw_body: bytes, request_id: str, path: str, anthropic_version: str | None
-) -> Request:
+def _request(app: Any, raw_body: bytes, request_id: str, path: str) -> Request:
     """Build the ``Request`` the handler reads: *raw_body*, from no network peer."""
     delivered = False
 
@@ -485,8 +492,6 @@ def _request(
         (b"content-length", str(len(raw_body)).encode()),
         (b"user-agent", BATCH_USER_AGENT.encode()),
     ]
-    if anthropic_version:
-        headers.append((b"anthropic-version", anthropic_version.encode()))
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -592,9 +597,43 @@ def _read_json_response(result: StarletteResponse) -> tuple[int, Any]:
     return int(result.status_code), decoded
 
 
+def _messages_completed(result: Any) -> tuple[int, Any] | DispatchResult:
+    """``(status, body)`` of a Messages outcome, as the route would have sent it.
+
+    The body goes through the JSON encoding the route's response applies, so
+    the result stored is the one an online caller receives; a body that cannot
+    be encoded raises, as rendering it would have.
+    """
+    from serving.servers.routers.anthropic_messages import (
+        MessagesError,
+        MessagesResponse,
+        MessagesStream,
+    )
+
+    if isinstance(result, MessagesError):
+        return result.status, result.body()
+    if isinstance(result, MessagesResponse):
+        encoded = json.dumps(
+            result.body, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        )
+        return 200, json.loads(encoded)
+    if isinstance(result, MessagesStream):
+        # The item forced stream off; a stream here never contacted the upstream.
+        return _failure(502, "The handler returned a stream for a batch request.")
+    return _failure(502, "The upstream response had an unexpected shape.")
+
+
 def _completed(target: str, result: Any) -> DispatchResult:
-    """Return the attempt that produced *result*, the handler's return value."""
-    if isinstance(result, StarletteResponse):
+    """Return the attempt that produced *result*, the execution's return value."""
+    if target == TARGET_MESSAGES:
+        read = _messages_completed(result)
+        if isinstance(read, DispatchResult):
+            return read
+        status, body = read
+        if status >= 400 or not isinstance(body, dict):
+            return _error_from_body(target, status if status >= 400 else 502, body)
+        result = body
+    elif isinstance(result, StarletteResponse):
         if not hasattr(result, "body"):
             # A streaming response: the batch forced stream off, so this is a
             # handler that did not honour it.

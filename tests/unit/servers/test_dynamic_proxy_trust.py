@@ -166,7 +166,7 @@ def test_batch_handler_request_preserves_internal_identity_in_dynamic_mode(monke
     # Batch dispatch calls the handler directly with this Request, without
     # entering the network ASGI middleware. Its provenance is deliberately
     # unknown, but does not indicate failed proxy discovery.
-    request = batch_request(None, b"{}", "batch-test", "/v1/chat/completions", None)
+    request = batch_request(None, b"{}", "batch-test", "/v1/chat/completions")
     info = get_client_ip_info(request)
 
     assert request.client is None

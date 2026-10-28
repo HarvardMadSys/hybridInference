@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import Response
-from fastapi.responses import JSONResponse
 
 from serving.batch import dispatch
 from serving.servers.routers import anthropic_messages, responses
@@ -21,15 +20,14 @@ from tests.unit.serving.test_batch_dispatch import _body, _owner, _setup, _Upstr
 
 @pytest.mark.parametrize("status,retryable", [(400, False), (429, True), (503, True)])
 async def test_batch_preserves_native_json_error_status(monkeypatch, status, retryable):
-    """Native handlers return errors rather than raising HTTPException."""
+    """Native execution answers errors as values rather than raising HTTPException."""
     app, services = _setup(_Upstream())
-    handler = AsyncMock(
-        return_value=JSONResponse(
-            {"type": "error", "error": {"type": "api_error", "message": "provider failed"}},
-            status_code=status,
+    execute = AsyncMock(
+        return_value=anthropic_messages.MessagesError(
+            status=status, message="provider failed", error_type="api_error"
         )
     )
-    monkeypatch.setattr(anthropic_messages, "anthropic_messages", handler)
+    monkeypatch.setattr(anthropic_messages, "execute_messages", execute)
     result = await dispatch.dispatch_item(
         app=app,
         services=services,
@@ -76,7 +74,6 @@ async def test_responses_explicit_no_store_survives_real_handler_translation(mon
         json.dumps({"model": "batch-model", "input": "hello", "store": False}).encode(),
         "review-request",
         "/v1/responses",
-        None,
     )
     store = SimpleNamespace(persist_enabled=True, save=AsyncMock(), get=AsyncMock())
     delegate = AsyncMock(
