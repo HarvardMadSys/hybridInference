@@ -54,7 +54,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import anyio
-from fastapi import HTTPException, Response, params as fastapi_params
+from fastapi import HTTPException, params as fastapi_params
 from pydantic import ValidationError
 from starlette.requests import Request
 from starlette.responses import Response as StarletteResponse
@@ -447,27 +447,27 @@ async def _run_messages(
 
 
 async def _run_responses(
-    services: Any, request: Request, caller: dict[str, Any], body: dict
+    services: Any, ctx: ExecutionContext, body: dict, *, app: Any, protocol_profile: str | None
 ) -> Any:
-    from serving.servers.routers.responses import create_response
-
-    return await call_handler(
-        create_response,
-        request,
-        Response(),
-        authorization=None,
-        user_ctx=caller,
-        router_exec=services.router,
-        log_store=getattr(services, "log_store", None),
-        model_router_registry=getattr(services, "model_router_registry", None),
-        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
-        completions_logger=await get_completions_logger(services),
-        pricing_lookup=await get_pricing_lookup(services),
-        cost_tracker=await get_cost_tracker(services),
-        # Never stored: a batch Responses request is independent (see targets).
-        response_store=None,
-        _concurrency_slot=None,
+    from serving.servers.routers.responses import (
+        ResponsesServices,
+        ResponsesStream,
+        execute_responses,
     )
+
+    outcome = await execute_responses(
+        body,
+        ctx,
+        ResponsesServices(
+            chat=await _chat_services(services, app),
+            # Never stored: a batch Responses request is independent (see targets).
+            response_store=None,
+        ),
+    )
+    if isinstance(outcome, ResponsesStream):
+        # Never expected (stream is forced off); closed here, answered as a 502.
+        await outcome.events.aclose()
+    return outcome
 
 
 #: Targets run through their protocol's execution function, with no request.
@@ -475,18 +475,15 @@ _CORE_EXECUTORS = {
     TARGET_CHAT: _run_chat,
     TARGET_EMBEDDINGS: _run_embeddings,
     TARGET_MESSAGES: _run_messages,
-}
-
-#: Targets still run through their route's handler (transitional, issue #1690).
-_HANDLER_EXECUTORS = {
     TARGET_RESPONSES: _run_responses,
 }
 
+#: Targets still run through their route's handler (transitional, issue #1690).
+_HANDLER_EXECUTORS: dict[str, Any] = {}
+
 #: The handler each handler-run target calls, for the tests that hold every
 #: injected parameter of each to a supplied argument.
-HANDLERS: dict[str, tuple[str, str]] = {
-    TARGET_RESPONSES: ("serving.servers.routers.responses", "create_response"),
-}
+HANDLERS: dict[str, tuple[str, str]] = {}
 
 
 def _request(app: Any, raw_body: bytes, request_id: str, path: str) -> Request:
@@ -650,8 +647,23 @@ def _chat_completed(result: Any) -> Any:
     return result
 
 
+def _responses_completed(result: Any) -> Any:
+    """The body of a Responses outcome, or the failed attempt it is."""
+    from serving.servers.routers.responses import ResponsesResult, ResponsesStream
+
+    if isinstance(result, ResponsesResult):
+        return result.body
+    if isinstance(result, ResponsesStream):
+        return _failure(502, "The handler returned a stream for a batch request.")
+    return result
+
+
 def _completed(target: str, result: Any) -> DispatchResult:
     """Return the attempt that produced *result*, the execution's return value."""
+    if target == TARGET_RESPONSES:
+        result = _responses_completed(result)
+        if isinstance(result, DispatchResult):
+            return result
     if target == TARGET_CHAT:
         result = _chat_completed(result)
         if isinstance(result, DispatchResult):

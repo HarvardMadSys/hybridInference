@@ -39,7 +39,7 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.concurrency import enforce_user_concurrency, retarget_interactive_load
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_completions_logger,
     get_cost_tracker,
@@ -61,12 +61,7 @@ from serving.servers.routers.routing_info import (
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
-from serving.surfaces.context import (
-    BatchAttribution,
-    ExecutionContext,
-    InteractiveAdmission,
-    read_only,
-)
+from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
@@ -581,35 +576,6 @@ class ChatStream:
 ChatOutcome = ChatResponse | ChatStream
 
 
-class _ScopeAdmission:
-    """Transitional (issue #1690): retarget through the tracker the request scope holds.
-
-    For the Responses and compatibility routes, which until their own
-    extraction call ``chat_completions`` with the request their own concurrency
-    dependency published a tracker on. Removed with that extraction.
-    """
-
-    __slots__ = ("_request",)
-
-    def __init__(self, request: Request) -> None:
-        self._request = request
-
-    def retarget(self, canonical_model_id: str) -> None:
-        retarget_interactive_load(self._request, canonical_model_id)
-
-
-def _batch_from_user_ctx(user_ctx: Mapping[str, Any]) -> BatchAttribution | None:
-    """Transitional (issue #1690): the batch attribution dispatch merges into ``user_ctx``.
-
-    The Responses target still reaches this route through its handler until
-    its own extraction.
-    """
-    batch_id = user_ctx.get("batch_job_id")
-    if batch_id is None:
-        return None
-    return BatchAttribution(batch_id, user_ctx.get("batch_item_id"), user_ctx.get("batch_attempt"))
-
-
 async def render_chat_http(outcome: ChatOutcome, request: Request, http_response: Response) -> Any:
     """Return what the Chat route answers *outcome* with.
 
@@ -726,21 +692,14 @@ async def chat_completions(
         body = await request.json()
     except Exception as e:
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
-    admission = (
-        _concurrency_slot
-        if isinstance(_concurrency_slot, InteractiveAdmission)
-        else _ScopeAdmission(request)
-    )
-    outcome = await execute_chat(
+    return await serve_chat_http(
         body,
-        ExecutionContext(
-            user_ctx=read_only(user_ctx),
-            origin=client_origin(request, authorization=authorization),
-            admission=admission,
-            batch=_batch_from_user_ctx(user_ctx),
-            timeout_probe=timeout_probe(request),
-        ),
-        ChatServices(
+        request,
+        http_response,
+        authorization=authorization,
+        user_ctx=user_ctx,
+        concurrency_slot=_concurrency_slot,
+        services=ChatServices(
             router=router_exec,
             model_router_registry=model_router_registry,
             visibility=model_visibility_resolver,
@@ -750,6 +709,36 @@ async def chat_completions(
             cost_tracker=cost_tracker,
             app_services=getattr(request.app.state, "services", None),
         ),
+        runtime_settings=runtime_settings,
+    )
+
+
+async def serve_chat_http(
+    body: Any,
+    request: Request,
+    http_response: Response,
+    *,
+    authorization: str | None,
+    user_ctx: Mapping[str, Any],
+    concurrency_slot: object,
+    services: ChatServices,
+    runtime_settings: RuntimeSettings | None,
+) -> Any:
+    """Serve a decoded chat request for an HTTP route and render the answer.
+
+    For ``/v1/chat/completions`` and the compatibility routes, each under its
+    own concurrency dependency: *concurrency_slot* is what it yielded.
+    """
+    outcome = await execute_chat(
+        body,
+        ExecutionContext(
+            user_ctx=read_only(user_ctx),
+            origin=client_origin(request, authorization=authorization),
+            admission=admission_from(concurrency_slot),
+            batch=None,
+            timeout_probe=timeout_probe(request),
+        ),
+        services,
         ChatOptions.online(runtime_settings),
     )
     return await render_chat_http(outcome, request, http_response)

@@ -6,12 +6,10 @@ access. The native JSONResponse probes intentionally fail on the Chat-only base.
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import Response
 
 from serving.batch import dispatch
 from serving.servers.routers import anthropic_messages, responses
@@ -67,56 +65,56 @@ async def test_batch_pinned_messages_model_cannot_use_small_budget_reroute(monke
 
 
 async def test_responses_explicit_no_store_survives_real_handler_translation(monkeypatch):
-    """Batch must supply store=false; the real handler must not persist it."""
-    app, _services = _setup(_Upstream())
-    request = dispatch._request(
-        app,
-        json.dumps({"model": "batch-model", "input": "hello", "store": False}).encode(),
-        "review-request",
-        "/v1/responses",
-    )
+    """Batch must supply store=false; the real translation must not persist it."""
+    from serving.servers.routers.completions import ChatResponse
+    from serving.surfaces.context import UNTRACKED, BatchAttribution, ClientOrigin, ExecutionContext
+
     store = SimpleNamespace(persist_enabled=True, save=AsyncMock(), get=AsyncMock())
     delegate = AsyncMock(
-        return_value={
-            "id": "chatcmpl-review",
-            "object": "chat.completion",
-            "created": 1,
-            "model": "batch-model",
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": "hello"},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
-        }
+        return_value=ChatResponse(
+            {
+                "id": "chatcmpl-review",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "batch-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+            },
+            None,
+        )
     )
-    monkeypatch.setattr(responses, "chat_completions", delegate)
-    result = await responses.create_response(
-        request,
-        Response(),
-        authorization=None,
-        user_ctx=_owner(batch_job_id="batch-review"),
-        router_exec=None,
-        log_store=None,
-        model_router_registry=None,
-        model_visibility_resolver=None,
-        completions_logger=None,
-        pricing_lookup=None,
-        cost_tracker=None,
-        response_store=store,
-        _concurrency_slot=None,
+    monkeypatch.setattr(responses, "execute_chat", delegate)
+    ctx = ExecutionContext(
+        user_ctx=_owner(),
+        origin=ClientOrigin.for_batch(
+            path="/v1/responses", ip=dispatch._BATCH_CLIENT, user_agent=dispatch.BATCH_USER_AGENT
+        ),
+        admission=UNTRACKED,
+        batch=BatchAttribution("batch-review", None, None),
+        timeout_probe=None,
     )
-    payload = json.loads(result.body)
-    assert result.status_code == 200
+    result = await responses.execute_responses(
+        {"model": "batch-model", "input": "hello", "store": False},
+        ctx,
+        responses.ResponsesServices(chat=None, response_store=store),
+    )
+    payload = result.body
+    assert isinstance(result, responses.ResponsesResult)
     assert payload["object"] == "response"
     assert payload["store"] is False
     assert payload["usage"]["total_tokens"] == 3
     store.save.assert_not_awaited()
     store.get.assert_not_awaited()
-    assert (await request.json())["messages"] == [{"role": "user", "content": "hello"}]
-    assert delegate.await_args.kwargs["user_ctx"]["batch_job_id"] == "batch-review"
+    chat_body, chat_ctx = delegate.await_args.args[0], delegate.await_args.args[1]
+    assert chat_body["messages"] == [{"role": "user", "content": "hello"}]
+    assert chat_ctx.batch.batch_id == "batch-review"
+    assert delegate.await_count == 1
 
 
 async def test_messages_upstream_timeout_keeps_cost_unknown(monkeypatch):
