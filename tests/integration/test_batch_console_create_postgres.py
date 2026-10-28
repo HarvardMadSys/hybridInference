@@ -1063,9 +1063,11 @@ async def test_a_source_deleted_first_refuses_the_create_and_leaves_nothing_usab
     with pytest.raises(BatchInputUnavailable):
         await gw.store.create_console_batch(**_create_args(alice, source, derived))
     row = await file_row(gw, derived["file_id"])
-    # Never made ready, hidden with its source, and gone at the next collection.
-    assert row["status"] == "uploading" and row["adopted_by_batch_id"] is None
-    assert row["deleted_at"] is not None
+    # Never made ready or usable. The live worker may already have collected
+    # the deleted copy by the time this query runs.
+    if row is not None:
+        assert row["status"] == "uploading" and row["adopted_by_batch_id"] is None
+        assert row["deleted_at"] is not None
     assert await jobs_of(gw, alice) == []
     await gw.files.abort_upload(derived["file_id"])
     assert await file_row(gw, derived["file_id"]) is None
