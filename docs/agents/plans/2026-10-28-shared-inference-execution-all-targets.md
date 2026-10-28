@@ -1,6 +1,6 @@
 # 四个推理目标共用协议执行：实施计划
 
-日期：2026-10-28。**状态：计划，待评审。** 未开始实施。
+日期：2026-10-28。**状态：S0–S6 已在本分支依次完成，待评审。** 检查点提交、与计划的差异、验证证据和未完成项记录在[设计稿第16节](../specs/2026-10-28-shared-inference-execution-design.zh.md#16-实施记录2026-10-28)；本计划保留实施前的写法，不逐条改写。
 
 设计：[2026-10-28 在线接口与 Batch 共用的协议执行](../specs/2026-10-28-shared-inference-execution-design.zh.md)（下称“设计稿”）。本计划只写“怎么分步做、每步怎么验收”，不重复设计理由；凡与设计稿冲突，以设计稿为准并回到评审。
 
@@ -47,10 +47,10 @@ S2、S3、S4 都只依赖 S1，互不依赖；在本分支上按 S2 → S3 → S
 | # | 测试（建议位置） | 内容 |
 |---|---|---|
 | T1 | `tests/integration/test_batch_surface_parity_postgres.py`（`dbtest`） | 四个目标的在线与 Batch **逐字段对照**。固定条件：同一 owner 与 key；非 auto 模型；单 adapter route（Messages 原生与 OpenAI 格式各一组；Chat 的 Fixed 与 RouteWise 各一组；Embeddings 单 adapter 与 `FallbackEmbeddingAdapter` 各一组）；静态定价；确定性假上游；在线请求不带 session 头；关闭小预算换模型。**应当相同**：`model_id`、`provider`、`endpoint_id`/`served_endpoint_id`、`status_code`、各 token 计数（含缓存列 NULL 与 0 的区别）、`cost_usd`、`params`、响应体（剔除上游 id）、`metadata.authenticated`、`user_id`、计费报告次数。**允许不同（逐项列明）**：`request_id`、时间与延迟字段、UA/referer/IP 相关字段、`batch_*` 归属、`ledger_attribution` 起始时间、Messages 不同版本组的 `anthropic-version`。不笼统断言整行相同。Chat 结果对照使用 `_client_body` 之后的形状 |
-| T2 | 扩展 `test_batch_expansion_http_postgres.py` 的 [:459](../../../tests/integration/test_batch_expansion_http_postgres.py#L459) | 参数化到 Chat、Embeddings、Responses：owner 在线配额耗尽时 Batch 仍真实执行，在线槽与 interactive-load 计数不变 |
-| T3 | 扩展同文件 [:561](../../../tests/integration/test_batch_expansion_http_postgres.py#L561) | 参数化到其余三个目标：模型容量或在线预留不足时 Batch 等待，释放后继续 |
+| T2 | 扩展 `test_batch_expansion_http_postgres.py` 的 [:459](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/integration/test_batch_expansion_http_postgres.py#L459) | 参数化到 Chat、Embeddings、Responses：owner 在线配额耗尽时 Batch 仍真实执行，在线槽与 interactive-load 计数不变 |
+| T3 | 扩展同文件 [:561](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/integration/test_batch_expansion_http_postgres.py#L561) | 参数化到其余三个目标：模型容量或在线预留不足时 Batch 等待，释放后继续 |
 | T4 | `tests/servers/test_surface_stream_bytes.py` | **流式字节快照**（规范化时间戳、随机 id 后逐字节比较）：Chat SSE 成功；Chat 未提交 4xx → HTTP 状态 + JSON 错误；Chat 提交后错误帧；Chat 强制流式（JSON + 空白 keepalive，状态码与 `scope["state"]` 标记的效果）；Messages SSE 原生与翻译；Responses SSE 成功与 `response.failed`。同时断言响应头集合 |
-| T5 | 扩展 `test_auto_mode_surfaces.py` | Messages 与 Responses **流式** auto 请求在整个流的生命周期内计入具体模型（Chat 已有 [:392](../../../tests/servers/test_auto_mode_surfaces.py#L392)）；compat `/completion` 强制流式时同样 |
+| T5 | 扩展 `test_auto_mode_surfaces.py` | Messages 与 Responses **流式** auto 请求在整个流的生命周期内计入具体模型（Chat 已有 [:392](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/servers/test_auto_mode_surfaces.py#L392)）；compat `/completion` 强制流式时同样 |
 | T6 | `tests/servers/test_anthropic_messages_edges.py` 追加 | `stream=true` 时未知模型、无权限、全部熔断、抢输探测权都是 HTTP 404/503 + Anthropic 错误体，不是 SSE |
 | T7 | `tests/servers/test_surface_disconnects.py` | 特征化（只记录观察到的事实，docstring 注明“记录现状，参见设计稿 Q7”）：Chat 迭代中断连 → 499 日志、无计费报告、无 routing 观察；Messages 开始迭代前断连且熔断器半开时 claim 是否残留；Chat 已 prime、未迭代时会话流与 router 流是否关闭。结论只覆盖测试传输层 |
 | T8 | `tests/unit/serving/test_batch_scheduler.py` 或新文件 | 租约丢失后重复执行与计费（Q8）：能稳定复现就写成特征化测试；不能就在检查点说明中以评审证据记录并标为待验证。不使用无条件的 `xfail(strict=True)` |
@@ -132,8 +132,8 @@ class InteractiveAdmission:
 
 ### 测试
 
-- 现有全绿：`test_embeddings_logging.py`、`test_embeddings_tier_gate.py`、`test_embedding_fallback.py`、`test_admin_embedding_denylist.py`、`test_batch_targets_dispatch.py` 中全部 embeddings 用例（:286–:393）、[`test_each_target_is_billed_once…`](../../../tests/unit/serving/test_batch_targets_dispatch.py#L157)、S0 的 T1/T2/T3/T9。
-- 调整：[`test_every_injected_argument_reaches_the_handler_explicitly`](../../../tests/unit/serving/test_batch_targets_dispatch.py#L213) 与 [`test_each_target_has_an_executor_and_a_handler`](../../../tests/unit/serving/test_batch_targets_dispatch.py#L480) 只对 `HANDLERS` 中剩余的目标参数化；新增“每个目标恰好在核心执行器或 handler 执行器中之一”。
+- 现有全绿：`test_embeddings_logging.py`、`test_embeddings_tier_gate.py`、`test_embedding_fallback.py`、`test_admin_embedding_denylist.py`、`test_batch_targets_dispatch.py` 中全部 embeddings 用例（:286–:393）、[`test_each_target_is_billed_once…`](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/unit/serving/test_batch_targets_dispatch.py#L157)、S0 的 T1/T2/T3/T9。
+- 调整：[`test_every_injected_argument_reaches_the_handler_explicitly`](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/unit/serving/test_batch_targets_dispatch.py#L213) 与 [`test_each_target_has_an_executor_and_a_handler`](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/unit/serving/test_batch_targets_dispatch.py#L480) 只对 `HANDLERS` 中剩余的目标参数化；新增“每个目标恰好在核心执行器或 handler 执行器中之一”。
 - 新增：Embeddings Batch 项在 `dispatch._request` 与 `call_handler` 被替换为抛错函数时仍成功；在线 `execute_embeddings` 收到的 `ctx.admission` 是依赖给出的同一个对象。
 
 ### 隔离网关与混合版本
@@ -207,7 +207,7 @@ smoke `check`（Messages 内联、文件、两个版本）与 `stream-check`（M
 ### 测试
 
 - 现有全绿：`test_completions.py`、`test_completions_request_contract.py`、`test_completions_session_identity.py`、`test_completions_cache_miss_surface.py`、`test_timeout_streaming_exempt.py`、`test_auto_mode_surfaces.py`、`test_compat.py`、`test_responses_router.py`、引用 `completions_stream` 的 4 个测试文件、routing 与 RouteWise 中跨 serving 边界的测试、Batch 单元与集成测试、S0 全部。
-- 调整：[`test_batch_dispatch.py:308`](../../../tests/unit/serving/test_batch_dispatch.py#L308) 把 patch 目标从 `completions.chat_completions` 改为 `completions.execute_chat`，断言不变（意外异常 → 500、`unknown`）；守卫同 S2。
+- 调整：[`test_batch_dispatch.py:308`](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/unit/serving/test_batch_dispatch.py#L308) 把 patch 目标从 `completions.chat_completions` 改为 `completions.execute_chat`，断言不变（意外异常 → 500、`unknown`）；守卫同 S2。
 - 新增：Chat Batch 路径在 `_request`/`call_handler` 抛错时仍成功；`execute_chat` 不接收、不读取 `Request`（签名检查 + 对 `ctx.origin` 之外的请求头不可见的测试）；Batch 下 `retarget` 调用的是 `BatchAdmission`；`ChatOptions.batch()`/`delegated()` 下强制流式永不触发、probe 日志开关视为关闭；`ScopeAdmission` 在有/无 tracker 时的行为与 `retarget_interactive_load` 相同。
 - Fixed 与 RouteWise：T1 的两组对照都通过；RouteWise 的观察与 hedging 测试不变（不改 `routing/`）。
 
@@ -234,8 +234,8 @@ smoke `check`（Chat 内联与文件；Fixed 与 RouteWise 模型）与 `stream-
 
 ### 测试
 
-- 现有全绿：`test_responses_router.py`、`test_responses_translator.py`、`test_compat.py`、`test_auto_mode_surfaces.py`（[:726](../../../tests/servers/test_auto_mode_surfaces.py#L726)、[:755](../../../tests/servers/test_auto_mode_surfaces.py#L755)）、S0 的 T1/T4/T5/T10。
-- 改写（断言不变，替身换位置）：`test_responses_router.py` 的 [:787](../../../tests/servers/test_responses_router.py#L787)、[:824](../../../tests/servers/test_responses_router.py#L824)、[:918](../../../tests/servers/test_responses_router.py#L918) 与 [`test_batch_review_contracts.py:98`](../../../tests/unit/serving/test_batch_review_contracts.py#L98) 改为替换 `responses.execute_chat`，返回 `ChatResponse` 或一个最小的 `ChatStream` 替身；`_open_stream` 辅助函数改为直接构造 `ResponsesStream`；原断言“`request.json()` 中的 messages 是译后的”改为断言传给 `execute_chat` 的 `body`。
+- 现有全绿：`test_responses_router.py`、`test_responses_translator.py`、`test_compat.py`、`test_auto_mode_surfaces.py`（[:726](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/servers/test_auto_mode_surfaces.py#L726)、[:755](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/servers/test_auto_mode_surfaces.py#L755)）、S0 的 T1/T4/T5/T10。
+- 改写（断言不变，替身换位置）：`test_responses_router.py` 的 [:787](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/servers/test_responses_router.py#L787)、[:824](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/servers/test_responses_router.py#L824)、[:918](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/servers/test_responses_router.py#L918) 与 [`test_batch_review_contracts.py:98`](https://github.com/HarvardMadSys/hybridInference/blob/a738f49153ffe68b0944b8b55b8ecd6b55f54371/tests/unit/serving/test_batch_review_contracts.py#L98) 改为替换 `responses.execute_chat`，返回 `ChatResponse` 或一个最小的 `ChatStream` 替身；`_open_stream` 辅助函数改为直接构造 `ResponsesStream`；原断言“`request.json()` 中的 messages 是译后的”改为断言传给 `execute_chat` 的 `body`。
 - 新增：Responses 与 compat 在 `_json`/`_body`/`_headers` 被设为只读（对 `Request` 打桩）时仍成功；传给 `execute_chat` 的 `ctx.admission` 与路由依赖给出的是同一个对象；T10 的“恰好一次”在 S5 后保持；Responses 流式在 Chat 未提交错误时仍是 HTTP 状态（T4 覆盖）。
 
 ### 隔离网关与混合版本
