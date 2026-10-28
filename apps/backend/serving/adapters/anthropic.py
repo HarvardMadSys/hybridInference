@@ -439,8 +439,6 @@ class AnthropicAdapter(BaseAdapter):
         usage = {
             "input_tokens": 0,
             "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
         }
 
         # Slot held for the whole passthrough stream; see stream_chat_completion.

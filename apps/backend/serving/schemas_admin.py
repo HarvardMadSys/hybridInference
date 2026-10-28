@@ -685,7 +685,8 @@ class AdminTtftScatterPoint(BaseModel):
 
     prompt_tokens: int
     ttft_ms: int
-    cache_hit: bool
+    #: True = measured hit; False = measured miss; null = provider did not say.
+    cache_hit: bool | None
     timestamp: datetime
 
 
@@ -2269,6 +2270,7 @@ class ProviderObservabilityTotals(BaseModel):
     cache_eligible_count: int
     cache_hit_count: int
     input_tokens: int
+    cache_eligible_input_tokens: int = 0
     cache_read_tokens: int
     cache_write_tokens: int
 
@@ -2283,6 +2285,7 @@ class ProviderObservabilityBucket(BaseModel):
     cache_hit_count: int
     cache_read_tokens: int
     input_tokens: int
+    cache_eligible_input_tokens: int = 0
 
 
 class ProviderErrorTypeRow(BaseModel):

@@ -160,6 +160,54 @@ def extract_reasoning_tokens(usage: dict[str, Any] | None) -> int | None:
     return None
 
 
+def optional_token_count(value: Any) -> int | None:
+    """Coerce a reported token count to ``int``, preserving "not reported".
+
+    A provider that omits a cache-token field is *not* reporting a measured
+    zero, and the two must not be conflated: ``None`` flows through to a NULL
+    ``api_logs`` column and an "unknown" cache state, whereas ``0`` is a
+    measured miss that a dashboard renders as 0% and a cost model reads as
+    "no discount earned". Collapsing ``None`` to ``0`` at a call site is how a
+    silent provider comes to look like a cache miss.
+
+    Returns ``None`` for a missing key, ``None``, a non-numeric value, a
+    negative count, a fractional value, or a non-finite one (``inf``/``nan``,
+    which ``int()`` would otherwise raise on or silently truncate); otherwise
+    the value as ``int``. A reported ``0`` stays ``0`` -- it is a real
+    measurement. Accepting a bare ``int`` fast-path keeps the common case off
+    the float path.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # ``bool`` is an ``int`` subclass; a boolean is never a token count.
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    if number != int(number):
+        # A fractional token count is not a real measurement; treat it as
+        # unreported rather than silently truncating.
+        return None
+    return int(number)
+
+
+#: Direct cache-count fields a usage block may carry, read by
+#: :func:`extract_cache_tokens`: Anthropic, SGLang/vLLM, normalized, DeepSeek.
+_CACHE_READ_FIELDS = (
+    "cache_read_input_tokens",
+    "cached_tokens",
+    "cache_read_tokens",
+    "prompt_cache_hit_tokens",
+)
+_CACHE_WRITE_FIELDS = ("cache_creation_input_tokens", "cache_write_tokens")
+
+
 def extract_cache_tokens(
     usage: dict[str, Any] | None,
     *,
@@ -205,21 +253,11 @@ def extract_cache_tokens(
     # Direct fields (Anthropic style, then SGLang/vLLM, then generic, then DeepSeek).
     # val >= 0 so that an explicit 0 ("cache supported but no hit") is recorded
     # rather than falling through to the next field or returning None.
-    for field in (
-        "cache_read_input_tokens",
-        "cached_tokens",
-        "cache_read_tokens",
-        "prompt_cache_hit_tokens",
-    ):
-        val = usage.get(field)
-        if val is not None:
-            try:
-                val = int(val)
-                if val >= 0:
-                    cache_read = val
-                    break
-            except (TypeError, ValueError):
-                pass
+    for field in _CACHE_READ_FIELDS:
+        count = optional_token_count(usage.get(field))
+        if count is not None:
+            cache_read = count
+            break
 
     # Nested: OpenAI/Azure use prompt_tokens_details; MiniMax may use input token details.
     #
@@ -253,16 +291,10 @@ def extract_cache_tokens(
             continue
         if isinstance(details, dict):
             for nested_field in ("cached_tokens", "cache_read_tokens", "cache_hit_tokens"):
-                val = details.get(nested_field)
-                if val is None:
-                    continue
-                try:
-                    val = int(val)
-                    if val >= 0:
-                        cache_read = val
-                        break
-                except (TypeError, ValueError):
-                    pass
+                count = optional_token_count(details.get(nested_field))
+                if count is not None:
+                    cache_read = count
+                    break
             if cache_read is not None:
                 break
 
@@ -275,16 +307,11 @@ def extract_cache_tokens(
     # --- cache write tokens ---
     cache_write: int | None = None
 
-    for field in ("cache_creation_input_tokens", "cache_write_tokens"):
-        val = usage.get(field)
-        if val is not None:
-            try:
-                val = int(val)
-                if val >= 0:
-                    cache_write = val
-                    break
-            except (TypeError, ValueError):
-                pass
+    for field in _CACHE_WRITE_FIELDS:
+        count = optional_token_count(usage.get(field))
+        if count is not None:
+            cache_write = count
+            break
 
     return cache_read, cache_write
 
@@ -292,8 +319,9 @@ def extract_cache_tokens(
 def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     """Normalize usage dict by extracting and flattening token fields.
 
-    Extracts reasoning_tokens and cache tokens from various nested provider
-    formats and places them at the top level for consistent downstream access.
+    Extracts reasoning and cache tokens from provider formats, flattens cache
+    fields to the top level, and removes invalid direct cache counts before
+    cost and persistence consumers read them.
 
     Args:
         usage: Raw usage dictionary from model response
@@ -305,16 +333,29 @@ def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     if not isinstance(usage, dict):
         return None
-    usage = sanitize_usage(usage)
+    # An invalid direct cache count is *unreported*, not zero: drop it before
+    # sanitize_usage coerces a negative, fractional or non-numeric count into
+    # a readable -- and misleadingly measured -- 0 (or truncated int). The
+    # nested ``*_details`` values keep their raw form here;
+    # :func:`extract_cache_tokens` reads them through
+    # :func:`optional_token_count` below.
+    readable = {
+        key: value
+        for key, value in usage.items()
+        if not (
+            value is not None
+            and (key in _CACHE_READ_FIELDS or key in _CACHE_WRITE_FIELDS)
+            and optional_token_count(value) is None
+        )
+    }
+    usage = sanitize_usage(readable)
+    normalized = dict(usage)
 
     # Extract reasoning tokens from nested locations
     reasoning_tokens = extract_reasoning_tokens(usage)
 
     # Extract cache tokens from nested locations
-    cache_read, cache_write = extract_cache_tokens(usage)
-
-    # Create normalized usage dict
-    normalized = dict(usage)  # Copy to avoid modifying original
+    cache_read, cache_write = extract_cache_tokens(normalized)
 
     # Add reasoning_tokens at top level if found
     if reasoning_tokens is not None:

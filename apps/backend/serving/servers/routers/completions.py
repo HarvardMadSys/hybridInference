@@ -69,7 +69,11 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip, get_client_ip_info
 from serving.utils.session_identity import session_identity
 from serving.utils.synthetic_probe import is_trusted_probe
-from serving.utils.token_utils import normalize_usage, sanitize_usage
+from serving.utils.token_utils import (
+    normalize_usage,
+    optional_token_count,
+    sanitize_usage,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -353,7 +357,9 @@ async def _streaming_response_with_keepalive(
             response_id = chunk_json.get("id") or response_id
             created = int(chunk_json.get("created") or created)
             if chunk_json.get("usage"):
-                usage = normalize_usage(chunk_json.get("usage")) or chunk_json.get("usage")
+                raw_usage = chunk_json.get("usage")
+                normalized_usage = normalize_usage(raw_usage)
+                usage = normalized_usage if normalized_usage is not None else raw_usage
 
             choices = chunk_json.get("choices") or []
             if not choices:
@@ -1078,8 +1084,8 @@ async def chat_completions(
                     if _ns_usage.get("total_tokens") is not None
                     else None
                 ),
-                cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
-                cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
+                cache_read_tokens=_ns_usage.get("cache_read_tokens"),
+                cache_write_tokens=_ns_usage.get("cache_write_tokens"),
                 reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
             )
 
@@ -1121,7 +1127,8 @@ async def chat_completions(
         # Emit token counters when usage is available, with anomaly checks
         # Normalize usage to extract reasoning_tokens from nested locations
         raw_usage = response.get("usage", {}) if isinstance(response, dict) else {}
-        usage = normalize_usage(raw_usage) or {}
+        normalized_usage = normalize_usage(raw_usage)
+        usage = normalized_usage if normalized_usage is not None else {}
         if usage and not is_synthetic_probe:
             prompt_tokens_raw = usage.get("prompt_tokens")
             completion_tokens_raw = usage.get("completion_tokens")
@@ -1153,18 +1160,13 @@ async def chat_completions(
 
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
-            ns_usage = normalize_usage(raw_usage) or {}
-            # Authoritative observed cache usage from the provider.
-            # None means "provider did not report" (NOT equivalent to 0).
-            cached_tokens_raw = ns_usage.get("cache_read_tokens")
-            cached_tokens: int | None = None
-            if cached_tokens_raw is not None:
-                try:
-                    cached_tokens = int(cached_tokens_raw)
-                    if cached_tokens < 0:
-                        cached_tokens = None
-                except (TypeError, ValueError):
-                    cached_tokens = None
+            normalized_usage = normalize_usage(raw_usage)
+            ns_usage = normalized_usage if normalized_usage is not None else {}
+            # Authoritative observed cache usage from the provider, through the
+            # canonical helper so this path shares one validation rule with
+            # cost and persistence. None means "provider did not report" (NOT
+            # equivalent to 0).
+            cached_tokens = optional_token_count(ns_usage.get("cache_read_tokens"))
             completions_logger.record_routing_observation(
                 active_router,
                 model,

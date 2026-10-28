@@ -654,6 +654,8 @@ async def test_messages_surface_uses_bounded_queue_and_shutdown_drain(monkeypatc
     )
     await cl.stop()
 
+    # ``usage={}`` reports no cache usage, so the cache keys are omitted (stored
+    # NULL, unknown) rather than logged as a fabricated 0 (a measured miss).
     store.log_request.assert_awaited_once_with(
         request_id="amsg-1",
         model_id="claude",
@@ -664,8 +666,6 @@ async def test_messages_surface_uses_bounded_queue_and_shutdown_drain(monkeypatc
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
-            "cache_read_tokens": 0,
-            "cache_write_tokens": 0,
         },
         latency_ms=1,
         status_code=200,

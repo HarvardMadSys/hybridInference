@@ -64,6 +64,13 @@ async def test_default_messages_translates_through_chat_completion():
     assert a.last_params["max_tokens"] == 10
 
 
+async def _stream_without_cache_usage(self, messages, **params):
+    self.last_messages = messages
+    self.last_params = params
+    yield 'data: {"id":"x","object":"chat.completion.chunk","model":"fake","choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n'
+    yield 'data: {"id":"x","object":"chat.completion.chunk","model":"fake","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n'
+
+
 @pytest.mark.asyncio
 async def test_default_stream_messages_translates_sse():
     a = _FakeOpenAIAdapter(_cfg())
@@ -79,3 +86,30 @@ async def test_default_stream_messages_translates_sse():
     assert b"event: message_start" in out
     assert b"event: message_stop" in out
     assert b'"text": "Hi"' in out
+
+
+@pytest.mark.asyncio
+async def test_default_stream_messages_keeps_absent_cache_usage_unknown(monkeypatch):
+    """Translator streams must not turn missing cache fields into measured zeros."""
+    sink: dict[str, int] = {}
+    a = _FakeOpenAIAdapter(_cfg())
+    monkeypatch.setattr(
+        _FakeOpenAIAdapter,
+        "stream_chat_completion",
+        _stream_without_cache_usage,
+        raising=True,
+    )
+    body = {
+        "model": "fake",
+        "max_tokens": 10,
+        "stream": True,
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+
+    async for _chunk in a.stream_messages(body, request_id="req-cache", usage_sink=sink):
+        pass
+
+    assert sink["input_tokens"] == 1
+    assert sink["output_tokens"] == 1
+    assert "cache_read_input_tokens" not in sink
+    assert "cache_creation_input_tokens" not in sink
