@@ -212,6 +212,7 @@ async def batch_summary(
             "requests",
             "completed",
             "failed",
+            "cancelled",
             "prompt_tokens",
             "completion_tokens",
             "unknown_cost_attempts",

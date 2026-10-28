@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BatchesTab } from './BatchesTab';
 import { getBatchSummary, listAllBatches } from '@/lib/api/batches';
-import type { ConsoleBatch, ConsoleBatchPage } from '@/lib/api/batches';
+import type { AdminBatchSummary, ConsoleBatch, ConsoleBatchPage } from '@/lib/api/batches';
 
 vi.mock('@/lib/api/batches', () => ({
   getBatchSummary: vi.fn(),
@@ -97,5 +97,41 @@ describe('Batch filters', () => {
     // The target column shows what the batch runs and how its requests arrived.
     expect(screen.queryByText('/v1/chat/completions')).not.toBeNull();
     expect(screen.queryByText('Direct requests · m')).not.toBeNull();
+  });
+});
+
+describe('Batch usage by user', () => {
+  it('counts cancelled requests as done, as each batch does', async () => {
+    const usage = {
+      batches: 3,
+      active: 1,
+      requests: 592445,
+      completed: 590000,
+      failed: 1200,
+      cancelled: 653,
+      cost_usd: 0,
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      unknown_cost_attempts: 1066,
+    };
+    const summary: AdminBatchSummary = {
+      users: [{ ...usage, user_id: 'owner-1', last_created_at: 1 }],
+      totals: usage,
+    };
+    vi.mocked(getBatchSummary).mockResolvedValue(summary);
+    vi.mocked(listAllBatches).mockResolvedValue({
+      object: 'list',
+      data: [],
+      has_more: false,
+      last_id: null,
+    } as ConsoleBatchPage);
+    render(<BatchesTab />);
+
+    const row = (await screen.findByRole('button', { name: 'owner-1' })).closest('tr');
+    const footer = screen.getByText('All users').closest('tr');
+    for (const cells of [row, footer]) {
+      expect(cells?.textContent).toContain('591,853/592,445');
+      expect(cells?.textContent).toContain('1,066');
+    }
   });
 });

@@ -1586,6 +1586,24 @@ async def test_model_stats_count_live_running_and_queued_items(pool, store):
     assert (await store.model_stats())[first] == {"running": 2, "queued": 0}
 
 
+async def test_batch_summary_counts_cancelled_requests_as_done(store):
+    model = _model()
+    cancelled = await _create(store, _items(model, 3))
+    (item,) = await _claim(store, model, limit=1)
+    assert await _complete(store, item, cost=0.25)
+    assert (await store.cancel_batch(cancelled["id"]))["status"] == "cancelled"
+    await _create(store, _items(model, 2), user="bob")
+
+    summary = {row["user_id"]: row for row in await store.batch_summary()}
+
+    alice, bob = summary["alice"], summary["bob"]
+    assert (alice["batches"], alice["active"], alice["requests"]) == (1, 0, 3)
+    assert (alice["completed"], alice["failed"], alice["cancelled"]) == (1, 0, 2)
+    assert alice["cost_usd"] == pytest.approx(0.25)
+    assert (bob["batches"], bob["active"], bob["requests"]) == (1, 1, 2)
+    assert (bob["completed"], bob["failed"], bob["cancelled"]) == (0, 0, 0)
+
+
 # -- schema ----------------------------------------------------------------------
 
 

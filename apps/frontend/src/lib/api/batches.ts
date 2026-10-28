@@ -196,6 +196,8 @@ export interface AdminBatchUserSummary {
   requests: number;
   completed: number;
   failed: number;
+  /** Requests a cancel settled before they ran: done, never answered. */
+  cancelled: number;
   cost_usd: number;
   prompt_tokens: number;
   completion_tokens: number;
