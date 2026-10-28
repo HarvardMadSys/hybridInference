@@ -271,6 +271,12 @@ async def list_my_batches(
         "data": data,
         "has_more": len(rows) > limit,
         "last_id": data[-1]["id"] if data else None,
+        # What this gateway applied, on every page (empty ones too): a console
+        # newer than the gateway learns from its absence that a category it
+        # asked for was not applied, rather than showing every batch as if it
+        # had been (an older gateway ignores the unknown query parameter).
+        "category_filter": True,
+        "category": category,
     }
 
 

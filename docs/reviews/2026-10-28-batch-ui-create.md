@@ -185,3 +185,19 @@ Repository gates run for this change: `make format` (clean), `make lint`
 passed), frontend type-check, lint, format, i18n (zh-CN 952/952) and tests
 (168 files, 2,152 tests), and `make docs-verify` (passed). Live and browser
 acceptance of this change is Codex's, in its own environment.
+
+### Mixed-version compatibility of the categories
+
+A console newer than the gateway that answers (a rolling upgrade) falls back
+to the same rule for a batch without `category`, and refuses any
+category-filtered page whose gateway did not say it applied that category
+(`category_filter` and `category` on every list page, empty ones included),
+showing a "not available for the moment" message instead. Checks the author ran:
+the categories suite against Postgres (4 passed, including every page carrying
+the applied category), the frontend client tests for new, old, empty and mixed
+pages and the fallback's parity with the server cases, and list/detail rendering
+of old responses. Removing the per-page check or the fallback made those tests
+fail. Full gates for this change: `make format` (clean), `make lint` (passed),
+`make test` (10,243 passed, 5 skipped), `make test-db-local` (785 passed),
+frontend type-check, lint, format, i18n (zh-CN 953/953) and tests (170 files,
+2,172 tests), and `make docs-verify` (passed).

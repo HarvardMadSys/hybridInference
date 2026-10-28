@@ -137,6 +137,33 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+const PROCESSING: ReadonlySet<BatchStatus> = new Set([
+  'validating',
+  'in_progress',
+  'finalizing',
+  'cancelling',
+]);
+
+/**
+ * A batch's category: the gateway's, or -- from a gateway older than the
+ * categories, during an upgrade -- the same rule applied here to the status it
+ * shows and its counts (`renderers.display_category` on the server). A
+ * completed batch with any unsuccessful request is never "completed".
+ */
+export function batchCategory(batch: ConsoleBatch): BatchCategory {
+  if (batch.category) return batch.category;
+  if (PROCESSING.has(batch.status)) return 'processing';
+  if (batch.status === 'cancelled') return 'cancelled';
+  if (batch.status === 'completed') {
+    const counts = batch.request_counts ?? { total: 0, completed: 0, failed: 0 };
+    const unsuccessful = (counts.failed ?? 0) + (batch.cancelled ?? 0);
+    return unsuccessful === 0 && (counts.completed ?? 0) >= (counts.total ?? 0)
+      ? 'completed'
+      : 'issues';
+  }
+  return 'issues';
+}
+
 /** A batch's category in words: the badge the list and the details show. */
 export function categoryLabel(category: BatchCategory, t: Translate): string {
   switch (category) {
@@ -178,7 +205,7 @@ export function categoryNote(batch: ConsoleBatch, t: Translate): string | null {
     case 'expired':
       return t('batches.note.expired', 'Execution window ran out');
     case 'completed':
-      if (batch.category !== 'issues') return null;
+      if (batchCategory(batch) !== 'issues') return null;
       return batch.request_counts.completed === 0
         ? t('batches.note.none_succeeded', 'No request succeeded')
         : t('batches.note.partial', 'Some requests failed');

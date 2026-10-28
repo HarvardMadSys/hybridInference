@@ -15,6 +15,7 @@ import {
   listMyBatches,
   type BatchCapabilities,
   BATCH_CATEGORIES,
+  BatchCategoryFilterUnavailable,
   type BatchCategory,
   type ConsoleBatch,
   type ResultKind,
@@ -310,7 +311,19 @@ function BatchesManager({
   }, [query]);
   const { batches, hasMore, loading, loadingMore, error, reload, loadMore, replace, remove } =
     usePagedBatches(
-      (after) => listMyBatches(after, 20, { category, q: appliedQuery }),
+      (after) =>
+        listMyBatches(after, 20, { category, q: appliedQuery }).catch((err: unknown) => {
+          // A gateway not yet upgraded answered: its page is not filtered.
+          if (err instanceof BatchCategoryFilterUnavailable) {
+            throw new Error(
+              t(
+                'batches.filter.unavailable',
+                'Filtering by status is not available right now while the service is being updated. Try again in a moment, or show all batches.',
+              ),
+            );
+          }
+          throw err;
+        }),
       `mine:${category}:${appliedQuery}`,
     );
   // Only a known "no": without an answer the gateway decides each action.

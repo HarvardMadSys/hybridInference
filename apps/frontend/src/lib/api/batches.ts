@@ -45,8 +45,12 @@ export interface ConsoleBatch {
   target: BatchTarget | null;
   endpoint: string | null;
   status: BatchStatus;
-  /** The console's group of `status` (see `BatchCategory`); what the page shows first. */
-  category: BatchCategory;
+  /**
+   * The console's group of `status` (see `BatchCategory`); what the page shows
+   * first. Absent from a gateway older than the categories (during a rolling
+   * upgrade): use `batchCategory`, which falls back to the same rule.
+   */
+  category?: BatchCategory;
   phase: string | null;
   models: string[];
   /** Requests in the batch, and how many have completed or failed (cancelled ones apart). */
@@ -127,6 +131,22 @@ export interface ConsoleBatchPage {
   data: ConsoleBatch[];
   has_more: boolean;
   last_id: string | null;
+  /** Present (true) from a gateway that filters by category; absent from an older one. */
+  category_filter?: boolean;
+  /** The category this page was filtered by, as the gateway applied it (null: none). */
+  category?: BatchCategory | null;
+}
+
+/**
+ * The gateway that answered did not filter by the category asked for: one
+ * older than the categories, which ignores the parameter and would return
+ * every batch. Its page must not be shown as filtered.
+ */
+export class BatchCategoryFilterUnavailable extends Error {
+  constructor() {
+    super('This gateway cannot filter batches by category yet.');
+    this.name = 'BatchCategoryFilterUnavailable';
+  }
 }
 
 /**
@@ -173,7 +193,12 @@ export async function listMyBatches(
   if (filters.status) params.set('status', filters.status);
   if (filters.q?.trim()) params.set('q', filters.q.trim());
   const resp = await fetchWithAuth(API_BASE, `/user/batches?${params.toString()}`);
-  return jsonOrThrow<ConsoleBatchPage>(resp);
+  const page = await jsonOrThrow<ConsoleBatchPage>(resp);
+  // Checked on every page: during an upgrade another gateway may answer the next one.
+  if (filters.category && (page.category_filter !== true || page.category !== filters.category)) {
+    throw new BatchCategoryFilterUnavailable();
+  }
+  return page;
 }
 
 /** One of the signed-in user's batches, with how it was created and whether it can be copied. */

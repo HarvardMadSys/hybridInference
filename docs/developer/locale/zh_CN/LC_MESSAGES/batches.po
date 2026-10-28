@@ -2305,6 +2305,14 @@ msgid ""
 "be downloaded only once the batch has finished, whatever it is shown as."
 msgstr "暂停的批次仍显示为 **处理中**，并附说明原因。无论显示为哪一类，只有批次结束后才能下载结果。"
 
+#: ../developer/batches.md:610
+msgid ""
+"While gateways are being upgraded, a console newer than the gateway that "
+"answers still shows each batch in its group, by the same rule; filtering "
+"by a group then says it is not available for the moment rather than show "
+"every batch as filtered. Showing all batches keeps working."
+msgstr "网关升级期间，如果应答的网关比控制台旧，控制台仍会按同一规则把每个批次归入对应分类；此时按分类筛选会提示暂时不可用，而不会把全部批次当作筛选结果显示。查看全部批次不受影响。"
+
 #~ msgid ""
 #~ "The **Batches** page of the console "
 #~ "(from the dashboard) lists all your "

@@ -332,3 +332,34 @@ async def test_a_category_is_filtered_before_the_page_is_cut(store, console):
         "/user/batches", params={"category": "paused"}, headers={"Authorization": f"Bearer {owner}"}
     )
     assert bad.status_code == 400
+
+
+async def test_every_page_says_which_category_it_applied(store, console):
+    owner = _user(store)
+    headers = {"Authorization": f"Bearer {owner}"}
+    # Nothing at all yet: an empty page still says what it applied.
+    empty = (
+        await console.get("/user/batches", params={"category": "issues"}, headers=headers)
+    ).json()
+    assert empty["data"] == [] and empty["category_filter"] is True
+    assert empty["category"] == "issues"
+    for round_ in range(3):
+        await _batch(store, owner, f"ok-{round_}", **INLINE, status="completed", **COUNTS_OK)
+    first = (
+        await console.get(
+            "/user/batches", params={"category": "completed", "limit": 2}, headers=headers
+        )
+    ).json()
+    assert first["has_more"] is True and first["category"] == "completed"
+    second = (
+        await console.get(
+            "/user/batches",
+            params={"category": "completed", "limit": 2, "after": first["last_id"]},
+            headers=headers,
+        )
+    ).json()
+    assert second["category"] == "completed" and second["category_filter"] is True
+    # Unfiltered, and filtered by exact status as before: no category applied.
+    for params in ({}, {"status": "completed"}):
+        page = (await console.get("/user/batches", params=params, headers=headers)).json()
+        assert page["category_filter"] is True and page["category"] is None

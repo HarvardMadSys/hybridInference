@@ -15,6 +15,7 @@ import {
   listMyBatches,
   listMyWebhookEvents,
   saveMyWebhook,
+  BatchCategoryFilterUnavailable,
   type BatchCapabilities,
   type ConsoleBatch,
   type ConsoleBatchPage,
@@ -474,6 +475,60 @@ describe('WebhookSettings', () => {
     const row = await screen.findByTestId('batch-batch_paused');
     expect(row.querySelector('[data-category]')).toHaveTextContent('Processing');
     expect(row).toHaveTextContent(/Paused: your daily quota is spent/);
+  });
+});
+
+describe('BatchesView with a gateway older than the categories', () => {
+  it('shows a partly failed batch without a category as with issues, never green', async () => {
+    const { category: _omitted, ...withoutCategory } = batch('batch_old', {
+      status: 'completed',
+      phase: 'sealed',
+      request_counts: { total: 10, completed: 8, failed: 2 },
+      results_available: true,
+    });
+    vi.mocked(listMyBatches).mockResolvedValue(page([withoutCategory as ConsoleBatch]));
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-batch_old');
+    const badge = row.querySelector('[data-category]') as HTMLElement;
+    expect(badge).toHaveTextContent('With issues');
+    expect(badge.className).not.toMatch(/green/);
+    expect(row).toHaveTextContent('Some requests failed');
+  });
+
+  it('says filtering is unavailable instead of showing an unfiltered page', async () => {
+    vi.mocked(listMyBatches).mockImplementation(async (_after, _limit, filters) => {
+      if (filters?.category) throw new BatchCategoryFilterUnavailable();
+      return page([batch('batch_any')]);
+    });
+    render(<BatchesView />);
+    await screen.findByTestId('batch-batch_any');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Status' }));
+    fireEvent.click(screen.getByRole('option', { name: 'With issues' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Filtering by status is not available right now',
+    );
+    expect(screen.queryByTestId('batch-batch_any')).not.toBeInTheDocument();
+  });
+
+  it('does not add a later page an older gateway answered unfiltered', async () => {
+    vi.mocked(listMyBatches).mockImplementation(async (after, _limit, filters) => {
+      if (filters?.category && after) throw new BatchCategoryFilterUnavailable();
+      return filters?.category
+        ? page([batch('batch_issue', { status: 'failed', category: 'issues' })], true)
+        : page([batch('batch_any')]);
+    });
+    render(<BatchesView />);
+    await screen.findByTestId('batch-batch_any');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Status' }));
+    fireEvent.click(screen.getByRole('option', { name: 'With issues' }));
+    await screen.findByTestId('batch-batch_issue');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Filtering by status is not available right now',
+    );
+    expect(screen.getAllByRole('listitem').map((item) => item.getAttribute('data-testid'))).toEqual(
+      ['batch-batch_issue'],
+    );
   });
 });
 

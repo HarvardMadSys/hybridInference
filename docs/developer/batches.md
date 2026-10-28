@@ -607,6 +607,11 @@ the `status` of `/v1/batches` is unchanged.
 A paused batch stays **Processing**, with a note saying why. Results can be
 downloaded only once the batch has finished, whatever it is shown as.
 
+While gateways are being upgraded, a console newer than the gateway that
+answers still shows each batch in its group, by the same rule; filtering by a
+group then says it is not available for the moment rather than show every
+batch as filtered. Showing all batches keeps working.
+
 The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and
 either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
 your own. With `BATCH_ENABLED` off there is no link, and the page says that

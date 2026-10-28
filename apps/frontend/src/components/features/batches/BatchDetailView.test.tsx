@@ -185,4 +185,13 @@ describe('BatchDetailView', () => {
       'With issues' + 'Execution window ran out',
     );
   });
+
+  it('shows a batch from an older gateway, without a category, by the same rule', async () => {
+    const { category: _omitted, ...withoutCategory } = detail();
+    vi.mocked(getMyBatch).mockResolvedValue(withoutCategory as BatchDetail);
+    render(<BatchDetailView batchId="batch_1" />);
+    const badge = await screen.findByTestId('batch-category');
+    expect(badge).toHaveTextContent('With issues');
+    expect(badge).toHaveTextContent('Some requests failed');
+  });
 });

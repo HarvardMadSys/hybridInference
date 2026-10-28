@@ -1719,6 +1719,10 @@
     "source": "Status",
     "text": "状态"
   },
+  "batches.filter.unavailable": {
+    "source": "Filtering by status is not available right now while the service is being updated. Try again in a moment, or show all batches.",
+    "text": "服务更新期间暂时无法按状态筛选。请稍后重试，或查看全部批次。"
+  },
   "batches.input.file": {
     "source": "JSONL file",
     "text": "JSONL 文件"
