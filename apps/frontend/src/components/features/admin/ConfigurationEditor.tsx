@@ -44,6 +44,14 @@ import {
   type AlertChannelChoice,
 } from '@/components/features/configuration/alertNotificationDrafts';
 import { KeyList } from '@/components/features/configuration/KeyList';
+import { LiveConfigStatus } from '@/components/features/configuration/LiveConfigStatus';
+import {
+  chainVersions,
+  noteEdit,
+  saveBase,
+  withoutVersions,
+  type DraftVersions,
+} from '@/components/features/configuration/draftVersions';
 import { ADMIN_SETTINGS_PATH } from '@/components/features/configuration/paths';
 import {
   ManualRestartHint,
@@ -73,6 +81,7 @@ import {
   type ConfigEntry,
   type ConfigResponse,
   type ConfigScalar,
+  type ConfigSourceVersion,
 } from '@/lib/api/config';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
@@ -108,6 +117,52 @@ interface CategorySave {
   secrets: string[];
   /** Keys whose stored row the save removes, one DELETE each after the PATCH. */
   resets: string[];
+  /**
+   * The version the category's changes were made on, pinned when the save
+   * starts: a read that completes while it is in flight cannot move it.
+   */
+  expectedVersion: ConfigSourceVersion | null;
+}
+
+/**
+ * The `If-Match` for a write: the version the category's changes were made on,
+ * or, within one save, the previous request's own `saved_version`. An older
+ * backend reports none, and its writes stay unconditional.
+ */
+function versioned(
+  version: ConfigSourceVersion | null | undefined,
+): [] | [{ expectedVersion: ConfigSourceVersion }] {
+  return version ? [{ expectedVersion: version }] : [];
+}
+
+/**
+ * The version to chain the next request of the same save on: the one this
+ * write committed. Never the response's `source_version`, which can include a
+ * save made elsewhere in the meantime. A write that stored nothing commits no
+ * version, and the chain stays where it was.
+ */
+function committedVersion(
+  next: ConfigResponse,
+  base: ConfigSourceVersion | null,
+): ConfigSourceVersion | null {
+  return next.saved_version ?? base;
+}
+
+/** Whether a write was refused because the configuration changed since it was read. */
+function isVersionConflict(error: unknown): boolean {
+  return error instanceof APIError && error.code === 'CONFIG_VERSION_CONFLICT';
+}
+
+/**
+ * The Add variable form's entry in `draftVersions`: the version it opened on,
+ * moved like a category's by this page's own writes and by a reload after a
+ * conflict. Not a category id.
+ */
+const ADD_VARIABLE_DRAFT = '\u0000add-variable';
+
+/** The live configuration groups a category's settings belong to, once each. */
+function liveGroupNames(group: ConfigGroup): string[] {
+  return [...new Set(group.entries.flatMap((entry) => (entry.group ? [entry.group] : [])))];
 }
 
 /** Keys of `record` that belong to `group`. */
@@ -157,6 +212,29 @@ export function useConfigurationEditor({
   // Restoring a backup overwrites everything, so it is confirmed; a download is not.
   const backupConfirmation = useConfirmAction();
   const saveInFlight = useRef(false);
+  // The version each category's unsaved changes were made on (draftVersions).
+  const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
+  // The version on screen when the administrator acts: set once each render
+  // is committed, so an event handler reads the version its page showed.
+  const shownVersion = useRef<ConfigSourceVersion | null>(null);
+  useEffect(() => {
+    shownVersion.current = config?.source_version ?? null;
+  }, [config]);
+  const categoryOf = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    categoryOf.current = new Map(
+      (config?.entries ?? []).map((entry) => [entry.key, entry.category]),
+    );
+  }, [config]);
+  /** A change is staged in the categories of `keys`: they keep the version shown now. */
+  const noteEdits = useCallback((keys: readonly string[]) => {
+    setDraftVersions((prev) =>
+      keys.reduce((versions, key) => {
+        const groupId = categoryOf.current.get(key);
+        return groupId === undefined ? versions : noteEdit(versions, groupId, shownVersion.current);
+      }, prev),
+    );
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -194,16 +272,20 @@ export function useConfigurationEditor({
     [router],
   );
 
-  const onDraftChange = useCallback((key: string, draft: ConfigDraft | undefined) => {
-    setDrafts((prev) => {
-      const next = { ...prev };
-      if (draft) next[key] = draft;
-      else delete next[key];
-      return next;
-    });
-    setEntryErrors((prev) => withoutKeys(prev, [key]));
-    if (isAlertWebhook(key)) setAlertTestResult(null);
-  }, []);
+  const onDraftChange = useCallback(
+    (key: string, draft: ConfigDraft | undefined) => {
+      if (draft) noteEdits([key]);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        if (draft) next[key] = draft;
+        else delete next[key];
+        return next;
+      });
+      setEntryErrors((prev) => withoutKeys(prev, [key]));
+      if (isAlertWebhook(key)) setAlertTestResult(null);
+    },
+    [noteEdits],
+  );
 
   const webhookEntries = config ? alertWebhookEntries(config.entries) : null;
   const alertChannel =
@@ -211,6 +293,7 @@ export function useConfigurationEditor({
 
   const changeAlertChannel = (channel: AlertChannelChoice) => {
     if (!webhookEntries || alertTestInFlight.current) return;
+    noteEdits(ALERT_WEBHOOK_KEYS);
     setAlertChannelDraft(channel === savedAlertChannel(webhookEntries) ? null : channel);
     setDrafts((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
     setEntryErrors((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
@@ -333,10 +416,18 @@ export function useConfigurationEditor({
     for (const key of resets) delete values[key];
     const secrets = groupKeys(group, pendingSecrets);
     if (Object.keys(values).length + secrets.length + resets.length === 0) return;
-    void commitSave({ group, values, secrets, resets });
+    void commitSave({
+      group,
+      values,
+      secrets,
+      resets,
+      // Taken now, from the version this category's changes were made on: a read
+      // that completes while the save is in flight cannot move it.
+      expectedVersion: saveBase(draftVersions, group.id, config?.source_version),
+    });
   };
 
-  const commitSave = async ({ group, values, secrets, resets }: CategorySave) => {
+  const commitSave = async ({ group, values, secrets, resets, expectedVersion }: CategorySave) => {
     if (saveInFlight.current) return;
     saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
@@ -356,6 +447,14 @@ export function useConfigurationEditor({
     let attempted = keys;
     // What was written before a failure, so the message can say so.
     let written = 0;
+    // The version this category's changes were made on. Each request after the
+    // first is conditional on the one before it committed, never on a version
+    // some other read brought in: anything saved in between is a conflict.
+    let base = expectedVersion;
+    /** Move every draft made on `from` along to what this page's own write committed. */
+    const chain = (from: ConfigSourceVersion | null, to: ConfigSourceVersion | null) => {
+      if (from) setDraftVersions((prev) => chainVersions(prev, from, to));
+    };
     let failedReset: string | null = null;
     try {
       if (keys.length > 0 || secrets.length > 0) {
@@ -364,7 +463,11 @@ export function useConfigurationEditor({
           secrets.length > 0
             ? { values, secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
             : { values },
+          ...versioned(base),
         );
+        const committed = committedVersion(next, base);
+        chain(base, committed);
+        base = committed;
         // Claim nothing the response does not show: a backend that ignored the
         // flag would answer with the variable unchanged.
         const unmarked = secrets.find(
@@ -383,7 +486,11 @@ export function useConfigurationEditor({
       for (const key of resets) {
         attempted = [key];
         failedReset = key;
-        applyResponse(await resetConfigKey(key), [key]);
+        const next = await resetConfigKey(key, ...versioned(base));
+        const committed = committedVersion(next, base);
+        chain(base, committed);
+        base = committed;
+        applyResponse(next, [key]);
         failedReset = null;
         written += 1;
       }
@@ -392,10 +499,33 @@ export function useConfigurationEditor({
         setAlertTestResult(null);
       }
       const count = new Set([...keys, ...secrets, ...resets]).size;
+      setDraftVersions((prev) => withoutVersions(prev, [group.id]));
       toast.success(
         count === 1 ? `Saved ${group.label}.` : `Saved ${count} changes to ${group.label}.`,
       );
     } catch (e) {
+      if (isVersionConflict(e)) {
+        // Saved elsewhere since this page read it: nothing of this request was
+        // written. Show the latest values and keep the drafts for a second look.
+        let message =
+          'The configuration was changed elsewhere since this page loaded, so this was not saved. The latest values are shown now; your unsaved changes are kept. Review them and save again.';
+        if (written > 0) {
+          message += ` ${plural(written, 'change')} ${written === 1 ? 'was' : 'were'} saved before that.`;
+        }
+        setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
+        // The one place a draft moves to a version this page did not write:
+        // the administrator has been told, and is shown the newer values.
+        void getConfig()
+          .then((fresh) => {
+            setConfig(fresh);
+            const shown = fresh.source_version;
+            setDraftVersions((prev) =>
+              shown ? { ...prev, [group.id]: shown } : withoutVersions(prev, [group.id]),
+            );
+          })
+          .catch(() => undefined);
+        return;
+      }
       // What was not written stays as a draft, with the reason beside the save.
       const reason = typedSecrets.reduce(
         (message, secret) => withoutSecret(message, secret),
@@ -434,6 +564,7 @@ export function useConfigurationEditor({
     setPendingResets((prev) => withoutKeys(prev, keys));
     setPendingSecrets((prev) => withoutKeys(prev, keys));
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
+    setDraftVersions((prev) => withoutVersions(prev, [group.id]));
   };
 
   const toggleReset = (target: ConfigEntry) => {
@@ -443,6 +574,7 @@ export function useConfigurationEditor({
       return;
     }
     // The row goes, so an edit to it or a flag on it would be lost: drop them now.
+    noteEdits([key]);
     setPendingResets((prev) => ({ ...prev, [key]: true }));
     setDrafts((prev) => withoutKeys(prev, [key]));
     setEntryErrors((prev) => withoutKeys(prev, [key]));
@@ -450,8 +582,60 @@ export function useConfigurationEditor({
     if (isAlertWebhook(key)) setAlertTestResult(null);
   };
 
+  // Bumped as the Add variable form opens and closes: a reload it asked for
+  // that completes after it closed moves nothing. The form's open state is
+  // AddVariableControl's; its version is kept here, with the categories'.
+  const addSession = useRef(0);
+
+  /** The Add variable form opens: it adds on the version shown now. */
+  const openAddForm = () => {
+    addSession.current += 1;
+    const shown = shownVersion.current;
+    setDraftVersions((prev) => {
+      const rest = withoutVersions(prev, [ADD_VARIABLE_DRAFT]);
+      return shown ? { ...rest, [ADD_VARIABLE_DRAFT]: shown } : rest;
+    });
+  };
+
+  const closeAddForm = () => {
+    addSession.current += 1;
+    setDraftVersions((prev) => withoutVersions(prev, [ADD_VARIABLE_DRAFT]));
+  };
+
+  /** The form's add was written, conditional on `base`: what else was made on it moves along. */
+  const variableAdded = (next: ConfigResponse, key: string, base: ConfigSourceVersion | null) => {
+    if (base) setDraftVersions((prev) => chainVersions(prev, base, next.saved_version));
+    applyResponse(next, [key]);
+    closeAddForm();
+  };
+
+  /**
+   * After the form's add met a conflict: show the latest configuration, and
+   * move the form onto it, for the administrator to review and add again.
+   * `null`, and the form's version left where it was, when the read fails.
+   */
+  const reloadForAdd = async (): Promise<ConfigResponse | null> => {
+    const session = addSession.current;
+    let fresh: ConfigResponse;
+    try {
+      fresh = await getConfig();
+    } catch {
+      return null;
+    }
+    if (session !== addSession.current) return null;
+    setConfig(fresh);
+    const shown = fresh.source_version;
+    setDraftVersions((prev) =>
+      shown
+        ? { ...prev, [ADD_VARIABLE_DRAFT]: shown }
+        : withoutVersions(prev, [ADD_VARIABLE_DRAFT]),
+    );
+    return fresh;
+  };
+
   const toggleMarkSecret = (target: ConfigEntry) => {
     const { key } = target;
+    if (!pendingSecrets[key]) noteEdits([key]);
     setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
@@ -532,6 +716,7 @@ export function useConfigurationEditor({
         const res = await restoreConfigBackup(parsed);
         setConfig(res.config);
         setDrafts({});
+        setDraftVersions({});
         setEntryErrors({});
         setGroupErrors({});
         setPendingResets({});
@@ -583,6 +768,15 @@ export function useConfigurationEditor({
     toggleReset,
     toggleMarkSecret,
     applyResponse,
+    /**
+     * The version the Add variable form's add is conditional on: the one it
+     * opened on, moved only by this page's own writes and by `reloadForAdd`.
+     */
+    addVariableVersion: saveBase(draftVersions, ADD_VARIABLE_DRAFT, config?.source_version),
+    openAddForm,
+    closeAddForm,
+    reloadForAdd,
+    variableAdded,
     downloadBackup,
     restoreFromFile,
     /** Render its `dialog` once, where no sub-tab can hide it. */
@@ -843,6 +1037,13 @@ export function ConfigCategorySection({
             Unsaved changes to them are kept and saved with the rest.
           </p>
         ) : null}
+        {liveGroupNames(group).map((name) => (
+          <LiveConfigStatus
+            key={name}
+            groupName={name}
+            refreshKey={editor.config?.source_version?.revision ?? null}
+          />
+        ))}
         <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
           <div className="divide-y divide-gray-100 px-4">
             {channelFirst ? channel : null}
@@ -905,13 +1106,19 @@ export function AddVariableControl({ editor }: { editor: ConfigurationEditor }) 
   const toast = useAccountToast();
   const [adding, setAdding] = useState(false);
   if (!editor.config) return null;
+  const close = () => {
+    editor.closeAddForm();
+    setAdding(false);
+  };
   if (adding) {
     return (
       <AddVariableForm
         existingKeys={new Set(editor.config.entries.map((entry) => entry.key))}
-        onCancel={() => setAdding(false)}
-        onAdded={(next, key) => {
-          editor.applyResponse(next, [key]);
+        expectedVersion={editor.addVariableVersion}
+        onCancel={close}
+        onConflict={editor.reloadForAdd}
+        onAdded={(next, key, base) => {
+          editor.variableAdded(next, key, base);
           setAdding(false);
           toast.success(`Added ${key}.`);
         }}
@@ -924,7 +1131,14 @@ export function AddVariableControl({ editor }: { editor: ConfigurationEditor }) 
         A <code className="rounded bg-gray-100 px-1">{'${VAR}'}</code> reference in a configuration
         file that is not listed here needs a variable of its own.
       </p>
-      <button type="button" onClick={() => setAdding(true)} className={BUTTON_SECONDARY}>
+      <button
+        type="button"
+        onClick={() => {
+          editor.openAddForm();
+          setAdding(true);
+        }}
+        className={BUTTON_SECONDARY}
+      >
         Add variable
       </button>
     </div>
@@ -978,14 +1192,28 @@ export function ConfigurationBackupSection({ editor }: { editor: ConfigurationEd
 /** A custom variable: a `${VAR}` reference in models.yaml the registry cannot see. */
 function AddVariableForm({
   existingKeys,
+  expectedVersion,
   onAdded,
   onCancel,
+  onConflict,
 }: {
   existingKeys: ReadonlySet<string>;
-  onAdded: (next: ConfigResponse, key: string) => void;
+  /**
+   * The version the add is conditional on: the one the form opened on, moved
+   * only by this page's own writes and by `onConflict`. A save elsewhere since
+   * is a conflict to review, not something to write over.
+   */
+  expectedVersion: ConfigSourceVersion | null;
+  onAdded: (next: ConfigResponse, key: string, base: ConfigSourceVersion | null) => void;
   onCancel: () => void;
+  /** Show the latest configuration after a conflict; `null` when it could not be read. */
+  onConflict: () => Promise<ConfigResponse | null>;
 }) {
   const baseId = useId();
+  // After a conflict: the latest configuration is being read, then the
+  // administrator reviews it and adds again. Nothing is retried for them.
+  const [reloading, setReloading] = useState(false);
+  const [conflicted, setConflicted] = useState(false);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   // The backend's rule: a name that looks like a credential's is secret
@@ -998,8 +1226,38 @@ function AddVariableForm({
   const secretByName = looksSecret(name);
   const secret = secretByName || secretChoice;
 
+  /** A conflict: nothing was written. Read the latest values and say what to do next. */
+  const reviewConflict = async (key: string) => {
+    setReloading(true);
+    setConflicted(true);
+    setError(null);
+    const fresh = await onConflict();
+    setReloading(false);
+    if (fresh === null) {
+      // The form's version stays: adding again meets the same conflict, and reads again.
+      setError(
+        'The configuration was changed elsewhere since this form opened, so the variable was not added, and the latest configuration could not be loaded. Your entry is kept; try adding it again.',
+      );
+      return;
+    }
+    const existing = fresh.entries.find((candidate) => candidate.key === key);
+    if (existing) {
+      const category =
+        fresh.categories.find((candidate) => candidate.id === existing.category)?.label ??
+        existing.category;
+      setError(
+        `${key} was added elsewhere in the meantime, so it was not added here. Edit it in its category (${category}).`,
+      );
+      return;
+    }
+    setError(
+      'The configuration was changed elsewhere since this form opened, so the variable was not added. The latest configuration is shown now and your entry is kept. Review it, then add it again.',
+    );
+  };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (reloading) return;
     const key = name.trim();
     if (!CUSTOM_KEY_PATTERN.test(key)) {
       setError(
@@ -1012,18 +1270,32 @@ function AddVariableForm({
       return;
     }
     setError(null);
+    // Taken now: the version this attempt is conditional on, whatever a read
+    // brings in while it is in flight.
+    const base = expectedVersion;
+    let conflict = false;
     // A refusal that echoes a secret's value shows it masked; the form keeps what was typed.
     const failure = await writes.perform({
       run: async () => {
-        const next = await patchConfig({
-          values: { [key]: value },
-          secrets: { [key]: secret },
-        }).catch((err: unknown) => {
+        const next = await patchConfig(
+          {
+            values: { [key]: value },
+            secrets: { [key]: secret },
+          },
+          ...versioned(base),
+        ).catch((err: unknown) => {
+          // Told apart here, while the error still has its type: the message
+          // the write flow returns, and the masking below, lose it.
+          if (isVersionConflict(err)) conflict = true;
           throw secret ? new Error(withoutSecret(getErrorMessage(err), value)) : err;
         });
-        onAdded(next, key);
+        onAdded(next, key, base);
       },
     });
+    if (conflict) {
+      await reviewConflict(key);
+      return;
+    }
     if (failure) setError(failure);
   };
 
@@ -1105,11 +1377,17 @@ function AddVariableForm({
         </button>
         <button
           type="submit"
-          disabled={saving}
-          aria-busy={saving || undefined}
+          disabled={saving || reloading}
+          aria-busy={saving || reloading || undefined}
           className={BUTTON_PRIMARY}
         >
-          {saving ? 'Adding…' : 'Add variable'}
+          {saving
+            ? 'Adding…'
+            : reloading
+              ? 'Loading latest…'
+              : conflicted
+                ? 'Add again'
+                : 'Add variable'}
         </button>
       </div>
     </form>

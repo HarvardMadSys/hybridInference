@@ -123,6 +123,13 @@ Setting
   the environment only supplies their starting values. See
   [Settings stored in the database](configuration.md#settings-stored-in-the-database).
 
+Live group
+: A set of settings the gateway applies together without a restart, once an
+  operator has activated the group: every backend process validates the whole
+  set, switches to it at once and reports that it has. `alerts.runtime` is
+  the first. See
+  [Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart).
+
 First-run setup
 : How a new deployment gets its first administrator: the backend prints a
   one-time setup code in its log, and whoever enters it on the console's
