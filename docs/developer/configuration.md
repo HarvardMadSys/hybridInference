@@ -484,6 +484,23 @@ them; see [Database](database.md#secrets-for-deleting-accounts). The backend
 refuses to start rather than generate `API_KEY_SECRET` for a database that
 already holds API keys, since a new secret would invalidate every one of them.
 
+### Analytics sections
+
+In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, **Users
+and Requests**, **Performance Metrics** and **Growth Rate** independently, then
+select **Save changes**. These database-backed settings apply to
+**Analytics → Overview** for all administrators. Token Usage, Users and Requests
+and Performance Metrics default to on; Growth Rate defaults to off. Reopen
+Analytics after saving; no backend restart is needed. A disabled section is
+hidden and does not request its data. Data collection continues, so re-enabling
+a section can show existing history.
+
+The runtime keys are `analytics_token_usage_enabled`,
+`analytics_users_and_requests_enabled`, `analytics_performance_metrics_enabled`
+and `analytics_growth_rate_enabled`. The overview's Hour / Day / Week / Month
+control applies to Token Usage and Users and Requests. Performance Metrics keeps
+its existing windows, and Growth Rate has its own 30, 60 or 90-day range.
+
 ### On the Settings tab
 
 The tab opens on **Common**, with the switches and limits changed most often:

@@ -166,6 +166,10 @@ vi.mock('@/lib/api/admin', async () => {
         runtime('log_full_payload', false),
         runtime('signup_enabled', true),
         runtime('auto_mode_enabled', false),
+        runtime('analytics_token_usage_enabled', true),
+        runtime('analytics_users_and_requests_enabled', true),
+        runtime('analytics_performance_metrics_enabled', true),
+        runtime('analytics_growth_rate_enabled', false),
         runtime('user_concurrency_free', 3),
         runtime('user_daily_quota_free', 100),
         // A setting no group names, from a later backend.
@@ -243,6 +247,7 @@ describe('Admin → Settings sub-tabs', () => {
         'Daily Quotas',
         'Request Handling',
         'Request Logging',
+        'Analytics',
         'Other Runtime Settings',
       ],
       Access: ['Signup Policy', 'Sign-up', 'Security'],
@@ -271,6 +276,37 @@ describe('Admin → Settings sub-tabs', () => {
         'user_concurrency_free value',
       ),
     ).toBeInTheDocument();
+  });
+
+  it.each([
+    ['analytics_token_usage_enabled', 'Token Usage', true],
+    ['analytics_users_and_requests_enabled', 'Users and Requests', true],
+    ['analytics_performance_metrics_enabled', 'Performance Metrics', true],
+    ['analytics_growth_rate_enabled', 'Growth Rate', false],
+  ] as const)('saves the independent %s switch from Common', async (key, label, initial) => {
+    await renderLoaded();
+    const analytics = within(screen.getByRole('region', { name: 'Analytics' }));
+    const toggle = analytics.getByRole('switch', { name: `Toggle ${label}` });
+    expect(analytics.getByText(label)).toBeVisible();
+    expect(analytics.getAllByRole('switch')).toHaveLength(4);
+    expect(toggle).toHaveAttribute('aria-checked', String(initial));
+
+    vi.mocked(updateRuntimeSetting).mockImplementation(async (settingKey, value) => ({
+      ...runtime(settingKey, value as boolean),
+      default_value: initial,
+    }));
+    for (const [index, enabled] of [!initial, initial].entries()) {
+      fireEvent.click(toggle);
+      expect(updateRuntimeSetting).toHaveBeenCalledTimes(index);
+      fireEvent.click(analytics.getByRole('button', { name: 'Save changes to Analytics' }));
+      await waitFor(() => expect(updateRuntimeSetting).toHaveBeenLastCalledWith(key, enabled));
+      await waitFor(() =>
+        expect(
+          analytics.queryByRole('button', { name: 'Save changes to Analytics' }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(toggle).toHaveAttribute('aria-checked', String(enabled));
+    }
   });
 
   it('lists the settings usually set once after the others of their category', async () => {
@@ -420,6 +456,7 @@ describe('Admin → Settings sub-tabs', () => {
       'Daily Quotas',
       'Request Handling',
       'Request Logging',
+      'Analytics',
       'Other Runtime Settings',
     ]);
     expect(screen.queryByLabelText('Search settings')).not.toBeInTheDocument();

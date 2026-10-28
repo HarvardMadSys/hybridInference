@@ -2058,3 +2058,15 @@ msgstr "`PATCH /admin/batch/models/{model_id}` 设置或清除某个模型的上
 #: ../developer/configuration.md
 msgid "`batch_model_limits`"
 msgstr ""
+
+#: ../developer/configuration.md
+msgid "Analytics sections"
+msgstr "Analytics 区块"
+
+#: ../developer/configuration.md
+msgid "In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, **Users and Requests**, **Performance Metrics** and **Growth Rate** independently, then select **Save changes**. These database-backed settings apply to **Analytics → Overview** for all administrators. Token Usage, Users and Requests and Performance Metrics default to on; Growth Rate defaults to off. Reopen Analytics after saving; no backend restart is needed. A disabled section is hidden and does not request its data. Data collection continues, so re-enabling a section can show existing history."
+msgstr "在 **Admin → Settings → Common → Analytics** 中，分别切换 **Token Usage**、**Users and Requests**、**Performance Metrics** 和 **Growth Rate**，然后点击 **Save changes**。这些设置保存在数据库中，对所有管理员的 **Analytics → Overview** 生效。Token Usage、Users and Requests 和 Performance Metrics 默认开启，Growth Rate 默认关闭。保存后重新打开 Analytics 即可，无需重启后端。关闭的区块会隐藏，且不请求其数据。数据仍持续收集，因此重新启用区块后可以查看已有历史。"
+
+#: ../developer/configuration.md
+msgid "The runtime keys are `analytics_token_usage_enabled`, `analytics_users_and_requests_enabled`, `analytics_performance_metrics_enabled` and `analytics_growth_rate_enabled`. The overview's Hour / Day / Week / Month control applies to Token Usage and Users and Requests. Performance Metrics keeps its existing windows, and Growth Rate has its own 30, 60 or 90-day range."
+msgstr "运行时设置键为 `analytics_token_usage_enabled`、`analytics_users_and_requests_enabled`、`analytics_performance_metrics_enabled` 和 `analytics_growth_rate_enabled`。概览的 Hour / Day / Week / Month 控件作用于 Token Usage 和 Users and Requests。Performance Metrics 保留原有时间窗口，Growth Rate 独立提供 30、60 或 90 天的范围。"
