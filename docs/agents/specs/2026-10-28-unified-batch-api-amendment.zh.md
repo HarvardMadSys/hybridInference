@@ -26,7 +26,8 @@
 
 - #1660 及之后的旧 worker：其种类过滤不含这两个新组合，因此不会领取、校验、过期、收尾、封存或清理新的 Messages 批次；新批次只由本版本的 worker 执行。旧进程仍能读取、取消、删除这些批次（这些操作不按种类过滤，语义与本版本相同）。混合部署期间，由旧进程处理的 Messages 目标创建请求会得到400（旧进程不认识该目标），客户端重试或等待全部进程升级即可；旧进程会忽略非 Messages 批次信封里的 `anthropic_version`（旧的信封模型忽略未知字段），升级完成后才会一律拒绝。不需要提升 `schema_version`。
 - #1660 之前的旧 worker 没有种类过滤，会把任何批次当作 Chat 执行；[2026-10-27 修订](2026-10-27-batch-default-availability-amendment.zh.md) 第3节的运维步骤继续适用。
-- 回滚到本版本之前（仍 ≥ #1660）：取消或等待所有 `target='messages' AND api_surface <> 'anthropic'` 且 `phase <> 'sealed'` 的批次再回滚；遗留的此类批次在旧版本上不会运行或过期，但可以取消和删除。回滚后旧的 Message Batches 路由重新出现，只能看到 `api_surface='anthropic'` 的批次。
+- 回滚到本版本之前（仍 ≥ #1660）：那个版本不运行、也不过期 `target='messages' AND api_surface <> 'anthropic'` 的批次（可以取消和删除），所以要由本版本先排空它们。只查一次未封存的此类批次是不够的：本版本仍有进程在运行时，已通过准入的创建仍可能写入新批次。因此沿用 [2026-10-27 修订](2026-10-27-batch-default-availability-amendment.zh.md) 第4节的静默步骤，只把排空查询换成上述条件：限制创建（`BATCH_MIN_ROLE=admin`，管理员自己也不创建）→ 取消或等待完成这些批次直到查询为空 → 关闭 `BATCH_ENABLED` → 停止本版本全部进程并保持停止 → 确认 gateway 数据库用户已无会话 → 再查一次，为空才启动旧版本。用户文档按目标版本给出两种排空查询，共用这一流程。
+- 回滚后：仍实现 `BATCH_EXPANSION_ENABLED` 的版本（#1660 至 #1673 之前；#1673 移除了它）会重新读取该开关，默认关闭；#1673 及之后的版本不受它控制。≥ #1660 的版本会重新提供 Message Batches 路由，只能看到 `api_surface='anthropic'` 的批次。回滚不改写任何已存的行。
 
 ## 4 统一的读取与管理
 

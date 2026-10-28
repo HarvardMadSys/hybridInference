@@ -658,8 +658,9 @@ and to the worker's next round.
 batches, Message Batches, embedding and Responses batches and webhooks, no
 longer controls anything. A value left in the environment or the database
 changes nothing, is not listed on the Settings tab and cannot be set
-there; the gateway keeps it, so that a rollback reads it again, and warns about
-it once at startup. Once no earlier version will run, delete the stored row
+there; the gateway keeps it, so that a rollback to a release that still
+implements it (#1660 up to, but not including, #1673) reads it again, and warns
+about it once at startup. Once no such release will run, delete the stored row
 (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or
 `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the
 variable.
@@ -737,40 +738,43 @@ things:
 
 ### Rolling back
 
-To a version that already has file batches and the former Message Batches
-(#1660 or later), first cancel or let finish every Messages batch created
-through `/v1/batches`: that version neither runs nor expires them, though it can
-still cancel and delete them. Wait until this returns no rows, then roll back as
-usual:
+Whatever version you roll back to, drain with this version the batches that
+version cannot run, and start it only once every process of this version has
+stopped and the database shows none left. Which batches those are depends on the
+version, and so does the query that lists them (the *drain query* below):
 
-```sql
-SELECT id, phase, status FROM batch_jobs
-WHERE target = 'messages' AND api_surface <> 'anthropic' AND phase <> 'sealed';
-```
+- To a version that already has file batches and the former Message Batches
+  (#1660 or later): the Messages batches created through `/v1/batches`. That
+  version neither runs nor expires them, though it can still cancel and delete
+  them.
 
-That version reads `BATCH_EXPANSION_ENABLED` again, off by default, so new
-batches of its newer kinds are refused until it is on; those already accepted
-keep running. It serves `/v1/messages/batches` again, and shows there only the
-batches created through it.
+  ```sql
+  SELECT id, phase, status FROM batch_jobs
+  WHERE target = 'messages' AND api_surface <> 'anthropic' AND phase <> 'sealed';
+  ```
 
-To an older version, drain the newer batches with this version, which alone
-can manage them, and start the older version only once every process of this
-version has stopped and the database shows none left:
+- To an older version (before #1660): every batch that is not an inline chat
+  batch. That version would run them as chat completions.
 
-1. Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches. Other
-   users' queued requests then stop starting too, so their batches have to be
-   cancelled rather than waited for. To let them finish instead, skip this
-   step; step 6 still catches a batch created meanwhile.
-2. Cancel (or let finish) every batch that is not an inline chat batch: the
-   admin **Batches** tab lists and cancels anyone's. A cancelled file batch
-   still needs a moment to seal. Wait until this returns no rows:
+  ```sql
+  SELECT api_surface, target, phase, status, count(*)
+  FROM batch_jobs
+  WHERE (api_surface, target) <> ('openai_inline', 'chat') AND phase <> 'sealed'
+  GROUP BY 1, 2, 3, 4;
+  ```
 
-   ```sql
-   SELECT api_surface, target, phase, status, count(*)
-   FROM batch_jobs
-   WHERE (api_surface, target) <> ('openai_inline', 'chat') AND phase <> 'sealed'
-   GROUP BY 1, 2, 3, 4;
-   ```
+Either way, one empty drain query is not enough while a process of this version
+is still running: a create admitted a moment before can still store a new
+batch. Follow every step:
+
+1. Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches, and
+   create none yourself. Other users' queued requests then stop starting too,
+   so their batches have to be cancelled rather than waited for. To let them
+   finish instead, skip this step; step 6 still catches a batch created
+   meanwhile.
+2. Cancel (or let finish) every batch the drain query lists: the admin
+   **Batches** tab lists and cancels anyone's. A cancelled file batch still
+   needs a moment to seal. Wait until the drain query returns no rows.
 
 3. Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a
    request that had already passed its checks may still be on its way to the
@@ -798,9 +802,9 @@ version has stopped and the database shows none left:
    connection is gone. Wait for it to end. If a session stays and you have
    confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)`
    ends it and rolls back its open transaction.
-6. Only then run the batch query from step 2 again. Only if it returns no
-   rows, start the older version. It keeps `BATCH_ENABLED` off; turn it on,
-   and set `BATCH_MIN_ROLE` back, once only the older version runs.
+6. Only then run the drain query again. Only if it returns no rows, start the
+   older version. It keeps `BATCH_ENABLED` off; turn it on, and set
+   `BATCH_MIN_ROLE` back, once only the older version runs.
 
 Why the last check waits until the database is quiet: turning `BATCH_ENABLED`
 off refuses new requests, but it does not stop a create that was admitted a
@@ -811,13 +815,23 @@ transaction and only gateway processes write batches, so once no gateway
 session is left and none can start, every create has either committed or
 rolled back, and the query sees everything that will ever be there.
 
-If step 6 returns rows, do not start the older version: it would run them as
-chat completions. Start this version again, and only this version, turn
-`BATCH_ENABLED` on so its worker can run or seal those batches, cancel them or
-let them finish (step 2), then repeat steps 3 to 6.
+If step 6 returns rows, do not start the older version: one before #1660 would
+run them as chat completions, and a later one would leave them unrun for good.
+Start this version again, and only this version, turn `BATCH_ENABLED` on so its
+worker can run or seal those batches, cancel them or let them finish (step 2),
+then repeat steps 3 to 6. Turning `BATCH_ENABLED` off is not enough on its own:
+it stops this version's worker too, so those batches would never drain.
 
-Finished batches of the newer kinds stay in the database; the older version
-lists and purges them as if they were inline chat batches. Uploaded files and
-webhooks stay unread until the next upgrade. Turning `BATCH_ENABLED` off is
-not enough on its own: it stops the newer version's worker too, so the
-newer batches would never drain.
+What the older version does once it runs:
+
+- A release that still implements `BATCH_EXPANSION_ENABLED` (from #1660 up to,
+  but not including, #1673, which retired it) reads it again, off by default,
+  so creating its newer batch kinds is refused until it is turned on; batches
+  already accepted keep running. From #1673 on the setting controls nothing, as
+  in this version.
+- Any release from #1660 on serves `/v1/messages/batches` again, and shows there
+  only the batches stored through it.
+- Rows are never rewritten by a rollback: finished batches of the newer kinds
+  stay in the database. A version before #1660 lists and purges them as if they
+  were inline chat batches, and leaves uploaded files and webhooks unread until
+  the next upgrade.
