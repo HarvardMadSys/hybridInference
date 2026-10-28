@@ -199,8 +199,12 @@ async def test_a_snapshot_pairs_rows_with_their_version_under_concurrent_writes(
     pool, store
 ) -> None:
     stop = asyncio.Event()
-    #: The revision each committed write left, by the value it wrote.
+    first_write = asyncio.Event()
+    #: The revision each committed write left, by the value it wrote. Recorded
+    #: after the commit, so a snapshot can name a revision before it is here.
     committed: dict[int, str] = {}
+    #: What each snapshot read: its version's revision and the row's value.
+    observed: list[tuple[int, str | None]] = []
 
     async def writer() -> None:
         index = 0
@@ -210,22 +214,29 @@ async def test_a_snapshot_pairs_rows_with_their_version_under_concurrent_writes(
                 await transaction.write([ConfigRow("SITE_NAME", str(index))])
                 version = await transaction.current_version()
             committed[version.revision] = str(index)
+            first_write.set()
+
+    async def sample() -> None:
+        # Read only once a write has committed: every snapshot has a row to pair.
+        await first_write.wait()
+        # At least 60 reads, spanning several commits: the reads ran between writes.
+        while len(observed) < 60 or len({revision for revision, _ in observed}) < 3:
+            snapshot = await store.fetch_snapshot()
+            row = snapshot.rows.get("SITE_NAME")
+            observed.append((snapshot.version.revision, row.value if row else None))
+            await asyncio.sleep(0.005)
 
     task = asyncio.create_task(writer())
-    checked = 0
     try:
-        for _ in range(60):
-            snapshot = await store.fetch_snapshot()
-            revision = snapshot.version.revision
-            if "SITE_NAME" in snapshot.rows and revision in committed:
-                # The rows read are exactly the ones the version names.
-                assert snapshot.rows["SITE_NAME"].value == committed[revision]
-                checked += 1
-            await asyncio.sleep(0.005)
+        await asyncio.wait_for(sample(), timeout=30)
     finally:
         stop.set()
         await task
-    assert checked > 0
+    # Every write is recorded now. Each snapshot's version names a committed
+    # write, and the rows read with it are exactly the ones that write left.
+    for revision, value in observed:
+        assert revision in committed, (revision, sorted(committed))
+        assert value == committed[revision], (revision, value, committed[revision])
 
 
 @pytest.mark.asyncio
