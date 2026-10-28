@@ -848,7 +848,15 @@ Batch 不重新解析调用方保存的别名（[`_dispatch_body`](https://githu
 
 ### 16.4 未完成或未验证
 
-- 计划 S0 中的 T7（开始迭代前断连的 claim/会话流残留）、T8（租约丢失后的重复执行与计费）、T9（embedding 注册名与 `config.id` 不同）**没有写成测试**；Q7、Q8、Q9 仍是“待验证”。
+- ~~计划 S0 中的 T7、T8、T9 没有写成测试~~：已在 `1a0808415` 补上，见第16.5节。
 - `ops/dev/batch_api_smoke.py` **没有扩展** SSE、Embeddings 与 `stream-check`；流式、Embeddings 与断连的网关验证用的是仓库外的临时合成上游与脚本，没有提交。
 - 混合版本检查只覆盖“基线与本分支同时运行”；早于 #1660 的 worker 的已知边界（统一 Batch API 修订第3节）未重新验证。
 - 没有真实供应商、真实账户或生产环境的验证；未推送、未开 PR。
+
+### 16.5 T7、T8、T9 的结论（`1a0808415`）
+
+- **T7（开始迭代前断连，Q7）**：锁定的 uvicorn 0.46 报告 ASGI spec 2.3。此时即使客户端已经断开，Starlette 仍会启动响应体生成器，再由断连监听取消它，各流自己的 `finally` 照常释放——测试确认，行为不变。spec ≥ 2.4 的服务器在首次 `send` 失败时**从不启动**生成器，测试在本分支与基线 `a738f4915` 上同样证明了两个既有缺陷：Messages 在预检中取得的半开探测权一直被占用到截止时间（其后请求全部 503）；Chat 与 Responses 为决定状态码而预读的会话流（连同上游流、reader 任务、router 的 claim）只有在被垃圾回收时才关闭，异常 traceback 被保留时会无限推迟。修复：三个路由（及 compat）各用一个 `scope="request"` 的 yield 依赖持有本次的流，请求结束时只在响应体**从未开始**时释放——`MessagesStream.release_if_unstarted()` 归还 claim，`ChatStream.close_if_unstarted()` 关闭预读的流，使会话按客户端断连结束（499、不计费）。已开始的响应体仍由自身释放；运行中的流在结束前一直持有探测权（有测试）。Q7 就此关闭；方案即原 Q7 的 (b)，边界是 FastAPI 0.137 的 request 作用域依赖。
+- **T8（租约丢失，Q8）**：没有发现缺陷，现状以真实 PostgreSQL 测试固定：另一 worker（或同一 worker 在自己的租约失效后）重新领取并再次执行；`attempt_seq` 栅栏只结算一次，落在较新的 attempt 上，旧 attempt 迟到的结果不改变任何东西；丢失的 attempt 记为 `abandoned`、费用 `unknown`，计入 `unknown_cost_count`；上游执行两次、用户被计费两次。测试把这记录为当前行为而非保证，**不承诺跨 attempt 恰好一次**。同一 worker 会重新领取自己仍在执行的过期项，这是调度器的既有行为，未修改；是否改变它仍属 Q8。两项测试在基线上同样通过。
+- **T9（embedding 别名与 `config.id`，Q9）**：没有发现缺陷。注册表只在 `embedding_adapters` 中以模型 id 与别名为键，适配器的 `config.id` 就是模型 id（含 `provider_model_id` 不同的路由与 fallback 链），准入固定的 id 总能找到同一个适配器；准入后别名被改指向别的模型，项目仍在原模型上执行；模型被删除时以未知模型（404、not_billed）失败且不触达上游。测试在基线上同样通过。Q9 就此关闭。
+- 门禁：`make lint` 通过；`make test` 10603 passed、4 skipped；`make test-db-local` 756 passed；`gitleaks git` 对本分支提交无发现。
+- 隔离网关（真实 uvicorn、独立数据库、合成上游；本机没有可用的 staging，也不在授权范围内部署）上，基线与 `1a0808415` 的 25 个在线探针与对应 `api_logs` 全部相同，中途断连四种情形相同；混合版本下四个目标共 288 项由两种 worker 执行，结果一致。spec 2.4 的断开情形无法用 uvicorn 在网关上复现，只由测试覆盖。
