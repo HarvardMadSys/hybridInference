@@ -1053,6 +1053,17 @@ msgstr "输入设置码，再选一个用户名和密码。这个管理员没有
 
 #: ../developer/deployment.md:473
 msgid ""
+"Once email delivery is configured, this administrator can bind an email "
+"in **Account Settings → Email Address**. Confirm the current password and"
+" follow the verification link sent to the new address. The username "
+"continues to work after binding; the same settings section also lets you "
+"change a bound email."
+msgstr ""
+"配置好邮件发送之后，这个管理员可以在 **Account Settings → Email Address**（账户设置 → "
+"邮箱地址）中绑定邮箱：先确认当前密码，再打开发到新地址的验证链接。绑定之后，用户名仍然可以用来登录；在同一个设置区域里也可以更换已绑定的邮箱。"
+
+#: ../developer/deployment.md:478
+msgid ""
 "Whoever can read the backend log, or the database that holds the code, "
 "can create this account, so keep both as private as the host. Wrong codes"
 " are rate limited per client address, ten in 15 minutes; the right code "
