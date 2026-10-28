@@ -10,7 +10,9 @@ Pure functions plus one stateful streaming translator. No I/O, no logging.
 from __future__ import annotations
 
 import json
+import re
 import uuid
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.token_utils import extract_cache_tokens, usage_count
@@ -390,6 +392,17 @@ def _translate_params(body: dict[str, Any]) -> dict[str, Any]:
         tc = _translate_tool_choice(body["tool_choice"])
         if tc is not None:
             params["tool_choice"] = tc
+        # Anthropic spells "at most one tool call this turn" as a flag inside
+        # tool_choice; the OpenAI dialect's switch is the top-level
+        # parallel_tool_calls (issue #876 P3). Anthropic only ever sends the
+        # flag to disable, so the key is written only for True — a provider's
+        # OpenAI-dialect default of True must not be second-guessed, and an
+        # explicit False would be indistinguishable from the disabled spelling.
+        if (
+            isinstance(body["tool_choice"], dict)
+            and body["tool_choice"].get("disable_parallel_tool_use") is True
+        ):
+            params["parallel_tool_calls"] = False
     metadata = body.get("metadata") or {}
     user_id = metadata.get("user_id")
     if user_id:
@@ -413,6 +426,10 @@ def _translate_tool_choice(tc: Any) -> Any:
         return "auto"
     if t == "any":
         return "required"
+    if t == "none":
+        # A real instruction, not an absence of one: the caller attached the
+        # tool definitions but this turn must not use them (issue #876 P3).
+        return "none"
     if t == "tool" and tc.get("name"):
         return {"type": "function", "function": {"name": tc["name"]}}
     return None
@@ -538,6 +555,137 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
 # Streaming translation: OpenAI SSE -> Anthropic SSE
 # ---------------------------------------------------------------------------
 
+# A valid SSE comment frame. The translator emits one while it is holding back
+# real content (see the buffer rules below), so the router's frame-level idle
+# watchdog can tell "upstream is talking, we are not allowed to forward this
+# yet" from "upstream is silent". It carries no Anthropic event or content and
+# is ignored by clients and by the router's accounting.
+_ACTIVITY_FRAME = b": keepalive\n\n"
+
+# Lexical states of a streamed tool-arguments value; see _ToolArguments.
+_ARGS_EMPTY = 0  # only JSON whitespace so far
+_ARGS_OBJECT = 1  # inside the top-level object
+_ARGS_CLOSED = 2  # the top-level object's closing brace was seen
+_ARGS_INVALID = 3  # can never become a complete JSON object
+
+# JSON's own whitespace set. ``str.strip()`` removes other Unicode spaces too,
+# which ``json.loads`` rejects.
+_JSON_NON_WHITESPACE = re.compile(r"[^ \t\n\r]")
+_JSON_STRUCTURAL = re.compile(r'["{}\[\]]')
+# The rest of a string body: stops at its closing quote, at the end of the
+# fragment, or at a backslash that is the fragment's last character (an escape
+# split across fragments).
+_JSON_STRING_BODY = re.compile(r'[^"\\]*(?:\\[\s\S][^"\\]*)*')
+
+
+def _is_json_object(text: str) -> bool:
+    """Whether ``text`` is exactly one JSON object, with optional whitespace.
+
+    Anthropic tool input is an object. Requiring one also stops a scalar
+    prefix (``1`` on the way to ``123``) from looking complete.
+    """
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return isinstance(parsed, dict)
+
+
+class _ToolArguments:
+    """The argument bytes of one streamed tool call, and their completeness.
+
+    Fragments are kept as a list and joined only when the whole value is
+    needed: once to emit a pending call's backlog when its block opens, and at
+    most once to validate it. Appending to one string instead copies
+    everything received so far on every fragment.
+
+    Completeness means the bytes are exactly one JSON object, as
+    ``json.loads`` would decide. Re-parsing the growing prefix on every
+    fragment is quadratic, so each fragment is scanned once instead, tracking
+    strings (escapes may split across fragments) and bracket depth. Only when
+    the top-level object's closing brace has been seen is the value parsed,
+    once, and the result kept. That is exact rather than heuristic: in valid
+    JSON the lexical close is where the object ends, so if the bytes up to it
+    are not a valid object no extension is, and any later non-whitespace is
+    trailing data that ``json.loads`` rejects. Whitespace may follow.
+    """
+
+    __slots__ = ("_chunks", "_depth", "_escaped", "_in_string", "_size", "_state", "_valid")
+
+    def __init__(self) -> None:
+        self._chunks: list[str] = []
+        self._size = 0
+        self._state = _ARGS_EMPTY
+        self._depth = 0
+        self._in_string = False
+        self._escaped = False
+        self._valid: bool | None = None
+
+    def __bool__(self) -> bool:
+        return self._size > 0
+
+    def append(self, fragment: str) -> None:
+        self._chunks.append(fragment)
+        self._size += len(fragment)
+        self._scan(fragment)
+
+    def text(self) -> str:
+        """Return every byte received so far, joined once and kept joined."""
+        if len(self._chunks) > 1:
+            self._chunks[:] = ["".join(self._chunks)]
+        return self._chunks[0] if self._chunks else ""
+
+    def complete(self) -> bool:
+        """Whether the bytes so far form exactly one JSON object."""
+        if self._state != _ARGS_CLOSED:
+            return False
+        if self._valid is None:
+            self._valid = _is_json_object(self.text())
+        return self._valid
+
+    def _scan(self, fragment: str) -> None:
+        pos, end = 0, len(fragment)
+        while pos < end:
+            if self._state == _ARGS_INVALID:
+                return
+            if self._state != _ARGS_OBJECT:
+                # Outside the object only whitespace may appear, and the
+                # object may begin only if nothing else came first.
+                match = _JSON_NON_WHITESPACE.search(fragment, pos)
+                if match is None:
+                    return
+                if self._state == _ARGS_EMPTY and match.group() == "{":
+                    self._state, self._depth, pos = _ARGS_OBJECT, 1, match.end()
+                    continue
+                self._state = _ARGS_INVALID
+                return
+            if self._in_string:
+                if self._escaped:
+                    self._escaped = False
+                    pos += 1
+                    continue
+                pos = _JSON_STRING_BODY.match(fragment, pos).end()
+                if pos < end:
+                    if fragment[pos] == '"':
+                        self._in_string = False
+                    else:
+                        self._escaped = True
+                    pos += 1
+                continue
+            match = _JSON_STRUCTURAL.search(fragment, pos)
+            if match is None:
+                return
+            pos = match.end()
+            char = match.group()
+            if char == '"':
+                self._in_string = True
+            elif char in "{[":
+                self._depth += 1
+            else:
+                self._depth -= 1
+                if self._depth == 0:
+                    self._state = _ARGS_CLOSED
+
 
 class OpenAIToAnthropicStreamTranslator:
     """Stateful translator: feed OpenAI SSE chunks, emit Anthropic SSE bytes.
@@ -554,6 +702,33 @@ class OpenAIToAnthropicStreamTranslator:
         for ant in t.finalize():
             yield ant
 
+    Buffer rules:
+
+    * A tool_use block is closed when its accumulated ``arguments`` parse as a
+      complete JSON object and the next queued event needs the wire. Until
+      then, interleaved content cannot be forwarded without closing the tool
+      and later reopening an orphan with no id/name.
+    * Tool-start markers and text/reasoning fragments share one FIFO queue in
+      arrival order. An event is emitted only after every earlier event; a
+      pending call opens exactly once when it reaches the head. Text before a
+      pending call therefore stays before it, and text after it stays after.
+      While real input is withheld behind an incomplete open tool, the
+      translator yields an SSE comment so the router sees upstream activity;
+      it never invents a content delta.
+    * A complete tool JSON is evidence that one arguments value is complete,
+      not that the upstream stream ended. While that block is still open,
+      whitespace-only continuations stay part of its valid JSON. After it has
+      been closed, whitespace-only continuations are ignored; any
+      non-whitespace continuation is a protocol violation, because a complete
+      JSON object cannot be extended, and raises ``ValueError`` rather than
+      inventing a second tool invocation with the same id.
+    * ``finalize`` is the success path and drains the FIFO before emitting the
+      terminal events. ``abort`` is only for an upstream error: it drains the
+      same FIFO and closes open blocks without a false ``message_stop``. After
+      ``abort`` the translator is terminal: ``feed`` and ``finalize`` are
+      no-ops, so a late call cannot revive the stream or turn the failure into
+      a successful ending.
+
     ``input_tokens_estimate`` seeds message_start.usage.input_tokens. OpenAI
     streams report prompt tokens only in the final chunk, so message_start would
     otherwise carry 0 -- but Anthropic clients read input usage from
@@ -567,11 +742,24 @@ class OpenAIToAnthropicStreamTranslator:
         self._message_id = f"msg_{uuid.uuid4().hex[:24]}"
         self._started = False
         self._closed = False
+        self._aborted = False
         self._current_thinking_index: int | None = None
         self._current_text_index: int | None = None
-        self._tool_blocks: dict[
-            int, dict[str, Any]
-        ] = {}  # openai-tool-index -> {anthropic_index, name, id}
+        # One FIFO of deferred wire events in arrival order: tool-start markers
+        # and typed text/reasoning fragments share this queue so a later event
+        # cannot overtake an earlier pending call or the content around it.
+        # Argument bytes themselves stay on the per-index call state below and
+        # are emitted only when that call's marker reaches the head and the
+        # block is put on the wire.
+        self._pending_events: deque[tuple[str, Any]] = deque()
+        # Every OpenAI tool call seen in this stream, keyed by its upstream
+        # index. A call may be pending (its marker is queued), open, or closed.
+        # Keeping the state after close is what lets a late argument fragment
+        # find its original id/name instead of reopening an empty orphan block.
+        self._tool_calls: dict[int, dict[str, Any]] = {}
+        # The one OpenAI index whose tool_use block is currently open on the
+        # wire, if any. Anthropic SSE allows exactly one open block at a time.
+        self._open_tool: int | None = None
         self._next_index = 0
         self._finish_reason: str | None = None
         self._usage: dict[str, int] = {
@@ -586,7 +774,13 @@ class OpenAIToAnthropicStreamTranslator:
         return dict(self._usage)
 
     def feed(self, chunk: bytes) -> Iterator[bytes]:
-        """Consume one OpenAI SSE chunk and yield zero or more Anthropic SSE frames."""
+        """Consume one OpenAI SSE chunk and yield zero or more Anthropic SSE frames.
+
+        A finalized or aborted translator is terminal: further input is dropped
+        rather than emitted after the terminal/error boundary.
+        """
+        if self._closed or self._aborted:
+            return
         self._buffer += chunk
         while b"\n\n" in self._buffer:
             frame, self._buffer = self._buffer.split(b"\n\n", 1)
@@ -594,23 +788,17 @@ class OpenAIToAnthropicStreamTranslator:
 
     def finalize(self) -> Iterator[bytes]:
         """Flush any buffered state and emit the terminal message_delta / message_stop events."""
-        if self._closed:
+        if self._closed or self._aborted:
             return
         if not self._started:
             yield from self._emit_message_start()
-        # Close any open content block.
-        yield from self._close_thinking()
-        if self._current_text_index is not None:
-            yield self._sse(
-                "content_block_stop",
-                {"type": "content_block_stop", "index": self._current_text_index},
-            )
-            self._current_text_index = None
-        for tb in list(self._tool_blocks.values()):
-            yield self._sse(
-                "content_block_stop", {"type": "content_block_stop", "index": tb["anthropic_index"]}
-            )
-        self._tool_blocks.clear()
+        # OpenAI has no per-tool end marker, so the end of the upstream stream
+        # is the one boundary at which the currently open tool block and every
+        # queued event must be drained in FIFO order. An incomplete pending
+        # call is closed with exactly the argument bytes already received.
+        yield from self._drain_pending_events(finalizing=True)
+        yield from self._close_open_tool()
+        yield from self._close_visible_blocks()
         # Emit message_delta with stop_reason + final usage. input_tokens are
         # unknown when message_start is emitted (upstream reports usage only in
         # its final chunk), so message_start carries 0; the client picks up the
@@ -634,6 +822,32 @@ class OpenAIToAnthropicStreamTranslator:
         )
         yield self._sse("message_stop", {"type": "message_stop"})
         self._closed = True
+
+    def abort(self) -> Iterator[bytes]:
+        """Flush content already received when the upstream fails mid-stream.
+
+        This is deliberately *not* ``finalize``: an upstream error is not a
+        successful end of message, so no ``message_delta`` and no
+        ``message_stop`` are emitted. The caller re-raises, and the router
+        turns that into an error event. Text/reasoning fragments that were
+        waiting behind an open tool block are already complete content, so
+        they are emitted instead of being discarded with the exception.
+
+        Cancellation does not call this path: the client is gone, and the
+        upstream did not fail.
+        """
+        if self._closed or self._aborted:
+            return
+        self._aborted = True
+        if not self._started:
+            return
+        # Preserve every received call/content event in FIFO order. At an
+        # error boundary an incomplete pending call is closed with the bytes
+        # already received (no invented arguments), and there is deliberately
+        # no successful terminal event.
+        yield from self._drain_pending_events(finalizing=True)
+        yield from self._close_open_tool()
+        yield from self._close_visible_blocks()
 
     # -- internals --
 
@@ -688,11 +902,11 @@ class OpenAIToAnthropicStreamTranslator:
             delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
         )
         if isinstance(reasoning, str) and reasoning:
-            yield from self._emit_thinking(reasoning)
+            yield from self._handle_content("thinking", reasoning)
 
         text = delta.get("content")
         if text:
-            yield from self._emit_text(text)
+            yield from self._handle_content("text", text)
 
         for tc in delta.get("tool_calls") or []:
             yield from self._emit_tool_call_delta(tc)
@@ -720,23 +934,24 @@ class OpenAIToAnthropicStreamTranslator:
             },
         )
 
+    def _handle_content(self, kind: str, text: str) -> Iterator[bytes]:
+        """Queue one text/reasoning fragment and drain in arrival order."""
+        self._pending_events.append((kind, text))
+        yield from self._drain_pending_events()
+        if self._pending_events:
+            # The fragment is still behind an incomplete open tool (or an
+            # earlier pending event). Real upstream input was received but
+            # cannot be forwarded yet; a comment keeps the router's idle
+            # watchdog from mistaking that for silence.
+            yield _ACTIVITY_FRAME
+
     def _emit_thinking(self, text: str) -> Iterator[bytes]:
         if self._current_thinking_index is None:
             # Anthropic SSE allows one open block at a time. Reasoning usually
             # precedes visible output, but with interleaved thinking it can
-            # follow text or a tool call, so close any open block first.
-            if self._current_text_index is not None:
-                yield self._sse(
-                    "content_block_stop",
-                    {"type": "content_block_stop", "index": self._current_text_index},
-                )
-                self._current_text_index = None
-            for tb in list(self._tool_blocks.values()):
-                yield self._sse(
-                    "content_block_stop",
-                    {"type": "content_block_stop", "index": tb["anthropic_index"]},
-                )
-            self._tool_blocks.clear()
+            # follow text or a tool call, so close any open visible block
+            # first. Callers close a tool_use block before this point.
+            yield from self._close_text()
             self._current_thinking_index = self._next_index
             self._next_index += 1
             yield self._sse(
@@ -769,13 +984,6 @@ class OpenAIToAnthropicStreamTranslator:
             # A thinking block precedes visible text; close it first. Anthropic
             # SSE requires exactly one open content block at a time.
             yield from self._close_thinking()
-            # Close any open tool blocks first (Anthropic SSE requires one block at a time).
-            for tb in list(self._tool_blocks.values()):
-                yield self._sse(
-                    "content_block_stop",
-                    {"type": "content_block_stop", "index": tb["anthropic_index"]},
-                )
-            self._tool_blocks.clear()
             self._current_text_index = self._next_index
             self._next_index += 1
             yield self._sse(
@@ -795,61 +1003,238 @@ class OpenAIToAnthropicStreamTranslator:
             },
         )
 
-    def _emit_tool_call_delta(self, tc: dict[str, Any]) -> Iterator[bytes]:
-        idx = tc.get("index", 0)
-        fn = tc.get("function") or {}
-        # Close thinking/text blocks if open before opening a tool block
-        # (matches Anthropic ordering convention).
-        if idx not in self._tool_blocks:
-            yield from self._close_thinking()
-            if self._current_text_index is not None:
-                yield self._sse(
-                    "content_block_stop",
-                    {"type": "content_block_stop", "index": self._current_text_index},
-                )
-                self._current_text_index = None
-
-        if idx not in self._tool_blocks:
-            anthropic_index = self._next_index
-            self._next_index += 1
-            self._tool_blocks[idx] = {
-                "anthropic_index": anthropic_index,
-                "id": tc.get("id", ""),
-                "name": fn.get("name", ""),
-            }
+    def _close_text(self) -> Iterator[bytes]:
+        if self._current_text_index is not None:
             yield self._sse(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": anthropic_index,
-                    "content_block": {
-                        "type": "tool_use",
-                        "id": tc.get("id", ""),
-                        "name": fn.get("name", ""),
-                        "input": {},
-                    },
-                },
+                "content_block_stop",
+                {"type": "content_block_stop", "index": self._current_text_index},
             )
+            self._current_text_index = None
 
-        anthropic_index = self._tool_blocks[idx]["anthropic_index"]
+    def _close_visible_blocks(self) -> Iterator[bytes]:
+        """Close the open thinking/text block; a tool block is handled separately."""
+        yield from self._close_thinking()
+        yield from self._close_text()
+
+    def _drain_pending_events(self, *, finalizing: bool = False) -> Iterator[bytes]:
+        """Emit queued tool starts and typed fragments strictly in FIFO order.
+
+        The head of the queue is emitted only when the wire is free: any
+        currently open tool must first have complete arguments, and it is
+        closed to make room. A queued tool opens exactly once and is then
+        closed once its arguments are complete and another queued event needs
+        the wire (or immediately at an end/error boundary). If its arguments are incomplete,
+        later events stay queued and the caller signals activity instead of
+        overtaking them.
+        """
+        while self._pending_events:
+            kind, payload = self._pending_events[0]
+
+            if kind == "tool":
+                idx = payload
+                call = self._tool_calls[idx]
+                if call["opened"] or call["closed"]:
+                    self._pending_events.popleft()
+                    continue
+                if self._open_tool is not None:
+                    open_call = self._tool_calls[self._open_tool]
+                    if not finalizing and not self._call_arguments_complete(open_call):
+                        return
+                    yield from self._close_open_tool()
+                    continue
+                self._pending_events.popleft()
+                if finalizing and not (call["id"] or call["name"] or call["arguments"]):
+                    # At an end/error boundary an index that never carried any
+                    # call data is not a call; opening it would put an empty
+                    # orphan on the wire.
+                    continue
+                yield from self._open_tool_block(idx)
+                if finalizing or (self._pending_events and self._call_arguments_complete(call)):
+                    yield from self._close_open_tool()
+                    continue
+                return
+
+            # Text/reasoning fragment.
+            if self._open_tool is not None:
+                open_call = self._tool_calls[self._open_tool]
+                if not finalizing and not self._call_arguments_complete(open_call):
+                    return
+                yield from self._close_open_tool()
+                continue
+            self._pending_events.popleft()
+            if kind == "thinking":
+                yield from self._emit_thinking(payload)
+            else:
+                yield from self._emit_text(payload)
+
+    def _call_arguments_complete(self, call: dict[str, Any]) -> bool:
+        """Whether an in-flight call's arguments form a complete JSON object.
+
+        This is a *local* completeness check, not proof that the upstream has
+        finished the call: OpenAI has no per-tool end marker. It is used only
+        to decide whether content that follows can be streamed without closing
+        a block that a later argument fragment would have to reopen. Empty or
+        whitespace-only arguments are not complete -- the call may still
+        receive its arguments -- and trailing non-whitespace is not either.
+        The drain asks on every queued event, so the answer is tracked
+        incrementally rather than by re-parsing the prefix (see
+        :class:`_ToolArguments`).
+        """
+        return call["arguments"].complete()
+
+    def _tool_call_state(self, idx: int, tc: dict[str, Any], fn: dict[str, Any]) -> dict[str, Any]:
+        """Return this index's state, recording id/name without overwriting them.
+
+        Reusing the first non-empty id/name is what keeps a later argument-only
+        fragment (or a repeated tool delta) attached to the block that already
+        started, rather than minting an empty orphan.
+        """
+        call = self._tool_calls.get(idx)
+        if call is None:
+            call = {
+                "anthropic_index": None,
+                "id": "",
+                "name": "",
+                "arguments": _ToolArguments(),
+                "opened": False,
+                "closed": False,
+            }
+            self._tool_calls[idx] = call
+            # The marker shares the FIFO with typed content, so calls and the
+            # text/reasoning around them keep their arrival order.
+            self._pending_events.append(("tool", idx))
+        call_id = tc.get("id")
+        if isinstance(call_id, str) and call_id and not call["id"]:
+            call["id"] = call_id
+        name = fn.get("name")
+        if isinstance(name, str) and name and not call["name"]:
+            call["name"] = name
+        return call
+
+    @staticmethod
+    def _normalize_partial_arguments(tc: dict[str, Any]) -> str | None:
+        """Return the argument fragment as the JSON string Anthropic expects."""
+        fn = tc.get("function") or {}
         partial = fn.get("arguments")
         # partial_json must be a JSON *string* fragment. Most providers stream
-        # string fragments; some send the whole arguments object as a dict in one
-        # delta -- serialize that to a string so the client's SSE parser doesn't
-        # receive a partial_json that is an object.
+        # string fragments; some send the whole arguments object as a dict in
+        # one delta -- serialize that to a string so the client's SSE parser
+        # doesn't receive a partial_json that is an object.
         if isinstance(partial, dict):
-            partial = json.dumps(partial)
-        elif partial is not None and not isinstance(partial, str):
-            partial = None
-        if partial:
+            return json.dumps(partial)
+        if partial is None or isinstance(partial, str):
+            return partial
+        return None
+
+    def _open_tool_block(self, idx: int) -> Iterator[bytes]:
+        """Start the one open tool_use block and emit its accumulated arguments."""
+        call = self._tool_calls[idx]
+        if self._open_tool is not None:
+            # Callers only open after closing the previous tool. Guarding here
+            # keeps a future state-machine mistake from putting two blocks on
+            # the wire at once.
+            yield from self._close_open_tool()
+        yield from self._close_visible_blocks()
+        anthropic_index = self._next_index
+        self._next_index += 1
+        call["anthropic_index"] = anthropic_index
+        call["opened"] = True
+        self._open_tool = idx
+        yield self._sse(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": anthropic_index,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": call["id"],
+                    "name": call["name"],
+                    "input": {},
+                },
+            },
+        )
+        backlog = call["arguments"].text()
+        if backlog:
             yield self._sse(
                 "content_block_delta",
                 {
                     "type": "content_block_delta",
                     "index": anthropic_index,
-                    "delta": {"type": "input_json_delta", "partial_json": partial},
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": backlog,
+                    },
                 },
             )
+
+    def _close_open_tool(self) -> Iterator[bytes]:
+        if self._open_tool is None:
+            return
+        call = self._tool_calls[self._open_tool]
+        yield self._sse(
+            "content_block_stop",
+            {"type": "content_block_stop", "index": call["anthropic_index"]},
+        )
+        call["closed"] = True
+        self._open_tool = None
+
+    def _emit_tool_call_delta(self, tc: dict[str, Any]) -> Iterator[bytes]:
+        # A missing index means a single call, as before. Anything else must be
+        # an integer: it is the only key tying a later argument fragment to its
+        # call, so an explicit null or a string cannot be mapped to one without
+        # guessing. Fail like any other upstream protocol error, before any state
+        # or block exists for it. bool is an int subclass, not an index.
+        idx = tc.get("index", 0)
+        if not isinstance(idx, int) or isinstance(idx, bool):
+            raise ValueError(
+                f"tool call index must be an integer, got {type(idx).__name__}; "
+                "argument fragments cannot be attributed to a call"
+            )
+        fn = tc.get("function") or {}
+        call = self._tool_call_state(idx, tc, fn)
+        partial = self._normalize_partial_arguments(tc)
+
+        if call["closed"]:
+            # The block already stopped. Whitespace is harmless and may still
+            # arrive from providers that pad the end of the JSON value; any
+            # non-whitespace suffix would extend an already-complete JSON
+            # object, which is not a valid continuation. Reject it instead of
+            # inventing a second tool_use block with the same id.
+            if partial and partial.strip():
+                raise ValueError(
+                    f"tool call index {idx!r} received non-whitespace arguments after "
+                    "its tool_use block was closed; a complete JSON value cannot be "
+                    "extended"
+                )
+            return
+
+        if partial:
+            call["arguments"].append(partial)
+
+        if call["opened"]:
+            if partial:
+                yield self._sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": call["anthropic_index"],
+                        "delta": {"type": "input_json_delta", "partial_json": partial},
+                    },
+                )
+            # The final argument fragment may have completed this call; release
+            # any content/start marker already waiting behind it now rather
+            # than waiting for another event or EOF.
+            yield from self._drain_pending_events()
+            return
+
+        # The call's start marker is already in the FIFO (queued when state was
+        # created). Drain may put it on the wire now, or may still be blocked
+        # behind an earlier incomplete call. In the latter case its argument
+        # bytes are retained here and only a real received fragment signals
+        # activity; nothing is invented.
+        yield from self._drain_pending_events()
+        if not call["opened"] and partial:
+            yield _ACTIVITY_FRAME
 
     def _sse(self, event: str, payload: dict[str, Any]) -> bytes:
         return f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode()

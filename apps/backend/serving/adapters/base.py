@@ -4,6 +4,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 
@@ -319,10 +320,32 @@ class BaseAdapter(ABC):
         translator = OpenAIToAnthropicStreamTranslator(
             model=body.get("model", ""), input_tokens_estimate=input_estimate
         )
-        async for openai_chunk in self.stream_chat_completion(oai_messages, **oai_params):
-            data = openai_chunk.encode("utf-8") if isinstance(openai_chunk, str) else openai_chunk
-            for ant in translator.feed(data):
-                yield ant
+        upstream = self.stream_chat_completion(oai_messages, **oai_params)
+        # ``async for`` alone does not close the owned upstream generator when
+        # this generator is closed early (client disconnect / consumer aclose).
+        # ``aclosing`` makes the inner ``finally`` run on every exit -- normal
+        # end, upstream error, cancellation and GeneratorExit -- instead of
+        # leaving the provider stream to the event loop's finalizer.
+        async with aclosing(upstream) as upstream_iter:
+            try:
+                async for openai_chunk in upstream_iter:
+                    data = (
+                        openai_chunk.encode("utf-8")
+                        if isinstance(openai_chunk, str)
+                        else openai_chunk
+                    )
+                    for ant in translator.feed(data):
+                        yield ant
+            except Exception:
+                # The upstream failed mid-stream. Emit content the translator
+                # had already received (deferred behind a tool block) before
+                # unwinding, but never run finalize(): a failed stream must not
+                # end with a fabricated message_delta/message_stop.
+                # Cancellation is a BaseException and deliberately skips this
+                # branch -- the client is gone and the upstream did not fail.
+                for ant in translator.abort():
+                    yield ant
+                raise
         for ant in translator.finalize():
             yield ant
         # Hand the accumulated usage to the router's DB-logging step.
