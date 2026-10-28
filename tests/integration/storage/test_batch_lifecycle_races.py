@@ -111,9 +111,7 @@ async def test_removing_a_webhook_waits_for_an_event_being_written_and_takes_it(
     async with pool.acquire() as sealing:
         transaction = sealing.transaction()
         await transaction.start()
-        await _enqueue_event(
-            sealing, owner, "batch-a", terminal_event("batch-a", "openai_inline", "completed")
-        )
+        await _enqueue_event(sealing, owner, "batch-a", terminal_event("batch-a", "completed"))
         known = {
             row["pid"]
             for row in await sealing.fetch(
@@ -134,9 +132,7 @@ async def test_removing_a_webhook_waits_for_an_event_being_written_and_takes_it(
     assert left == 0, "an event outlived the webhook it was written under"
     # Another user's delivery is unaffected.
     async with pool.acquire() as conn:
-        await _enqueue_event(
-            conn, other, "batch-b", terminal_event("batch-b", "openai_inline", "completed")
-        )
+        await _enqueue_event(conn, other, "batch-b", terminal_event("batch-b", "completed"))
     (claimed,) = await hooks.claim_due_events(worker_id="w", limit=1, lease_seconds=60)
     assert claimed["user_id"] == other
 
@@ -149,9 +145,7 @@ async def test_an_event_is_not_written_once_the_webhook_is_gone(pool, users):
     )
     assert await hooks.delete_webhook(owner)
     async with pool.acquire() as conn:
-        await _enqueue_event(
-            conn, owner, "batch-c", terminal_event("batch-c", "openai_inline", "completed")
-        )
+        await _enqueue_event(conn, owner, "batch-c", terminal_event("batch-c", "completed"))
         assert (
             await conn.fetchval(
                 "SELECT count(*) FROM batch_webhook_events WHERE user_id = $1", owner
@@ -175,9 +169,7 @@ async def test_an_orphaned_event_neither_starves_others_nor_stays_pending(pool, 
             f"evt_orphan_{uuid.uuid4().hex[:8]}",
             orphan_owner,
         )
-        await _enqueue_event(
-            conn, healthy, "batch-h", terminal_event("batch-h", "openai_inline", "completed")
-        )
+        await _enqueue_event(conn, healthy, "batch-h", terminal_event("batch-h", "completed"))
     for attempt in range(3):
         claimed = await hooks.claim_due_events(worker_id=f"w{attempt}", limit=1, lease_seconds=60)
         assert [row["user_id"] for row in claimed] == ([healthy] if attempt == 0 else [])
@@ -199,9 +191,7 @@ async def test_erasure_takes_an_event_written_while_it_ran(pool, users):
     async with pool.acquire() as sealing:
         transaction = sealing.transaction()
         await transaction.start()
-        await _enqueue_event(
-            sealing, owner, "batch-e", terminal_event("batch-e", "openai_inline", "completed")
-        )
+        await _enqueue_event(sealing, owner, "batch-e", terminal_event("batch-e", "completed"))
         known = {
             row["pid"]
             for row in await sealing.fetch(

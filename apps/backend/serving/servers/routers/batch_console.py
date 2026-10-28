@@ -1,10 +1,10 @@
 """Batch management for people: the console's batch page, and webhook settings.
 
-The protocol routes (``/v1/batches``, ``/v1/messages/batches``, ``/v1/files``)
-are for programs holding an API key. This router serves the same batches to
-the signed-in user of the console (``/user/batches``, session token), across
-every API surface at once, with the counts, tokens and known cost of each, and
-lets them cancel, delete and download results. Nothing here creates a batch.
+The API routes (``/v1/batches``, ``/v1/files``) are for programs holding an API
+key. This router serves the same batches to the signed-in user of the console
+(``/user/batches``, session token) -- every target and input method alike, in
+one shape, with the status, counts, tokens and known cost of each -- and lets
+them cancel, delete and download results. Nothing here creates a batch.
 
 Webhook settings exist twice over the same store: ``/user/batch-webhook`` for
 the console and ``/v1/batch_webhook`` for an API key. A user has at most one
@@ -28,11 +28,7 @@ from pydantic import BaseModel, Field
 
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import stream_lines
-from serving.batch.renderers import (
-    anthropic_processing_status,
-    anthropic_request_counts,
-    openai_status,
-)
+from serving.batch.renderers import display_status
 from serving.batch.webhooks import (
     new_secret,
     resolution_problem as check_resolves_public,
@@ -46,11 +42,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.batches import results_final
 from serving.servers.routers.files import content_disposition
-from serving.storage.batch_store import (
-    SURFACE_ANTHROPIC,
-    SURFACE_OPENAI_FILE,
-    BatchDeleteInProgress,
-)
+from serving.storage.batch_store import SURFACE_OPENAI_FILE, BatchDeleteInProgress
 
 router = APIRouter()
 
@@ -68,30 +60,31 @@ def _epoch(value: Any) -> int | None:
 
 
 def batch_view(row: dict[str, Any]) -> dict[str, Any]:
-    """One batch as the console shows it, whatever its API surface."""
+    """One batch as the console shows it: the same shape and status words for every batch.
+
+    ``status`` and ``request_counts`` are those of ``/v1/batches`` (a batch the
+    retired Message Batches API stored included); ``input`` says how its
+    requests arrived (``inline`` or ``file``). ``api_surface`` is the stored
+    value, for diagnosis only.
+    """
     surface = row.get("api_surface") or "openai_inline"
-    if surface == SURFACE_ANTHROPIC:
-        status = anthropic_processing_status(row)
-        counts = anthropic_request_counts(row)
-    else:
-        status = openai_status(row)
-        counts = {
-            "total": int(row.get("request_count") or 0),
-            "completed": int(row.get("completed_count") or 0),
-            "failed": int(row.get("failed_count") or 0),
-        }
     prompt = int(row.get("prompt_tokens") or 0)
     completion = int(row.get("completion_tokens") or 0)
     return {
         "id": row["id"],
         "user_id": row.get("user_id"),
         "api_surface": surface,
+        "input": "file" if surface == SURFACE_OPENAI_FILE else "inline",
         "target": row.get("target"),
         "endpoint": row.get("endpoint"),
-        "status": status,
+        "status": display_status(row),
         "phase": row.get("phase"),
         "models": row.get("model_ids") or [],
-        "request_counts": counts,
+        "request_counts": {
+            "total": int(row.get("request_count") or 0),
+            "completed": int(row.get("completed_count") or 0),
+            "failed": int(row.get("failed_count") or 0),
+        },
         "cancelled": int(row.get("cancelled_count") or 0),
         "expired": int(row.get("expired_count") or 0),
         "usage": {
@@ -123,7 +116,7 @@ async def list_my_batches(
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
 ) -> dict[str, Any]:
-    """The signed-in user's batches across every API surface, newest first."""
+    """The signed-in user's batches, every target and input alike, newest first."""
     store = _require_store(store)
     rows = await store.list_batches(user_id=current_user["user_id"], limit=limit + 1, after=after)
     data = [batch_view(row) for row in rows[:limit]]
@@ -177,18 +170,17 @@ async def download_my_results(
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
-    """Download a finished batch's results as JSONL, in its protocol's line shape."""
+    """Download a finished batch's results as JSONL (the ``/v1/batches`` line shape)."""
     store = _require_store(store)
     row = await store.get_batch(batch_id, user_id=current_user["user_id"])
     if row is None:
         raise HTTPException(404, f"Batch '{batch_id}' not found")
     if not results_final(row):
         raise HTTPException(409, "This batch has not finished; its results are not final")
-    surface = row.get("api_surface") or "openai_inline"
-    if surface != SURFACE_OPENAI_FILE:
+    if row.get("api_surface") != SURFACE_OPENAI_FILE:
         kind = "all"
     return StreamingResponse(
-        stream_lines(store=store, batch_id=batch_id, surface=surface, kind=kind),
+        stream_lines(store=store, batch_id=batch_id, kind=kind),
         media_type="application/jsonl",
         headers={"content-disposition": content_disposition(f"{batch_id}_{kind}.jsonl")},
     )

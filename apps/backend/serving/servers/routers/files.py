@@ -360,7 +360,6 @@ async def file_content(
             stream_lines(
                 store=store,
                 batch_id=batch_id,
-                surface="openai_file",
                 kind=row["kind"],
                 version=int(row.get("renderer_version") or 1),
                 expected=row,

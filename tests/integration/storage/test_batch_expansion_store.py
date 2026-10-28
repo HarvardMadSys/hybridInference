@@ -1,7 +1,7 @@
 """The batch store's expansion contracts, against real PostgreSQL.
 
 Surfaces and phases (a validating batch is never claimed, a sealing one never
-expires or cancels), Anthropic admission failures settling at create, file
+expires or cancels), legacy Message Batch admission failures settling at create, file
 batches staged and published or failed whole, sealing guarded by generation,
 attempt accounting (billed once, unknown never zero, replays change nothing),
 idempotency (replay, conflict, tombstone, concurrency), atomic per-user caps,
@@ -23,7 +23,6 @@ from serving.storage.batch_file_store import BatchFileStore
 from serving.storage.batch_store import (
     BatchDeleteInProgress,
     BatchLimitExceeded,
-    BatchNotEnded,
     BatchStore,
     IdempotencyConflict,
     IdempotencyTombstoned,
@@ -255,7 +254,8 @@ async def test_cancelling_while_validating_ends_cancelled_without_running(store)
     assert sealed["cancelled_at"] is not None
 
 
-async def test_anthropic_items_refused_at_admission_are_errored_and_never_claimed(store):
+async def test_legacy_message_batch_items_refused_at_admission_are_never_claimed(store):
+    """Batches the retired Message Batches API stored still drain as they were stored."""
     user, model = _user(store), _model()
     items = [
         *_items(model, 2),
@@ -574,16 +574,23 @@ async def test_splitting_into_more_batches_earns_no_more_turns(store):
 # -- deletion, erasure, leases ---------------------------------------------------------
 
 
-async def test_anthropic_style_delete_needs_an_ended_batch(store):
+async def test_a_legacy_message_batch_is_deleted_like_any_other_batch(store):
+    """No longer only once ended: refused only while an upstream call may be live."""
     user, model = _user(store), _model()
-    batch = await _create(store, user, _items(model, 1), api_surface="anthropic", target="messages")
-    with pytest.raises(BatchNotEnded):
-        await store.delete_batch(batch["id"], user_id=user, require_ended=True)
+    running = await _create(
+        store, user, _items(model, 1), api_surface="anthropic", target="messages"
+    )
     (item,) = await _claim(store, model)
     with pytest.raises(BatchDeleteInProgress):
-        await store.delete_batch(batch["id"], user_id=user)
+        await store.delete_batch(running["id"], user_id=user)
     await _complete(store, item)
-    assert await store.delete_batch(batch["id"], user_id=user, require_ended=True)
+    assert await store.delete_batch(running["id"], user_id=user)
+    queued = await _create(
+        store, user, _items(model, 2, prefix="q"), api_surface="anthropic", target="messages"
+    )
+    assert (await store.get_batch(queued["id"]))["phase"] == "runnable"
+    assert await store.delete_batch(queued["id"], user_id=user)
+    assert await store.get_batch(queued["id"]) is None
 
 
 async def test_a_delete_during_a_download_hides_the_batch_until_the_sweep(pool, store):
