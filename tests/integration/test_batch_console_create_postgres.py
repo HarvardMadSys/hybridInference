@@ -19,6 +19,7 @@ everything is the signed-in user's only, administrators included.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import uuid
@@ -1086,28 +1087,80 @@ async def test_a_source_deleted_first_refuses_the_create_and_leaves_nothing_usab
 
 
 async def test_the_create_lock_holds_off_a_deletion_that_key_share_would_not(gateway):
-    gw, alice = gateway, gateway.users["alice"]
-    source = await upload(gw, alice, jsonl([chat_row("l-1", gw.chat.config.id)]))
+    """The console's source lock serializes with a deletion; the public pin does not.
 
-    async def deletion_waits_on(lock_sql: str) -> bool:
+    Decided by PostgreSQL, not by timing: with the pin a public create takes
+    (``FOR KEY SHARE``) held, the deletion must finish while the pin is still
+    held; with the console's lock (``FOR UPDATE``) held, PostgreSQL must report
+    the deletion's backend as blocked by the holder (``pg_blocking_pids``),
+    and the deletion finishes once the lock is released.
+    """
+    gw, alice = gateway, gateway.users["alice"]
+
+    async def deleted_at(file_id: str) -> Any:
         async with gw.pool.acquire() as conn:
-            tx = conn.transaction()
-            await tx.start()
-            await conn.execute(lock_sql, source["id"])
-            delete = asyncio.create_task(
-                gw.files.delete_file(source["id"], user_id=alice["user_id"])
+            return await conn.fetchval("SELECT deleted_at FROM batch_files WHERE id = $1", file_id)
+
+    async def blocked_by(holder_pid: int) -> bool:
+        async with gw.pool.acquire() as probe:
+            return bool(
+                await probe.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                    "WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'UPDATE batch_files%')",
+                    holder_pid,
+                )
             )
-            await asyncio.sleep(0.3)
-            blocked = not delete.done()
-            await tx.rollback()
-            await delete
-            return blocked
+
+    async def under_lock(lock_sql: str, file_id: str, *, conflicts: bool) -> None:
+        delete: asyncio.Task[bool] | None = None
+        try:
+            async with gw.pool.acquire() as holder:
+                tx = holder.transaction()
+                await tx.start()
+                try:
+                    await holder.execute(lock_sql, file_id)
+                    holder_pid = await holder.fetchval("SELECT pg_backend_pid()")
+                    delete = asyncio.create_task(
+                        gw.files.delete_file(file_id, user_id=alice["user_id"])
+                    )
+                    if conflicts:
+                        # A real waiter on this very lock, as PostgreSQL sees it.
+                        await until(
+                            lambda: blocked_by(holder_pid),
+                            timeout=30,
+                            what="the deletion to wait on the source lock",
+                        )
+                        assert not delete.done()
+                        assert await deleted_at(file_id) is None
+                    else:
+                        # No conflict: the deletion completes while the pin is still held,
+                        # however long the scheduler or the pool takes to run it.
+                        assert await asyncio.wait_for(asyncio.shield(delete), timeout=30) is True
+                        assert await deleted_at(file_id) is not None
+                        assert not await blocked_by(holder_pid)
+                finally:
+                    await tx.rollback()
+            assert delete is not None
+            # Released: a waiting deletion goes through now.
+            assert await asyncio.wait_for(delete, timeout=30) is True
+            assert await deleted_at(file_id) is not None
+        finally:
+            if delete is not None:
+                if not delete.done():
+                    delete.cancel()
+                with contextlib.suppress(BaseException):
+                    await delete
 
     # The pin a public create takes does not conflict with a deletion's update ...
-    assert not await deletion_waits_on("SELECT id FROM batch_files WHERE id = $1 FOR KEY SHARE")
+    pinned = await upload(gw, alice, jsonl([chat_row("l-1", gw.chat.config.id)]))
+    await under_lock(
+        "SELECT id FROM batch_files WHERE id = $1 FOR KEY SHARE", pinned["id"], conflicts=False
+    )
     # ... the console's source lock does, so a deletion and an adoption are ordered.
-    source = await upload(gw, alice, jsonl([chat_row("l-2", gw.chat.config.id)]))
-    assert await deletion_waits_on("SELECT id FROM batch_files WHERE id = $1 FOR UPDATE")
+    locked = await upload(gw, alice, jsonl([chat_row("l-2", gw.chat.config.id)]))
+    await under_lock(
+        "SELECT id FROM batch_files WHERE id = $1 FOR UPDATE", locked["id"], conflicts=True
+    )
 
 
 async def test_a_batch_created_first_keeps_running_when_its_source_is_deleted(gateway):
