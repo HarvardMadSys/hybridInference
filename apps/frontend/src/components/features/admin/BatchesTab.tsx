@@ -26,22 +26,17 @@ import {
   isCancellable,
   listAllBatches,
   type AdminBatchSummary,
-  type BatchSurface,
+  type BatchStatus,
   type ConsoleBatch,
 } from '@/lib/api/batches';
 import { getErrorMessage } from '@/lib/utils/errors';
 
-const SURFACES: { value: BatchSurface | ''; label: string }[] = [
-  { value: '', label: 'All APIs' },
-  { value: 'openai_inline', label: 'OpenAI inline' },
-  { value: 'openai_file', label: 'OpenAI file' },
-  { value: 'anthropic', label: 'Anthropic' },
-];
-
-const STATUSES = [
+/** The statuses the list shows; the filter matches the same ones, finalizing included. */
+const STATUSES: (BatchStatus | '')[] = [
   '',
   'validating',
   'in_progress',
+  'finalizing',
   'cancelling',
   'completed',
   'failed',
@@ -57,14 +52,10 @@ function when(epoch: number | null): string {
   return epoch ? new Date(epoch * 1000).toLocaleString('en-US') : '—';
 }
 
-/** Done / total of a batch, whichever protocol's tallies it has. */
+/** Done / total of a batch: completed, failed and cancelled requests are done. */
 function progressText(batch: ConsoleBatch): string {
   const counts = batch.request_counts;
-  if (batch.api_surface === 'anthropic') {
-    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
-    return `${total - (counts.processing ?? 0)}/${total}`;
-  }
-  return `${(counts.completed ?? 0) + (counts.failed ?? 0) + batch.cancelled}/${counts.total ?? 0}`;
+  return `${counts.completed + counts.failed + batch.cancelled}/${counts.total}`;
 }
 
 /**
@@ -77,8 +68,7 @@ export function BatchesTab() {
   const [summary, setSummary] = useState<AdminBatchSummary | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [userId, setUserId] = useState('');
-  const [status, setStatus] = useState('');
-  const [surface, setSurface] = useState<BatchSurface | ''>('');
+  const [status, setStatus] = useState<BatchStatus | ''>('');
   const owner = userId.trim();
   const {
     batches,
@@ -90,8 +80,8 @@ export function BatchesTab() {
     loadMore,
     replace,
   } = usePagedBatches(
-    (after) => listAllBatches({ userId: owner, status, surface, after }),
-    JSON.stringify([owner, status, surface]),
+    (after) => listAllBatches({ userId: owner, status, after }),
+    JSON.stringify([owner, status]),
   );
   const summaryGeneration = useRef(0);
 
@@ -214,7 +204,7 @@ export function BatchesTab() {
 
       <AdminSection
         title="All batches"
-        description="Newest first. Filter by owner, internal status or API."
+        description="Newest first. Filter by owner or by the status shown."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className={BUTTON_SECONDARY} onClick={refresh}>
@@ -227,18 +217,11 @@ export function BatchesTab() {
               value={userId}
               onChange={(event) => setUserId(event.target.value)}
             />
-            <Select
+            <Select<BatchStatus | ''>
               aria-label="Status"
               value={status}
               onValueChange={setStatus}
               options={STATUSES.map((value) => ({ value, label: value || 'Any status' }))}
-              className="w-36"
-            />
-            <Select<BatchSurface | ''>
-              aria-label="API"
-              value={surface}
-              onValueChange={setSurface}
-              options={SURFACES}
               className="w-36"
             />
           </div>
@@ -255,7 +238,7 @@ export function BatchesTab() {
                 <tr>
                   <th className={TABLE_HEAD_CELL}>Batch</th>
                   <th className={TABLE_HEAD_CELL}>Owner</th>
-                  <th className={TABLE_HEAD_CELL}>API / target</th>
+                  <th className={TABLE_HEAD_CELL}>Target</th>
                   <th className={TABLE_HEAD_CELL}>Status</th>
                   <th className={TABLE_HEAD_CELL}>Done</th>
                   <th className={TABLE_HEAD_CELL}>Tokens</th>
@@ -272,7 +255,11 @@ export function BatchesTab() {
                     <td className={`${TABLE_CELL} font-mono text-[12px]`}>{batch.id}</td>
                     <td className={`${TABLE_CELL} font-mono text-[12px]`}>{batch.user_id}</td>
                     <td className={TABLE_CELL}>
-                      {batch.api_surface} / {batch.target}
+                      {batch.endpoint ?? batch.target}
+                      <span className="block text-[11px] text-gray-500">
+                        {batch.input === 'file' ? 'JSONL file' : 'Direct requests'}
+                        {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
+                      </span>
                     </td>
                     <td className={TABLE_CELL}>
                       <span className={`${PILL} bg-gray-100 text-gray-700`}>{batch.status}</span>

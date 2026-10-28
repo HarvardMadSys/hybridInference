@@ -1,7 +1,8 @@
-"""OpenAI-shaped batch surface (``/v1/batches``).
+"""The batch API (``/v1/batches``).
 
 A caller submits many requests in one call, polls the batch, then collects its
-results. Two ways in, exclusive of each other on ``POST /v1/batches``:
+results. A batch has one target and its requests arrive in one of two ways,
+exclusive of each other on ``POST /v1/batches``:
 
 - **inline**: a ``requests`` array (``custom_id``, ``method``, ``url``,
   ``body``). Results are paged (``GET /v1/batches/{id}/results``) or exported
@@ -14,9 +15,12 @@ results. Two ways in, exclusive of each other on ``POST /v1/batches``:
   (status ``validating``); one bad line fails the batch before anything runs.
   Results arrive as ``output_file_id`` / ``error_file_id``.
 
-Targets: ``/v1/chat/completions``, ``/v1/embeddings`` and ``/v1/responses``
-(independent, unstored requests only), inline or from a file, whenever
-``BATCH_ENABLED`` is on. Running the requests is the in-process
+Targets: ``/v1/chat/completions``, ``/v1/embeddings``, ``/v1/responses``
+(independent, unstored requests only) and ``/v1/messages`` (Anthropic Messages
+bodies, our extension of the OpenAI shape), inline or from a file, whenever
+``BATCH_ENABLED`` is on. A Messages batch names the ``anthropic_version`` its
+requests are checked and run under (:mod:`serving.batch.profiles`); no other
+batch takes one. Running the requests is the in-process
 worker's job (``serving.batch.scheduler``): it re-authenticates the owner's key
 before each one, so a stored batch never outlives the access its owner had.
 
@@ -32,12 +36,14 @@ This router owns admission and the HTTP shapes:
   (``serving.batch.admission``);
 - a batch belongs to its owner, whichever of the owner's keys asks; an
   administrator may read, cancel and delete anyone's. Listing shows the
-  caller's own OpenAI-shaped batches; an Anthropic Message Batch is not found
-  here, as an OpenAI batch is not found on the Anthropic routes.
+  caller's own batches, every target and input alike -- including those the
+  retired Message Batches API (``/v1/messages/batches``) stored, which are
+  read, cancelled, deleted and downloaded here like any other.
 
 Design records: ``docs/agents/specs/2026-10-25-batch-inference-design.md``,
-``docs/agents/specs/2026-10-26-batch-api-expansion-design.zh.md`` and
-``docs/agents/specs/2026-10-27-batch-default-availability-amendment.zh.md``.
+``docs/agents/specs/2026-10-26-batch-api-expansion-design.zh.md``,
+``docs/agents/specs/2026-10-27-batch-default-availability-amendment.zh.md`` and
+``docs/agents/specs/2026-10-28-unified-batch-api-amendment.zh.md``.
 """
 
 from __future__ import annotations
@@ -54,9 +60,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from serving.batch import admission
-from serving.batch.config import PROTOCOL_WINDOW_SECONDS, batch_config, may_use_batch
+from serving.batch.config import (
+    KNOWN_ANTHROPIC_VERSIONS,
+    PROTOCOL_WINDOW_SECONDS,
+    batch_config,
+    may_use_batch,
+)
 from serving.batch.delivery import stream_lines
-from serving.batch.renderers import openai_status
+from serving.batch.profiles import PROFILES
+from serving.batch.renderers import display_status
 from serving.batch.schemas import (
     CHAT_COMPLETIONS_URL,
     FILE_COMPLETION_WINDOW,
@@ -72,7 +84,7 @@ from serving.batch.schemas import (
     BatchResultsPage,
     BatchUsage,
 )
-from serving.batch.targets import OPENAI_TARGET_URLS, AdmissionContext, check_item
+from serving.batch.targets import TARGET_URLS, AdmissionContext, check_item
 from serving.config.settings import has_role
 from serving.servers.auth import enforce_daily_quota, verify_batch_management_identity
 from serving.servers.deps import (
@@ -84,11 +96,11 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.files import content_disposition
 from serving.storage.batch_store import (
-    OPENAI_SURFACES,
     PHASE_SEALED,
     PHASE_VALIDATING,
     SURFACE_OPENAI_FILE,
     SURFACE_OPENAI_INLINE,
+    TARGET_MESSAGES,
     TERMINAL_BATCH_STATUSES,
     BatchDeleteInProgress,
 )
@@ -178,7 +190,7 @@ def batch_object(row: dict[str, Any], config: BatchConfig) -> BatchObject:
     Field by field, so the row's ownership columns (``user_id``, ``key_hash``)
     can never reach a response.
     """
-    status = openai_status(row)
+    status = display_status(row)
     sealed = row.get("phase") == PHASE_SEALED or row.get("api_surface") != SURFACE_OPENAI_FILE
     prompt = int(row.get("prompt_tokens") or 0)
     completion = int(row.get("completion_tokens") or 0)
@@ -209,6 +221,9 @@ def batch_object(row: dict[str, Any], config: BatchConfig) -> BatchObject:
         usage=BatchUsage(
             input_tokens=prompt, output_tokens=completion, total_tokens=prompt + completion
         ),
+        anthropic_version=row.get("protocol_profile")
+        if row.get("target") == TARGET_MESSAGES
+        else None,
         cost_usd=float(row.get("cost_usd") or 0.0),
         cost_unknown_attempts=int(row.get("unknown_cost_count") or 0),
         results_expires_at=_epoch(row.get("results_expires_at")),
@@ -292,7 +307,12 @@ def _parse_create_body(raw: bytes | bytearray) -> tuple[BatchCreateRequest, Any]
 
 
 def _admission_context(
-    user_ctx: dict[str, Any], *, services: Any, router_exec: Any, visibility_resolver: Any
+    user_ctx: dict[str, Any],
+    *,
+    services: Any,
+    router_exec: Any,
+    visibility_resolver: Any,
+    anthropic_version: str | None = None,
 ) -> AdmissionContext:
     return AdmissionContext(
         user_ctx=user_ctx,
@@ -301,6 +321,64 @@ def _admission_context(
         visibility_resolver=visibility_resolver,
         embedding_adapters=getattr(services, "embedding_adapters", None),
         embedding_routes=getattr(router_exec, "embedding_routes", None),
+        profile=PROFILES[anthropic_version] if anthropic_version else None,
+    )
+
+
+def _target_url(payload: BatchCreateRequest) -> str | None:
+    """The url that names the batch's target: the file's ``endpoint``, or the first request's."""
+    if payload.input_file_id is not None:
+        return payload.endpoint
+    return payload.requests[0].url if payload.requests else None
+
+
+def _anthropic_version(request: Request, payload: BatchCreateRequest) -> str | None:
+    """The ``anthropic_version`` a create names, checked against its target; None for others.
+
+    Only a ``/v1/messages`` batch takes one, and it must: a version on any
+    other batch is refused rather than ignored. It must be one this gateway
+    knows; whether it may still create a batch is decided after a replay
+    (:data:`KNOWN_ANTHROPIC_VERSIONS` replays, ``BATCH_ANTHROPIC_VERSIONS``
+    creates). No header is a second way to say it: ``anthropic-beta`` is
+    refused, and an ``anthropic-version`` header must repeat the envelope's.
+    A body whose target is not one of ours gets its own error later.
+    """
+    if request.headers.get("anthropic-beta"):
+        raise HTTPException(400, "anthropic-beta is not supported for batches")
+    url = _target_url(payload)
+    version = payload.anthropic_version
+    header = request.headers.get("anthropic-version")
+    if TARGET_URLS.get(url or "") != TARGET_MESSAGES:
+        if version is not None or header is not None:
+            raise HTTPException(
+                400,
+                f"anthropic_version: only a /v1/messages batch takes one; remove it from this "
+                f"{url or 'batch'} batch",
+            )
+        return None
+    if version is None:
+        raise HTTPException(
+            400,
+            "anthropic_version: a /v1/messages batch needs one, such as "
+            f"{KNOWN_ANTHROPIC_VERSIONS[0]!r}",
+        )
+    if version not in KNOWN_ANTHROPIC_VERSIONS:
+        raise _unsupported_version(version)
+    if header is not None and header.strip() != version:
+        raise HTTPException(
+            400,
+            "anthropic-version header: must match the batch's anthropic_version "
+            f"({version!r}), or be left out",
+        )
+    return version
+
+
+def _unsupported_version(version: str) -> HTTPException:
+    allowed = batch_config().anthropic_versions
+    return HTTPException(
+        400,
+        f"anthropic_version: {version!r} is not supported for batches here; "
+        f"use one of {', '.join(allowed)}",
     )
 
 
@@ -324,12 +402,12 @@ async def _validate_inline(
             f"this one has {len(requests)}",
         )
     url = requests[0].url
-    target = OPENAI_TARGET_URLS.get(url)
+    target = TARGET_URLS.get(url)
     if target is None:
         raise HTTPException(
             400,
             f"{_item_label(0, requests[0].custom_id)}: url must be one of "
-            f"{', '.join(sorted(OPENAI_TARGET_URLS))}",
+            f"{', '.join(sorted(TARGET_URLS))}",
         )
     seen: set[str] = set()
     items: list[dict[str, Any]] = []
@@ -365,8 +443,8 @@ async def _check_file(
     """The upload a file batch names, checked: the caller's, for batches, ready, in size."""
     if file_store is None:
         raise HTTPException(404, _UNAVAILABLE)
-    if payload.endpoint not in OPENAI_TARGET_URLS:
-        raise HTTPException(400, f"endpoint must be one of {', '.join(sorted(OPENAI_TARGET_URLS))}")
+    if payload.endpoint not in TARGET_URLS:
+        raise HTTPException(400, f"endpoint must be one of {', '.join(sorted(TARGET_URLS))}")
     if payload.completion_window != FILE_COMPLETION_WINDOW:
         raise HTTPException(400, f"completion_window must be {FILE_COMPLETION_WINDOW!r}")
     upload = await file_store.get_file(payload.input_file_id, user_id=owner)
@@ -400,7 +478,7 @@ async def create_batch(
     router_exec=Depends(get_router),
     visibility_resolver=Depends(get_model_visibility_resolver),
 ) -> BatchObject:
-    """Create a batch from inline requests, or from an uploaded JSONL file."""
+    """Create a batch from inline requests, or from an uploaded JSONL file, for any target."""
     store, config = _surface(store)
     owner = _owner(user_ctx)
     key = admission.idempotency_key(request)
@@ -414,6 +492,11 @@ async def create_batch(
     )
     file_mode = payload.input_file_id is not None
     surface = SURFACE_OPENAI_FILE if file_mode else SURFACE_OPENAI_INLINE
+    version = _anthropic_version(request, payload)
+    # The version is part of what is asked for, so it is part of the digest --
+    # but only where there is one: a non-Messages digest keeps exactly the
+    # parts it had before versions existed, so records written then still replay.
+    versioned = {"anthropic_version": version} if version is not None else {}
     if file_mode:
         digest = admission.request_digest(
             surface,
@@ -421,12 +504,14 @@ async def create_batch(
             endpoint=payload.endpoint,
             completion_window=payload.completion_window,
             metadata=payload.metadata,
+            **versioned,
         )
     else:
         digest = admission.request_digest(
             surface,
             requests=[entry.model_dump(mode="json") for entry in payload.requests or []],
             metadata=payload.metadata,
+            **versioned,
         )
     replay = await admission.find_replay(
         store, owner=owner, surface=surface, key=key, digest=digest
@@ -435,6 +520,8 @@ async def create_batch(
         return batch_object(replay, config)
 
     _may_create(request, user_ctx, config)
+    if version is not None and version not in config.anthropic_versions:
+        raise _unsupported_version(version)
     if key is None:
         # Checked before the requests are validated, so a caller at the limit is
         # not made to wait for it; enforced again, atomically, by the insert.
@@ -451,6 +538,7 @@ async def create_batch(
         "idempotency": {"key": key, "digest": digest} if key else None,
         "max_active": config.max_active_per_user,
         "max_queued": config.max_queued_per_user,
+        "protocol_profile": version,
     }
     if file_mode:
         upload = await _check_file(file_store, payload, owner, config)
@@ -462,7 +550,7 @@ async def create_batch(
             items=[],
             completion_window_seconds=PROTOCOL_WINDOW_SECONDS,
             api_surface=SURFACE_OPENAI_FILE,
-            target=OPENAI_TARGET_URLS[payload.endpoint or ""],
+            target=TARGET_URLS[payload.endpoint or ""],
             phase=PHASE_VALIDATING,
             input_file_id=upload["id"],
         )
@@ -472,6 +560,7 @@ async def create_batch(
             services=services,
             router_exec=router_exec,
             visibility_resolver=visibility_resolver,
+            anthropic_version=version,
         )
         url, items, model_ids = await _validate_inline(payload, config=config, ctx=ctx)
         row = await admission.create(
@@ -482,7 +571,7 @@ async def create_batch(
             items=items,
             completion_window_seconds=config.completion_window_seconds,
             api_surface=SURFACE_OPENAI_INLINE,
-            target=OPENAI_TARGET_URLS[url],
+            target=TARGET_URLS[url],
         )
     if not row.get("replayed"):
         logger.info(
@@ -504,11 +593,9 @@ async def list_batches(
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
 ) -> BatchList:
-    """List the caller's OpenAI-shaped batches, newest first."""
+    """List the caller's batches, every target and input alike, newest first."""
     store, config = _surface(store)
-    rows = await store.list_batches(
-        user_id=_owner(user_ctx), limit=limit + 1, after=after, surfaces=OPENAI_SURFACES
-    )
+    rows = await store.list_batches(user_id=_owner(user_ctx), limit=limit + 1, after=after)
     page = [batch_object(row, config) for row in rows[:limit]]
     return BatchList(
         data=page,
@@ -526,7 +613,7 @@ async def retrieve_batch(
 ) -> BatchObject:
     """Return a batch: its status and request counts."""
     store, config = _surface(store)
-    row = await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx), surfaces=OPENAI_SURFACES)
+    row = await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx))
     if row is None:
         raise _not_found(batch_id)
     return batch_object(row, config)
@@ -545,9 +632,7 @@ async def cancel_batch(
     returned unchanged.
     """
     store, config = _surface(store)
-    row = await store.cancel_batch(
-        batch_id, user_id=_lookup_scope(user_ctx), surfaces=OPENAI_SURFACES
-    )
+    row = await store.cancel_batch(batch_id, user_id=_lookup_scope(user_ctx))
     if row is None:
         raise _not_found(batch_id)
     return batch_object(row, config)
@@ -562,9 +647,7 @@ async def delete_batch(
     """Delete a batch unless one of its requests still holds a live lease."""
     store, _config = _surface(store)
     try:
-        deleted = await store.delete_batch(
-            batch_id, user_id=_lookup_scope(user_ctx), surfaces=OPENAI_SURFACES
-        )
+        deleted = await store.delete_batch(batch_id, user_id=_lookup_scope(user_ctx))
     except BatchDeleteInProgress:
         raise HTTPException(
             409,
@@ -587,10 +670,7 @@ async def list_batch_results(
     """Page through a batch's requests in submission order, with their outcomes."""
     store, _config = _surface(store)
     cursor = _results_cursor(after)
-    if (
-        await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx), surfaces=OPENAI_SURFACES)
-        is None
-    ):
+    if await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx)) is None:
         raise _not_found(batch_id)
     rows = await store.list_results(batch_id, after=cursor, limit=limit + 1)
     page = [_result(row) for row in rows[:limit]]
@@ -615,15 +695,15 @@ async def export_batch_results(
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
-    """Download every result of a finished batch as JSONL (OpenAI output-line shape)."""
+    """Download every result of a finished batch as JSONL (the OpenAI output-line shape)."""
     store, _config = _surface(store)
-    row = await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx), surfaces=OPENAI_SURFACES)
+    row = await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx))
     if row is None:
         raise _not_found(batch_id)
     if not results_final(row):
         raise HTTPException(409, f"Batch '{batch_id}' has not finished; its results are not final")
     return StreamingResponse(
-        stream_lines(store=store, batch_id=batch_id, surface=row["api_surface"], kind="all"),
+        stream_lines(store=store, batch_id=batch_id, kind="all"),
         media_type="application/jsonl",
         headers={"content-disposition": content_disposition(f"{batch_id}.jsonl")},
     )

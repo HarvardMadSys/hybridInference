@@ -1,6 +1,8 @@
-"""Request and response bodies of the OpenAI-shaped batch surface (``/v1/batches``).
+"""Request and response bodies of the batch API (``/v1/batches``).
 
-Two ways to create a batch share ``POST /v1/batches``:
+A batch has one target (``/v1/chat/completions``, ``/v1/embeddings``,
+``/v1/messages`` or ``/v1/responses``) and its requests arrive in one of two
+ways, both through ``POST /v1/batches``:
 
 - **inline**: a ``requests`` array whose entries have the shape of the lines of
   an OpenAI batch input file (``custom_id``, ``method``, ``url``, ``body``).
@@ -9,8 +11,10 @@ Two ways to create a batch share ``POST /v1/batches``:
   ``endpoint`` and ``completion_window``. Results arrive as output and error
   files (``/v1/files``).
 
-The two are exclusive. Responses are OpenAI-shaped batch objects, plus fields
-of ours: ``cost_usd`` (what the batch's finished attempts were billed so far),
+The two are exclusive. A ``/v1/messages`` batch -- our extension of the OpenAI
+shape -- also names its ``anthropic_version``, in either form. Responses are
+OpenAI-shaped batch objects, plus fields of ours: ``anthropic_version``,
+``cost_usd`` (what the batch's finished attempts were billed so far),
 ``cost_unknown_attempts`` (attempts whose cost is unknown and so not in
 ``cost_usd``), ``usage`` and ``error`` (why the whole batch failed, e.g.
 ``owner_unauthorized``).
@@ -92,6 +96,9 @@ class BatchCreateRequest(BaseModel):
     endpoint: str | None = None
     completion_window: str | None = None
     metadata: dict[str, str] | None = None
+    #: The Anthropic API version a ``/v1/messages`` batch is checked and run
+    #: under; required for such a batch and refused on any other.
+    anthropic_version: str | None = Field(default=None, min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def _one_mode(self) -> BatchCreateRequest:
@@ -145,8 +152,8 @@ class BatchObject(BaseModel):
     ``error_file_id`` are null); its results are read from
     ``GET /v1/batches/{id}/results``. A file batch names its input and, once
     sealed, its output and error files; ``errors`` lists what made its input
-    invalid. ``cost_usd``, ``cost_unknown_attempts``, ``results_expires_at``
-    and ``error`` are ours.
+    invalid. ``anthropic_version`` (a ``/v1/messages`` batch's), ``cost_usd``,
+    ``cost_unknown_attempts``, ``results_expires_at`` and ``error`` are ours.
     """
 
     id: str
@@ -170,6 +177,7 @@ class BatchObject(BaseModel):
     request_counts: BatchRequestCounts
     metadata: dict[str, Any] | None = None
     usage: BatchUsage | None = None
+    anthropic_version: str | None = None
     cost_usd: float = 0.0
     cost_unknown_attempts: int = 0
     results_expires_at: int | None = None

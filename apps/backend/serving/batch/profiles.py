@@ -1,7 +1,9 @@
-"""Anthropic API versions a Message Batch can be created under.
+"""Anthropic API versions a Messages batch can be created under.
 
-A Message Batch keeps the ``anthropic-version`` it was created with, and every
-request in it is checked against that version's rules when it is admitted. Two
+A batch whose target is ``/v1/messages`` names an ``anthropic_version`` in its
+``POST /v1/batches`` envelope (inline and file alike). The batch keeps it
+(``protocol_profile``), and every request in it is checked against that
+version's rules when it is admitted, or when its input file is validated. Two
 versions are known:
 
 - ``2023-06-01``, what every SDK before the 2026 major versions sends;
@@ -17,9 +19,10 @@ Admission applies the version's rules, so a request accepted under
 ``2026-10-21`` means the same under either version. The native Anthropic
 adapter is sent the stored version (``req_ctx.ANTHROPIC_VERSION``); other
 adapters receive a request that the version's rules already made equivalent.
-Any version not listed here, a missing ``anthropic-version`` header and any
-``anthropic-beta`` header are refused on the batch routes. Which of the known
-versions are accepted is the ``BATCH_ANTHROPIC_VERSIONS`` setting.
+A Messages batch without a version, a version not listed here and any
+``anthropic-beta`` header are refused when a batch is created. Which of the
+known versions new batches may use is the ``BATCH_ANTHROPIC_VERSIONS``
+setting; a batch already stored keeps running under its own.
 """
 
 from __future__ import annotations

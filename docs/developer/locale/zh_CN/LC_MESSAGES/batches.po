@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-26 23:33-0400\n"
+"POT-Creation-Date: 2026-10-28 01:58-0400\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -33,12 +33,82 @@ msgid ""
 msgstr "批次是一次调用交给网关、稍后才给出结果的许多推理请求。你提交整个任务，轮询它的状态，然后收取结果。网关在后台运行这些请求，每个模型同时只跑几个，与交互式流量并行。"
 
 #: ../developer/batches.md:8
-msgid "There are three ways to submit one, and each speaks its own protocol:"
-msgstr "提交批次有三种方式，各自使用自己的协议："
+msgid ""
+"There is one batch API, `/v1/batches`. Every batch has one **target**, "
+"the endpoint each of its requests is for:"
+msgstr "网关只有一个 Batch API：`/v1/batches`。每个批次有一个**目标**，即批次中每个请求所发往的端点："
 
 #: ../developer/batches.md
-msgid "API"
-msgstr "API"
+msgid "Target"
+msgstr "目标"
+
+#: ../developer/batches.md
+msgid "`url` / `endpoint`"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "Request body"
+msgstr "请求体"
+
+#: ../developer/batches.md
+msgid "Chat completions"
+msgstr "Chat Completions"
+
+#: ../developer/batches.md
+msgid "`/v1/chat/completions`"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "A chat completion request"
+msgstr "一个 Chat Completions 请求"
+
+#: ../developer/batches.md
+msgid "Embeddings"
+msgstr "Embeddings"
+
+#: ../developer/batches.md
+msgid "`/v1/embeddings`"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "An embeddings request"
+msgstr "一个 Embeddings 请求"
+
+#: ../developer/batches.md
+msgid "Responses"
+msgstr "Responses"
+
+#: ../developer/batches.md
+msgid "`/v1/responses`"
+msgstr ""
+
+#: ../developer/batches.md
+msgid "An independent Responses request"
+msgstr "一个独立的 Responses 请求"
+
+#: ../developer/batches.md
+msgid "Messages"
+msgstr "Messages"
+
+#: ../developer/batches.md
+msgid "`/v1/messages`"
+msgstr ""
+
+#: ../developer/batches.md
+msgid ""
+"An Anthropic Messages request; the batch also names its "
+"`anthropic_version`"
+msgstr "一个 Anthropic Messages 请求；批次还要给出它的 `anthropic_version`"
+
+#: ../developer/batches.md:18
+msgid ""
+"Its requests arrive in one of two ways, the **input methods** of the same"
+" batch resource:"
+msgstr "请求可以通过两种方式提交，它们是同一个批次资源的两种**输入方式**："
+
+#: ../developer/batches.md
+msgid "Input method"
+msgstr "输入方式"
 
 #: ../developer/batches.md
 msgid "Submit"
@@ -49,8 +119,8 @@ msgid "Results"
 msgstr "结果"
 
 #: ../developer/batches.md
-msgid "OpenAI, inline"
-msgstr "OpenAI，内联"
+msgid "Direct requests"
+msgstr "直接提交请求"
 
 #: ../developer/batches.md
 msgid "`POST /v1/batches` with the requests in a `requests` array"
@@ -62,8 +132,8 @@ msgid "Paged from `/v1/batches/{id}/results`, or one JSONL export"
 msgstr "从 `/v1/batches/{id}/results` 分页读取，或一次导出为 JSONL"
 
 #: ../developer/batches.md
-msgid "OpenAI, from a file"
-msgstr "OpenAI，来自文件"
+msgid "JSONL file"
+msgstr "JSONL 文件"
 
 #: ../developer/batches.md
 msgid ""
@@ -75,76 +145,62 @@ msgstr "先把 JSONL 文件上传到 `/v1/files`，再带上它的 `input_file_i
 msgid "An output file and an error file, downloaded from `/v1/files`"
 msgstr "一个输出文件和一个错误文件，从 `/v1/files` 下载"
 
-#: ../developer/batches.md ../developer/batches.md:402
-msgid "Anthropic Message Batches"
-msgstr "Anthropic Message Batches"
-
-#: ../developer/batches.md
-msgid "`POST /v1/messages/batches` (also under `/anthropic`)"
-msgstr "`POST /v1/messages/batches`（`/anthropic` 下也有）"
-
-#: ../developer/batches.md
-#, python-brace-format
-msgid "JSONL from `/v1/messages/batches/{id}/results`"
-msgstr "从 `/v1/messages/batches/{id}/results` 获取 JSONL"
-
-#: ../developer/batches.md:16
+#: ../developer/batches.md:26
 msgid ""
-"A batch request can be a chat completion (`/v1/chat/completions`), an "
-"embedding (`/v1/embeddings`), an independent Responses request "
-"(`/v1/responses`) or an Anthropic message. The shapes follow OpenAI's "
-"Batch API and Anthropic's Message Batches API; the differences are listed"
-" at the end of this page."
-msgstr ""
-"批次中的请求可以是 chat "
-"completion（`/v1/chat/completions`）、embedding（`/v1/embeddings`）、独立的 "
-"Responses 请求（`/v1/responses`）或 Anthropic 消息。格式遵循 OpenAI 的 Batch API 和 "
-"Anthropic 的 Message Batches API；差异列在本页末尾。"
-
-#: ../developer/batches.md:21
-msgid ""
-"The official OpenAI and Anthropic SDKs work against these routes: point "
-"the SDK's base URL at the gateway — `https://your-gateway.example/v1` for"
-" OpenAI's, `https://your-gateway.example` for Anthropic's — and pass your"
-" gateway API key. There is no HybridInference SDK of its own, and the "
-"gateway does not offer every batch feature of either provider. The inline"
-" form and the results pages are this gateway's own, so the SDKs have no "
-"methods for them; call them over HTTP, as the examples below do."
-msgstr ""
-"官方 OpenAI 和 Anthropic SDK 可以直接对接这些路由：把 SDK 的 base URL 指向网关——OpenAI SDK 用 "
-"`https://your-gateway.example/v1`，Anthropic SDK 用 `https://your-"
-"gateway.example`——并传入你在网关上的 API key。HybridInference 没有自己的 "
-"SDK，网关也不提供两家供应商的全部批量功能。内联形式和结果分页是本网关独有的，SDK 没有对应的方法；请像下面的示例那样直接通过 HTTP "
-"调用。"
+"Whatever the target and input method, a batch is the same object, with "
+"the same statuses, counts, results, cancel and delete. The shapes follow "
+"OpenAI's Batch API; the differences are listed at the end of this page."
+msgstr "无论目标和输入方式如何，批次都是同一种对象，状态、计数、结果、取消和删除都一样。形状沿用 OpenAI 的 Batch API；差异列在本页末尾。"
 
 #: ../developer/batches.md:30
-msgid "Only **internal** users and administrators can create batches unless the operator opens them to other roles. A gateway with batch inference turned off, or without a database, answers every batch route with `404`. Otherwise every way in on this page is available: inline and file batches, Anthropic Message Batches, chat, embedding and Responses requests, and webhooks."
-msgstr "默认只有 **internal** 用户和管理员可以创建批次，除非运营者向其他角色开放。网关关闭批量推理或没有数据库时，所有批次路由都返回 `404`。否则，本页介绍的所有入口均可用：内联批次和文件批次、Anthropic Message Batches、聊天、嵌入和 Responses 请求，以及 webhook。"
+msgid ""
+"The official OpenAI SDKs work with the file flow for the chat, embeddings"
+" and Responses targets: point the SDK's base URL at `https://your-"
+"gateway.example/v1` and pass your gateway API key. The Messages target is"
+" this gateway's extension of that shape. Anthropic's own Message Batches "
+"API (`/v1/messages/batches`, the Anthropic SDKs' `messages.batches`) is "
+"not served; see [Moving from Message Batches](#moving-from-message-"
+"batches). There is no HybridInference SDK of its own. Direct requests and"
+" the results pages are this gateway's own, so the SDKs have no methods "
+"for them; call them over HTTP, as the examples below do."
+msgstr ""
+"官方 OpenAI SDK 可以用文件方式提交 Chat、Embeddings 和 Responses 目标的批次：把 SDK 的 base "
+"URL 指向 `https://your-gateway.example/v1`，并传入你的网关 API 密钥。Messages "
+"目标是本网关对这一形状的扩展。网关不提供 Anthropic 自己的 Message Batches "
+"API（`/v1/messages/batches`，即 Anthropic SDK 的 `messages.batches`）；见[从 "
+"Message Batches 迁移](#moving-from-message-batches)。HybridInference 没有自己的 "
+"SDK。直接提交请求和结果分页是本网关自有的接口，SDK 没有对应的方法；请像下面的示例那样直接通过 HTTP 调用。"
 
-#: ../developer/batches.md:38
+#: ../developer/batches.md:41
+msgid ""
+"Only **internal** users and administrators can create batches unless the "
+"operator opens them to other roles. A gateway with batch inference turned"
+" off, or without a database, answers every batch route with `404`. "
+"Otherwise everything on this page is available: both input methods, every"
+" target, and webhooks."
+msgstr ""
+"默认只有 **internal** 用户和管理员可以创建批次，除非运营者向其他角色开放。网关关闭批量推理或没有数据库时，所有批次路由都返回 "
+"`404`。否则本页介绍的全部功能都可用：两种输入方式、所有目标以及 webhook。"
+
+#: ../developer/batches.md:48
 msgid "How it works"
 msgstr "工作原理"
 
-#: ../developer/batches.md:40
+#: ../developer/batches.md:50
 msgid ""
-"Creating a batch stores its requests; nothing runs during that call. When"
-" the requests are checked depends on the API: an inline batch is checked "
-"whole before the call answers ([Create a batch](#create-a-batch)), a file"
-" batch is checked whole in the background ([Batches from a file"
-"](#batches-from-a-file)), and a Message Batch's requests are checked one "
-"by one, each invalid one becoming an error result ([Anthropic Message "
-"Batches](#anthropic-message-batches)). An OpenAI batch starts as "
-"`validating`, and the gateway's worker starts the requests of any batch "
-"as soon as their models have room."
+"Creating a batch stores its requests; nothing runs during that call. "
+"Every request is checked before any of them runs: direct requests are "
+"checked whole before the call answers ([Create a "
+"batch](#create-a-batch)), and a file is checked whole in the background "
+"([Batches from a file](#batches-from-a-file)). One invalid request "
+"refuses the whole batch. A batch starts as `validating`, and the "
+"gateway's worker starts its requests as soon as their models have room."
 msgstr ""
-"创建批次时会存下它的请求；这次调用本身不运行任何请求。请求何时校验取决于 "
-"API：内联批次在调用返回前整体校验（[创建批次](#create-a-batch)），文件批次在后台整体校验（[来自文件的批次"
-"](#batches-from-a-file)），Message Batch "
-"的请求逐条校验，每条无效请求各自成为一个错误结果（[Anthropic Message Batches](#anthropic-message-"
-"batches)）。OpenAI 批次的初始状态是 `validating`；无论哪种批次，只要请求所用的模型有空位，网关的 worker "
-"就会开始运行它们。"
+"创建批次时会存下它的请求；这次调用本身不运行任何请求。任何请求运行之前，所有请求都会先经过校验：直接提交的请求在调用返回前整体校验（[创建批次](#create-a-batch)），文件在后台整体校验（[来自文件的批次"
+"](#batches-from-a-file)）。只要有一个请求无效，整个批次就会被拒绝。批次一开始处于 "
+"`validating`，只要其模型有空余，网关的 worker 就会开始运行它的请求。"
 
-#: ../developer/batches.md:49
+#: ../developer/batches.md:57
 msgid ""
 "Each request then runs exactly as if you had sent it to its endpoint "
 "yourself: the same models, routing and fallback, the same price, logged "
@@ -154,7 +210,7 @@ msgid ""
 "your interactive requests need, and they do not use up the batch's."
 msgstr "之后每个请求的运行方式与你亲自把它发到对应端点完全相同：同样的模型、路由和回退，同样的价格，记在你的账户下。它计入你的每日费用额度。它**不**占用你的并发请求名额：批量任务按角色有单独的配额，所以运行中的批次不会用掉交互式请求需要的名额，交互式请求也不会用掉批次的名额。"
 
-#: ../developer/batches.md:56
+#: ../developer/batches.md:64
 msgid ""
 "Batch and interactive requests still share the models and the upstream "
 "servers behind them. By default a model runs fewer batch requests while "
@@ -166,7 +222,7 @@ msgstr ""
 "批量请求和交互式请求仍然共享模型及其背后的上游服务器。默认情况下，某个模型上有交互式请求在处理时，它会少运行一些批量请求，因此批次会为同一模型上的交互式流量让路，在交互流量大时可能变慢（见[运行批量推理"
 "](#running-batch-inference)）。"
 
-#: ../developer/batches.md:62
+#: ../developer/batches.md:70
 msgid ""
 "Requests run in no particular order, and a request that fails for a "
 "reason that may pass — a timeout, a `429`, a `5xx` — is retried with "
@@ -176,125 +232,143 @@ msgstr ""
 "请求的运行顺序不固定。因可能自行恢复的原因失败的请求——超时、`429`、`5xx`——会带退避重试，最多共尝试八次。被模型拒绝的请求（其他任何 "
 "`4xx`）会立即失败。"
 
-#: ../developer/batches.md:67
+#: ../developer/batches.md:75
 msgid ""
 "Before each request runs, the gateway checks the API key that created the"
 " batch again:"
 msgstr "每个请求运行前，网关都会再次检查创建该批次的 API key："
 
-#: ../developer/batches.md:70
+#: ../developer/batches.md:78
 msgid ""
 "if the key was revoked or has expired, or the account was suspended or "
 "deleted, the batch fails;"
 msgstr "如果 key 已被吊销或过期，或账户已被停用或删除，批次失败；"
 
-#: ../developer/batches.md:72
+#: ../developer/batches.md:80
 msgid ""
 "if your daily quota is used up, your batches pause until it renews at "
 "midnight UTC;"
 msgstr "如果你的每日额度已用完，你的批次会暂停，直到额度在 UTC 午夜刷新；"
 
-#: ../developer/batches.md:74
+#: ../developer/batches.md:82
 msgid "if your role no longer allows batches, they pause until it does."
 msgstr "如果你的角色不再允许使用批量推理，批次会暂停，直到重新允许为止。"
 
-#: ../developer/batches.md:76
+#: ../developer/batches.md:84
 msgid "So keep the key you created a batch with until the batch finishes."
 msgstr "所以在批次完成之前，请保留创建它所用的 key。"
 
-#: ../developer/batches.md:78
+#: ../developer/batches.md:86
 msgid "Create a batch"
 msgstr "创建批次"
 
-#: ../developer/batches.md:80
+#: ../developer/batches.md:88
 msgid "`POST /v1/batches` with your API key:"
 msgstr "用你的 API key 调用 `POST /v1/batches`："
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Field"
 msgstr "字段"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Required"
 msgstr "必填"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Meaning"
 msgstr "含义"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`requests`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "yes"
 msgstr "是"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "The requests, at least one"
 msgstr "请求列表，至少一个"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`requests[].custom_id`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Your name for the request, 1–512 characters, unique in the batch. Results"
 " carry it back"
 msgstr "你给请求起的名字，1–512 个字符，在批次内唯一。结果中会原样带回"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`requests[].method`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "no"
 msgstr "否"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`POST`, the default"
 msgstr "`POST`，默认值"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`requests[].url`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
-"`/v1/chat/completions` (the default), `/v1/embeddings` or "
-"`/v1/responses`. Every request of one batch uses the same `url`"
+"The target: `/v1/chat/completions` (the default), `/v1/embeddings`, "
+"`/v1/responses` or `/v1/messages`. Every request of one batch uses the "
+"same `url`"
 msgstr ""
-"`/v1/chat/completions`（默认）、`/v1/embeddings` 或 "
-"`/v1/responses`。同一批次的所有请求使用同一个 `url`"
+"目标：`/v1/chat/completions`（默认）、`/v1/embeddings`、`/v1/responses` 或 "
+"`/v1/messages`。同一批次的所有请求使用同一个 `url`"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`requests[].body`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "The request body, as you would send it to that endpoint. `stream` must "
 "not be `true`"
 msgstr "请求体，与你直接发给该端点时一样。`stream` 不能为 `true`"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
+msgid "`anthropic_version`"
+msgstr ""
+
+#: ../developer/batches.md:40
+msgid "for `/v1/messages`"
+msgstr "`/v1/messages` 时必填"
+
+#: ../developer/batches.md:40
+msgid ""
+"The Anthropic API version the batch's Messages requests are checked and "
+"run under ([Messages in a batch](#messages-in-a-batch)). Refused on any "
+"other target"
+msgstr ""
+"批次中 Messages 请求校验和运行所依据的 Anthropic API 版本（[批次中的 Messages](#messages-"
+"in-a-batch)）。其他目标提供该字段会被拒绝"
+
+#: ../developer/batches.md:40
 msgid "`metadata`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Up to 16 string pairs for your own use; keys up to 64 characters, values "
 "up to 512"
 msgstr "最多 16 对字符串，供你自己使用；键最长 64 个字符，值最长 512 个字符"
 
-#: ../developer/batches.md:120
+#: ../developer/batches.md:129
 msgid ""
 "One batch may use several models. Auto models (`auto`, `auto-<tier>`) "
 "cannot be used in a batch; name a specific model."
 msgstr "一个批次可以使用多个模型。自动模型（`auto`、`auto-<tier>`）不能用于批次；请指定具体模型。"
 
-#: ../developer/batches.md:123
+#: ../developer/batches.md:132
 msgid ""
 "If that name is an alias, the stored request retains the name you sent, "
 "but the worker dispatches it to the canonical model the alias named when "
@@ -304,7 +378,7 @@ msgstr ""
 "如果该名称是别名，存储的请求保留你发送的名称，但 worker "
 "会把它分派到你创建批次时该别名所指向的规范模型。之后修改别名，不会把已提交的任务转到另一个模型或另一个模型的并发上限下。"
 
-#: ../developer/batches.md:128
+#: ../developer/batches.md:137
 #, python-brace-format
 msgid ""
 "The whole batch is refused when any request in it is invalid. The error "
@@ -312,94 +386,101 @@ msgid ""
 " the request:"
 msgstr "只要批次中有任何一个请求无效，整个批次都会被拒绝。错误采用网关通常的 `{\"error\": {...}}` 格式，消息里会指出是哪个请求："
 
-#: ../developer/batches.md:140
+#: ../developer/batches.md:149
 msgid "A model you may not use is reported exactly like one that does not exist."
 msgstr "你无权使用的模型，报错方式与不存在的模型完全相同。"
 
-#: ../developer/batches.md:142
+#: ../developer/batches.md:151
 msgid "The answer is the new batch:"
 msgstr "返回的是新建的批次："
 
-#: ../developer/batches.md:171
+#: ../developer/batches.md:180
 msgid ""
-"An inline batch has no files, so its file fields are `null`. Several "
-"fields are not in OpenAI's object: `cost_usd`, what the batch's finished "
-"requests were billed so far; `cost_unknown_attempts`, attempts whose cost"
-" is unknown and not in `cost_usd` (see [Costs](#costs)); "
-"`results_expires_at`, when the results will be deleted; and `error`, why "
-"the whole batch failed. `usage` totals the tokens of the finished "
-"requests."
+"A batch of direct requests has no files, so its file fields are `null`. "
+"Several fields are not in OpenAI's object: `anthropic_version`, the "
+"version of a Messages batch (`null` otherwise); `cost_usd`, what the "
+"batch's finished requests were billed so far; `cost_unknown_attempts`, "
+"attempts whose cost is unknown and not in `cost_usd` (see "
+"[Costs](#costs)); `results_expires_at`, when the results will be deleted;"
+" and `error`, why the whole batch failed. `usage` totals the tokens of "
+"the finished requests."
 msgstr ""
-"内联批次没有文件，所以文件相关字段为 `null`。有几个字段不在 OpenAI "
-"的对象里：`cost_usd`，批次中已完成请求到目前为止的计费金额；`cost_unknown_attempts`，费用未知、未计入 "
-"`cost_usd` "
-"的尝试次数（见[费用](#costs)）；`results_expires_at`，结果将被删除的时间；`error`，整个批次失败的原因。`usage`"
-" 汇总已完成请求的 token 数。"
+"直接提交请求的批次没有文件，所以它的文件字段都是 `null`。有几个字段不在 OpenAI "
+"的对象中：`anthropic_version`，Messages 批次的版本（其他批次为 "
+"`null`）；`cost_usd`，批次中已结束请求目前的计费；`cost_unknown_attempts`，费用未知、未计入 "
+"`cost_usd` 的尝试数（见[费用](#costs)）；`results_expires_at`，结果将被删除的时间；以及 "
+"`error`，整个批次失败的原因。`usage` 汇总已结束请求的 token 数。"
 
-#: ../developer/batches.md:178
+#: ../developer/batches.md:188
 msgid "Check on a batch"
 msgstr "查看批次"
 
-#: ../developer/batches.md:180
+#: ../developer/batches.md:190
 #, python-brace-format
 msgid ""
 "`GET /v1/batches/{id}` returns the batch object again. Poll it until "
 "`status` is one of the four final ones:"
 msgstr "`GET /v1/batches/{id}` 再次返回批次对象。轮询它，直到 `status` 成为四个最终状态之一："
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Status"
 msgstr "状态"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`validating`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Stored; no request has started yet"
 msgstr "已存储；还没有请求开始运行"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`in_progress`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Requests are running"
 msgstr "请求正在运行"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`finalizing`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "A file batch: every request has finished and its output files are being "
 "written"
 msgstr "文件批次：所有请求都已结束，正在写入输出文件"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`completed`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Every request has finished, successfully or not. Read each one's outcome "
 "in the results"
 msgstr "所有请求都已结束，无论成功与否。每个请求的结果请在结果中查看"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`failed`"
 msgstr ""
 
-#: ../developer/batches.md:29
-msgid "The batch stopped because its creating key or account is no longer valid; `error` says so (`owner_unauthorized`), and unstarted requests fail with `batch_failed`. A file batch also fails if its input cannot be validated; no request runs and `errors` lists the problems"
-msgstr "创建批次的密钥或账户已失效，批次停止；`error` 会说明原因（`owner_unauthorized`），未启动的请求以 `batch_failed` 失败。文件批次的输入无法通过校验时也会失败；此时不会执行任何请求，`errors` 会列出问题"
+#: ../developer/batches.md:40
+msgid ""
+"The batch stopped because its creating key or account is no longer valid;"
+" `error` says so (`owner_unauthorized`), and unstarted requests fail with"
+" `batch_failed`. A file batch also fails if its input cannot be "
+"validated; no request runs and `errors` lists the problems"
+msgstr ""
+"创建批次的密钥或账户已失效，批次停止；`error` 会说明原因（`owner_unauthorized`），未启动的请求以 "
+"`batch_failed` 失败。文件批次的输入无法通过校验时也会失败；此时不会执行任何请求，`errors` 会列出问题"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`expired`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "The completion window (`completion_window`, from `created_at` to "
 "`expires_at`) closed first. Requests that had not started are `expired` "
@@ -408,23 +489,23 @@ msgstr ""
 "完成窗口（`completion_window`，从 `created_at` 到 `expires_at`）先关闭了。尚未开始的请求为 "
 "`expired`，错误为 `batch_expired`；已结束的请求保留其结果"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`cancelling`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Cancelled while requests were running; they are finishing"
 msgstr "在请求运行期间被取消；这些请求正在收尾"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`cancelled`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Cancelled. Requests that had not started never will"
 msgstr "已取消。尚未开始的请求不会再运行"
 
-#: ../developer/batches.md:194
+#: ../developer/batches.md:204
 msgid ""
 "`request_counts.completed` counts the requests that succeeded and "
 "`request_counts.failed` those that failed, including the ones a failed or"
@@ -433,122 +514,133 @@ msgstr ""
 "`request_counts.completed` 统计成功的请求，`request_counts.failed` "
 "统计失败的请求，包括失败或过期的批次从未运行的请求。已取消的请求两边都不计入。"
 
-#: ../developer/batches.md:198
+#: ../developer/batches.md:208
 msgid "Read the results"
 msgstr "读取结果"
 
-#: ../developer/batches.md:200
+#: ../developer/batches.md:210
 #, python-brace-format
 msgid ""
 "`GET /v1/batches/{id}/results` pages through the batch's requests in the "
 "order you submitted them, with each one's outcome:"
 msgstr "`GET /v1/batches/{id}/results` 按你提交的顺序分页列出批次的请求及各自的结果："
 
-#: ../developer/batches.md:249
-msgid "`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the next page with `after` set to the page's `last_id`. Every request of the batch is listed, finished or not. A request still `queued` or `running` has no `response` yet, but may retain its last `error` while being retried. Read the results once the batch is in a final status, or read them again later."
-msgstr "`limit` 为 1–1000，默认 100。当 `has_more` 为 `true` 时，将本页的 `last_id` 作为 `after` 获取下一页。批次中的所有请求都会列出，无论是否完成。仍处于 `queued` 或 `running` 的请求尚无 `response`，但在重试时可能保留上一次的 `error`。请在批次达到最终状态后读取结果，或稍后再次读取。"
-
-#: ../developer/batches.md:255
+#: ../developer/batches.md:259
 msgid ""
-"A finished request has a `status` of `completed`, with the chat "
-"completion in `response.body`, or `failed`, with an `error` instead. A "
-"request that never ran is `cancelled`, `expired` or `failed`. Error "
-"codes:"
+"`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the "
+"next page with `after` set to the page's `last_id`. Every request of the "
+"batch is listed, finished or not. A request still `queued` or `running` "
+"has no `response` yet, but may retain its last `error` while being "
+"retried. Read the results once the batch is in a final status, or read "
+"them again later."
 msgstr ""
-"已结束的请求，其 `status` 为 `completed`（chat completion 在 `response.body` 中），或为 "
-"`failed`（改为带有 `error`）。从未运行的请求为 `cancelled`、`expired` 或 `failed`。错误码："
+"`limit` 为 1–1000，默认 100。当 `has_more` 为 `true` 时，将本页的 `last_id` 作为 `after`"
+" 获取下一页。批次中的所有请求都会列出，无论是否完成。仍处于 `queued` 或 `running` 的请求尚无 "
+"`response`，但在重试时可能保留上一次的 `error`。请在批次达到最终状态后读取结果，或稍后再次读取。"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:265
+msgid ""
+"A finished request has a `status` of `completed`, with its endpoint's "
+"response (a chat completion, an embeddings list, a Responses object or a "
+"Messages `message`) in `response.body`, or `failed`, with an `error` "
+"instead. A request that never ran is `cancelled`, `expired` or `failed`. "
+"Error codes:"
+msgstr ""
+"已结束的请求 `status` 为 `completed` 时，`response.body` 中是其端点的响应（Chat "
+"Completion、Embeddings 列表、Responses 对象或 Messages 的 `message`）；为 `failed` "
+"时则带有 `error`。从未运行的请求为 `cancelled`、`expired` 或 `failed`。错误码："
+
+#: ../developer/batches.md:40
 msgid "`code`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`invalid_request`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "The model rejected the request (`400`, `422`)"
 msgstr "模型拒绝了请求（`400`、`422`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`model_not_found`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "The model is gone, or you may no longer use it (`404`)"
 msgstr "模型已不存在，或你已无权使用它（`404`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`forbidden`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Refused (`403`)"
 msgstr "被拒绝（`403`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`rate_limited`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Still rate-limited after every retry (`429`)"
 msgstr "所有重试之后仍被限流（`429`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`timeout`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Still timing out after every retry (`504`)"
 msgstr "所有重试之后仍然超时（`504`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`service_unavailable`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "No endpoint could serve it after every retry (`503`)"
 msgstr "所有重试之后仍没有端点能处理它（`503`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`upstream_error`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Another server error after every retry"
 msgstr "所有重试之后仍是其他服务器错误"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`batch_failed`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Not run: the batch failed"
 msgstr "未运行：批次失败了"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`batch_expired`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Not run before the completion window closed"
 msgstr "完成窗口关闭前未能运行"
 
-#: ../developer/batches.md:271
+#: ../developer/batches.md:282
 msgid "`error.status` is the HTTP status behind the error, when there was one."
 msgstr "`error.status` 是导致该错误的 HTTP 状态码（如果有的话）。"
 
-#: ../developer/batches.md:273
+#: ../developer/batches.md:284
 msgid ""
 "A short Python client that submits a batch, waits for it and collects "
 "every result:"
 msgstr "一个简短的 Python 客户端，提交批次、等待完成并收取全部结果："
 
-#: ../developer/batches.md:319
+#: ../developer/batches.md:330
 msgid "Cancel or delete a batch"
 msgstr "取消或删除批次"
 
-#: ../developer/batches.md:321
+#: ../developer/batches.md:332
 #, python-brace-format
 msgid ""
 "`POST /v1/batches/{id}/cancel` stops a batch. Requests that have not "
@@ -560,7 +652,7 @@ msgstr ""
 "停止一个批次。尚未开始的请求被取消；正在运行的请求会跑完并保留结果。在它们结束之前，批次处于 `cancelling`，之后变为 "
 "`cancelled`。取消一个已经结束的批次，会原样返回它。"
 
-#: ../developer/batches.md:326
+#: ../developer/batches.md:337
 #, python-brace-format
 msgid ""
 "`DELETE /v1/batches/{id}` deletes a batch with its requests and results "
@@ -576,32 +668,32 @@ msgstr ""
 "true}`。批次处于什么状态都可以删除，但只要还有请求持有有效的上游租约，删除就会以 `409` "
 "被阻止。请先取消批次，等它正在运行的请求结束（或其租约过期），再删除。租约已过期的陈旧 `running` 条目不会阻止删除。"
 
-#: ../developer/batches.md:333
+#: ../developer/batches.md:344
 msgid ""
 "A finished batch is deleted automatically after the deployment's "
 "retention period, seven days by default, so collect its results before "
 "then."
 msgstr "已结束的批次会在部署设定的保留期（默认七天）后被自动删除，请在此之前收取结果。"
 
-#: ../developer/batches.md:336
+#: ../developer/batches.md:347
 msgid "List your batches"
 msgstr "列出你的批次"
 
-#: ../developer/batches.md:338
+#: ../developer/batches.md:349
 msgid ""
 "`GET /v1/batches` lists your own batches, newest first. `limit` is 1–100 "
 "(default 20); for the next page pass `after` set to the `last_id` of the "
 "previous one. The answer has the shape of a results page, with batch "
-"objects in `data`. It lists OpenAI batches, inline and from files; "
-"Message Batches are listed by `GET /v1/messages/batches`, and an id of "
-"one API reads as not found on the other."
+"objects in `data`. It lists every batch of yours, of every target and "
+"input method, including those created through the former "
+"`/v1/messages/batches` (their ids start with `msgbatch_`)."
 msgstr ""
-"`GET /v1/batches` 列出你自己的批次，最新的在前。`limit` 取 1–100（默认 20）；下一页请把 `after` "
-"设为上一页的 `last_id`。返回的格式与结果分页相同，`data` 中是批次对象。它列出 OpenAI "
-"批次，包括内联批次和来自文件的批次；Message Batches 由 `GET /v1/messages/batches` 列出，一种 API "
-"的 id 在另一种 API 上会被视为不存在。"
+"`GET /v1/batches` 按时间倒序列出你自己的批次。`limit` 为 1–100（默认 20）；要取下一页，把 `after` "
+"设为上一页的 `last_id`。返回结果与结果分页的形状相同，`data` "
+"中是批次对象。它列出你所有的批次，涵盖每种目标和输入方式，包括通过已移除的 `/v1/messages/batches` 创建的批次（它们的 id"
+" 以 `msgbatch_` 开头）。"
 
-#: ../developer/batches.md:345
+#: ../developer/batches.md:356
 msgid ""
 "Reading, downloading, cancelling, deleting and listing your batches work "
 "even if your role no longer allows creating them or your daily quota is "
@@ -612,27 +704,29 @@ msgstr ""
 "即使你的角色已不再允许创建批次，或每日额度已用完，读取、下载、取消、删除和列出你的批次仍然可用，所以你总能用任意一个自己的 API key "
 "收取并清理提交过的内容。其他用户的批次会被视为不存在。管理员可以读取、取消和删除任何批次。"
 
-#: ../developer/batches.md:351
+#: ../developer/batches.md:362
 msgid "Batches from a file"
 msgstr "来自文件的批次"
 
-#: ../developer/batches.md:353
+#: ../developer/batches.md:364
 msgid ""
-"The OpenAI flow: upload a JSONL file whose every line is one request, "
-"then create a batch from it."
-msgstr "OpenAI 的流程：上传一个 JSONL 文件，每行是一个请求，然后用它创建批次。"
+"Upload a JSONL file whose every line is one request, then create a batch "
+"from it."
+msgstr "上传一个每行为一个请求的 JSONL 文件，然后用它创建批次。"
 
-#: ../developer/batches.md:366
+#: ../developer/batches.md:377
 #, python-brace-format
 msgid ""
 "Each line is `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`, "
 "the `url` equal to the batch's `endpoint`. Every line must use the same "
-"model."
+"model. A file batch for `/v1/messages` also names its `anthropic_version`"
+" in the create call, and every line is checked under it."
 msgstr ""
-"每行是 `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`，其中 `url` "
-"等于批次的 `endpoint`。所有行必须使用同一个模型。"
+"每一行是 `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`，其中 `url` "
+"必须等于批次的 `endpoint`。每一行必须使用同一个模型。`/v1/messages` 的文件批次还要在创建调用中给出 "
+"`anthropic_version`，每一行都按它校验。"
 
-#: ../developer/batches.md:369
+#: ../developer/batches.md:382
 msgid ""
 "The batch starts as `validating` while the gateway reads the file in the "
 "background. If any line is invalid — not JSON, a repeated `custom_id`, "
@@ -650,7 +744,7 @@ msgstr ""
 "`finalizing`，写入结果文件，然后进入最终状态，并设置 `output_file_id`（成功的请求）和 "
 "`error_file_id`（其余请求）；没有对应行时该字段为 `null`。"
 
-#: ../developer/batches.md:378
+#: ../developer/batches.md:391
 #, python-brace-format
 msgid ""
 "Download them with `GET /v1/files/{id}/content`. A result file is the "
@@ -666,80 +760,250 @@ msgstr ""
 "返回其中一个，`DELETE /v1/files/{id}` "
 "将其永久删除：被删除的输出文件不会重新生成，尽管批次仍会引用它。删除输入文件不影响已经用它创建的批次。"
 
-#: ../developer/batches.md:385
+#: ../developer/batches.md:398
 msgid "The official OpenAI SDKs work with this flow:"
 msgstr "官方 OpenAI SDK 支持这一流程："
 
-#: ../developer/batches.md:399
+#: ../developer/batches.md:412
 #, python-brace-format
 msgid ""
-"An inline batch's results are also available as one JSONL file, in the "
-"same line shape, once it has ended: `GET /v1/batches/{id}/output.jsonl`."
-msgstr "内联批次结束后，其结果也可以作为一个 JSONL 文件获取，行格式相同：`GET /v1/batches/{id}/output.jsonl`。"
-
-#: ../developer/batches.md:404
-msgid ""
-"`/v1/messages/batches` (and `/anthropic/v1/messages/batches`) speak "
-"Anthropic's Message Batches API, so the official Anthropic SDKs work "
-"against it:"
+"The results of a batch of direct requests are also available as one JSONL"
+" file, in the same line shape, once it has ended: `GET "
+"/v1/batches/{id}/output.jsonl`."
 msgstr ""
-"`/v1/messages/batches`（以及 `/anthropic/v1/messages/batches`）实现了 Anthropic "
-"的 Message Batches API，因此官方 Anthropic SDK 可以直接对接："
+"直接提交请求的批次结束后，它的结果也可以作为一个 JSONL 文件获取，行的形状相同：`GET "
+"/v1/batches/{id}/output.jsonl`。"
 
-#: ../developer/batches.md:428
+#: ../developer/batches.md:415
+msgid "Messages in a batch"
+msgstr "批次中的 Messages"
+
+#: ../developer/batches.md:417
 msgid ""
-"Every request needs the `anthropic-version` header. `2023-06-01` and "
-"`2026-10-21` are accepted; a batch keeps the version it was created with,"
-" and each of its requests is checked against that version's rules (under "
-"`2026-10-21`, `temperature`, `top_p` and `top_k` are refused, as are "
-"document blocks in assistant messages and citations on user text). "
-"`anthropic-beta` is refused."
+"A batch whose target is `/v1/messages` carries Anthropic Messages request"
+" bodies and names the Anthropic API version they are written for in its "
+"`anthropic_version` field, beside `requests` or `input_file_id`:"
 msgstr ""
-"每个请求都需要 `anthropic-version` 请求头。接受 `2023-06-01` 和 "
-"`2026-10-21`；批次保留创建时所用的版本，其中每个请求都按该版本的规则检查（在 `2026-10-21` "
-"下，`temperature`、`top_p` 和 `top_k` 会被拒绝，assistant 消息中的 document 块和用户文本上的 "
-"citations 也会被拒绝）。`anthropic-beta` 会被拒绝。"
+"目标为 `/v1/messages` 的批次携带 Anthropic Messages 请求体，并在 `anthropic_version` "
+"字段中给出这些请求所针对的 Anthropic API 版本，与 `requests` 或 `input_file_id` 并列："
 
-#: ../developer/batches.md:435
+#: ../developer/batches.md:440
 msgid ""
-"The envelope — `custom_id` (up to 64 letters, digits, `_` and `-`, "
-"unique), the number of requests, the body size — is checked at once and "
-"any problem refuses the batch. Each request's `params` is then checked on"
-" its own: one the gateway cannot run as written, including one naming a "
-"model you may not use, becomes an `errored` result and the others still "
-"run. A request is never sent with a parameter silently dropped: when a "
-"model's route cannot carry a parameter (extended thinking, cache control "
-"or structured output on a non-Anthropic backend, for example), the "
-"request errors instead."
-msgstr ""
-"外层结构——`custom_id`（最多 64 个字母、数字、`_` 和 "
-"`-`，且唯一）、请求数量、请求体大小——会立即检查，任何问题都会导致整个批次被拒绝。之后每个请求的 `params` "
-"单独检查：网关无法按原样运行的请求，包括指定了你无权使用的模型的请求，会成为 `errored` "
-"结果，其他请求照常运行。网关从不悄悄丢弃参数后再发送请求：当某个模型的路由无法承载某个参数时（例如非 Anthropic 后端上的 "
-"extended thinking、cache control 或结构化输出），该请求会报错。"
+"From a file, every line has `\"url\": \"/v1/messages\"` and the create "
+"call names the version:"
+msgstr "使用文件时，每一行都是 `\"url\": \"/v1/messages\"`，并在创建调用中给出版本："
 
-#: ../developer/batches.md:444
+#: ../developer/batches.md:447
+#, python-brace-format
 msgid ""
-"`request_counts` hold every request as `processing` until the whole batch"
-" has `ended`; `results_url` appears then. Cancelling makes it `canceling`"
-" until its running requests finish. A batch can be deleted only once it "
-"has ended."
+"With the OpenAI SDK, pass it as an extra field: "
+"`client.batches.create(input_file_id=upload.id, "
+"endpoint=\"/v1/messages\", completion_window=\"24h\", "
+"extra_body={\"anthropic_version\": \"2023-06-01\"})`."
 msgstr ""
-"在整个批次 `ended` 之前，`request_counts` 把每个请求都计为 `processing`；那时才会出现 "
-"`results_url`。取消后批次处于 `canceling`，直到正在运行的请求结束。批次只有在结束后才能删除。"
+"使用 OpenAI SDK "
+"时，把它作为额外字段传入：`client.batches.create(input_file_id=upload.id, "
+"endpoint=\"/v1/messages\", completion_window=\"24h\", "
+"extra_body={\"anthropic_version\": \"2023-06-01\"})`。"
 
-#: ../developer/batches.md:448
+#: ../developer/batches.md:451
+msgid ""
+"`anthropic_version` is required for a Messages batch, and refused on any "
+"other. `2023-06-01` and `2026-10-21` are known; the operator chooses "
+"which of them new batches may use (`BATCH_ANTHROPIC_VERSIONS`). A batch "
+"keeps its version, and every request is checked, and runs, under it: "
+"under `2026-10-21`, `temperature`, `top_p` and `top_k` are refused, as "
+"are document blocks in assistant messages and citations on user text."
+msgstr ""
+"Messages 批次必须提供 `anthropic_version`，其他批次提供会被拒绝。已知的版本是 `2023-06-01` 和 "
+"`2026-10-21`；运营者决定新批次可以使用其中哪些（`BATCH_ANTHROPIC_VERSIONS`）。批次保留它的版本，每个请求都按该版本校验和运行：在"
+" `2026-10-21` 下，`temperature`、`top_p` 和 `top_k` 会被拒绝，assistant 消息中的 "
+"document 块和 user 文本上的 citations 也会被拒绝。"
+
+#: ../developer/batches.md:457
+msgid ""
+"The version is not taken from headers. `anthropic-beta` is refused, and "
+"an `anthropic-version` header, if you send one, must equal "
+"`anthropic_version`. A request body cannot carry its own version or "
+"`betas` either."
+msgstr ""
+"版本不从请求头读取。`anthropic-beta` 会被拒绝；如果你发送了 `anthropic-version` 请求头，它必须与 "
+"`anthropic_version` 一致。请求体本身也不能携带自己的版本或 `betas`。"
+
+#: ../developer/batches.md:460
+msgid ""
+"Each request is checked like any batch request: one the gateway cannot "
+"run as written refuses the whole batch, naming it. That includes a model "
+"you may not use (reported exactly as an unknown one), server tools, Files"
+" API sources, MCP servers and containers, and any parameter a model's "
+"route cannot carry — extended thinking, cache control or structured "
+"output on a non-Anthropic backend, for example. A parameter is never "
+"silently dropped."
+msgstr ""
+"每个请求都像其他批次请求一样校验：网关无法原样运行的请求会使整个批次被拒绝，错误中会指明是哪一个。包括你无权使用的模型（报告方式与未知模型完全相同）、服务端工具、Files"
+" API 来源、MCP 服务器和 container，以及模型路由无法承载的任何参数——例如在非 Anthropic "
+"后端上使用扩展思考、cache control 或结构化输出。参数绝不会被静默丢弃。"
+
+#: ../developer/batches.md:466
+msgid ""
+"The result of a request is the same line as for any target, with the "
+"Messages `message` in `response.body`."
+msgstr "请求的结果与其他目标相同的一行，`response.body` 中是 Messages 的 `message`。"
+
+#: ../developer/batches.md:469
 msgid ""
 "Each request is a single inference turn. A result that asks for a tool "
 "call is for your program to carry out and send back in a new request; the"
 " gateway never runs your tools."
 msgstr "每个请求都是单轮推理。要求调用工具的结果，需要由你的程序执行，并在新请求中把结果发回；网关从不运行你的工具。"
 
-#: ../developer/batches.md:452
+#: ../developer/batches.md:473
+msgid "Moving from Message Batches"
+msgstr "从 Message Batches 迁移"
+
+#: ../developer/batches.md:475
+msgid ""
+"The Anthropic Message Batches routes — `/v1/messages/batches` and "
+"`/anthropic/v1/messages/batches` with every operation under them — have "
+"been removed and answer `404`. The Anthropic SDKs' `messages.batches` "
+"methods no longer work against this gateway. Online `/v1/messages` (and "
+"`/anthropic/v1/messages`) is unchanged. Use `/v1/batches` with the "
+"Messages target instead:"
+msgstr ""
+"Anthropic Message Batches 路由——`/v1/messages/batches` 和 "
+"`/anthropic/v1/messages/batches` 及其下的所有操作——已经移除，返回 `404`。Anthropic SDK 的 "
+"`messages.batches` 方法不再能用于本网关。在线的 `/v1/messages`（以及 "
+"`/anthropic/v1/messages`）不变。请改用 Messages 目标的 `/v1/batches`："
+
+#: ../developer/batches.md:40
+msgid "Before"
+msgstr "以前"
+
+#: ../developer/batches.md:40
+msgid "Now"
+msgstr "现在"
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid ""
+"`POST /v1/messages/batches`, header `anthropic-version`, body "
+"`{\"requests\": [{\"custom_id\", \"params\"}]}`"
+msgstr ""
+"`POST /v1/messages/batches`，请求头 `anthropic-version`，请求体 `{\"requests\": "
+"[{\"custom_id\", \"params\"}]}`"
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid ""
+"`POST /v1/batches`, body `{\"anthropic_version\", \"requests\": "
+"[{\"custom_id\", \"url\": \"/v1/messages\", \"body\"}]}`"
+msgstr ""
+"`POST /v1/batches`，请求体 `{\"anthropic_version\", \"requests\": "
+"[{\"custom_id\", \"url\": \"/v1/messages\", \"body\"}]}`"
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid "`GET /v1/messages/batches`, `GET …/{id}`"
+msgstr ""
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid "`GET /v1/batches`, `GET /v1/batches/{id}`"
+msgstr ""
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid "`POST …/{id}/cancel`"
+msgstr ""
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid "`POST /v1/batches/{id}/cancel`"
+msgstr ""
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid "`DELETE …/{id}`, only once ended"
+msgstr "`DELETE …/{id}`，仅在结束后"
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid "`DELETE /v1/batches/{id}`, refused only while a request is running"
+msgstr "`DELETE /v1/batches/{id}`，只在有请求运行时被拒绝"
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid "`GET …/{id}/results` (`{\"custom_id\", \"result\"}` lines)"
+msgstr "`GET …/{id}/results`（`{\"custom_id\", \"result\"}` 行）"
+
+#: ../developer/batches.md:40
+#, python-brace-format
+msgid ""
+"`GET /v1/batches/{id}/results` (pages) or `/output.jsonl` (the line shape"
+" above)"
+msgstr "`GET /v1/batches/{id}/results`（分页）或 `/output.jsonl`（上面的行形状）"
+
+#: ../developer/batches.md:40
+msgid "`processing_status` `in_progress` / `canceling` / `ended`"
+msgstr ""
+
+#: ../developer/batches.md:40
+msgid "`status`, as for every batch (`completed`, `cancelled`, `expired`, …)"
+msgstr "`status`，与所有批次相同（`completed`、`cancelled`、`expired` 等）"
+
+#: ../developer/batches.md:40
+msgid ""
+"`request_counts` `processing` / `succeeded` / `errored` / `canceled` / "
+"`expired`"
+msgstr ""
+
+#: ../developer/batches.md:40
+msgid "`request_counts` `total` / `completed` / `failed`"
+msgstr ""
+
+#: ../developer/batches.md:40
+msgid "An invalid request became one `errored` result"
+msgstr "无效的请求成为一条 `errored` 结果"
+
+#: ../developer/batches.md:40
+msgid "An invalid request refuses the batch, naming it"
+msgstr "无效的请求使整个批次被拒绝，并指明是哪一个"
+
+#: ../developer/batches.md:40
+msgid "`custom_id` up to 64 letters, digits, `_`, `-`"
+msgstr "`custom_id` 最多 64 个字母、数字、`_`、`-`"
+
+#: ../developer/batches.md:40
+msgid "`custom_id` of 1–512 characters"
+msgstr "`custom_id` 为 1–512 个字符"
+
+#: ../developer/batches.md:40
+msgid "Webhook event `message_batch.ended`"
+msgstr "Webhook 事件 `message_batch.ended`"
+
+#: ../developer/batches.md:40
+msgid "`batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled`"
+msgstr "`batch.completed`、`batch.failed`、`batch.expired` 或 `batch.cancelled`"
+
+#: ../developer/batches.md:495
+#, python-brace-format
+msgid ""
+"Batches created through the removed routes are kept and still run. They "
+"are listed, read, cancelled, deleted and downloaded through `/v1/batches`"
+" and the console like any other batch (their ids start with `msgbatch_`),"
+" in the shapes above: their results come as the common result lines, no "
+"longer as `{\"custom_id\", \"result\"}` lines. An `Idempotency-Key` used "
+"on the removed routes does not replay through `/v1/batches`."
+msgstr ""
+"通过已移除路由创建的批次会保留并继续运行。它们与其他批次一样，通过 `/v1/batches` 和控制台列出、读取、取消、删除和下载（它们的 id"
+" 以 `msgbatch_` 开头），形状如上：它们的结果是通用的结果行，不再是 `{\"custom_id\", \"result\"}` "
+"行。在已移除路由上使用过的 `Idempotency-Key` 不会通过 `/v1/batches` 重放。"
+
+#: ../developer/batches.md:502
 msgid "Embeddings and Responses in a batch"
 msgstr "批次中的 embedding 和 Responses"
 
-#: ../developer/batches.md:454
+#: ../developer/batches.md:504
 msgid ""
 "`/v1/embeddings` and `/v1/responses` can be batched like chat "
 "completions, inline or from a file. A batched Responses request must be "
@@ -753,32 +1017,33 @@ msgstr ""
 "`previous_response_id`、`conversation`、`background` 和 "
 "`stream`。托管工具、文件输入以及网关不得不丢弃的任何其他字段都会被拒绝。"
 
-#: ../developer/batches.md:460
+#: ../developer/batches.md:510
 msgid "Submitting safely twice"
 msgstr "安全地重复提交"
 
-#: ../developer/batches.md:462
+#: ../developer/batches.md:512
 msgid ""
-"Send an `Idempotency-Key` header with a create call (any of the three "
-"APIs) to make it safe to retry. The same key with the same request "
-"returns the batch the first call created, even if your quota has since "
-"run out or your role changed; the same key with a different request "
-"answers `409`. After the batch is deleted the key answers `410` for at "
-"least a day; a key is remembered until a day after its batch ends. The "
-"key belongs to your account, so any of your API keys can replay it, and a"
-" replay never changes which key the batch runs under. The SDKs do not "
-"send this header for you."
+"Send an `Idempotency-Key` header with a create call (either input method)"
+" to make it safe to retry. The same key with the same request — for a "
+"Messages batch, the same `anthropic_version` too — returns the batch the "
+"first call created, even if your quota has since run out or your role "
+"changed; the same key with a different request answers `409`. After the "
+"batch is deleted the key answers `410` for at least a day; a key is "
+"remembered until a day after its batch ends. The key belongs to your "
+"account, so any of your API keys can replay it, and a replay never "
+"changes which key the batch runs under. The SDKs do not send this header "
+"for you."
 msgstr ""
-"在创建调用（三种 API 均可）中带上 `Idempotency-Key` 请求头，就可以安全地重试。相同的 key "
-"加相同的请求，会返回第一次调用创建的批次，即使你的额度此后已用完或角色已改变；相同的 key 加不同的请求返回 `409`。批次被删除后，该 "
-"key 至少在一天内返回 `410`；key 会一直保留到其批次结束后一天。key 属于你的账户，所以你的任何 API key "
-"都可以重放它，而重放永远不会改变批次运行所用的 key。SDK 不会替你发送这个请求头。"
+"在创建调用中发送 `Idempotency-Key` 请求头（两种输入方式都可以），即可安全地重试。同一个键配同一个请求（Messages "
+"批次还要求 `anthropic_version` 相同）会返回第一次调用创建的批次，即使你的配额此后已用完或角色已变化；同一个键配不同的请求返回"
+" `409`。批次删除后，该键至少一天内返回 `410`；键会一直记住，直到其批次结束后一天。键属于你的账户，所以你的任何 API "
+"密钥都能重放它，重放也绝不会改变批次运行所用的密钥。SDK 不会替你发送这个请求头。"
 
-#: ../developer/batches.md:471
+#: ../developer/batches.md:522
 msgid "Costs"
 msgstr "费用"
 
-#: ../developer/batches.md:473
+#: ../developer/batches.md:524
 msgid ""
 "Every attempt at a request is recorded with what it was billed, at the "
 "same point and the same price as an interactive request; a batch is never"
@@ -786,7 +1051,7 @@ msgid ""
 "is known."
 msgstr "请求的每次尝试都会记录其计费金额，计费时点和价格与交互式请求相同；批次不会在此之外再计费一次。`cost_usd` 累加费用已知的尝试。"
 
-#: ../developer/batches.md:477
+#: ../developer/batches.md:528
 msgid ""
 "When an attempt's result was lost after the request had been sent — the "
 "gateway timed out, or a worker stopped mid-request — the provider may "
@@ -798,11 +1063,11 @@ msgstr ""
 "在请求中途停止——供应商可能仍然运行并收了费。此时它的费用是*未知*的：计入 `cost_unknown_attempts`，并且不计入 "
 "`cost_usd`，而不是按零计算。因此，重试过的请求可能运行了不止一次。"
 
-#: ../developer/batches.md:483
+#: ../developer/batches.md:534
 msgid "Webhooks"
 msgstr "Webhook"
 
-#: ../developer/batches.md:485
+#: ../developer/batches.md:536
 #, python-brace-format
 msgid ""
 "Instead of polling, register one HTTPS endpoint for your batches with "
@@ -818,35 +1083,46 @@ msgstr ""
 "webhook，`DELETE /v1/batch_webhook` 删除它，`GET /v1/batch_webhook/events` "
 "列出最近的投递记录。"
 
-#: ../developer/batches.md:491
-msgid "Setting up a webhook, changing its URL, rotating its secret or turning it back on needs the same role as creating a batch (`BATCH_MIN_ROLE`); below it, `PUT` answers `403` and nothing is stored or looked up. The check uses your role at the time of the request. If your role is lowered, you can still read your webhook, list its deliveries and delete it, and events for your existing batches are still delivered while it stays enabled."
-msgstr "设置 webhook、修改其 URL、轮换密钥或重新启用，都需要达到创建批次所需的角色（`BATCH_MIN_ROLE`）；角色不足时，`PUT` 返回 `403`，不会存储配置或进行地址查询。检查使用请求时的当前角色。角色降低后，你仍可读取自己的 webhook、查看投递记录和删除它；只要它仍启用，已有批次的事件也会继续投递。"
+#: ../developer/batches.md:543
+msgid ""
+"Setting up a webhook, changing its URL, rotating its secret or turning it"
+" back on needs the same role as creating a batch (`BATCH_MIN_ROLE`); "
+"below it, `PUT` answers `403` and nothing is stored or looked up. The "
+"check uses your role at the time of the request. If your role is lowered,"
+" you can still read your webhook, list its deliveries and delete it, and "
+"events for your existing batches are still delivered while it stays "
+"enabled."
+msgstr ""
+"设置 webhook、修改其 URL、轮换密钥或重新启用，都需要达到创建批次所需的角色（`BATCH_MIN_ROLE`）；角色不足时，`PUT`"
+" 返回 `403`，不会存储配置或进行地址查询。检查使用请求时的当前角色。角色降低后，你仍可读取自己的 "
+"webhook、查看投递记录和删除它；只要它仍启用，已有批次的事件也会继续投递。"
 
-#: ../developer/batches.md:492
+#: ../developer/batches.md:550
 #, python-brace-format
 msgid ""
 "When a batch ends, after its results can be read, the gateway POSTs an "
 "event: `batch.completed`, `batch.failed`, `batch.expired` or "
-"`batch.cancelled` for an OpenAI batch, `message_batch.ended` for a "
-"Message Batch. The body names the batch only (`{\"id\", \"object\": "
-"\"event\", \"type\", \"created_at\", \"data\": {\"id\"}}`); fetch the "
-"results with your API key. Deliveries are signed as Standard Webhooks "
-"are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 of "
-"`\"{webhook-id}.{webhook-timestamp}.{body}\"` with the secret's base64 "
-"part as the key). A delivery that is not answered with a `2xx` is retried"
-" with backoff, up to eight attempts; the same event can arrive more than "
-"once, so deduplicate on `webhook-id`."
+"`batch.cancelled`, whatever the batch's target. (An event a previous "
+"version queued for a Message Batch before the upgrade is still delivered "
+"as `message_batch.ended`.) The body names the batch only (`{\"id\", "
+"\"object\": \"event\", \"type\", \"created_at\", \"data\": {\"id\"}}`); "
+"fetch the results with your API key. Deliveries are signed as Standard "
+"Webhooks are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 "
+"of `\"{webhook-id}.{webhook-timestamp}.{body}\"` with the secret's base64"
+" part as the key). A delivery that is not answered with a `2xx` is "
+"retried with backoff, up to eight attempts; the same event can arrive "
+"more than once, so deduplicate on `webhook-id`."
 msgstr ""
-"批次结束、结果可读之后，网关会 POST 一个事件：OpenAI 批次为 "
-"`batch.completed`、`batch.failed`、`batch.expired` 或 "
-"`batch.cancelled`，Message Batch 为 "
-"`message_batch.ended`。事件体只标明是哪个批次（`{\"id\", \"object\": \"event\", "
-"\"type\", \"created_at\", \"data\": {\"id\"}}`）；结果请用你的 API key 获取。投递按 "
+"批次结束、其结果可读之后，网关会 POST "
+"一个事件：`batch.completed`、`batch.failed`、`batch.expired` 或 "
+"`batch.cancelled`，与批次的目标无关。（升级前旧版本为某个 Message Batch 排队的事件，仍以 "
+"`message_batch.ended` 投递。）请求体只指明批次（`{\"id\", \"object\": \"event\", "
+"\"type\", \"created_at\", \"data\": {\"id\"}}`）；请用你的 API 密钥获取结果。投递按 "
 "Standard Webhooks 的方式签名：校验 `webhook-signature`（`v1,` 加上以密钥的 base64 部分为 "
 "key、对 `\"{webhook-id}.{webhook-timestamp}.{body}\"` 计算的 base64 HMAC-"
-"SHA256）。没有得到 `2xx` 响应的投递会带退避重试，最多尝试八次；同一事件可能到达不止一次，所以请按 `webhook-id` 去重。"
+"SHA256）。没有得到 `2xx` 回应的投递会带退避重试，最多八次；同一事件可能到达不止一次，请按 `webhook-id` 去重。"
 
-#: ../developer/batches.md:503
+#: ../developer/batches.md:562
 msgid ""
 "A webhook URL must be HTTPS and reach a public address. Private, "
 "loopback, link-local and cloud-metadata addresses are refused when the "
@@ -855,184 +1131,192 @@ msgstr ""
 "webhook URL 必须是 HTTPS，且指向公网地址。私有地址、回环地址、链路本地地址和云元数据地址会在保存 URL "
 "时、每次重定向时以及每次连接时被拒绝。"
 
-#: ../developer/batches.md:507
+#: ../developer/batches.md:566
 msgid "Batches in the console"
 msgstr "控制台中的批次"
 
-#: ../developer/batches.md:509
+#: ../developer/batches.md:568
 msgid ""
-"The **Batches** page of the console (from the dashboard) lists your "
-"batches across all three APIs with their progress, tokens and known cost,"
-" and lets you cancel, delete and download results, and set up your "
-"webhook."
+"The **Batches** page of the console (from the dashboard) lists all your "
+"batches — each with its target, model and input method, status, progress,"
+" tokens and known cost — and lets you cancel, delete and download "
+"results, and set up your webhook. Batches are created through the API, "
+"not there."
 msgstr ""
-"控制台的 **Batches** 页面（从仪表盘进入）列出你在三种 API 下的所有批次，以及它们的进度、token "
-"数和已知费用；你可以在这里取消、删除批次，下载结果，并设置 webhook。"
+"控制台的 **Batches** 页面（从仪表盘进入）列出你的所有批次——每个批次的目标、模型和输入方式、状态、进度、token "
+"和已知费用——并可以取消、删除、下载结果，以及设置 webhook。批次通过 API 创建，不在那里创建。"
 
-#: ../developer/batches.md:513
+#: ../developer/batches.md:573
 msgid "Limits"
 msgstr "限制"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Limit"
 msgstr "限制项"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Default"
 msgstr "默认值"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Size of the create request's body"
 msgstr "创建请求的请求体大小"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "32 MiB (`413` above it)"
 msgstr "32 MiB（超过返回 `413`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Requests per batch"
 msgstr "每个批次的请求数"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "50,000"
 msgstr ""
 
-#: ../developer/batches.md:29
-msgid "Batches you may have unfinished at once (`validating`, `in_progress`, `finalizing` or `cancelling`)"
+#: ../developer/batches.md:40
+msgid ""
+"Batches you may have unfinished at once (`validating`, `in_progress`, "
+"`finalizing` or `cancelling`)"
 msgstr "可同时保留的未完成批次数（`validating`、`in_progress`、`finalizing` 或 `cancelling`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "10 (`429` above it)"
 msgstr "10（超过返回 `429`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Unfinished requests across all your batches"
 msgstr "你所有批次中的未完成请求"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "100,000 (`429` above it)"
 msgstr "100,000（超过返回 `429`）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Size of an input file, and of one of its lines"
 msgstr "输入文件及其单行的大小"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "32 MiB; 4 MiB per line"
 msgstr "32 MiB；每行 4 MiB"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Input files you may keep, and upload per hour"
 msgstr "你可以保留的输入文件总量，以及每小时上传数"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "512 MiB; 60"
 msgstr "512 MiB；60 个"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Time a batch has to start its pending requests (`completion_window`)"
 msgstr "批次启动待处理请求的时间窗口（`completion_window`）"
 
-#: ../developer/batches.md:29
-msgid "24 hours (always 24 hours for file batches and Message Batches)"
-msgstr "24 小时（文件批次和 Message Batches 固定为 24 小时）"
+#: ../developer/batches.md:40
+msgid "24 hours (always 24 hours for file batches)"
+msgstr "24 小时（文件批次始终为 24 小时）"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Time a finished batch is kept"
 msgstr "已结束批次的保留时间"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "7 days"
 msgstr "7 天"
 
-#: ../developer/batches.md:526
+#: ../developer/batches.md:586
 msgid ""
 "The operator may have changed any of them. A larger job is several "
 "batches."
 msgstr "运营方可能修改过其中任何一项。更大的任务请拆成多个批次。"
 
-#: ../developer/batches.md:528
+#: ../developer/batches.md:588
 msgid "Errors from the create call"
 msgstr "创建调用的错误"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "When"
 msgstr "何时出现"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`400`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "The body is not valid JSON or not a batch; a request is invalid, uses an "
-"unknown or auto model, or repeats a `custom_id`; too many requests; or "
-"the request carries `X-On-Behalf-Of`"
-msgstr ""
-"请求体不是有效的 JSON 或不是批次；某个请求无效、使用了未知模型或自动模型，或 `custom_id` 重复；请求过多；或者请求带有 `X"
+"unknown or auto model, or repeats a `custom_id`; too many requests; a "
+"Messages batch without a known, allowed `anthropic_version`, or another "
+"batch with one; an `anthropic-beta` header, or an `anthropic-version` "
+"header that differs from `anthropic_version`; or the request carries `X"
 "-On-Behalf-Of`"
+msgstr ""
+"请求体不是有效的 JSON 或不是批次；某个请求无效、使用了未知模型或 auto 模型，或 `custom_id` "
+"重复；请求过多；Messages 批次没有已知且允许的 `anthropic_version`，或其他批次带有该字段；带有 `anthropic-"
+"beta` 请求头，或 `anthropic-version` 请求头与 `anthropic_version` 不一致；或请求带有 `X-On-"
+"Behalf-Of`"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`401`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "The API key is invalid or expired when authentication runs, or the "
 "account becomes unavailable before the batch is stored"
 msgstr "认证时 API key 无效或已过期，或在批次存储之前账户变得不可用"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`403`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Your role may not create batches"
 msgstr "你的角色不能创建批次"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`404`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Batch inference is not available on this gateway"
 msgstr "此网关不提供批量推理"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`409`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "The `Idempotency-Key` was already used with a different request"
 msgstr "该 `Idempotency-Key` 已用于另一个不同的请求"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`410`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "The `Idempotency-Key`'s batch has been deleted"
 msgstr "该 `Idempotency-Key` 对应的批次已被删除"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`413`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "The body is larger than the size limit"
 msgstr "请求体超过大小限制"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`429`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "You have the most unfinished batches allowed, the batch would take your "
 "unfinished requests over their limit, or your daily quota is used up"
 msgstr "你的未完成批次已达上限、该批次会让你的未完成请求超过上限，或你的每日额度已用完"
 
-#: ../developer/batches.md:541
+#: ../developer/batches.md:601
 msgid ""
 "A file batch is counted against the limit on unfinished requests while "
 "its file is read, after the create call has answered: over the limit, the"
@@ -1041,51 +1325,49 @@ msgstr ""
 "文件批次在创建调用返回之后、读取文件期间才计入未完成请求上限：超出上限时，批次会 `failed`，`errors` 中带有 "
 "`queued_request_limit`。"
 
-#: ../developer/batches.md:551
-msgid "Message Batch routes answer every error in Anthropic's shape: a top-level `\"type\": \"error\"` and an `error` object with its own `type` and `message`."
-msgstr "Message Batch 路由的所有错误都使用 Anthropic 格式：顶层有 `\"type\": \"error\"`，另有一个 `error` 对象，其中包含自己的 `type` 和 `message`。"
+#: ../developer/batches.md:605
+msgid "Compared with OpenAI's batch API"
+msgstr "与 OpenAI Batch API 的比较"
 
-#: ../developer/batches.md:559
-msgid "Compared with OpenAI's and Anthropic's batch APIs"
-msgstr "与 OpenAI 和 Anthropic 批量 API 的比较"
-
-#: ../developer/batches.md:561
+#: ../developer/batches.md:607
 msgid ""
 "Batch requests cost the same as interactive ones: there is no batch "
 "discount, and the gateway runs each request itself rather than handing "
 "the batch to a provider's own batch service."
 msgstr "批量请求与交互式请求价格相同：没有批量折扣，网关自己运行每个请求，而不是把批次交给供应商自己的批量服务。"
 
-#: ../developer/batches.md:564
+#: ../developer/batches.md:610
 msgid ""
 "The limits are the deployment's (see [Limits](#limits)), lower than the "
 "providers' own: 50,000 requests and 32 MiB per batch by default."
 msgstr "限制由部署决定（见[限制](#limits)），低于供应商自己的限制：默认每个批次 50,000 个请求、32 MiB。"
 
-#: ../developer/batches.md:566
+#: ../developer/batches.md:612
 msgid ""
-"The 24-hour window of file batches and Message Batches is when the "
-"gateway stops *starting* requests. Requests already running when it ends "
-"finish, so a batch may reach its final status after `expires_at`."
+"The 24-hour window of file batches is when the gateway stops *starting* "
+"requests. Requests already running when it ends finish, so a batch may "
+"reach its final status after `expires_at`."
 msgstr ""
-"文件批次和 Message Batches 的 24 小时窗口，是网关停止*启动*请求的时间。窗口结束时仍在运行的请求会跑完，所以批次可能在 "
-"`expires_at` 之后才进入最终状态。"
+"文件批次的 24 小时窗口是网关停止*开始*请求的时间。窗口结束时已在运行的请求会运行完，所以批次可能在 `expires_at` "
+"之后才进入最终状态。"
 
-#: ../developer/batches.md:569
+#: ../developer/batches.md:615
 #, python-brace-format
 msgid ""
-"The inline form, `GET /v1/batches/{id}/results`, the JSONL export, "
-"`DELETE /v1/batches/{id}`, `Idempotency-Key` and the cost fields are this"
-" gateway's own."
+"Direct requests, `GET /v1/batches/{id}/results`, the JSONL export, "
+"`DELETE /v1/batches/{id}`, `Idempotency-Key`, the Messages target with "
+"`anthropic_version`, and the cost fields are this gateway's own. OpenAI's"
+" file flow is compatible for the chat, embeddings and Responses targets."
 msgstr ""
-"内联形式、`GET /v1/batches/{id}/results`、JSONL 导出、`DELETE /v1/batches/{id"
-"}`、`Idempotency-Key` 以及费用字段是本网关独有的。"
+"直接提交请求、`GET /v1/batches/{id}/results`、JSONL 导出、`DELETE /v1/batches/{id"
+"}`、`Idempotency-Key`、带 `anthropic_version` 的 Messages "
+"目标以及费用字段都是本网关自有的。OpenAI 的文件方式对 Chat、Embeddings 和 Responses 目标兼容。"
 
-#: ../developer/batches.md:572
+#: ../developer/batches.md:619
 msgid "Only `purpose=batch` files exist, and they serve batches only."
 msgstr "只存在 `purpose=batch` 的文件，且它们只用于批次。"
 
-#: ../developer/batches.md:573
+#: ../developer/batches.md:620
 msgid ""
 "Responses requests in a batch are independent: `store: true`, "
 "`previous_response_id`, `conversation`, `background` and hosted tools are"
@@ -1094,20 +1376,21 @@ msgstr ""
 "批次中的 Responses 请求是独立的：`store: "
 "true`、`previous_response_id`、`conversation`、`background` 和托管工具会被拒绝。"
 
-#: ../developer/batches.md:576
+#: ../developer/batches.md:623
 msgid ""
-"Message Batches belong to your account; there are no workspaces. "
-"`anthropic-beta` is refused, and so are server tools, Files API sources, "
-"MCP servers and containers."
+"Messages batches belong to your account; there are no workspaces. Betas, "
+"server tools, Files API sources, MCP servers and containers are refused. "
+"Messages requests run through the gateway's own routing, not a provider's"
+" batch service."
 msgstr ""
-"Message Batches 属于你的账户；没有 workspace。`anthropic-beta` 会被拒绝，server "
-"tools、Files API 来源、MCP 服务器和容器也会被拒绝。"
+"Messages 批次属于你的账户；没有 workspace。betas、服务端工具、Files API 来源、MCP 服务器和 "
+"container 都会被拒绝。Messages 请求通过网关自己的路由运行，而不是供应商的批处理服务。"
 
-#: ../developer/batches.md:580
+#: ../developer/batches.md:628
 msgid "Running batch inference"
 msgstr "运行批量推理"
 
-#: ../developer/batches.md:582
+#: ../developer/batches.md:630
 msgid ""
 "These settings are on the admin console's **Configuration** tab, under "
 "**Batch inference**. None needs a restart: a change applies to the next "
@@ -1116,53 +1399,61 @@ msgstr ""
 "这些设置项位于管理控制台 **Configuration** 标签页的 **Batch inference** "
 "下。都不需要重启：修改会作用于下一个请求和 worker 的下一轮。"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Setting"
 msgstr "设置项"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_ENABLED`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "on"
 msgstr "开"
 
-#: ../developer/batches.md:29
-msgid "Serve batch inference, every kind of it. Off, every batch, file and webhook route answers `404` and no queued request starts; stored batches are kept"
+#: ../developer/batches.md:40
+msgid ""
+"Serve batch inference, every kind of it. Off, every batch, file and "
+"webhook route answers `404` and no queued request starts; stored batches "
+"are kept"
 msgstr "提供所有类型的批量推理。关闭时，所有批次、文件和 webhook 路由都返回 `404`，排队中的请求不会开始执行；已存储的批次会保留"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MIN_ROLE`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`internal`"
 msgstr ""
 
-#: ../developer/batches.md:29
-msgid "Lowest role that may create batches, upload files and set up a batch webhook (`free`, `pro`, `internal`, `admin`). A queued request also waits while its owner's role is below it"
-msgstr "允许创建批次、上传文件和设置批次 webhook 的最低角色（`free`、`pro`、`internal`、`admin`）。排队中的请求在其所有者的角色低于该门槛时也会等待"
+#: ../developer/batches.md:40
+msgid ""
+"Lowest role that may create batches, upload files and set up a batch "
+"webhook (`free`, `pro`, `internal`, `admin`). A queued request also waits"
+" while its owner's role is below it"
+msgstr ""
+"允许创建批次、上传文件和设置批次 webhook "
+"的最低角色（`free`、`pro`、`internal`、`admin`）。排队中的请求在其所有者的角色低于该门槛时也会等待"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MODEL_CONCURRENCY`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "64"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Batch requests a model runs at once, across the whole deployment, when it"
 " has no cap of its own. `0` pauses batch work on those models"
 msgstr "模型没有自己的上限时，它在整个部署中同时运行的批量请求数。`0` 会暂停这些模型上的批量任务"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_YIELD_TO_INTERACTIVE`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Interactive requests in flight on a model take batch slots from its cap, "
 "so batch work gives way to interactive traffic on the same model. Off, "
@@ -1173,89 +1464,89 @@ msgstr ""
 "模型上正在处理的交互式请求会占用其上限中的批量名额，因此批量任务会为同一模型上的交互式流量让路。关闭后，无论交互负载如何，批量任务都会占满上限，`BATCH_SHARED_INTERACTIVE_LOAD`"
 " 和 `BATCH_INTERACTIVE_RESERVE` 也不再起作用"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MAX_REQUESTS`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "50000"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Requests one batch may hold"
 msgstr "一个批次可以包含的请求数"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MAX_BODY_MB`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "32"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Largest create request, in MiB"
 msgstr "创建请求的最大大小，单位 MiB"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MAX_ACTIVE_PER_USER`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "10"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Unfinished batches one user may have"
 msgstr "一个用户可以有的未完成批次数"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_COMPLETION_WINDOW_HOURS`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "24"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Hours a new batch has before its unstarted requests expire, 1–168"
 msgstr "新批次中未开始的请求过期前的小时数，1–168"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_RETENTION_DAYS`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "7"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Days a finished batch and its results are kept. A batch keeps the value "
 "it was created with"
 msgstr "已结束批次及其结果的保留天数。批次保留创建时的取值"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MAX_QUEUED_REQUESTS_PER_USER`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "100000"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Unfinished requests one user may have across all their batches"
 msgstr "一个用户在其所有批次中可以有的未完成请求数"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_ROLE_CONCURRENCY_FREE` / `_PRO` / `_INTERNAL` / `_ADMIN`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "8 / 16 / 64 / 64"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Batch requests one user of that role may have running at once, across "
 "every model. Counted in each gateway process on its own, so with several "
@@ -1268,11 +1559,11 @@ msgstr ""
 "该角色的一个用户在所有模型上同时运行的批量请求数。每个网关进程各自计数，所以有多个进程时，一个用户在每个进程中都可以运行这么多；相比之下，模型上限在数据库中跨所有进程计数。它独立于该角色的交互式并发上限（`user_concurrency_<role>`"
 " 和用户自己的覆盖值只作用于交互式请求）；`0` 取消这一上限"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_SHARED_INTERACTIVE_LOAD`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Yield to the interactive requests of every gateway process, not only the "
 "worker's own. While the shared counts cannot be read from the database, "
@@ -1282,15 +1573,15 @@ msgstr ""
 "让位于所有网关进程的交互式请求，而不只是 worker 所在进程的。无法从数据库读取共享计数时，不会启动新的批量请求；正在运行的请求继续。只在 "
 "`BATCH_YIELD_TO_INTERACTIVE` 开启时生效"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_INTERACTIVE_RESERVE`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "0"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Slots of every model's batch cap kept free for interactive requests, on "
 "top of those in flight. Applies only while `BATCH_YIELD_TO_INTERACTIVE` "
@@ -1299,93 +1590,91 @@ msgstr ""
 "每个模型的批量上限中，在正在处理的交互式请求之外，再为交互式请求预留的名额数。只在 `BATCH_YIELD_TO_INTERACTIVE` "
 "开启时生效"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MAX_LINE_KB`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "4096"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Largest line of an input file"
 msgstr "输入文件的最大单行大小"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_MAX_RESULT_KB`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Largest response one batch request may store"
 msgstr "单个批量请求可以存储的最大响应"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_FILES_MAX_TOTAL_MB_PER_USER`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "512"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Uploaded input files one user may keep"
 msgstr "一个用户可以保留的已上传输入文件总量"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_FILE_UPLOADS_PER_HOUR`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "60"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Input files one user may upload per hour"
 msgstr "一个用户每小时可以上传的输入文件数"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_FILE_RETENTION_DAYS`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "30"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "Days an uploaded input file is kept"
 msgstr "已上传输入文件的保留天数"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_ANTHROPIC_VERSIONS`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`2023-06-01,2026-10-21`"
 msgstr ""
 
-#: ../developer/batches.md:29
-msgid "`anthropic-version` values a Message Batch may be created under"
-msgstr "创建 Message Batch 时允许使用的 `anthropic-version` 取值"
+#: ../developer/batches.md:40
+msgid ""
+"`anthropic_version` values a new `/v1/messages` batch may name. A stored "
+"batch keeps running under its own"
+msgstr "新的 `/v1/messages` 批次可以使用的 `anthropic_version` 值。已存的批次继续按它自己的版本运行"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "`BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS`"
 msgstr ""
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid "off"
 msgstr "关"
 
-#: ../developer/batches.md:29
+#: ../developer/batches.md:40
 msgid ""
 "Let webhooks reach private and loopback addresses. For isolated test "
 "deployments only"
 msgstr "允许 webhook 访问私有地址和回环地址。仅用于隔离的测试部署"
 
-#: ../developer/batches.md:604
-msgid "`BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file batches, Message Batches, embedding and Responses batches and webhooks, no longer controls anything. A value left in the environment or the database changes nothing, is not listed on the Settings tab and cannot be set there; the gateway keeps it, so that a rollback reads it again, and warns about it once at startup. Once no earlier version will run, delete the stored row (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the variable."
-msgstr "早期版本用 `BATCH_EXPANSION_ENABLED` 控制文件批次、Message Batches、嵌入和 Responses 批次以及 webhook，现在它已不再生效。环境变量或数据库中遗留的值不会改变任何行为，也不会在 Settings 页列出，且不能再通过该页设置；网关会保留它以便回滚后的旧版本重新读取，并在启动时发出一次警告。确认不再运行任何早期版本后，删除已存储的记录（`DELETE /admin/config/BATCH_EXPANSION_ENABLED`，或 `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`），并移除对应环境变量。"
-
-#: ../developer/batches.md:610
+#: ../developer/batches.md:667
 #, python-brace-format
 msgid ""
 "A model's own cap is set in **Batch Concurrency** on the admin Settings "
@@ -1403,7 +1692,7 @@ msgstr ""
 "/admin/batch/models` 和 `PATCH /admin/batch/models/{model_id}`（请求体 "
 "`{\"max_concurrency\": <n or null>}`）。该上限把所有网关进程的请求计入同一个限额，所以不会随进程数增加而变大。"
 
-#: ../developer/batches.md:619
+#: ../developer/batches.md:676
 msgid ""
 "Every gateway process runs a worker; requests of one batch may run in "
 "several of them. A process that stops hands its unfinished requests back,"
@@ -1413,7 +1702,7 @@ msgstr ""
 "每个网关进程都运行一个 "
 "worker；同一批次的请求可能在其中多个进程里运行。正常停止的进程会交还未完成的请求；意外退出的进程，其请求会在租约到期后（几分钟后）由其他进程接管。"
 
-#: ../developer/batches.md:624
+#: ../developer/batches.md:681
 msgid ""
 "The batches live in the operational database: `batch_jobs`, "
 "`batch_items`, `batch_attempts` (one row per attempt, with what it was "
@@ -1432,43 +1721,64 @@ msgstr ""
 " 中。批次运行的每个请求都是 `api_logs` 中设置了 `batch_job_id` 的一行，其条目和尝试记录在该行的 metadata "
 "中。永久删除用户时，也会删除其批次、文件、幂等记录和 webhook。"
 
-#: ../developer/batches.md:633
+#: ../developer/batches.md:690
 msgid ""
 "The admin console's **Batches** tab lists every user's batches, totals "
 "them per user and lets an administrator cancel one."
 msgstr "管理控制台的 **Batches** 标签页列出所有用户的批次，按用户汇总，并允许管理员取消批次。"
 
-#: ../developer/batches.md:636
+#: ../developer/batches.md:693
 msgid "Upgrading a deployment"
 msgstr "升级部署"
 
-#: ../developer/batches.md:642
-msgid "A worker only runs the kinds of batch it knows: claims, expiry, finalizing, validation, sealing and cleanup all skip a batch whose surface, target or schema version is newer than the worker's. The workers that do not know this are the old ones: a gateway older than the one that added file batches and Message Batches (before #1660) has no such filter and would run their requests as chat completions. New code cannot change what an old process already running does, so before upgrading from one of those versions, make sure no old worker is running alongside the new version:"
-msgstr "worker 只处理自己认识的批次类型：领取请求、过期处理、最终处理、校验、封存和清理，都会跳过 API 类型、请求目标或 schema 版本比自身更新的批次。但旧 worker 不具备这种能力：在文件批次和 Message Batches 加入之前（#1660 之前）的网关没有这层过滤，会把这些请求当成聊天补全来执行。新代码无法改变已经运行的旧进程的行为，因此从这些版本升级前，必须确保旧 worker 不会与新版本同时运行："
+#: ../developer/batches.md:695
+msgid ""
+"A worker only runs the kinds of batch it knows: claims, expiry, "
+"finalizing, validation, sealing and cleanup all skip a batch whose "
+"surface, target or schema version is newer than the worker's. The workers"
+" that do not know this are the old ones: a gateway older than the one "
+"that added file batches and the former Message Batches (before #1660) has"
+" no such filter and would run their requests as chat completions. New "
+"code cannot change what an old process already running does, so before "
+"upgrading from one of those versions, make sure no old worker is running "
+"alongside the new version:"
+msgstr ""
+"worker 只运行它认识的批次种类：领取、过期、收尾、校验、封存和清理都会跳过 surface、target 或 schema version "
+"比 worker 新的批次。不认识这一点的是旧 worker：比加入文件批次和原 Message Batches 的版本更早的网关（#1660 "
+"之前）没有这种过滤，会把它们的请求当作 Chat Completions "
+"运行。新代码无法改变已经在运行的旧进程的行为，所以从这些版本升级之前，请确保没有旧 worker 与新版本同时运行："
 
-#: ../developer/batches.md:651
-msgid "On the old version, turn `BATCH_ENABLED` off (Settings tab, or `python -m serving.config.manage set BATCH_ENABLED false`). Within about ten seconds every old process stops claiming and sweeping, and logs that its batch worker is disabled. A request it was already running finishes or is handed back; those are chat batches, which the new version runs too."
-msgstr "在旧版本上关闭 `BATCH_ENABLED`（通过 Settings 页，或 `python -m serving.config.manage set BATCH_ENABLED false`）。约十秒内，每个旧进程都会停止领取和扫描批次，并记录 batch worker 已停用。已经运行的请求会完成或交还；这些都是聊天批次，新版本也能处理。"
+#: ../developer/batches.md:704
+msgid ""
+"On the old version, turn `BATCH_ENABLED` off (Settings tab, or `python -m"
+" serving.config.manage set BATCH_ENABLED false`). Within about ten "
+"seconds every old process stops claiming and sweeping, and logs that its "
+"batch worker is disabled. A request it was already running finishes or is"
+" handed back; those are chat batches, which the new version runs too."
+msgstr ""
+"在旧版本上关闭 `BATCH_ENABLED`（通过 Settings 页，或 `python -m serving.config.manage "
+"set BATCH_ENABLED false`）。约十秒内，每个旧进程都会停止领取和扫描批次，并记录 batch worker "
+"已停用。已经运行的请求会完成或交还；这些都是聊天批次，新版本也能处理。"
 
-#: ../developer/batches.md:656
-msgid "Upgrade every gateway process. The new processes start with `BATCH_ENABLED` still off."
+#: ../developer/batches.md:709
+msgid ""
+"Upgrade every gateway process. The new processes start with "
+"`BATCH_ENABLED` still off."
 msgstr "升级每个网关进程。新进程启动时，`BATCH_ENABLED` 仍保持关闭。"
 
-#: ../developer/batches.md:658
-msgid "Once no process of the old version is left (check your process manager or orchestrator, not only the health endpoint), turn `BATCH_ENABLED` on."
+#: ../developer/batches.md:711
+msgid ""
+"Once no process of the old version is left (check your process manager or"
+" orchestrator, not only the health endpoint), turn `BATCH_ENABLED` on."
 msgstr "确认没有任何旧版本进程后（检查进程管理器或编排器，不能只看健康检查接口），再开启 `BATCH_ENABLED`。"
 
-#: ../developer/batches.md:661
-msgid "Stopping every old process before any new one starts is equally safe. From a version that already has file batches and Message Batches (#1660 or later), a rolling upgrade needs none of this: its workers know every kind."
-msgstr "在启动任何新进程之前先停止所有旧进程，也同样安全。如果原版本已支持文件批次和 Message Batches（#1660 或之后），滚动升级不需要这些步骤：其 worker 已认识所有类型。"
-
-#: ../developer/batches.md:644
+#: ../developer/batches.md:724
 msgid ""
 "Upgrading from a version without `BATCH_ROLE_CONCURRENCY_<ROLE>` changes "
 "three things:"
 msgstr "从没有 `BATCH_ROLE_CONCURRENCY_<ROLE>` 的版本升级，会带来三处变化："
 
-#: ../developer/batches.md:647
+#: ../developer/batches.md:727
 msgid ""
 "`BATCH_MODEL_CONCURRENCY` now defaults to 64, but a value stored for it "
 "on the **Configuration** tab still applies. A deployment that saved the "
@@ -1477,7 +1787,7 @@ msgstr ""
 "`BATCH_MODEL_CONCURRENCY` 的默认值现在是 64，但在 **Configuration** "
 "标签页为它存储的值仍然生效。保存过旧默认值 4 的部署会一直使用 4，直到管理员修改它。"
 
-#: ../developer/batches.md:650
+#: ../developer/batches.md:730
 msgid ""
 "`BATCH_USER_MAX_CONCURRENCY` no longer exists. A value stored for it is "
 "ignored; `BATCH_ROLE_CONCURRENCY_<ROLE>` is the per-user batch limit."
@@ -1485,60 +1795,218 @@ msgstr ""
 "`BATCH_USER_MAX_CONCURRENCY` "
 "已不存在。为它存储的值会被忽略；`BATCH_ROLE_CONCURRENCY_<ROLE>` 就是每用户的批量上限。"
 
-#: ../developer/batches.md:652
+#: ../developer/batches.md:732
 msgid ""
 "`user_concurrency_<role>` and a user's own concurrency override no longer"
 " limit batch requests."
 msgstr "`user_concurrency_<role>` 和用户自己的并发覆盖值不再限制批量请求。"
 
-#: ../developer/batches.md:676
+#: ../developer/batches.md:735
 msgid "Rolling back"
 msgstr "回滚"
 
-#: ../developer/batches.md:678
-msgid "To a version that already has file batches and Message Batches (#1660 or later), roll back as usual. That version reads `BATCH_EXPANSION_ENABLED` again, off by default, so new batches of the newer kinds are refused until it is on; those already accepted keep running."
-msgstr "如果回滚到已支持文件批次和 Message Batches 的版本（#1660 或之后），按常规步骤回滚即可。该版本会再次读取 `BATCH_EXPANSION_ENABLED`，其默认值为关闭，因此开启它之前无法创建这些较新类型的批次；已经接收的批次会继续运行。"
+#: ../developer/batches.md:772
+msgid ""
+"Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a "
+"request that had already passed its checks may still be on its way to the"
+" database, so an empty result at this point proves nothing yet."
+msgstr ""
+"关闭 `BATCH_ENABLED`。新的批次请求现在会返回 "
+"`404`，但已经通过检查的请求仍可能正在写入数据库，因此此时查询为空还不足以证明安全。"
 
-#: ../developer/batches.md:683
-msgid "To an older version, drain the newer batches with this version, which alone can manage them, and start the older version only once every process of this version has stopped and the database shows none left:"
-msgstr "如果回滚到更早的版本，需要先由当前版本处理完较新类型的批次，因为只有当前版本能管理它们。必须等当前版本的所有进程都停止，且数据库确认没有剩余任务后，才能启动旧版本："
+#: ../developer/batches.md:775
+msgid ""
+"Stop every gateway process of this version, every replica and worker, and"
+" keep them stopped: turn off whatever would start one again on its own "
+"(restart policies, autoscaling, health-check replacement, deploy jobs) "
+"for as long as the final check takes. Do not start any process of the "
+"older version yet."
+msgstr ""
+"停止当前版本的所有网关进程、所有副本和 "
+"worker，并保持停止状态：在最终检查完成前，关闭所有可能自动拉起进程的机制（重启策略、自动扩缩容、健康检查替换和部署任务）。此时不要启动任何旧版本进程。"
 
-#: ../developer/batches.md:687
-msgid "Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches. Other users' queued requests then stop starting too, so their batches have to be cancelled rather than waited for. To let them finish instead, skip this step; step 6 still catches a batch created meanwhile."
-msgstr "将 `BATCH_MIN_ROLE` 设为 `admin`，阻止其他用户创建批次。其他用户排队中的请求也会停止启动，因此必须取消这些批次，不能只是等待它们完成。如果希望它们正常完成，可以跳过这一步；第 6 步仍会发现期间新建的批次。"
-
-#: ../developer/batches.md:691
-msgid "Cancel (or let finish) every batch that is not an inline chat batch: the admin **Batches** tab lists and cancels anyone's. A cancelled file batch still needs a moment to seal. Wait until this returns no rows:"
-msgstr "取消所有非内联聊天批次，或等待它们完成：管理后台的 **Batches** 页可以列出并取消任何用户的批次。文件批次取消后仍需要一点时间完成封存。等待以下查询不再返回任何行："
-
-#: ../developer/batches.md:702
-msgid "Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a request that had already passed its checks may still be on its way to the database, so an empty result at this point proves nothing yet."
-msgstr "关闭 `BATCH_ENABLED`。新的批次请求现在会返回 `404`，但已经通过检查的请求仍可能正在写入数据库，因此此时查询为空还不足以证明安全。"
-
-#: ../developer/batches.md:705
-msgid "Stop every gateway process of this version, every replica and worker, and keep them stopped: turn off whatever would start one again on its own (restart policies, autoscaling, health-check replacement, deploy jobs) for as long as the final check takes. Do not start any process of the older version yet."
-msgstr "停止当前版本的所有网关进程、所有副本和 worker，并保持停止状态：在最终检查完成前，关闭所有可能自动拉起进程的机制（重启策略、自动扩缩容、健康检查替换和部署任务）。此时不要启动任何旧版本进程。"
-
-#: ../developer/batches.md:710
-msgid "Confirm the database has finished with them: no session of the gateway's database user is left, so every transaction those processes opened has committed or rolled back. Run this as a different user, or in your own session, which the query leaves out; it must return no rows:"
+#: ../developer/batches.md:780
+msgid ""
+"Confirm the database has finished with them: no session of the gateway's "
+"database user is left, so every transaction those processes opened has "
+"committed or rolled back. Run this as a different user, or in your own "
+"session, which the query leaves out; it must return no rows:"
 msgstr "确认数据库已完成这些进程留下的工作：网关数据库用户的会话必须全部退出，这样这些进程开启的所有事务才都已提交或回滚。用另一个用户执行以下查询，或在自己的会话中执行（查询会排除该会话）；结果必须为空："
 
-#: ../developer/batches.md:723
-msgid "A session can outlive its process: the server may still be finishing a query or commit that was already sent, or not yet have noticed that the connection is gone. Wait for it to end. If a session stays and you have confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)` ends it and rolls back its open transaction."
-msgstr "会话可能比进程存活得更久：数据库服务端可能仍在完成已发送的查询或提交，也可能尚未发现连接已断开。应等待会话结束。如果某个会话一直存在，且已确认其所在主机不再运行网关，可用 `pg_terminate_backend(pid)` 终止它并回滚尚未完成的事务。"
+#: ../developer/batches.md:793
+msgid ""
+"A session can outlive its process: the server may still be finishing a "
+"query or commit that was already sent, or not yet have noticed that the "
+"connection is gone. Wait for it to end. If a session stays and you have "
+"confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)` "
+"ends it and rolls back its open transaction."
+msgstr ""
+"会话可能比进程存活得更久：数据库服务端可能仍在完成已发送的查询或提交，也可能尚未发现连接已断开。应等待会话结束。如果某个会话一直存在，且已确认其所在主机不再运行网关，可用"
+" `pg_terminate_backend(pid)` 终止它并回滚尚未完成的事务。"
 
-#: ../developer/batches.md:728
-msgid "Only then run the batch query from step 2 again. Only if it returns no rows, start the older version. It keeps `BATCH_ENABLED` off; turn it on, and set `BATCH_MIN_ROLE` back, once only the older version runs."
-msgstr "只有这时，才再次执行第 2 步的批次查询。只有结果为空，才能启动旧版本。旧版本仍会保持 `BATCH_ENABLED` 关闭；确认只剩旧版本运行后，再开启它，并恢复 `BATCH_MIN_ROLE`。"
+#: ../developer/batches.md:802
+msgid ""
+"Why the last check waits until the database is quiet: turning "
+"`BATCH_ENABLED` off refuses new requests, but it does not stop a create "
+"that was admitted a moment earlier; that create still stores its batch, "
+"however long its body or the database takes. A process having exited is "
+"not enough either, since a commit it sent may still be in progress on the"
+" server. Each create is one transaction and only gateway processes write "
+"batches, so once no gateway session is left and none can start, every "
+"create has either committed or rolled back, and the query sees everything"
+" that will ever be there."
+msgstr ""
+"最终检查必须等数据库活动结束，是因为关闭 `BATCH_ENABLED` "
+"只会拒绝新请求，不会阻止刚刚通过准入检查的创建请求；无论读取请求体或访问数据库耗时多久，该请求仍会存储批次。仅确认进程已退出也不够，因为它之前发送的提交可能仍在服务端执行。每次创建都在一个事务内完成，而且只有网关进程会写入批次；因此，当所有网关会话都已退出且不会再启动时，每次创建必定已经提交或回滚，查询才能看到全部最终写入的数据。"
 
-#: ../developer/batches.md:732
-msgid "Why the last check waits until the database is quiet: turning `BATCH_ENABLED` off refuses new requests, but it does not stop a create that was admitted a moment earlier; that create still stores its batch, however long its body or the database takes. A process having exited is not enough either, since a commit it sent may still be in progress on the server. Each create is one transaction and only gateway processes write batches, so once no gateway session is left and none can start, every create has either committed or rolled back, and the query sees everything that will ever be there."
-msgstr "最终检查必须等数据库活动结束，是因为关闭 `BATCH_ENABLED` 只会拒绝新请求，不会阻止刚刚通过准入检查的创建请求；无论读取请求体或访问数据库耗时多久，该请求仍会存储批次。仅确认进程已退出也不够，因为它之前发送的提交可能仍在服务端执行。每次创建都在一个事务内完成，而且只有网关进程会写入批次；因此，当所有网关会话都已退出且不会再启动时，每次创建必定已经提交或回滚，查询才能看到全部最终写入的数据。"
+#: ../developer/batches.md:714
+msgid ""
+"Stopping every old process before any new one starts is equally safe. "
+"From a version that already has file batches and the former Message "
+"Batches (#1660 or later), a rolling upgrade needs none of this. Messages "
+"batches created through `/v1/batches` are kinds those workers do not "
+"know, so while old processes are still running they neither run, "
+"validate, seal nor expire them; only this version's workers do. A create "
+"for the Messages target that an old process happens to answer is refused "
+"with `400` (it does not know the target); retry it, or wait until every "
+"process runs this version. Until the last old process is gone, a client "
+"may still reach the old `/v1/messages/batches` on one of them; batches it"
+" creates there are drained by this version as described in [Moving from "
+"Message Batches](#moving-from-message-batches)."
+msgstr ""
+"先停掉所有旧进程再启动新进程同样安全。如果是从已经有文件批次和原 Message Batches 的版本（#1660 "
+"或之后）升级，滚动升级不需要以上任何步骤。通过 `/v1/batches` 创建的 Messages 批次是这些 worker "
+"不认识的种类，所以旧进程还在运行时，它们既不运行、校验、封存，也不过期这些批次；只有本版本的 worker 会处理。恰好由旧进程处理的 "
+"Messages 目标创建请求会得到 "
+"`400`（旧进程不认识该目标）；请重试，或等到所有进程都运行本版本。在最后一个旧进程退出之前，客户端仍可能在某个旧进程上访问到旧的 "
+"`/v1/messages/batches`；在那里创建的批次由本版本按[从 Message Batches 迁移](#moving-from-"
+"message-batches)中所述的方式排空。"
+
+#: ../developer/batches.md:657
+msgid ""
+"`BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file "
+"batches, Message Batches, embedding and Responses batches and webhooks, "
+"no longer controls anything. A value left in the environment or the "
+"database changes nothing, is not listed on the Settings tab and cannot be"
+" set there; the gateway keeps it, so that a rollback to a release that "
+"still implements it (#1660 up to, but not including, #1673) reads it "
+"again, and warns about it once at startup. Once no such release will run,"
+" delete the stored row (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, "
+"or `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and "
+"unset the variable."
+msgstr ""
+"早期版本用 `BATCH_EXPANSION_ENABLED` 控制文件批次、Message Batches、嵌入和 Responses 批次以及"
+" webhook，现在它已不再生效。环境变量或数据库中遗留的值不会改变任何行为，也不会在 Settings "
+"页列出，且不能再通过该页设置；网关会保留它，以便回滚到仍实现该开关的版本（#1660 起、#1673 "
+"之前）时重新读取，并在启动时发出一次警告。确认不再运行任何这样的版本后，删除已存储的记录（`DELETE "
+"/admin/config/BATCH_EXPANSION_ENABLED`，或 `python -m serving.config.manage"
+" reset BATCH_EXPANSION_ENABLED`），并移除对应环境变量。"
 
 #: ../developer/batches.md:741
-msgid "If step 6 returns rows, do not start the older version: it would run them as chat completions. Start this version again, and only this version, turn `BATCH_ENABLED` on so its worker can run or seal those batches, cancel them or let them finish (step 2), then repeat steps 3 to 6."
-msgstr "如果第 6 步仍返回记录，不要启动旧版本，否则它会把这些任务当成聊天补全执行。重新启动当前版本，且只运行当前版本；开启 `BATCH_ENABLED`，让 worker 能够执行或封存这些批次，取消它们或等待它们完成（第 2 步），再重复第 3 至第 6 步。"
+msgid ""
+"Whatever version you roll back to, drain with this version the batches "
+"that version cannot run, and start it only once every process of this "
+"version has stopped and the database shows none left. Which batches those"
+" are depends on the version, and so does the query that lists them (the "
+"*drain query* below):"
+msgstr "无论回滚到哪个版本，都要先由当前版本排空那个版本无法运行的批次，并且只有在当前版本的所有进程都已停止、数据库确认没有剩余之后，才能启动它。需要排空哪些批次取决于目标版本，列出它们的查询也随之不同（下文称为*排空查询*）："
 
 #: ../developer/batches.md:746
-msgid "Finished batches of the newer kinds stay in the database; the older version lists and purges them as if they were inline chat batches. Uploaded files and webhooks stay unread until the next upgrade. Turning `BATCH_ENABLED` off is not enough on its own: it stops the newer version's worker too, so the newer batches would never drain."
-msgstr "已经完成的较新类型批次会保留在数据库中；旧版本会把它们当成内联聊天批次列出和清理。已上传的文件和 webhook 在下次升级前不会被读取。单独关闭 `BATCH_ENABLED` 并不够：它也会停止新版本的 worker，导致这些较新类型的批次永远无法处理完。"
+msgid ""
+"To a version that already has file batches and the former Message Batches"
+" (#1660 or later): the Messages batches created through `/v1/batches`. "
+"That version neither runs nor expires them, though it can still cancel "
+"and delete them."
+msgstr ""
+"回滚到已经有文件批次和原 Message Batches 的版本（#1660 或之后）：需要排空通过 `/v1/batches` 创建的 "
+"Messages 批次。那个版本既不运行也不过期它们，但仍可以取消和删除。"
+
+#: ../developer/batches.md:756
+msgid ""
+"To an older version (before #1660): every batch that is not an inline "
+"chat batch. That version would run them as chat completions."
+msgstr "回滚到更早的版本（#1660 之前）：需要排空所有非内联聊天批次。那个版本会把它们当作聊天补全执行。"
+
+#: ../developer/batches.md:766
+msgid ""
+"Either way, one empty drain query is not enough while a process of this "
+"version is still running: a create admitted a moment before can still "
+"store a new batch. Follow every step:"
+msgstr "无论哪种情况，只要当前版本还有进程在运行，排空查询一次为空都不够：片刻之前已通过准入的创建请求仍可能写入新批次。请完成以下每一步："
+
+#: ../developer/batches.md:770
+msgid ""
+"Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches, and "
+"create none yourself. Other users' queued requests then stop starting "
+"too, so their batches have to be cancelled rather than waited for. To let"
+" them finish instead, skip this step; step 6 still catches a batch "
+"created meanwhile."
+msgstr ""
+"将 `BATCH_MIN_ROLE` 设为 "
+"`admin`，阻止其他用户创建批次，你自己也不要创建。其他用户排队中的请求也会停止启动，因此必须取消这些批次，不能只是等待它们完成。如果希望它们正常完成，可以跳过这一步；第"
+" 6 步仍会发现期间新建的批次。"
+
+#: ../developer/batches.md:775
+msgid ""
+"Cancel (or let finish) every batch the drain query lists: the admin "
+"**Batches** tab lists and cancels anyone's. A cancelled file batch still "
+"needs a moment to seal. Wait until the drain query returns no rows."
+msgstr ""
+"取消排空查询列出的每个批次，或等待它们完成：管理后台的 **Batches** "
+"页可以列出并取消任何用户的批次。文件批次取消后仍需要一点时间完成封存。等待排空查询不再返回任何行。"
+
+#: ../developer/batches.md:805
+msgid ""
+"Only then run the drain query again. Only if it returns no rows, start "
+"the older version. It keeps `BATCH_ENABLED` off; turn it on, and set "
+"`BATCH_MIN_ROLE` back, once only the older version runs."
+msgstr ""
+"只有这时，才再次执行排空查询。只有结果为空，才能启动旧版本。旧版本仍会保持 `BATCH_ENABLED` "
+"关闭；确认只剩旧版本运行后，再开启它，并恢复 `BATCH_MIN_ROLE`。"
+
+#: ../developer/batches.md:818
+msgid ""
+"If step 6 returns rows, do not start the older version: one before #1660 "
+"would run them as chat completions, and a later one would leave them "
+"unrun for good. Start this version again, and only this version, turn "
+"`BATCH_ENABLED` on so its worker can run or seal those batches, cancel "
+"them or let them finish (step 2), then repeat steps 3 to 6. Turning "
+"`BATCH_ENABLED` off is not enough on its own: it stops this version's "
+"worker too, so those batches would never drain."
+msgstr ""
+"如果第 6 步仍返回记录，不要启动旧版本：#1660 "
+"之前的版本会把它们当作聊天补全执行，之后的版本则会让它们永远不运行。重新启动当前版本，且只运行当前版本；开启 `BATCH_ENABLED`，让 "
+"worker 能够执行或封存这些批次，取消它们或等待它们完成（第 2 步），再重复第 3 至第 6 步。只关闭 `BATCH_ENABLED` "
+"是不够的：它也会让当前版本的 worker 停止，这些批次就永远无法排空。"
+
+#: ../developer/batches.md:825
+msgid "What the older version does once it runs:"
+msgstr "旧版本运行后的行为："
+
+#: ../developer/batches.md:827
+msgid ""
+"A release that still implements `BATCH_EXPANSION_ENABLED` (from #1660 up "
+"to, but not including, #1673, which retired it) reads it again, off by "
+"default, so creating its newer batch kinds is refused until it is turned "
+"on; batches already accepted keep running. From #1673 on the setting "
+"controls nothing, as in this version."
+msgstr ""
+"仍实现 `BATCH_EXPANSION_ENABLED` 的版本（#1660 起，到移除它的 #1673 "
+"之前）会重新读取它，默认关闭，因此在开启之前，它较新的批次种类无法创建；已接受的批次继续运行。从 #1673 "
+"起，该设置与当前版本一样不再控制任何功能。"
+
+#: ../developer/batches.md:832
+msgid ""
+"Any release from #1660 on serves `/v1/messages/batches` again, and shows "
+"there only the batches stored through it."
+msgstr "#1660 及之后的任何版本都会重新提供 `/v1/messages/batches`，并且只在那里显示通过它存储的批次。"
+
+#: ../developer/batches.md:834
+msgid ""
+"Rows are never rewritten by a rollback: finished batches of the newer "
+"kinds stay in the database. A version before #1660 lists and purges them "
+"as if they were inline chat batches, and leaves uploaded files and "
+"webhooks unread until the next upgrade."
+msgstr ""
+"回滚不会改写任何行：较新种类中已结束的批次仍留在数据库中。#1660 "
+"之前的版本会把它们当作内联聊天批次列出和清理，并且直到下次升级前都不会读取已上传的文件和 webhook。"

@@ -28,7 +28,10 @@ function page(id: string, hasMore = false): ConsoleBatchPage {
     id,
     user_id: `${id}-owner`,
     api_surface: 'openai_inline',
+    input: 'inline',
     target: 'chat',
+    endpoint: '/v1/chat/completions',
+    models: ['m'],
     status: 'completed',
     request_counts: { total: 1, completed: 1, failed: 0 },
     cancelled: 0,
@@ -81,5 +84,18 @@ describe('Batch list request ownership', () => {
     });
     expect(requestsWhilePending).toBe(2);
     expect(screen.getAllByText('second-batch')).toHaveLength(1);
+  });
+});
+
+describe('Batch filters', () => {
+  it('filters by the status the list shows, with no API dropdown', async () => {
+    vi.mocked(listAllBatches).mockResolvedValue(page('any-batch'));
+    render(<BatchesTab />);
+    await screen.findByText('any-batch');
+    expect(screen.queryByLabelText('API')).toBeNull();
+    expect(screen.queryByText(/OpenAI|Anthropic/)).toBeNull();
+    // The target column shows what the batch runs and how its requests arrived.
+    expect(screen.queryByText('/v1/chat/completions')).not.toBeNull();
+    expect(screen.queryByText('Direct requests · m')).not.toBeNull();
   });
 });

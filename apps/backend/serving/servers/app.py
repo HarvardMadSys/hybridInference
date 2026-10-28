@@ -32,7 +32,6 @@ from .routers import (
     identity,
     internal,
     internal_lookups,
-    message_batches,
     models,
     playground,
     public_stats,
@@ -126,7 +125,6 @@ def create_app() -> FastAPI:
     app.include_router(completions.router)
     app.include_router(embeddings.router)
     app.include_router(batches.router)
-    app.include_router(message_batches.router)
     app.include_router(files.router)
     app.include_router(batch_console.router)
     app.include_router(rag.router)

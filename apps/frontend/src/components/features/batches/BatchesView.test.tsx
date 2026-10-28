@@ -52,6 +52,7 @@ function batch(id: string, overrides: Partial<ConsoleBatch> = {}): ConsoleBatch 
     id,
     user_id: 'me',
     api_surface: 'openai_inline',
+    input: 'inline',
     target: 'chat',
     endpoint: '/v1/chat/completions',
     status: 'in_progress',
@@ -103,12 +104,56 @@ describe('BatchesView', () => {
     expect(screen.getByText('+ 2 unknown')).toBeInTheDocument();
   });
 
-  it('counts an Anthropic batch done from its tallies', () => {
-    const row = batch('msgbatch_1', {
+  it('shows every batch as one product: target and model first, input method second', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_m', {
+          target: 'messages',
+          endpoint: '/v1/messages',
+          models: ['claude-x'],
+          protocol_profile: '2023-06-01',
+        }),
+        batch('batch_f', {
+          api_surface: 'openai_file',
+          input: 'file',
+          target: 'embeddings',
+          endpoint: '/v1/embeddings',
+          models: ['embed-1'],
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const messages = await screen.findByTestId('batch-batch_m');
+    expect(messages).toHaveTextContent('Messages · claude-x');
+    expect(messages).toHaveTextContent('Direct requests');
+    const file = screen.getByTestId('batch-batch_f');
+    expect(file).toHaveTextContent('Embeddings · embed-1');
+    expect(file).toHaveTextContent('JSONL file');
+    // No vendor-named products, no separate API surfaces.
+    for (const text of [/OpenAI batch/, /Anthropic/, /Message Batch/, /\/v1\/messages\/batches/]) {
+      expect(screen.queryByText(text)).toBeNull();
+    }
+  });
+
+  it('shows a legacy Message Batch with the common status words and counts', async () => {
+    const legacy = batch('msgbatch_1', {
       api_surface: 'anthropic',
-      request_counts: { processing: 1, succeeded: 2, errored: 1, canceled: 0, expired: 1 },
+      target: 'messages',
+      endpoint: '/v1/messages',
+      status: 'completed',
+      phase: 'sealed',
+      request_counts: { total: 5, completed: 3, failed: 1 },
+      cancelled: 1,
+      results_available: true,
     });
-    expect(progress(row)).toEqual({ done: 4, total: 5, failed: 2 });
+    expect(progress(legacy)).toEqual({ done: 5, total: 5, failed: 1 });
+    vi.mocked(listMyBatches).mockResolvedValue(page([legacy]));
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-msgbatch_1');
+    expect(row).toHaveTextContent('Completed');
+    expect(row).not.toHaveTextContent('Ended');
+    expect(row).toHaveTextContent('5 of 5 done · 1 failed');
+    expect(screen.getByRole('button', { name: 'Download results' })).toBeInTheDocument();
   });
 
   it('requests the next page once while it loads, and lists each batch once', async () => {
@@ -160,6 +205,7 @@ describe('BatchesView', () => {
       page([
         batch('batch_file', {
           api_surface: 'openai_file',
+          input: 'file',
           status: 'completed',
           phase: 'sealed',
           results_available: true,
