@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 
@@ -90,6 +90,18 @@ async def lifespan(app: FastAPI):
                 restart.exit_for_restart()
 
 
+#: CORS options besides the origins. ``ETag`` is exposed because a console
+#: served from another origin reads it to tell a configuration version conflict
+#: (409 with the version now stored) from any other 409; a browser hides every
+#: response header CORS does not expose.
+CORS_OPTIONS: dict[str, Any] = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+    "expose_headers": ["ETag"],
+}
+
+
 def create_app() -> FastAPI:
     """Create and configure a FastAPI app instance with modular routers."""
     app = FastAPI(
@@ -101,12 +113,7 @@ def create_app() -> FastAPI:
 
     # CORS: use specific origins when credentials are enabled. The origins are
     # read per request (CORS_ALLOWED_ORIGINS is database-backed).
-    app.add_middleware(
-        SettingsCORSMiddleware,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app.add_middleware(SettingsCORSMiddleware, **CORS_OPTIONS)
 
     # Request ID, timeout, and request log middlewares
     app.add_middleware(TimeoutMiddleware)

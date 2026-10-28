@@ -389,38 +389,58 @@ def _settings_stub(webhook_url="", wecom_url="", slack_alerts_url=""):
     )
 
 
-def test_register_disabled_when_webhook_empty():
-    """Empty SLACK_WEBHOOK_URL must skip registration entirely."""
+def _published(config):
+    from serving.config import live
+
+    return live.Published(config, None, 7)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "webhooks",
+    [
+        {},
+        {"slack_webhook_url": "   "},
+        # Only SLACK_WEBHOOK_URL or WeCom enables this detector; the alerting
+        # URL alone does not. That asymmetry predates the live configuration.
+        {"slack_alerts_webhook_url": "https://hooks.slack.test/alerting"},
+    ],
+    ids=["empty", "whitespace", "only-slack-alerts-url"],
+)
+async def test_one_job_is_registered_and_paused_without_the_detectors_webhook(webhooks):
+    """The job always exists; without its webhook a check queries and sends nothing.
+
+    A webhook saved later then starts the detector without registering a job
+    or restarting, and the cooldown and incident it keeps are the same ones.
+    """
     from serving.admin import failed_request_alerter
+    from serving.observability.alert_runtime import AlertRuntimeConfig
 
     fake_scheduler = MagicMock()
     pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=10_000)
+    pool.fetchrow = AsyncMock(return_value={"failures": 10_000, "total": 10_000})
 
-    with patch.object(
-        failed_request_alerter,
-        "get_scheduler",
-        return_value=fake_scheduler,
+    with (
+        patch.object(failed_request_alerter, "get_scheduler", return_value=fake_scheduler),
+        patch.object(
+            failed_request_alerter.alert_runtime,
+            "acquire",
+            return_value=_published(AlertRuntimeConfig(**webhooks)),
+        ),
+        patch.object(
+            failed_request_alerter, "alert_on_transition", new=AsyncMock(return_value=True)
+        ) as transition,
     ):
-        failed_request_alerter.register_alerter_job(pool, _settings_stub(webhook_url=""))
+        alerter = failed_request_alerter.register_alerter_job(pool)
+        assert alerter is not None
+        await alerter.run_check()
 
-    fake_scheduler.add_job.assert_not_called()
-
-
-def test_register_disabled_when_webhook_whitespace():
-    """Whitespace-only SLACK_WEBHOOK_URL must be treated as unset — no job registered."""
-    from serving.admin import failed_request_alerter
-
-    fake_scheduler = MagicMock()
-    pool = MagicMock()
-
-    with patch.object(
-        failed_request_alerter,
-        "get_scheduler",
-        return_value=fake_scheduler,
-    ):
-        failed_request_alerter.register_alerter_job(pool, _settings_stub(webhook_url="   "))
-
-    fake_scheduler.add_job.assert_not_called()
+    fake_scheduler.add_job.assert_called_once()
+    pool.fetchval.assert_not_awaited()
+    pool.fetchrow.assert_not_awaited()
+    transition.assert_not_awaited()
+    assert alerter.last_state == "paused"
 
 
 def test_register_adds_job_when_webhook_set():
@@ -467,31 +487,6 @@ def test_register_adds_job_when_only_wecom_is_set():
         )
 
     fake_scheduler.add_job.assert_called_once()
-
-
-def test_register_disabled_when_only_slack_alerts_webhook_is_set():
-    """Only SLACK_WEBHOOK_URL enables this detector; the alerting URL does not.
-
-    That asymmetry predates this change: deployments that set just
-    SLACK_ALERTS_WEBHOOK_URL never registered the DB-query detector, and the
-    WeCom channel must not alter that.
-    """
-    from serving.admin import failed_request_alerter
-
-    fake_scheduler = MagicMock()
-    pool = MagicMock()
-
-    with patch.object(
-        failed_request_alerter,
-        "get_scheduler",
-        return_value=fake_scheduler,
-    ):
-        failed_request_alerter.register_alerter_job(
-            pool,
-            _settings_stub(slack_alerts_url="https://hooks.slack.test/alerting"),
-        )
-
-    fake_scheduler.add_job.assert_not_called()
 
 
 def test_register_no_scheduler_is_safe():

@@ -562,7 +562,9 @@ that served the save, and within ten seconds in every other one. A setting
 marked **Restart required** is read only at startup, and the process keeps the
 value it started with until it restarts. Provider credentials and every
 variable the registry names are among them, as are the circuit-breaker and
-outbound-concurrency tuning, alerting and `DB_STORE_FULL_CONTENT`.
+outbound-concurrency tuning, `ALERTS_ENABLED` and `DB_STORE_FULL_CONTENT`. The
+alert channels and the failed-request alert thresholds are too, until an
+operator activates their [live group](#settings-that-apply-without-a-restart).
 
 While such a change is waiting, the tab shows a **Restart pending** notice with
 a **Restart backend** button. The button (`POST /admin/system/restart`) makes
@@ -580,6 +582,95 @@ shows a command to run yourself instead, such as
 flight, streams included. The console knows the restart is over once `/health`
 names a different process in its `instance` field, however quickly the backend
 came back.
+
+### Settings that apply without a restart
+
+A live group is a set of settings the backend applies together, without a
+restart, once an operator has activated it. The first one, `alerts.runtime`,
+holds the alert channel and the failed-request alert:
+
+| Settings | What they choose |
+|---|---|
+| `SLACK_ALERTS_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `WECOM_ALERTS_WEBHOOK_URL` | The one channel alerts go to |
+| `FAILED_REQUEST_ALERT_THRESHOLD`, `FAILED_REQUEST_ALERT_WINDOW_MINUTES`, `FAILED_REQUEST_ALERT_COOLDOWN_MINUTES`, `FAILED_REQUEST_ALERT_RATE`, `FAILED_REQUEST_ALERT_RATE_MIN_COUNT` | When the failed-request alert pages |
+
+Once the group is active, a save reaches every backend process within about
+ten seconds. Each process checks the whole group first: a pair of channels
+that conflict, or a value out of range, keeps the values it already uses and
+reports the group as invalid, while the saved values stay for you to correct.
+To move from Slack to WeCom, clear the Slack webhooks and fill in the WeCom
+one in the same save. Clearing every webhook pauses alert delivery and the
+failed-request alert on purpose; it is not a failure. The failed-request alert
+runs while `SLACK_WEBHOOK_URL` or `WECOM_ALERTS_WEBHOOK_URL` is set, as before;
+`SLACK_ALERTS_WEBHOOK_URL` alone does not start it.
+
+The Alerts category shows where the saved configuration stands. **Applied in
+each backend process** names the saved version — for example
+`app_config / epoch 3f1c… / revision 42` — and, for every process that has
+registered, whether it has applied that revision, is still applying it, failed
+or has not reported. A process whose heartbeat stopped more than a minute ago
+counts as unknown, never as applied. A backend running an older build does not
+register at all, so the panel cannot prove that every process is covered:
+compare its list with your deployment's own list of processes. **Applied**
+means the process uses the saved channel and thresholds; it says nothing about
+whether a message reached the channel, which **Send test** checks. **Send
+test** uses the saved webhook (or the address you typed), not necessarily the
+one a process is using.
+
+After a channel change, alerts already under way finish on the old channel,
+and the recovery message of an incident opened earlier goes to the new one.
+The failed-request alert keeps its cooldown and its open incident across the
+change. It still checks once a minute, so a new threshold takes effect at the
+next check after the change has applied.
+
+The console saves conditionally: if someone else saved the configuration after
+you started editing a category, your save is refused, nothing is stored, and
+the tab reloads the latest values and keeps your unsaved changes for you to
+review and save again. A reload, or a save in another category, never moves
+unsaved changes onto values you have not seen.
+
+`ALERTS_ENABLED`, the alert rules file and the alert engine still apply only
+after a restart. Other settings join live groups later, one group at a time.
+
+#### Activating a live group
+
+A group stays inactive until an operator activates it, and a backend upgrade
+never activates one by itself. Until then its settings behave as **Restart
+required**. Activate it once every backend process runs a build that supports
+it:
+
+1. Deploy the build everywhere and check that each process registered:
+   `python -m serving.config.manage live status`.
+2. Preview what activation applies. It shows each setting's saved value (a
+   secret only as set or not set) and the processes whose value in use differs
+   — values saved while a restart was pending apply as soon as you activate,
+   which can change where alerts go:
+   `python -m serving.config.manage live preview alerts.runtime`.
+3. Activate with the version the preview printed, and the number of backend
+   processes your deployment runs:
+   `python -m serving.config.manage live activate alerts.runtime --expect <epoch>:<revision> --expect-instances <N>`.
+   It refuses when the configuration changed after the preview, when a running
+   process does not support the group, or when the count differs.
+4. Check `live status`, or the Alerts category, until every process has
+   applied the latest revision.
+
+If a process cannot apply the group when it is activated — a saved value is
+invalid, say — the group stays active and the process keeps the values it was
+using. Correct the setting and save it again: it applies without a restart.
+
+`live deactivate alerts.runtime --expect <epoch>:<revision>` turns the group
+off. A running process then keeps the values it last applied until it
+restarts, instead of returning to the ones it started with, and a process that
+starts afterwards uses the saved values. Until every process has restarted the
+two can differ, and the status shows it. Going back to a build that does not
+know the group is a deployment, not a configuration change.
+
+A configuration backup does not include this status. Restoring a backup
+applies its `app_config` rows to live groups like any other save; the other
+tables in the backup are written separately, so a failure there can leave them
+partly restored. After restoring a whole database, run
+`python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`:
+it starts a new version history and makes every process register again.
 
 ### Without the console
 
