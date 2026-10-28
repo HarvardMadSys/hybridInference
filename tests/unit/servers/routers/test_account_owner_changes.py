@@ -156,6 +156,32 @@ async def test_phone_account_binds_email_with_a_bind_email_code(setup):
 
 
 @pytest.mark.asyncio
+async def test_login_name_account_binds_a_first_email_with_its_password(setup, monkeypatch):
+    # The first-run administrator has a login name and no address. Its
+    # password guesses count against the name it signs in with.
+    limiter = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(reauth, "check_and_record_login", limiter)
+    store = Store(account(email=None, login_name="admin", role="admin"))
+    with pytest.raises(HTTPException) as exc:
+        await bind(store, BindEmailRequest(email="admin@e2e-mail.org", password="Wrong-Horse-1"))
+    assert exc.value.status_code == 400
+    store.create_verification_token.assert_not_awaited()
+    assert limiter.await_args.args[0] == "admin"
+
+    result = await bind(store, BindEmailRequest(email="admin@e2e-mail.org", password=PASSWORD))
+    assert result.email_verified is False
+    assert store.create_verification_token.call_args.kwargs["pending_email"] == "admin@e2e-mail.org"
+    store.bind_user_email.assert_not_awaited()
+
+    # Following the link binds it; there is no replaced address to tell.
+    store.get_verification_token.return_value = token_row(pending_email="admin@e2e-mail.org")
+    tasks = BackgroundTasks()
+    await auth_routes.verify_email("link", tasks, store)
+    store.bind_user_email.assert_awaited_once_with("owner", "admin@e2e-mail.org")
+    assert tasks.tasks == []
+
+
+@pytest.mark.asyncio
 async def test_unconfirmed_session_cannot_learn_whether_an_address_is_taken(setup):
     store = Store(account(), taken_by={"id": "someone-else"})
     with pytest.raises(HTTPException) as exc:

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from serving.config.revisions import GroupContract
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
 # settings_init_name is re-exported: callers map a registry entry's field to
@@ -1226,8 +1227,9 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "slack_alerts_webhook_url",
         "alerts",
-        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL. "
-        "Takes effect after a restart, together with the WeCom channel it alternates with.",
+        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL. Saved together with the "
+        "WeCom channel it alternates with. Part of the alerts.runtime group: applies without "
+        "a restart once the group is activated, after a restart until then.",
         "str",
         secret=True,
         fallback_key="SLACK_WEBHOOK_URL",
@@ -1237,8 +1239,8 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "wecom_alerts_webhook_url",
         "alerts",
-        "WeCom group-bot webhook for alerts. Empty disables the WeCom channel. "
-        "Takes effect after a restart, like the failed-request detector it enables.",
+        "WeCom group-bot webhook for alerts. Empty disables the WeCom channel; setting it also "
+        "runs the failed-request detector. Part of the alerts.runtime group.",
         "str",
         secret=True,
         restart_required=True,
@@ -1248,7 +1250,8 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "slack_webhook_url",
         "alerts",
         "Slack webhook for the failed-request alerter, and for alerts when "
-        "SLACK_ALERTS_WEBHOOK_URL is empty. Empty turns the failed-request alerter off.",
+        "SLACK_ALERTS_WEBHOOK_URL is empty. Empty, with WECOM_ALERTS_WEBHOOK_URL empty too, "
+        "pauses the failed-request alerter. Part of the alerts.runtime group.",
         "str",
         secret=True,
         restart_required=True,
@@ -1552,6 +1555,70 @@ DERIVED_SETTINGS_FIELDS: tuple[str, ...] = (
     "trusted_direct_client_parsed",
     "trusted_cloudflare_parsed",
 )
+
+#: The first live configuration group (:mod:`serving.config.live`).
+ALERTS_RUNTIME_GROUP = "alerts.runtime"
+
+#: Live configuration groups and the keys each one owns. A key belongs to at
+#: most one group. Every owned key stays ``restart_required`` here: that is how
+#: it behaves until an operator activates the group's persisted contract
+#: (``python -m serving.config.manage live activate``), and again after one
+#: deactivates it in a process that never applied it. A key moves into a group
+#: only once its adapter, every reader on its execution path and the tests
+#: are in place; ``tests/unit/config/test_live_groups.py`` holds the list to
+#: the readers.
+MANAGED_GROUPS: Mapping[str, GroupContract] = {
+    ALERTS_RUNTIME_GROUP: GroupContract(
+        ALERTS_RUNTIME_GROUP,
+        schema_version=1,
+        keys=(
+            "SLACK_ALERTS_WEBHOOK_URL",
+            "SLACK_WEBHOOK_URL",
+            "WECOM_ALERTS_WEBHOOK_URL",
+            "FAILED_REQUEST_ALERT_THRESHOLD",
+            "FAILED_REQUEST_ALERT_WINDOW_MINUTES",
+            "FAILED_REQUEST_ALERT_COOLDOWN_MINUTES",
+            "FAILED_REQUEST_ALERT_RATE",
+            "FAILED_REQUEST_ALERT_RATE_MIN_COUNT",
+        ),
+    ),
+}
+
+_GROUP_OF_KEY: dict[str, str] = {
+    key: name for name, contract in MANAGED_GROUPS.items() for key in contract.keys
+}
+
+#: How a change to a setting reaches the code that reads it.
+ApplyMode = Literal["live", "managed", "restart", "immutable"]
+
+
+def managed_group(key: str) -> str | None:
+    """Return the live configuration group that owns *key*, if one does."""
+    return _GROUP_OF_KEY.get(key)
+
+
+def apply_mode(entry: ConfigEntry, *, group_managed: bool = False) -> ApplyMode:
+    """Return how a change to *entry* applies.
+
+    ``live`` is the older in-place apply (the overlay and :func:`on_change`
+    listeners, read at use), ``managed`` a group the live protocol applies and
+    acknowledges, ``restart`` a value captured at startup and ``immutable`` a
+    value that cannot change once set.
+
+    Args:
+        entry: The setting.
+        group_managed: Whether this process applies *entry*'s group through
+            the live protocol now (its contract is active). Otherwise an owned
+            key is restart-required, as declared.
+    """
+    if entry.immutable:
+        return "immutable"
+    if group_managed and managed_group(entry.key) is not None:
+        return "managed"
+    if entry.restart_required:
+        return "restart"
+    return "live"
+
 
 #: Environment-variable spellings of the runtime settings, which ``site_settings``
 #: holds and the Settings tab edits.

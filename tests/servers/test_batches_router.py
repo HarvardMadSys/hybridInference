@@ -278,6 +278,8 @@ def scheduler() -> FakeScheduler:
 def services(store, scheduler) -> AppServices:
     router = FixedRouter()
     router.register_route(MODEL, [(_adapter(MODEL), 1.0)])
+    # Embedding admission reads its own access gate, not the chat route above.
+    router.register_embedding_route(MODEL, [(_adapter(MODEL), 1.0)], required_role="free")
     router.register_route(ADMIN_MODEL, [(_adapter(ADMIN_MODEL), 1.0)], required_role="admin")
     router.register_route(
         CANONICAL_MODEL, [(_adapter(CANONICAL_MODEL), 1.0)], aliases=[ALIAS_MODEL]

@@ -71,6 +71,30 @@ class ConfigEntryItem(BaseModel):
     used_by: list[str] = Field(default_factory=list, description="Model ids that reference it")
     updated_at: datetime | None = None
     updated_by: str | None = None
+    group: str | None = Field(
+        None, description="The live configuration group that owns the key, if one does"
+    )
+    apply_mode: Literal["live", "managed", "restart", "immutable"] = Field(
+        "live",
+        description="How a saved change applies in this process: in place at once (live), "
+        "through its group's prepare-and-publish with acknowledgement (managed), after a "
+        "restart, or never (immutable)",
+    )
+
+
+class ConfigSourceVersion(BaseModel):
+    """A configuration source's version: an epoch and a revision within it."""
+
+    epoch: str
+    revision: int
+
+
+class ConfigGroupSummary(BaseModel):
+    """A live configuration group as this process applies it."""
+
+    name: str
+    state: str
+    managed: bool = Field(..., description="Applied live in this process (contract active)")
 
 
 class ConfigResponse(BaseModel):
@@ -82,6 +106,77 @@ class ConfigResponse(BaseModel):
     pending_restart: list[str] = Field(..., description="Keys of the pending-restart entries")
     restart_supported: bool = Field(
         ..., description="Whether POST /admin/system/restart can bring the process back"
+    )
+    source_version: ConfigSourceVersion | None = Field(
+        None,
+        description="The saved configuration's version as this process last read it; send it "
+        "back as If-Match (the response's ETag) to make a change conditional",
+    )
+    saved_version: ConfigSourceVersion | None = Field(
+        None, description="On a write: the version the write committed"
+    )
+    groups: list[ConfigGroupSummary] = Field(default_factory=list)
+
+
+class LiveGroupInstance(BaseModel):
+    """One registered process and its report on a group. Never a value or a secret."""
+
+    instance_id: str
+    this_process: bool = False
+    build: str
+    host: str | None = None
+    lifecycle: str
+    started_at: datetime | None = None
+    heartbeat_age_seconds: float | None = Field(
+        None, description="Seconds since its last heartbeat, by the database clock"
+    )
+    stale: bool = Field(..., description="No heartbeat within stale_after_seconds: unknown")
+    supports: bool = Field(..., description="Its build supports the group's schema version")
+    status: dict[str, Any] | None = Field(
+        None,
+        description="Its latest report: state, epoch, checked and reconciled revisions, "
+        "generation, error code, cleanup and pending keys",
+    )
+
+
+class LiveGroupStatus(BaseModel):
+    """A live configuration group across every registered process."""
+
+    name: str
+    keys: list[str]
+    schema_version: int
+    contract: dict[str, Any] | None = Field(
+        None, description="The persisted contract; null until an operator activates the group"
+    )
+    coverage: dict[str, Any] = Field(
+        ...,
+        description="Counts of registered processes by standing. verified is false: a process "
+        "on an older build never registers, so coverage is unknown until checked against the "
+        "deployment inventory",
+    )
+    instances: list[LiveGroupInstance]
+    local: dict[str, Any] | None = Field(None, description="This process's own status")
+    preview: dict[str, Any] | None = Field(
+        None,
+        description="What activation applies: each key's saved target (a secret only as set or "
+        "not set) and, per process, the keys whose value in use differs",
+    )
+
+
+class LiveConfigStatusResponse(BaseModel):
+    """How the saved configuration has been applied, per group and per process."""
+
+    database: bool = Field(..., description="Whether the configuration is stored in a database")
+    source: str = "app_config"
+    version: ConfigSourceVersion | None = None
+    this_instance: str | None = None
+    stale_after_seconds: float | None = None
+    read_ok: bool | None = Field(
+        None, description="Whether this process's last read of the configuration succeeded"
+    )
+    groups: list[LiveGroupStatus] = Field(default_factory=list)
+    unknown_groups: list[str] = Field(
+        default_factory=list, description="Active groups in the contract this build does not know"
     )
 
 
