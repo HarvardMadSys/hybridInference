@@ -3,10 +3,10 @@
 Every inference surface already charges its caller at one point of its own:
 ``CostTracker.schedule_increment`` for chat completions (and the Responses API,
 which delegates to it), ``embeddings._schedule_cost_increment`` and the
-Anthropic surface's success logging. A batch attempt runs through those same
-handlers, so it is charged there, exactly once, and nowhere else. This module
-only *watches* those points: the batch dispatcher opens an
-:class:`AttemptObserver` around the handler call (:func:`observing`), and each
+Anthropic surface's success logging. A batch attempt runs through the same
+protocol executions, so it is charged there, once per execution, and nowhere
+else. This module only *watches* those points: the batch dispatcher opens an
+:class:`AttemptObserver` around the execution (:func:`observing`), and each
 billing point reports what it charged to :func:`observe_billing`. Outside a
 batch attempt there is no observer and the call does nothing.
 
@@ -15,8 +15,8 @@ model). A successful attempt with no report -- pricing missing, or no log
 store to bill through -- has an **unknown** cost, as has one abandoned
 mid-flight; neither is recorded as zero.
 
-The handlers also tag their log rows with the batch, item and attempt
-(:func:`batch_log_attribution`), so an ``api_logs`` row and the attempt record
+The executions also tag their log rows with the batch, item and attempt
+(``ExecutionContext.batch``), so an ``api_logs`` row and the attempt record
 point at each other through the request id the observer captures.
 """
 
@@ -106,13 +106,3 @@ def note_request_id(request_id: str) -> None:
     observer = _OBSERVER.get()
     if observer is not None and observer.request_id is None:
         observer.request_id = request_id
-
-
-def batch_log_attribution(user_ctx: dict[str, Any]) -> dict[str, Any]:
-    """The log metadata tying a request to its batch, item and attempt (or nothing)."""
-    out: dict[str, Any] = {}
-    for key in ("batch_job_id", "batch_item_id", "batch_attempt"):
-        value = user_ctx.get(key)
-        if value is not None:
-            out[key] = value
-    return out

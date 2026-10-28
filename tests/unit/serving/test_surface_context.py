@@ -16,7 +16,6 @@ import pytest
 from starlette.datastructures import Headers
 from starlette.requests import Request
 
-from serving.batch.attempts import batch_log_attribution
 from serving.batch.interactive_load import InteractiveLoad
 from serving.observability import rejection_log
 from serving.servers.surface_http import client_origin
@@ -197,12 +196,19 @@ def test_anything_but_an_interactive_admission_is_untracked(slot):
 
 
 def test_batch_attribution_logs_what_the_merged_caller_context_logged():
-    for item_id, attempt in [(7, 2), (None, None), (0, 1)]:
-        merged = {"user_id": "u", "batch_job_id": "b", "batch_item_id": item_id}
-        merged["batch_attempt"] = attempt
-        assert BatchAttribution("b", item_id, attempt).log_metadata() == batch_log_attribution(
-            merged
-        )
+    # What batch_log_attribution(user_ctx) wrote from the caller context the
+    # dispatcher used to merge these into: set values only.
+    assert BatchAttribution("b", 7, 2).log_metadata() == {
+        "batch_job_id": "b",
+        "batch_item_id": 7,
+        "batch_attempt": 2,
+    }
+    assert BatchAttribution("b", None, None).log_metadata() == {"batch_job_id": "b"}
+    assert BatchAttribution("b", 0, 1).log_metadata() == {
+        "batch_job_id": "b",
+        "batch_item_id": 0,
+        "batch_attempt": 1,
+    }
 
 
 def test_the_caller_context_is_a_read_only_snapshot():

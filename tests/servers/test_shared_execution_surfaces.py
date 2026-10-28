@@ -801,70 +801,46 @@ def test_no_batch_policy_travels_through_the_request_scope():
     import inspect
 
     from serving.batch import dispatch
+    from serving.utils import context as req_ctx
 
-    for module in (anthropic_messages, dispatch):
+    for module in (anthropic_messages, dispatch, req_ctx):
         assert "BATCH_EXECUTION" not in inspect.getsource(module)
+    assert "batch_execution" not in req_ctx.REQUEST_SCOPED_KEYS
 
 
-# -- Chat execution, called directly ----------------------------------------------
+@pytest.mark.parametrize(
+    "execute",
+    [
+        anthropic_messages.execute_messages,
+        completions.execute_chat,
+        embeddings.execute_embeddings,
+        responses.execute_responses,
+    ],
+    ids=lambda fn: fn.__name__,
+)
+def test_an_execution_function_holds_no_http_request_or_response(execute):
+    """The shared execution is called with values, never with the HTTP objects."""
+    import ast
+    import inspect
+    import textwrap
 
-
-class _ForceStreaming:
-    async def get_bool(self, key: str) -> bool:
-        return key == "force_chat_completions_streaming"
-
-
-async def _chat_services(gateway: _Gateway) -> Any:
-    from serving.batch import dispatch
-
-    # The services the worker builds from the application's own.
-    return await dispatch._chat_services(gateway.app.state.services, gateway.app)
-
-
-@pytest.mark.asyncio
-async def test_only_online_chat_with_the_setting_on_is_force_streamed(gateway):
-    online = await completions.execute_chat(
-        _chat(MID),
-        _direct_context(),
-        await _chat_services(gateway),
-        completions.ChatOptions.online(_ForceStreaming()),
-    )
-    assert isinstance(online, completions.ChatStream)
-    assert online.buffered is True
-    await online.aclose()
-
-    for options in (completions.ChatOptions.batch(), completions.ChatOptions.delegated()):
-        outcome = await completions.execute_chat(
-            _chat(MID), _direct_context(), await _chat_services(gateway), options
-        )
-        assert isinstance(outcome, completions.ChatResponse)
-        assert outcome.body["choices"][0]["message"]["content"] == "ok"
-        assert outcome.provider_header is None
-
-
-@pytest.mark.asyncio
-async def test_a_requested_chat_stream_is_returned_unread(gateway, monkeypatch):
-    read: list[Any] = []
-    adapter = gateway.adapters[MID]
-    real_stream = adapter.stream_chat_completion
-
-    def recording(messages, **params):
-        read.append(messages)
-        return real_stream(messages, **params)
-
-    monkeypatch.setattr(adapter, "stream_chat_completion", recording)
-
-    outcome = await completions.execute_chat(
-        _chat(MID, stream=True),
-        _direct_context(),
-        await _chat_services(gateway),
-        completions.ChatOptions.batch(),
-    )
-
-    assert isinstance(outcome, completions.ChatStream)
-    assert outcome.buffered is False
-    assert read == []
-    first = await outcome.prime()
-    assert first is not None and '"role": "assistant"' in first
-    assert read
-    await outcome.aclose()
+    http_types = re.compile(r"\b(Request|Response|StreamingResponse|JSONResponse)\b")
+    parameters = inspect.signature(execute).parameters
+    for name, parameter in parameters.items():
+        assert not http_types.search(str(parameter.annotation)), name
+    tree = ast.parse(textwrap.dedent(inspect.getsource(execute)))
+    used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    forbidden = {
+        "request",
+        "http_request",
+        "http_response",
+        "Request",
+        "StreamingResponse",
+        "JSONResponse",
+        "Depends",
+        "Header",
+        "call_handler",
+    }
+    # A parameter of that name holding a protocol value (embeddings' validated
+    # ``EmbeddingRequest``) is not an HTTP request.
+    assert not (used & forbidden) - set(parameters), used & forbidden

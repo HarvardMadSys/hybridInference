@@ -164,7 +164,7 @@ class RejectionSource:
     runtime settings it is persisted under. A protocol's execution function,
     which never holds a ``Request``, logs its rejections through one of these
     (:func:`log_rejection_from`); a batch item's says what its synthetic request
-    said: its target path, an unknown client, no marker.
+    used to: its target path, an unknown client, no marker.
     """
 
     route_path: str

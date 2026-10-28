@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
         await stop_runtime()
         raise
     app.state.services = services  # type: ignore[attr-defined]
-    # The batch worker runs each request through this app's handlers, so it
+    # The batch worker reads services off this app (as the routes do), so it
     # starts only once the services are reachable from the app.
     bootstrap.start_batch_scheduler(app, services)
 

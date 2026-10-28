@@ -414,7 +414,7 @@ def preset_client_ip_info(scope_state: dict[str, Any], info: ClientIpInfo) -> No
     """Record *info* as the client of a request whose scope is still being built.
 
     For requests the gateway issues itself on a caller's behalf, with no network
-    peer to resolve (the batch worker's): :func:`get_client_ip_info` then
+    peer to resolve: :func:`get_client_ip_info` then
     returns *info* instead of resolving the missing peer, which would log
     ``client_ip_resolution_unresolved`` -- the signal for degraded proxy
     provenance, not for internal callers.

@@ -359,10 +359,11 @@ def adapter_problem(adapter: Any, body: dict[str, Any]) -> str | None:
 
 @dataclass(frozen=True)
 class AdapterRequirement:
-    """The adapters that may serve one Messages batch item (published on req_ctx).
+    """The adapters that may serve one Messages batch item.
 
-    Read by the Anthropic surface when it chooses among a route's candidates;
-    see ``serving.servers.routers.anthropic_messages._pick_dispatch_adapter``.
+    Handed to the Messages execution in its ``MessagesConstraints``, which
+    narrows a route's candidates through it; see
+    ``serving.servers.routers.anthropic_messages._pick_dispatch_adapter``.
     """
 
     body: dict[str, Any]

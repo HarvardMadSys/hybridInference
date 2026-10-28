@@ -158,23 +158,25 @@ async def test_stream_keeps_admitted_identity_after_snapshot_changes(monkeypatch
     assert response.text == "8.8.8.8\n8.8.8.8\n"
 
 
-def test_batch_handler_request_preserves_internal_identity_in_dynamic_mode(monkeypatch, caplog):
-    from serving.batch.dispatch import _request as batch_request
+def test_batch_origin_preserves_internal_identity_in_dynamic_mode(monkeypatch, caplog):
+    from serving.batch.dispatch import _BATCH_CLIENT, BATCH_USER_AGENT
+    from serving.surfaces.context import ClientOrigin
 
     settings = _settings()
     monkeypatch.setattr("serving.utils.request_ip.get_settings", lambda: settings)
-    # Batch dispatch calls the handler directly with this Request, without
-    # entering the network ASGI middleware. Its provenance is deliberately
-    # unknown, but does not indicate failed proxy discovery.
-    request = batch_request(None, b"{}", "batch-test", "/v1/chat/completions")
-    info = get_client_ip_info(request)
+    # Batch dispatch runs an item with no request and no network ASGI
+    # middleware. Its provenance is deliberately unknown, but does not
+    # indicate failed proxy discovery.
+    origin = ClientOrigin.for_batch(
+        path="/v1/chat/completions", ip=_BATCH_CLIENT, user_agent=BATCH_USER_AGENT
+    )
+    info = origin.ip
 
-    assert request.client is None
     assert info.source == "batch"
     assert info.client_ip == info.peer_ip == "unknown"
     assert info.resolved is False
     assert info.trusted_proxy_headers is False
-    assert get_client_ip_info(request) is info
+    assert origin.ip is info
     assert "client_ip_resolution_unresolved" not in caplog.text
 
 

@@ -1,45 +1,42 @@
-"""Run one batch item through the handler of its target.
+"""Run one batch item through the execution function of its target.
 
-A batch item is served by the handler behind its endpoint, called directly --
-the way ``responses.py`` and ``compat.py`` delegate to the chat handler -- so
-routing, fallback, circuit breaking, model access, cost accounting and request
-logging apply to it unchanged:
+A batch item is served by the same protocol execution its online route calls
+(issue #1690), so model access, routing (and the router's own fallback and
+circuit breaking), cost accounting and request logging apply to it unchanged:
 
 =================  ==========================================================
-target             handler
+target             execution
 =================  ==========================================================
-``chat``           ``completions.chat_completions``
-``embeddings``     ``embeddings.create_embeddings``
-``messages``       ``anthropic_messages.anthropic_messages``
-``responses``      ``responses.create_response``
+``chat``           ``completions.execute_chat`` (``ChatOptions.batch()``)
+``embeddings``     ``embeddings.execute_embeddings``
+``messages``       ``anthropic_messages.execute_messages``
+``responses``      ``responses.execute_responses`` (no response store)
 =================  ==========================================================
 
-What the HTTP stack provides around a handler is provided here instead:
+No HTTP request is built and no route handler is called. What the HTTP stack
+provides around a route is provided here instead:
 
 * a request scope, opened as ``RequestIdMiddleware`` opens one, in a context of
   its own, so nothing leaks between items or into the worker;
 * the caller role, published as ``verify_api_key`` publishes it, so the
   upstream key pool keeps keys reserved for a higher tier away from batch
   traffic exactly as it does from the owner's own requests;
-* every argument FastAPI would inject. A handler's parameters default to
-  ``Depends(...)``/``Header(...)`` markers, which are truthy objects, so an
-  argument left out would silently reach the handler as a marker.
-  :func:`call_handler` refuses any call that leaves one out;
-* a ``Request`` for the handler to read: the item's body with ``stream`` forced
-  off, a batch user agent, and no network peer. A batch item has none, and must
-  never pass for a trusted or loopback caller: its client resolves to
-  ``"unknown"``, unresolved, so its routing affinity follows the owner's key
-  and nothing keyed on a client address applies to it;
-* the serialization the route applies to the handler's return value, and the
-  reading of a ``JSONResponse`` -- the Messages and Responses handlers answer
-  errors with one rather than raising, and its status decides the outcome.
+* the execution context: the owner as authenticated for this attempt, an
+  origin with no network peer (a batch item must never pass for a trusted or
+  loopback caller: its client is ``"unknown"``, unresolved, so its routing
+  affinity follows the owner's key), no interactive admission, and the batch
+  attribution its ``api_logs`` rows carry;
+* the item's body with ``stream`` forced off, and for a Messages item the
+  constraints it was admitted under (served as written, on its model, under its
+  stored ``anthropic-version``);
+* the serialization the route applies to the execution's answer.
 
-The handler's own billing point reports what it charged
-(:mod:`serving.batch.attempts`); nothing here charges anything. The attempt's
-``api_logs`` rows carry the batch, item and attempt.
+The execution's own billing point reports what it charged
+(:mod:`serving.batch.attempts`); nothing here charges anything.
 
 Whether an item runs at all -- its owner re-authenticated, the owner's
-concurrency slot held -- is the worker's decision (:mod:`serving.batch.scheduler`).
+batch quota, the model's capacity and the lease held -- is the worker's
+decision (:mod:`serving.batch.scheduler`).
 """
 
 from __future__ import annotations
@@ -47,17 +44,14 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import datetime as dt
-import inspect
 import json
 import secrets
 from dataclasses import dataclass, replace
 from typing import Any
 
 import anyio
-from fastapi import HTTPException, params as fastapi_params
+from fastapi import HTTPException
 from pydantic import ValidationError
-from starlette.requests import Request
-from starlette.responses import Response as StarletteResponse
 
 from serving.batch.attempts import observing
 from serving.batch.targets import TARGET_PATHS
@@ -82,14 +76,14 @@ from serving.surfaces.context import (
 )
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import ClientIpInfo, preset_client_ip_info
+from serving.utils.request_ip import ClientIpInfo
 
 logger = get_logger(__name__)
 
 #: User agent of every request the batch worker runs, as ``api_logs`` records it.
 BATCH_USER_AGENT = "hybridinference-batch/1.0"
 
-# Statuses a handler answers with when an upstream call was made but its
+# Statuses an execution answers with when an upstream call was made but its
 # answer lost (a gateway timeout, a broken connection, an internal failure after
 # sending): the attempt's cost is unknown, not zero.
 _UNCERTAIN_STATUSES = frozenset({500, 502, 504})
@@ -114,10 +108,9 @@ _ERROR_CODES: dict[int, str] = {
 }
 
 # Who a batch item's request comes from, as client-IP resolution
-# (serving/utils/request_ip.py) answers it, preset as the resolver's answer for
-# the request. No network peer: unknown and unresolved, never a
-# loopback, private or trusted-proxy address. Supplied rather than resolved
-# because resolving a request without a peer logs
+# (serving/utils/request_ip.py) would answer it. No network peer: unknown and
+# unresolved, never a loopback, private or trusted-proxy address. Supplied
+# rather than resolved because resolving a request without a peer logs
 # ``client_ip_resolution_unresolved``, the signal for degraded client
 # provenance, and batch traffic would flood it with one line per item.
 _BATCH_CLIENT = ClientIpInfo(
@@ -128,10 +121,6 @@ _BATCH_CLIENT = ClientIpInfo(
     resolved=False,
 )
 
-# The FastAPI markers a handler parameter defaults to when FastAPI is meant to
-# fill it in.
-_INJECTED_DEFAULTS = (fastapi_params.Depends, fastapi_params.Param, fastapi_params.Body)
-
 
 @dataclass(frozen=True)
 class DispatchResult:
@@ -141,9 +130,9 @@ class DispatchResult:
     ``error`` is ``{"code", "message", "status"}`` (plus ``"anthropic"``, the
     Anthropic error object, for a Messages item) and ``retryable`` says whether
     the same request may succeed if sent again. ``request_id`` is the
-    ``api_logs`` id of the request, once the handler got far enough to log it.
+    ``api_logs`` id of the request, once the execution got far enough to log it.
     ``cost_status`` is ``billed`` (``cost_usd`` was charged), ``not_billed`` or
-    ``unknown``; ``dispatched`` whether the handler was entered at all.
+    ``unknown``; ``dispatched`` whether the execution was entered at all.
     """
 
     status_code: int
@@ -157,28 +146,6 @@ class DispatchResult:
     usage: dict[str, Any] | None = None
     cost_status: str = "not_billed"
     dispatched: bool = True
-
-
-def call_handler(handler: Any, /, *args: Any, **kwargs: Any) -> Any:
-    """Call a FastAPI handler directly, refusing to leave any injected argument out.
-
-    Raises:
-        TypeError: A parameter that FastAPI would inject (one defaulting to a
-            ``Depends``/``Header``/``Query``/``Body`` marker) was not supplied.
-    """
-    signature = inspect.signature(handler)
-    bound = signature.bind_partial(*args, **kwargs)
-    missing = [
-        name
-        for name, parameter in signature.parameters.items()
-        if name not in bound.arguments and isinstance(parameter.default, _INJECTED_DEFAULTS)
-    ]
-    if missing:
-        raise TypeError(
-            f"{getattr(handler, '__name__', handler)!r} called without {', '.join(missing)}: "
-            "a batch dispatch must supply every argument FastAPI would inject"
-        )
-    return handler(*args, **kwargs)
 
 
 async def dispatch_item(
@@ -197,7 +164,8 @@ async def dispatch_item(
     """Run one batch item's request and report how it went. Never raises.
 
     Args:
-        app: The FastAPI application; the handlers read its services off it.
+        app: The FastAPI application, whose services the routes read their
+            auto-mode configuration and rejection-log destination from.
         services: The application's services.
         user_ctx: The owner's user context for this attempt, as
             :func:`serving.servers.auth.authenticate_stored_key` returned it.
@@ -248,11 +216,12 @@ async def _dispatch(
 ) -> DispatchResult:
     if not isinstance(body, dict):
         return replace(_failure(400, "The request body must be a JSON object."), dispatched=False)
-    if target not in _CORE_EXECUTORS and target not in _HANDLER_EXECUTORS:
+    executor = _EXECUTORS.get(target)
+    if executor is None:
         return replace(_failure(400, f"Unsupported batch target {target!r}."), dispatched=False)
     request_body = {**body, "stream": False} if target != TARGET_EMBEDDINGS else dict(body)
     try:
-        raw = json.dumps(request_body).encode()
+        json.dumps(request_body)
     except (TypeError, ValueError):
         return replace(_failure(400, "The request body is not valid JSON."), dispatched=False)
 
@@ -264,7 +233,7 @@ async def _dispatch(
         "pricing_snapshot": get_pricing_snapshot(),
     }
     result: Any = None
-    # The upstream may have run, and charged, without the handler reporting it:
+    # The upstream may have run, and charged, without its billing point reporting it:
     # an attempt abandoned at its deadline, or one that crashed.
     uncertain = False
     deadline = anyio.move_on_after(timeout_s)
@@ -272,14 +241,7 @@ async def _dispatch(
         try:
             # The scope RequestIdMiddleware opens for an HTTP request.
             req_ctx.reset_request_scope(**seed)
-            caller = publish_caller_role(
-                {
-                    **user_ctx,
-                    "batch_job_id": batch_id,
-                    "batch_item_id": item_id,
-                    "batch_attempt": attempt,
-                }
-            )
+            publish_caller_role(user_ctx)
             ctx = ExecutionContext(
                 user_ctx=read_only(user_ctx),
                 origin=ClientOrigin.for_batch(
@@ -291,17 +253,10 @@ async def _dispatch(
                 batch=BatchAttribution(batch_id, item_id, attempt),
                 timeout_probe=None,
             )
-            core = _CORE_EXECUTORS.get(target)
             with deadline:
-                if core is not None:
-                    result = await core(
-                        services, ctx, request_body, app=app, protocol_profile=protocol_profile
-                    )
-                else:
-                    request = _request(app, raw, scope_request_id, TARGET_PATHS[target])
-                    result = await _HANDLER_EXECUTORS[target](
-                        services, request, caller, request_body
-                    )
+                result = await executor(
+                    services, ctx, request_body, app=app, protocol_profile=protocol_profile
+                )
         except HTTPException as exc:
             if deadline.cancel_called:
                 outcome, uncertain = _TIMED_OUT, True
@@ -335,7 +290,7 @@ async def _dispatch(
             # and charged, after the answer was lost.
             cost_status = "unknown"
         else:
-            # The handler answered with an error; the surfaces bill only success.
+            # The execution answered with an error; the surfaces bill only success.
             cost_status = "not_billed"
         # The target's own usage object (native shape) when the response has one.
         usage = outcome.usage or observer.usage
@@ -351,7 +306,7 @@ async def _dispatch(
     )
 
 
-# -- executors: one per target, every injected argument supplied ----------------
+# -- executors: one per target, each calling its protocol's execution -----------
 
 
 async def _run_chat(
@@ -470,63 +425,19 @@ async def _run_responses(
     return outcome
 
 
-#: Targets run through their protocol's execution function, with no request.
-_CORE_EXECUTORS = {
+#: Each target's executor: its protocol's execution function, with no request.
+_EXECUTORS = {
     TARGET_CHAT: _run_chat,
     TARGET_EMBEDDINGS: _run_embeddings,
     TARGET_MESSAGES: _run_messages,
     TARGET_RESPONSES: _run_responses,
 }
 
-#: Targets still run through their route's handler (transitional, issue #1690).
-_HANDLER_EXECUTORS: dict[str, Any] = {}
-
-#: The handler each handler-run target calls, for the tests that hold every
-#: injected parameter of each to a supplied argument.
-HANDLERS: dict[str, tuple[str, str]] = {}
-
-
-def _request(app: Any, raw_body: bytes, request_id: str, path: str) -> Request:
-    """Build the ``Request`` the handler reads: *raw_body*, from no network peer."""
-    delivered = False
-
-    async def receive() -> dict[str, Any]:
-        nonlocal delivered
-        if delivered:
-            return {"type": "http.disconnect"}
-        delivered = True
-        return {"type": "http.request", "body": raw_body, "more_body": False}
-
-    state: dict[str, Any] = {"request_id": request_id}
-    preset_client_ip_info(state, _BATCH_CLIENT)
-    headers = [
-        (b"content-type", b"application/json"),
-        (b"content-length", str(len(raw_body)).encode()),
-        (b"user-agent", BATCH_USER_AGENT.encode()),
-    ]
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0", "spec_version": "2.3"},
-        "http_version": "1.1",
-        "method": "POST",
-        "scheme": "http",
-        "server": None,
-        "client": None,
-        "root_path": "",
-        "path": path,
-        "raw_path": path.encode(),
-        "query_string": b"",
-        "headers": headers,
-        "app": app,
-        "state": state,
-    }
-    return Request(scope, receive)
-
 
 def _client_body(result: dict[str, Any]) -> dict[str, Any]:
     """Return the body ``POST /v1/chat/completions`` would have sent for *result*.
 
-    The route serializes the handler's return value through its response model
+    The route serializes the execution's answer through its response model
     (``ChatCompletionResponse``, ``exclude_none``); a direct call skips that,
     so it is applied here. A result the model rejects is kept as it came rather
     than dropped: the request was served, and billed.
@@ -544,9 +455,9 @@ def _client_body(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _logged_request_id(scope_request_id: str) -> str | None:
-    """Return the ``api_logs`` request id the handler published, if it got that far.
+    """Return the ``api_logs`` request id the execution published, if it got that far.
 
-    The handler publishes its own id over the scope's once it has passed its
+    The execution publishes its own id over the scope's once it has passed its
     early checks (unknown model, access, modality); a request refused before
     that has none to report.
     """
@@ -598,15 +509,6 @@ def _failure(
 
 # An attempt abandoned at its deadline.
 _TIMED_OUT = _failure(504, "The request did not complete in time.")
-
-
-def _read_json_response(result: StarletteResponse) -> tuple[int, Any]:
-    """The status and decoded JSON body of a ``JSONResponse`` a handler returned."""
-    try:
-        decoded = json.loads(bytes(result.body))
-    except (ValueError, TypeError, AttributeError):
-        decoded = None
-    return int(result.status_code), decoded
 
 
 def _messages_completed(result: Any) -> tuple[int, Any] | DispatchResult:
@@ -676,15 +578,6 @@ def _completed(target: str, result: Any) -> DispatchResult:
         if status >= 400 or not isinstance(body, dict):
             return _error_from_body(target, status if status >= 400 else 502, body)
         result = body
-    elif isinstance(result, StarletteResponse):
-        if not hasattr(result, "body"):
-            # A streaming response: the batch forced stream off, so this is a
-            # handler that did not honour it.
-            return _failure(502, "The handler returned a stream for a batch request.")
-        status, body = _read_json_response(result)
-        if status >= 400 or not isinstance(body, dict):
-            return _error_from_body(target, status if status >= 400 else 502, body)
-        result = body
     if not isinstance(result, dict):
         return _failure(502, "The upstream response had an unexpected shape.")
     if target == TARGET_MESSAGES and result.get("type") == "error":
@@ -699,7 +592,7 @@ def _completed(target: str, result: Any) -> DispatchResult:
 
 
 def _error_from_body(target: str, status: int, body: Any) -> DispatchResult:
-    """A failed attempt from an error body a handler answered with."""
+    """A failed attempt from an error body the execution answered with."""
     message = None
     anthropic = None
     if isinstance(body, dict):
