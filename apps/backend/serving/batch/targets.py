@@ -54,10 +54,13 @@ from serving.storage.batch_store import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-#: The OpenAI endpoint of each target an OpenAI-shaped batch can name.
-OPENAI_TARGET_URLS: dict[str, str] = {
+#: The ``url`` (inline) or ``endpoint`` (file) that names each target of
+#: ``/v1/batches``. ``/v1/messages`` is this gateway's extension of the OpenAI
+#: batch shape; a Messages batch also names its ``anthropic_version``.
+TARGET_URLS: dict[str, str] = {
     "/v1/chat/completions": TARGET_CHAT,
     "/v1/embeddings": TARGET_EMBEDDINGS,
+    "/v1/messages": TARGET_MESSAGES,
     "/v1/responses": TARGET_RESPONSES,
 }
 #: The endpoint each target is logged and described under.
@@ -249,10 +252,15 @@ def _blocks_problem(
 
 
 def native_messages_problem(body: dict[str, Any]) -> str | None:
-    """Why *body* is outside what batch Messages items accept at all, or None."""
+    """Why *body* is outside what batch Messages items accept at all, or None.
+
+    Every top-level key outside the accepted set is refused rather than
+    ignored -- ``anthropic_version`` and ``betas`` included: the version is the
+    batch's own (its envelope), and betas are not supported in batches.
+    """
     unknown = sorted(set(body) - _NATIVE_TOP_LEVEL)
     if unknown:
-        return f"{', '.join(unknown)}: not supported in Message Batches"
+        return f"{', '.join(unknown)}: not supported in Messages batch requests"
     if body.get("stream"):
         return "stream: must not be true in a batch"
     problem = _tools_problem(body.get("tools"), translated=False)
@@ -530,10 +538,13 @@ async def _admit_messages(body: dict[str, Any], ctx: AdmissionContext) -> str:
     problem = native_messages_problem(body)
     if problem:
         raise ItemRejected("invalid_request", problem)
-    if ctx.profile is not None:
-        violation = profile_violation(ctx.profile, body)
-        if violation:
-            raise ItemRejected("invalid_request", violation)
+    if ctx.profile is None:
+        # The batch's anthropic_version decides the rules below; without one a
+        # request would be admitted under none of them.
+        raise ItemRejected("invalid_request", "anthropic_version: a Messages batch needs one")
+    violation = profile_violation(ctx.profile, body)
+    if violation:
+        raise ItemRejected("invalid_request", violation)
     canonical, route = await _cached_route_model(
         body["model"], ctx, TARGET_MESSAGES, resolve_anthropic_alias
     )

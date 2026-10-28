@@ -36,8 +36,7 @@ from serving.batch.renderers import (
     FINAL_ITEM_STATUSES,
     OUTPUT_STATUSES,
     RENDERER_VERSION,
-    anthropic_line,
-    openai_line,
+    result_line,
 )
 from serving.storage.batch_file_store import new_file_id
 from serving.storage.batch_store import terminal_event
@@ -69,11 +68,6 @@ def _wanted(kind: str) -> Callable[[dict[str, Any]], bool]:
     return lambda item: item.get("status") in FINAL_ITEM_STATUSES
 
 
-def renderer_for(surface: str) -> Callable[[dict[str, Any], int], bytes]:
-    """The line renderer of an API surface."""
-    return anthropic_line if surface == "anthropic" else openai_line
-
-
 async def seal_file_batch(
     *, store: Any, batch: dict[str, Any], worker_id: str, lease_seconds: int
 ) -> dict[str, Any] | None:
@@ -92,7 +86,7 @@ async def seal_file_batch(
         for item in items:
             after = item["id"]
             kind = "output" if item.get("status") in OUTPUT_STATUSES else "error"
-            line = openai_line(item, RENDERER_VERSION)
+            line = result_line(item, RENDERER_VERSION)
             digests[kind].update(line)
             sizes[kind] += len(line)
             lines[kind] += 1
@@ -121,7 +115,7 @@ async def seal_file_batch(
         worker_id=worker_id,
         generation=generation,
         files=files,
-        event=terminal_event(batch_id, batch.get("api_surface") or "openai_file", final),
+        event=terminal_event(batch_id, final),
     )
     if sealed is not None:
         logger.info(
@@ -182,7 +176,6 @@ async def stream_lines(
     *,
     store: Any,
     batch_id: str,
-    surface: str,
     kind: str,
     version: int = RENDERER_VERSION,
     expected: dict[str, Any] | None = None,
@@ -190,7 +183,7 @@ async def stream_lines(
     """Yield the lines of one of a batch's result files, a page at a time.
 
     ``kind`` is ``output`` or ``error`` (a file batch's two files), or ``all``
-    (an Anthropic results file, or an inline batch's export). With
+    (every result, an inline batch's export). With
     ``expected`` (a manifest), the stream's size and digest are checked as it
     goes: more bytes than the manifest, or fewer or different ones at the end,
     fail the download instead of ending it as complete.
@@ -199,7 +192,6 @@ async def stream_lines(
         DownloadInterrupted: The batch was removed under the download, its
             read lease was lost, or the rendering does not match its manifest.
     """
-    render = renderer_for(surface)
     wanted = _wanted(kind)
     try:
         lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
@@ -221,7 +213,7 @@ async def stream_lines(
             for item in items:
                 after = item["id"]
                 if wanted(item):
-                    chunk += render(item, version)
+                    chunk += result_line(item, version)
             if chunk:
                 digest.update(chunk)
                 size += len(chunk)

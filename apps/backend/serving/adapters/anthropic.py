@@ -110,8 +110,8 @@ class AnthropicAdapter(BaseAdapter):
     def _api_version(self) -> str:
         """The ``anthropic-version`` to send: a batch item's own, else the fixed default.
 
-        Only the batch worker publishes a version (the one a Message Batch was
-        created under, see ``serving.batch.profiles``), and only a known one is
+        Only the batch worker publishes a version (the ``anthropic_version`` a
+        Messages batch was created with, see ``serving.batch.profiles``), and only a known one is
         honoured; every other request keeps :attr:`ANTHROPIC_VERSION`.
         """
         requested = req_ctx.get().get(req_ctx.ANTHROPIC_VERSION)

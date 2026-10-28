@@ -1149,8 +1149,8 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_ANTHROPIC_VERSIONS",
         "batch",
-        "Comma-separated anthropic-version values a Message Batch may be created under. "
-        "Known versions: 2023-06-01, 2026-10-21. A request with any other version is "
+        "Comma-separated anthropic_version values a new /v1/messages batch may name. "
+        "Known versions: 2023-06-01, 2026-10-21. A batch with any other version is "
         "refused.",
         default="2023-06-01,2026-10-21",
         one_time=True,

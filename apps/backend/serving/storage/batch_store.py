@@ -1,4 +1,4 @@
-"""Persistence for batch inference (``/v1/batches``, ``/v1/messages/batches``).
+"""Persistence for batch inference (``/v1/batches``).
 
 A batch is one row of ``batch_jobs`` plus one row of ``batch_items`` per
 request; ``batch_model_limits`` holds the per-model concurrency caps an
@@ -12,9 +12,11 @@ the rest of the batch schema, so one migration orders every foreign key.
 Every gateway process runs a worker (:mod:`serving.batch.scheduler`) that claims
 items from here, so whatever coordinates the processes lives in SQL:
 
-- **Kinds and phases.** A batch has an ``api_surface`` (``openai_inline``,
-  ``openai_file``, ``anthropic``), a ``target`` (``chat``, ``embeddings``,
-  ``messages``, ``responses``) and a ``schema_version``. A worker only touches
+- **Kinds and phases.** A batch has an ``api_surface`` -- how its requests
+  arrived: ``openai_inline`` (a ``requests`` array) or ``openai_file`` (an
+  uploaded JSONL file); ``anthropic`` only on batches the retired Message
+  Batches API stored -- a ``target`` (``chat``, ``embeddings``, ``messages``,
+  ``responses``) and a ``schema_version``. A worker only touches
   the kinds it knows (:data:`SUPPORTED_JOB_KINDS`): the claim, the list of
   models with work and the sweep all share one predicate
   (``_CLAIMABLE_JOB``), so a batch a newer worker created is never run, settled
@@ -49,7 +51,7 @@ items from here, so whatever coordinates the processes lives in SQL:
   transition: a ``cancelling``, ``failed`` or ``expired`` batch passes its
   verdict on to its queued items (and to running items whose lease ran out,
   which no worker can claim back), and a batch with no open item left is
-  finalized. Inline and Anthropic batches are sealed in that same transaction;
+  finalized. Inline (and legacy Anthropic) batches are sealed in that same transaction;
   a file batch freezes its final status in ``pending_terminal_status`` and
   enters ``sealing``, where a worker renders its output files and publishes
   them together with the final status. Neither expiry nor a cancel changes a
@@ -109,14 +111,6 @@ class BatchDeleteInProgress(RuntimeError):
         super().__init__(f"Batch {batch_id!r} still has a running request.")
 
 
-class BatchNotEnded(RuntimeError):
-    """The operation needs a batch whose results are published (sealed)."""
-
-    def __init__(self, batch_id: str) -> None:
-        self.batch_id = batch_id
-        super().__init__(f"Batch {batch_id!r} has not ended.")
-
-
 class BatchInputUnavailable(RuntimeError):
     """A file batch's input upload is no longer available to create it from."""
 
@@ -158,10 +152,13 @@ class IdempotencyTombstoned(RuntimeError):
 
 # -- batch kinds ----------------------------------------------------------------
 
+#: How a batch's requests arrived. The values keep the names they were first
+#: stored under; they are internal and never shown as separate APIs.
 SURFACE_OPENAI_INLINE = "openai_inline"
 SURFACE_OPENAI_FILE = "openai_file"
+#: Batches the retired Message Batches API (``/v1/messages/batches``) stored.
+#: Nothing creates one any more; they are still run, read and purged.
 SURFACE_ANTHROPIC = "anthropic"
-OPENAI_SURFACES: frozenset[str] = frozenset({SURFACE_OPENAI_INLINE, SURFACE_OPENAI_FILE})
 
 TARGET_CHAT = "chat"
 TARGET_EMBEDDINGS = "embeddings"
@@ -174,15 +171,19 @@ SCHEMA_VERSION = 2
 
 #: The (surface, target) pairs this worker can run, at :data:`SCHEMA_VERSION`
 #: or below. Claims, the list of models with work and every sweep step are
-#: restricted to them.
+#: restricted to them. Messages through ``/v1/batches`` (inline or from a file)
+#: are pairs a worker of an earlier version does not list, so during a rolling
+#: upgrade only this version runs, validates, seals or expires them.
 SUPPORTED_JOB_KINDS: frozenset[tuple[str, str]] = frozenset(
     {
         (SURFACE_OPENAI_INLINE, TARGET_CHAT),
         (SURFACE_OPENAI_INLINE, TARGET_EMBEDDINGS),
         (SURFACE_OPENAI_INLINE, TARGET_RESPONSES),
+        (SURFACE_OPENAI_INLINE, TARGET_MESSAGES),
         (SURFACE_OPENAI_FILE, TARGET_CHAT),
         (SURFACE_OPENAI_FILE, TARGET_EMBEDDINGS),
         (SURFACE_OPENAI_FILE, TARGET_RESPONSES),
+        (SURFACE_OPENAI_FILE, TARGET_MESSAGES),
         (SURFACE_ANTHROPIC, TARGET_MESSAGES),
     }
 )
@@ -225,12 +226,34 @@ _PURGE_LIMIT = 100
 _JSON_ENVELOPE_MARKER = "hybridinference:batch-json:v1"
 
 
-def _supported_kinds_sql(alias: str) -> str:
+def _supported_kinds_sql(
+    alias: str, kinds: frozenset[tuple[str, str]] = SUPPORTED_JOB_KINDS
+) -> str:
     """SQL matching the batches this worker supports (``alias`` is the jobs alias)."""
-    pairs = ", ".join(
-        f"('{surface}', '{target}')" for surface, target in sorted(SUPPORTED_JOB_KINDS)
-    )
+    pairs = ", ".join(f"('{surface}', '{target}')" for surface, target in sorted(kinds))
     return f"({alias}.schema_version <= {SCHEMA_VERSION} AND ({alias}.api_surface, {alias}.target) IN ({pairs}))"
+
+
+def display_status_sql(alias: str) -> str:
+    """A batch's status as the API and the console show it, as SQL (``alias``: the jobs alias).
+
+    The twin of ``serving.batch.renderers.display_status``, so filtering on a
+    status matches exactly the batches listed with it: a file batch is
+    ``validating`` until its input is checked, ``finalizing`` (or
+    ``cancelling``) while its result files are sealed, and shows its final
+    status only once they are published; any other batch shows its status.
+    """
+    return f"""(CASE
+        WHEN {alias}.api_surface <> '{SURFACE_OPENAI_FILE}' THEN {alias}.status
+        WHEN {alias}.phase = '{PHASE_VALIDATING}' THEN
+            CASE WHEN {alias}.status = 'cancelling' THEN 'cancelling' ELSE 'validating' END
+        WHEN {alias}.phase = '{PHASE_SEALING}' THEN
+            CASE WHEN {alias}.pending_terminal_status = 'cancelled'
+                 THEN 'cancelling' ELSE 'finalizing' END
+        WHEN {alias}.phase = '{PHASE_SEALED}' THEN {alias}.status
+        WHEN {alias}.status IN ('expired', 'failed') THEN 'in_progress'
+        ELSE {alias}.status
+    END)"""
 
 
 def _claimable_job_sql(alias: str) -> str:
@@ -1083,10 +1106,11 @@ class BatchStore:
             metadata: The caller's metadata, or None.
             completion_window_seconds: Time the batch has before its
                 unstarted items expire.
-            api_surface: ``openai_inline``, ``openai_file`` or ``anthropic``.
+            api_surface: ``openai_inline`` or ``openai_file`` (``anthropic`` only
+                for a batch stored the way the retired Message Batches API stored them).
             target: ``chat``, ``embeddings``, ``messages`` or ``responses``.
             protocol_profile: The protocol version the batch was created under
-                (the ``anthropic-version`` of an Anthropic batch).
+                (the ``anthropic_version`` of a Messages batch).
             phase: ``runnable``, or ``validating`` for a file batch whose items
                 the validator adds later.
             status: The initial status.
@@ -1362,26 +1386,16 @@ class BatchStore:
             )
 
     async def get_batch(
-        self,
-        batch_id: str,
-        *,
-        user_id: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
+        self, batch_id: str, *, user_id: str | None = None
     ) -> dict[str, Any] | None:
-        """Fetch a batch row, or None when absent (or not *user_id*'s, when given).
-
-        ``surfaces`` restricts the lookup to batches of those API surfaces, so
-        an id of another protocol family reads as absent.
-        """
+        """Fetch a batch row, or None when absent (or not *user_id*'s, when given)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 f"SELECT {_BATCH_COLUMNS} FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
-                "AND delete_requested_at IS NULL "
-                "AND ($3::text[] IS NULL OR api_surface = ANY($3::text[]))",
+                "AND delete_requested_at IS NULL",
                 batch_id,
                 user_id,
-                sorted(surfaces) if surfaces is not None else None,
             )
         return _batch_row(row) if row is not None else None
 
@@ -1392,7 +1406,6 @@ class BatchStore:
         limit: int,
         after: str | None = None,
         before: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
         status: str | None = None,
     ) -> list[dict[str, Any]]:
         """List batches, newest first.
@@ -1405,8 +1418,8 @@ class BatchStore:
                 else's, ends the listing.
             before: Id of the first batch of the next page: return the newer
                 ones just before it (still newest first).
-            surfaces: Only batches of these API surfaces.
-            status: Only batches in this internal status.
+            status: Only batches showing this status (:func:`display_status_sql`,
+                the status the API and the console report), not the stored one.
 
         Returns:
             Up to ``limit`` batch rows ordered by ``created_at DESC, id DESC``.
@@ -1414,28 +1427,22 @@ class BatchStore:
         conditions = [
             "($1::text IS NULL OR j.user_id = $1)",
             "j.delete_requested_at IS NULL",
-            "($3::text[] IS NULL OR j.api_surface = ANY($3::text[]))",
-            "($4::text IS NULL OR j.status = $4)",
+            f"($3::text IS NULL OR {display_status_sql('j')} = $3)",
         ]
-        args: list[Any] = [
-            user_id,
-            limit,
-            sorted(surfaces) if surfaces is not None else None,
-            status,
-        ]
+        args: list[Any] = [user_id, limit, status]
         order = "DESC"
         if after is not None:
             args.append(after)
             conditions.append(
                 "(j.created_at, j.id) < (SELECT created_at, id FROM batch_jobs "
-                "WHERE id = $5 AND ($1::text IS NULL OR user_id = $1))"
+                "WHERE id = $4 AND ($1::text IS NULL OR user_id = $1))"
             )
         elif before is not None:
             args.append(before)
             order = "ASC"
             conditions.append(
                 "(j.created_at, j.id) > (SELECT created_at, id FROM batch_jobs "
-                "WHERE id = $5 AND ($1::text IS NULL OR user_id = $1))"
+                "WHERE id = $4 AND ($1::text IS NULL OR user_id = $1))"
             )
         columns = ", ".join(f"j.{name.strip()}" for name in _BATCH_COLUMNS.split(","))
         async with self._pool.acquire() as conn:
@@ -1518,11 +1525,7 @@ class BatchStore:
         return [_result_row(row) for row in rows]
 
     async def cancel_batch(
-        self,
-        batch_id: str,
-        *,
-        user_id: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
+        self, batch_id: str, *, user_id: str | None = None
     ) -> dict[str, Any] | None:
         """Cancel a validating or in-progress batch.
 
@@ -1541,11 +1544,9 @@ class BatchStore:
             row = await conn.fetchrow(
                 "SELECT status, phase FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
-                "AND delete_requested_at IS NULL "
-                "AND ($3::text[] IS NULL OR api_surface = ANY($3::text[])) FOR NO KEY UPDATE",
+                "AND delete_requested_at IS NULL FOR NO KEY UPDATE",
                 batch_id,
                 user_id,
-                sorted(surfaces) if surfaces is not None else None,
             )
             if row is None:
                 return None
@@ -1564,17 +1565,10 @@ class BatchStore:
             )
         return _batch_row(batch)
 
-    async def delete_batch(
-        self,
-        batch_id: str,
-        *,
-        user_id: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
-        require_ended: bool = False,
-    ) -> bool:
+    async def delete_batch(self, batch_id: str, *, user_id: str | None = None) -> bool:
         """Delete a batch with no live upstream call, including its items.
 
-        Scoped to *user_id* (and *surfaces*) when given. The batch's immutable
+        Scoped to *user_id* when given. The batch's immutable
         model ids are read first, then their claim/heartbeat advisory locks are
         taken in sorted order before the batch is locked and rechecked. A
         heartbeat therefore waits rather than skipping an item lock and losing
@@ -1587,18 +1581,14 @@ class BatchStore:
         Raises:
             BatchDeleteInProgress: At least one item has an unexpired running
                 lease and may still be making an upstream call.
-            BatchNotEnded: ``require_ended`` and the batch is not sealed.
         """
-        scope = sorted(surfaces) if surfaces is not None else None
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT model_ids FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
-                "AND delete_requested_at IS NULL "
-                "AND ($3::text[] IS NULL OR api_surface = ANY($3::text[]))",
+                "AND delete_requested_at IS NULL",
                 batch_id,
                 user_id,
-                scope,
             )
             if row is None:
                 return False
@@ -1612,7 +1602,7 @@ class BatchStore:
             for model_id in sorted(set(model_ids)):
                 await conn.execute(_CLAIM_LOCK_SQL, _CLAIM_LOCK_CLASS, model_id)
             found = await conn.fetchrow(
-                "SELECT phase FROM batch_jobs "
+                "SELECT id FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
                 "AND delete_requested_at IS NULL FOR UPDATE",
                 batch_id,
@@ -1620,8 +1610,6 @@ class BatchStore:
             )
             if found is None:
                 return False
-            if require_ended and found["phase"] != PHASE_SEALED:
-                raise BatchNotEnded(batch_id)
             live = await conn.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM batch_items "
                 "WHERE batch_id = $1 AND status = 'running' "
@@ -2991,18 +2979,20 @@ class BatchStore:
             conn,
             row["user_id"],
             batch_id,
-            terminal_event(batch_id, row["api_surface"], final),
+            terminal_event(batch_id, final),
         )
 
 
-def terminal_event(batch_id: str, api_surface: str, final_status: str) -> dict[str, Any]:
-    """The webhook event a batch's end publishes. Never carries prompts or results."""
+def terminal_event(batch_id: str, final_status: str) -> dict[str, Any]:
+    """The webhook event a batch's end publishes. Never carries prompts or results.
+
+    ``batch.<final status>`` for every batch, a legacy Message Batch included.
+    Events already in the outbox are delivered as they were written.
+    """
     import time
 
     event_id = new_event_id()
-    event_type = (
-        "message_batch.ended" if api_surface == SURFACE_ANTHROPIC else f"batch.{final_status}"
-    )
+    event_type = f"batch.{final_status}"
     return {
         "id": event_id,
         "type": event_type,
@@ -3247,15 +3237,14 @@ def _load_json_envelope(value: list[Any] | tuple[Any, ...]) -> Any:
 
 __all__ = [
     "ACTIVE_BATCH_STATUSES",
-    "OPENAI_SURFACES",
     "SUPPORTED_JOB_KINDS",
     "TERMINAL_BATCH_STATUSES",
     "BatchDeleteInProgress",
     "BatchInputUnavailable",
     "BatchLimitExceeded",
-    "BatchNotEnded",
     "BatchOwnerUnavailable",
     "BatchStore",
     "IdempotencyConflict",
     "IdempotencyTombstoned",
+    "display_status_sql",
 ]

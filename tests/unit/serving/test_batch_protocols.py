@@ -1,7 +1,8 @@
 """Protocol pieces of batch inference, without a database or a network.
 
 Result lines are byte-stable (a virtual file renders the same bytes every
-time), Anthropic version profiles refuse what their version refuses, target
+time) and share one shape for every target, every batch shows the same status
+words, Anthropic version profiles refuse what their version refuses, target
 admission refuses what a target would silently drop, webhook targets are
 checked against forgery and signed as Standard Webhooks, and the multipart
 reader handles uploads cut anywhere.
@@ -41,9 +42,9 @@ def _item(status: str, **extra: Any) -> dict[str, Any]:
     }
 
 
-def test_openai_lines_are_exact_and_stable():
+def test_result_lines_are_exact_and_stable():
     done = _item("completed", response={"id": "x", "b": 2, "a": "é"})
-    line = renderers.openai_line(done)
+    line = renderers.result_line(done)
     assert (
         line
         == (
@@ -51,14 +52,14 @@ def test_openai_lines_are_exact_and_stable():
             '"request_id":"req-9","body":{"id":"x","b":2,"a":"é"}},"error":null}\n'
         ).encode()
     )
-    assert renderers.openai_line(done) == line
+    assert renderers.result_line(done) == line
 
     http_fail = _item(
         "failed",
         status_code=400,
         error={"code": "invalid_request", "message": "bad", "status": 400},
     )
-    body = json.loads(renderers.openai_line(http_fail))
+    body = json.loads(renderers.result_line(http_fail))
     assert body["response"]["status_code"] == 400
     assert body["response"]["body"]["error"] == {
         "message": "bad",
@@ -68,83 +69,52 @@ def test_openai_lines_are_exact_and_stable():
     }
     assert body["error"] is None
 
-    expired = json.loads(renderers.openai_line(_item("expired")))
+    expired = json.loads(renderers.result_line(_item("expired")))
     assert expired["response"] is None
     assert expired["error"]["code"] == "batch_expired"
-    cancelled = json.loads(renderers.openai_line(_item("cancelled")))
+    cancelled = json.loads(renderers.result_line(_item("cancelled")))
     assert cancelled["error"]["code"] == "batch_cancelled"
 
 
-def test_anthropic_lines_map_every_outcome():
-    succeeded = json.loads(
-        renderers.anthropic_line(_item("completed", response={"type": "message"}))
-    )
-    assert succeeded == {
+def test_a_messages_result_is_the_same_line_its_body_the_messages_response():
+    """Every target shares one line shape; a Messages error is an OpenAI error body."""
+    message = {"id": "msg_1", "type": "message", "role": "assistant", "content": []}
+    done = json.loads(renderers.result_line(_item("completed", response=message)))
+    assert done == {
+        "id": "batch_req_42",
         "custom_id": "c-1",
-        "result": {"type": "succeeded", "message": {"type": "message"}},
+        "response": {"status_code": 200, "request_id": "req-9", "body": message},
+        "error": None,
     }
-    native = _item(
+    failed = _item(
         "failed",
+        status_code=429,
         error={
             "code": "rate_limited",
             "message": "slow",
+            "status": 429,
             "anthropic": {"type": "rate_limit_error", "message": "slow"},
         },
     )
-    errored = json.loads(renderers.anthropic_line(native))["result"]
-    assert errored == {
-        "type": "errored",
-        "error": {
-            "type": "error",
-            "error": {"type": "rate_limit_error", "message": "slow"},
-            "request_id": "req-9",
-        },
-    }
-    hidden = _item("failed", error={"code": "model_not_found", "message": "Model 'x' not found"})
-    assert json.loads(renderers.anthropic_line(hidden))["result"]["error"]["error"]["type"] == (
-        "not_found_error"
-    )
-    assert json.loads(renderers.anthropic_line(_item("cancelled")))["result"] == {
-        "type": "canceled"
-    }
-    assert json.loads(renderers.anthropic_line(_item("expired")))["result"] == {"type": "expired"}
+    line = json.loads(renderers.result_line(failed))
+    assert line["response"]["body"]["error"]["type"] == "rate_limit_error"
+    assert line["response"]["body"]["error"]["code"] == "rate_limited"
+    assert not hasattr(renderers, "anthropic_line")
 
 
 def test_an_unknown_renderer_version_is_refused():
     with pytest.raises(ValueError):
-        renderers.openai_line(_item("completed"), version=99)
+        renderers.result_line(_item("completed"), version=99)
 
 
-def test_anthropic_counts_hold_everything_as_processing_until_the_end():
-    running = {"phase": "runnable", "request_count": 5, "completed_count": 2, "failed_count": 1}
-    assert renderers.anthropic_request_counts(running) == {
-        "processing": 5,
-        "succeeded": 0,
-        "errored": 0,
-        "canceled": 0,
-        "expired": 0,
-    }
-    ended = {
-        "phase": "sealed",
-        "request_count": 6,
-        "completed_count": 2,
-        "failed_count": 3,
-        "expired_count": 1,
-        "cancelled_count": 1,
-    }
-    counts = renderers.anthropic_request_counts(ended)
-    assert counts == {"processing": 0, "succeeded": 2, "errored": 2, "canceled": 1, "expired": 1}
-    assert sum(counts.values()) == ended["request_count"]
-
-
-def test_openai_status_is_projected_from_phase():
+def test_display_status_is_projected_from_phase():
     file_row = {"api_surface": "openai_file"}
     assert (
-        renderers.openai_status({**file_row, "status": "validating", "phase": "validating"})
+        renderers.display_status({**file_row, "status": "validating", "phase": "validating"})
         == "validating"
     )
     assert (
-        renderers.openai_status(
+        renderers.display_status(
             {
                 **file_row,
                 "status": "in_progress",
@@ -155,7 +125,7 @@ def test_openai_status_is_projected_from_phase():
         == "finalizing"
     )
     assert (
-        renderers.openai_status(
+        renderers.display_status(
             {
                 **file_row,
                 "status": "expired",
@@ -166,7 +136,7 @@ def test_openai_status_is_projected_from_phase():
         == "finalizing"
     )
     assert (
-        renderers.openai_status(
+        renderers.display_status(
             {
                 **file_row,
                 "status": "cancelling",
@@ -177,19 +147,37 @@ def test_openai_status_is_projected_from_phase():
         == "cancelling"
     )
     assert (
-        renderers.openai_status({**file_row, "status": "expired", "phase": "runnable"})
+        renderers.display_status({**file_row, "status": "expired", "phase": "runnable"})
         == "in_progress"
     )
     assert (
-        renderers.openai_status({**file_row, "status": "completed", "phase": "sealed"})
+        renderers.display_status({**file_row, "status": "completed", "phase": "sealed"})
         == "completed"
     )
     # An inline batch keeps its status as it always did.
     assert (
-        renderers.openai_status(
+        renderers.display_status(
             {"api_surface": "openai_inline", "status": "expired", "phase": "runnable"}
         )
         == "expired"
+    )
+    # So does one the retired Message Batches API stored: the words are those
+    # of /v1/batches, never "ended" or "canceling".
+    for status in ("in_progress", "cancelling", "completed", "cancelled", "expired", "failed"):
+        legacy = {"api_surface": "anthropic", "status": status, "phase": "sealed"}
+        assert renderers.display_status(legacy) == status
+    # A Messages file batch is projected like any other file batch.
+    assert (
+        renderers.display_status(
+            {
+                "api_surface": "openai_file",
+                "target": "messages",
+                "status": "in_progress",
+                "phase": "sealing",
+                "pending_terminal_status": "completed",
+            }
+        )
+        == "finalizing"
     )
 
 
@@ -327,9 +315,12 @@ def test_reasoning_effort_is_translated_only_where_the_model_declares_it():
         },
         {"metadata": {"user_id": "u", "other": "x"}},
         {"messages": [{"role": "system", "content": "s"}]},
+        # The version is the batch's; a request cannot name its own, or betas.
+        {"anthropic_version": "2023-06-01"},
+        {"betas": ["x"]},
     ],
 )
-def test_message_batches_refuse_what_is_not_accepted_yet(body):
+def test_messages_batch_requests_refuse_what_is_not_accepted_yet(body):
     full = {"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": "hi"}], **body}
     assert targets.native_messages_problem(full) is not None
 
@@ -681,7 +672,7 @@ async def test_every_malformed_value_anywhere_is_refused_not_raised(monkeypatch,
 
     monkeypatch.setattr(targets, "_cached_route_model", admitted_model)
     body = _VALID_BODIES[target]
-    for profile in (None, profiles.PROFILES["2026-10-21"]):
+    for profile in profiles.PROFILES.values():
         ctx = _admission_context(profile)
         assert await targets.admit_item(target, json.loads(json.dumps(body)), ctx)
         for path in list(_paths(body)):
@@ -726,3 +717,35 @@ async def test_responses_with_malformed_types_or_tools_are_refused(monkeypatch, 
     with pytest.raises(targets.ItemRejected) as refused:
         await _admit_responses(body)
     assert refused.value.param in ("input", "tools")
+
+
+async def test_a_messages_request_without_the_batchs_version_is_refused(monkeypatch):
+    """Admission never runs a Messages request under no version's rules."""
+
+    async def admitted_model(*args: Any, **kwargs: Any) -> Any:
+        return "m", SimpleNamespace(adapters=[(_NATIVE, 1.0)])
+
+    monkeypatch.setattr(targets, "_cached_route_model", admitted_model)
+    body = json.loads(json.dumps(_VALID_BODIES["messages"]))
+    with pytest.raises(targets.ItemRejected) as refused:
+        await targets.admit_item("messages", body, _admission_context(None))
+    assert "anthropic_version" in refused.value.message
+    assert await targets.admit_item(
+        "messages", body, _admission_context(profiles.PROFILES["2023-06-01"])
+    )
+    # The versions differ where the migration guide says they do.
+    with pytest.raises(targets.ItemRejected):
+        await targets.admit_item(
+            "messages",
+            {**body, "temperature": 0.5},
+            _admission_context(profiles.PROFILES["2026-10-21"]),
+        )
+
+
+def test_messages_is_a_target_of_v1_batches():
+    assert targets.TARGET_URLS == {
+        "/v1/chat/completions": "chat",
+        "/v1/embeddings": "embeddings",
+        "/v1/messages": "messages",
+        "/v1/responses": "responses",
+    }

@@ -1,4 +1,4 @@
-"""The batch API surfaces end to end over HTTP, against Postgres and real workers.
+"""The batch API end to end over HTTP, against Postgres and real workers.
 
 The routers, the store, the handlers, cost accounting and the owner's
 re-authentication from real ``users``/``api_keys`` rows are the production code;
@@ -10,12 +10,14 @@ by the auth tests). It all runs in this one test process: one FastAPI app, one
 database -- several workers claiming against each other through the database,
 not several gateway processes (that is exercised by running separate gateway
 processes, outside this suite). What this
-holds: an Anthropic Message Batch ends with every request accounted for and its
-results downloadable; a file batch is validated, run, sealed and downloaded
-byte-for-byte as its manifest says, and an invalid file runs nothing;
-idempotent creates replay before the quota and role checks; protocol families
-do not see each other's batches; and a webhook arrives, signed, only after the
-results are readable.
+holds: a Messages batch -- inline or from a file -- runs on ``/v1/batches``
+under its frozen ``anthropic_version`` with every request accounted for; a
+file batch is validated, run, sealed and downloaded byte-for-byte as its
+manifest says, and an invalid file runs nothing; idempotent creates replay
+before the quota and role checks, and the version is part of what they
+compare; batches the retired Message Batches API stored are read, listed,
+cancelled, downloaded and deleted here, by their owner only; and a webhook
+arrives, signed, only after the results are readable.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from routing.routers import FixedRouter
+from serving.adapters.anthropic import AnthropicAdapter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.batch import config as batch_config_module, webhooks
 from serving.batch.model_limits import BatchModelLimits
@@ -46,15 +49,20 @@ from serving.config.settings import get_settings
 from serving.servers import auth as auth_module
 from serving.servers.auth import decrypt_api_key, verify_api_key, verify_batch_management_identity
 from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
-from serving.servers.deps import AppServices, get_current_user
+from serving.servers.deps import (
+    AppServices,
+    get_admin_audit_actor,
+    get_current_user,
+    verify_admin_access,
+)
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import (
     anthropic_messages,
     batch_console,
     batches,
     files,
-    message_batches,
 )
+from serving.servers.routers.admin import batch as admin_batch
 from serving.storage.batch_file_store import BatchFileStore
 from serving.storage.batch_store import BatchStore
 from serving.storage.batch_webhook_store import BatchWebhookStore
@@ -114,6 +122,41 @@ class _Upstream(BaseAdapter):
     async def stream_chat_completion(self, messages, **params):  # pragma: no cover
         raise AssertionError("batch items never stream")
         yield
+
+
+class _NativeUpstream(AnthropicAdapter):
+    """A native Anthropic route whose upstream is a stub: it records what it was sent.
+
+    ``_api_version`` is the adapter's own choice of the ``anthropic-version``
+    header it would send, so the recorded value is what a real upstream gets.
+    """
+
+    def __init__(self, model_id: str) -> None:
+        super().__init__(
+            ModelConfig(
+                id=model_id,
+                name=model_id,
+                provider="anthropic",
+                base_url=f"https://{model_id}.test",
+                pricing=_PRICING,
+            )
+        )
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def messages(self, body, *, request_id, extra_headers=None):
+        self.calls.append((self._api_version(), json.loads(json.dumps(body))))
+        await asyncio.sleep(0.005)
+        text = body["messages"][-1]["content"]
+        return {
+            "id": f"msg_{uuid.uuid4().hex[:8]}",
+            "type": "message",
+            "role": "assistant",
+            "model": self.config.id,
+            "content": [{"type": "text", "text": f"echo {text}"}],
+            "stop_reason": "end_turn",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }
 
 
 @pytest_asyncio.fixture
@@ -176,8 +219,10 @@ def settings(monkeypatch) -> dict[str, str]:
 @pytest_asyncio.fixture
 async def gateway(pool, owner, settings):
     model = _Upstream(f"bx-{uuid.uuid4().hex[:6]}")
+    native = _NativeUpstream(f"bxn-{uuid.uuid4().hex[:6]}")
     router = FixedRouter()
     router.register_route(model.config.id, [(model, 1.0)])
+    router.register_route(native.config.id, [(native, 1.0)])
     store = BatchStore(pool)
     # The Messages surface bills through its log path, so a log store is wired.
     log_store = MagicMock()
@@ -207,10 +252,15 @@ async def gateway(pool, owner, settings):
         "spent_today_usd": 0.0,
     }
 
+    # Someone else, holding a key of their own: reads and manages only theirs.
+    stranger = {**caller, "user_id": f"stranger-{uuid.uuid4().hex[:6]}", "auth_key_hash": None}
+
     async def identity(
         authorization: str | None = Header(None), x_api_key: str | None = Header(None)
     ):
         key = (authorization or "").removeprefix("Bearer ") or x_api_key
+        if key == "stranger-key":
+            return dict(stranger)
         if key != "test-key":
             raise HTTPException(401, "Invalid or expired API key")
         return dict(caller)
@@ -223,12 +273,14 @@ async def gateway(pool, owner, settings):
     app.dependency_overrides[verify_batch_management_identity] = identity
     app.dependency_overrides[verify_api_key] = identity
     app.dependency_overrides[get_current_user] = console_user
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-test"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: None
     install_error_handlers(app)
     for exc_type in (StarletteHTTPException, FastAPIHTTPException):
         app.add_exception_handler(
             exc_type, anthropic_messages.anthropic_aware_http_exception_handler
         )
-    for module in (batches, message_batches, files, batch_console):
+    for module in (batches, files, batch_console, admin_batch):
         app.include_router(module.router)
 
     workers: list[BatchScheduler] = []
@@ -251,7 +303,15 @@ async def gateway(pool, owner, settings):
             yield type(
                 "Gateway",
                 (),
-                {"client": client, "model": model, "store": store, "caller": caller, "pool": pool},
+                {
+                    "client": client,
+                    "model": model,
+                    "native": native,
+                    "store": store,
+                    "caller": caller,
+                    "pool": pool,
+                    "owner": owner,
+                },
             )
         finally:
             for worker in workers:
@@ -259,7 +319,7 @@ async def gateway(pool, owner, settings):
 
 
 KEY = {"Authorization": "Bearer test-key"}
-ANTHROPIC = {**KEY, "anthropic-version": "2023-06-01"}
+STRANGER = {"Authorization": "Bearer stranger-key"}
 
 
 async def _until(check, *, timeout: float = 20.0, what: str = "condition"):
@@ -273,110 +333,325 @@ async def _until(check, *, timeout: float = 20.0, what: str = "condition"):
         await asyncio.sleep(0.05)
 
 
-async def test_an_anthropic_message_batch_ends_with_every_request_accounted_for(gateway):
-    client, model = gateway.client, gateway.model
-    params = {"model": model.config.id, "max_tokens": 32}
+def _messages_request(custom_id: str, model: str, text: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "custom_id": custom_id,
+        "method": "POST",
+        "url": "/v1/messages",
+        "body": {
+            "model": model,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": text}],
+            **extra,
+        },
+    }
+
+
+async def _status(client: AsyncClient, batch_id: str, wanted: str, what: str) -> dict[str, Any]:
+    async def reached():
+        body = (await client.get(f"/v1/batches/{batch_id}", headers=KEY)).json()
+        return body if body["status"] == wanted else None
+
+    return await _until(reached, what=what)
+
+
+async def test_an_inline_messages_batch_runs_on_v1_batches_under_its_version(gateway):
+    client, native = gateway.client, gateway.native
+    model = native.config.id
     created = await client.post(
-        "/v1/messages/batches",
-        headers=ANTHROPIC,
+        "/v1/batches",
+        headers=KEY,
         json={
+            "anthropic_version": "2026-10-21",
             "requests": [
-                {
-                    "custom_id": "ok-1",
-                    "params": {**params, "messages": [{"role": "user", "content": "one"}]},
-                },
-                {
-                    "custom_id": "ok-2",
-                    "params": {**params, "messages": [{"role": "user", "content": "two"}]},
-                },
-                {
-                    "custom_id": "hidden",
-                    "params": {
-                        **params,
-                        "model": "no-such-model",
-                        "messages": [{"role": "user", "content": "x"}],
-                    },
-                },
-            ]
+                _messages_request("ok-1", model, "one"),
+                _messages_request("ok-2", model, "two"),
+            ],
         },
     )
     assert created.status_code == 200, created.text
     batch = created.json()
-    assert batch["type"] == "message_batch" and batch["processing_status"] == "in_progress"
-    assert batch["results_url"] is None
+    assert batch["object"] == "batch" and batch["endpoint"] == "/v1/messages"
+    assert batch["id"].startswith("batch_") and batch["anthropic_version"] == "2026-10-21"
 
-    async def ended():
-        response = await client.get(f"/v1/messages/batches/{batch['id']}", headers=ANTHROPIC)
-        body = response.json()
-        return body if body["processing_status"] == "ended" else None
+    final = await _status(client, batch["id"], "completed", "the messages batch to complete")
+    assert final["request_counts"] == {"total": 2, "completed": 2, "failed": 0}
+    assert final["usage"] == {"input_tokens": 200, "output_tokens": 100, "total_tokens": 300}
+    assert final["cost_usd"] == pytest.approx(0.0004)
+    # Each request reached the native route as the Messages body it was, under
+    # the batch's version -- not the adapter's default, not a chat translation.
+    assert sorted(version for version, _body in native.calls) == ["2026-10-21"] * 2
+    assert sorted(body["messages"][0]["content"] for _v, body in native.calls) == ["one", "two"]
+    assert all(body["max_tokens"] == 32 for _v, body in native.calls)
 
-    final = await _until(ended, what="the message batch to end")
-    assert final["request_counts"] == {
-        "processing": 0,
-        "succeeded": 2,
-        "errored": 1,
-        "canceled": 0,
-        "expired": 0,
-    }
-    assert final["results_url"].endswith(f"/v1/messages/batches/{batch['id']}/results")
-    results = await client.get(f"/v1/messages/batches/{batch['id']}/results", headers=ANTHROPIC)
-    lines = [json.loads(line) for line in results.text.splitlines()]
-    by_id = {line["custom_id"]: line["result"] for line in lines}
-    assert by_id["ok-1"]["type"] == "succeeded"
-    assert by_id["ok-1"]["message"]["type"] == "message"
-    assert by_id["hidden"]["error"]["error"]["type"] == "not_found_error"
-    assert sorted(model.calls) == ["one", "two"]
-    # Another protocol family does not see it; the delete needs no running request.
+    page = (await client.get(f"/v1/batches/{batch['id']}/results", headers=KEY)).json()
+    assert [row["custom_id"] for row in page["data"]] == ["ok-1", "ok-2"]
+    assert page["data"][0]["response"]["body"]["type"] == "message"
+    export = await client.get(f"/v1/batches/{batch['id']}/output.jsonl", headers=KEY)
+    lines = [json.loads(line) for line in export.text.splitlines()]
+    assert [set(line) for line in lines] == [{"id", "custom_id", "response", "error"}] * 2
+    assert lines[1]["response"]["body"]["content"][0]["text"] == "echo two"
+
+    deleted = await client.delete(f"/v1/batches/{batch['id']}", headers=KEY)
+    assert deleted.json() == {"id": batch["id"], "object": "batch.deleted", "deleted": True}
     assert (await client.get(f"/v1/batches/{batch['id']}", headers=KEY)).status_code == 404
-    deleted = await client.delete(f"/v1/messages/batches/{batch['id']}", headers=ANTHROPIC)
-    assert deleted.json() == {"id": batch["id"], "type": "message_batch_deleted"}
-    missing = await client.get(f"/v1/messages/batches/{batch['id']}", headers=ANTHROPIC)
-    assert missing.status_code == 404
-    assert missing.json()["error"]["type"] == "not_found_error"
 
 
-async def test_message_batches_need_a_known_version_and_no_beta(gateway):
-    client = gateway.client
-    assert (await client.get("/v1/messages/batches", headers=KEY)).status_code == 400
-    bad = await client.get(
-        "/v1/messages/batches", headers={**KEY, "anthropic-version": "2099-01-01"}
-    )
-    assert bad.status_code == 400
-    beta = await client.get("/v1/messages/batches", headers={**ANTHROPIC, "anthropic-beta": "x"})
-    assert beta.status_code == 400
-    assert beta.json()["type"] == "error"
-
-
-async def test_2026_version_errors_items_its_version_refuses(gateway):
-    client, model = gateway.client, gateway.model
-    created = await client.post(
-        "/v1/messages/batches",
-        headers={**KEY, "anthropic-version": "2026-10-21"},
-        json={
-            "requests": [
-                {
-                    "custom_id": "temp",
-                    "params": {
-                        "model": model.config.id,
-                        "max_tokens": 8,
-                        "temperature": 0.2,
-                        "messages": [{"role": "user", "content": "x"}],
+async def test_messages_batches_need_a_known_version_and_refuse_what_they_cannot_run(gateway):
+    client, native = gateway.client, gateway.native
+    model = native.config.id
+    one = [_messages_request("a", model, "x")]
+    refused = [
+        await client.post("/v1/batches", headers=KEY, json={"requests": one}),
+        await client.post(
+            "/v1/batches", headers=KEY, json={"requests": one, "anthropic_version": "2099-01-01"}
+        ),
+        await client.post(
+            "/v1/batches",
+            headers={**KEY, "anthropic-beta": "x"},
+            json={"requests": one, "anthropic_version": "2023-06-01"},
+        ),
+        # The version's own rules, for every request.
+        await client.post(
+            "/v1/batches",
+            headers=KEY,
+            json={
+                "requests": [
+                    _messages_request("fine", model, "x"),
+                    _messages_request("temp", model, "x", temperature=0.2),
+                ],
+                "anthropic_version": "2026-10-21",
+            },
+        ),
+        # A server tool: refused, never silently dropped.
+        await client.post(
+            "/v1/batches",
+            headers=KEY,
+            json={
+                "requests": [
+                    _messages_request(
+                        "tool", model, "x", tools=[{"type": "web_search_20250305", "name": "w"}]
+                    )
+                ],
+                "anthropic_version": "2023-06-01",
+            },
+        ),
+        # A malformed content block refuses the whole batch, naming the request.
+        await client.post(
+            "/v1/batches",
+            headers=KEY,
+            json={
+                "requests": [
+                    _messages_request("good", model, "x"),
+                    {
+                        **_messages_request("bad", model, "x"),
+                        "body": {
+                            "model": model,
+                            "max_tokens": 8,
+                            "messages": [{"role": "user", "content": [{"type": []}]}],
+                        },
                     },
-                }
-            ]
+                ],
+                "anthropic_version": "2023-06-01",
+            },
+        ),
+    ]
+    assert [response.status_code for response in refused] == [400] * len(refused)
+    assert "temp" in refused[3].json()["error"]["message"]
+    assert "temperature" in refused[3].json()["error"]["message"]
+    assert "'bad'" in refused[5].json()["error"]["message"]
+    assert native.calls == []
+    assert await gateway.store.list_batches(user_id=gateway.owner["user_id"], limit=5) == []
+
+
+async def test_a_messages_file_batch_is_validated_whole_and_run_under_its_version(gateway):
+    client, native = gateway.client, gateway.native
+    model = native.config.id
+    rows = [_messages_request(f"line-{i}", model, f"file {i}") for i in range(3)]
+    uploaded = await _upload(client, ("\n".join(json.dumps(row) for row in rows) + "\n").encode())
+    created = await client.post(
+        "/v1/batches",
+        headers=KEY,
+        json={
+            "input_file_id": uploaded["id"],
+            "endpoint": "/v1/messages",
+            "completion_window": "24h",
+            "anthropic_version": "2023-06-01",
         },
     )
-    assert created.json()["processing_status"] == "ended"
-    lines = (
-        await client.get(
-            f"/v1/messages/batches/{created.json()['id']}/results",
-            headers={**KEY, "anthropic-version": "2026-10-21"},
-        )
-    ).text.splitlines()
-    error = json.loads(lines[0])["result"]["error"]["error"]
-    assert error["type"] == "invalid_request_error"
-    assert "temperature" in error["message"]
-    assert model.calls == []
+    assert created.status_code == 200, created.text
+    assert created.json()["status"] == "validating"
+    final = await _status(client, created.json()["id"], "completed", "the messages file batch")
+    assert final["anthropic_version"] == "2023-06-01"
+    assert final["request_counts"] == {"total": 3, "completed": 3, "failed": 0}
+    assert final["output_file_id"] and final["error_file_id"] is None
+    assert {version for version, _body in native.calls} == {"2023-06-01"}
+    meta = (await client.get(f"/v1/files/{final['output_file_id']}", headers=KEY)).json()
+    content = await client.get(f"/v1/files/{final['output_file_id']}/content", headers=KEY)
+    assert len(content.content) == meta["bytes"]
+    assert hashlib.sha256(content.content).hexdigest() == content.headers["etag"].strip('"')
+    outputs = [json.loads(line) for line in content.text.splitlines()]
+    assert [line["custom_id"] for line in outputs] == ["line-0", "line-1", "line-2"]
+    assert all(line["response"]["body"]["type"] == "message" for line in outputs)
+
+
+async def test_a_messages_file_with_a_line_its_version_refuses_runs_nothing(gateway):
+    client, native = gateway.client, gateway.native
+    model = native.config.id
+    rows = [
+        _messages_request("ok", model, "x"),
+        _messages_request("ok-2", model, "y"),
+        _messages_request("temp", model, "z", temperature=0.3),
+    ]
+    uploaded = await _upload(client, ("\n".join(json.dumps(row) for row in rows) + "\n").encode())
+    created = await client.post(
+        "/v1/batches",
+        headers=KEY,
+        json={
+            "input_file_id": uploaded["id"],
+            "endpoint": "/v1/messages",
+            "completion_window": "24h",
+            "anthropic_version": "2026-10-21",
+        },
+    )
+    assert created.status_code == 200, created.text
+    final = await _status(client, created.json()["id"], "failed", "the invalid messages file")
+    (problem,) = final["errors"]["data"]
+    assert problem["line"] == 3 and "temperature" in problem["message"]
+    assert final["request_counts"]["total"] == 0
+    assert native.calls == []
+
+
+async def test_a_messages_batch_is_cancelled_and_owned_like_any_batch(gateway):
+    client, native = gateway.client, gateway.native
+    model = native.config.id
+    # Paused: nothing of this model is claimed, so its requests stay queued.
+    await gateway.store.set_model_limit(model, 0, "test")
+    created = await client.post(
+        "/v1/batches",
+        headers=KEY,
+        json={
+            "requests": [_messages_request(f"q-{i}", model, "x") for i in range(3)],
+            "anthropic_version": "2023-06-01",
+        },
+    )
+    batch_id = created.json()["id"]
+    for method, path in (
+        ("GET", f"/v1/batches/{batch_id}"),
+        ("POST", f"/v1/batches/{batch_id}/cancel"),
+        ("DELETE", f"/v1/batches/{batch_id}"),
+        ("GET", f"/v1/batches/{batch_id}/results"),
+        ("GET", f"/v1/batches/{batch_id}/output.jsonl"),
+    ):
+        response = await client.request(method, path, headers=STRANGER)
+        assert response.status_code == 404, (method, path)
+    assert (await client.get("/v1/batches", headers=STRANGER)).json()["data"] == []
+
+    cancelled = (await client.post(f"/v1/batches/{batch_id}/cancel", headers=KEY)).json()
+    assert cancelled["status"] == "cancelled" and cancelled["cancelled_at"]
+    assert cancelled["request_counts"] == {"total": 3, "completed": 0, "failed": 0}
+    lines = (await client.get(f"/v1/batches/{batch_id}/output.jsonl", headers=KEY)).text
+    assert {json.loads(line)["error"]["code"] for line in lines.splitlines()} == {"batch_cancelled"}
+    assert native.calls == []
+
+
+async def test_an_idempotency_key_compares_the_version_too(gateway):
+    client, native = gateway.client, gateway.native
+    await gateway.store.set_model_limit(native.config.id, 0, "test")
+    body = {
+        "requests": [_messages_request("only", native.config.id, "x")],
+        "anthropic_version": "2023-06-01",
+    }
+    headers = {**KEY, "Idempotency-Key": "messages-version"}
+    first = await client.post("/v1/batches", headers=headers, json=body)
+    replay = await client.post("/v1/batches", headers=headers, json=body)
+    other_version = await client.post(
+        "/v1/batches", headers=headers, json={**body, "anthropic_version": "2026-10-21"}
+    )
+    assert first.status_code == replay.status_code == 200
+    assert replay.json()["id"] == first.json()["id"]
+    assert other_version.status_code == 409
+
+
+async def _legacy_message_batch(gateway, *, model: str, texts: list[str]) -> str:
+    """A batch as the retired Message Batches API stored it (its items, as it admitted them)."""
+    batch_id = f"msgbatch_{uuid.uuid4().hex}"
+    await gateway.store.create_batch(
+        batch_id=batch_id,
+        user_id=gateway.owner["user_id"],
+        key_hash=gateway.owner["key_hash"],
+        endpoint="/v1/messages",
+        model_ids=[model],
+        items=[
+            {
+                "custom_id": f"legacy-{i}",
+                "model_id": model,
+                "request": {
+                    "model": model,
+                    "max_tokens": 8,
+                    "messages": [{"role": "user", "content": text}],
+                },
+            }
+            for i, text in enumerate(texts)
+        ],
+        metadata=None,
+        completion_window_seconds=24 * 3600,
+        api_surface="anthropic",
+        target="messages",
+        protocol_profile="2026-10-21",
+        retention_seconds=7 * 86400,
+    )
+    return batch_id
+
+
+async def test_a_legacy_message_batch_drains_and_is_read_through_v1_batches(gateway):
+    client, native = gateway.client, gateway.native
+    model = native.config.id
+    batch_id = await _legacy_message_batch(gateway, model=model, texts=["old one", "old two"])
+
+    final = await _status(client, batch_id, "completed", "the legacy message batch")
+    assert final["object"] == "batch" and final["endpoint"] == "/v1/messages"
+    assert final["anthropic_version"] == "2026-10-21"
+    assert final["request_counts"] == {"total": 2, "completed": 2, "failed": 0}
+    assert {version for version, _body in native.calls} == {"2026-10-21"}
+    listed = (await client.get("/v1/batches", headers=KEY)).json()["data"]
+    assert batch_id in [row["id"] for row in listed]
+    lines = (await client.get(f"/v1/batches/{batch_id}/output.jsonl", headers=KEY)).text
+    first = json.loads(lines.splitlines()[0])
+    assert first["custom_id"] == "legacy-0" and first["response"]["body"]["type"] == "message"
+    for method, path in (
+        ("GET", f"/v1/batches/{batch_id}"),
+        ("DELETE", f"/v1/batches/{batch_id}"),
+        ("GET", f"/v1/batches/{batch_id}/results"),
+    ):
+        assert (await client.request(method, path, headers=STRANGER)).status_code == 404
+
+    console = {"Authorization": "Bearer console"}
+    rows = (await client.get("/user/batches", headers=console)).json()["data"]
+    row = next(row for row in rows if row["id"] == batch_id)
+    assert (row["status"], row["input"], row["target"]) == ("completed", "inline", "messages")
+    assert row["request_counts"] == {"total": 2, "completed": 2, "failed": 0}
+    download = await client.get(f"/user/batches/{batch_id}/results", headers=console)
+    assert download.text == lines
+
+    admin = (await client.get("/admin/batch/jobs?status=completed", headers=KEY)).json()["data"]
+    assert batch_id in [row["id"] for row in admin]
+    assert (await client.get("/admin/batch/jobs?status=ended", headers=KEY)).status_code == 422
+    deleted = await client.delete(f"/v1/batches/{batch_id}", headers=KEY)
+    assert deleted.json()["deleted"] is True
+
+
+async def test_a_queued_legacy_message_batch_is_cancelled_through_v1_batches(gateway):
+    client, native = gateway.client, gateway.native
+    await gateway.store.set_model_limit(native.config.id, 0, "test")
+    batch_id = await _legacy_message_batch(gateway, model=native.config.id, texts=["a", "b"])
+
+    cancelled = (await client.post(f"/v1/batches/{batch_id}/cancel", headers=KEY)).json()
+    assert cancelled["status"] == "cancelled"
+    console = {"Authorization": "Bearer console"}
+    rows = (await client.get("/user/batches", headers=console)).json()["data"]
+    assert next(row for row in rows if row["id"] == batch_id)["status"] == "cancelled"
+    assert native.calls == []
 
 
 def _multipart(
@@ -538,7 +813,7 @@ async def test_an_idempotent_replay_comes_before_quota_and_role(gateway):
 
 
 async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
-    client, model = gateway.client, gateway.model
+    client = gateway.client
     received: list[tuple[dict[str, str], bytes, bool]] = []
 
     async def receive(request: web.Request) -> web.Response:
@@ -567,19 +842,11 @@ async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
         secret = saved.json()["secret"]
         assert (await client.get("/v1/batch_webhook", headers=KEY)).json().get("secret") is None
         created = await client.post(
-            "/v1/messages/batches",
-            headers=ANTHROPIC,
+            "/v1/batches",
+            headers=KEY,
             json={
-                "requests": [
-                    {
-                        "custom_id": "w",
-                        "params": {
-                            "model": model.config.id,
-                            "max_tokens": 8,
-                            "messages": [{"role": "user", "content": "hook"}],
-                        },
-                    }
-                ]
+                "requests": [_messages_request("w", gateway.native.config.id, "hook")],
+                "anthropic_version": "2023-06-01",
             },
         )
         batch_id = created.json()["id"]
@@ -590,7 +857,8 @@ async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
         await _until(delivered, what="the webhook delivery")
         headers, payload, sealed_when_sent = received[0]
         event = json.loads(payload)
-        assert event["type"] == "message_batch.ended" and event["data"] == {"id": batch_id}
+        # A Messages batch ends as every batch does now: batch.<status>.
+        assert event["type"] == "batch.completed" and event["data"] == {"id": batch_id}
         assert sealed_when_sent, "the event must not arrive before the results are readable"
         lowered = {k.lower(): v for k, v in headers.items()}
         assert webhooks.verify(secret, lowered, payload)
@@ -603,19 +871,11 @@ async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
 async def test_the_console_lists_and_downloads_a_users_batches(gateway):
     client, model = gateway.client, gateway.model
     created = await client.post(
-        "/v1/messages/batches",
-        headers=ANTHROPIC,
+        "/v1/batches",
+        headers=KEY,
         json={
-            "requests": [
-                {
-                    "custom_id": "c",
-                    "params": {
-                        "model": model.config.id,
-                        "max_tokens": 8,
-                        "messages": [{"role": "user", "content": "console"}],
-                    },
-                }
-            ]
+            "requests": [_messages_request("c", model.config.id, "console")],
+            "anthropic_version": "2023-06-01",
         },
     )
     batch_id = created.json()["id"]
@@ -624,10 +884,15 @@ async def test_the_console_lists_and_downloads_a_users_batches(gateway):
     async def listed():
         rows = (await client.get("/user/batches", headers=console)).json()["data"]
         row = next((r for r in rows if r["id"] == batch_id), None)
-        return row if row and row["status"] == "ended" else None
+        return row if row and row["status"] == "completed" else None
 
-    row = await _until(listed, what="the console to show the ended batch")
-    assert row["api_surface"] == "anthropic"
+    row = await _until(listed, what="the console to show the completed batch")
+    assert (row["target"], row["input"], row["api_surface"]) == (
+        "messages",
+        "inline",
+        "openai_inline",
+    )
+    assert row["request_counts"] == {"total": 1, "completed": 1, "failed": 0}
     assert row["usage"]["total_tokens"] == 150
     assert row["cost_usd"] == pytest.approx(0.0002)
     download = await client.get(f"/user/batches/{batch_id}/results", headers=console)
@@ -674,46 +939,6 @@ async def test_an_invalid_idna_webhook_host_is_a_400_without_any_lookup(gateway,
     assert (await gateway.client.get("/v1/batch_webhook", headers=KEY)).json() == {
         "configured": False
     }
-
-
-async def test_a_malformed_message_batch_request_errors_alone(gateway):
-    """A request with a wrongly typed field is one errored result, not a failed create."""
-    client, model = gateway.client, gateway.model
-    good = {
-        "model": model.config.id,
-        "max_tokens": 8,
-        "messages": [{"role": "user", "content": "fine"}],
-    }
-    bad = {
-        "model": model.config.id,
-        "max_tokens": 8,
-        "messages": [{"role": "user", "content": [{"type": []}]}],
-    }
-    created = await client.post(
-        "/v1/messages/batches",
-        headers=ANTHROPIC,
-        json={
-            "requests": [{"custom_id": "good", "params": good}, {"custom_id": "bad", "params": bad}]
-        },
-    )
-    assert created.status_code == 200, created.text
-    batch_id = created.json()["id"]
-
-    async def ended():
-        body = (await client.get(f"/v1/messages/batches/{batch_id}", headers=ANTHROPIC)).json()
-        return body if body["processing_status"] == "ended" else None
-
-    final = await _until(ended, what="the mixed message batch to end")
-    assert (final["request_counts"]["succeeded"], final["request_counts"]["errored"]) == (1, 1)
-    lines = (await client.get(f"/v1/messages/batches/{batch_id}/results", headers=ANTHROPIC)).text
-    results = {
-        json.loads(line)["custom_id"]: json.loads(line)["result"] for line in lines.splitlines()
-    }
-    assert results["good"]["type"] == "succeeded"
-    error = results["bad"]["error"]["error"]
-    assert error["type"] == "invalid_request_error"
-    assert "content block type" in error["message"]
-    assert model.calls == ["fine"]
 
 
 async def test_a_file_responses_batch_with_a_malformed_line_runs_nothing(gateway):
@@ -763,13 +988,9 @@ async def test_batch_enabled_alone_switches_every_surface(gateway, settings):
     """
     client, model = gateway.client, gateway.model
     payload = _lines(model.config.id, 1)
-    message = {
-        "custom_id": "one",
-        "params": {
-            "model": model.config.id,
-            "max_tokens": 8,
-            "messages": [{"role": "user", "content": "x"}],
-        },
+    messages = {
+        "requests": [_messages_request("one", model.config.id, "x")],
+        "anthropic_version": "2023-06-01",
     }
     body, content_type = _multipart(payload)
     hook = {"url": "http://127.0.0.1:9/hook"}
@@ -787,7 +1008,7 @@ async def test_batch_enabled_alone_switches_every_surface(gateway, settings):
                 "completion_window": "24h",
             },
         ),
-        await client.post("/v1/messages/batches", headers=ANTHROPIC, json={"requests": [message]}),
+        await client.post("/v1/batches", headers=KEY, json=messages),
         await client.put("/v1/batch_webhook", headers=KEY, json=hook),
     ]
     assert [response.status_code for response in off] == [404] * len(off)
@@ -803,12 +1024,14 @@ async def test_batch_enabled_alone_switches_every_surface(gateway, settings):
             "completion_window": "24h",
         },
     )
-    messages = await client.post(
-        "/v1/messages/batches", headers=ANTHROPIC, json={"requests": [message]}
-    )
+    messages_batch = await client.post("/v1/batches", headers=KEY, json=messages)
     saved = await client.put("/v1/batch_webhook", headers=KEY, json=hook)
-    assert (created.status_code, messages.status_code, saved.status_code) == (200, 200, 200), (
+    assert (created.status_code, messages_batch.status_code, saved.status_code) == (
+        200,
+        200,
+        200,
+    ), (
         created.text,
-        messages.text,
+        messages_batch.text,
         saved.text,
     )

@@ -1,4 +1,4 @@
-"""Validating the input file of an OpenAI file batch, in the background.
+"""Validating the input file of a file batch, in the background.
 
 ``POST /v1/batches`` with an ``input_file_id`` only checks the envelope and the
 file (owner, purpose, ready, size) and answers ``validating``. A worker then
@@ -7,7 +7,8 @@ takes the batch's work lease and reads the file a chunk at a time:
 - every line must be a JSON object ``{"custom_id", "method": "POST", "url",
   "body"}`` with ``url`` equal to the batch's ``endpoint``, a ``custom_id``
   unique in the file, and a body its target admits
-  (:func:`serving.batch.targets.admit_item`);
+  (:func:`serving.batch.targets.admit_item`) -- for ``/v1/messages``, under the
+  ``anthropic_version`` the batch was created with, as an inline batch is;
 - every line must name the same model (a file batch runs one model);
 - the file holds at most ``BATCH_MAX_REQUESTS`` lines, none longer than
   ``BATCH_MAX_LINE_KB``.
@@ -33,9 +34,10 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from serving.batch.admission import has_invalid_unicode
-from serving.batch.targets import OPENAI_TARGET_URLS, AdmissionContext, ItemRejected, admit_item
+from serving.batch.profiles import PROFILES
+from serving.batch.targets import TARGET_URLS, AdmissionContext, ItemRejected, admit_item
 from serving.servers.auth import StoredKeyRejected, authenticate_stored_key
-from serving.storage.batch_store import BatchLimitExceeded
+from serving.storage.batch_store import TARGET_MESSAGES, BatchLimitExceeded
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -217,7 +219,26 @@ async def validate_file_batch(
         return "retry"
 
     endpoint = batch["endpoint"]
-    target = OPENAI_TARGET_URLS.get(endpoint)
+    target = TARGET_URLS.get(endpoint)
+    profile = PROFILES.get(batch.get("protocol_profile") or "")
+    if target == TARGET_MESSAGES and profile is None:
+        # Admission refuses this; a row that holds it anyway fails as a whole
+        # rather than once per line.
+        await store.fail_validation(
+            batch_id=batch_id,
+            worker_id=worker_id,
+            errors=_errors(
+                [
+                    {
+                        "code": "invalid_request",
+                        "message": "The batch has no supported anthropic_version.",
+                        "param": "anthropic_version",
+                        "line": None,
+                    }
+                ]
+            ),
+        )
+        return "failed"
     router = getattr(services, "router", None)
     ctx = AdmissionContext(
         user_ctx=user_ctx,
@@ -226,6 +247,7 @@ async def validate_file_batch(
         visibility_resolver=getattr(services, "model_visibility_resolver", None),
         embedding_adapters=getattr(services, "embedding_adapters", None),
         embedding_routes=getattr(router, "embedding_routes", None),
+        profile=profile if target == TARGET_MESSAGES else None,
     )
     errors: list[dict[str, Any]] = []
     seen: set[bytes] = set()

@@ -1,16 +1,17 @@
 """Admission steps the batch entry points share, in the order they must run.
 
-Every create route -- inline and file ``/v1/batches``, and the Anthropic
-``/v1/messages/batches`` -- goes through the same sequence:
+Every create -- ``POST /v1/batches``, inline or from a file, for any target --
+goes through the same sequence:
 
 1. **Identity**: the full key and account checks, without the daily quota
    (``verify_batch_management_identity``). A revoked key or a suspended account
    is refused here, before anything else.
 2. **Body**: read under ``BATCH_MAX_BODY_MB``.
 3. **Idempotency** (optional ``Idempotency-Key`` header, our extension): a key
-   the same owner already used on the same API surface returns that batch when
-   the request is the same (its digest: the normalized body, endpoint,
-   metadata, protocol version), answers 409 when it differs and 410 when that
+   the same owner already used for the same input method returns that batch
+   when the request is the same (its digest: the normalized body, endpoint,
+   metadata and, for a Messages batch, its ``anthropic_version``), answers 409
+   when it differs and 410 when that
    batch was deleted. A replay is decided **before** the role, quota and caps
    below, so an owner whose quota ran out or whose role was lowered can still
    learn what their earlier request created; it never changes the batch, and

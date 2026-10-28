@@ -4,6 +4,8 @@
 
 本记录取代 [2026-10-26 Batch API 扩展设计](2026-10-26-batch-api-expansion-design.zh.md) 第11节中 `BATCH_EXPANSION_ENABLED` 的决定（新种类默认关闭、需单独开启）以及据此写的升级与回滚步骤。该记录的其余部分不变，仍是当时的历史记录。用户与运维文档见 [docs/developer/batches.md](../../developer/batches.md)。
 
+> **历史记录。** 第1节所列可创建种类中的“Anthropic Message Batches”已被 [2026-10-28 统一 Batch API 修订](2026-10-28-unified-batch-api-amendment.zh.md) 取代：Messages 现在通过 `/v1/batches` 创建。
+
 ## 1 决定
 
 Batch 是标准推理功能，不再是需要单独开启的扩展。`BATCH_ENABLED` 开启时，本版本支持的所有种类都可创建：内联与文件批次、Anthropic Message Batches、Chat / Embeddings / Responses 目标，以及 Webhook 设置。
