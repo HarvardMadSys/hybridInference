@@ -19,6 +19,7 @@ import {
 } from '@/components/features/admin/adminStyles';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { usePagedBatches } from '@/components/features/batches/usePagedBatches';
+import { Select } from '@/components/ui/Select';
 import {
   adminCancelBatch,
   getBatchSummary,
@@ -226,30 +227,20 @@ export function BatchesTab() {
               value={userId}
               onChange={(event) => setUserId(event.target.value)}
             />
-            <select
+            <Select
               aria-label="Status"
-              className={CONTROL}
               value={status}
-              onChange={(event) => setStatus(event.target.value)}
-            >
-              {STATUSES.map((value) => (
-                <option key={value} value={value}>
-                  {value || 'Any status'}
-                </option>
-              ))}
-            </select>
-            <select
+              onValueChange={setStatus}
+              options={STATUSES.map((value) => ({ value, label: value || 'Any status' }))}
+              className="w-36"
+            />
+            <Select<BatchSurface | ''>
               aria-label="API"
-              className={CONTROL}
               value={surface}
-              onChange={(event) => setSurface(event.target.value as BatchSurface | '')}
-            >
-              {SURFACES.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              onValueChange={setSurface}
+              options={SURFACES}
+              className="w-36"
+            />
           </div>
         }
       >
