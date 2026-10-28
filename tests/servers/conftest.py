@@ -628,14 +628,19 @@ async def anthropic_app_services(
 ):
     """AppServices instance for anthropic compat router tests."""
     from serving.servers.deps import AppServices
+    from serving.servers.routers.completions_logging import CompletionsLogger
 
-    return AppServices(
+    completions_logger = CompletionsLogger(log_store=mock_log_store)
+    services = AppServices(
         router=anthropic_compat_router,
         db_logger=mock_db_logger,
         operational_store=mock_operational_store,
         log_store=mock_log_store,
         routing_manager=None,
+        completions_logger=completions_logger,
     )
+    yield services
+    await completions_logger.stop(timeout=0.1)
 
 
 @pytest_asyncio.fixture

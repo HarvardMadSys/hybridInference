@@ -455,6 +455,25 @@ async def test_without_a_fence_secret_identity_is_not_kept(history):
     assert "user-synthetic-9" not in str(trigger.content())
 
 
+async def test_request_log_saturation_counts_are_history_facts(history):
+    """The new rule's counts are safe facts, not omitted free text."""
+    _capture, records, _posts = history
+    context = {
+        "events_in_window": 2,
+        "dropped_total": 300,
+        "queue_maxsize": 1024,
+        "window_sec": 600,
+        "note": "api_logs report rows were discarded; quota increments are separate",
+    }
+    await _breach("request_log_queue_saturation", now=1.0, context=context)
+    (trigger,) = kinds(records, kind="condition_triggered")
+    assert trigger.facts["events_in_window"] == 2
+    assert trigger.facts["dropped_total"] == 300
+    assert trigger.facts["queue_maxsize"] == 1024
+    assert trigger.facts["window_sec"] == 600
+    assert not [note for note in trigger.limitations if note.startswith("omitted:")]
+
+
 async def test_unsafe_fields_are_omitted_and_typed_facts_kept(history):
     _capture, records, _posts = history
     context = {

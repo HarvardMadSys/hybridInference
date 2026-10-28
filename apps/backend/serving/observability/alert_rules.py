@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         PendingPrefixCacheLeakConfig,
         ProviderHourlySpend,
         RateRule,
+        RequestLogQueueSaturationConfig,
         StreamFailureRateConfig,
         TrackedTaskFailureRateConfig,
         UserOverrun,
@@ -814,6 +815,93 @@ class PendingPrefixCacheLeakRule:
         )
 
 
+class RequestLogQueueSaturationRule:
+    """Alert when the bounded request-log queue discards report rows.
+
+    Reads the ``request_log_queue_saturated`` warning emitted by
+    ``CompletionsLogger.schedule_log`` when the fixed worker pool falls behind
+    and drop-oldest evicts an ``api_logs`` row. The producer emits the warning
+    on the first loss, every 100th, and at least once per 60 seconds while
+    drops continue, so this rule receives a bounded event stream rather than
+    one record per dropped payload; its sliding window and ``cooldown_sec``
+    turn a sustained stall into a rate-limited page.
+
+    This is the alerting surface the ``request_log`` tracked-task failure rate
+    cannot provide: a dropped row never becomes a failed write, and the queue's
+    cumulative ``dropped_count`` is process-local. The record carries only the
+    cumulative count and the queue bound, never the payload or request text.
+    A drop is report-data loss; quota increments are separately scheduled
+    background tasks, not rows on this queue. The context says both so the page
+    is not read as billing-ledger corruption.
+    """
+
+    name = "request_log_queue_saturation"
+
+    def __init__(self, cfg: RequestLogQueueSaturationConfig) -> None:
+        self._cfg = cfg
+        self._window = _SlidingWindow(cfg.window_sec)
+
+    async def on_record(self, record: logging.LogRecord) -> None:
+        """Track loss warnings and alert when the window reaches the threshold."""
+        if not self._cfg.enabled:
+            return
+        # Structured attribute, not message text, for the reason documented on
+        # ClientErrorBurstRule: this engine's root handler also sees its own
+        # log output, and none of those records carries an ``event``.
+        if getattr(record, "event", None) != "request_log_queue_saturated":
+            return
+        now = time.time()
+        self._window.add(
+            now,
+            {
+                "dropped_total": getattr(record, "dropped_total", None),
+                "queue_maxsize": getattr(record, "queue_maxsize", None),
+            },
+        )
+        items = self._window.items(now)
+
+        def breach_context() -> dict[str, Any]:
+            dropped_totals = [
+                item["dropped_total"] for item in items if isinstance(item["dropped_total"], int)
+            ]
+            bounds = [
+                item["queue_maxsize"] for item in items if isinstance(item["queue_maxsize"], int)
+            ]
+            return {
+                "events_in_window": len(items),
+                "dropped_total": max(dropped_totals) if dropped_totals else "unknown",
+                "queue_maxsize": max(bounds) if bounds else "unknown",
+                "window_sec": self._cfg.window_sec,
+                "note": (
+                    "api_logs report rows were discarded. Quota-authoritative "
+                    "increments are separate background tasks, not rows on this "
+                    "queue, so this eviction did not drop them; usage and "
+                    "task/grant cost reports that read api_logs undercount "
+                    "these rows"
+                ),
+            }
+
+        await alert_on_transition(
+            key=self.name,
+            # ``>=``: unlike the burst rules that tolerate background noise,
+            # one discarded report row is already a loss. threshold_count is
+            # the number of rate-limited warnings that constitute a breach.
+            breached=len(items) >= self._cfg.threshold_count,
+            severity=AlertSeverity.WARN,
+            title="Request-log queue saturated; report rows dropped",
+            context=breach_context,
+            cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule whose
+            # traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
+            # Warnings only exist while rows are being dropped, so their
+            # absence is not evidence the queue recovered; close the incident
+            # silently rather than posting a recovery the rule never measured.
+            announce_resolution=False,
+        )
+
+
 class TrackedTaskFailureRateRule:
     """Alert when a tracked task type fails at a sustained rate.
 
@@ -1427,6 +1515,11 @@ class AlertEngine:
         # service fault, so it must never page Slack.
         self._rules.append(PendingPrefixCacheLeakRule(self._config.rules.prefix_cache_pending_leak))
         self._rules.append(TrackedTaskFailureRateRule(self._config.rules.tracked_task_failure_rate))
+        # The tracked-task rule cannot see a dropped row: no write was attempted.
+        # This reads the queue's own loss warning. See RequestLogQueueSaturationRule.
+        self._rules.append(
+            RequestLogQueueSaturationRule(self._config.rules.request_log_queue_saturation)
+        )
         # The two symptoms nothing above can see: a relayed-4xx storm that is
         # routed past the circuit breaker on purpose, and streams that break
         # after the response has already started. See ClientErrorBurstRule and

@@ -2763,3 +2763,145 @@ def test_stream_failed_fields_survive_log_formatters() -> None:
     assert payload["error_type"] == "HTTPStatusError"
     assert 'model="deepseek-v4-flash"' in plain
     assert 'error_type="HTTPStatusError"' in plain
+
+
+@pytest.mark.asyncio
+async def test_request_log_queue_loss_reaches_the_alert_engine(monkeypatch):
+    """A real drop from ``CompletionsLogger`` opens a saturation incident.
+
+    This is the integration that matters: the warning is produced by the
+    queue's own drop path, travels through ``AlertingLogHandler``, and is
+    evaluated by the rule the engine builds. The rule context is asserted too,
+    so a future event rename cannot leave a text-only warning that pages
+    nobody.
+    """
+    from unittest.mock import MagicMock
+
+    from serving.observability.alerts import reset_dedupe_state
+    from serving.servers.routers import completions_logging as cl_module
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    reset_dedupe_state()
+    # Use the real producer and its warning; shrink only the bound so the test
+    # reaches saturation with two payloads instead of 1025 rows.
+    monkeypatch.setattr(cl_module, "_LOG_QUEUE_MAXSIZE", 1)
+
+    handler = AlertingLogHandler(maxsize=100)
+    producer_logger = logging.getLogger(cl_module.__name__)
+    producer_logger.addHandler(handler)
+    engine = AlertEngine(
+        handler=handler,
+        config=AlertConfig(),
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    hang = asyncio.Event()
+    store = MagicMock()
+
+    async def _slow(**kwargs: object) -> None:
+        await hang.wait()
+
+    store.log_request = AsyncMock(side_effect=_slow)
+    cl = CompletionsLogger(log_store=store)
+    try:
+        with patch(
+            "serving.observability.alerts.alert_slack",
+            new=AsyncMock(),
+        ) as mock_alert:
+            await engine.start()
+            # The first payload fills the one-slot queue. The second finds it
+            # full before a worker can run, so the producer drops the oldest
+            # and emits request_log_queue_saturated with dropped_total=1.
+            cl.schedule_log("req-1", {"request_id": "req-1"})
+            cl.schedule_log("req-2", {"request_id": "req-2"})
+
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1
+            context = mock_alert.await_args_list[0].args[2]
+            assert context["events_in_window"] == 1
+            assert context["dropped_total"] == 1
+            assert context["queue_maxsize"] == 1
+            assert context["window_sec"] == 600
+            assert "api_logs" in context["note"]
+            assert "task/grant" in context["note"]
+
+            # A quiet period followed by a small second burst (lifetime drops
+            # #2 and #3) must still reach the rule; the time-based producer
+            # refresh is what makes that possible.
+            cl._last_drop_warn_at = -1e9
+            cl.schedule_log("req-3", {"request_id": "req-3"})
+            cl.schedule_log("req-4", {"request_id": "req-4"})
+            for _ in range(100):
+                if mock_alert.await_count >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert mock_alert.await_count >= 2
+            second_context = mock_alert.await_args_list[-1].args[2]
+            assert second_context["events_in_window"] == 2
+            assert second_context["dropped_total"] == 2
+    finally:
+        hang.set()
+        await cl.stop()
+        producer_logger.removeHandler(handler)
+        await engine.stop()
+
+
+def _make_request_log_saturation_record(
+    *, dropped_total: int = 1, queue_maxsize: int = 1024
+) -> logging.LogRecord:
+    record = logging.LogRecord(
+        name="serving.servers.routers.completions_logging",
+        level=logging.WARNING,
+        pathname="",
+        lineno=0,
+        msg="Request-log queue saturated",
+        args=None,
+        exc_info=None,
+    )
+    record.event = "request_log_queue_saturated"
+    record.dropped_total = dropped_total
+    record.queue_maxsize = queue_maxsize
+    return record
+
+
+def _request_log_saturation_rule(**overrides: object):
+    from serving.observability.alert_config import RequestLogQueueSaturationConfig
+    from serving.observability.alert_rules import RequestLogQueueSaturationRule
+
+    defaults = {
+        "enabled": True,
+        "window_sec": 600,
+        "threshold_count": 1,
+        "cooldown_sec": 0,
+    }
+    return RequestLogQueueSaturationRule(
+        RequestLogQueueSaturationConfig(**{**defaults, **overrides})
+    )
+
+
+async def test_request_log_queue_saturation_cooldown_suppresses_a_storm(monkeypatch) -> None:
+    """A sustained loss episode posts one page, not one per warning.
+
+    The producer refreshes its warning while drops continue; this is the other
+    half of the bound, enforced by the real alert cooldown.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+    rule = _request_log_saturation_rule(cooldown_sec=3600)
+    posted: list[dict] = []
+
+    async def _capture(_url, message, **_kwargs):
+        posted.append(message)
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
+        for dropped_total in range(1, 41):
+            await rule.on_record(_make_request_log_saturation_record(dropped_total=dropped_total))
+
+    assert len(posted) == 1, posted
+    assert "Request-log queue saturated" in json.dumps(posted[0])

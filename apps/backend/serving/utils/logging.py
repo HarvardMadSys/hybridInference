@@ -64,6 +64,13 @@ _STRUCTURED_LOG_KEYS = (
     # depend on.
     "task_name",
     "success",
+    # Request-log queue health: preserve counts and bounds without adding
+    # request payloads to the structured field allowlist.
+    "dropped_total",
+    "queue_maxsize",
+    "queued_rows_discarded",
+    "inflight_writes_uncertain",
+    "pending_rows",
     "from_provider",
     "to_provider",
     "ttft_ms",
