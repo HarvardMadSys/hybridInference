@@ -92,6 +92,7 @@ export function usePagedBatches(
     try {
       const page = await fetchRef.current(cursor.current);
       if (mine !== generation.current) return;
+      setError(null);
       setBatches((current) => {
         const seen = new Set(current.map((row) => row.id));
         return [...current, ...page.data.filter((row) => !seen.has(row.id))];
