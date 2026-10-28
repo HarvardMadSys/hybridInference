@@ -1015,6 +1015,14 @@
     "source": "You have no batches. Submit one through the API to see it here.",
     "text": "你还没有批次。通过 API 提交后会显示在这里。"
   },
+  "batches.input.file": {
+    "source": "JSONL file",
+    "text": "JSONL 文件"
+  },
+  "batches.input.inline": {
+    "source": "Direct requests",
+    "text": "直接提交的请求"
+  },
   "batches.loading": {
     "source": "Loading batches…",
     "text": "正在加载批次…"
@@ -1079,10 +1087,6 @@
     "source": "Completed",
     "text": "已完成"
   },
-  "batches.status.ended": {
-    "source": "Ended",
-    "text": "已结束"
-  },
   "batches.status.expired": {
     "source": "Expired",
     "text": "已过期"
@@ -1104,20 +1108,28 @@
     "text": "校验中"
   },
   "batches.subtitle": {
-    "source": "Batches you submitted through /v1/batches or /v1/messages/batches. Results are kept for a limited time after a batch ends.",
-    "text": "你通过 /v1/batches 或 /v1/messages/batches 提交的批次。批次结束后，结果只保留一段时间。"
+    "source": "Batches you submitted through /v1/batches, as direct requests or a JSONL file. Results are kept for a limited time after a batch ends.",
+    "text": "你通过 /v1/batches 提交的批次（直接提交请求或使用 JSONL 文件）。批次结束后，结果只保留一段时间。"
   },
-  "batches.surface.anthropic": {
-    "source": "Anthropic Message Batch",
-    "text": "Anthropic 消息批次"
+  "batches.target.chat": {
+    "source": "Chat completions",
+    "text": "Chat Completions"
   },
-  "batches.surface.file": {
-    "source": "OpenAI batch (file)",
-    "text": "OpenAI 批次（文件）"
+  "batches.target.embeddings": {
+    "source": "Embeddings",
+    "text": "Embeddings"
   },
-  "batches.surface.inline": {
-    "source": "OpenAI batch (inline)",
-    "text": "OpenAI 批次（内联）"
+  "batches.target.messages": {
+    "source": "Messages",
+    "text": "Messages"
+  },
+  "batches.target.responses": {
+    "source": "Responses",
+    "text": "Responses"
+  },
+  "batches.target.unknown": {
+    "source": "Batch",
+    "text": "批次"
   },
   "batches.title": {
     "source": "Batches",

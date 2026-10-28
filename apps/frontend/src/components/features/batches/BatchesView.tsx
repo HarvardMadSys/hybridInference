@@ -12,6 +12,7 @@ import {
   downloadMyResults,
   isCancellable,
   listMyBatches,
+  type BatchStatus,
   type ConsoleBatch,
   type ResultKind,
 } from '@/lib/api/batches';
@@ -21,36 +22,47 @@ import { fill } from '@/lib/utils/interpolate';
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
 
-const STATUS_TONE: Record<string, string> = {
+const STATUS_TONE: Partial<Record<BatchStatus, string>> = {
   completed: 'bg-green-50 text-green-700 ring-green-200',
-  ended: 'bg-green-50 text-green-700 ring-green-200',
   failed: 'bg-red-50 text-red-700 ring-red-200',
   expired: 'bg-amber-50 text-amber-800 ring-amber-200',
   cancelled: 'bg-gray-100 text-gray-700 ring-gray-200',
   cancelling: 'bg-gray-100 text-gray-700 ring-gray-200',
-  canceling: 'bg-gray-100 text-gray-700 ring-gray-200',
 };
 
-/** The protocol a batch was submitted through, as the list names it. */
-export function surfaceLabel(batch: ConsoleBatch, t: Translate): string {
-  if (batch.api_surface === 'anthropic')
-    return t('batches.surface.anthropic', 'Anthropic Message Batch');
-  if (batch.api_surface === 'openai_file') return t('batches.surface.file', 'OpenAI batch (file)');
-  return t('batches.surface.inline', 'OpenAI batch (inline)');
+/** What a batch runs, as the list names it: the target, whatever API shape it uses. */
+export function targetLabel(batch: ConsoleBatch, t: Translate): string {
+  switch (batch.target) {
+    case 'chat':
+      return t('batches.target.chat', 'Chat completions');
+    case 'embeddings':
+      return t('batches.target.embeddings', 'Embeddings');
+    case 'messages':
+      return t('batches.target.messages', 'Messages');
+    case 'responses':
+      return t('batches.target.responses', 'Responses');
+    default:
+      return batch.endpoint ?? t('batches.target.unknown', 'Batch');
+  }
 }
 
-/** A batch's status in words, in its protocol's vocabulary. */
-export function statusLabel(status: string, t: Translate): string {
-  const labels: Record<string, string> = {
+/** How the batch's requests arrived: an input method of the one batch API, not an API. */
+export function inputLabel(batch: ConsoleBatch, t: Translate): string {
+  return batch.input === 'file'
+    ? t('batches.input.file', 'JSONL file')
+    : t('batches.input.inline', 'Direct requests');
+}
+
+/** A batch's status in words; every batch uses the same ones. */
+export function statusLabel(status: BatchStatus, t: Translate): string {
+  const labels: Record<BatchStatus, string> = {
     validating: t('batches.status.validating', 'Validating'),
     in_progress: t('batches.status.in_progress', 'In progress'),
     finalizing: t('batches.status.finalizing', 'Finalizing'),
     completed: t('batches.status.completed', 'Completed'),
-    ended: t('batches.status.ended', 'Ended'),
     failed: t('batches.status.failed', 'Failed'),
     expired: t('batches.status.expired', 'Expired'),
     cancelling: t('batches.status.cancelling', 'Cancelling'),
-    canceling: t('batches.status.cancelling', 'Cancelling'),
     cancelled: t('batches.status.cancelled', 'Cancelled'),
   };
   return labels[status] ?? status;
@@ -61,21 +73,13 @@ function formatTime(epoch: number | null): string {
   return new Date(epoch * 1000).toLocaleString();
 }
 
-/** Done / total, whichever protocol's tallies the batch has. */
+/** Done / total: completed, failed and cancelled requests are done. */
 export function progress(batch: ConsoleBatch): { done: number; total: number; failed: number } {
   const counts = batch.request_counts;
-  if (batch.api_surface === 'anthropic') {
-    const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
-    return {
-      done: total - (counts.processing ?? 0),
-      total,
-      failed: (counts.errored ?? 0) + (counts.expired ?? 0),
-    };
-  }
   return {
-    done: (counts.completed ?? 0) + (counts.failed ?? 0) + batch.cancelled,
-    total: counts.total ?? 0,
-    failed: counts.failed ?? 0,
+    done: counts.completed + counts.failed + batch.cancelled,
+    total: counts.total,
+    failed: counts.failed,
   };
 }
 
@@ -107,11 +111,11 @@ function BatchRow({
               {statusLabel(batch.status, t)}
             </span>
           </div>
-          <p className="mt-1 text-xs text-gray-500">
-            {surfaceLabel(batch, t)}
-            {batch.endpoint ? ` · ${batch.endpoint}` : ''}
+          <p className="mt-1 text-sm text-gray-700">
+            <span className="font-medium">{targetLabel(batch, t)}</span>
             {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
           </p>
+          <p className="mt-0.5 text-xs text-gray-500">{inputLabel(batch, t)}</p>
           <dl className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-gray-600 sm:grid-cols-4">
             <div>
               <dt className="text-gray-400">{t('batches.row.requests', 'Requests')}</dt>
@@ -178,7 +182,7 @@ function BatchRow({
           ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
-          {batch.results_available && batch.api_surface !== 'openai_file' && (
+          {batch.results_available && batch.input !== 'file' && (
             <Button
               size="sm"
               variant="secondary"
@@ -223,7 +227,7 @@ function BatchRow({
 }
 
 /**
- * The signed-in user's batches across every API, with what each has done and
+ * The signed-in user's batches, every target alike, with what each has done and
  * cost so far, the actions an owner has (cancel, delete, download results) and
  * their webhook settings. Batches are created through the API, not here.
  */
@@ -293,7 +297,7 @@ export function BatchesView() {
           <p className="mt-1 text-sm text-gray-500">
             {t(
               'batches.subtitle',
-              'Batches you submitted through /v1/batches or /v1/messages/batches. Results are kept for a limited time after a batch ends.',
+              'Batches you submitted through /v1/batches, as direct requests or a JSONL file. Results are kept for a limited time after a batch ends.',
             )}
           </p>
         </div>

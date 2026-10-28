@@ -3,28 +3,41 @@ import { config } from '@/config/env';
 
 const API_BASE = config.apiBase;
 
-/** The API a batch was created through. */
-export type BatchSurface = 'openai_inline' | 'openai_file' | 'anthropic';
+/** The statuses a batch shows, the same for every target (those of `/v1/batches`). */
+export type BatchStatus =
+  | 'validating'
+  | 'in_progress'
+  | 'finalizing'
+  | 'completed'
+  | 'failed'
+  | 'expired'
+  | 'cancelling'
+  | 'cancelled';
+
+/** What a batch runs: the endpoint each of its requests targets. */
+export type BatchTarget = 'chat' | 'embeddings' | 'messages' | 'responses';
+
+/** How a batch's requests arrived: directly in the create call, or as a JSONL file. */
+export type BatchInput = 'inline' | 'file';
 
 /**
- * One batch as the console shows it, whatever its API surface.
- *
- * `status` is the batch's status as its own protocol names it: OpenAI's
- * (`validating`, `in_progress`, `finalizing`, `completed`, `failed`,
- * `expired`, `cancelling`, `cancelled`) or Anthropic's (`in_progress`,
- * `canceling`, `ended`).
+ * One batch as the console shows it. Every batch has the same shape and status
+ * words, whatever its target or how its requests arrived -- including those
+ * the retired Message Batches API stored.
  */
 export interface ConsoleBatch {
   id: string;
   user_id?: string | null;
-  api_surface: BatchSurface;
-  target: string | null;
+  /** The stored input kind, for diagnosis only; use `input` to show it. */
+  api_surface: string;
+  input: BatchInput;
+  target: BatchTarget | null;
   endpoint: string | null;
-  status: string;
+  status: BatchStatus;
   phase: string | null;
   models: string[];
-  /** OpenAI's `{total, completed, failed}` or Anthropic's five tallies. */
-  request_counts: Record<string, number>;
+  /** Requests in the batch, and how many have completed or failed (cancelled ones apart). */
+  request_counts: { total: number; completed: number; failed: number };
   cancelled: number;
   expired: number;
   usage: { input_tokens: number; output_tokens: number; total_tokens: number };
@@ -160,8 +173,8 @@ export async function listMyWebhookEvents(): Promise<{ data: BatchWebhookEvent[]
 
 export interface AdminBatchFilters {
   userId?: string;
-  status?: string;
-  surface?: BatchSurface | '';
+  /** A status as the list shows it (a file batch being sealed is `finalizing`). */
+  status?: BatchStatus | '';
   after?: string | null;
   limit?: number;
 }
@@ -171,7 +184,6 @@ export async function listAllBatches(filters: AdminBatchFilters = {}): Promise<C
   const params = new URLSearchParams({ limit: String(filters.limit ?? 50) });
   if (filters.userId) params.set('user_id', filters.userId);
   if (filters.status) params.set('status', filters.status);
-  if (filters.surface) params.set('surface', filters.surface);
   if (filters.after) params.set('after', filters.after);
   const resp = await fetchWithAuth(API_BASE, `/admin/batch/jobs?${params.toString()}`);
   return jsonOrThrow<ConsoleBatchPage>(resp);
@@ -210,8 +222,8 @@ export async function adminCancelBatch(batchId: string): Promise<ConsoleBatch> {
   return jsonOrThrow<ConsoleBatch>(resp);
 }
 
-/** Statuses after which a batch never changes again (either protocol's spelling). */
-export const FINAL_STATUSES = new Set(['completed', 'failed', 'expired', 'cancelled', 'ended']);
+/** Statuses after which a batch never changes again. */
+export const FINAL_STATUSES = new Set<BatchStatus>(['completed', 'failed', 'expired', 'cancelled']);
 
 /** Whether a batch can still be cancelled. */
 export function isCancellable(batch: ConsoleBatch): boolean {
