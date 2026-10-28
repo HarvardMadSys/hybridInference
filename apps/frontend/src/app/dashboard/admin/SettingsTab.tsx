@@ -127,6 +127,19 @@ export function SettingsTab({
   const [runtimeLoading, setRuntimeLoading] = useState(true);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [quotaLoadingRole, setQuotaLoadingRole] = useState<Role | null>(null);
+  const initialAnchorHandled = useRef(false);
+
+  useEffect(() => {
+    // Next's initial hash scroll can run before the sections exist. Wait for
+    // both reads so the runtime sections above the target have their full height.
+    if (!editor.settled || runtimeLoading || initialAnchorHandled.current) return;
+    initialAnchorHandled.current = true;
+    const target = document.getElementById(window.location.hash.slice(1));
+    if (target && !target.closest('[hidden]')) {
+      target.scrollIntoView({ block: 'start' });
+    }
+  }, [editor.settled, runtimeLoading]);
+
   // Unsaved changes in the sections that are not configuration, by section,
   // so a sub-tab can say it has some while another is shown.
   const [unsavedBySection, setUnsavedBySection] = useState<Record<string, number>>({});

@@ -109,6 +109,54 @@ async def test_list_settings_offers_the_auto_mode_switch_only_with_auto_models(a
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "default"),
+    [
+        ("analytics_token_usage_enabled", True),
+        ("analytics_users_and_requests_enabled", True),
+        ("analytics_performance_metrics_enabled", True),
+        ("analytics_growth_rate_enabled", False),
+    ],
+)
+async def test_analytics_visibility_settings_persist_for_a_new_reader(admin_client, key, default):
+    client, op_store, log_action = admin_client
+    headers = {"Authorization": "Bearer test-admin"}
+    rows = {}
+
+    async def get_setting(name):
+        return rows.get(name)
+
+    async def set_setting(name, value, value_type, updated_by):
+        rows[name] = {"key": name, "value": value, "value_type": value_type}
+
+    op_store.get_setting.side_effect = get_setting
+    op_store.set_setting.side_effect = set_setting
+
+    async def listed_value():
+        response = await client.get("/admin/settings", headers=headers)
+        assert response.status_code == 200
+        return next(item for item in response.json()["settings"] if item["key"] == key)
+
+    initial = await listed_value()
+    assert initial["value"] is default
+    assert initial["default_value"] is default
+    assert initial["value_type"] == "bool"
+
+    for enabled in (not default, default):
+        response = await client.patch(
+            f"/admin/settings/{key}", json={"value": enabled}, headers=headers
+        )
+        assert response.status_code == 200
+        assert response.json()["value"] is enabled
+        assert (await listed_value())["value"] is enabled
+        # A fresh reader proves the value survives beyond the writer's cache.
+        client._transport.app.state.services.runtime_settings = RuntimeSettings(op_store)
+        assert (await listed_value())["value"] is enabled
+
+    assert log_action.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_update_bool_setting(admin_client):
     client, op_store, log_action = admin_client
     op_store.get_setting.return_value = None

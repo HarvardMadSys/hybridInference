@@ -28,6 +28,7 @@ export type SettingsTabKey =
 /** A group of runtime settings, edited together with one Save. */
 export type RuntimeGroupKey =
   | 'logging'
+  | 'analytics'
   | 'access'
   | 'requests'
   | 'concurrency'
@@ -78,6 +79,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
       runtime('quotas'),
       runtime('requests'),
       runtime('logging'),
+      runtime('analytics'),
       runtime('other'),
     ],
   },
@@ -164,6 +166,10 @@ export function tabOfCategory(category: string): SettingsTabKey {
 export const RUNTIME_GROUPS: Readonly<
   Record<RuntimeGroupKey, { title: string; description: string }>
 > = {
+  analytics: {
+    title: 'Analytics',
+    description: 'Choose which sections appear on the Analytics overview.',
+  },
   logging: {
     title: 'Request Logging',
     description: 'What the gateway records about requests. Changes take effect immediately.',
@@ -202,6 +208,7 @@ const REQUEST_HANDLING_SETTINGS: ReadonlySet<string> = new Set([
 
 /** The group a runtime setting is edited in. */
 export function runtimeGroupOf(key: string): RuntimeGroupKey {
+  if (key.startsWith('analytics_')) return 'analytics';
   if (key.startsWith('log_')) return 'logging';
   if (key === 'user_auth_enabled' || key.startsWith('signup_')) return 'access';
   if (key.startsWith('user_concurrency_')) return 'concurrency';

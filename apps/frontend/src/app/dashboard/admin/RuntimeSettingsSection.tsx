@@ -11,7 +11,15 @@ import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { useReportUnsaved } from './useReportUnsaved';
 
+const ANALYTICS_SETTING_LABELS: Readonly<Record<string, string>> = {
+  analytics_token_usage_enabled: 'Token Usage',
+  analytics_users_and_requests_enabled: 'Users and Requests',
+  analytics_performance_metrics_enabled: 'Performance Metrics',
+  analytics_growth_rate_enabled: 'Growth Rate',
+};
+
 function settingLabel(key: string): string {
+  if (ANALYTICS_SETTING_LABELS[key]) return ANALYTICS_SETTING_LABELS[key];
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -183,7 +191,9 @@ export function RuntimeSettingsSection({
             const draft = draftOf(setting);
             const validated = flag ? null : validateNumeric(setting, String(draft));
             const hint = flag ? null : rangeHint(setting);
-            const name = flag ? `Toggle ${setting.key.replace(/_/g, ' ')}` : `${setting.key} value`;
+            const name = flag
+              ? `Toggle ${ANALYTICS_SETTING_LABELS[setting.key] ?? setting.key.replace(/_/g, ' ')}`
+              : `${setting.key} value`;
             return (
               <li
                 key={setting.key}
