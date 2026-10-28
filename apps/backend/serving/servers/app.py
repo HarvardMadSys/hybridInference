@@ -39,6 +39,7 @@ from .routers import (
     qdrant_proxy,
     rag,
     responses,
+    retired_message_batches,
     setup,
     site_config,
     site_updates,
@@ -133,6 +134,7 @@ def create_app() -> FastAPI:
     app.include_router(completions.router)
     app.include_router(embeddings.router)
     app.include_router(batches.router)
+    app.include_router(retired_message_batches.router)
     app.include_router(files.router)
     app.include_router(batch_console.router)
     app.include_router(batch_console_create.router)

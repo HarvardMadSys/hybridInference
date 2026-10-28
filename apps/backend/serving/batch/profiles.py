@@ -1,7 +1,8 @@
 """Anthropic API versions a Messages batch can be created under.
 
-A batch whose target is ``/v1/messages`` names an ``anthropic_version`` in its
-``POST /v1/batches`` envelope (inline and file alike). The batch keeps it
+A batch whose target is ``/v1/messages`` names its version in the
+``anthropic-version`` header of ``POST /v1/batches`` (inline and file alike).
+The batch keeps it
 (``protocol_profile``), and every request in it is checked against that
 version's rules when it is admitted, or when its input file is validated. Two
 versions are known:

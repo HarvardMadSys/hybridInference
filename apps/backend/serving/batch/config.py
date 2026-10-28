@@ -73,7 +73,7 @@ ROLE_CONCURRENCY_KEYS: dict[str, str] = {
 }
 #: Slots of every model's batch cap kept free for interactive traffic.
 INTERACTIVE_RESERVE_KEY = "BATCH_INTERACTIVE_RESERVE"
-#: Anthropic API versions a new Messages batch may name (``anthropic_version``).
+#: Anthropic API versions a new Messages batch may name (its ``anthropic-version`` header).
 ANTHROPIC_VERSIONS_KEY = "BATCH_ANTHROPIC_VERSIONS"
 #: Webhooks may target private, loopback or link-local addresses (testing only).
 WEBHOOK_ALLOW_PRIVATE_KEY = "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS"

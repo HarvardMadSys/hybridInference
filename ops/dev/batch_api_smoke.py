@@ -13,7 +13,9 @@ Subcommands (run each with ``--help``):
 ``upstream``
     Serve the fake provider (``POST /v1/chat/completions``, ``POST
     /v1/messages``; ``GET /_calls`` lists what arrived, with each request's
-    ``anthropic-version`` header).
+    ``anthropic-version`` header) and a webhook receiver (``POST /_hook``,
+    listed by ``GET /_hooks``). Webhooks to it need the gateway's
+    ``BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS`` on: the receiver is a loopback address.
 ``models``
     Write a models file routing ``smoke-chat`` (OpenAI-compatible) and
     ``smoke-claude`` (native Anthropic) to the fake upstream.
@@ -21,12 +23,18 @@ Subcommands (run each with ``--help``):
     Create an ``internal`` owner and a second ``internal`` user with an API key
     each, through the gateway's own store code, in the gateway's database. Run
     it with the gateway's database and ``API_KEY_SECRET`` environment.
+``webhook``
+    Point the owner's batch webhook at the fake upstream's receiver.
 ``check``
-    The acceptance checks: removed routes, online Messages, Messages batches
-    inline and from a file under their versions, refusals, the OpenAI
-    workflows, idempotency, ownership, cancellation, the admin status filter
-    and deletion. With ``--legacy-ids``, batches the retired Message Batches
-    API created (see ``legacy-create``) are read and downloaded too.
+    The acceptance checks: the retired routes' ``410`` (and ``404`` with
+    ``BATCH_ENABLED`` off), online Messages, Messages batches inline and from
+    a file under the ``anthropic-version`` header, refusals (the obsolete
+    body field included), the OpenAI workflows, idempotency (a version the
+    operator stopped allowing still replays), ownership, cancellation, the
+    admin status filter, webhook event types and deletion. With
+    ``--legacy-ids``, batches the retired Message Batches API created (see
+    ``legacy-create``) are read and downloaded too, and their webhook events
+    checked when a webhook was set up before they ended.
 ``legacy-create``
     Against a gateway that still serves ``/v1/messages/batches`` (the previous
     release), create a Message Batch the old way and print its id.
@@ -64,6 +72,8 @@ from typing import Any
 CHAT_MODEL = "smoke-chat"
 MESSAGES_MODEL = "smoke-claude"
 OK_MARKER = "BATCH_API_SMOKE_OK"
+VERSION_HEADER = "anthropic-version"
+MIGRATION_DOC = "https://doc.hybridinference.org/batches.html#moving-from-message-batches"
 _FINAL = ("completed", "failed", "expired", "cancelled")
 
 
@@ -139,10 +149,21 @@ def _serve_upstream(port: int) -> None:
     async def list_calls(_request: web.Request) -> web.Response:
         return web.json_response(calls)
 
+    hooks: list[dict[str, Any]] = []
+
+    async def hook(request: web.Request) -> web.Response:
+        hooks.append(json.loads(await request.read()))
+        return web.Response(status=204)
+
+    async def list_hooks(_request: web.Request) -> web.Response:
+        return web.json_response(hooks)
+
     app = web.Application()
     app.router.add_post("/v1/chat/completions", chat)
     app.router.add_post("/v1/messages", messages)
     app.router.add_get("/_calls", list_calls)
+    app.router.add_post("/_hook", hook)
+    app.router.add_get("/_hooks", list_hooks)
     web.run_app(app, host="127.0.0.1", port=port, print=lambda *_: None)
 
 
@@ -246,9 +267,24 @@ class Gateway:
         self.admin = {"Authorization": f"Bearer {admin}"} if admin else None
         self.owner_key = owner
 
-    def create(self, body: dict[str, Any], **headers: str) -> Any:
-        """``POST /v1/batches`` as the owner."""
+    def create(self, body: dict[str, Any], version: str | None = None, **headers: str) -> Any:
+        """``POST /v1/batches`` as the owner, with *version* as its ``anthropic-version``."""
+        if version is not None:
+            headers = {VERSION_HEADER: version, **headers}
         return self.http.post("/v1/batches", json=body, headers={**self.owner, **headers})
+
+    def configure(self, key: str, value: Any) -> None:
+        """Set a runtime setting through the admin API (None resets it to its default)."""
+        if self.admin is None:
+            raise SmokeError("--admin-token is needed to change a setting")
+        if value is None:
+            response = self.http.delete(f"/admin/config/{key}", headers=self.admin)
+        else:
+            response = self.http.patch(
+                "/admin/config", json={"values": {key: value}}, headers=self.admin
+            )
+        if response.status_code >= 300:
+            raise SmokeError(f"could not set {key}: {response.status_code}")
 
     def batch(self, batch_id: str) -> dict[str, Any]:
         """The owner's view of one batch."""
@@ -319,30 +355,67 @@ def _chat_line(custom_id: str, text: str) -> dict[str, Any]:
     }
 
 
+_RETIRED = [
+    (method, f"{prefix}/v1/messages/batches{suffix}")
+    for prefix in ("", "/anthropic")
+    for method, suffix in (
+        ("POST", ""),
+        ("GET", ""),
+        ("GET", "/msgbatch_x"),
+        ("POST", "/msgbatch_x/cancel"),
+        ("DELETE", "/msgbatch_x"),
+        ("GET", "/msgbatch_x/results"),
+    )
+]
+
+
+def _hooks(upstream: str) -> list[dict[str, Any]]:
+    import httpx
+
+    return httpx.get(f"{upstream.rstrip('/')}/_hooks", timeout=10).json()
+
+
 def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
     run = uuid.uuid4().hex[:6]
 
-    # 1. The removed routes are gone; online Messages is not.
+    # 1. The retired routes answer 410 with the way forward; online Messages is unchanged.
     paths = gw.http.get("/openapi.json").json()["paths"]
     _expect(not [p for p in paths if "messages/batches" in p], "no Message Batches path in OpenAPI")
-    for prefix in ("", "/anthropic"):
-        for method, suffix in (
-            ("POST", ""),
-            ("GET", ""),
-            ("GET", "/msgbatch_x"),
-            ("POST", "/msgbatch_x/cancel"),
-            ("DELETE", "/msgbatch_x"),
-            ("GET", "/msgbatch_x/results"),
+    for method, path in _RETIRED:
+        for who, headers in (
+            ("the owner", {**gw.owner, VERSION_HEADER: "2023-06-01"}),
+            ("an invalid key", {"Authorization": "Bearer not-a-key"}),
         ):
-            path = f"{prefix}/v1/messages/batches{suffix}"
-            response = gw.http.request(
-                method, path, headers={**gw.owner, "anthropic-version": "2023-06-01"}
+            response = gw.http.request(method, path, headers=headers, content=b"{not json")
+            error = response.json().get("error", {}) if response.status_code == 410 else {}
+            _expect(
+                response.status_code == 410
+                and error.get("type") == "invalid_request_error"
+                and "/v1/batches" in error.get("message", "")
+                and MIGRATION_DOC in error.get("message", ""),
+                f"{method} {path} -> 410 with migration guidance, for {who}",
             )
-            _expect(response.status_code == 404, f"{method} {path} -> 404")
+    for method, path in (
+        ("GET", "/v1/messages/batches/msgbatch_x/other"),
+        ("PUT", "/v1/messages/batches/msgbatch_x"),
+    ):
+        response = gw.http.request(method, path, headers=gw.owner)
+        _expect(response.status_code in (404, 405), f"{method} {path} is no tombstone")
+    if gw.admin is not None:
+        gw.configure("BATCH_ENABLED", False)
+        try:
+            for method, path in _RETIRED[:2]:
+                response = gw.http.request(method, path, headers=gw.owner)
+                _expect(response.status_code == 404, f"BATCH_ENABLED off: {method} {path} -> 404")
+            response = gw.http.get("/v1/batches", headers=gw.owner)
+            _expect(response.status_code == 404, "BATCH_ENABLED off: /v1/batches -> 404")
+        finally:
+            gw.configure("BATCH_ENABLED", True)
+        _expect(gw.http.get("/v1/batches", headers=gw.owner).status_code == 200, "back on")
     for path in ("/v1/messages", "/anthropic/v1/messages"):
         online = gw.http.post(
             path,
-            headers={**gw.owner, "anthropic-version": "2023-06-01"},
+            headers={**gw.owner, VERSION_HEADER: "2023-06-01"},
             json={
                 "model": MESSAGES_MODEL,
                 "max_tokens": 16,
@@ -355,37 +428,30 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
         )
 
     # 2. Refusals, before anything is stored or run.
-    one = [_messages_line("a", f"refused {run}")]
+    one = {"requests": [_messages_line("a", f"refused {run}")]}
     cases = {
-        "no anthropic_version": (gw.create({"requests": one}), "needs one"),
-        "unknown version": (
-            gw.create({"requests": one, "anthropic_version": "2099-01-01"}),
-            "not supported",
+        "no anthropic-version header": (gw.create(one), "needs this header"),
+        "unknown version": (gw.create(one, "2099-01-01"), "not supported"),
+        "the obsolete body field, beside a valid header": (
+            gw.create({**one, "anthropic_version": "2023-06-01"}, "2023-06-01"),
+            "not accepted in the body",
         ),
-        "version on a chat batch": (
-            gw.create({"requests": [_chat_line("c", "x")], "anthropic_version": "2023-06-01"}),
+        "the obsolete body field, null": (
+            gw.create({**one, "anthropic_version": None}, "2023-06-01"),
+            "not accepted in the body",
+        ),
+        "a version header on a chat batch": (
+            gw.create({"requests": [_chat_line("c", "x")]}, "2023-06-01"),
             "only a /v1/messages batch",
         ),
-        "version header differing": (
-            gw.create(
-                {"requests": one, "anthropic_version": "2023-06-01"},
-                **{"anthropic-version": "2026-10-21"},
-            ),
-            "must match",
-        ),
         "anthropic-beta": (
-            gw.create(
-                {"requests": one, "anthropic_version": "2023-06-01"},
-                **{"anthropic-beta": "files-api-2025-04-14"},
-            ),
+            gw.create(one, "2023-06-01", **{"anthropic-beta": "files-api-2025-04-14"}),
             "anthropic-beta",
         ),
         "a version's own rules": (
             gw.create(
-                {
-                    "requests": [_messages_line("t", f"refused {run}", temperature=0.2)],
-                    "anthropic_version": "2026-10-21",
-                }
+                {"requests": [_messages_line("t", f"refused {run}", temperature=0.2)]},
+                "2026-10-21",
             ),
             "temperature",
         ),
@@ -398,26 +464,27 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
                             f"refused {run}",
                             tools=[{"type": "web_search_20250305", "name": "w"}],
                         )
-                    ],
-                    "anthropic_version": "2023-06-01",
-                }
+                    ]
+                },
+                "2023-06-01",
             ),
             "not supported",
         ),
     }
     for what, (response, text) in cases.items():
-        _expect(
-            response.status_code == 400 and text in response.text,
-            f"refused with 400: {what}",
-        )
+        _expect(response.status_code == 400 and text in response.text, f"refused with 400: {what}")
+    _expect(
+        not [c for c in _upstream_calls(upstream) if c["text"].startswith(f"refused {run}")],
+        "nothing refused reached the upstream",
+    )
 
     # 3. An inline Messages batch, under 2026-10-21.
     created = gw.create(
         {
-            "anthropic_version": "2026-10-21",
             "requests": [_messages_line(f"m-{i}", f"inline {run} {i}") for i in range(3)],
             "metadata": {"smoke": run},
-        }
+        },
+        "2026-10-21",
     )
     _expect(created.status_code == 200, "inline Messages batch created on /v1/batches")
     inline = created.json()
@@ -460,19 +527,16 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
             input_file_id=file_id,
             endpoint="/v1/messages",  # type: ignore[arg-type]
             completion_window="24h",
-            extra_body={"anthropic_version": "2023-06-01"},
+            extra_headers={VERSION_HEADER: "2023-06-01"},
         ).id
     else:
         file_batch = gw.create(
-            {
-                "input_file_id": file_id,
-                "endpoint": "/v1/messages",
-                "completion_window": "24h",
-                "anthropic_version": "2023-06-01",
-            }
+            {"input_file_id": file_id, "endpoint": "/v1/messages", "completion_window": "24h"},
+            "2023-06-01",
         ).json()["id"]
     done = gw.wait(file_batch)
     _expect(done["status"] == "completed", "Messages file batch completed (OpenAI SDK)")
+    _expect(done["anthropic_version"] == "2023-06-01", "the file batch shows its frozen version")
     content = gw.http.get(f"/v1/files/{done['output_file_id']}/content", headers=gw.owner)
     _expect(len(content.text.splitlines()) == 2, "Messages output file has every result")
     sent = [c for c in _upstream_calls(upstream) if c["text"].startswith(f"file {run}")]
@@ -489,12 +553,8 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
         ]
     )
     bad = gw.create(
-        {
-            "input_file_id": bad_file,
-            "endpoint": "/v1/messages",
-            "completion_window": "24h",
-            "anthropic_version": "2026-10-21",
-        }
+        {"input_file_id": bad_file, "endpoint": "/v1/messages", "completion_window": "24h"},
+        "2026-10-21",
     ).json()
     failed = gw.wait(bad["id"])
     _expect(
@@ -534,18 +594,39 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
         "chat file batch completed, with no version",
     )
 
-    # 7. Idempotency compares the version.
-    body = {"requests": [_messages_line("i", f"idem {run}")], "anthropic_version": "2023-06-01"}
-    key = {"Idempotency-Key": f"smoke-{run}"}
-    first = gw.create(body, **key)
-    replay = gw.create(body, **key)
-    other = gw.create({**body, "anthropic_version": "2026-10-21"}, **key)
-    _expect(
-        first.status_code == replay.status_code == 200
-        and first.json()["id"] == replay.json()["id"],
-        "the same Idempotency-Key and version replay the batch",
-    )
-    _expect(other.status_code == 409, "the same key with another version answers 409")
+    # 7. Idempotency compares the version; a version no longer allowed still replays.
+    gw.set_cap(MESSAGES_MODEL, 0)
+    try:
+        body = {"requests": [_messages_line("i", f"idem {run}")]}
+        key = {"Idempotency-Key": f"smoke-{run}"}
+        first = gw.create(body, "2026-10-21", **key)
+        replay = gw.create(body, "2026-10-21", **key)
+        other = gw.create(body, "2023-06-01", **key)
+        _expect(
+            first.status_code == replay.status_code == 200
+            and first.json()["id"] == replay.json()["id"],
+            "the same Idempotency-Key and version replay the batch",
+        )
+        _expect(other.status_code == 409, "the same key with another version answers 409")
+        _expect(gw.create(body, **key).status_code == 400, "a replay without the header is 400")
+        if gw.admin is not None:
+            gw.configure("BATCH_ANTHROPIC_VERSIONS", "2023-06-01")
+            try:
+                still = gw.create(body, "2026-10-21", **key)
+                fresh = gw.create(body, "2026-10-21", **{"Idempotency-Key": f"fresh-{run}"})
+                _expect(
+                    still.status_code == 200 and still.json()["id"] == first.json()["id"],
+                    "a version the operator stopped allowing still replays its batch",
+                )
+                _expect(
+                    fresh.status_code == 400 and "use one of 2023-06-01" in fresh.text,
+                    "...but creates nothing new",
+                )
+            finally:
+                gw.configure("BATCH_ANTHROPIC_VERSIONS", None)
+        gw.http.post(f"/v1/batches/{first.json()['id']}/cancel", headers=gw.owner)
+    finally:
+        gw.set_cap(MESSAGES_MODEL, None)
 
     # 8. Ownership.
     if gw.stranger is not None:
@@ -565,10 +646,8 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
     gw.set_cap(MESSAGES_MODEL, 0)
     try:
         queued = gw.create(
-            {
-                "requests": [_messages_line(f"q-{i}", f"cancel {run} {i}") for i in range(3)],
-                "anthropic_version": "2023-06-01",
-            }
+            {"requests": [_messages_line(f"q-{i}", f"cancel {run} {i}") for i in range(3)]},
+            "2023-06-01",
         ).json()
         cancelled = gw.http.post(f"/v1/batches/{queued['id']}/cancel", headers=gw.owner).json()
         _expect(cancelled["status"] == "cancelled", "a queued Messages batch is cancelled")
@@ -600,7 +679,22 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
             "admin status=ended is not a status",
         )
 
-    # 11. Legacy Message Batches, through /v1/batches.
+    # 11. Webhook events, when a webhook points at the fake receiver.
+    webhook = gw.http.get("/v1/batch_webhook", headers=gw.owner).json()
+    receiving = webhook.get("configured") and webhook.get("url", "").endswith("/_hook")
+    if receiving:
+        deadline = time.monotonic() + 30
+        want = {inline["id"]: "batch.completed", file_batch: "batch.completed"}
+        want.update(dict.fromkeys(legacy_ids, "message_batch.ended"))
+        while True:
+            seen = {event["data"]["id"]: event["type"] for event in _hooks(upstream)}
+            if all(batch_id in seen for batch_id in want) or time.monotonic() > deadline:
+                break
+            time.sleep(0.5)
+        for batch_id, event_type in want.items():
+            _expect(seen.get(batch_id) == event_type, f"{batch_id} delivered {event_type}")
+
+    # 12. Legacy Message Batches, through /v1/batches.
     for legacy in legacy_ids:
         batch = gw.wait(legacy)
         _expect(
@@ -619,13 +713,20 @@ def _check(gw: Gateway, upstream: str, legacy_ids: list[str]) -> None:
             response = gw.http.get(f"/v1/batches/{legacy}", headers=gw.stranger)
             _expect(response.status_code == 404, f"legacy {legacy} is not another user's")
 
-    # 12. Deletion.
+    # 13. Deletion.
     deleted = gw.http.delete(f"/v1/batches/{inline['id']}", headers=gw.owner).json()
     _expect(deleted == {"id": inline["id"], "object": "batch.deleted", "deleted": True}, "deleted")
     _expect(
         gw.http.get(f"/v1/batches/{inline['id']}", headers=gw.owner).status_code == 404,
         "a deleted batch reads as not found",
     )
+
+
+def _webhook(gw: Gateway, upstream: str) -> None:
+    response = gw.http.put(
+        "/v1/batch_webhook", headers=gw.owner, json={"url": f"{upstream.rstrip('/')}/_hook"}
+    )
+    _expect(response.status_code == 200, "the owner's webhook points at the fake receiver")
 
 
 # -- rolling upgrade ---------------------------------------------------------------
@@ -635,20 +736,14 @@ def _stage(gw: Gateway, out: Path) -> None:
     run = uuid.uuid4().hex[:6]
     gw.set_cap(MESSAGES_MODEL, 0)
     inline = gw.create(
-        {
-            "requests": [_messages_line(f"r-{i}", f"rolling {run} inline {i}") for i in range(2)],
-            "anthropic_version": "2026-10-21",
-        }
+        {"requests": [_messages_line(f"r-{i}", f"rolling {run} inline {i}") for i in range(2)]},
+        "2026-10-21",
     )
     _expect(inline.status_code == 200, "staged an inline Messages batch (model paused)")
     file_id = gw.upload([_messages_line(f"rf-{i}", f"rolling {run} file {i}") for i in range(2)])
     from_file = gw.create(
-        {
-            "input_file_id": file_id,
-            "endpoint": "/v1/messages",
-            "completion_window": "24h",
-            "anthropic_version": "2023-06-01",
-        }
+        {"input_file_id": file_id, "endpoint": "/v1/messages", "completion_window": "24h"},
+        "2023-06-01",
     )
     _expect(from_file.status_code == 200, "staged a Messages file batch (model paused)")
     out.write_text(json.dumps({"run": run, "ids": [inline.json()["id"], from_file.json()["id"]]}))
@@ -727,7 +822,14 @@ def main(argv: list[str] | None = None) -> int:
     models.add_argument("--upstream", required=True)
     models.add_argument("--out", type=Path, required=True)
     sub.add_parser("seed", help="create the two smoke accounts; prints their keys as JSON")
-    for name in ("check", "stage", "expect-untouched", "expect-complete", "legacy-create"):
+    for name in (
+        "check",
+        "stage",
+        "expect-untouched",
+        "expect-complete",
+        "legacy-create",
+        "webhook",
+    ):
         command = sub.add_parser(name)
         command.add_argument("--gateway", required=True)
         command.add_argument("--keys", required=True, help="the JSON `seed` printed")
@@ -763,6 +865,8 @@ def main(argv: list[str] | None = None) -> int:
             _expect_complete(gw, args.upstream, json.loads(args.staged.read_text()))
         elif args.command == "legacy-create":
             _legacy_create(gw)
+        elif args.command == "webhook":
+            _webhook(gw, args.upstream)
     except SmokeError as exc:
         print(f"FAIL {exc}", flush=True)
         return 1

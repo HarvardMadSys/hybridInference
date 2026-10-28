@@ -11,7 +11,7 @@ database -- several workers claiming against each other through the database,
 not several gateway processes (that is exercised by running separate gateway
 processes, outside this suite). What this
 holds: a Messages batch -- inline or from a file -- runs on ``/v1/batches``
-under its frozen ``anthropic_version`` with every request accounted for; a
+under the ``anthropic-version`` it was created with, every request accounted for; a
 file batch is validated, run, sealed and downloaded byte-for-byte as its
 manifest says, and an invalid file runs nothing; idempotent creates replay
 before the quota and role checks, and the version is part of what they
@@ -61,6 +61,7 @@ from serving.servers.routers import (
     batch_console,
     batches,
     files,
+    retired_message_batches,
 )
 from serving.servers.routers.admin import batch as admin_batch
 from serving.storage.batch_file_store import BatchFileStore
@@ -280,7 +281,7 @@ async def gateway(pool, owner, settings):
         app.add_exception_handler(
             exc_type, anthropic_messages.anthropic_aware_http_exception_handler
         )
-    for module in (batches, files, batch_console, admin_batch):
+    for module in (batches, retired_message_batches, files, batch_console, admin_batch):
         app.include_router(module.router)
 
     workers: list[BatchScheduler] = []
@@ -322,6 +323,11 @@ KEY = {"Authorization": "Bearer test-key"}
 STRANGER = {"Authorization": "Bearer stranger-key"}
 
 
+def _v(version: str, **extra: str) -> dict[str, str]:
+    """The owner's headers for a Messages create: the version is the anthropic-version header."""
+    return {**KEY, "anthropic-version": version, **extra}
+
+
 async def _until(check, *, timeout: float = 20.0, what: str = "condition"):
     deadline = time.monotonic() + timeout
     while True:
@@ -360,9 +366,8 @@ async def test_an_inline_messages_batch_runs_on_v1_batches_under_its_version(gat
     model = native.config.id
     created = await client.post(
         "/v1/batches",
-        headers=KEY,
+        headers=_v("2026-10-21"),
         json={
-            "anthropic_version": "2026-10-21",
             "requests": [
                 _messages_request("ok-1", model, "one"),
                 _messages_request("ok-2", model, "two"),
@@ -403,43 +408,39 @@ async def test_messages_batches_need_a_known_version_and_refuse_what_they_cannot
     one = [_messages_request("a", model, "x")]
     refused = [
         await client.post("/v1/batches", headers=KEY, json={"requests": one}),
-        await client.post(
-            "/v1/batches", headers=KEY, json={"requests": one, "anthropic_version": "2099-01-01"}
-        ),
+        await client.post("/v1/batches", headers=_v("2099-01-01"), json={"requests": one}),
         await client.post(
             "/v1/batches",
-            headers={**KEY, "anthropic-beta": "x"},
-            json={"requests": one, "anthropic_version": "2023-06-01"},
+            headers=_v("2023-06-01", **{"anthropic-beta": "x"}),
+            json={"requests": one},
         ),
         # The version's own rules, for every request.
         await client.post(
             "/v1/batches",
-            headers=KEY,
+            headers=_v("2026-10-21"),
             json={
                 "requests": [
                     _messages_request("fine", model, "x"),
                     _messages_request("temp", model, "x", temperature=0.2),
                 ],
-                "anthropic_version": "2026-10-21",
             },
         ),
         # A server tool: refused, never silently dropped.
         await client.post(
             "/v1/batches",
-            headers=KEY,
+            headers=_v("2023-06-01"),
             json={
                 "requests": [
                     _messages_request(
                         "tool", model, "x", tools=[{"type": "web_search_20250305", "name": "w"}]
                     )
                 ],
-                "anthropic_version": "2023-06-01",
             },
         ),
         # A malformed content block refuses the whole batch, naming the request.
         await client.post(
             "/v1/batches",
-            headers=KEY,
+            headers=_v("2023-06-01"),
             json={
                 "requests": [
                     _messages_request("good", model, "x"),
@@ -452,14 +453,20 @@ async def test_messages_batches_need_a_known_version_and_refuse_what_they_cannot
                         },
                     },
                 ],
-                "anthropic_version": "2023-06-01",
             },
+        ),
+        # The obsolete body field is refused, even beside a valid header.
+        await client.post(
+            "/v1/batches",
+            headers=_v("2023-06-01"),
+            json={"requests": one, "anthropic_version": "2023-06-01"},
         ),
     ]
     assert [response.status_code for response in refused] == [400] * len(refused)
     assert "temp" in refused[3].json()["error"]["message"]
     assert "temperature" in refused[3].json()["error"]["message"]
     assert "'bad'" in refused[5].json()["error"]["message"]
+    assert "not accepted in the body" in refused[6].json()["error"]["message"]
     assert native.calls == []
     assert await gateway.store.list_batches(user_id=gateway.owner["user_id"], limit=5) == []
 
@@ -471,12 +478,11 @@ async def test_a_messages_file_batch_is_validated_whole_and_run_under_its_versio
     uploaded = await _upload(client, ("\n".join(json.dumps(row) for row in rows) + "\n").encode())
     created = await client.post(
         "/v1/batches",
-        headers=KEY,
+        headers=_v("2023-06-01"),
         json={
             "input_file_id": uploaded["id"],
             "endpoint": "/v1/messages",
             "completion_window": "24h",
-            "anthropic_version": "2023-06-01",
         },
     )
     assert created.status_code == 200, created.text
@@ -506,12 +512,11 @@ async def test_a_messages_file_with_a_line_its_version_refuses_runs_nothing(gate
     uploaded = await _upload(client, ("\n".join(json.dumps(row) for row in rows) + "\n").encode())
     created = await client.post(
         "/v1/batches",
-        headers=KEY,
+        headers=_v("2026-10-21"),
         json={
             "input_file_id": uploaded["id"],
             "endpoint": "/v1/messages",
             "completion_window": "24h",
-            "anthropic_version": "2026-10-21",
         },
     )
     assert created.status_code == 200, created.text
@@ -529,11 +534,8 @@ async def test_a_messages_batch_is_cancelled_and_owned_like_any_batch(gateway):
     await gateway.store.set_model_limit(model, 0, "test")
     created = await client.post(
         "/v1/batches",
-        headers=KEY,
-        json={
-            "requests": [_messages_request(f"q-{i}", model, "x") for i in range(3)],
-            "anthropic_version": "2023-06-01",
-        },
+        headers=_v("2023-06-01"),
+        json={"requests": [_messages_request(f"q-{i}", model, "x") for i in range(3)]},
     )
     batch_id = created.json()["id"]
     for method, path in (
@@ -555,22 +557,32 @@ async def test_a_messages_batch_is_cancelled_and_owned_like_any_batch(gateway):
     assert native.calls == []
 
 
-async def test_an_idempotency_key_compares_the_version_too(gateway):
+async def test_an_idempotency_key_compares_the_version_too(gateway, settings):
     client, native = gateway.client, gateway.native
     await gateway.store.set_model_limit(native.config.id, 0, "test")
-    body = {
-        "requests": [_messages_request("only", native.config.id, "x")],
-        "anthropic_version": "2023-06-01",
-    }
-    headers = {**KEY, "Idempotency-Key": "messages-version"}
-    first = await client.post("/v1/batches", headers=headers, json=body)
-    replay = await client.post("/v1/batches", headers=headers, json=body)
-    other_version = await client.post(
-        "/v1/batches", headers=headers, json={**body, "anthropic_version": "2026-10-21"}
-    )
-    assert first.status_code == replay.status_code == 200
+    body = {"requests": [_messages_request("only", native.config.id, "x")]}
+    key = {"Idempotency-Key": "messages-version"}
+    first = await client.post("/v1/batches", headers=_v("2026-10-21", **key), json=body)
+    replay = await client.post("/v1/batches", headers=_v(" 2026-10-21 ", **key), json=body)
+    other_version = await client.post("/v1/batches", headers=_v("2023-06-01", **key), json=body)
+    assert first.status_code == replay.status_code == 200, (first.text, replay.text)
     assert replay.json()["id"] == first.json()["id"]
     assert other_version.status_code == 409
+    # A replay needs the version too: without it the request is not the same one.
+    unversioned = await client.post("/v1/batches", headers={**KEY, **key}, json=body)
+    assert unversioned.status_code == 400 and "needs this header" in unversioned.text
+
+    # Once the operator stops allowing the version, the earlier create still
+    # replays, but nothing new can be created under it.
+    settings["BATCH_ANTHROPIC_VERSIONS"] = "2023-06-01"
+    still = await client.post("/v1/batches", headers=_v("2026-10-21", **key), json=body)
+    fresh = await client.post(
+        "/v1/batches", headers=_v("2026-10-21", **{"Idempotency-Key": "new-key"}), json=body
+    )
+    assert (still.status_code, still.json()["id"]) == (200, first.json()["id"])
+    assert fresh.status_code == 400 and "use one of 2023-06-01" in fresh.text
+    unknown = await client.post("/v1/batches", headers=_v("2099-01-01", **key), json=body)
+    assert unknown.status_code == 400
 
 
 async def _legacy_message_batch(gateway, *, model: str, texts: list[str]) -> str:
@@ -843,11 +855,8 @@ async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
         assert (await client.get("/v1/batch_webhook", headers=KEY)).json().get("secret") is None
         created = await client.post(
             "/v1/batches",
-            headers=KEY,
-            json={
-                "requests": [_messages_request("w", gateway.native.config.id, "hook")],
-                "anthropic_version": "2023-06-01",
-            },
+            headers=_v("2023-06-01"),
+            json={"requests": [_messages_request("w", gateway.native.config.id, "hook")]},
         )
         batch_id = created.json()["id"]
 
@@ -857,13 +866,32 @@ async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
         await _until(delivered, what="the webhook delivery")
         headers, payload, sealed_when_sent = received[0]
         event = json.loads(payload)
-        # A Messages batch ends as every batch does now: batch.<status>.
+        # A Messages batch created through /v1/batches ends as every new batch does.
         assert event["type"] == "batch.completed" and event["data"] == {"id": batch_id}
         assert sealed_when_sent, "the event must not arrive before the results are readable"
         lowered = {k.lower(): v for k, v in headers.items()}
         assert webhooks.verify(secret, lowered, payload)
+
+        # A batch the retired Message Batches API stored, drained by this
+        # version, still ends with the event its owner subscribed to.
+        legacy_id = await _legacy_message_batch(
+            gateway, model=gateway.native.config.id, texts=["hook legacy"]
+        )
+
+        async def delivered_twice():
+            return received if len(received) >= 2 else None
+
+        await _until(delivered_twice, what="the legacy batch's webhook delivery")
+        headers, payload, sealed_when_sent = received[1]
+        event = json.loads(payload)
+        assert event["type"] == "message_batch.ended" and event["data"] == {"id": legacy_id}
+        assert sealed_when_sent
+        assert webhooks.verify(secret, {k.lower(): v for k, v in headers.items()}, payload)
         events = (await client.get("/v1/batch_webhook/events", headers=KEY)).json()["data"]
-        assert events[0]["status"] == "delivered"
+        assert {(e["batch_id"], e["type"], e["status"]) for e in events} == {
+            (batch_id, "batch.completed", "delivered"),
+            (legacy_id, "message_batch.ended", "delivered"),
+        }
     finally:
         await runner.cleanup()
 
@@ -872,11 +900,8 @@ async def test_the_console_lists_and_downloads_a_users_batches(gateway):
     client, model = gateway.client, gateway.model
     created = await client.post(
         "/v1/batches",
-        headers=KEY,
-        json={
-            "requests": [_messages_request("c", model.config.id, "console")],
-            "anthropic_version": "2023-06-01",
-        },
+        headers=_v("2023-06-01"),
+        json={"requests": [_messages_request("c", model.config.id, "console")]},
     )
     batch_id = created.json()["id"]
     console = {"Authorization": "Bearer console"}
@@ -988,10 +1013,7 @@ async def test_batch_enabled_alone_switches_every_surface(gateway, settings):
     """
     client, model = gateway.client, gateway.model
     payload = _lines(model.config.id, 1)
-    messages = {
-        "requests": [_messages_request("one", model.config.id, "x")],
-        "anthropic_version": "2023-06-01",
-    }
+    messages = {"requests": [_messages_request("one", model.config.id, "x")]}
     body, content_type = _multipart(payload)
     hook = {"url": "http://127.0.0.1:9/hook"}
 
@@ -1008,8 +1030,11 @@ async def test_batch_enabled_alone_switches_every_surface(gateway, settings):
                 "completion_window": "24h",
             },
         ),
-        await client.post("/v1/batches", headers=KEY, json=messages),
+        await client.post("/v1/batches", headers=_v("2023-06-01"), json=messages),
         await client.put("/v1/batch_webhook", headers=KEY, json=hook),
+        # The retired routes are behind the same switch.
+        await client.post("/v1/messages/batches", headers=KEY, json=messages),
+        await client.get("/anthropic/v1/messages/batches/msgbatch_x", headers=KEY),
     ]
     assert [response.status_code for response in off] == [404] * len(off)
 
@@ -1024,7 +1049,10 @@ async def test_batch_enabled_alone_switches_every_surface(gateway, settings):
             "completion_window": "24h",
         },
     )
-    messages_batch = await client.post("/v1/batches", headers=KEY, json=messages)
+    messages_batch = await client.post("/v1/batches", headers=_v("2023-06-01"), json=messages)
+    retired = await client.post("/v1/messages/batches", headers=KEY, json=messages)
+    assert retired.status_code == 410
+    assert retired.json()["error"]["type"] == "invalid_request_error"
     saved = await client.put("/v1/batch_webhook", headers=KEY, json=hook)
     assert (created.status_code, messages_batch.status_code, saved.status_code) == (
         200,

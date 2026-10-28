@@ -1049,9 +1049,16 @@ def _messages_batch(*bodies: dict[str, Any], **envelope: Any) -> dict[str, Any]:
     return {"requests": requests, **envelope}
 
 
+def _versioned(version: str, key: str = "key-alice") -> dict[str, str]:
+    """The headers of a Messages create: the version travels in ``anthropic-version``."""
+    return {**_auth(key), "anthropic-version": version}
+
+
 @pytest.mark.parametrize("version", ["2023-06-01", "2026-10-21"])
 async def test_a_messages_batch_is_created_on_v1_batches_with_its_version(client, store, version):
-    batch = await _create(client, body=_messages_batch(anthropic_version=version))
+    response = await client.post("/v1/batches", json=_messages_batch(), headers=_versioned(version))
+    assert response.status_code == 200, response.text
+    batch = response.json()
 
     assert batch["object"] == "batch" and batch["endpoint"] == "/v1/messages"
     assert batch["anthropic_version"] == version
@@ -1063,20 +1070,45 @@ async def test_a_messages_batch_is_created_on_v1_batches_with_its_version(client
     assert store.created[0]["items"][0]["request"] == _messages()
 
 
+async def test_the_version_header_is_read_without_surrounding_whitespace(client, store):
+    response = await client.post(
+        "/v1/batches", json=_messages_batch(), headers=_versioned("  2026-10-21 ")
+    )
+
+    assert response.status_code == 200, response.text
+    assert store.options["protocol_profile"] == "2026-10-21"
+
+
 @pytest.mark.parametrize(
-    ("envelope", "expected"),
+    ("headers", "expected"),
     [
-        ({}, "needs one"),
-        ({"anthropic_version": "2099-01-01"}, "'2099-01-01' is not supported"),
-        ({"anthropic_version": ""}, "anthropic_version"),
-        ({"anthropic_version": 20230601}, "anthropic_version"),
+        ({}, "needs this header"),
+        ({"anthropic-version": "   "}, "needs this header"),
+        ({"anthropic-version": "2099-01-01"}, "'2099-01-01' is not supported"),
     ],
 )
-async def test_a_messages_batch_needs_a_known_version(client, store, envelope, expected):
-    response = await client.post("/v1/batches", json=_messages_batch(**envelope), headers=_auth())
+async def test_a_messages_batch_needs_a_known_version_header(client, store, headers, expected):
+    response = await client.post(
+        "/v1/batches", json=_messages_batch(), headers={**_auth(), **headers}
+    )
 
     assert response.status_code == 400
     assert expected in _message(response)
+    assert store.created == []
+
+
+@pytest.mark.parametrize("value", ["2023-06-01", None, ""])
+async def test_the_obsolete_body_version_field_is_refused_never_ignored(client, store, value):
+    """Even beside a valid header, and even null: the envelope would otherwise drop it."""
+    response = await client.post(
+        "/v1/batches",
+        json=_messages_batch(anthropic_version=value),
+        headers=_versioned("2023-06-01"),
+    )
+
+    assert response.status_code == 400
+    assert "not accepted in the body" in _message(response)
+    assert "anthropic-version header" in _message(response)
     assert store.created == []
 
 
@@ -1084,7 +1116,7 @@ async def test_a_known_version_the_setting_does_not_allow_cannot_create(client, 
     settings["BATCH_ANTHROPIC_VERSIONS"] = "2023-06-01"
 
     response = await client.post(
-        "/v1/batches", json=_messages_batch(anthropic_version="2026-10-21"), headers=_auth()
+        "/v1/batches", json=_messages_batch(), headers=_versioned("2026-10-21")
     )
 
     assert response.status_code == 400
@@ -1098,17 +1130,20 @@ async def test_only_a_messages_batch_takes_a_version(client, services, store, ur
     services.router.register_embedding_route(MODEL, [(services.embedding_adapters[MODEL], 1.0)])
     body = {"requests": [_request("only", _TARGET_BODIES[url], url=url)]}
 
+    in_header = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
     in_body = await client.post(
         "/v1/batches", json={**body, "anthropic_version": "2023-06-01"}, headers=_auth()
     )
-    in_header = await client.post(
-        "/v1/batches", json=body, headers={**_auth(), "anthropic-version": "2023-06-01"}
-    )
 
-    for response in (in_body, in_header):
-        assert response.status_code == 400
-        assert "only a /v1/messages batch takes one" in _message(response)
+    assert in_header.status_code == 400
+    assert "only a /v1/messages batch takes one" in _message(in_header)
+    assert in_body.status_code == 400 and "not accepted in the body" in _message(in_body)
     assert store.created == []
+    # A blank header is no header.
+    blank = await client.post(
+        "/v1/batches", json=body, headers={**_auth(), "anthropic-version": " "}
+    )
+    assert blank.status_code == 200, blank.text
 
 
 async def test_a_file_batch_follows_the_same_version_rules_before_the_file_is_read(client, store):
@@ -1118,52 +1153,57 @@ async def test_a_file_batch_follows_the_same_version_rules_before_the_file_is_re
     )
     on_chat = await client.post(
         "/v1/batches",
-        json={**file_batch, "endpoint": "/v1/chat/completions", "anthropic_version": "2023-06-01"},
-        headers=_auth(),
+        json={**file_batch, "endpoint": "/v1/chat/completions"},
+        headers=_versioned("2023-06-01"),
     )
-
-    assert missing.status_code == 400 and "needs one" in _message(missing)
-    assert on_chat.status_code == 400 and "only a /v1/messages" in _message(on_chat)
-    assert store.created == []
-
-
-async def test_a_version_header_must_repeat_the_envelope_and_betas_are_refused(client, store):
-    body = _messages_batch(anthropic_version="2023-06-01")
-
-    mismatched = await client.post(
-        "/v1/batches", json=body, headers={**_auth(), "anthropic-version": "2026-10-21"}
-    )
-    beta = await client.post(
-        "/v1/batches", json=body, headers={**_auth(), "anthropic-beta": "files-api-2025-04-14"}
-    )
-    header_only = await client.post(
+    in_body = await client.post(
         "/v1/batches",
-        json=_messages_batch(),
-        headers={**_auth(), "anthropic-version": "2023-06-01"},
+        json={**file_batch, "endpoint": "/v1/messages", "anthropic_version": "2023-06-01"},
+        headers=_versioned("2023-06-01"),
     )
 
-    assert mismatched.status_code == 400 and "must match" in _message(mismatched)
-    assert beta.status_code == 400 and "anthropic-beta" in _message(beta)
-    assert header_only.status_code == 400 and "needs one" in _message(header_only)
+    assert missing.status_code == 400 and "needs this header" in _message(missing)
+    assert on_chat.status_code == 400 and "only a /v1/messages" in _message(on_chat)
+    assert in_body.status_code == 400 and "not accepted in the body" in _message(in_body)
     assert store.created == []
-    matching = await client.post(
-        "/v1/batches", json=body, headers={**_auth(), "anthropic-version": "2023-06-01"}
+
+
+async def test_betas_are_refused_whatever_the_version(client, store):
+    headers = {**_versioned("2023-06-01"), "anthropic-beta": "files-api-2025-04-14"}
+
+    beta = await client.post("/v1/batches", json=_messages_batch(), headers=headers)
+
+    assert beta.status_code == 400 and "anthropic-beta" in _message(beta)
+    assert store.created == []
+
+
+async def test_management_needs_no_version_header(client, store):
+    created = await client.post(
+        "/v1/batches", json=_messages_batch(), headers=_versioned("2023-06-01")
     )
-    assert matching.status_code == 200, matching.text
+    batch_id = created.json()["id"]
+
+    for method, path in (
+        ("GET", "/v1/batches"),
+        ("GET", f"/v1/batches/{batch_id}"),
+        ("GET", f"/v1/batches/{batch_id}/results"),
+        ("POST", f"/v1/batches/{batch_id}/cancel"),
+        ("DELETE", f"/v1/batches/{batch_id}"),
+    ):
+        response = await client.request(method, path, headers=_auth())
+        assert response.status_code == 200, (method, path, response.text)
 
 
 async def test_each_version_applies_its_own_rules_to_every_request(client, store):
     sampled = _messages(temperature=0.5)
 
     old = await client.post(
-        "/v1/batches",
-        json=_messages_batch(sampled, anthropic_version="2023-06-01"),
-        headers=_auth(),
+        "/v1/batches", json=_messages_batch(sampled), headers=_versioned("2023-06-01")
     )
     new = await client.post(
         "/v1/batches",
-        json=_messages_batch(_messages(), sampled, anthropic_version="2026-10-21"),
-        headers=_auth(),
+        json=_messages_batch(_messages(), sampled),
+        headers=_versioned("2026-10-21"),
     )
 
     assert old.status_code == 200, old.text
@@ -1179,14 +1219,15 @@ async def test_each_version_applies_its_own_rules_to_every_request(client, store
         {"mcp_servers": [{"url": "https://mcp.example"}]},
         {"stream": True},
         {"betas": ["x"]},
+        {"anthropic_version": "2023-06-01"},
         # A native-only feature on a route only an OpenAI-compatible adapter serves.
         {"thinking": {"type": "enabled", "budget_tokens": 1024}},
     ],
 )
 async def test_an_unsupported_messages_capability_refuses_the_whole_batch(client, store, extra):
-    body = _messages_batch(_messages(), _messages(**extra), anthropic_version="2023-06-01")
+    body = _messages_batch(_messages(), _messages(**extra))
 
-    response = await client.post("/v1/batches", json=body, headers=_auth())
+    response = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
 
     assert response.status_code == 400
     assert "custom_id 'm-1'" in _message(response)
@@ -1194,9 +1235,9 @@ async def test_an_unsupported_messages_capability_refuses_the_whole_batch(client
 
 
 async def test_a_messages_model_the_caller_may_not_use_reads_as_unknown(client, store):
-    body = _messages_batch(_messages(ADMIN_MODEL), anthropic_version="2023-06-01")
+    body = _messages_batch(_messages(ADMIN_MODEL))
 
-    response = await client.post("/v1/batches", json=body, headers=_auth())
+    response = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
 
     assert response.status_code == 400
     assert ADMIN_MODEL in _message(response) and "not found" in _message(response)
@@ -1208,11 +1249,10 @@ async def test_messages_and_another_target_cannot_share_a_batch(client, store):
         "requests": [
             _request("m", _messages(), url="/v1/messages"),
             _request("c", _chat(), url="/v1/chat/completions"),
-        ],
-        "anthropic_version": "2023-06-01",
+        ]
     }
 
-    response = await client.post("/v1/batches", json=body, headers=_auth())
+    response = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
 
     assert response.status_code == 400
     assert "same url" in _message(response)
@@ -1226,7 +1266,9 @@ async def test_the_version_is_part_of_the_idempotency_digest(client, store):
     headers = {**_auth(), "Idempotency-Key": "k"}
     for version in ("2023-06-01", "2026-10-21"):
         response = await client.post(
-            "/v1/batches", json=_messages_batch(anthropic_version=version), headers=headers
+            "/v1/batches",
+            json=_messages_batch(),
+            headers={**headers, "anthropic-version": version},
         )
         assert response.status_code == 200, response.text
     first, second = (entry for entry in store.created)

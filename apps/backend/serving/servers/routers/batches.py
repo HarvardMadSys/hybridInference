@@ -18,10 +18,12 @@ exclusive of each other on ``POST /v1/batches``:
 Targets: ``/v1/chat/completions``, ``/v1/embeddings``, ``/v1/responses``
 (independent, unstored requests only) and ``/v1/messages`` (Anthropic Messages
 bodies, our extension of the OpenAI shape), inline or from a file, whenever
-``BATCH_ENABLED`` is on. A Messages batch names the ``anthropic_version`` its
-requests are checked and run under (:mod:`serving.batch.profiles`); no other
-batch takes one. Running the requests is the in-process
-worker's job (``serving.batch.scheduler``): it re-authenticates the owner's key
+``BATCH_ENABLED`` is on. A Messages batch names the Anthropic API version its
+requests are checked and run under in the ``anthropic-version`` header
+(:mod:`serving.batch.profiles`); no other batch takes one. Every request is
+checked before any runs, and one that cannot run refuses the whole batch.
+Running the requests is the in-process worker's job
+(``serving.batch.scheduler``): it re-authenticates the owner's key
 before each one, so a stored batch never outlives the access its owner had.
 
 This router owns admission and the HTTP shapes:
@@ -300,6 +302,14 @@ def _parse_create_body(raw: bytes | bytearray) -> tuple[BatchCreateRequest, Any]
         raise HTTPException(400, "Request body is not valid JSON") from exc
     if admission.has_invalid_unicode(decoded):
         raise HTTPException(400, "Request body holds a string that is not valid Unicode")
+    if isinstance(decoded, dict) and "anthropic_version" in decoded:
+        # The envelope ignores unknown fields, so this one -- a natural guess,
+        # and once part of this API -- is refused here rather than dropped.
+        raise HTTPException(
+            400,
+            f"anthropic_version: not accepted in the body; send the {VERSION_HEADER} "
+            "header instead",
+        )
     try:
         return BatchCreateRequest.model_validate(decoded), decoded
     except ValidationError as exc:
@@ -332,44 +342,43 @@ def _target_url(payload: BatchCreateRequest) -> str | None:
     return payload.requests[0].url if payload.requests else None
 
 
-def _anthropic_version(request: Request, payload: BatchCreateRequest) -> str | None:
-    """The ``anthropic_version`` a create names, checked against its target; None for others.
+#: The request header a Messages batch names its Anthropic API version in.
+VERSION_HEADER = "anthropic-version"
 
-    Only a ``/v1/messages`` batch takes one, and it must: a version on any
-    other batch is refused rather than ignored. It must be one this gateway
-    knows; whether it may still create a batch is decided after a replay
-    (:data:`KNOWN_ANTHROPIC_VERSIONS` replays, ``BATCH_ANTHROPIC_VERSIONS``
-    creates). No header is a second way to say it: ``anthropic-beta`` is
-    refused, and an ``anthropic-version`` header must repeat the envelope's.
-    A body whose target is not one of ours gets its own error later.
+
+def _anthropic_version(request: Request, payload: BatchCreateRequest) -> str | None:
+    """The ``anthropic-version`` header of a create, checked against its target; None for others.
+
+    The header is the one place a batch's version is given, for direct
+    requests and files alike (surrounding whitespace is ignored, and a blank
+    header counts as none). Only a ``/v1/messages`` batch takes one, and it
+    must: a version on any other batch is refused rather than ignored. It must
+    be one this gateway knows; whether it may still create a batch is decided
+    after a replay (:data:`KNOWN_ANTHROPIC_VERSIONS` replays,
+    ``BATCH_ANTHROPIC_VERSIONS`` creates). ``anthropic-beta`` is refused: no
+    beta is supported in batches. A body whose target is not one of ours gets
+    its own error later.
     """
     if request.headers.get("anthropic-beta"):
         raise HTTPException(400, "anthropic-beta is not supported for batches")
     url = _target_url(payload)
-    version = payload.anthropic_version
-    header = request.headers.get("anthropic-version")
+    version = (request.headers.get(VERSION_HEADER) or "").strip() or None
     if TARGET_URLS.get(url or "") != TARGET_MESSAGES:
-        if version is not None or header is not None:
+        if version is not None:
             raise HTTPException(
                 400,
-                f"anthropic_version: only a /v1/messages batch takes one; remove it from this "
-                f"{url or 'batch'} batch",
+                f"{VERSION_HEADER}: only a /v1/messages batch takes one; remove the header "
+                f"from this {url or 'batch'} batch",
             )
         return None
     if version is None:
         raise HTTPException(
             400,
-            "anthropic_version: a /v1/messages batch needs one, such as "
-            f"{KNOWN_ANTHROPIC_VERSIONS[0]!r}",
+            f"{VERSION_HEADER}: a /v1/messages batch needs this header, such as "
+            f"{VERSION_HEADER}: {KNOWN_ANTHROPIC_VERSIONS[0]}",
         )
     if version not in KNOWN_ANTHROPIC_VERSIONS:
         raise _unsupported_version(version)
-    if header is not None and header.strip() != version:
-        raise HTTPException(
-            400,
-            "anthropic-version header: must match the batch's anthropic_version "
-            f"({version!r}), or be left out",
-        )
     return version
 
 
@@ -377,7 +386,7 @@ def _unsupported_version(version: str) -> HTTPException:
     allowed = batch_config().anthropic_versions
     return HTTPException(
         400,
-        f"anthropic_version: {version!r} is not supported for batches here; "
+        f"{VERSION_HEADER}: {version!r} is not supported for batches here; "
         f"use one of {', '.join(allowed)}",
     )
 

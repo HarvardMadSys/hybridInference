@@ -10,7 +10,7 @@ goes through the same sequence:
 3. **Idempotency** (optional ``Idempotency-Key`` header, our extension): a key
    the same owner already used for the same input method returns that batch
    when the request is the same (its digest: the normalized body, endpoint,
-   metadata and, for a Messages batch, its ``anthropic_version``), answers 409
+   metadata and, for a Messages batch, its ``anthropic-version``), answers 409
    when it differs and 410 when that
    batch was deleted. A replay is decided **before** the role, quota and caps
    below, so an owner whose quota ran out or whose role was lowered can still
