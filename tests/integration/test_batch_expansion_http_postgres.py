@@ -27,6 +27,7 @@ import hashlib
 import json
 import time
 import uuid
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -43,6 +44,7 @@ from routing.routers import FixedRouter
 from serving.adapters.anthropic import AnthropicAdapter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.batch import config as batch_config_module, webhooks
+from serving.batch.interactive_load import INTERACTIVE_LOAD
 from serving.batch.model_limits import BatchModelLimits
 from serving.batch.scheduler import BatchScheduler, SchedulerTimings
 from serving.config.settings import get_settings
@@ -143,11 +145,30 @@ class _NativeUpstream(AnthropicAdapter):
             )
         )
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        # Per-prompt events, so a test can hold one upstream call in flight and
+        # know exactly when the real handler reached it.
+        self.entered: dict[str, asyncio.Event] = {}
+        self.gates: dict[str, asyncio.Event] = {}
+
+    def hold(self, text: str) -> asyncio.Event:
+        """Make the call carrying *text* wait until the returned event is set."""
+        self.entered.setdefault(text, asyncio.Event())
+        return self.gates.setdefault(text, asyncio.Event())
+
+    async def wait_entered(self, text: str) -> None:
+        """Wait until the real handler has handed the upstream a call with *text*."""
+        await asyncio.wait_for(self.entered.setdefault(text, asyncio.Event()).wait(), timeout=10)
 
     async def messages(self, body, *, request_id, extra_headers=None):
-        self.calls.append((self._api_version(), json.loads(json.dumps(body))))
-        await asyncio.sleep(0.005)
         text = body["messages"][-1]["content"]
+        self.calls.append((self._api_version(), json.loads(json.dumps(body))))
+        if isinstance(text, str) and text in self.entered:
+            self.entered[text].set()
+        gate = self.gates.get(text) if isinstance(text, str) else None
+        if gate is not None:
+            await gate.wait()
+        else:
+            await asyncio.sleep(0.005)
         return {
             "id": f"msg_{uuid.uuid4().hex[:8]}",
             "type": "message",
@@ -197,7 +218,7 @@ async def owner(pool):
 
 
 @pytest.fixture
-def settings(monkeypatch) -> dict[str, str]:
+def settings(monkeypatch, request) -> dict[str, str]:
     values = {
         # Left over from a version that held the newer kinds back: it controls
         # nothing now, so everything below runs with it off.
@@ -205,6 +226,9 @@ def settings(monkeypatch) -> dict[str, str]:
         "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS": "1",
         "BATCH_SHARED_INTERACTIVE_LOAD": "0",
     }
+    # Configure admission before gateway starts its workers: an already-running
+    # scheduling round may otherwise still hold the previous config snapshot.
+    values.update(getattr(request, "param", {}))
     monkeypatch.setattr(
         batch_config_module, "config_value", lambda key, default=None: values.get(key, default)
     )
@@ -281,7 +305,14 @@ async def gateway(pool, owner, settings):
         app.add_exception_handler(
             exc_type, anthropic_messages.anthropic_aware_http_exception_handler
         )
-    for module in (batches, retired_message_batches, files, batch_console, admin_batch):
+    for module in (
+        anthropic_messages,
+        batches,
+        retired_message_batches,
+        files,
+        batch_console,
+        admin_batch,
+    ):
         app.include_router(module.router)
 
     workers: list[BatchScheduler] = []
@@ -312,6 +343,8 @@ async def gateway(pool, owner, settings):
                     "caller": caller,
                     "pool": pool,
                     "owner": owner,
+                    "workers": workers,
+                    "services": services,
                 },
             )
         finally:
@@ -359,6 +392,207 @@ async def _status(client: AsyncClient, batch_id: str, wanted: str, what: str) ->
         return body if body["status"] == wanted else None
 
     return await _until(reached, what=what)
+
+
+def _online_messages(model: str, text: str) -> dict[str, Any]:
+    """A direct (non-batch) Messages request body."""
+    return {
+        "model": model,
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": text}],
+    }
+
+
+def _native_versions(native: _NativeUpstream) -> dict[str, str]:
+    """The protocol version observed by the native adapter for each prompt."""
+    return {body["messages"][-1]["content"]: version for version, body in native.calls}
+
+
+@asynccontextmanager
+async def _held_online_request(gateway, text: str):
+    """Hold real online admission and always finish the request, including on assertion failure."""
+    gate = gateway.native.hold(text)
+    online = asyncio.create_task(
+        gateway.client.post(
+            "/v1/messages",
+            headers=_v("2023-06-01"),
+            json=_online_messages(gateway.native.config.id, text),
+        )
+    )
+    try:
+        await gateway.native.wait_entered(text)
+        yield online, gate
+    finally:
+        gate.set()
+        await asyncio.wait_for(online, timeout=5)
+
+
+def _observe_top_up(monkeypatch, workers, model: str) -> asyncio.Queue[str]:
+    """Observe complete production scheduling rounds for this test's unique model."""
+    rounds: asyncio.Queue[str] = asyncio.Queue()
+    for worker in workers:
+        real_top_up = worker._top_up
+
+        async def top_up(model_id, cfg, now, interactive, real_top_up=real_top_up):
+            await real_top_up(model_id, cfg, now, interactive)
+            if model_id == model:
+                rounds.put_nowait(model_id)
+
+        monkeypatch.setattr(worker, "_top_up", top_up)
+    return rounds
+
+
+@pytest.mark.parametrize("input_method", ["direct", "file"])
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {
+            "BATCH_ROLE_CONCURRENCY_INTERNAL": "1",
+            "BATCH_MODEL_CONCURRENCY": "2",
+            "BATCH_YIELD_TO_INTERACTIVE": "1",
+            "BATCH_INTERACTIVE_RESERVE": "0",
+        }
+    ],
+    indirect=True,
+    ids=["separate-user-quotas"],
+)
+async def test_an_online_request_does_not_starve_a_messages_batch_for_the_same_owner(
+    gateway, settings, input_method
+):
+    """Real online and Batch execution retain independent user slots and load accounting."""
+    client, native, model = gateway.client, gateway.native, gateway.native.config.id
+    user_id = gateway.owner["user_id"]
+    limiter = gateway.services.user_concurrency_limiter
+    gateway.caller["max_concurrent_requests"] = 1
+    # The worker reauthenticates from PostgreSQL, so both paths see the same limit.
+    await gateway.owner["op_store"].update_user_fields(user_id, max_concurrent_requests=1)
+    # A single active worker makes the per-process Batch quota unambiguous.
+    await gateway.workers[1].stop()
+    batch_limiter = gateway.workers[0]._role_slots
+
+    async with _held_online_request(gateway, "online-one") as (online, _online_gate):
+        assert limiter._slots[user_id].in_use == 1
+        assert INTERACTIVE_LOAD.in_flight(model) == 1
+        refused = await client.post(
+            "/v1/messages", headers=KEY, json=_online_messages(model, "online-two")
+        )
+        assert refused.status_code == 429, refused.text
+        assert "online-two" not in _native_versions(native)
+
+        rows = [_messages_request("first", model, "batch-one")]
+        if input_method == "file":
+            uploaded = await _upload(client, (json.dumps(rows[0]) + "\n").encode())
+            payload = {
+                "input_file_id": uploaded["id"],
+                "endpoint": "/v1/messages",
+                "completion_window": "24h",
+            }
+        else:
+            payload = {"requests": rows}
+
+        batch_gate = native.hold("batch-one")
+        try:
+            created = await client.post("/v1/batches", headers=_v("2026-10-21"), json=payload)
+            assert created.status_code == 200, created.text
+            batch_id = created.json()["id"]
+            await native.wait_entered("batch-one")
+
+            # The real handler is in flight: Batch owns its slot without
+            # changing the online quota or publishing interactive load.
+            assert batch_limiter._slots[user_id].in_use == 1
+            assert limiter._slots[user_id].in_use == 1
+            assert INTERACTIVE_LOAD.in_flight(model) == 1
+            held = (await client.get(f"/v1/batches/{batch_id}", headers=KEY)).json()
+            assert held["status"] == "in_progress"
+            assert held["request_counts"] == {"total": 1, "completed": 0, "failed": 0}
+
+            batch_gate.set()
+            final = await _status(client, batch_id, "completed", "the Messages batch to complete")
+            assert final["request_counts"] == {"total": 1, "completed": 1, "failed": 0}
+            assert final["anthropic_version"] == "2026-10-21"
+            results = (await client.get(f"/v1/batches/{batch_id}/results", headers=KEY)).json()
+            result = results["data"][0]
+            assert result["status"] == "completed"
+            assert result["response"]["body"]["type"] == "message"
+            assert result["response"]["body"]["content"][0]["text"] == "echo batch-one"
+            assert _native_versions(native)["batch-one"] == "2026-10-21"
+
+            assert batch_limiter._slots[user_id].in_use == 0
+            assert not online.done()
+            assert limiter._slots[user_id].in_use == 1
+            assert INTERACTIVE_LOAD.in_flight(model) == 1
+            refused = await client.post(
+                "/v1/messages", headers=KEY, json=_online_messages(model, "online-three")
+            )
+            assert refused.status_code == 429, refused.text
+        finally:
+            batch_gate.set()
+
+    response = online.result()
+    assert response.status_code == 200, response.text
+    assert response.json()["content"][0]["text"] == "echo online-one"
+    assert limiter._slots[user_id].in_use == 0
+    assert INTERACTIVE_LOAD.in_flight(model) == 0
+    freed = await client.post(
+        "/v1/messages", headers=KEY, json=_online_messages(model, "online-four")
+    )
+    assert freed.status_code == 200, freed.text
+    assert limiter._slots[user_id].in_use == 0
+    assert INTERACTIVE_LOAD.in_flight(model) == 0
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {
+            "BATCH_MODEL_CONCURRENCY": "1",
+            "BATCH_INTERACTIVE_RESERVE": "0",
+            "BATCH_YIELD_TO_INTERACTIVE": "1",
+        },
+        {
+            "BATCH_MODEL_CONCURRENCY": "2",
+            "BATCH_INTERACTIVE_RESERVE": "1",
+            "BATCH_YIELD_TO_INTERACTIVE": "1",
+        },
+    ],
+    indirect=True,
+    ids=["interactive-load", "interactive-reserve"],
+)
+async def test_a_full_model_capacity_holds_a_messages_batch_until_pressure_is_released(
+    gateway, settings, monkeypatch
+):
+    """A complete real scheduling round respects interactive load and reserved capacity."""
+    client, native, model = gateway.client, gateway.native, gateway.native.config.id
+    async with _held_online_request(gateway, "capacity-online") as (online, online_gate):
+        assert INTERACTIVE_LOAD.in_flight(model) == 1
+        rounds = _observe_top_up(monkeypatch, gateway.workers, model)
+        created = await client.post(
+            "/v1/batches",
+            headers=_v("2023-06-01"),
+            json={"requests": [_messages_request("capacity", model, "capacity-batch")]},
+        )
+        assert created.status_code == 200, created.text
+        batch_id = created.json()["id"]
+        # This unique model has no other batches. A completed top-up round
+        # therefore proves the real scheduler saw this item and left it queued.
+        await asyncio.wait_for(rounds.get(), timeout=10)
+        assert "capacity-batch" not in _native_versions(native)
+        results = (await client.get(f"/v1/batches/{batch_id}/results", headers=KEY)).json()
+        assert results["data"][0]["status"] == "queued"
+
+        online_gate.set()
+        released = await asyncio.wait_for(asyncio.shield(online), timeout=5)
+        assert released.status_code == 200, released.text
+        assert INTERACTIVE_LOAD.in_flight(model) == 0
+        final = await _status(
+            client, batch_id, "completed", "the batch after capacity was released"
+        )
+        assert final["request_counts"] == {"total": 1, "completed": 1, "failed": 0}
+        assert _native_versions(native)["capacity-batch"] == "2023-06-01"
+        results = (await client.get(f"/v1/batches/{batch_id}/results", headers=KEY)).json()
+        result = results["data"][0]
+        assert result["response"]["body"]["type"] == "message"
+        assert result["response"]["body"]["content"][0]["text"] == "echo capacity-batch"
 
 
 async def test_an_inline_messages_batch_runs_on_v1_batches_under_its_version(gateway):
