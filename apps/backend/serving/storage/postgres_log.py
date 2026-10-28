@@ -194,7 +194,8 @@ class PostgresLogStore(LogStore):
         Defaults to ``model_id``. The served endpoint is recovered from the
         routing ``metadata`` and stored alongside it.
         """
-        usage = normalize_usage(usage) or usage
+        normalized_usage = normalize_usage(usage)
+        usage = normalized_usage if normalized_usage is not None else usage
 
         should_store_full = (
             store_full_content if store_full_content is not None else self.store_full_prompts

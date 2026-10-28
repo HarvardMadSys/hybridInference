@@ -189,6 +189,41 @@ def test_client_error_burst_on_with_no_alerts_file(tmp_path: Path):
     assert cfg.rules.key_pool_exhaustion_burst.cooldown_sec == 3600
 
 
+def test_request_log_queue_saturation_on_with_no_alerts_file(tmp_path: Path):
+    """A legacy alerts.yaml without this key gets a safe, documented default.
+
+    Existing deployments keep every key they already configured; the only
+    change is that the new loss warning is paged when the alert framework is
+    otherwise enabled.
+    """
+    cfg = load_alert_config(tmp_path / "missing.yaml")
+    assert cfg.rules.request_log_queue_saturation.enabled is True
+    assert cfg.rules.request_log_queue_saturation.window_sec == 600
+    assert cfg.rules.request_log_queue_saturation.threshold_count == 1
+    assert cfg.rules.request_log_queue_saturation.cooldown_sec == 1800
+
+
+def test_request_log_queue_saturation_is_tunable_and_can_be_turned_off(tmp_path: Path):
+    p = tmp_path / "alerts.yaml"
+    p.write_text(
+        textwrap.dedent(
+            """
+            rules:
+              request_log_queue_saturation:
+                enabled: false
+                window_sec: 120
+                threshold_count: 3
+                cooldown_sec: 60
+            """
+        )
+    )
+    cfg = load_alert_config(p)
+    assert cfg.rules.request_log_queue_saturation.enabled is False
+    assert cfg.rules.request_log_queue_saturation.window_sec == 120
+    assert cfg.rules.request_log_queue_saturation.threshold_count == 3
+    assert cfg.rules.request_log_queue_saturation.cooldown_sec == 60
+
+
 def test_stream_failure_rate_on_with_no_alerts_file(tmp_path: Path):
     """Same deliberate default, and a **count** despite the ``_rate`` suffix.
 

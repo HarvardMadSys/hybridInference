@@ -877,6 +877,60 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reported_cache", "expected_cache"),
+    [({}, None), ({"cache_read_input_tokens": 0}, 0), ({"cache_read_input_tokens": True}, None)],
+)
+async def test_non_streaming_preserves_valid_cache_measurement_state(
+    anthropic_test_client, monkeypatch, reported_cache, expected_cache
+):
+    upstream_resp = {
+        "id": "msg_cache_state",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hello"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 7, "output_tokens": 3, **reported_cache},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    import asyncio
+
+    captured: dict = {}
+    captured_event = asyncio.Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    response = await anthropic_test_client.post(
+        "/v1/messages",
+        json={
+            "model": NATIVE_MODEL,
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers=_auth(),
+    )
+    assert response.status_code == 200
+    await asyncio.wait_for(captured_event.wait(), timeout=2)
+
+    usage = captured["usage"]
+    assert usage.get("cache_read_tokens") == expected_cache
+    assert usage["prompt_tokens"] == 7
+
+
+@pytest.mark.asyncio
 async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_client, monkeypatch):
     """Streaming path must persist the request prompt and accumulated response.
     ``prompt_tokens`` follows OpenAI semantics — it includes the cached subset
@@ -1382,6 +1436,27 @@ def test_resolve_stream_usage_trusts_real_usage():
     usage, estimated = amod._resolve_stream_usage(req, {"usage": {"input_tokens": 999}}, None)
     assert usage["input_tokens"] == 12
     assert usage["output_tokens"] == 5
+    assert usage["cache_read_input_tokens"] == 0
+    assert usage["cache_creation_input_tokens"] == 0
+    assert estimated is False
+
+
+def test_resolve_stream_usage_preserves_unknown_cache_counts():
+    """Missing cache fields stay absent through a normal stream and recovery."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    request_usage = {"input_tokens": 12, "output_tokens": 5}
+    usage, estimated = amod._resolve_stream_usage(request_usage, None, None)
+    assert usage == {"input_tokens": 12, "output_tokens": 5}
+    assert estimated is False
+
+    recovered, estimated = amod._resolve_stream_usage(
+        {"input_tokens": 0, "output_tokens": 0},
+        {"usage": {"input_tokens": 12, "cache_read_input_tokens": 0}},
+        None,
+    )
+    assert recovered["cache_read_input_tokens"] == 0
+    assert "cache_creation_input_tokens" not in recovered
     assert estimated is False
 
 
@@ -1396,8 +1471,6 @@ def test_resolve_stream_usage_recovers_partial_from_response_acc():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     acc = {
         "usage": {"input_tokens": 37, "output_tokens": 1, "cache_read_input_tokens": 4},
@@ -1422,8 +1495,6 @@ def test_resolve_stream_usage_placeholder_output_does_not_suppress_estimate():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     acc = {
         "usage": {"input_tokens": 50, "output_tokens": 1},
@@ -1442,8 +1513,6 @@ def test_resolve_stream_usage_keeps_real_observed_output_over_estimate():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     acc = {
         "usage": {"input_tokens": 20, "output_tokens": 999},  # real, e.g. late message_delta
@@ -1469,8 +1538,6 @@ def test_resolve_stream_usage_estimates_input_on_pure_hang():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     payload = {
         "system": "You are a helpful coding assistant.",
@@ -1489,8 +1556,6 @@ def test_resolve_stream_usage_zero_when_nothing_available():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     usage, estimated = amod._resolve_stream_usage(empty, None, None)
     assert usage["input_tokens"] == 0
@@ -1601,6 +1666,7 @@ async def test_streaming_recovers_usage_on_client_disconnect(anthropic_test_clie
     usage = captured["usage"]
     assert usage["input_tokens"] == 41  # recovered from message_start, not 0
     assert usage["output_tokens"] > 1  # estimated from forwarded content, not the placeholder
+    assert "cache_read_tokens" not in usage
     assert captured["metadata"].get("usage_estimated") is True
 
 

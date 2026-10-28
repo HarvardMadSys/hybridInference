@@ -906,7 +906,10 @@ class DatabaseLogger:
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
 
-        usage = normalize_usage(usage) or usage
+        # Same explicit-None rule as the router paths: an all-invalid usage dict
+        # must not be restored to its raw form.
+        normalized = normalize_usage(usage)
+        usage = normalized if normalized is not None else usage
 
         # Privacy control: use per-request override or instance default
         should_store_full = (

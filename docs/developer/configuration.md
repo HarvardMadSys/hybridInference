@@ -46,6 +46,26 @@ starts, serves `/health`, and answers `GET /v1/models` with an empty list.
 Without a routing file each route keeps the weight the registry gives it, and
 without an alerts file the built-in thresholds apply.
 
+The built-in `rules.request_log_queue_saturation` rule pages when the bounded
+request-log queue drops `api_logs` report rows. It is on by default but still
+only runs when alerting is otherwise enabled (`ALERTS_ENABLED` and a configured
+channel). Tune or disable it in `alerts.yaml`:
+
+```yaml
+rules:
+  request_log_queue_saturation:
+    enabled: true       # default
+    window_sec: 600     # default
+    threshold_count: 1  # warning events in the window; default = first loss
+    cooldown_sec: 1800  # default
+```
+
+`threshold_count` counts the producer's loss warnings, not dropped rows. The
+producer warns on the first drop, every 100th drop, and at least once per
+60 seconds while drops continue, so a second small burst after a quiet period
+is still observable. The rule uses the alert engine's existing cooldown, so a
+sustained loss episode does not page once per warning.
+
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded

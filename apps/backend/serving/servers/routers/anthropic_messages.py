@@ -70,6 +70,7 @@ from serving.servers.auth import (
 )
 from serving.servers.concurrency import enforce_user_concurrency, retarget_interactive_load
 from serving.servers.deps import (
+    get_completions_logger,
     get_log_store,
     get_model_visibility_resolver,
     get_operational_store,
@@ -81,7 +82,7 @@ from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
 from serving.utils.session_identity import consume_session_fields, session_identity
-from serving.utils.token_utils import usage_count
+from serving.utils.token_utils import optional_token_count, usage_count
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 if TYPE_CHECKING:
@@ -1025,6 +1026,7 @@ def _schedule_log_store_task(
     operator_error: str | None = None,
     op_store: Any = None,
     user_id: str | None = None,
+    completions_logger=None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget).
 
@@ -1054,46 +1056,62 @@ def _schedule_log_store_task(
         metadata = {**(metadata or {}), "operator_error": operator_error}
     input_tokens = usage_count(usage.get("input_tokens"), field="input_tokens")
     output_tokens = usage_count(usage.get("output_tokens"), field="output_tokens")
-    cache_read = usage_count(usage.get("cache_read_input_tokens"), field="cache_read_input_tokens")
-    cache_write = usage_count(
-        usage.get("cache_creation_input_tokens"), field="cache_creation_input_tokens"
-    )
-    prompt_tokens = input_tokens + cache_read + cache_write
+    # ``None`` means the upstream reported no cache usage, which is distinct
+    # from a reported 0 (a measured miss). Preserve that distinction here so
+    # the api_logs ``cache_read_tokens`` / ``cache_write_tokens`` columns stay
+    # NULL for an unreported value instead of being persisted as a fabricated
+    # 0; :func:`calculate_cost` already coerces ``None`` to 0 for billing.
+    cache_read = optional_token_count(usage.get("cache_read_input_tokens"))
+    cache_write = optional_token_count(usage.get("cache_creation_input_tokens"))
+    prompt_tokens = input_tokens + (cache_read or 0) + (cache_write or 0)
     total_tokens = prompt_tokens + output_tokens
     prompt_for_log: list[dict[str, Any]] | str = prompt if prompt is not None else []
 
     # OpenAI-shaped usage, shared verbatim by the api_logs row and the quota
     # counter increment below so the logged cost_usd and the billed amount agree.
+    # Cache keys are omitted entirely when the provider did not report them, so
+    # the columns are stored NULL (unknown) rather than 0 (measured miss).
     usage_for_cost = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": output_tokens,
         "total_tokens": total_tokens,
-        "cache_read_tokens": cache_read,
-        "cache_write_tokens": cache_write,
     }
+    if cache_read is not None:
+        usage_for_cost["cache_read_tokens"] = cache_read
+    if cache_write is not None:
+        usage_for_cost["cache_write_tokens"] = cache_write
 
-    async def _log() -> None:
-        try:
-            await log_store.log_request(
-                request_id=request_id,
-                model_id=model_id,
-                provider=provider,
-                prompt=prompt_for_log,
-                response=response,
-                usage=usage_for_cost,
-                latency_ms=latency_ms,
-                status_code=status_code,
-                params=params,
-                metadata=metadata,
-                pricing=pricing,
-                ttft_ms=ttft_ms,
-                error=error,
-                request_payload=request_payload,
-            )
-        except Exception:
-            logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
+    log_payload = {
+        "request_id": request_id,
+        "model_id": model_id,
+        "provider": provider,
+        "prompt": prompt_for_log,
+        "response": response,
+        "usage": usage_for_cost,
+        "latency_ms": latency_ms,
+        "status_code": status_code,
+        "params": params,
+        "metadata": metadata,
+        "pricing": pricing,
+        "ttft_ms": ttft_ms,
+        "error": error,
+        "request_payload": request_payload,
+    }
+    if completions_logger is not None:
+        # Same bounded, shutdown-drained queue as every other api_logs surface.
+        # The quota-authoritative cost increment remains separate below.
+        completions_logger.schedule_log(request_id, log_payload)
+    else:
+        # Compatibility for direct helper callers in older tests/tools. Every
+        # route passes the shared logger; this fallback is not shut down as a
+        # member of app services and must not be used by request handlers.
+        async def _log() -> None:
+            try:
+                await log_store.log_request(**log_payload)
+            except Exception:
+                logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
-    asyncio.create_task(_log())  # noqa: RUF006
+        asyncio.create_task(_log())  # noqa: RUF006
 
     # Successful, billed requests must also advance the daily quota counter that
     # verify_api_key enforces; error rows (status != 200) are logged but never
@@ -1338,7 +1356,7 @@ def _accumulated_output_text(response_acc: dict | None) -> str:
 
 
 def _resolve_stream_usage(
-    request_usage: dict[str, int],
+    request_usage: dict[str, Any],
     response_acc: dict | None,
     request_payload: dict[str, Any] | None,
 ) -> tuple[dict[str, int], bool]:
@@ -1366,14 +1384,14 @@ def _resolve_stream_usage(
     Returns ``(usage, estimated)`` where ``usage`` is the Anthropic-shaped dict
     and ``estimated`` is True when any field was filled by estimation.
     """
-    base = {
+    base: dict[str, int] = {
         "input_tokens": int(request_usage.get("input_tokens", 0) or 0),
         "output_tokens": int(request_usage.get("output_tokens", 0) or 0),
-        "cache_read_input_tokens": int(request_usage.get("cache_read_input_tokens", 0) or 0),
-        "cache_creation_input_tokens": int(
-            request_usage.get("cache_creation_input_tokens", 0) or 0
-        ),
     }
+    for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        value = optional_token_count(request_usage.get(key))
+        if value is not None:
+            base[key] = value
     # Adapter flushed real usage (normal completion) -> trust it as-is.
     if base["input_tokens"] or base["output_tokens"]:
         return base, False
@@ -1387,8 +1405,13 @@ def _resolve_stream_usage(
     if isinstance(acc_usage, dict):
         for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
             value = acc_usage.get(key)
-            if isinstance(value, int) and value > 0:
-                base[key] = value
+            if key == "input_tokens":
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    base[key] = value
+            else:
+                cache_count = optional_token_count(value)
+                if cache_count is not None:
+                    base[key] = cache_count
 
     # 2. Estimate input from the request when still unknown (translator path, or
     #    a disconnect before message_start was forwarded).
@@ -1430,6 +1453,7 @@ def _log_failure(
     status_code: int,
     error_message: str,
     operator_error: str | None = None,
+    completions_logger=None,
 ) -> None:
     latency_ms = int((time.time() - start) * 1000)
     if log_store:
@@ -1449,6 +1473,7 @@ def _log_failure(
             error=error_message,
             request_payload=request_payload_for_log,
             operator_error=operator_error,
+            completions_logger=completions_logger,
         )
 
 
@@ -1531,6 +1556,7 @@ async def anthropic_messages(
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    completions_logger=Depends(get_completions_logger),
     _conc=Depends(enforce_user_concurrency),
 ):
     """Handle Anthropic Messages API requests (non-streaming)."""
@@ -1938,8 +1964,6 @@ async def anthropic_messages(
             request_usage = {
                 "input_tokens": 0,
                 "output_tokens": 0,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
             }
             stream_failed = False
             stream_status_code: int = 200
@@ -2317,6 +2341,7 @@ async def anthropic_messages(
                         operator_error=stream_error_operator if stream_failed else None,
                         op_store=op_store,
                         user_id=user_ctx.get("user_id"),
+                        completions_logger=completions_logger,
                     )
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
@@ -2358,6 +2383,7 @@ async def anthropic_messages(
             status_code=exc.status_code,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
+            completions_logger=completions_logger,
         )
         return _anthropic_error(exc.status_code, error_message)
     except aiohttp.ClientResponseError as exc:
@@ -2389,6 +2415,7 @@ async def anthropic_messages(
             status_code=client_status,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
+            completions_logger=completions_logger,
         )
         return _anthropic_error(client_status, error_message, error_type=err_type)
     except KeyPoolExhausted as exc:
@@ -2417,6 +2444,7 @@ async def anthropic_messages(
             status_code=429,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
+            completions_logger=completions_logger,
         )
         return _anthropic_error(
             429, error_message, headers={"retry-after": str(int(KeyPool.MUTE_SECONDS))}
@@ -2450,6 +2478,7 @@ async def anthropic_messages(
             status_code=429,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
+            completions_logger=completions_logger,
         )
         return _anthropic_error(429, error_message, headers={"retry-after": "1"})
     except TimeoutError as exc:
@@ -2477,6 +2506,7 @@ async def anthropic_messages(
             status_code=504,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
+            completions_logger=completions_logger,
         )
         return _anthropic_error(504, error_message)
     except Exception as exc:
@@ -2503,6 +2533,7 @@ async def anthropic_messages(
             status_code=502,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
+            completions_logger=completions_logger,
         )
         return _anthropic_error(502, error_message)
 
@@ -2531,10 +2562,12 @@ async def anthropic_messages(
         for field in (
             "input_tokens",
             "output_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
         )
     }
+    for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        cache_count = optional_token_count(usage.get(key))
+        if cache_count is not None:
+            usage_for_log[key] = cache_count
     latency_ms = int((time.time() - start) * 1000)
     provider = adapter.config.provider
     if log_store:
@@ -2554,6 +2587,7 @@ async def anthropic_messages(
             request_payload=request_payload_for_log,
             op_store=op_store,
             user_id=user_ctx.get("user_id"),
+            completions_logger=completions_logger,
         )
     return JSONResponse(content=resp)
 

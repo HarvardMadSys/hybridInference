@@ -459,6 +459,28 @@ async def test_finalization_propagates_usage_and_schedules_cost_when_routing_pre
 
 
 @pytest.mark.asyncio
+async def test_finalization_does_not_restore_invalid_cache_usage():
+    """The persisted usage stays normalized when an invalid cache field is stripped."""
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+    routed_chunk = (
+        'data: {"id": "x", "object": "chat.completion.chunk", "created": 1, '
+        '"model": "gpt-4", "choices": [{"index": 0, "delta": {"content": "ok"}, '
+        '"finish_reason": "stop"}], '
+        '"_routing": {"provider": "openai", "base_url": "https://api.openai.com/v1"}}\n\n'
+    )
+    invalid_usage = _usage_chunk(
+        "gpt-4",
+        {"prompt_tokens": 5, "completion_tokens": 2, "cache_read_tokens": True},
+    )
+
+    await _consume(session.stream(_aiter([routed_chunk, invalid_usage])))
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["usage"] == {"prompt_tokens": 5, "completion_tokens": 2}
+
+
+@pytest.mark.asyncio
 async def test_probe_skips_log_and_observation_but_still_bills():
     """The probe flag suppresses noise, never money.
 

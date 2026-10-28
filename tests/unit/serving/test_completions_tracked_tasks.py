@@ -26,8 +26,8 @@ async def test_schedule_db_log_emits_tracked_task_completed(
 
     with caplog.at_level(logging.INFO, logger="serving.observability.tracked_tasks"):
         cl.schedule_log("req-1", {"foo": "bar"})
-        # Drain pending tasks.
-        await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
+        # Drain the queued row through the worker.
+        await cl.stop()
 
     matching = [
         r
@@ -55,7 +55,8 @@ async def test_schedule_db_log_failure_emits_failure_event(
 
     with caplog.at_level(logging.WARNING, logger="serving.observability.tracked_tasks"):
         cl.schedule_log("req-2", {})
-        await asyncio.gather(*list(_TRACKED_TASKS), return_exceptions=True)
+        # Drain the queued row through the worker.
+        await cl.stop()
 
     matching = [
         r

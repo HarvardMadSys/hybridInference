@@ -393,6 +393,7 @@ async def _run_messages(services: Any, request: Request, caller: dict[str, Any],
         log_store=getattr(services, "log_store", None),
         op_store=getattr(services, "operational_store", None),
         model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
+        completions_logger=await get_completions_logger(services),
         _conc=None,
     )
 

@@ -156,6 +156,16 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="tracked_task_failure:<task>",
     ),
     AlertType(
+        id="request_log_queue_saturation",
+        label="Request-log queue saturated; report rows dropped",
+        description=(
+            "The bounded api_logs queue fell behind and discarded report rows; quota-ledger "
+            "increments are separate, but usage reports undercount the dropped rows."
+        ),
+        group="Platform",
+        key_pattern="request_log_queue_saturation",
+    ),
+    AlertType(
         id="prefix_cache_pending_leak",
         label="RouteWise pending prefix-cache entries leaking",
         description=(
