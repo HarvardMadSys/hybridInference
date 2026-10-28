@@ -37,6 +37,15 @@ class BatchWebhookStore:
             )
         return dict(row) if row is not None else None
 
+    async def has_webhook(self, user_id: str) -> bool:
+        """Whether a user has a webhook, without reading its URL or secret."""
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM batch_webhooks WHERE user_id = $1)", user_id
+                )
+            )
+
     async def set_webhook(
         self,
         *,

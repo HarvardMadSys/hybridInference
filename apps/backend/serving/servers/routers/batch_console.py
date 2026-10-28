@@ -5,6 +5,13 @@ key. This router serves the same batches to the signed-in user of the console
 (``/user/batches``, session token) -- every target and input method alike, in
 one shape, with the status, counts, tokens and known cost of each -- and lets
 them cancel, delete and download results. Nothing here creates a batch.
+These owner routes do not check ``BATCH_MIN_ROLE``: a user whose role was
+lowered keeps managing what they already have.
+
+``/user/batch-capabilities`` tells the console what to offer: whether Batch is
+on, whether the user's role may submit, and whether they have batches or a
+webhook to manage -- so a user below the role who has history keeps the
+dashboard entry, and one without it sees none.
 
 Webhook settings exist twice over the same store: ``/user/batch-webhook`` for
 the console and ``/v1/batch_webhook`` for an API key. A user has at most one
@@ -22,7 +29,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -43,8 +50,10 @@ from serving.servers.deps import (
 from serving.servers.routers.batches import results_final
 from serving.servers.routers.files import content_disposition
 from serving.storage.batch_store import SURFACE_OPENAI_FILE, BatchDeleteInProgress
+from serving.utils.logging import get_logger
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 _UNAVAILABLE = "Batch inference is not available on this gateway"
 
@@ -106,6 +115,77 @@ def batch_view(row: dict[str, Any]) -> dict[str, Any]:
         "error": row.get("error"),
         "validation_error": row.get("validation_error"),
         "protocol_profile": row.get("protocol_profile"),
+    }
+
+
+async def _owns_any(check: Any, user_id: str, what: str) -> bool | None:
+    """One history lookup: True / False, or None when it failed."""
+    try:
+        return bool(await check(user_id))
+    except Exception:
+        logger.warning("Batch capabilities: looking up %s failed", what, exc_info=True)
+        return None
+
+
+async def _has_history(store: Any, webhook_store: Any, user_id: str) -> bool | None:
+    """Whether the user has something on the Batches page to manage.
+
+    Own batches not being deleted, or a saved webhook. True as soon as either
+    lookup finds one; None when neither found one and a lookup failed, since
+    "no history" would then be a guess.
+    """
+    batches = await _owns_any(store.has_batches, user_id, "batches")
+    if batches:
+        return True
+    # A webhook store that is not set up has no webhook to manage.
+    webhook = (
+        False
+        if webhook_store is None
+        else await _owns_any(webhook_store.has_webhook, user_id, "the webhook")
+    )
+    if webhook:
+        return True
+    return None if batches is None or webhook is None else False
+
+
+@router.get("/user/batch-capabilities")
+async def my_batch_capabilities(
+    response: Response,
+    current_user: dict = Depends(get_current_user),
+    store=Depends(get_batch_store),
+    webhook_store=Depends(get_batch_webhook_store),
+) -> dict[str, Any]:
+    """What the console offers the signed-in user for Batch.
+
+    ``status`` is ``enabled``, ``disabled`` (``BATCH_ENABLED`` off) or
+    ``unavailable`` (on, but the batch store is not ready). ``role_may_submit``
+    is whether the user's current role reaches ``BATCH_MIN_ROLE`` -- not
+    whether a submission would pass quotas or hold a usable key, which this
+    route never reads. ``has_history`` is whether the user has batches or a
+    webhook to manage (None when the lookup failed, and when not enabled: then
+    nothing is read). ``show_entry`` is whether the dashboard links the
+    Batches page: when the user may submit, or has (or may have) history.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    user_id = current_user["user_id"]
+    config = batch_config()
+    if not config.enabled:
+        status = "disabled"
+    elif store is None:
+        status = "unavailable"
+    else:
+        status = "enabled"
+    role_may_submit = status == "enabled" and may_use_batch(current_user.get("role"), config)
+    has_history = await _has_history(store, webhook_store, user_id) if status == "enabled" else None
+    return {
+        "user_id": user_id,
+        "status": status,
+        "enabled": config.enabled,
+        "min_role": config.min_role,
+        "role_may_submit": role_may_submit,
+        "has_history": has_history,
+        "history_error": status == "enabled" and has_history is None,
+        "show_entry": status == "enabled" and (role_may_submit or has_history is not False),
     }
 
 

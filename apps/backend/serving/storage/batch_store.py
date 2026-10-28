@@ -1385,6 +1385,20 @@ class BatchStore:
                 user_id,
             )
 
+    async def has_batches(self, user_id: str) -> bool:
+        """Whether a user has any batch the console lists (one not being deleted).
+
+        An ``EXISTS`` over ``idx_batch_jobs_user``: it stops at the first row.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM batch_jobs WHERE user_id = $1 "
+                    "AND delete_requested_at IS NULL)",
+                    user_id,
+                )
+            )
+
     async def get_batch(
         self, batch_id: str, *, user_id: str | None = None
     ) -> dict[str, Any] | None:

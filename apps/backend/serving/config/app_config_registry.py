@@ -982,8 +982,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_ENABLED",
         "batch",
-        "Serve batch inference (/v1/batches) and run its worker. Off, every batch route "
-        "answers 404 and no queued request starts; stored batches are kept.",
+        "Serve batch inference (/v1/batches) and run its worker, and offer the console's "
+        "Batches page. Off, user/API batch data and write routes answer 404, the dashboard "
+        "hides the entry and no queued request starts; stored batches are kept. Capability "
+        "discovery and administrator operational controls remain available.",
         type="bool",
         default="1",
         flag=True,
@@ -991,9 +993,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_MIN_ROLE",
         "batch",
-        "Lowest role that may submit batches. A queued request starts only while its "
-        "owner still holds this role; owners can always read, cancel and delete their "
-        "own batches.",
+        "Lowest role that may submit batches and change a batch webhook. A queued request "
+        "starts only while its owner still holds this role. While Batch is enabled, owners below it can "
+        "read, download, cancel and delete their own batches and read or remove their "
+        "webhook; they keep the dashboard's Batches entry while they have any.",
         default="internal",
         choices=("free", "pro", "internal", "admin"),
     ),

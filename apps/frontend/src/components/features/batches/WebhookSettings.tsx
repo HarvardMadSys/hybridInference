@@ -20,8 +20,11 @@ import { getErrorMessage } from '@/lib/utils/errors';
  * The user's batch webhook: one HTTPS endpoint told when each of their
  * batches ends. The signing secret is shown once, when the webhook is created
  * or the secret rotated; deliveries are listed with how they went.
+ *
+ * Without `canEdit` (the user's role is below `BATCH_MIN_ROLE`) the webhook
+ * can only be viewed and removed; the gateway refuses changes either way.
  */
-export function WebhookSettings() {
+export function WebhookSettings({ canEdit = true }: { canEdit?: boolean }) {
   const t = useT();
   const toast = useAccountToast();
   const [webhook, setWebhook] = useState<BatchWebhook | null>(null);
@@ -130,60 +133,76 @@ export function WebhookSettings() {
           {loadError}
         </p>
       )}
-      <form
-        className="mt-4 space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (loaded) void save(false);
-        }}
-      >
-        <InputField
-          label={t('batches.webhook.url', 'Endpoint URL (https)')}
-          type="url"
-          value={url}
-          placeholder="https://example.com/hooks/batches"
-          onChange={(event) => setUrl(event.target.value)}
-          disabled={!loaded}
-          error={error ?? undefined}
-          required
-        />
-        <label className="flex items-center gap-2 text-sm text-gray-700">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(event) => setEnabled(event.target.checked)}
-            disabled={!loaded}
+      {!canEdit && loaded && (
+        <p role="note" className="mt-3 text-sm text-amber-800">
+          {webhook?.configured
+            ? t(
+                'batches.webhook.read_only',
+                'Your plan cannot change webhook settings. You can still view and remove your webhook.',
+              )
+            : t('batches.webhook.cannot_create', 'Your plan cannot set up a webhook.')}
+        </p>
+      )}
+      {(canEdit || webhook?.configured) && (
+        <form
+          className="mt-4 space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (loaded && canEdit) void save(false);
+          }}
+        >
+          <InputField
+            label={t('batches.webhook.url', 'Endpoint URL (https)')}
+            type="url"
+            value={url}
+            placeholder="https://example.com/hooks/batches"
+            onChange={(event) => setUrl(event.target.value)}
+            disabled={!loaded || !canEdit}
+            error={error ?? undefined}
+            required
           />
-          {t('batches.webhook.enabled', 'Send events')}
-        </label>
-        <div className="flex flex-wrap gap-2">
-          <Button type="submit" isLoading={saving} disabled={!loaded || !url}>
-            {webhook?.configured
-              ? t('batches.webhook.update', 'Save')
-              : t('batches.webhook.create', 'Create webhook')}
-          </Button>
-          {webhook?.configured && (
-            <>
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={saving}
-                onClick={() => void save(true)}
-              >
-                {t('batches.webhook.rotate', 'Rotate secret')}
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(event) => setEnabled(event.target.checked)}
+              disabled={!loaded || !canEdit}
+            />
+            {t('batches.webhook.enabled', 'Send events')}
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {canEdit && (
+              <Button type="submit" isLoading={saving} disabled={!loaded || !url}>
+                {webhook?.configured
+                  ? t('batches.webhook.update', 'Save')
+                  : t('batches.webhook.create', 'Create webhook')}
               </Button>
-              <Button
-                type="button"
-                variant="danger"
-                disabled={saving}
-                onClick={() => void remove()}
-              >
-                {t('batches.webhook.remove', 'Remove')}
-              </Button>
-            </>
-          )}
-        </div>
-      </form>
+            )}
+            {webhook?.configured && (
+              <>
+                {canEdit && (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={saving}
+                    onClick={() => void save(true)}
+                  >
+                    {t('batches.webhook.rotate', 'Rotate secret')}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="danger"
+                  disabled={saving}
+                  onClick={() => void remove()}
+                >
+                  {t('batches.webhook.remove', 'Remove')}
+                </Button>
+              </>
+            )}
+          </div>
+        </form>
+      )}
       {secret && (
         <div className="mt-4 rounded-lg bg-yellow-50 p-4 ring-1 ring-inset ring-yellow-200">
           <p className="text-sm font-medium text-yellow-800">
