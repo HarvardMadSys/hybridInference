@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ConfigEntry, ConfigResponse } from '@/lib/api/config';
 import type { RuntimeSettingItem } from '@/lib/api/admin';
@@ -220,6 +220,91 @@ async function renderLoaded(...args: Parameters<typeof renderSettings>) {
   await renderSettings(...args);
   await screen.findByLabelText('mystery_knob value');
 }
+
+describe('Settings section links', () => {
+  const scrollIntoView = vi.fn();
+  const originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+
+  beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+  });
+
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+    if (originalScroll) {
+      Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScroll);
+    } else {
+      delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    }
+  });
+
+  it.each(['configuration', 'runtime settings'] as const)(
+    'waits for both reads when %s arrives first, then scrolls only once',
+    async (first) => {
+      window.history.replaceState(
+        null,
+        '',
+        '/dashboard/admin/settings?tab=common#settings-analytics',
+      );
+      let resolveConfig!: (value: ConfigResponse) => void;
+      let resolveRuntime!: (value: { settings: RuntimeSettingItem[] }) => void;
+      vi.mocked(getConfig).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveConfig = resolve;
+        }),
+      );
+      vi.mocked(listRuntimeSettings).mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveRuntime = resolve;
+        }),
+      );
+      await renderSettings();
+
+      const finishConfig = () => resolveConfig(CONFIG);
+      const finishRuntime = () =>
+        resolveRuntime({
+          settings: [runtime('analytics_growth_rate_enabled', false)],
+        });
+      await act(async () => {
+        (first === 'configuration' ? finishConfig : finishRuntime)();
+      });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      await act(async () => {
+        (first === 'configuration' ? finishRuntime : finishConfig)();
+      });
+
+      const section = screen.getByRole('region', { name: 'Analytics' });
+      expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
+      expect(scrollIntoView.mock.contexts[0]).toBe(section);
+
+      vi.mocked(updateRuntimeSetting).mockResolvedValueOnce(
+        runtime('analytics_growth_rate_enabled', true),
+      );
+      fireEvent.click(within(section).getByRole('switch', { name: 'Toggle Growth Rate' }));
+      fireEvent.click(within(section).getByRole('button', { name: 'Save changes to Analytics' }));
+      await waitFor(() =>
+        expect(
+          within(section).queryByRole('button', { name: 'Save changes to Analytics' }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    ['', {}],
+    ['#settings-missing', {}],
+    ['#settings-analytics', { initialTab: 'access' as const }],
+    ['#settings-analytics', { initialMissingOnly: true }],
+  ])('does not scroll for an absent or hidden target (%s, %j)', async (hash, props) => {
+    window.history.replaceState(null, '', `/dashboard/admin/settings${hash}`);
+    await renderLoaded(undefined, props);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+});
 
 describe('Admin → Settings sub-tabs', () => {
   it('opens on the common settings, then groups the rest by topic, what is set once last', async () => {
