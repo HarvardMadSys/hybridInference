@@ -1110,7 +1110,7 @@ class BatchStore:
                 for a batch stored the way the retired Message Batches API stored them).
             target: ``chat``, ``embeddings``, ``messages`` or ``responses``.
             protocol_profile: The protocol version the batch was created under
-                (the ``anthropic_version`` of a Messages batch).
+                (the ``anthropic-version`` of a Messages batch).
             phase: ``runnable``, or ``validating`` for a file batch whose items
                 the validator adds later.
             status: The initial status.
@@ -2979,20 +2979,27 @@ class BatchStore:
             conn,
             row["user_id"],
             batch_id,
-            terminal_event(batch_id, final),
+            terminal_event(batch_id, final, api_surface=row["api_surface"]),
         )
 
 
-def terminal_event(batch_id: str, final_status: str) -> dict[str, Any]:
+def terminal_event(
+    batch_id: str, final_status: str, *, api_surface: str | None = None
+) -> dict[str, Any]:
     """The webhook event a batch's end publishes. Never carries prompts or results.
 
-    ``batch.<final status>`` for every batch, a legacy Message Batch included.
+    ``batch.<final status>`` for every batch created through ``/v1/batches``.
+    A batch the retired Message Batches API stored (``api_surface`` is
+    ``anthropic``) still ends with ``message_batch.ended``, the event its
+    owner subscribed to when it was created; its id works on ``/v1/batches``.
     Events already in the outbox are delivered as they were written.
     """
     import time
 
     event_id = new_event_id()
-    event_type = f"batch.{final_status}"
+    event_type = (
+        "message_batch.ended" if api_surface == SURFACE_ANTHROPIC else f"batch.{final_status}"
+    )
     return {
         "id": event_id,
         "type": event_type,

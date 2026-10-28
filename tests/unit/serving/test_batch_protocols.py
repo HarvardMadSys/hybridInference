@@ -729,7 +729,7 @@ async def test_a_messages_request_without_the_batchs_version_is_refused(monkeypa
     body = json.loads(json.dumps(_VALID_BODIES["messages"]))
     with pytest.raises(targets.ItemRejected) as refused:
         await targets.admit_item("messages", body, _admission_context(None))
-    assert "anthropic_version" in refused.value.message
+    assert "anthropic-version" in refused.value.message
     assert await targets.admit_item(
         "messages", body, _admission_context(profiles.PROFILES["2023-06-01"])
     )

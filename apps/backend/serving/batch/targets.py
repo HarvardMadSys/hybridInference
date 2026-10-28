@@ -56,7 +56,7 @@ if TYPE_CHECKING:
 
 #: The ``url`` (inline) or ``endpoint`` (file) that names each target of
 #: ``/v1/batches``. ``/v1/messages`` is this gateway's extension of the OpenAI
-#: batch shape; a Messages batch also names its ``anthropic_version``.
+#: batch shape; a Messages batch also names its ``anthropic-version`` header.
 TARGET_URLS: dict[str, str] = {
     "/v1/chat/completions": TARGET_CHAT,
     "/v1/embeddings": TARGET_EMBEDDINGS,
@@ -256,7 +256,7 @@ def native_messages_problem(body: dict[str, Any]) -> str | None:
 
     Every top-level key outside the accepted set is refused rather than
     ignored -- ``anthropic_version`` and ``betas`` included: the version is the
-    batch's own (its envelope), and betas are not supported in batches.
+    batch's own (its ``anthropic-version`` header), and betas are not supported in batches.
     """
     unknown = sorted(set(body) - _NATIVE_TOP_LEVEL)
     if unknown:
@@ -539,9 +539,9 @@ async def _admit_messages(body: dict[str, Any], ctx: AdmissionContext) -> str:
     if problem:
         raise ItemRejected("invalid_request", problem)
     if ctx.profile is None:
-        # The batch's anthropic_version decides the rules below; without one a
+        # The batch's anthropic-version decides the rules below; without one a
         # request would be admitted under none of them.
-        raise ItemRejected("invalid_request", "anthropic_version: a Messages batch needs one")
+        raise ItemRejected("invalid_request", "anthropic-version: a Messages batch needs one")
     violation = profile_violation(ctx.profile, body)
     if violation:
         raise ItemRejected("invalid_request", violation)

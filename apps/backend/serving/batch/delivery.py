@@ -115,7 +115,7 @@ async def seal_file_batch(
         worker_id=worker_id,
         generation=generation,
         files=files,
-        event=terminal_event(batch_id, final),
+        event=terminal_event(batch_id, final, api_surface=batch.get("api_surface")),
     )
     if sealed is not None:
         logger.info(

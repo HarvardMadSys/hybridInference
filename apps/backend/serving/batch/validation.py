@@ -8,7 +8,7 @@ takes the batch's work lease and reads the file a chunk at a time:
   "body"}`` with ``url`` equal to the batch's ``endpoint``, a ``custom_id``
   unique in the file, and a body its target admits
   (:func:`serving.batch.targets.admit_item`) -- for ``/v1/messages``, under the
-  ``anthropic_version`` the batch was created with, as an inline batch is;
+  ``anthropic-version`` the batch was created with, as an inline batch is;
 - every line must name the same model (a file batch runs one model);
 - the file holds at most ``BATCH_MAX_REQUESTS`` lines, none longer than
   ``BATCH_MAX_LINE_KB``.
@@ -231,8 +231,8 @@ async def validate_file_batch(
                 [
                     {
                         "code": "invalid_request",
-                        "message": "The batch has no supported anthropic_version.",
-                        "param": "anthropic_version",
+                        "message": "The batch has no supported anthropic-version.",
+                        "param": "anthropic-version",
                         "line": None,
                     }
                 ]

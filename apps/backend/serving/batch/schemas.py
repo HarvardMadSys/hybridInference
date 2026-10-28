@@ -12,7 +12,9 @@ ways, both through ``POST /v1/batches``:
   files (``/v1/files``).
 
 The two are exclusive. A ``/v1/messages`` batch -- our extension of the OpenAI
-shape -- also names its ``anthropic_version``, in either form. Responses are
+shape -- names its Anthropic API version in the ``anthropic-version`` request
+header, in either form; a top-level ``anthropic_version`` body field is
+refused by the router, not ignored. Responses are
 OpenAI-shaped batch objects, plus fields of ours: ``anthropic_version``,
 ``cost_usd`` (what the batch's finished attempts were billed so far),
 ``cost_unknown_attempts`` (attempts whose cost is unknown and so not in
@@ -96,9 +98,6 @@ class BatchCreateRequest(BaseModel):
     endpoint: str | None = None
     completion_window: str | None = None
     metadata: dict[str, str] | None = None
-    #: The Anthropic API version a ``/v1/messages`` batch is checked and run
-    #: under; required for such a batch and refused on any other.
-    anthropic_version: str | None = Field(default=None, min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def _one_mode(self) -> BatchCreateRequest:
