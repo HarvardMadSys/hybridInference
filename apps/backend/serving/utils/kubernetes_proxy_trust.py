@@ -38,6 +38,67 @@ class KubernetesProxyTrustError(RuntimeError):
         super().__init__(code)
 
 
+# Every code this module raises. A diagnostic is only ever one of these or an
+# ``api_status_NNN`` of the observed HTTP status; anything else, including an
+# unexpected ``code`` attribute on a lookalike exception, collapses to the
+# generic fallback so a log line can never carry API, token or request text.
+_FAILURE_CODES = frozenset(
+    {
+        "ambiguous_json",
+        "api_response_too_large",
+        "api_timeout",
+        "api_transport_error",
+        "ca_file_unavailable",
+        "discovery_cancelled",
+        "discovery_closed",
+        "discovery_unavailable",
+        "duplicate_pod_address",
+        "duplicate_pod_identity",
+        "encoded_api_response",
+        "incomplete_pod_list",
+        "invalid_api_object",
+        "invalid_json",
+        "invalid_pod",
+        "invalid_pod_addresses",
+        "invalid_pod_identity",
+        "invalid_pod_owner",
+        "invalid_service",
+        "invalid_service_selector",
+        "invalid_token_file",
+        "pod_namespace_mismatch",
+        "pod_selector_mismatch",
+        "refresh_timeout",
+        "service_changed_during_read",
+        "service_identity_mismatch",
+        "snapshot_expired",
+        "snapshot_expired_during_read",
+        "token_file_unavailable",
+    }
+)
+_API_STATUS_CODE = re.compile(r"api_status_[1-5][0-9][0-9]\Z")
+
+
+def discovery_failure_code(exc: BaseException) -> str:
+    """Map a discovery failure to a fixed, loggable reason code.
+
+    Only the class of the failure is used, never its message or arguments.
+    """
+    if isinstance(exc, KubernetesProxyTrustError):
+        code = exc.code
+        if type(code) is str and (code in _FAILURE_CODES or _API_STATUS_CODE.fullmatch(code)):
+            return code
+        return "discovery_unavailable"
+    if isinstance(exc, TimeoutError):
+        # The whole multi-read refresh exceeded its freshness budget.
+        return "refresh_timeout"
+    if isinstance(exc, httpx.TimeoutException):
+        # One API read hit the client's connect/read/write/pool timeout.
+        return "api_timeout"
+    if isinstance(exc, httpx.TransportError):
+        return "api_transport_error"
+    return "discovery_unavailable"
+
+
 @dataclass(frozen=True)
 class KubernetesProxyConfig:
     """Deployment-owned discovery wiring; never derived from an HTTP request."""
@@ -198,11 +259,14 @@ class KubernetesProxyDiscovery:
 
     def _http_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            verify = (
-                True
-                if self._transport is not None
-                else ssl.create_default_context(cafile=self.config.ca_file)
-            )
+            try:
+                verify = (
+                    True
+                    if self._transport is not None
+                    else ssl.create_default_context(cafile=self.config.ca_file)
+                )
+            except OSError:
+                raise KubernetesProxyTrustError("ca_file_unavailable") from None
             self._client = httpx.AsyncClient(
                 verify=verify,
                 transport=self._transport,
@@ -214,11 +278,17 @@ class KubernetesProxyDiscovery:
 
     async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
         # Projected tokens rotate. Never cache a token in the client or snapshot.
-        with Path(self.config.token_file).open("rb") as source:
-            raw_token = source.read(16385)
+        try:
+            with Path(self.config.token_file).open("rb") as source:
+                raw_token = source.read(16385)
+        except OSError:
+            raise KubernetesProxyTrustError("token_file_unavailable") from None
         if len(raw_token) > 16384:
             raise KubernetesProxyTrustError("invalid_token_file")
-        token = raw_token.decode("ascii").strip()
+        try:
+            token = raw_token.decode("ascii").strip()
+        except UnicodeDecodeError:
+            raise KubernetesProxyTrustError("invalid_token_file") from None
         if not token or any(char.isspace() or ord(char) < 33 or ord(char) > 126 for char in token):
             raise KubernetesProxyTrustError("invalid_token_file")
         url = self.config.api_url.rstrip("/") + path
@@ -382,11 +452,7 @@ class KubernetesProxyDiscovery:
                 self._retry_at = self._clock() + 0.25
                 raise
             except Exception as exc:
-                self._error_code = (
-                    exc.code
-                    if isinstance(exc, KubernetesProxyTrustError)
-                    else "discovery_unavailable"
-                )
+                self._error_code = discovery_failure_code(exc)
                 self._retry_at = self._clock() + 0.25
                 raise KubernetesProxyTrustError(self._error_code) from None
             return self._snapshot

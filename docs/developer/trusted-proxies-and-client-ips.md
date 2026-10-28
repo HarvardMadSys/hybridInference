@@ -119,6 +119,20 @@ before a replacement is discovered can remain unresolved, so this is not a
 zero-window traffic gate. An admitted request keeps its identity throughout
 a stream; it is not reclassified when membership changes.
 
+With discovery enabled and the effective `TRUST_PROXY_HEADERS` on,
+`/health/ready` also requires a fresh, nonempty proxy set from the same
+per-worker cache. With `TRUST_PROXY_HEADERS` off, discovery makes no API
+reads, every identity is `unknown`, and readiness depends only on the store
+checks.
+
+A refresh is three Kubernetes API GETs, so continuous traffic costs about
+`3 × total gateway workers / KUBERNETES_PROXY_MAX_AGE_SECONDS` GETs per
+second. After a failure each worker waits 0.25 seconds before trying again,
+at one to three GETs per attempt. More than 500 selector-matching Pods,
+counted before any are excluded, or an API response over 2,000,000 bytes
+fails closed. The deployment guide covers these limits, controller UIDs, Pod
+deletion and the `reason` and `proxy_discovery_ms` log fields.
+
 Before enabling this mode, verify that the gateway sees the proxy Pod's
 actual socket address, protect Service selectors and Pod ownership with
 RBAC, and enforce network isolation and trusted ingress header handling.

@@ -20,7 +20,10 @@ from serving.servers.deps import (
     get_router,
     get_services,
 )
-from serving.servers.middleware.proxy_trust import proxy_discovery_ready
+from serving.servers.middleware.proxy_trust import (
+    proxy_discovery_ready,
+    proxy_discovery_required,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -341,7 +344,10 @@ async def health_ready(
     from ``/health`` (liveness), which stays 200 with ``status:
     "degraded"`` to avoid container restart loops.
     """
-    if get_settings().trust_kubernetes_proxy_discovery and not proxy_discovery_ready(request):
+    # Membership gates readiness only while it gates identity: with the master
+    # TRUST_PROXY_HEADERS switch off, discovery is skipped and identities stay
+    # unknown, so the store checks below decide alone.
+    if proxy_discovery_required(get_settings()) and not proxy_discovery_ready(request):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "not_ready", "reason": "proxy_discovery_unavailable"}
 

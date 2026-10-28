@@ -629,3 +629,131 @@ async def test_cancelled_refresh_backoff_prevents_caller_driven_api_storm(env):
     finally:
         release.set()
         await discovery.aclose()
+
+
+# Synthetic secrets that must never reach a diagnostic code. None of them are
+# real credentials, hosts or API bodies.
+LEAK = 'Bearer synthetic-secret https://192.0.2.99/api/v1/namespaces/x {"items":[]}'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("403", "api_status_403"),
+        ("401", "api_status_401"),
+        ("continue", "incomplete_pod_list"),
+        ("over-limit", "incomplete_pod_list"),
+        ("oversized", "api_response_too_large"),
+        ("refresh-timeout", "refresh_timeout"),
+        ("read-timeout", "api_timeout"),
+        ("transport", "api_transport_error"),
+        ("missing-token", "token_file_unavailable"),
+        ("binary-token", "invalid_token_file"),
+        ("unexpected", "discovery_unavailable"),
+    ],
+)
+async def test_failures_carry_a_fixed_reason_code(env, mode, expected):
+    api = API(pods=pod_list([pod("proxy-a", POD_A, ("192.0.2.60",))]))
+    overrides = {}
+    transport = api
+    if mode in ("403", "401"):
+        api.svc_status = int(mode)
+    elif mode == "continue":
+        api.pods = pod_list(metadata={"resourceVersion": "1", "continue": LEAK})
+    elif mode == "over-limit":
+        # The limit counts selector matches before phase/owner filtering.
+        api.pods = pod_list(
+            [
+                pod("proxy-a", POD_A, ("192.0.2.60",)),
+                pod("proxy-b", POD_B, ("192.0.2.61",), phase="Pending", owner_uid=OTHER_UID),
+            ]
+        )
+        overrides["max_pods"] = 1
+    elif mode == "oversized":
+        api.pods_raw = b'{"padding":"' + b"x" * 2048 + b'"}'
+        overrides["max_response_bytes"] = 1024
+    elif mode == "refresh-timeout":
+        api.delay = 0.1
+        overrides.update(max_age_seconds=0.02, timeout_seconds=0.02)
+    elif mode == "missing-token":
+        env.token.unlink()
+    elif mode == "binary-token":
+        env.token.write_bytes(b"\xff\xfe" + LEAK.encode())
+    else:
+        exc = {
+            "read-timeout": httpx.ReadTimeout(LEAK),
+            "transport": httpx.ConnectError(LEAK),
+            "unexpected": RuntimeError(LEAK),
+        }[mode]
+
+        async def transport(request):
+            api.requests.append(request)
+            raise exc
+
+    async with opened(env, transport, **overrides) as discovery:
+        for _ in range(2):  # the negative cache repeats the same code
+            with pytest.raises(KubernetesProxyTrustError) as exc_info:
+                await discovery.get_snapshot()
+            check_error(exc_info)
+            assert exc_info.value.code == expected
+            assert str(exc_info.value) == expected
+            assert exc_info.value.__cause__ is None
+            assert "synthetic-secret" not in repr(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        KubernetesProxyTrustError(LEAK),
+        KubernetesProxyTrustError("api_status_403 " + LEAK),
+        KubernetesProxyTrustError("api_status_403\n"),
+        KubernetesProxyTrustError("api_status_٤٠٣"),  # non-ASCII digits
+        KubernetesProxyTrustError("api_status_999"),
+        KubernetesProxyTrustError("API_STATUS_403"),
+        KubernetesProxyTrustError(403),
+        KubernetesProxyTrustError(None),
+        RuntimeError(LEAK),
+        ValueError("invalid_json"),
+    ],
+)
+def test_untrusted_codes_collapse_to_the_generic_reason(exc):
+    from serving.utils.kubernetes_proxy_trust import discovery_failure_code
+
+    assert discovery_failure_code(exc) == "discovery_unavailable"
+
+
+def test_lookalike_code_attributes_are_not_trusted():
+    from serving.utils.kubernetes_proxy_trust import discovery_failure_code
+
+    class Sneaky(str):
+        # Compares and hashes like an allowed code but renders something else.
+        def __eq__(self, other):
+            return True
+
+        def __hash__(self):
+            return hash("invalid_json")
+
+    lookalike = RuntimeError(LEAK)
+    lookalike.code = "invalid_json"
+    sneaky = KubernetesProxyTrustError("invalid_json")
+    sneaky.code = Sneaky(LEAK)
+    assert discovery_failure_code(lookalike) == "discovery_unavailable"
+    assert discovery_failure_code(sneaky) == "discovery_unavailable"
+    assert discovery_failure_code(TimeoutError(LEAK)) == "refresh_timeout"
+    assert discovery_failure_code(httpx.PoolTimeout(LEAK)) == "api_timeout"
+    assert discovery_failure_code(httpx.RemoteProtocolError(LEAK)) == "api_transport_error"
+
+
+def test_every_raised_code_is_allowed():
+    import inspect
+    import re
+
+    from serving.servers.middleware import proxy_trust
+    from serving.utils import kubernetes_proxy_trust as module
+
+    raised = set()
+    for source in (inspect.getsource(module), inspect.getsource(proxy_trust)):
+        raised.update(re.findall(r'KubernetesProxyTrustError\("([a-z_]+)"\)', source))
+    assert raised
+    assert raised <= module._FAILURE_CODES

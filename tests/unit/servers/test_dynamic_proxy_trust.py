@@ -277,3 +277,297 @@ async def test_readiness_requires_fresh_membership_without_requiring_proxy_pod_r
         response = await client.get("/health/ready")
         assert response.status_code == 503
         assert response.json()["reason"] == "proxy_discovery_unavailable"
+
+
+def _readiness_app(monkeypatch, settings, discovery, stores_healthy, **middleware):
+    from fastapi import FastAPI
+
+    from serving.servers.routers import health
+
+    monkeypatch.setattr("serving.servers.middleware.proxy_trust.get_settings", lambda: settings)
+    monkeypatch.setattr("serving.utils.request_ip.get_settings", lambda: settings)
+    monkeypatch.setattr(health, "get_settings", lambda: settings)
+    store_check = AsyncMock(
+        return_value={
+            "all_healthy": stores_healthy,
+            "database_configured": True,
+            "operational_store": {"status": "ok" if stores_healthy else "error"},
+            "log_store": {"status": "ok"},
+        }
+    )
+    monkeypatch.setattr(health, "_test_store_health", store_check)
+    inner = FastAPI()
+    inner.include_router(health.router)
+    inner.dependency_overrides[health.get_operational_store] = lambda: None
+    inner.dependency_overrides[health.get_log_store] = lambda: None
+
+    async def identity(request: Request):
+        return JSONResponse({"ip": get_client_ip_info(request).client_ip})
+
+    inner.add_route("/identity", identity)
+    app = KubernetesProxyTrustMiddleware(
+        inner, discovery_factory=lambda config: discovery, **middleware
+    )
+    return app, store_check
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stores_healthy", [True, False], ids=["stores-ok", "stores-down"])
+@pytest.mark.parametrize("membership", ["present", "empty", "failure"])
+@pytest.mark.parametrize(
+    ("dynamic", "master"),
+    [(False, False), (False, True), (True, False), (True, True)],
+    ids=["static-master-off", "static-master-on", "dynamic-master-off", "dynamic-master-on"],
+)
+async def test_readiness_requires_membership_only_when_discovery_and_master_are_on(
+    monkeypatch, dynamic, master, membership, stores_healthy
+):
+    discovery = _Discovery(
+        {
+            "present": _snapshot("11.0.0.21/32"),
+            "empty": _snapshot(),
+            "failure": RuntimeError("API unavailable"),
+        }[membership]
+    )
+    settings = _settings(trust_kubernetes_proxy_discovery=dynamic, trust_proxy_headers=master)
+    app, store_check = _readiness_app(monkeypatch, settings, discovery, stores_healthy)
+    required = dynamic and master
+    membership_ok = not required or membership == "present"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("11.0.0.21", 12345)),
+        base_url="http://gateway",
+    ) as client:
+        ready = await client.get("/health/ready")
+        identity = await client.get("/identity", headers={"x-forwarded-for": "6.6.6.6, 8.8.8.8"})
+
+    if not membership_ok:
+        assert ready.status_code == 503
+        assert ready.json()["reason"] == "proxy_discovery_unavailable"
+    elif stores_healthy:
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+    else:
+        # The store checks stay in force whatever the discovery switches say.
+        assert ready.status_code == 503
+        assert ready.json()["reason"] == "store_degraded"
+    assert store_check.await_count == (1 if membership_ok else 0)
+    # With the master switch off there is no discovery I/O at all.
+    assert discovery.calls == (2 if required else 0)
+    expected_ip = {
+        (False, False): "11.0.0.21",  # legacy: the routable socket peer
+        (False, True): "8.8.8.8",  # legacy: the static trusted proxy
+        (True, False): "unknown",  # dynamic + kill switch: no fallback at all
+        (True, True): "8.8.8.8" if membership == "present" else "unknown",
+    }[(dynamic, master)]
+    assert identity.json()["ip"] == expected_ip
+
+
+class _FakeExc(Exception):
+    pass
+
+
+@pytest.mark.asyncio
+async def test_transition_warning_carries_only_a_fixed_reason(monkeypatch, caplog):
+    import logging
+
+    from serving.utils.kubernetes_proxy_trust import KubernetesProxyTrustError
+    from serving.utils.logging import JsonFormatter, PlainFormatter
+
+    secret = "Bearer synthetic-secret https://192.0.2.99/api/v1/namespaces/x?raw=1"
+    discovery = _Discovery(KubernetesProxyTrustError("api_status_403"))
+    app = _app(monkeypatch, _settings(), discovery)
+    caplog.set_level(logging.INFO, logger="serving.servers.middleware.proxy_trust")
+
+    def warnings():
+        return [
+            r for r in caplog.records if r.getMessage() == "kubernetes_proxy_discovery_unavailable"
+        ]
+
+    await _request(app)
+    await _request(app)
+    assert [r.reason for r in warnings()] == ["api_status_403"]  # transition only
+
+    discovery.result = _snapshot("11.0.0.21/32")
+    await _request(app)
+    assert "kubernetes_proxy_discovery_recovered" in caplog.text
+
+    for failure, reason in (
+        (RuntimeError(secret), "discovery_unavailable"),
+        (KubernetesProxyTrustError(secret), "discovery_unavailable"),
+        (_FakeExc(secret), "discovery_unavailable"),
+        (httpx.ConnectError(secret), "api_transport_error"),
+        (TimeoutError(secret), "refresh_timeout"),
+        (_snapshot("11.0.0.21/32", expires_at=time.monotonic() - 1), "snapshot_expired"),
+    ):
+        caplog.clear()
+        discovery.result = failure
+        await _request(app)
+        (record,) = warnings()
+        assert record.reason == reason
+        for formatter in (JsonFormatter(), PlainFormatter()):
+            line = formatter.format(record)
+            assert reason in line
+            assert "synthetic-secret" not in line and "192.0.2.99" not in line
+        discovery.result = _snapshot("11.0.0.21/32")
+        await _request(app)
+    assert "synthetic-secret" not in caplog.text
+
+
+class _StepClock:
+    """A monotonic stand-in that only moves when a test advances it."""
+
+    def __init__(self):
+        self.value = 100.0
+
+    def __call__(self):
+        return self.value
+
+
+def _logged_app(monkeypatch, settings, discovery, clock=None):
+    from serving.servers.middleware.request_log import RequestLogMiddleware
+
+    monkeypatch.setattr("serving.servers.middleware.proxy_trust.get_settings", lambda: settings)
+    monkeypatch.setattr("serving.utils.request_ip.get_settings", lambda: settings)
+
+    async def ok(request: Request):
+        return JSONResponse({"ip": get_client_ip_info(request).client_ip})
+
+    inner = RequestLogMiddleware(Starlette(routes=[Route("/identity", ok), Route("/health", ok)]))
+    extra = {} if clock is None else {"clock": clock}
+    return KubernetesProxyTrustMiddleware(
+        inner, discovery_factory=lambda config: discovery, **extra
+    )
+
+
+def _request_records(caplog):
+    return [r for r in caplog.records if r.getMessage() == "http_request"]
+
+
+@pytest.mark.asyncio
+async def test_request_log_reports_discovery_stage_time_from_injected_clock(monkeypatch, caplog):
+    import json
+    import logging
+
+    from serving.utils.logging import JsonFormatter, PlainFormatter
+
+    clock = _StepClock()
+
+    class Timed(_Discovery):
+        step = 0.0
+
+        async def get_snapshot(self):
+            clock.value += self.step
+            return await super().get_snapshot()
+
+    discovery = Timed(_snapshot("11.0.0.21/32"))
+    app = _logged_app(monkeypatch, _settings(), discovery, clock)
+    caplog.set_level(logging.DEBUG)
+
+    discovery.step = 0.0  # a cache hit costs no stage time
+    await _request(app)
+    discovery.step = 0.0123  # a refresh or a wait behind one
+    await _request(app)
+    discovery.step = 1.002  # a failed refresh is reported too
+    discovery.result = RuntimeError("timed out")
+    await _request(app)
+
+    records = _request_records(caplog)
+    assert [r.proxy_discovery_ms for r in records] == [0.0, 12.3, 1002.0]
+    # duration_ms keeps its meaning: the stage runs outside the request log.
+    assert all(isinstance(r.duration_ms, int) for r in records)
+    # Both formatters emit only allowlisted keys; the field must reach the line.
+    for record, expected in zip(records, ("0.0", "12.3", "1002.0"), strict=True):
+        assert json.loads(JsonFormatter().format(record))["proxy_discovery_ms"] == float(expected)
+        assert f"proxy_discovery_ms={expected}" in PlainFormatter().format(record).split()
+
+
+@pytest.mark.asyncio
+async def test_request_log_includes_provider_and_snapshot_lock_waits(monkeypatch, caplog):
+    import asyncio
+    import logging
+
+    class Serialized(_Discovery):
+        def __init__(self, result):
+            super().__init__(result)
+            self.lock = asyncio.Lock()
+
+        async def get_snapshot(self):
+            async with self.lock:  # one refresh at a time, like the real provider
+                await asyncio.sleep(0.05)
+                return await super().get_snapshot()
+
+    discovery = Serialized(_snapshot("11.0.0.21/32"))
+    app = _logged_app(monkeypatch, _settings(), discovery)
+    caplog.set_level(logging.DEBUG)
+
+    await asyncio.gather(_request(app), _request(app))
+    first, second = sorted(r.proxy_discovery_ms for r in _request_records(caplog))
+    assert first >= 50.0
+    assert second >= 100.0  # waited for the other request's refresh
+
+    caplog.clear()
+    async with app._lock:  # hold the provider lock, e.g. during reconfiguration
+        pending = asyncio.ensure_future(_request(app))
+        await asyncio.sleep(0.05)
+    await pending
+    (record,) = _request_records(caplog)
+    assert record.proxy_discovery_ms >= 100.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dynamic", "master", "path"),
+    [(False, True, "/identity"), (True, False, "/identity"), (True, True, "/health")],
+    ids=["disabled", "master-off", "liveness"],
+)
+async def test_unmeasured_requests_never_inherit_a_stage_time(
+    monkeypatch, caplog, dynamic, master, path
+):
+    import logging
+
+    discovery = _Discovery(_snapshot("11.0.0.21/32"))
+    app = _logged_app(
+        monkeypatch,
+        _settings(trust_kubernetes_proxy_discovery=dynamic, trust_proxy_headers=master),
+        discovery,
+    )
+    caplog.set_level(logging.DEBUG)
+
+    async def seeded(scope, receive, send):
+        scope.setdefault("state", {})["_hybrid_inference_proxy_discovery_ms"] = 1234.0
+        await app(scope, receive, send)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=seeded, client=("11.0.0.21", 1)),
+        base_url="http://gateway",
+    ) as client:
+        assert (await client.get(path)).status_code == 200
+    (record,) = _request_records(caplog)
+    assert record.proxy_discovery_ms is None
+    assert discovery.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (12.5, 12.5),
+        (0.0, 0.0),
+        (600_000.0, 600_000.0),
+        (600_000.5, None),
+        (-1.0, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        (True, None),
+        (5, None),
+        ("12.5", None),
+    ],
+)
+def test_logged_stage_time_is_a_bounded_number(value, expected):
+    from serving.servers.middleware.proxy_trust import _elapsed_ms, proxy_discovery_ms
+
+    request = SimpleNamespace(state=SimpleNamespace(_hybrid_inference_proxy_discovery_ms=value))
+    assert proxy_discovery_ms(request) == expected
+    assert _elapsed_ms(10.0, 9.0) == 0.0  # a clock that stepped backwards
+    assert _elapsed_ms(0.0, float("nan")) == 0.0
+    assert _elapsed_ms(0.0, 1e12) == 600_000.0
