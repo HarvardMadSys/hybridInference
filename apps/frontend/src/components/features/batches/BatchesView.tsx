@@ -74,17 +74,32 @@ function BatchRow({
   ]
     .filter(Boolean)
     .join(' · ');
-  const primaryDownload: ResultKind | null = !batch.results_available
-    ? null
+  // A file batch shows every result file it has, except that one where no
+  // request succeeded leads with its errors and keeps the output under More.
+  const directDownloads: ResultKind[] = !batch.results_available
+    ? []
     : batch.input !== 'file'
-      ? 'all'
+      ? ['all']
       : batch.error_file_id && counts.succeeded === 0
-        ? 'error'
-        : batch.output_file_id
-          ? 'output'
-          : batch.error_file_id
-            ? 'error'
-            : null;
+        ? ['error']
+        : [
+            ...(batch.output_file_id ? (['output'] as const) : []),
+            ...(batch.error_file_id ? (['error'] as const) : []),
+          ];
+  const timeline = [
+    batch.created_at &&
+      fill(t('batches.row.created_compact', 'Created {time}'), {
+        time: formatTime(batch.created_at),
+      }),
+    batch.results_available &&
+      batch.results_expires_at &&
+      fill(t('batches.row.results_until_compact', 'Results kept until {time}'), {
+        time: formatTime(batch.results_expires_at),
+      }),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const problems = batch.validation_error?.data ?? [];
 
   return (
     <li className="py-5" data-testid={`batch-${batch.id}`}>
@@ -105,13 +120,7 @@ function BatchRow({
             {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
           </p>
           {outcome && <p className="mt-2 text-sm text-gray-700">{outcome}</p>}
-          {batch.created_at && (
-            <p className="mt-1 text-xs text-gray-500">
-              {fill(t('batches.row.created_compact', 'Created {time}'), {
-                time: formatTime(batch.created_at),
-              })}
-            </p>
-          )}
+          {timeline && <p className="mt-1 text-xs text-gray-500">{timeline}</p>}
           {paused && (
             <p role="note" className="mt-2 text-xs text-amber-800">
               ⚠ {paused}
@@ -124,16 +133,18 @@ function BatchRow({
               })}
             </p>
           )}
-          {batch.validation_error?.data?.length ? (
+          {problems.length ? (
             <p className="mt-2 break-words text-xs text-red-700">
-              {batch.validation_error.data.slice(0, 1).map((problem) =>
-                problem.line
-                  ? fill(t('batches.row.line_problem', 'Line {line}: {message}'), {
-                      line: String(problem.line),
-                      message: problem.message ?? '',
-                    })
-                  : (problem.message ?? ''),
-              )}
+              {problems[0].line
+                ? fill(t('batches.row.line_problem', 'Line {line}: {message}'), {
+                    line: String(problems[0].line),
+                    message: problems[0].message ?? '',
+                  })
+                : (problems[0].message ?? '')}
+              {problems.length > 1 &&
+                ` · ${fill(t('batches.row.more_problems', 'and {count} more errors'), {
+                  count: (problems.length - 1).toLocaleString(),
+                })}`}
             </p>
           ) : null}
           {batch.error?.message ? (
@@ -141,22 +152,21 @@ function BatchRow({
           ) : null}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {primaryDownload && (
+          {directDownloads.map((kind) => (
             <Button
+              key={kind}
               size="sm"
               variant="secondary"
               disabled={busy}
-              onClick={() => {
-                if (primaryDownload) onDownload(batch, primaryDownload);
-              }}
+              onClick={() => onDownload(batch, kind)}
             >
-              {primaryDownload === 'all'
+              {kind === 'all'
                 ? t('batches.action.download', 'Download results')
-                : primaryDownload === 'output'
+                : kind === 'output'
                   ? t('batches.action.download_output', 'Download outputs')
                   : t('batches.action.download_errors', 'Download errors')}
             </Button>
-          )}
+          ))}
           {isCancellable(batch) && (
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => onCancel(batch)}>
               {t('batches.action.cancel', 'Cancel')}
@@ -164,12 +174,24 @@ function BatchRow({
           )}
           <Link
             href={`/dashboard/batches/${encodeURIComponent(batch.id)}`}
+            aria-label={fill(t('batches.action.details_for', 'Details for {name}'), { name })}
             className="inline-flex h-9 items-center rounded-md px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
           >
             {t('batches.action.details', 'Details')}
           </Link>
           <details
             className="group relative"
+            data-row-actions=""
+            onToggle={(event) => {
+              // One row's menu at a time: opening this one closes any other.
+              const menu = event.currentTarget;
+              if (!menu.open) return;
+              document
+                .querySelectorAll<HTMLDetailsElement>('details[data-row-actions][open]')
+                .forEach((other) => {
+                  if (other !== menu) other.open = false;
+                });
+            }}
             onKeyDown={(event) => {
               if (event.key === 'Escape' && event.currentTarget.open) {
                 event.currentTarget.open = false;
@@ -188,36 +210,40 @@ function BatchRow({
               </span>
             </summary>
             <div className="absolute right-0 z-20 mt-1 w-44 rounded-lg bg-white p-1 shadow-lg ring-1 ring-gray-200">
-              {batch.results_available && batch.output_file_id && primaryDownload !== 'output' && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="block w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
-                  onClick={(event) => {
-                    const menu = event.currentTarget.closest('details');
-                    menu?.removeAttribute('open');
-                    menu?.querySelector('summary')?.focus();
-                    onDownload(batch, 'output');
-                  }}
-                >
-                  {t('batches.action.download_output', 'Download outputs')}
-                </button>
-              )}
-              {batch.results_available && batch.error_file_id && primaryDownload !== 'error' && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  className="block w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
-                  onClick={(event) => {
-                    const menu = event.currentTarget.closest('details');
-                    menu?.removeAttribute('open');
-                    menu?.querySelector('summary')?.focus();
-                    onDownload(batch, 'error');
-                  }}
-                >
-                  {t('batches.action.download_errors', 'Download errors')}
-                </button>
-              )}
+              {batch.results_available &&
+                batch.output_file_id &&
+                !directDownloads.includes('output') && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="block w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
+                    onClick={(event) => {
+                      const menu = event.currentTarget.closest('details');
+                      menu?.removeAttribute('open');
+                      menu?.querySelector('summary')?.focus();
+                      onDownload(batch, 'output');
+                    }}
+                  >
+                    {t('batches.action.download_output', 'Download outputs')}
+                  </button>
+                )}
+              {batch.results_available &&
+                batch.error_file_id &&
+                !directDownloads.includes('error') && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    className="block w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
+                    onClick={(event) => {
+                      const menu = event.currentTarget.closest('details');
+                      menu?.removeAttribute('open');
+                      menu?.querySelector('summary')?.focus();
+                      onDownload(batch, 'error');
+                    }}
+                  >
+                    {t('batches.action.download_errors', 'Download errors')}
+                  </button>
+                )}
               <button
                 type="button"
                 disabled={busy}

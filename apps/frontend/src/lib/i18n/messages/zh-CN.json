@@ -995,6 +995,10 @@
     "source": "Details",
     "text": "详情"
   },
+  "batches.action.details_for": {
+    "source": "Details for {name}",
+    "text": "任务 {name} 的详情"
+  },
   "batches.action.download": {
     "source": "Download results",
     "text": "下载结果"
@@ -1821,7 +1825,7 @@
   },
   "batches.row.expired_nonzero": {
     "source": "{count} expired unrun",
-    "text": "超时未执行 {count}"
+    "text": "过期未执行 {count}"
   },
   "batches.row.failed_nonzero": {
     "source": "{count} failed",
@@ -1831,9 +1835,17 @@
     "source": "Line {line}: {message}",
     "text": "第 {line} 行：{message}"
   },
+  "batches.row.more_problems": {
+    "source": "and {count} more errors",
+    "text": "另有 {count} 条错误"
+  },
   "batches.row.results_until": {
     "source": "Results kept until",
     "text": "结果保留到"
+  },
+  "batches.row.results_until_compact": {
+    "source": "Results kept until {time}",
+    "text": "结果保留到 {time}"
   },
   "batches.row.success_fraction": {
     "source": "{succeeded} / {total} succeeded",

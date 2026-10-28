@@ -308,17 +308,19 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
           )}
           {detail.validation_error?.data?.length ? (
             <Row label={t('batches.detail.validation', 'Input problems')}>
-              {detail.validation_error.data
-                .slice(0, 5)
-                .map((problem) =>
-                  problem.line
-                    ? fill(t('batches.row.line_problem', 'Line {line}: {message}'), {
-                        line: String(problem.line),
-                        message: problem.message ?? '',
-                      })
-                    : (problem.message ?? ''),
-                )
-                .join(' · ')}
+              {/* Every problem the gateway returned; the list says how many there are. */}
+              <ul className="space-y-1" data-testid="validation-problems">
+                {detail.validation_error.data.map((problem, index) => (
+                  <li key={index}>
+                    {problem.line
+                      ? fill(t('batches.row.line_problem', 'Line {line}: {message}'), {
+                          line: String(problem.line),
+                          message: problem.message ?? '',
+                        })
+                      : (problem.message ?? '')}
+                  </li>
+                ))}
+              </ul>
             </Row>
           ) : null}
         </dl>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getMyBatch, type BatchDetail } from '@/lib/api/batches';
@@ -126,6 +126,25 @@ describe('BatchDetailView', () => {
       screen.queryByRole('button', { name: 'Export unfinished requests' }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download outputs' })).toBeInTheDocument();
+  });
+
+  it('lists every input problem the gateway returned, not only the first five', async () => {
+    const problems = [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        line: index + 1,
+        message: `problem ${index + 1}`,
+      })),
+      { message: 'file-level problem' },
+    ];
+    vi.mocked(getMyBatch).mockResolvedValue(
+      detail({ status: 'failed', validation_error: { data: problems } }),
+    );
+    render(<BatchDetailView batchId="batch_1" />);
+    const list = await screen.findByTestId('validation-problems');
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(7);
+    expect(items[5]).toHaveTextContent('Line 6: problem 6');
+    expect(items[6]).toHaveTextContent('file-level problem');
   });
 
   it('says why a batch is paused', async () => {

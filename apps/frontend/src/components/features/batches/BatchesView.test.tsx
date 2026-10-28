@@ -60,8 +60,14 @@ vi.mock('@/lib/hooks/useAccountToast', async (importOriginal) => ({
   useAccountToast: () => ({ success: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('next/link', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
+  default: ({
+    children,
+    href,
+    ...rest
+  }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
   ),
 }));
 
@@ -145,7 +151,82 @@ describe('BatchesView', () => {
       'href',
       '/dashboard/batches/batch_long_id',
     );
-    expect(within(row).getByRole('link', { name: 'Details' })).toBeInTheDocument();
+    expect(within(row).getByRole('link', { name: 'Details for Eval run' })).toHaveAttribute(
+      'href',
+      '/dashboard/batches/batch_long_id',
+    );
+  });
+
+  it('shows the results deadline beside creation only while results are kept and dated', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_kept', {
+          status: 'completed',
+          results_available: true,
+          results_expires_at: 1_790_086_400,
+        }),
+        batch('batch_undated', { status: 'completed', results_available: true }),
+        batch('batch_gone', { status: 'completed', results_expires_at: 1_790_086_400 }),
+      ]),
+    );
+    render(<BatchesView />);
+    const kept = await screen.findByTestId('batch-batch_kept');
+    expect(kept).toHaveTextContent(
+      `Created ${new Date(1_790_000_000_000).toLocaleString()} · Results kept until ${new Date(
+        1_790_086_400_000,
+      ).toLocaleString()}`,
+    );
+    expect(screen.getByTestId('batch-batch_undated')).not.toHaveTextContent('Results kept until');
+    expect(screen.getByTestId('batch-batch_gone')).not.toHaveTextContent('Results kept until');
+  });
+
+  it('shows the first input problem and how many more the details list', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_bad', {
+          input: 'file',
+          status: 'failed',
+          category: 'issues',
+          request_counts: { total: 0, completed: 0, failed: 0 },
+          validation_error: {
+            data: [
+              { line: 2, message: 'invalid JSON' },
+              { line: 5, message: 'missing model' },
+              { message: 'duplicate custom_id' },
+            ],
+          },
+        }),
+        batch('batch_one', {
+          input: 'file',
+          status: 'failed',
+          category: 'issues',
+          request_counts: { total: 0, completed: 0, failed: 0 },
+          validation_error: { data: [{ line: 1, message: 'empty line' }] },
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const bad = await screen.findByTestId('batch-batch_bad');
+    expect(bad).toHaveTextContent('Line 2: invalid JSON · and 2 more errors');
+    expect(bad).not.toHaveTextContent('missing model');
+    const one = screen.getByTestId('batch-batch_one');
+    expect(one).toHaveTextContent('Line 1: empty line');
+    expect(one).not.toHaveTextContent('more errors');
+  });
+
+  it('keeps one row menu open at a time', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(page([batch('batch_1'), batch('batch_2')]));
+    render(<BatchesView />);
+    const first = await screen.findByLabelText('More actions for batch_1');
+    const second = screen.getByLabelText('More actions for batch_2');
+    fireEvent.click(first);
+    await waitFor(() => expect(first.closest('details')).toHaveAttribute('open'));
+    fireEvent.click(second);
+    await waitFor(() => expect(first.closest('details')).not.toHaveAttribute('open'));
+    expect(second.closest('details')).toHaveAttribute('open');
+    fireEvent.keyDown(second, { key: 'Escape' });
+    expect(second.closest('details')).not.toHaveAttribute('open');
+    expect(second).toHaveFocus();
   });
 
   it('does not imply zero requests during file validation', async () => {
@@ -294,26 +375,42 @@ describe('BatchesView', () => {
     confirm.mockRestore();
   });
 
-  it('offers downloads only for finished results, by file kind', async () => {
+  it('offers both result files of a partially failed file batch directly', async () => {
     vi.mocked(listMyBatches).mockResolvedValue(
       page([
         batch('batch_file', {
           api_surface: 'openai_file',
           input: 'file',
           status: 'completed',
+          category: 'issues',
           phase: 'sealed',
+          request_counts: { total: 4, completed: 3, failed: 1 },
           results_available: true,
           output_file_id: 'file-out',
           error_file_id: 'file-err',
         }),
+        batch('batch_running', {
+          input: 'file',
+          output_file_id: 'file-out-2',
+          error_file_id: 'file-err-2',
+        }),
       ]),
     );
+    vi.mocked(downloadMyResults).mockResolvedValue();
     render(<BatchesView />);
-    expect(await screen.findByRole('button', { name: 'Download outputs' })).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText('More actions for batch_file'));
-    expect(screen.getByRole('button', { name: 'Download errors' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Download results' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    const row = await screen.findByTestId('batch-batch_file');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download outputs' }));
+    expect(downloadMyResults).toHaveBeenCalledWith('batch_file', 'output');
+    await waitFor(() =>
+      expect(within(row).getByRole('button', { name: 'Download errors' })).toBeEnabled(),
+    );
+    fireEvent.click(within(row).getByRole('button', { name: 'Download errors' }));
+    expect(downloadMyResults).toHaveBeenCalledWith('batch_file', 'error');
+    expect(within(row).queryByRole('button', { name: 'Download results' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    // Nothing is downloadable before the results are.
+    const running = screen.getByTestId('batch-batch_running');
+    expect(within(running).queryByRole('button', { name: /Download/ })).toBeNull();
   });
 });
 
