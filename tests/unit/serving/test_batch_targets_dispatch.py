@@ -477,7 +477,35 @@ async def test_a_success_its_billing_point_could_not_price_is_unknown(monkeypatc
     assert (result.cost_status, result.cost_usd) == ("unknown", None)
 
 
-def test_each_target_has_an_executor_and_a_handler():
-    assert (
-        set(dispatch._EXECUTORS) == set(HANDLERS) == {"chat", "embeddings", "messages", "responses"}
+def test_each_target_has_exactly_one_executor():
+    core, handler = set(dispatch._CORE_EXECUTORS), set(dispatch._HANDLER_EXECUTORS)
+
+    assert core | handler == {"chat", "embeddings", "messages", "responses"}
+    assert not core & handler
+    assert set(HANDLERS) == handler
+
+
+@pytest.mark.parametrize("target", sorted(dispatch._CORE_EXECUTORS))
+async def test_a_core_target_runs_without_a_request_or_a_handler(monkeypatch, target):
+    """No synthetic HTTP request and no route handler on the batch execution path."""
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a core target built a Request or called a handler")
+
+    monkeypatch.setattr(dispatch, "_request", refuse)
+    monkeypatch.setattr(dispatch, "call_handler", refuse)
+    app, services, upstream, embedder = _setup()
+
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=_owner(),
+        body=_BODIES[target],
+        batch_id="b",
+        target=target,
+        protocol_profile="2023-06-01" if target == "messages" else None,
     )
+
+    assert result.error is None, result
+    assert result.cost_status == "billed"
+    assert len(embedder.calls if target == "embeddings" else upstream.calls) == 1

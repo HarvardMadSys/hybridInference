@@ -73,6 +73,13 @@ from serving.storage.batch_store import (
     TARGET_RESPONSES,
 )
 from serving.storage.utils import json_safe
+from serving.surfaces.context import (
+    UNTRACKED,
+    BatchAttribution,
+    ClientOrigin,
+    ExecutionContext,
+    read_only,
+)
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import ClientIpInfo, preset_client_ip_info
@@ -241,8 +248,7 @@ async def _dispatch(
 ) -> DispatchResult:
     if not isinstance(body, dict):
         return replace(_failure(400, "The request body must be a JSON object."), dispatched=False)
-    executor = _EXECUTORS.get(target)
-    if executor is None:
+    if target not in _CORE_EXECUTORS and target not in _HANDLER_EXECUTORS:
         return replace(_failure(400, f"Unsupported batch target {target!r}."), dispatched=False)
     request_body = {**body, "stream": False} if target != TARGET_EMBEDDINGS else dict(body)
     try:
@@ -278,9 +284,28 @@ async def _dispatch(
                     "batch_attempt": attempt,
                 }
             )
-            request = _request(app, raw, scope_request_id, TARGET_PATHS[target], protocol_profile)
+            ctx = ExecutionContext(
+                user_ctx=read_only(user_ctx),
+                origin=ClientOrigin.for_batch(
+                    path=TARGET_PATHS[target], ip=_BATCH_CLIENT, user_agent=BATCH_USER_AGENT
+                ),
+                # Not interactive traffic: the worker's own admission (the
+                # owner's batch quota, the model's capacity, the lease) holds it.
+                admission=UNTRACKED,
+                batch=BatchAttribution(batch_id, item_id, attempt),
+                timeout_probe=None,
+            )
+            core = _CORE_EXECUTORS.get(target)
             with deadline:
-                result = await executor(services, request, caller, request_body)
+                if core is not None:
+                    result = await core(services, ctx, request_body)
+                else:
+                    request = _request(
+                        app, raw, scope_request_id, TARGET_PATHS[target], protocol_profile
+                    )
+                    result = await _HANDLER_EXECUTORS[target](
+                        services, request, caller, request_body
+                    )
         except HTTPException as exc:
             if deadline.cancel_called:
                 outcome, uncertain = _TIMED_OUT, True
@@ -354,31 +379,28 @@ async def _run_chat(services: Any, request: Request, caller: dict[str, Any], bod
     )
 
 
-async def _run_embeddings(
-    services: Any, request: Request, caller: dict[str, Any], body: dict
-) -> Any:
-    from serving.servers.routers.embeddings import create_embeddings
+async def _run_embeddings(services: Any, ctx: ExecutionContext, body: dict) -> Any:
+    from serving.servers.routers.embeddings import EmbeddingServices, execute_embeddings
 
     try:
         payload = EmbeddingRequest.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(400, "The request is not a valid embeddings request.") from exc
-    return await call_handler(
-        create_embeddings,
+    return await execute_embeddings(
         payload,
-        request,
-        authorization=None,
-        user_ctx=caller,
-        embedding_adapters=getattr(services, "embedding_adapters", None) or {},
-        # The handler enforces the embedding access gate recorded on the
-        # router (refusing a model without one) and its runtime overrides.
-        router_exec=services.router,
-        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
-        log_store=getattr(services, "log_store", None),
-        completions_logger=await get_completions_logger(services),
-        op_store=getattr(services, "operational_store", None),
-        runtime_settings=None,
-        _concurrency_slot=None,
+        body,
+        ctx,
+        EmbeddingServices(
+            embedding_adapters=getattr(services, "embedding_adapters", None) or {},
+            # The access gate recorded on the router (refusing a model without
+            # one) and its runtime overrides apply as on /v1/embeddings.
+            router=services.router,
+            visibility=getattr(services, "model_visibility_resolver", None),
+            log_store=getattr(services, "log_store", None),
+            completions_logger=await get_completions_logger(services),
+            op_store=getattr(services, "operational_store", None),
+            runtime_settings=None,
+        ),
     )
 
 
@@ -422,18 +444,22 @@ async def _run_responses(
     )
 
 
-_EXECUTORS = {
-    TARGET_CHAT: _run_chat,
+#: Targets run through their protocol's execution function, with no request.
+_CORE_EXECUTORS = {
     TARGET_EMBEDDINGS: _run_embeddings,
+}
+
+#: Targets still run through their route's handler (transitional, issue #1690).
+_HANDLER_EXECUTORS = {
+    TARGET_CHAT: _run_chat,
     TARGET_MESSAGES: _run_messages,
     TARGET_RESPONSES: _run_responses,
 }
 
-#: The handler each target runs, for the tests that hold every injected
-#: parameter of each to a supplied argument.
+#: The handler each handler-run target calls, for the tests that hold every
+#: injected parameter of each to a supplied argument.
 HANDLERS: dict[str, tuple[str, str]] = {
     TARGET_CHAT: ("serving.servers.routers.completions", "chat_completions"),
-    TARGET_EMBEDDINGS: ("serving.servers.routers.embeddings", "create_embeddings"),
     TARGET_MESSAGES: ("serving.servers.routers.anthropic_messages", "anthropic_messages"),
     TARGET_RESPONSES: ("serving.servers.routers.responses", "create_response"),
 }
