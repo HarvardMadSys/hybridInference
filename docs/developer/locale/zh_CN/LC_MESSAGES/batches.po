@@ -94,12 +94,6 @@ msgstr "Messages"
 msgid "`/v1/messages`"
 msgstr ""
 
-#: ../developer/batches.md
-msgid ""
-"An Anthropic Messages request; the batch also names its "
-"`anthropic_version`"
-msgstr "一个 Anthropic Messages 请求；批次还要给出它的 `anthropic_version`"
-
 #: ../developer/batches.md:18
 msgid ""
 "Its requests arrive in one of two ways, the **input methods** of the same"
@@ -152,25 +146,6 @@ msgid ""
 "OpenAI's Batch API; the differences are listed at the end of this page."
 msgstr "无论目标和输入方式如何，批次都是同一种对象，状态、计数、结果、取消和删除都一样。形状沿用 OpenAI 的 Batch API；差异列在本页末尾。"
 
-#: ../developer/batches.md:30
-msgid ""
-"The official OpenAI SDKs work with the file flow for the chat, embeddings"
-" and Responses targets: point the SDK's base URL at `https://your-"
-"gateway.example/v1` and pass your gateway API key. The Messages target is"
-" this gateway's extension of that shape. Anthropic's own Message Batches "
-"API (`/v1/messages/batches`, the Anthropic SDKs' `messages.batches`) is "
-"not served; see [Moving from Message Batches](#moving-from-message-"
-"batches). There is no HybridInference SDK of its own. Direct requests and"
-" the results pages are this gateway's own, so the SDKs have no methods "
-"for them; call them over HTTP, as the examples below do."
-msgstr ""
-"官方 OpenAI SDK 可以用文件方式提交 Chat、Embeddings 和 Responses 目标的批次：把 SDK 的 base "
-"URL 指向 `https://your-gateway.example/v1`，并传入你的网关 API 密钥。Messages "
-"目标是本网关对这一形状的扩展。网关不提供 Anthropic 自己的 Message Batches "
-"API（`/v1/messages/batches`，即 Anthropic SDK 的 `messages.batches`）；见[从 "
-"Message Batches 迁移](#moving-from-message-batches)。HybridInference 没有自己的 "
-"SDK。直接提交请求和结果分页是本网关自有的接口，SDK 没有对应的方法；请像下面的示例那样直接通过 HTTP 调用。"
-
 #: ../developer/batches.md:41
 msgid ""
 "Only **internal** users and administrators can create batches unless the "
@@ -185,20 +160,6 @@ msgstr ""
 #: ../developer/batches.md:48
 msgid "How it works"
 msgstr "工作原理"
-
-#: ../developer/batches.md:50
-msgid ""
-"Creating a batch stores its requests; nothing runs during that call. "
-"Every request is checked before any of them runs: direct requests are "
-"checked whole before the call answers ([Create a "
-"batch](#create-a-batch)), and a file is checked whole in the background "
-"([Batches from a file](#batches-from-a-file)). One invalid request "
-"refuses the whole batch. A batch starts as `validating`, and the "
-"gateway's worker starts its requests as soon as their models have room."
-msgstr ""
-"创建批次时会存下它的请求；这次调用本身不运行任何请求。任何请求运行之前，所有请求都会先经过校验：直接提交的请求在调用返回前整体校验（[创建批次](#create-a-batch)），文件在后台整体校验（[来自文件的批次"
-"](#batches-from-a-file)）。只要有一个请求无效，整个批次就会被拒绝。批次一开始处于 "
-"`validating`，只要其模型有空余，网关的 worker 就会开始运行它的请求。"
 
 #: ../developer/batches.md:57
 msgid ""
@@ -336,23 +297,6 @@ msgid ""
 msgstr "请求体，与你直接发给该端点时一样。`stream` 不能为 `true`"
 
 #: ../developer/batches.md:40
-msgid "`anthropic_version`"
-msgstr ""
-
-#: ../developer/batches.md:40
-msgid "for `/v1/messages`"
-msgstr "`/v1/messages` 时必填"
-
-#: ../developer/batches.md:40
-msgid ""
-"The Anthropic API version the batch's Messages requests are checked and "
-"run under ([Messages in a batch](#messages-in-a-batch)). Refused on any "
-"other target"
-msgstr ""
-"批次中 Messages 请求校验和运行所依据的 Anthropic API 版本（[批次中的 Messages](#messages-"
-"in-a-batch)）。其他目标提供该字段会被拒绝"
-
-#: ../developer/batches.md:40
 msgid "`metadata`"
 msgstr ""
 
@@ -393,23 +337,6 @@ msgstr "你无权使用的模型，报错方式与不存在的模型完全相同
 #: ../developer/batches.md:151
 msgid "The answer is the new batch:"
 msgstr "返回的是新建的批次："
-
-#: ../developer/batches.md:180
-msgid ""
-"A batch of direct requests has no files, so its file fields are `null`. "
-"Several fields are not in OpenAI's object: `anthropic_version`, the "
-"version of a Messages batch (`null` otherwise); `cost_usd`, what the "
-"batch's finished requests were billed so far; `cost_unknown_attempts`, "
-"attempts whose cost is unknown and not in `cost_usd` (see "
-"[Costs](#costs)); `results_expires_at`, when the results will be deleted;"
-" and `error`, why the whole batch failed. `usage` totals the tokens of "
-"the finished requests."
-msgstr ""
-"直接提交请求的批次没有文件，所以它的文件字段都是 `null`。有几个字段不在 OpenAI "
-"的对象中：`anthropic_version`，Messages 批次的版本（其他批次为 "
-"`null`）；`cost_usd`，批次中已结束请求目前的计费；`cost_unknown_attempts`，费用未知、未计入 "
-"`cost_usd` 的尝试数（见[费用](#costs)）；`results_expires_at`，结果将被删除的时间；以及 "
-"`error`，整个批次失败的原因。`usage` 汇总已结束请求的 token 数。"
 
 #: ../developer/batches.md:188
 msgid "Check on a batch"
@@ -714,18 +641,6 @@ msgid ""
 "from it."
 msgstr "上传一个每行为一个请求的 JSONL 文件，然后用它创建批次。"
 
-#: ../developer/batches.md:377
-#, python-brace-format
-msgid ""
-"Each line is `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`, "
-"the `url` equal to the batch's `endpoint`. Every line must use the same "
-"model. A file batch for `/v1/messages` also names its `anthropic_version`"
-" in the create call, and every line is checked under it."
-msgstr ""
-"每一行是 `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`，其中 `url` "
-"必须等于批次的 `endpoint`。每一行必须使用同一个模型。`/v1/messages` 的文件批次还要在创建调用中给出 "
-"`anthropic_version`，每一行都按它校验。"
-
 #: ../developer/batches.md:382
 msgid ""
 "The batch starts as `validating` while the gateway reads the file in the "
@@ -778,58 +693,6 @@ msgstr ""
 msgid "Messages in a batch"
 msgstr "批次中的 Messages"
 
-#: ../developer/batches.md:417
-msgid ""
-"A batch whose target is `/v1/messages` carries Anthropic Messages request"
-" bodies and names the Anthropic API version they are written for in its "
-"`anthropic_version` field, beside `requests` or `input_file_id`:"
-msgstr ""
-"目标为 `/v1/messages` 的批次携带 Anthropic Messages 请求体，并在 `anthropic_version` "
-"字段中给出这些请求所针对的 Anthropic API 版本，与 `requests` 或 `input_file_id` 并列："
-
-#: ../developer/batches.md:440
-msgid ""
-"From a file, every line has `\"url\": \"/v1/messages\"` and the create "
-"call names the version:"
-msgstr "使用文件时，每一行都是 `\"url\": \"/v1/messages\"`，并在创建调用中给出版本："
-
-#: ../developer/batches.md:447
-#, python-brace-format
-msgid ""
-"With the OpenAI SDK, pass it as an extra field: "
-"`client.batches.create(input_file_id=upload.id, "
-"endpoint=\"/v1/messages\", completion_window=\"24h\", "
-"extra_body={\"anthropic_version\": \"2023-06-01\"})`."
-msgstr ""
-"使用 OpenAI SDK "
-"时，把它作为额外字段传入：`client.batches.create(input_file_id=upload.id, "
-"endpoint=\"/v1/messages\", completion_window=\"24h\", "
-"extra_body={\"anthropic_version\": \"2023-06-01\"})`。"
-
-#: ../developer/batches.md:451
-msgid ""
-"`anthropic_version` is required for a Messages batch, and refused on any "
-"other. `2023-06-01` and `2026-10-21` are known; the operator chooses "
-"which of them new batches may use (`BATCH_ANTHROPIC_VERSIONS`). A batch "
-"keeps its version, and every request is checked, and runs, under it: "
-"under `2026-10-21`, `temperature`, `top_p` and `top_k` are refused, as "
-"are document blocks in assistant messages and citations on user text."
-msgstr ""
-"Messages 批次必须提供 `anthropic_version`，其他批次提供会被拒绝。已知的版本是 `2023-06-01` 和 "
-"`2026-10-21`；运营者决定新批次可以使用其中哪些（`BATCH_ANTHROPIC_VERSIONS`）。批次保留它的版本，每个请求都按该版本校验和运行：在"
-" `2026-10-21` 下，`temperature`、`top_p` 和 `top_k` 会被拒绝，assistant 消息中的 "
-"document 块和 user 文本上的 citations 也会被拒绝。"
-
-#: ../developer/batches.md:457
-msgid ""
-"The version is not taken from headers. `anthropic-beta` is refused, and "
-"an `anthropic-version` header, if you send one, must equal "
-"`anthropic_version`. A request body cannot carry its own version or "
-"`betas` either."
-msgstr ""
-"版本不从请求头读取。`anthropic-beta` 会被拒绝；如果你发送了 `anthropic-version` 请求头，它必须与 "
-"`anthropic_version` 一致。请求体本身也不能携带自己的版本或 `betas`。"
-
 #: ../developer/batches.md:460
 msgid ""
 "Each request is checked like any batch request: one the gateway cannot "
@@ -861,20 +724,6 @@ msgstr "每个请求都是单轮推理。要求调用工具的结果，需要由
 msgid "Moving from Message Batches"
 msgstr "从 Message Batches 迁移"
 
-#: ../developer/batches.md:475
-msgid ""
-"The Anthropic Message Batches routes — `/v1/messages/batches` and "
-"`/anthropic/v1/messages/batches` with every operation under them — have "
-"been removed and answer `404`. The Anthropic SDKs' `messages.batches` "
-"methods no longer work against this gateway. Online `/v1/messages` (and "
-"`/anthropic/v1/messages`) is unchanged. Use `/v1/batches` with the "
-"Messages target instead:"
-msgstr ""
-"Anthropic Message Batches 路由——`/v1/messages/batches` 和 "
-"`/anthropic/v1/messages/batches` 及其下的所有操作——已经移除，返回 `404`。Anthropic SDK 的 "
-"`messages.batches` 方法不再能用于本网关。在线的 `/v1/messages`（以及 "
-"`/anthropic/v1/messages`）不变。请改用 Messages 目标的 `/v1/batches`："
-
 #: ../developer/batches.md:40
 msgid "Before"
 msgstr "以前"
@@ -891,15 +740,6 @@ msgid ""
 msgstr ""
 "`POST /v1/messages/batches`，请求头 `anthropic-version`，请求体 `{\"requests\": "
 "[{\"custom_id\", \"params\"}]}`"
-
-#: ../developer/batches.md:40
-#, python-brace-format
-msgid ""
-"`POST /v1/batches`, body `{\"anthropic_version\", \"requests\": "
-"[{\"custom_id\", \"url\": \"/v1/messages\", \"body\"}]}`"
-msgstr ""
-"`POST /v1/batches`，请求体 `{\"anthropic_version\", \"requests\": "
-"[{\"custom_id\", \"url\": \"/v1/messages\", \"body\"}]}`"
 
 #: ../developer/batches.md:40
 #, python-brace-format
@@ -962,14 +802,6 @@ msgid "`request_counts` `total` / `completed` / `failed`"
 msgstr ""
 
 #: ../developer/batches.md:40
-msgid "An invalid request became one `errored` result"
-msgstr "无效的请求成为一条 `errored` 结果"
-
-#: ../developer/batches.md:40
-msgid "An invalid request refuses the batch, naming it"
-msgstr "无效的请求使整个批次被拒绝，并指明是哪一个"
-
-#: ../developer/batches.md:40
 msgid "`custom_id` up to 64 letters, digits, `_`, `-`"
 msgstr "`custom_id` 最多 64 个字母、数字、`_`、`-`"
 
@@ -980,24 +812,6 @@ msgstr "`custom_id` 为 1–512 个字符"
 #: ../developer/batches.md:40
 msgid "Webhook event `message_batch.ended`"
 msgstr "Webhook 事件 `message_batch.ended`"
-
-#: ../developer/batches.md:40
-msgid "`batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled`"
-msgstr "`batch.completed`、`batch.failed`、`batch.expired` 或 `batch.cancelled`"
-
-#: ../developer/batches.md:495
-#, python-brace-format
-msgid ""
-"Batches created through the removed routes are kept and still run. They "
-"are listed, read, cancelled, deleted and downloaded through `/v1/batches`"
-" and the console like any other batch (their ids start with `msgbatch_`),"
-" in the shapes above: their results come as the common result lines, no "
-"longer as `{\"custom_id\", \"result\"}` lines. An `Idempotency-Key` used "
-"on the removed routes does not replay through `/v1/batches`."
-msgstr ""
-"通过已移除路由创建的批次会保留并继续运行。它们与其他批次一样，通过 `/v1/batches` 和控制台列出、读取、取消、删除和下载（它们的 id"
-" 以 `msgbatch_` 开头），形状如上：它们的结果是通用的结果行，不再是 `{\"custom_id\", \"result\"}` "
-"行。在已移除路由上使用过的 `Idempotency-Key` 不会通过 `/v1/batches` 重放。"
 
 #: ../developer/batches.md:502
 msgid "Embeddings and Responses in a batch"
@@ -1020,24 +834,6 @@ msgstr ""
 #: ../developer/batches.md:510
 msgid "Submitting safely twice"
 msgstr "安全地重复提交"
-
-#: ../developer/batches.md:512
-msgid ""
-"Send an `Idempotency-Key` header with a create call (either input method)"
-" to make it safe to retry. The same key with the same request — for a "
-"Messages batch, the same `anthropic_version` too — returns the batch the "
-"first call created, even if your quota has since run out or your role "
-"changed; the same key with a different request answers `409`. After the "
-"batch is deleted the key answers `410` for at least a day; a key is "
-"remembered until a day after its batch ends. The key belongs to your "
-"account, so any of your API keys can replay it, and a replay never "
-"changes which key the batch runs under. The SDKs do not send this header "
-"for you."
-msgstr ""
-"在创建调用中发送 `Idempotency-Key` 请求头（两种输入方式都可以），即可安全地重试。同一个键配同一个请求（Messages "
-"批次还要求 `anthropic_version` 相同）会返回第一次调用创建的批次，即使你的配额此后已用完或角色已变化；同一个键配不同的请求返回"
-" `409`。批次删除后，该键至少一天内返回 `410`；键会一直记住，直到其批次结束后一天。键属于你的账户，所以你的任何 API "
-"密钥都能重放它，重放也绝不会改变批次运行所用的密钥。SDK 不会替你发送这个请求头。"
 
 #: ../developer/batches.md:522
 msgid "Costs"
@@ -1096,31 +892,6 @@ msgstr ""
 "设置 webhook、修改其 URL、轮换密钥或重新启用，都需要达到创建批次所需的角色（`BATCH_MIN_ROLE`）；角色不足时，`PUT`"
 " 返回 `403`，不会存储配置或进行地址查询。检查使用请求时的当前角色。角色降低后，你仍可读取自己的 "
 "webhook、查看投递记录和删除它；只要它仍启用，已有批次的事件也会继续投递。"
-
-#: ../developer/batches.md:550
-#, python-brace-format
-msgid ""
-"When a batch ends, after its results can be read, the gateway POSTs an "
-"event: `batch.completed`, `batch.failed`, `batch.expired` or "
-"`batch.cancelled`, whatever the batch's target. (An event a previous "
-"version queued for a Message Batch before the upgrade is still delivered "
-"as `message_batch.ended`.) The body names the batch only (`{\"id\", "
-"\"object\": \"event\", \"type\", \"created_at\", \"data\": {\"id\"}}`); "
-"fetch the results with your API key. Deliveries are signed as Standard "
-"Webhooks are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 "
-"of `\"{webhook-id}.{webhook-timestamp}.{body}\"` with the secret's base64"
-" part as the key). A delivery that is not answered with a `2xx` is "
-"retried with backoff, up to eight attempts; the same event can arrive "
-"more than once, so deduplicate on `webhook-id`."
-msgstr ""
-"批次结束、其结果可读之后，网关会 POST "
-"一个事件：`batch.completed`、`batch.failed`、`batch.expired` 或 "
-"`batch.cancelled`，与批次的目标无关。（升级前旧版本为某个 Message Batch 排队的事件，仍以 "
-"`message_batch.ended` 投递。）请求体只指明批次（`{\"id\", \"object\": \"event\", "
-"\"type\", \"created_at\", \"data\": {\"id\"}}`）；请用你的 API 密钥获取结果。投递按 "
-"Standard Webhooks 的方式签名：校验 `webhook-signature`（`v1,` 加上以密钥的 base64 部分为 "
-"key、对 `\"{webhook-id}.{webhook-timestamp}.{body}\"` 计算的 base64 HMAC-"
-"SHA256）。没有得到 `2xx` 回应的投递会带退避重试，最多八次；同一事件可能到达不止一次，请按 `webhook-id` 去重。"
 
 #: ../developer/batches.md:562
 msgid ""
@@ -1243,20 +1014,6 @@ msgid "`400`"
 msgstr ""
 
 #: ../developer/batches.md:40
-msgid ""
-"The body is not valid JSON or not a batch; a request is invalid, uses an "
-"unknown or auto model, or repeats a `custom_id`; too many requests; a "
-"Messages batch without a known, allowed `anthropic_version`, or another "
-"batch with one; an `anthropic-beta` header, or an `anthropic-version` "
-"header that differs from `anthropic_version`; or the request carries `X"
-"-On-Behalf-Of`"
-msgstr ""
-"请求体不是有效的 JSON 或不是批次；某个请求无效、使用了未知模型或 auto 模型，或 `custom_id` "
-"重复；请求过多；Messages 批次没有已知且允许的 `anthropic_version`，或其他批次带有该字段；带有 `anthropic-"
-"beta` 请求头，或 `anthropic-version` 请求头与 `anthropic_version` 不一致；或请求带有 `X-On-"
-"Behalf-Of`"
-
-#: ../developer/batches.md:40
 msgid "`401`"
 msgstr ""
 
@@ -1350,18 +1107,6 @@ msgid ""
 msgstr ""
 "文件批次的 24 小时窗口是网关停止*开始*请求的时间。窗口结束时已在运行的请求会运行完，所以批次可能在 `expires_at` "
 "之后才进入最终状态。"
-
-#: ../developer/batches.md:615
-#, python-brace-format
-msgid ""
-"Direct requests, `GET /v1/batches/{id}/results`, the JSONL export, "
-"`DELETE /v1/batches/{id}`, `Idempotency-Key`, the Messages target with "
-"`anthropic_version`, and the cost fields are this gateway's own. OpenAI's"
-" file flow is compatible for the chat, embeddings and Responses targets."
-msgstr ""
-"直接提交请求、`GET /v1/batches/{id}/results`、JSONL 导出、`DELETE /v1/batches/{id"
-"}`、`Idempotency-Key`、带 `anthropic_version` 的 Messages "
-"目标以及费用字段都是本网关自有的。OpenAI 的文件方式对 Chat、Embeddings 和 Responses 目标兼容。"
 
 #: ../developer/batches.md:619
 msgid "Only `purpose=batch` files exist, and they serve batches only."
@@ -1655,12 +1400,6 @@ msgid "`2023-06-01,2026-10-21`"
 msgstr ""
 
 #: ../developer/batches.md:40
-msgid ""
-"`anthropic_version` values a new `/v1/messages` batch may name. A stored "
-"batch keeps running under its own"
-msgstr "新的 `/v1/messages` 批次可以使用的 `anthropic_version` 值。已存的批次继续按它自己的版本运行"
-
-#: ../developer/batches.md:40
 msgid "`BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS`"
 msgstr ""
 
@@ -1730,47 +1469,6 @@ msgstr "管理控制台的 **Batches** 标签页列出所有用户的批次，�
 #: ../developer/batches.md:693
 msgid "Upgrading a deployment"
 msgstr "升级部署"
-
-#: ../developer/batches.md:695
-msgid ""
-"A worker only runs the kinds of batch it knows: claims, expiry, "
-"finalizing, validation, sealing and cleanup all skip a batch whose "
-"surface, target or schema version is newer than the worker's. The workers"
-" that do not know this are the old ones: a gateway older than the one "
-"that added file batches and the former Message Batches (before #1660) has"
-" no such filter and would run their requests as chat completions. New "
-"code cannot change what an old process already running does, so before "
-"upgrading from one of those versions, make sure no old worker is running "
-"alongside the new version:"
-msgstr ""
-"worker 只运行它认识的批次种类：领取、过期、收尾、校验、封存和清理都会跳过 surface、target 或 schema version "
-"比 worker 新的批次。不认识这一点的是旧 worker：比加入文件批次和原 Message Batches 的版本更早的网关（#1660 "
-"之前）没有这种过滤，会把它们的请求当作 Chat Completions "
-"运行。新代码无法改变已经在运行的旧进程的行为，所以从这些版本升级之前，请确保没有旧 worker 与新版本同时运行："
-
-#: ../developer/batches.md:704
-msgid ""
-"On the old version, turn `BATCH_ENABLED` off (Settings tab, or `python -m"
-" serving.config.manage set BATCH_ENABLED false`). Within about ten "
-"seconds every old process stops claiming and sweeping, and logs that its "
-"batch worker is disabled. A request it was already running finishes or is"
-" handed back; those are chat batches, which the new version runs too."
-msgstr ""
-"在旧版本上关闭 `BATCH_ENABLED`（通过 Settings 页，或 `python -m serving.config.manage "
-"set BATCH_ENABLED false`）。约十秒内，每个旧进程都会停止领取和扫描批次，并记录 batch worker "
-"已停用。已经运行的请求会完成或交还；这些都是聊天批次，新版本也能处理。"
-
-#: ../developer/batches.md:709
-msgid ""
-"Upgrade every gateway process. The new processes start with "
-"`BATCH_ENABLED` still off."
-msgstr "升级每个网关进程。新进程启动时，`BATCH_ENABLED` 仍保持关闭。"
-
-#: ../developer/batches.md:711
-msgid ""
-"Once no process of the old version is left (check your process manager or"
-" orchestrator, not only the health endpoint), turn `BATCH_ENABLED` on."
-msgstr "确认没有任何旧版本进程后（检查进程管理器或编排器，不能只看健康检查接口），再开启 `BATCH_ENABLED`。"
 
 #: ../developer/batches.md:724
 msgid ""
@@ -1858,29 +1556,6 @@ msgid ""
 msgstr ""
 "最终检查必须等数据库活动结束，是因为关闭 `BATCH_ENABLED` "
 "只会拒绝新请求，不会阻止刚刚通过准入检查的创建请求；无论读取请求体或访问数据库耗时多久，该请求仍会存储批次。仅确认进程已退出也不够，因为它之前发送的提交可能仍在服务端执行。每次创建都在一个事务内完成，而且只有网关进程会写入批次；因此，当所有网关会话都已退出且不会再启动时，每次创建必定已经提交或回滚，查询才能看到全部最终写入的数据。"
-
-#: ../developer/batches.md:714
-msgid ""
-"Stopping every old process before any new one starts is equally safe. "
-"From a version that already has file batches and the former Message "
-"Batches (#1660 or later), a rolling upgrade needs none of this. Messages "
-"batches created through `/v1/batches` are kinds those workers do not "
-"know, so while old processes are still running they neither run, "
-"validate, seal nor expire them; only this version's workers do. A create "
-"for the Messages target that an old process happens to answer is refused "
-"with `400` (it does not know the target); retry it, or wait until every "
-"process runs this version. Until the last old process is gone, a client "
-"may still reach the old `/v1/messages/batches` on one of them; batches it"
-" creates there are drained by this version as described in [Moving from "
-"Message Batches](#moving-from-message-batches)."
-msgstr ""
-"先停掉所有旧进程再启动新进程同样安全。如果是从已经有文件批次和原 Message Batches 的版本（#1660 "
-"或之后）升级，滚动升级不需要以上任何步骤。通过 `/v1/batches` 创建的 Messages 批次是这些 worker "
-"不认识的种类，所以旧进程还在运行时，它们既不运行、校验、封存，也不过期这些批次；只有本版本的 worker 会处理。恰好由旧进程处理的 "
-"Messages 目标创建请求会得到 "
-"`400`（旧进程不认识该目标）；请重试，或等到所有进程都运行本版本。在最后一个旧进程退出之前，客户端仍可能在某个旧进程上访问到旧的 "
-"`/v1/messages/batches`；在那里创建的批次由本版本按[从 Message Batches 迁移](#moving-from-"
-"message-batches)中所述的方式排空。"
 
 #: ../developer/batches.md:657
 msgid ""
@@ -2010,3 +1685,395 @@ msgid ""
 msgstr ""
 "回滚不会改写任何行：较新种类中已结束的批次仍留在数据库中。#1660 "
 "之前的版本会把它们当作内联聊天批次列出和清理，并且直到下次升级前都不会读取已上传的文件和 webhook。"
+
+#: ../developer/batches.md
+msgid ""
+"An Anthropic Messages request; the create call also sends the `anthropic-"
+"version` header"
+msgstr "一个 Anthropic Messages 请求；创建调用还要发送 `anthropic-version` 请求头"
+
+#: ../developer/batches.md:30
+msgid ""
+"The official OpenAI SDKs work with the file flow for the chat, embeddings"
+" and Responses targets: point the SDK's base URL at `https://your-"
+"gateway.example/v1` and pass your gateway API key. The Messages target is"
+" this gateway's extension of that shape. Anthropic's own Message Batches "
+"API (`/v1/messages/batches`, the Anthropic SDKs' `messages.batches`) is "
+"no longer served: its routes answer `410`; see [Moving from Message "
+"Batches](#moving-from-message-batches). There is no HybridInference SDK "
+"of its own. Direct requests and the results pages are this gateway's own,"
+" so the SDKs have no methods for them; call them over HTTP, as the "
+"examples below do."
+msgstr ""
+"官方 OpenAI SDK 可以用文件方式提交 Chat、Embeddings 和 Responses 目标的批次：把 SDK 的 base "
+"URL 指向 `https://your-gateway.example/v1`，并传入你的网关 API 密钥。Messages "
+"目标是本网关对这一形状的扩展。网关不再提供 Anthropic 自己的 Message Batches "
+"API（`/v1/messages/batches`，即 Anthropic SDK 的 `messages.batches`），它的路由返回 "
+"`410`；见[从 Message Batches 迁移](#moving-from-message-"
+"batches)。HybridInference 没有自己的 SDK。直接提交请求和结果分页是本网关自有的接口，SDK "
+"没有对应的方法；请像下面的示例那样直接通过 HTTP 调用。"
+
+#: ../developer/batches.md:51
+msgid ""
+"Creating a batch stores its requests; nothing runs during that call. "
+"Every request is checked before any of them runs: direct requests are "
+"checked whole before the call answers ([Create a "
+"batch](#create-a-batch)), and a file is checked whole in the background "
+"([Batches from a file](#batches-from-a-file)). One invalid request "
+"refuses the whole batch, and a refused batch has made no inference call "
+"at all. A batch starts as `validating`, and the gateway's worker starts "
+"its requests as soon as their models have room. From then on each request"
+" succeeds or fails on its own: a request the model rejects, or that still"
+" fails after its retries, fails alone, and the others keep running."
+msgstr ""
+"创建批次时会存下它的请求；这次调用本身不运行任何请求。任何请求运行之前，所有请求都会先经过校验：直接提交的请求在调用返回前整体校验（[创建批次](#create-a-batch)），文件在后台整体校验（[来自文件的批次"
+"](#batches-from-a-file)）。只要有一个请求无效，整个批次就会被拒绝，被拒绝的批次没有发出任何推理调用。批次一开始处于 "
+"`validating`，只要其模型有空余，网关的 worker "
+"就会开始运行它的请求。从这时起，每个请求各自成功或失败：被模型拒绝、或重试后仍失败的请求只有它自己失败，其他请求继续运行。"
+
+#: ../developer/batches.md:154
+msgid ""
+"A Messages batch also sends the `anthropic-version` header with this "
+"call; see [Messages in a batch](#messages-in-a-batch)."
+msgstr ""
+"Messages 批次在这次调用中还要发送 `anthropic-version` 请求头；见[批次中的 Messages](#messages-"
+"in-a-batch)。"
+
+#: ../developer/batches.md:186
+msgid ""
+"A batch of direct requests has no files, so its file fields are `null`. "
+"Several fields are not in OpenAI's object: `anthropic_version`, the "
+"version a Messages batch was created with (`null` otherwise); `cost_usd`,"
+" what the batch's finished requests were billed so far; "
+"`cost_unknown_attempts`, attempts whose cost is unknown and not in "
+"`cost_usd` (see [Costs](#costs)); `results_expires_at`, when the results "
+"will be deleted; and `error`, why the whole batch failed. `usage` totals "
+"the tokens of the finished requests."
+msgstr ""
+"直接提交请求的批次没有文件，所以它的文件字段都是 `null`。有几个字段不在 OpenAI "
+"的对象中：`anthropic_version`，Messages 批次创建时使用的版本（其他批次为 "
+"`null`）；`cost_usd`，批次中已结束请求目前的计费；`cost_unknown_attempts`，费用未知、未计入 "
+"`cost_usd` 的尝试数（见[费用](#costs)）；`results_expires_at`，结果将被删除的时间；以及 "
+"`error`，整个批次失败的原因。`usage` 汇总已结束请求的 token 数。"
+
+#: ../developer/batches.md:383
+#, python-brace-format
+msgid ""
+"Each line is `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`, "
+"the `url` equal to the batch's `endpoint`. Every line must use the same "
+"model. A file batch for `/v1/messages` also sends the `anthropic-version`"
+" header with the create call, and every line is checked under that "
+"version."
+msgstr ""
+"每一行是 `{\"custom_id\", \"method\": \"POST\", \"url\", \"body\"}`，其中 `url` "
+"必须等于批次的 `endpoint`。每一行必须使用同一个模型。`/v1/messages` 的文件批次在创建调用中还要发送 "
+"`anthropic-version` 请求头，每一行都按该版本校验。"
+
+#: ../developer/batches.md:423
+msgid ""
+"A batch whose target is `/v1/messages` carries Anthropic Messages request"
+" bodies, and its create call names the Anthropic API version they are "
+"written for in the `anthropic-version` header, as Anthropic's API does:"
+msgstr ""
+"目标为 `/v1/messages` 的批次携带 Anthropic Messages 请求体，创建调用像 Anthropic 的 API "
+"一样，在 `anthropic-version` 请求头中给出这些请求所针对的 Anthropic API 版本："
+
+#: ../developer/batches.md:446
+#, python-brace-format
+msgid ""
+"From a file, every line has `\"url\": \"/v1/messages\"`, and the create "
+"call (`{\"input_file_id\": \"file-…\", \"endpoint\": \"/v1/messages\", "
+"\"completion_window\": \"24h\"}`) sends the same header. With the OpenAI "
+"SDK:"
+msgstr ""
+"使用文件时，每一行都是 `\"url\": \"/v1/messages\"`，创建调用（`{\"input_file_id\": "
+"\"file-…\", \"endpoint\": \"/v1/messages\", \"completion_window\": "
+"\"24h\"}`）发送同样的请求头。使用 OpenAI SDK 时："
+
+#: ../developer/batches.md:459
+msgid ""
+"The header is required for a Messages batch, and refused on any other. "
+"`2023-06-01` and `2026-10-21` are known; the operator chooses which of "
+"them new batches may use (`BATCH_ANTHROPIC_VERSIONS`). A batch keeps its "
+"version (the batch object shows it as `anthropic_version`), and every "
+"request is checked, and runs, under it: under `2026-10-21`, "
+"`temperature`, `top_p` and `top_k` are refused, as are document blocks in"
+" assistant messages and citations on user text. Only the header names it:"
+" an `anthropic_version` field in the body is refused, and so is one "
+"inside a request's body."
+msgstr ""
+"Messages 批次必须提供这个请求头，其他批次提供会被拒绝。已知的版本是 `2023-06-01` 和 "
+"`2026-10-21`；运营者决定新批次可以使用其中哪些（`BATCH_ANTHROPIC_VERSIONS`）。批次保留它的版本（批次对象中显示为"
+" `anthropic_version`），每个请求都按该版本校验和运行：在 `2026-10-21` "
+"下，`temperature`、`top_p` 和 `top_k` 会被拒绝，assistant 消息中的 document 块和 user "
+"文本上的 citations 也会被拒绝。版本只能由请求头给出：请求体中的 `anthropic_version` "
+"字段会被拒绝，单个请求体中的也一样。"
+
+#: ../developer/batches.md:467
+msgid ""
+"Reading, listing, cancelling, deleting and downloading a batch need no "
+"version header."
+msgstr "读取、列出、取消、删除和下载批次都不需要版本请求头。"
+
+#: ../developer/batches.md:469
+msgid ""
+"`anthropic-beta` is refused: batches support no beta, and a request body "
+"cannot carry `betas` either."
+msgstr "`anthropic-beta` 会被拒绝：批次不支持任何 beta，请求体也不能携带 `betas`。"
+
+#: ../developer/batches.md:486
+msgid ""
+"The Anthropic Message Batches routes — `/v1/messages/batches` and "
+"`/anthropic/v1/messages/batches` with every operation under them — have "
+"been removed. Each of their operations answers `410 Gone` with a short "
+"note on where to go instead, whoever calls it and whatever the id; "
+"nothing of the old API runs. The Anthropic SDKs' `messages.batches` "
+"methods therefore fail against this gateway. Online `/v1/messages` (and "
+"`/anthropic/v1/messages`) is unchanged. Use `/v1/batches` with the "
+"Messages target instead:"
+msgstr ""
+"Anthropic Message Batches 路由——`/v1/messages/batches` 和 "
+"`/anthropic/v1/messages/batches` 及其下的所有操作——已经移除。它们的每个操作都返回 `410 "
+"Gone`，并附一段简短说明告诉你应改用哪里，不论调用者是谁、id 是什么；旧 API 的任何部分都不会运行。因此 Anthropic SDK 的"
+" `messages.batches` 方法对本网关会失败。在线的 `/v1/messages`（以及 "
+"`/anthropic/v1/messages`）不变。请改用 Messages 目标的 `/v1/batches`："
+
+#: ../developer/batches.md:41
+#, python-brace-format
+msgid ""
+"`POST /v1/batches`, header `anthropic-version`, body `{\"requests\": "
+"[{\"custom_id\", \"url\": \"/v1/messages\", \"body\"}]}`"
+msgstr ""
+"`POST /v1/batches`，请求头 `anthropic-version`，请求体 `{\"requests\": "
+"[{\"custom_id\", \"url\": \"/v1/messages\", \"body\"}]}`"
+
+#: ../developer/batches.md:41
+msgid "An invalid request became one `errored` result and the others ran"
+msgstr "无效的请求成为一条 `errored` 结果，其余请求照常运行"
+
+#: ../developer/batches.md:41
+msgid "An invalid request refuses the whole batch before anything runs, naming it"
+msgstr "无效的请求会在任何请求运行之前使整个批次被拒绝，并指明是哪一个"
+
+#: ../developer/batches.md:41
+msgid ""
+"`batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled` "
+"for a new batch"
+msgstr "新批次为 `batch.completed`、`batch.failed`、`batch.expired` 或 `batch.cancelled`"
+
+#: ../developer/batches.md:507
+#, python-brace-format
+msgid ""
+"Batches created through the removed routes are kept and still run. They "
+"are listed, read, cancelled, deleted and downloaded through `/v1/batches`"
+" and the console like any other batch (their ids start with `msgbatch_`),"
+" in the shapes above: their results come as the common result lines, no "
+"longer as `{\"custom_id\", \"result\"}` lines. When one of them ends, its"
+" webhook event is still `message_batch.ended`, the event it was created "
+"under; its id works on `/v1/batches`. An `Idempotency-Key` used on the "
+"removed routes does not replay through `/v1/batches`."
+msgstr ""
+"通过已移除路由创建的批次会保留并继续运行。它们与其他批次一样，通过 `/v1/batches` 和控制台列出、读取、取消、删除和下载（它们的 id"
+" 以 `msgbatch_` 开头），形状如上：它们的结果是通用的结果行，不再是 `{\"custom_id\", \"result\"}` "
+"行。它们结束时的 webhook 事件仍是 `message_batch.ended`，即它们创建时所用的事件；事件中的 id 可在 "
+"`/v1/batches` 上使用。在已移除路由上使用过的 `Idempotency-Key` 不会通过 `/v1/batches` 重放。"
+
+#: ../developer/batches.md:516
+msgid ""
+"The change to invalid requests needs care when migrating. The removed API"
+" checked each request on its own: one with a bad parameter or a model you"
+" may not use became an `errored` result and the rest of the batch ran. "
+"`/v1/batches` checks every request first, for every target alike, and "
+"refuses the whole batch when any request is invalid, before it makes any "
+"inference call. A program that relied on submitting mixed good and bad "
+"requests in one batch has to check its requests itself, or resubmit "
+"without the request the error names."
+msgstr ""
+"迁移时需要注意无效请求的处理方式变了。已移除的 API 逐个检查请求：参数有误或使用了无权使用的模型的请求成为一条 `errored` "
+"结果，批次的其余请求照常运行。`/v1/batches` "
+"对所有目标一样，先检查全部请求，只要有一个无效就拒绝整个批次，此时还没有发出任何推理调用。依赖于在一个批次中混合提交有效和无效请求的程序，需要自己先检查请求，或者去掉错误中指出的请求后重新提交。"
+
+#: ../developer/batches.md:534
+msgid ""
+"Send an `Idempotency-Key` header with a create call (either input method)"
+" to make it safe to retry. The same key with the same request — for a "
+"Messages batch, the same `anthropic-version` header too — returns the "
+"batch the first call created, even if your quota has since run out or "
+"your role changed; the same key with a different request answers `409`. "
+"After the batch is deleted the key answers `410` for at least a day; a "
+"key is remembered until a day after its batch ends. The key belongs to "
+"your account, so any of your API keys can replay it, and a replay never "
+"changes which key the batch runs under. The SDKs do not send this header "
+"for you."
+msgstr ""
+"在创建调用中发送 `Idempotency-Key` 请求头（两种输入方式都可以），即可安全地重试。同一个键配同一个请求（Messages "
+"批次还要求 `anthropic-version` "
+"请求头相同）会返回第一次调用创建的批次，即使你的配额此后已用完或角色已变化；同一个键配不同的请求返回 `409`。批次删除后，该键至少一天内返回 "
+"`410`；键会一直记住，直到其批次结束后一天。键属于你的账户，所以你的任何 API 密钥都能重放它，重放也绝不会改变批次运行所用的密钥。SDK "
+"不会替你发送这个请求头。"
+
+#: ../developer/batches.md:572
+#, python-brace-format
+msgid ""
+"When a batch ends, after its results can be read, the gateway POSTs an "
+"event: `batch.completed`, `batch.failed`, `batch.expired` or "
+"`batch.cancelled`, whatever the batch's target. A batch created through "
+"the removed Message Batches API ends with `message_batch.ended` instead, "
+"as it did when it was created; events already queued are delivered as "
+"they were written. The body names the batch only (`{\"id\", \"object\": "
+"\"event\", \"type\", \"created_at\", \"data\": {\"id\"}}`); fetch the "
+"results with your API key. Deliveries are signed as Standard Webhooks "
+"are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 of "
+"`\"{webhook-id}.{webhook-timestamp}.{body}\"` with the secret's base64 "
+"part as the key). A delivery that is not answered with a `2xx` is retried"
+" with backoff, up to eight attempts; the same event can arrive more than "
+"once, so deduplicate on `webhook-id`."
+msgstr ""
+"批次结束、其结果可读之后，网关会 POST "
+"一个事件：`batch.completed`、`batch.failed`、`batch.expired` 或 "
+"`batch.cancelled`，与批次的目标无关。通过已移除的 Message Batches API 创建的批次则以 "
+"`message_batch.ended` 结束，与它创建时一样；已经排队的事件按写入时的样子投递。请求体只指明批次（`{\"id\", "
+"\"object\": \"event\", \"type\", \"created_at\", \"data\": "
+"{\"id\"}}`）；请用你的 API 密钥获取结果。投递按 Standard Webhooks 的方式签名：校验 `webhook-"
+"signature`（`v1,` 加上以密钥的 base64 部分为 key、对 `\"{webhook-id}.{webhook-"
+"timestamp}.{body}\"` 计算的 base64 HMAC-SHA256）。没有得到 `2xx` "
+"回应的投递会带退避重试，最多八次；同一事件可能到达不止一次，请按 `webhook-id` 去重。"
+
+#: ../developer/batches.md:41
+msgid ""
+"The body is not valid JSON or not a batch; a request is invalid, uses an "
+"unknown or auto model, or repeats a `custom_id`; too many requests; a "
+"Messages batch without a known, allowed `anthropic-version` header, or "
+"another batch with one; an `anthropic_version` field in the body; an "
+"`anthropic-beta` header; or the request carries `X-On-Behalf-Of`"
+msgstr ""
+"请求体不是有效的 JSON 或不是批次；某个请求无效、使用了未知模型或 auto 模型，或 `custom_id` "
+"重复；请求过多；Messages 批次没有已知且允许的 `anthropic-version` 请求头，或其他批次带有该请求头；请求体中有 "
+"`anthropic_version` 字段；带有 `anthropic-beta` 请求头；或请求带有 `X-On-Behalf-Of`"
+
+#: ../developer/batches.md:638
+#, python-brace-format
+msgid ""
+"Direct requests, `GET /v1/batches/{id}/results`, the JSONL export, "
+"`DELETE /v1/batches/{id}`, `Idempotency-Key`, the Messages target with "
+"its `anthropic-version` header, and the cost fields are this gateway's "
+"own. OpenAI's file flow is compatible for the chat, embeddings and "
+"Responses targets."
+msgstr ""
+"直接提交请求、`GET /v1/batches/{id}/results`、JSONL 导出、`DELETE /v1/batches/{id"
+"}`、`Idempotency-Key`、带 `anthropic-version` 请求头的 Messages "
+"目标以及费用字段都是本网关自有的。OpenAI 的文件方式对 Chat、Embeddings 和 Responses 目标兼容。"
+
+#: ../developer/batches.md:41
+msgid ""
+"`anthropic-version` values a new `/v1/messages` batch may name. A stored "
+"batch keeps running under its own, and a create it made still replays"
+msgstr ""
+"新的 `/v1/messages` 批次可以使用的 `anthropic-version` "
+"值。已存的批次继续按它自己的版本运行，它创建时的请求仍可重放"
+
+#: ../developer/batches.md:719
+msgid ""
+"A worker only runs the kinds of batch it knows: claims, expiry, "
+"finalizing, validation, sealing and cleanup all filter, in the database "
+"query itself, on a batch's surface, target and schema version. That "
+"filter is what makes a rolling upgrade safe, and it exists from #1660 on:"
+" **a rolling upgrade is supported from a release that includes #1660.** "
+"Its workers skip the Messages batches this version creates through "
+"`/v1/batches`, inline or from a file, so while they still run only this "
+"version's workers run, validate, seal or expire those. While both "
+"versions run:"
+msgstr ""
+"worker 只运行它认识的批次种类：领取、过期、收尾、校验、封存和清理都在数据库查询中按批次的 surface、target 和 schema "
+"version 过滤。正是这一过滤让滚动升级是安全的，它从 #1660 起才有：**滚动升级只支持从包含 #1660 的版本开始**。这些 "
+"worker 会跳过本版本通过 `/v1/batches` 创建的 Messages 批次（直接提交或来自文件），所以它们还在运行时，只有本版本的"
+" worker 会运行、校验、封存或过期这些批次。两个版本同时运行时："
+
+#: ../developer/batches.md:728
+msgid ""
+"a create for the Messages target that an old process happens to answer is"
+" refused with `400` (it does not know the target); retry it, or wait "
+"until every process runs this version;"
+msgstr "恰好由旧进程处理的 Messages 目标创建请求会得到 `400`（旧进程不认识该目标）；请重试，或等到所有进程都运行本版本；"
+
+#: ../developer/batches.md:731
+msgid ""
+"an old process ignores an `anthropic-version` header or "
+"`anthropic_version` field on a non-Messages batch, which this version "
+"refuses;"
+msgstr ""
+"旧进程会忽略非 Messages 批次上的 `anthropic-version` 请求头或 `anthropic_version` "
+"字段，而本版本会拒绝；"
+
+#: ../developer/batches.md:733
+msgid ""
+"an old process still serves `/v1/messages/batches`, where this version "
+"answers `410`; batches created there are drained by this version as "
+"described in [Moving from Message Batches](#moving-from-message-batches)."
+msgstr ""
+"旧进程仍提供 `/v1/messages/batches`，本版本对这些路由返回 `410`；在旧进程上创建的批次由本版本按[从 Message "
+"Batches 迁移](#moving-from-message-batches)中所述的方式排空。"
+
+#: ../developer/batches.md:737
+msgid ""
+"A release that has a batch worker but not #1660 has no such filter: it "
+"would run any batch it finds, Messages batches included, as chat "
+"completions. Nothing this version stores, and no check it makes at "
+"startup, can change what such a process already running does, or even "
+"tell that one is running. Upgrade from such a release only with every old"
+" process stopped, and when you do not know which release every process "
+"runs, assume this case:"
+msgstr ""
+"有 batch worker 但不包含 #1660 的版本没有这种过滤：它会把找到的任何批次（包括 Messages "
+"批次）当作聊天补全运行。本版本存储的任何内容、启动时做的任何检查，都无法改变这样一个已在运行的进程的行为，甚至无法察觉它在运行。从这样的版本升级时，只能在所有旧进程都停止的情况下进行；如果不知道各进程运行的是哪个版本，也按这种情况处理："
+
+#: ../developer/batches.md:744
+msgid ""
+"On the old version, turn `BATCH_ENABLED` off (Settings tab, or `python -m"
+" serving.config.manage set BATCH_ENABLED false`). Its workers read the "
+"setting every round: within about ten seconds every old process stops "
+"claiming and sweeping, and logs that its batch worker is disabled. A "
+"request it was already running finishes or is handed back; those are chat"
+" batches, which the new version runs too."
+msgstr ""
+"在旧版本上关闭 `BATCH_ENABLED`（Settings 页，或 `python -m serving.config.manage set"
+" BATCH_ENABLED false`）。它的 worker "
+"每一轮都会读取这个设置：大约十秒内，每个旧进程都会停止领取和清理，并在日志中记录其批次 worker "
+"已禁用。它已经在运行的请求会运行完或交还；那些都是聊天批次，新版本也会运行。"
+
+#: ../developer/batches.md:750
+msgid ""
+"Stop every gateway process of the old version, every replica and worker, "
+"and keep them stopped: turn off whatever would start one again on its own"
+" (restart policies, autoscaling, health-check replacement, deploy jobs)."
+msgstr ""
+"停止旧版本的所有 gateway 进程，包括所有副本和 "
+"worker，并保持停止：关闭任何会自动重新启动它们的机制（重启策略、自动扩缩容、健康检查替换、部署任务）。"
+
+#: ../developer/batches.md:753
+msgid ""
+"Confirm that none is left with your orchestrator's own identity of each "
+"process: its image, revision, release or deployment id. A database "
+"session's client address does not show which version holds it — NAT, "
+"shared hosts and connection poolers all hide that — and the health "
+"endpoint does not either."
+msgstr ""
+"用编排系统自己对每个进程的身份确认已没有旧进程：它的镜像、revision、release 或 deployment "
+"id。数据库会话的客户端地址说明不了是哪个版本持有它——NAT、共享主机和连接池都会掩盖这一点——健康检查端点也一样。"
+
+#: ../developer/batches.md:758
+msgid ""
+"Wait for the database to finish their work: no session of the gateway's "
+"database user is left (the query in step 5 of [Rolling back](#rolling-"
+"back))."
+msgstr "等待数据库处理完它们的工作：gateway 数据库用户已没有任何会话（[回滚](#rolling-back)第 5 步中的查询）。"
+
+#: ../developer/batches.md:761
+msgid "Start this version. It keeps `BATCH_ENABLED` off, as step 1 stored it."
+msgstr "启动本版本。它会保持 `BATCH_ENABLED` 关闭，即第 1 步存下的状态。"
+
+#: ../developer/batches.md:762
+msgid ""
+"Once only this version runs, confirmed as in step 3, turn `BATCH_ENABLED`"
+" on."
+msgstr "确认只剩本版本运行后（按第 3 步的方式确认），开启 `BATCH_ENABLED`。"
