@@ -191,13 +191,15 @@ class _State:
     applied_at_boot: frozenset[str] = frozenset()
     #: Bumped by every apply.
     generation: int = 0
-    #: Read tickets, taken as each read of the table begins. A read is
-    #: accepted only when no read that began after it has been: a slower,
-    #: older snapshot never replaces a newer one, whether the rows, the
-    #: version or only the contracts changed. A legitimately older state the
-    #: database returns later (a restore) is a later read, and is accepted.
-    read_tickets: int = 0
-    accepted_ticket: int = 0
+    #: Held by every read of the table that is applied (:func:`refresh`,
+    #: :func:`_reload`) from its snapshot to its apply, so reads apply in the
+    #: order their snapshots were taken: a snapshot is taken at the read's
+    #: first query, after the previous read has returned, so it is never
+    #: older than the one applied before it. The order of the calls proves
+    #: nothing — one can wait for a connection while a later one reads. A
+    #: legitimately older state the database returns (a restore) is still the
+    #: newest snapshot, and is applied.
+    read_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     store: AppConfigStore | None = None
     refresh_task: asyncio.Task[None] | None = None
     #: ``time.monotonic()`` of the last successful read of the table.
@@ -1441,28 +1443,26 @@ async def refresh() -> None:
         return
     if not _STATE.loaded:
         await store.ensure_schema()
-    ticket = _take_ticket()
-    read_started = time.monotonic()
-    try:
-        snapshot = await store.fetch_snapshot()
-    except Exception:
-        # Every live group keeps what it published; its currency is unknown.
-        live.COORDINATOR.read_failed()
-        raise
-    if not _accept(ticket):
-        return  # A read that began later has been applied already.
-    rows, resets = _split(snapshot.rows)
-    if not _STATE.loaded or rows != _STATE.rows or resets != _STATE.resets:
-        _STATE.loaded = True
-        _apply(rows, boot=False, resets=resets)
-    else:
-        # Runtime settings (signup, verification) feed the required rules.
-        refresh_health()
-    _remember(snapshot)
-    # The snapshot in force is now confirmed current as of when this read
-    # began; a read whose result was discarded above confirms nothing.
-    _STATE.read_at = read_started
-    live.COORDINATOR.submit(snapshot)
+    async with _STATE.read_lock:
+        read_started = time.monotonic()
+        try:
+            snapshot = await store.fetch_snapshot()
+        except Exception:
+            # Every live group keeps what it published; its currency is unknown.
+            live.COORDINATOR.read_failed()
+            raise
+        rows, resets = _split(snapshot.rows)
+        if not _STATE.loaded or rows != _STATE.rows or resets != _STATE.resets:
+            _STATE.loaded = True
+            _apply(rows, boot=False, resets=resets)
+        else:
+            # Runtime settings (signup, verification) feed the required rules.
+            refresh_health()
+        _remember(snapshot)
+        # The snapshot in force is now confirmed current as of when this read
+        # began.
+        _STATE.read_at = read_started
+        live.COORDINATOR.submit(snapshot)
 
 
 async def _refresh_loop(interval_seconds: float) -> None:
@@ -1495,34 +1495,22 @@ async def stop_refresh() -> None:
 
 
 async def _reload(store: AppConfigStore) -> None:
-    """Re-read and apply, so a write takes effect in this process at once."""
-    ticket = _take_ticket()
-    read_started = time.monotonic()
-    snapshot = await store.fetch_snapshot()
-    if not _accept(ticket):
-        # A read that began after this one — so after the write committed —
-        # has been applied: it includes the write.
-        return
-    rows, resets = _split(snapshot.rows)
-    _STATE.loaded = True
-    _apply(rows, boot=False, resets=resets)
-    _remember(snapshot)
-    _STATE.read_at = read_started
-    # The write's own process applies it at once, groups included.
-    live.COORDINATOR.submit(snapshot)
+    """Re-read and apply, so a write takes effect in this process at once.
 
-
-def _take_ticket() -> int:
-    _STATE.read_tickets += 1
-    return _STATE.read_tickets
-
-
-def _accept(ticket: int) -> bool:
-    """Accept the read holding *ticket* unless a later-begun read was accepted first."""
-    if ticket < _STATE.accepted_ticket:
-        return False
-    _STATE.accepted_ticket = ticket
-    return True
+    Serialized with :func:`refresh` (``read_lock``): the snapshot is taken
+    after the write committed and after any read applied before it, so it
+    includes the write and undoes nothing newer.
+    """
+    async with _STATE.read_lock:
+        read_started = time.monotonic()
+        snapshot = await store.fetch_snapshot()
+        rows, resets = _split(snapshot.rows)
+        _STATE.loaded = True
+        _apply(rows, boot=False, resets=resets)
+        _remember(snapshot)
+        _STATE.read_at = read_started
+        # The write's own process applies it at once, groups included.
+        live.COORDINATOR.submit(snapshot)
 
 
 @contextlib.asynccontextmanager

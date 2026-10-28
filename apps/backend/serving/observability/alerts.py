@@ -1191,8 +1191,22 @@ def _hold_fence(key: str, published: Any) -> Callable[[], bool] | None:
     return lambda: alert_runtime.is_current(published) and not _held(key)
 
 
-def restart_settling(key: str) -> None:
-    """Make the metric incident on ``key`` settle afresh from its next healthy observation."""
+def restart_settling(key: str, *, healthy: bool = False) -> None:
+    """Make the metric incident on ``key`` settle afresh from its next healthy observation.
+
+    With ``healthy`` -- the observation about to be made is healthy -- a
+    recovery card queued for a retry is dropped as well: it reports a close
+    that settled before the restart (before a pause, or under an earlier
+    configuration), which is no evidence now. The incident stays open and
+    settles afresh, and its own close sends the recovery then. A breached
+    observation leaves the queued card to the breach, which supersedes it.
+    """
+    pending = _PENDING_RESOLUTIONS.get(key)
+    if healthy and pending is not None and _TRANSITIONS.is_firing(key):
+        del _PENDING_RESOLUTIONS[key]
+        _history.retry_terminated(
+            key, episode_id=pending.history_episode, reason="other", attempts=pending.attempts
+        )
     _TRANSITIONS.restart_settling(key)
 
 

@@ -419,6 +419,63 @@ async def queue_detector_recovery(clock: Clock, channel: Channel, alerter, db):
     return alerts._PENDING_RESOLUTIONS[ALERT_KEY]
 
 
+@pytest.mark.parametrize("delivered", [True, False], ids=["delivered", "refused-then-retried"])
+async def test_a_recovery_queued_before_a_pause_waits_for_a_fresh_settling(
+    clock, channel, delivered
+) -> None:
+    alerter, db = await open_incident(clock, channel)
+    pending = await queue_detector_recovery(clock, channel, alerter, db)
+
+    # Paused for longer than a queued recovery may age: it neither ages nor retries.
+    publish(GENERIC)
+    for offset in range(240, 2000, 60):
+        await sweep_at(clock, offset)
+    assert alerts._PENDING_RESOLUTIONS.get(ALERT_KEY) is pending
+    assert pending.attempts == 0
+
+    # Resumed and healthy. The card reports a close settled before the pause,
+    # so the first healthy check settles afresh rather than release it.
+    publish(running())
+    resumed = 2000.0
+    for offset in (0, 60, DEFAULT_CLEAR_AFTER_SEC - 1):
+        clock.at(resumed + offset)
+        await alerter.run_check()
+        await alerts.sweep_stale_breaches()
+        assert channel.recoveries() == []
+        assert alerts._TRANSITIONS.is_firing(ALERT_KEY)
+
+    # The fresh settling completes: the incident's own close sends the recovery.
+    channel.accept = delivered
+    clock.at(resumed + DEFAULT_CLEAR_AFTER_SEC)
+    await alerter.run_check()
+    if not delivered:
+        # Refused: queued afresh, its age counted from now, not from before the pause.
+        retry = alerts._PENDING_RESOLUTIONS[ALERT_KEY]
+        assert retry is not pending
+        assert (retry.attempts, retry.queued_at) == (0, clock.t)
+        channel.accept = True
+        await sweep_at(clock, resumed + DEFAULT_CLEAR_AFTER_SEC + 60)
+    assert channel.recoveries() == [DETECTOR_RECOVERY]
+    assert not alerts._TRANSITIONS.is_firing(ALERT_KEY)
+    assert ALERT_KEY not in alerts._PENDING_RESOLUTIONS
+    await sweep_at(clock, resumed + DEFAULT_CLEAR_AFTER_SEC + 120)
+    assert channel.recoveries() == [DETECTOR_RECOVERY]
+
+
+async def test_a_queued_recovery_without_a_pause_is_still_retried_at_once(clock, channel) -> None:
+    alerter, db = await open_incident(clock, channel)
+    pending = await queue_detector_recovery(clock, channel, alerter, db)
+
+    # The same configuration: the next healthy check leaves the card queued,
+    # and the next sweep delivers it without a second settling period.
+    clock.at(240)
+    await alerter.run_check()
+    assert alerts._PENDING_RESOLUTIONS.get(ALERT_KEY) is pending
+    await alerts.sweep_stale_breaches()
+    assert channel.recoveries() == [DETECTOR_RECOVERY]
+    assert ALERT_KEY not in alerts._PENDING_RESOLUTIONS
+
+
 async def yield_a_few() -> None:
     for _ in range(5):
         await asyncio.sleep(0)
@@ -542,7 +599,12 @@ async def test_a_pause_during_an_earlier_retry_fences_a_queued_recovery(
     await sweep_at(clock, 240)
 
     assert channel.recoveries() == ["Recovered: Other"]
-    assert alerts._PENDING_RESOLUTIONS.get(ALERT_KEY) is pending
+    if resumed:
+        # The healthy check under the resumed configuration settles afresh:
+        # the card queued before the pause is no evidence any more.
+        assert ALERT_KEY not in alerts._PENDING_RESOLUTIONS
+    else:
+        assert alerts._PENDING_RESOLUTIONS.get(ALERT_KEY) is pending
     assert pending.attempts == 0
     assert alerts._TRANSITIONS.is_firing(ALERT_KEY)
 

@@ -14,10 +14,18 @@ import json
 import pytest
 import pytest_asyncio
 
-from serving.config import instances, live_control, revisions
+from serving.config import app_config, instances, live_control, revisions
 from serving.config.app_config_registry import ALERTS_RUNTIME_GROUP, MANAGED_GROUPS
 from serving.config.app_config_store import AppConfigStore, ConfigRow
+from serving.observability import alert_runtime
 from tests.fixtures import postgres
+
+# A fixture the tests below request by name; imported for pytest, not called.
+from tests.unit.observability.test_alert_runtime import (
+    boot,
+    config_env,  # noqa: F401
+    settle,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -389,6 +397,101 @@ async def test_a_new_epoch_removes_every_registration(pool, store) -> None:
     assert await reporter.report_once()
     async with pool.acquire() as connection:
         assert await connection.fetchval("SELECT COUNT(*) FROM config_instances") == 1
+
+
+async def _boot_with_alerts_active(store: AppConfigStore, threshold: str) -> None:
+    await store.write([ConfigRow(_THRESHOLD, threshold, secret=False, source="admin")])
+    async with store.transaction() as transaction, transaction.connection() as conn:
+        await revisions.set_group_active(
+            conn,
+            MANAGED_GROUPS[ALERTS_RUNTIME_GROUP],
+            active=True,
+            expected=None,
+            changed_by="test",
+        )
+    await boot(store)
+
+
+_THRESHOLD = "FAILED_REQUEST_ALERT_THRESHOLD"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("config_env")
+async def test_a_read_snapshotted_earlier_never_undoes_a_newer_apply(store, monkeypatch) -> None:
+    """Reads apply in snapshot order, whatever order they were issued and answered in.
+
+    The first read waits (for a connection, say) before its snapshot; a read
+    issued after it snapshots at once on its own connection and answers late;
+    a write commits between the two snapshots. The newer write must stay in
+    force once both have answered.
+    """
+    await _boot_with_alerts_active(store, "100")
+    snapshot_now = store.fetch_snapshot
+    first_waiting = asyncio.Event()
+    connected = asyncio.Event()
+    answer = asyncio.Event()
+    calls = 0
+
+    async def fetch_snapshot():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_waiting.set()
+            await connected.wait()
+            return await snapshot_now()
+        taken = await snapshot_now()
+        await answer.wait()
+        return taken
+
+    monkeypatch.setattr(store, "fetch_snapshot", fetch_snapshot)
+    first = asyncio.create_task(app_config.refresh())
+    await first_waiting.wait()
+    second = asyncio.create_task(app_config.refresh())
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+    await store.write([ConfigRow(_THRESHOLD, "200", secret=False, source="admin")])
+    latest = (await snapshot_now()).version
+    connected.set()
+    await asyncio.wait_for(first, timeout=10)
+    answer.set()
+    await asyncio.wait_for(second, timeout=10)
+    await settle()
+
+    assert app_config.source_version() == latest
+    assert alert_runtime.current().failed_request_alert_threshold == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("config_env")
+async def test_a_restored_older_revision_and_a_new_epoch_still_apply(pool, store) -> None:
+    """Serialized reads reject nothing the database returns: a restore is the newest state."""
+    await _boot_with_alerts_active(store, "200")
+    await app_config.refresh()
+    await settle()
+    before = app_config.source_version()
+    assert before is not None
+    assert alert_runtime.current().failed_request_alert_threshold == 200
+
+    # A restore in the same epoch: an older value and an older revision.
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute("UPDATE app_config SET value = '100' WHERE key = $1", _THRESHOLD)
+        await connection.execute(
+            "UPDATE config_source_revisions SET revision = $1 WHERE source = $2",
+            before.revision - 2,
+            revisions.APP_CONFIG_SOURCE,
+        )
+    await app_config.refresh()
+    await settle()
+    assert app_config.source_version() == revisions.SourceVersion(before.epoch, before.revision - 2)
+    assert alert_runtime.current().failed_request_alert_threshold == 100
+    assert alert_runtime.GROUP.status.regressed
+
+    # The operator then starts a new epoch.
+    fresh = await live_control.reset_epoch(store, expected=app_config.source_version())
+    await app_config.refresh()
+    await settle()
+    assert app_config.source_version() == fresh
+    assert not alert_runtime.GROUP.status.regressed
 
 
 @pytest.mark.asyncio

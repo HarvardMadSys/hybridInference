@@ -307,15 +307,16 @@ class FailedRequestAlerter:
             return True
         return self._observed_generation != published.generation
 
-    def _observe(self, published: Any) -> None:
+    def _observe(self, published: Any, *, healthy: bool) -> None:
         """Note that a check is about to observe the incident under *published*.
 
         Called synchronously right before the tracker is observed. The first
         observation under a configuration settles afresh: healthy readings
-        under an earlier one, or before a pause, are no evidence under this one.
+        under an earlier one, or before a pause, are no evidence under this one
+        -- including the close a queued recovery card reports.
         """
         if self._observed_generation != published.generation:
-            restart_settling(ALERT_KEY)
+            restart_settling(ALERT_KEY, healthy=healthy)
         self._observed_generation = published.generation
 
     def _acquire(self) -> Any:
@@ -406,7 +407,7 @@ class FailedRequestAlerter:
             # tracker changes; the cooldown is cleared only if it passed.
             if not fence():
                 return
-            self._observe(published)
+            self._observe(published, healthy=True)
             await alert_on_transition(
                 key="failed_request_rate_db",
                 breached=False,
@@ -458,7 +459,7 @@ class FailedRequestAlerter:
             context["failure_rate"] = round(rate, 4)
             context["rate_threshold"] = rate_threshold
         context.update(breakdown)
-        self._observe(published)
+        self._observe(published, healthy=False)
         ok = await alert_on_transition(
             key="failed_request_rate_db",
             breached=True,

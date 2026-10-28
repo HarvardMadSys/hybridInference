@@ -17,7 +17,7 @@ import pytest
 from serving.config import app_config, instances, live
 from serving.observability import alert_runtime, alerts
 from serving.observability.alert_runtime import AlertRuntimeConfig
-from tests.fixtures.app_config_store import FakeAppConfigStore
+from tests.fixtures.app_config_store import FakeAppConfigStore, row
 from tests.unit.config.test_live import KEYS, Component, snapshot
 
 # A fixture the tests below request by name; imported for pytest, not called.
@@ -27,6 +27,7 @@ from tests.unit.observability.test_alert_runtime import (
     boot,
     config_env,  # noqa: F401
     publish,
+    settle,
 )
 
 
@@ -219,12 +220,66 @@ async def test_delayed_read_cannot_undo_a_newer_contract_snapshot(monkeypatch):
     monkeypatch.setattr(store, "fetch_snapshot", fetch_snapshot)
     delayed = asyncio.create_task(app_config.refresh())
     await entered.wait()
-    await app_config.refresh()
-    assert app_config.source_version() == newer.version
+    later = asyncio.create_task(app_config.refresh())
+    for _ in range(5):
+        await asyncio.sleep(0)
     release.set()
-    await delayed
+    await asyncio.wait_for(asyncio.gather(delayed, later), timeout=5)
     assert app_config.source_version() == newer.version
     assert app_config.last_snapshot().contracts.groups["alerts.runtime"].active
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("config_env")
+async def test_a_read_issued_later_but_snapshotted_earlier_cannot_undo_a_newer_apply(
+    monkeypatch,
+):
+    """Snapshot order, not call order, decides which read is newer.
+
+    The first read waits for a connection before it takes its snapshot; a read
+    issued after it would, on its own connection, snapshot at once and answer
+    late. A write commits in between. Each read here snapshots when its query
+    runs, as a database read does, so nothing assumes the interleaving can or
+    cannot happen: whichever reads run, the newest write must be in force.
+    """
+    key = "FAILED_REQUEST_ALERT_THRESHOLD"
+    store = FakeAppConfigStore([row(key, "100")])
+    store.set_contract("alerts.runtime", active=True)
+    await boot(store)
+    snapshot_now = store.fetch_snapshot
+    first_waiting = asyncio.Event()
+    connected = asyncio.Event()
+    answer = asyncio.Event()
+    calls = 0
+
+    async def fetch_snapshot():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_waiting.set()
+            await connected.wait()  # Waiting for a connection: no snapshot yet.
+            return await snapshot_now()
+        taken = await snapshot_now()
+        await answer.wait()  # Snapshotted, answering late.
+        return taken
+
+    monkeypatch.setattr(store, "fetch_snapshot", fetch_snapshot)
+    first = asyncio.create_task(app_config.refresh())
+    await first_waiting.wait()
+    second = asyncio.create_task(app_config.refresh())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    await store.write([row(key, "200")])
+    latest = store.version
+    connected.set()
+    await asyncio.wait_for(first, timeout=5)
+    answer.set()
+    await asyncio.wait_for(second, timeout=5)
+    await settle()
+
+    assert app_config.source_version() == latest
+    assert app_config.config_value(key) == "200"
+    assert alert_runtime.current().failed_request_alert_threshold == 200
 
 
 class _SlowRelease(Component):
