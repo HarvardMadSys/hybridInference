@@ -466,6 +466,11 @@ else can claim the account:
 3. Enter the code and choose a username and a password. This administrator has
    no email address and signs in with the username.
 
+Once email delivery is configured, this administrator can bind an email in
+**Account Settings → Email Address**. Confirm the current password and follow
+the verification link sent to the new address. The username continues to work
+after binding; the same settings section also lets you change a bound email.
+
 Whoever can read the backend log, or the database that holds the code, can
 create this account, so keep both as private as the host. Wrong codes are
 rate limited per client address, ten in 15 minutes; the right code is never
