@@ -60,6 +60,10 @@ class _Invalid(Exception):
         self.entry = {"code": code, "message": message, "param": param, "line": line}
 
 
+class LineTooLong(_Invalid):
+    """A line of the file is longer than the limit; reading stops there."""
+
+
 def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
 
@@ -89,14 +93,14 @@ async def iter_lines(
                 line, buffer = buffer[:newline], buffer[newline + 1 :]
                 line_no += 1
                 if len(line) > max_line_bytes:
-                    raise _Invalid(
+                    raise LineTooLong(
                         "line_too_long",
                         f"Line {line_no} is longer than {max_line_bytes} bytes.",
                         line_no,
                     )
                 yield line_no, line
             if len(buffer) > max_line_bytes:
-                raise _Invalid(
+                raise LineTooLong(
                     "line_too_long",
                     f"Line {line_no + 1} is longer than {max_line_bytes} bytes.",
                     line_no + 1,

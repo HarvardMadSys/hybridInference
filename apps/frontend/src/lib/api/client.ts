@@ -3,7 +3,15 @@
 import { APIError, ERROR_MESSAGES, httpStatusToErrorCode } from '@/lib/utils/errors';
 
 let accessToken: string | null = null;
-let refreshPromise: Promise<boolean> | null = null;
+// The refresh in flight, for the session it was started for.
+let refreshing: { generation: number; promise: Promise<boolean> } | null = null;
+// Bumped whenever this tab's session is replaced or ended from outside a
+// refresh -- a sign-in, an account switch, a sign-out, an account change.
+// Work started for an earlier session (a refresh, a retry, an upload) checks it
+// before it acts, so it can neither install its old token over the new session,
+// nor end the new session on a late 401, nor run again as the new account --
+// even when the new session is the same account again (A, then B, then A).
+let sessionGeneration = 0;
 // Set once a refresh proves the browser's session now belongs to another
 // account; cleared only by a sign-in in this tab. See refreshAccessToken.
 let accountChanged = false;
@@ -58,6 +66,7 @@ export type AccountChangeReason = 'switched' | 'signed-out';
  * Dispatches `ACCOUNT_CHANGED_EVENT` with the reason as its `detail`.
  */
 export function markAccountChanged(reason: AccountChangeReason): void {
+  sessionGeneration += 1;
   accountChanged = true;
   accessToken = null;
   sessionStorage.removeItem('access_token');
@@ -67,6 +76,9 @@ export function markAccountChanged(reason: AccountChangeReason): void {
 }
 
 export function setAccessToken(token: string | null): void {
+  // Only sign-in, account switch, setup and sign-out hand a session in or end
+  // it here; a refresh of the same session installs its token itself.
+  sessionGeneration += 1;
   accessToken = token;
   if (token) {
     // Only a sign-in in this tab hands a token in from outside; the account
@@ -127,14 +139,18 @@ export async function withSessionLock<T>(run: () => Promise<T>): Promise<T> {
 
 async function refreshAccessToken(apiBase: string): Promise<boolean> {
   if (accountChanged) return false;
-  // If refresh is already in progress, wait for it to prevent race conditions
-  if (refreshPromise) {
-    return refreshPromise;
-  }
+  const generation = sessionGeneration;
+  // A refresh already in flight for this same session answers this one too.
+  if (refreshing && refreshing.generation === generation) return refreshing.promise;
 
-  refreshPromise = (async () => {
+  const entry = { generation, promise: Promise.resolve(false) };
+  entry.promise = (async () => {
     try {
       return await withSessionLock(async () => {
+        // Another session was installed meanwhile: this refresh is not for it.
+        // Without Web Locks a sign-in or switch is not held off by the lock,
+        // so this is checked again after every wait below.
+        if (generation !== sessionGeneration) return false;
         // The account this tab is showing, read before the refresh can replace it.
         const shownSubject = tokenSubject(getAccessToken());
         const resp = await safeFetch(`${apiBase}/auth/refresh`, {
@@ -142,11 +158,13 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
           credentials: 'include',
           signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
         });
+        if (generation !== sessionGeneration) return false;
         if (!resp.ok) {
           notifyAuthExpired();
           return false;
         }
         const data = await resp.json();
+        if (generation !== sessionGeneration) return false;
         const token = data?.access_token as string | undefined;
         if (!token) {
           notifyAuthExpired();
@@ -166,11 +184,11 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
       });
     } finally {
       // Clear the promise so future refreshes can proceed
-      refreshPromise = null;
+      if (refreshing === entry) refreshing = null;
     }
   })();
-
-  return refreshPromise;
+  refreshing = entry;
+  return entry.promise;
 }
 
 function accountChangedError(): APIError {
@@ -183,12 +201,13 @@ export async function fetchWithAuth(
   init: RequestInit = {},
 ): Promise<Response> {
   if (accountChanged) throw accountChangedError();
+  const generation = sessionGeneration;
   let token = getAccessToken();
   if (isAccessTokenExpired(token)) {
     await refreshAccessToken(apiBase);
     // Sending without a token now would earn a 401 whose retry runs as the
     // other account, the very switch the refresh just refused.
-    if (accountChanged) throw accountChangedError();
+    if (accountChanged || generation !== sessionGeneration) throw accountChangedError();
     token = getAccessToken();
   }
 
@@ -202,10 +221,13 @@ export async function fetchWithAuth(
   });
 
   if (resp.status !== 401) return resp;
+  // A 401 for a session that has since been replaced: refreshing now would
+  // refresh the new session and send this request again as it.
+  if (generation !== sessionGeneration) throw accountChangedError();
 
   const refreshed = await refreshAccessToken(apiBase);
+  if (accountChanged || generation !== sessionGeneration) throw accountChangedError();
   if (!refreshed) {
-    if (accountChanged) throw accountChangedError();
     notifyAuthExpired();
     return resp;
   }
@@ -219,6 +241,106 @@ export async function fetchWithAuth(
     headers: headersRetry,
     credentials: 'include',
   });
+}
+
+/** Progress of an upload: bytes sent so far, of `total` (0 when unknown). */
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+}
+
+function xhrSend(
+  url: string,
+  body: XMLHttpRequestBodyInit,
+  token: string | null,
+  onProgress?: (progress: UploadProgress) => void,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('The upload was cancelled.', 'AbortError'));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.withCredentials = true;
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = (event) =>
+      onProgress?.({ loaded: event.loaded, total: event.lengthComputable ? event.total : 0 });
+    const abort = () => xhr.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    xhr.onload = () => {
+      signal?.removeEventListener('abort', abort);
+      resolve(
+        new Response(xhr.responseText, {
+          status: xhr.status,
+          headers: { 'content-type': xhr.getResponseHeader('content-type') ?? 'application/json' },
+        }),
+      );
+    };
+    xhr.onerror = () => {
+      signal?.removeEventListener('abort', abort);
+      reject(new APIError('NETWORK_ERROR', 'Network request failed'));
+    };
+    xhr.onabort = () => {
+      signal?.removeEventListener('abort', abort);
+      reject(new DOMException('The upload was cancelled.', 'AbortError'));
+    };
+    xhr.send(body);
+  });
+}
+
+/**
+ * POST a body with upload progress, as `fetchWithAuth` sends any request.
+ *
+ * `fetch` reports no upload progress, so this sends through XHR; everything
+ * about authentication is `fetchWithAuth`'s own: the same token, the same
+ * refresh before an expired one and after a 401 (one retry, with the body sent
+ * again), and the same refusal once this tab's account has changed -- so an
+ * upload never lands in an account the page does not show. Cancelled through
+ * `signal` (an `AbortError`).
+ */
+export async function uploadWithAuth(
+  apiBase: string,
+  input: string,
+  body: XMLHttpRequestBodyInit,
+  options: {
+    /** The account the page that started the upload shows; nothing else may receive it. */
+    expectedUserId: string;
+    onProgress?: (progress: UploadProgress) => void;
+    signal?: AbortSignal;
+  },
+): Promise<Response> {
+  // The upload belongs to the account the page shows, not to whichever token
+  // the tab holds now: a sign-in or switch installs the next account's token
+  // before the page has moved to it. So the token must name that account
+  // before anything is sent, after any refresh, before a retry and when the
+  // answer arrives -- in the same session, with no session installed between.
+  const expected = options.expectedUserId;
+  const owns = () => !accountChanged && tokenSubject(getAccessToken()) === expected;
+  if (accountChanged) throw accountChangedError();
+  let token = getAccessToken();
+  if (token && tokenSubject(token) !== expected) throw accountChangedError();
+  if (isAccessTokenExpired(token)) {
+    await refreshAccessToken(apiBase);
+    token = getAccessToken();
+  }
+  if (!owns()) throw accountChangedError();
+  const generation = sessionGeneration;
+  const same = () => owns() && generation === sessionGeneration;
+  const url = `${apiBase}${input}`;
+  const resp = await xhrSend(url, body, token, options.onProgress, options.signal);
+  if (!same()) throw accountChangedError();
+  if (resp.status !== 401) return resp;
+  const refreshed = await refreshAccessToken(apiBase);
+  if (!same()) throw accountChangedError();
+  if (!refreshed) {
+    notifyAuthExpired();
+    return resp;
+  }
+  const retried = await xhrSend(url, body, getAccessToken(), options.onProgress, options.signal);
+  if (!same()) throw accountChangedError();
+  return retried;
 }
 
 export async function jsonOrThrow<T>(resp: Response): Promise<T> {

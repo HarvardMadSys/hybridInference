@@ -75,6 +75,12 @@ BATCH_KEYS = {
     "completion_tokens",
     "unknown_cost_count",
     "idempotency_key",
+    # Added with batches created in the console, and pause reasons.
+    "display_name",
+    "description",
+    "created_via",
+    "console_spec",
+    "paused_reason",
 }
 RATE_LIMITED = {"code": "rate_limited", "message": "slow down", "status": 429}
 _TEST_USERS = ("alice", "bob", "carol", "dave", "erin")

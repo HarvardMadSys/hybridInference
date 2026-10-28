@@ -450,6 +450,12 @@ async def _check_file(
     upload = await file_store.get_file(payload.input_file_id, user_id=owner)
     if upload is None or upload.get("kind") != "upload":
         raise HTTPException(400, f"File '{payload.input_file_id}' not found")
+    if upload.get("derived_from_file_id"):
+        raise HTTPException(
+            400,
+            "This file holds the stored requests of a batch created in the console; "
+            "it cannot start another batch. Use its source file instead",
+        )
     if upload.get("purpose") != "batch":
         raise HTTPException(400, "The input file's purpose must be 'batch'")
     if upload.get("status") != "ready":

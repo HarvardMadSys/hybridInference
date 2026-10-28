@@ -122,7 +122,11 @@ describe('BatchesView', () => {
     );
     render(<BatchesView />);
     expect(await screen.findByText('batch_a')).toBeInTheDocument();
-    expect(screen.getByText('3 of 4 done · 1 failed')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '2 succeeded · 1 failed · 0 expired unrun · 0 cancelled · 1 not finished · 4 total',
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByText('100 in · 50 out')).toBeInTheDocument();
     expect(screen.getByText(/\$0\.2500/)).toBeInTheDocument();
     expect(screen.getByText('+ 2 unknown')).toBeInTheDocument();
@@ -176,7 +180,9 @@ describe('BatchesView', () => {
     const row = await screen.findByTestId('batch-msgbatch_1');
     expect(row).toHaveTextContent('Completed');
     expect(row).not.toHaveTextContent('Ended');
-    expect(row).toHaveTextContent('5 of 5 done · 1 failed');
+    expect(row).toHaveTextContent(
+      '3 succeeded · 1 failed · 0 expired unrun · 1 cancelled · 0 not finished · 5 total',
+    );
     expect(screen.getByRole('button', { name: 'Download results' })).toBeInTheDocument();
   });
 
@@ -380,5 +386,29 @@ describe('WebhookSettings', () => {
       enabled: true,
       rotate_secret: false,
     });
+  });
+
+  it('filters by name or id and by the status shown, and links to creating a batch', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(page([batch('batch_a', { name: 'eval-0420' })]));
+    render(<BatchesView />);
+    expect(await screen.findByText('eval-0420')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Create batch' })).toHaveAttribute(
+      'href',
+      '/dashboard/batches/new',
+    );
+    fireEvent.change(screen.getByLabelText('Search by name or batch ID'), {
+      target: { value: 'eval' },
+    });
+    await waitFor(() =>
+      expect(listMyBatches).toHaveBeenLastCalledWith(null, 20, { status: '', q: 'eval' }),
+    );
+  });
+
+  it('offers no create button to a role that cannot submit', async () => {
+    access = { capabilities: caps({ role_may_submit: false }), loading: false, error: null };
+    vi.mocked(listMyBatches).mockResolvedValue(page([]));
+    render(<BatchesView />);
+    expect(await screen.findByText('You have no batches.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Create batch' })).not.toBeInTheDocument();
   });
 });

@@ -14,6 +14,16 @@ schema by :class:`serving.storage.batch_store.BatchStore`):
   immutable items with the renderer version the manifest records, and the
   manifest's size and SHA-256 say exactly what that rendering produces.
 
+A console batch whose stored requests differ from its source upload (an
+override, a filled ``url``, a model pinned to its canonical id) reads a
+**derived** upload instead (``derived_from_file_id``): written ``uploading``
+while the submission is checked, and made ready only by the transaction that
+creates the batch, which adopts it (``adopted_by_batch_id``). A derived file
+belongs to that batch: it never starts another one, does not count as an upload
+against the hourly rate (it does count against storage), expires no later than
+its source, and is deleted with its source or its batch. One never adopted is
+collected like an abandoned upload.
+
 Deleting a file hides it at once (``deleted_at``); a deleted output is never
 re-created, and its batch keeps naming it. The bytes of an upload go later,
 from :meth:`BatchFileStore.collect_garbage`, once no batch still validating
@@ -56,7 +66,8 @@ _STALE_UPLOAD_SECONDS = 3600
 
 _FILE_COLUMNS = (
     "id, user_id, purpose, kind, filename, status, bytes, sha256, line_count, batch_id, "
-    "generation, renderer_version, created_at, ready_at, deleted_at, expires_at"
+    "generation, renderer_version, created_at, ready_at, deleted_at, expires_at, "
+    "derived_from_file_id, adopted_by_batch_id"
 )
 
 
@@ -93,7 +104,8 @@ class BatchFileStore:
             usage = await conn.fetchrow(
                 """
                 SELECT COALESCE(sum(bytes), 0) AS stored,
-                       count(*) FILTER (WHERE created_at > now() - interval '1 hour') AS recent
+                       count(*) FILTER (WHERE created_at > now() - interval '1 hour'
+                                          AND derived_from_file_id IS NULL) AS recent
                 FROM batch_files
                 WHERE user_id = $1 AND kind = 'upload'
                 """,
@@ -116,6 +128,43 @@ class BatchFileStore:
                 user_id,
                 purpose,
                 filename,
+            )
+        return file_id
+
+    async def create_derived(
+        self, *, user_id: str, source_file_id: str, filename: str, max_total_bytes: int
+    ) -> str:
+        """Open the stored-request copy of *source_file_id*, ``uploading`` until adopted.
+
+        Its bytes follow with :meth:`append_chunk`, within the storage cap; it
+        is not an upload against the hourly rate. Only
+        :meth:`BatchStore.create_console_batch` makes it ready.
+
+        Raises:
+            BatchFileQuotaExceeded: The user already stores ``max_total_bytes``.
+        """
+        file_id = new_file_id()
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(_CLAIM_LOCK_SQL, _USER_ADMISSION_LOCK_CLASS, user_id)
+            stored = await conn.fetchval(
+                "SELECT COALESCE(sum(bytes), 0) FROM batch_files "
+                "WHERE user_id = $1 AND kind = 'upload'",
+                user_id,
+            )
+            if stored >= max_total_bytes:
+                raise BatchFileQuotaExceeded(
+                    "stored_bytes", limit=max_total_bytes, current=int(stored)
+                )
+            await conn.execute(
+                """
+                INSERT INTO batch_files
+                    (id, user_id, purpose, kind, filename, status, derived_from_file_id)
+                VALUES ($1, $2, 'batch', 'upload', $3, 'uploading', $4)
+                """,
+                file_id,
+                user_id,
+                filename[:255],
+                source_file_id,
             )
         return file_id
 
@@ -231,8 +280,13 @@ class BatchFileStore:
         after: str | None = None,
         purpose: str | None = None,
         ascending: bool = False,
+        sources_only: bool = False,
     ) -> list[dict[str, Any]]:
-        """A user's visible files, newest first (or oldest first with ``ascending``)."""
+        """A user's visible files, newest first (or oldest first with ``ascending``).
+
+        ``sources_only`` keeps the uploads a user made (no output file, no
+        derived copy): what the console lists for clean-up and creation.
+        """
         order = "ASC" if ascending else "DESC"
         comparison = ">" if ascending else "<"
         async with self._pool.acquire() as conn:
@@ -244,6 +298,7 @@ class BatchFileStore:
                   AND ($3::text IS NULL OR f.purpose = $3)
                   AND ($4::text IS NULL OR (f.created_at, f.id) {comparison} (
                       SELECT created_at, id FROM batch_files WHERE id = $4 AND user_id = $1))
+                  AND (NOT $5 OR (f.kind = 'upload' AND f.derived_from_file_id IS NULL))
                 ORDER BY f.created_at {order}, f.id {order}
                 LIMIT $2
                 """,
@@ -251,12 +306,39 @@ class BatchFileStore:
                 limit,
                 purpose,
                 after,
+                sources_only,
             )
         return [dict(row) for row in rows]
 
-    async def delete_file(self, file_id: str, *, user_id: str | None) -> bool:
-        """Hide a file for good; its bytes are collected later. True when it was visible."""
+    async def usage(self, user_id: str) -> dict[str, int]:
+        """What counts against a user's caps now: ``{"stored_bytes", "uploads_last_hour"}``.
+
+        Stored bytes are every upload's, derived copies and deleted-but-not-yet
+        collected ones included, as the cap counts them.
+        """
         async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(sum(bytes), 0) AS stored,
+                       count(*) FILTER (WHERE created_at > now() - interval '1 hour'
+                                          AND derived_from_file_id IS NULL) AS recent
+                FROM batch_files
+                WHERE user_id = $1 AND kind = 'upload'
+                """,
+                user_id,
+            )
+        return {"stored_bytes": int(row["stored"]), "uploads_last_hour": int(row["recent"])}
+
+    async def delete_file(self, file_id: str, *, user_id: str | None) -> bool:
+        """Hide a file for good; its bytes are collected later. True when it was visible.
+
+        The stored-request copies derived from an upload are hidden with it,
+        in the same transaction (the source row first, then theirs: the order
+        a console create locks them in). A batch already created from one
+        keeps running: a validating batch pins its input's bytes, and a
+        validated one reads its own items.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
             result = await conn.execute(
                 "UPDATE batch_files SET deleted_at = now() WHERE id = $1 "
                 "AND ($2::text IS NULL OR user_id = $2) AND deleted_at IS NULL "
@@ -264,7 +346,14 @@ class BatchFileStore:
                 file_id,
                 user_id,
             )
-        return _rowcount(result) > 0
+            deleted = _rowcount(result) > 0
+            if deleted:
+                await conn.execute(
+                    "UPDATE batch_files SET deleted_at = now() "
+                    "WHERE derived_from_file_id = $1 AND deleted_at IS NULL",
+                    file_id,
+                )
+        return deleted
 
     async def read_chunks(
         self, file_id: str, *, after_seq: int = -1, limit: int = 8
@@ -298,6 +387,21 @@ class BatchFileStore:
             await conn.execute(
                 "UPDATE batch_files SET deleted_at = now() WHERE kind = 'upload' "
                 "AND deleted_at IS NULL AND expires_at IS NOT NULL AND expires_at <= now()"
+            )
+            # A derived file left ready without a batch -- never adopted, or
+            # adopted by a batch an earlier version deleted without it -- is
+            # hidden once it is older than any submission in progress could
+            # be; the pins below still decide when its bytes go.
+            await conn.execute(
+                """
+                UPDATE batch_files AS f SET deleted_at = now()
+                WHERE f.kind = 'upload' AND f.derived_from_file_id IS NOT NULL
+                  AND f.status = 'ready' AND f.deleted_at IS NULL
+                  AND f.created_at < now() - make_interval(secs => $1)
+                  AND (f.adopted_by_batch_id IS NULL OR NOT EXISTS (
+                      SELECT 1 FROM batch_jobs AS j WHERE j.id = f.adopted_by_batch_id))
+                """,
+                float(_STALE_UPLOAD_SECONDS),
             )
             # Only uploads that look collectable now: a page of the oldest
             # deleted ones would otherwise fill up with files still pinned or

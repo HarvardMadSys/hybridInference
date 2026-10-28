@@ -277,7 +277,7 @@ class OwnerStore:
         row = self.rows.get(batch_id)
         return row if row is not None and row["user_id"] == user_id else None
 
-    async def list_batches(self, *, user_id, limit, after=None):
+    async def list_batches(self, *, user_id, limit, after=None, status=None, query=None):
         return [row for row in self.rows.values() if row["user_id"] == user_id][:limit]
 
     async def get_batch(self, batch_id, *, user_id=None):

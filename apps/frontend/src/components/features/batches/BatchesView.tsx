@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 import { Button } from '@/components/ui/Button';
-import { useT, type Translate } from '@/components/providers/useT';
+import { Select } from '@/components/ui/Select';
+import { useT } from '@/components/providers/useT';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   cancelMyBatch,
@@ -22,6 +23,16 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { roleLabel } from '@/lib/utils/roleLabel';
 
+import {
+  ALL_STATUSES,
+  formatTime,
+  inputLabel,
+  originLabel,
+  outcomeCounts,
+  pauseText,
+  statusLabel,
+  targetLabel,
+} from './batchText';
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
 
@@ -33,58 +44,7 @@ const STATUS_TONE: Partial<Record<BatchStatus, string>> = {
   cancelling: 'bg-gray-100 text-gray-700 ring-gray-200',
 };
 
-/** What a batch runs, as the list names it: the target, whatever API shape it uses. */
-export function targetLabel(batch: ConsoleBatch, t: Translate): string {
-  switch (batch.target) {
-    case 'chat':
-      return t('batches.target.chat', 'Chat completions');
-    case 'embeddings':
-      return t('batches.target.embeddings', 'Embeddings');
-    case 'messages':
-      return t('batches.target.messages', 'Messages');
-    case 'responses':
-      return t('batches.target.responses', 'Responses');
-    default:
-      return batch.endpoint ?? t('batches.target.unknown', 'Batch');
-  }
-}
-
-/** How the batch's requests arrived: an input method of the one batch API, not an API. */
-export function inputLabel(batch: ConsoleBatch, t: Translate): string {
-  return batch.input === 'file'
-    ? t('batches.input.file', 'JSONL file')
-    : t('batches.input.inline', 'Direct requests');
-}
-
-/** A batch's status in words; every batch uses the same ones. */
-export function statusLabel(status: BatchStatus, t: Translate): string {
-  const labels: Record<BatchStatus, string> = {
-    validating: t('batches.status.validating', 'Validating'),
-    in_progress: t('batches.status.in_progress', 'In progress'),
-    finalizing: t('batches.status.finalizing', 'Finalizing'),
-    completed: t('batches.status.completed', 'Completed'),
-    failed: t('batches.status.failed', 'Failed'),
-    expired: t('batches.status.expired', 'Expired'),
-    cancelling: t('batches.status.cancelling', 'Cancelling'),
-    cancelled: t('batches.status.cancelled', 'Cancelled'),
-  };
-  return labels[status] ?? status;
-}
-
-function formatTime(epoch: number | null): string {
-  if (!epoch) return '—';
-  return new Date(epoch * 1000).toLocaleString();
-}
-
-/** Done / total: completed, failed and cancelled requests are done. */
-export function progress(batch: ConsoleBatch): { done: number; total: number; failed: number } {
-  const counts = batch.request_counts;
-  return {
-    done: counts.completed + counts.failed + batch.cancelled,
-    total: counts.total,
-    failed: counts.failed,
-  };
-}
+export { inputLabel, progress, statusLabel, targetLabel } from './batchText';
 
 function BatchRow({
   batch,
@@ -100,38 +60,53 @@ function BatchRow({
   onDownload: (batch: ConsoleBatch, kind: ResultKind) => void;
 }) {
   const t = useT();
-  const { done, total, failed } = progress(batch);
+  const counts = outcomeCounts(batch);
   const tone = STATUS_TONE[batch.status] ?? 'bg-blue-50 text-blue-700 ring-blue-200';
+  const paused = pauseText(batch, t);
   return (
     <li className="py-4" data-testid={`batch-${batch.id}`}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <code className="truncate text-sm font-medium text-gray-900">{batch.id}</code>
+            <Link
+              href={`/dashboard/batches/${encodeURIComponent(batch.id)}`}
+              className="truncate text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline"
+            >
+              {batch.name || <code>{batch.id}</code>}
+            </Link>
             <span
               className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tone}`}
             >
               {statusLabel(batch.status, t)}
             </span>
           </div>
+          {batch.name && (
+            <code className="mt-0.5 block truncate text-xs text-gray-400">{batch.id}</code>
+          )}
           <p className="mt-1 text-sm text-gray-700">
             <span className="font-medium">{targetLabel(batch, t)}</span>
             {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
           </p>
-          <p className="mt-0.5 text-xs text-gray-500">{inputLabel(batch, t)}</p>
+          <p className="mt-0.5 text-xs text-gray-500">
+            {inputLabel(batch, t)} · {originLabel(batch, t)}
+          </p>
+          <p className="mt-2 text-xs text-gray-600">
+            {fill(
+              t(
+                'batches.row.outcomes',
+                '{succeeded} succeeded · {failed} failed · {expired} expired unrun · {cancelled} cancelled · {unfinished} not finished · {total} total',
+              ),
+              {
+                succeeded: counts.succeeded.toLocaleString(),
+                failed: counts.failed.toLocaleString(),
+                expired: counts.expired.toLocaleString(),
+                cancelled: counts.cancelled.toLocaleString(),
+                unfinished: counts.unfinished.toLocaleString(),
+                total: counts.total.toLocaleString(),
+              },
+            )}
+          </p>
           <dl className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-gray-600 sm:grid-cols-4">
-            <div>
-              <dt className="text-gray-400">{t('batches.row.requests', 'Requests')}</dt>
-              <dd>
-                {fill(t('batches.row.progress', '{done} of {total} done'), {
-                  done: String(done),
-                  total: String(total),
-                })}
-                {failed > 0
-                  ? ` · ${fill(t('batches.row.failed', '{failed} failed'), { failed: String(failed) })}`
-                  : ''}
-              </dd>
-            </div>
             <div>
               <dt className="text-gray-400">{t('batches.row.tokens', 'Tokens')}</dt>
               <dd>
@@ -164,7 +139,18 @@ function BatchRow({
               <dt className="text-gray-400">{t('batches.row.created', 'Created')}</dt>
               <dd>{formatTime(batch.created_at)}</dd>
             </div>
+            <div>
+              <dt className="text-gray-400">
+                {t('batches.row.results_until', 'Results kept until')}
+              </dt>
+              <dd>{formatTime(batch.results_expires_at)}</dd>
+            </div>
           </dl>
+          {paused && (
+            <p role="note" className="mt-2 text-xs text-amber-800">
+              ⚠ {paused}
+            </p>
+          )}
           {batch.validation_error?.data?.length ? (
             <p className="mt-2 text-xs text-red-700">
               {batch.validation_error.data
@@ -215,6 +201,12 @@ function BatchRow({
               {t('batches.action.download_errors', 'Download errors')}
             </Button>
           )}
+          <Link
+            href={`/dashboard/batches/${encodeURIComponent(batch.id)}`}
+            className="inline-flex items-center rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 ring-1 ring-inset ring-blue-200 hover:bg-blue-50"
+          >
+            {t('batches.action.details', 'Details')}
+          </Link>
           {isCancellable(batch) && (
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => onCancel(batch)}>
               {t('batches.action.cancel', 'Cancel')}
@@ -307,7 +299,8 @@ export function BatchesView() {
 /**
  * The signed-in user's batches, every target alike, with what each has done and
  * cost so far, the actions an owner has (cancel, delete, download results) and
- * their webhook settings. Batches are created through the API, not here.
+ * their webhook settings. A user whose role may submit also creates batches
+ * here (`/dashboard/batches/new`), and filters the list by name, id and status.
  */
 function BatchesManager({
   capabilities,
@@ -319,10 +312,22 @@ function BatchesManager({
   const t = useT();
   const toast = useAccountToast();
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [appliedQuery, setAppliedQuery] = useState('');
+  const [status, setStatus] = useState<BatchStatus | ''>('');
+  useEffect(() => {
+    // Search as the user types, without a request per keystroke.
+    const timer = setTimeout(() => setAppliedQuery(query.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [query]);
   const { batches, hasMore, loading, loadingMore, error, reload, loadMore, replace, remove } =
-    usePagedBatches((after) => listMyBatches(after), 'mine');
+    usePagedBatches(
+      (after) => listMyBatches(after, 20, { status, q: appliedQuery }),
+      `mine:${status}:${appliedQuery}`,
+    );
   // Only a known "no": without an answer the gateway decides each action.
   const cannotSubmit = capabilities?.role_may_submit === false;
+  const filtered = Boolean(status || appliedQuery);
   async function handleCancel(batch: ConsoleBatch) {
     const message = t(
       'batches.confirm.cancel',
@@ -373,13 +378,23 @@ function BatchesManager({
     <div className="space-y-6">
       <PageHeader
         subtitle={t(
-          'batches.subtitle',
-          'Batches you submitted through /v1/batches, as direct requests or a JSONL file. Results are kept for a limited time after a batch ends.',
+          'batches.subtitle_create',
+          'Batches you created here or through /v1/batches, from a JSONL file or as direct requests. Results are kept for a limited time after a batch ends.',
         )}
       >
-        <Button variant="secondary" onClick={() => void reload()} disabled={loading}>
-          {t('batches.refresh', 'Refresh')}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={() => void reload()} disabled={loading}>
+            {t('batches.refresh', 'Refresh')}
+          </Button>
+          {!cannotSubmit && (
+            <Link
+              href="/dashboard/batches/new"
+              className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+            >
+              {t('batches.create.button', 'Create batch')}
+            </Link>
+          )}
+        </div>
       </PageHeader>
 
       {cannotSubmit && capabilities && (
@@ -409,6 +424,26 @@ function BatchesManager({
       )}
 
       <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <input
+            type="search"
+            aria-label={t('batches.search.label', 'Search by name or batch ID')}
+            placeholder={t('batches.search.placeholder', 'Search by name or batch ID')}
+            className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 sm:max-w-xs"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <Select<BatchStatus | ''>
+            aria-label={t('batches.filter.status', 'Status')}
+            value={status}
+            onValueChange={setStatus}
+            options={[
+              { value: '', label: t('batches.filter.any', 'Any status') },
+              ...ALL_STATUSES.map((value) => ({ value, label: statusLabel(value, t) })),
+            ]}
+            className="sm:w-48"
+          />
+        </div>
         {error && (
           <p role="alert" className="mb-3 text-sm text-red-700">
             {error}
@@ -418,12 +453,14 @@ function BatchesManager({
           <p className="text-sm text-gray-500">{t('batches.loading', 'Loading batches…')}</p>
         ) : batches.length === 0 && !error ? (
           <p className="text-sm text-gray-500">
-            {cannotSubmit
-              ? t('batches.empty_existing', 'You have no batches.')
-              : t(
-                  'batches.empty',
-                  'You have no batches. Submit one through the API to see it here.',
-                )}
+            {filtered
+              ? t('batches.empty_filtered', 'No batch matches this search.')
+              : cannotSubmit
+                ? t('batches.empty_existing', 'You have no batches.')
+                : t(
+                    'batches.empty_create',
+                    'You have no batches. Create one here, or submit one through the API.',
+                  )}
           </p>
         ) : (
           <ul className="divide-y divide-gray-100">

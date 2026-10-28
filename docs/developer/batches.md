@@ -566,9 +566,10 @@ on every redirect, and again on every connection.
 ## Batches in the console
 
 The **Batches** page of the console (from the dashboard) lists all your
-batches — each with its target, model and input method, status, progress,
-tokens and known cost — and lets you cancel, delete and download results, and
-set up your webhook. Batches are created through the API, not there.
+batches — each with its name, target, model and input method, status, requests
+by outcome, tokens and known cost — and lets you search them by name or ID,
+filter them by status, open one for its details, cancel, delete and download
+results, and set up your webhook.
 
 The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and
 either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
@@ -578,13 +579,80 @@ Batch is not available. Quotas and API keys play no part in either.
 Below `BATCH_MIN_ROLE` you cannot submit batches or change your webhook, and the
 page says so; what you already have stays yours to manage: list your batches,
 download their results, cancel and delete them, and read and remove your
-webhook. Batches are submitted through the API; the page has no create button.
+webhook. The page then offers no **Create batch** button.
 
 The console asks `GET /user/batch-capabilities` (signed-in session) for this:
 `status` (`enabled`, `disabled`, or `unavailable` while the batch store is not
 ready), `min_role`, `role_may_submit` (your role only, not your quotas),
 `has_history` (null when it could not be checked; the link then stays) and
 `show_entry`.
+
+### Creating a batch in the console
+
+**Create batch** turns a JSONL file into a Chat Completions or Embeddings batch
+in three steps; nothing runs until you confirm the last one:
+
+1. **Upload data.** The file has the lines described in
+   [Batches from a file](#batches-from-a-file); `url` and `method` may be left
+   out. The page recognises the type from each line's `url`, or from the body
+   when there is none (`messages`: Chat; `input`: Embeddings). It asks you to
+   choose only when no line says. A file mixing both types, a `url` the body
+   contradicts, and any other endpoint are errors that no choice overrides.
+2. **Configure.** Give the batch a name, and optionally a description. Keep the
+   file's model, or choose one model for every request, which you must do when
+   the file names several models or one you cannot use. For Chat you may also
+   set `temperature` and `max_tokens` for every request. Every other field is
+   kept as the file has it.
+3. **Check and confirm.** The gateway checks every line without running or
+   billing anything. Each problem names its line, `custom_id` and field, never
+   the request's content, and the list can be downloaded as CSV or JSONL. When
+   the file is valid, the page shows the first stored requests, the canonical
+   model the batch will run on, its 24-hour window, how it is billed and how
+   long its results are kept.
+
+The console is stricter than `/v1/batches`. A field the gateway would not
+forward is an error rather than dropped silently: for example
+`max_completion_tokens` (rename it to `max_tokens`) or `user`. So are a
+byte-order mark, a key repeated within an object, and `NaN` or `Infinity`.
+Fields such as `tools` and a JSON schema are passed on as written. The stored
+requests name the canonical model, so a later change to an alias does not move
+the batch to another model. The stored requests, filled-in fields and overrides
+included, are held to the same file size limit as an upload.
+
+A batch created in the console runs under your active API key, as a batch you
+submit with that key would. The page shows the key's prefix only and never
+creates a key: without one you can upload and check files, and the page links to
+the dashboard to create a key before you submit. Signing out or closing the
+browser does not stop a submitted batch; revoking or regenerating the key fails
+its unfinished requests. If the key, or the model the choice resolves to, changes
+between the check and the submission, the submission is refused and you check
+again. Uploading and checking cost nothing, even with a daily quota of zero;
+submitting needs quota left.
+
+Each submission keeps its own `Idempotency-Key` in your browser until its outcome
+is known. A timeout, a reload or a second tab therefore finds the batch it
+created instead of creating another. When a submission's answer never arrived
+and more than a day has passed, the page can no longer be sure, so it stops and
+asks you: submitting again then makes a new submission, which can create and
+bill a second batch. A request in a batch may still be billed more than once
+when an attempt's result is lost; see [Costs](#costs).
+
+**Copy as new batch** opens the create page on a batch's source file and
+settings, for a batch created in the console and for an API file batch of
+target Chat or Embeddings whose input file is still stored. When that file has
+been deleted or has expired, you upload it again and the settings are kept. A
+batch of direct requests, or of target Messages or Responses, cannot be copied
+yet. Copying runs nothing and does not extend the file's retention.
+
+Uploaded files are kept for `BATCH_FILE_RETENTION_DAYS`. **Uploaded files** on
+the create page lists yours and deletes them; a batch already submitted keeps
+running. When the settings change what is stored, the batch keeps its own copy
+of the requests: it counts toward your storage and is deleted with the batch or
+its source file.
+
+A finished Chat or Embeddings batch's details offer **Export unfinished
+requests**: its failed, expired and cancelled requests as an input file, to fix
+and submit as a new batch.
 
 ## Limits
 

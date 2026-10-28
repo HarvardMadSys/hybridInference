@@ -504,9 +504,14 @@ async def _admit_embeddings(body: dict[str, Any], ctx: AdmissionContext) -> str:
         raise ItemRejected(
             "invalid_request", f"body is not a valid embeddings request: {_describe(exc)}"
         ) from None
+    return await _admit_embedding_model(request.model, ctx)
+
+
+async def _admit_embedding_model(model: str, ctx: AdmissionContext) -> str:
+    """The canonical id of an embedding model the caller may batch."""
     adapters = ctx.embedding_adapters or {}
-    adapter = adapters.get(request.model)
-    gate = (ctx.embedding_routes or {}).get(request.model)
+    adapter = adapters.get(model)
+    gate = (ctx.embedding_routes or {}).get(model)
     if (
         adapter is None
         # The gate is mandatory, as on /v1/embeddings: an adapter without one
@@ -514,7 +519,7 @@ async def _admit_embeddings(body: dict[str, Any], ctx: AdmissionContext) -> str:
         or gate is None
         or (
             await model_access_denial(
-                gate, request.model, ctx.user_ctx, visibility_resolver=ctx.visibility_resolver
+                gate, model, ctx.user_ctx, visibility_resolver=ctx.visibility_resolver
             )
             is not None
         )
@@ -522,13 +527,33 @@ async def _admit_embeddings(body: dict[str, Any], ctx: AdmissionContext) -> str:
         # Every reason reads as an unknown model, as on the interactive surface.
         raise ItemRejected(
             "model_not_found",
-            model_not_found_detail(request.model, user_ctx=ctx.user_ctx, noun="Embedding model"),
+            model_not_found_detail(model, user_ctx=ctx.user_ctx, noun="Embedding model"),
             status=404,
             param="model",
         )
     # The embedding adapter is looked up by the name as given, as the
     # interactive endpoint does; its configured id is what the cap keys on.
-    return getattr(getattr(adapter, "config", None), "id", None) or request.model
+    return getattr(getattr(adapter, "config", None), "id", None) or model
+
+
+async def resolve_model(target: str, model: Any, ctx: AdmissionContext) -> str:
+    """The canonical model a ``chat`` or ``embeddings`` item naming *model* would run on.
+
+    The model checks of :func:`admit_item` alone, with the same refusals --
+    auto models, and every reason the caller may not use a model reading as
+    an unknown one -- for a caller that checks the rest of the body itself.
+
+    Raises:
+        ItemRejected: The caller may not batch *model* for *target*.
+    """
+    if target == TARGET_CHAT:
+        canonical, _route = await _cached_route_model(model, ctx, TARGET_CHAT)
+        return canonical
+    if target == TARGET_EMBEDDINGS:
+        if not isinstance(model, str) or not model:
+            raise ItemRejected("invalid_request", "model: a model name is required", param="model")
+        return await _admit_embedding_model(model, ctx)
+    raise ItemRejected("invalid_request", f"unsupported batch target {target!r}")
 
 
 async def _admit_messages(body: dict[str, Any], ctx: AdmissionContext) -> str:
