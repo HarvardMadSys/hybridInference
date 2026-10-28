@@ -54,6 +54,7 @@ from serving.servers.routers.completions import (
     ChatServices,
     ChatStream,
     execute_chat,
+    release_unstarted_chat_streams,
 )
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
@@ -124,6 +125,8 @@ class ResponsesStream:
     """
 
     events: AsyncIterator[bytes]
+    #: The primed chat stream the events re-frame (None if chat answered unary).
+    chat_stream: ChatStream | None = None
 
 
 async def _load_prior_messages(
@@ -160,6 +163,7 @@ async def create_response(
     cost_tracker=Depends(get_cost_tracker),
     response_store=Depends(get_response_store),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ):
     """Handle an OpenAI Responses API create request (stream or non-stream)."""
     try:
@@ -192,6 +196,9 @@ async def create_response(
         ),
     )
     if isinstance(result, ResponsesStream):
+        if result.chat_stream is not None:
+            # Closed at the end of the request if the response never started.
+            _streams.append(result.chat_stream)
         return StreamingResponse(
             result.events, media_type="text/event-stream", headers=_SSE_HEADERS
         )
@@ -291,9 +298,11 @@ async def execute_responses(
         # ``HTTPException`` here -- before any byte is sent -- so the client gets
         # a clean JSON error rather than a broken stream.
         frames = None
+        chat_stream = None
         if isinstance(outcome, ChatStream):
             await outcome.prime()
             frames = outcome.frames()
+            chat_stream = outcome
         return ResponsesStream(
             _response_events(
                 frames,
@@ -306,7 +315,8 @@ async def execute_responses(
                 store=store,
                 convo_messages=convo_messages,
                 user_id=user_id,
-            )
+            ),
+            chat_stream=chat_stream,
         )
 
     # Non-streaming: translate the chat completion to a Response.

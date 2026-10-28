@@ -844,3 +844,146 @@ def test_an_execution_function_holds_no_http_request_or_response(execute):
     # A parameter of that name holding a protocol value (embeddings' validated
     # ``EmbeddingRequest``) is not an HTTP request.
     assert not (used & forbidden) - set(parameters), used & forbidden
+
+
+# -- a client that leaves before the stream starts (T7) -----------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        pytest.param("/v1/chat/completions", _chat(MID, stream=True), id="chat"),
+        pytest.param(
+            "/v1/responses",
+            {"model": MID, "input": "hi", "stream": True, "store": False},
+            id="responses",
+        ),
+    ],
+)
+async def test_a_primed_stream_the_client_left_is_still_finalized(
+    gateway, monkeypatch, path, body, spec_version
+):
+    """The chat stream is read before the response starts; leaving then still closes it.
+
+    The session stream has started (its first item was pulled to decide the
+    status) when Starlette may never iterate the response body: the client is
+    already gone. The session must still end as a client disconnect -- a 499
+    row, no charge -- the upstream stream must be closed, and the request's
+    interactive load released. The close comes from the event loop finalizing
+    the abandoned session stream; ``gc.collect`` makes that deterministic here.
+    """
+    import gc
+
+    load = _capture_interactive_load(gateway, monkeypatch)
+    adapter = gateway.adapters[MID]
+    closed: list[bool] = []
+
+    async def held_stream(messages, **params):
+        try:
+            yield adapter.format_stream_chunk(model=MID, content="ok")
+            await asyncio.sleep(30)
+            yield "data: [DONE]\n\n"
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(adapter, "stream_chat_completion", held_stream)
+    charges: list[Any] = []
+    real_charge = CostTracker.schedule_increment
+
+    async def counting_charge(self, **kwargs):
+        charges.append(kwargs)
+        return await real_charge(self, **kwargs)
+
+    monkeypatch.setattr(CostTracker, "schedule_increment", counting_charge)
+    payload = json.dumps(body).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+        ],
+        "client": ("127.0.0.1", 5001),
+        "server": ("test", 80),
+    }
+    delivered = False
+
+    async def receive():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        return {"type": "http.disconnect"}  # already gone
+
+    async def send(message):
+        if spec_version == "2.4":
+            raise OSError("peer closed")
+
+    try:
+        await asyncio.wait_for(gateway.app(scope, receive, send), timeout=10)
+    except Exception as exc:  # the 2.4 path surfaces the dead peer
+        assert spec_version == "2.4", exc
+    for _ in range(3):
+        gc.collect()
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+    assert closed == [True]
+    assert charges == []
+    assert load.in_flight(MID) == 0
+    rows = await _rows(gateway.log_store)
+    assert [row["status_code"] for row in rows] == [499]
+    assert rows[0]["metadata"]["terminal_state"] == "client_disconnect"
+
+
+@pytest.mark.asyncio
+async def test_close_if_unstarted_closes_only_a_body_that_never_ran():
+    """The release at the end of a request never cuts a body that is streaming."""
+    closed: list[str] = []
+
+    async def tail(name: str):
+        try:
+            yield f"{name}-1"
+            yield f"{name}-2"
+        finally:
+            closed.append(name)
+
+    def stream() -> Any:
+        return completions.ChatStream(
+            session=None,
+            adapter_chunks=None,
+            buffered=True,
+            request_id="r",
+            model=MID,
+            request_headers={},
+            provider_header=None,
+        )
+
+    # Read ahead (as prime() and the buffered path both do), body never iterated.
+    unstarted = stream()
+    rest = tail("unstarted")
+    first = await rest.__anext__()
+    unstarted.adopt(first, rest)
+    await unstarted.close_if_unstarted()
+    assert closed == ["unstarted"]
+
+    # Body iterated: only its own finally closes the stream, once.
+    started = stream()
+    rest = tail("started")
+    started.adopt(await rest.__anext__(), rest)
+    frames = started.frames()
+    assert await frames.__anext__() == "started-1"
+    await started.close_if_unstarted()
+    assert closed == ["unstarted"]
+    assert [item async for item in frames] == ["started-2"]
+    assert closed == ["unstarted", "started"]

@@ -91,7 +91,7 @@ from serving.utils.token_utils import optional_token_count, usage_count
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Mapping
+    from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import StreamingResponse
@@ -1582,9 +1582,6 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     return None
 
 
-# --- Route handler ---------------------------------------------------------
-
-
 # --- Protocol execution, shared with the batch worker (issue #1690) ----------
 
 #: The body of a request that was not valid JSON. ``execute_messages`` answers
@@ -1690,10 +1687,19 @@ class MessagesStream:
         self._started = started
         self._release_unstarted = release_unstarted
 
-    async def aclose(self) -> None:
-        """Close the stream, releasing the claim whether or not it ever started."""
+    def release_if_unstarted(self) -> None:
+        """Release the claim of a stream that never started; leave a started one alone.
+
+        A started stream returns its claim in its own ``finally``. Safe to call
+        more than once: the release is the health registry's ``end_dispatch``,
+        which is idempotent for a claim.
+        """
         if not self._started():
             self._release_unstarted()
+
+    async def aclose(self) -> None:
+        """Close the stream, releasing the claim whether or not it ever started."""
+        self.release_if_unstarted()
         await self.frames.aclose()
 
 
@@ -1728,6 +1734,26 @@ def _rejection_source(ctx: ExecutionContext, services: MessagesServices) -> Reje
     )
 
 
+async def _unstarted_stream_release() -> AsyncIterator[list[MessagesStream]]:
+    """Hold the route's stream; once the response is over, free it if it never ran.
+
+    Declared with ``scope="request"``, so this ends after the response has been
+    sent -- or abandoned. A client already gone when the response starts can
+    leave Starlette never iterating the body (an ASGI server reporting spec
+    2.4+ fails the first send), and an async generator that never started runs
+    no ``finally``: the health claim taken in preflight -- a half-open probe,
+    when the endpoint is recovering -- would stay held until its deadline,
+    every request behind it refused. A stream that did start keeps releasing
+    its own claim, unchanged.
+    """
+    held: list[MessagesStream] = []
+    try:
+        yield held
+    finally:
+        for stream in held:
+            stream.release_if_unstarted()
+
+
 # --- Route handler ---------------------------------------------------------
 
 
@@ -1742,6 +1768,7 @@ async def anthropic_messages(
     model_visibility_resolver=Depends(get_model_visibility_resolver),
     completions_logger=Depends(get_completions_logger),
     _conc=Depends(enforce_user_concurrency),
+    _streams: list[MessagesStream] = Depends(_unstarted_stream_release, scope="request"),
 ):
     """Handle Anthropic Messages API requests, served by :func:`execute_messages`."""
     try:
@@ -1767,6 +1794,8 @@ async def anthropic_messages(
         ),
         MessagesConstraints.online(),
     )
+    if isinstance(outcome, MessagesStream):
+        _streams.append(outcome)
     return render_messages_http(outcome)
 
 

@@ -220,16 +220,6 @@ def _pre_commit_error(chunk: str | None) -> tuple[int, str | None] | None:
     )
 
 
-async def _chain_first_then_rest(first: bytes | str | None, stream: Any) -> Any:
-    try:
-        if first is not None:
-            yield first
-        async for data in stream:
-            yield data
-    finally:
-        await _close_stream_quietly(stream)
-
-
 async def _streaming_response_with_keepalive(
     stream_chunks: Any,
     *,
@@ -486,12 +476,19 @@ class ChatStream:
     started, as the SSE route always has -- and raises ``HTTPException`` when
     that item is a failure nothing was committed for; :meth:`frames` then yields
     everything, unbuffered. A forced (buffered) stream is rendered by the HTTP
-    route from :meth:`session_stream` instead.
+    route from :meth:`session_stream` instead (see :meth:`adopt`).
+
+    Once primed, the session stream is running. If the response body is then
+    never iterated (a client already gone when the response starts),
+    :meth:`close_if_unstarted` closes it, so it ends as a client disconnect
+    rather than whenever the abandoned generator happens to be collected.
     """
 
     __slots__ = (
-        "_first",
+        "_frames_started",
+        "_head",
         "_sse",
+        "_tail",
         "adapter_chunks",
         "buffered",
         "model",
@@ -521,7 +518,11 @@ class ChatStream:
         self.request_headers = request_headers
         self.provider_header = provider_header
         self._sse: Any = None
-        self._first: str | None = None
+        # What the response body yields: a first item already read, then the
+        # rest of the started stream it came from.
+        self._head: Any = None
+        self._tail: Any = None
+        self._frames_started = False
 
     async def prime(self) -> str | None:
         """Read the first SSE item; refuse with its status if it is an uncommitted failure.
@@ -557,20 +558,67 @@ class ChatStream:
                 status_code=status_code,
                 detail=message or scrub_error_for_user(None, self.request_id, status_code),
             )
-        self._first = first_sse
+        self.adopt(first_sse, self._sse)
         return first_sse
 
-    def frames(self) -> AsyncIterator[str]:
-        """The primed first item, then the rest of the stream; closed when done."""
-        return _chain_first_then_rest(self._first, self._sse)
+    def adopt(self, first: Any, rest: Any) -> None:
+        """Make *first*, then the rest of the started stream *rest*, the response body."""
+        self._head, self._tail = first, rest
+
+    def frames(self) -> AsyncIterator[Any]:
+        """The first item already read, then the rest of the stream; closed when done."""
+        return self._frames()
+
+    async def _frames(self) -> AsyncIterator[Any]:
+        self._frames_started = True
+        try:
+            if self._head is not None:
+                yield self._head
+            async for data in self._tail:
+                yield data
+        finally:
+            await _close_stream_quietly(self._tail)
 
     def session_stream(self) -> AsyncIterator[str]:
         """The session's SSE items from the start, for a forced (buffered) stream."""
         return self.session.stream(self.adapter_chunks)
 
+    async def close_if_unstarted(self) -> None:
+        """Close a stream read ahead whose response body never started; else nothing.
+
+        A body that started closes the stream in its own ``finally``.
+        """
+        if self._tail is not None and not self._frames_started:
+            await _close_stream_quietly(self._tail)
+
     async def aclose(self) -> None:
         """Close whatever has been started."""
-        await _close_stream_quietly(self._sse if self._sse is not None else self.adapter_chunks)
+        if self._tail is not None:
+            await _close_stream_quietly(self._tail)
+        else:
+            await _close_stream_quietly(self._sse if self._sse is not None else self.adapter_chunks)
+
+
+async def release_unstarted_chat_streams() -> AsyncIterator[list[ChatStream]]:
+    """Hold a route's chat stream; once the response is over, close it if it never ran.
+
+    Declared with ``scope="request"``, so this ends after the response has been
+    sent -- or abandoned. The stream was read ahead to choose the response's
+    status, so its session and upstream are running; a client already gone when
+    the response starts can leave Starlette never iterating the body (an ASGI
+    server reporting spec 2.4+ fails the first send). Closed here, the session
+    ends as a client disconnect (499, no charge) and the upstream stream, its
+    reader task and the router's claim are released at the end of the request,
+    instead of whenever the abandoned generator is collected -- which an
+    exception traceback kept alive can postpone indefinitely. A stream whose
+    body started is left to close itself, as before.
+    """
+    held: list[ChatStream] = []
+    try:
+        yield held
+    finally:
+        for stream in held:
+            await stream.close_if_unstarted()
 
 
 ChatOutcome = ChatResponse | ChatStream
@@ -634,8 +682,9 @@ async def _render_chat_stream(
         if stream.provider_header:
             streaming_headers["X-Provider"] = stream.provider_header
 
+        stream.adopt(first_chunk, keepalive_gen)
         return StreamingResponse(
-            _chain_first_then_rest(first_chunk, keepalive_gen),
+            stream.frames(),
             media_type="application/json",
             headers=streaming_headers or None,
         )
@@ -682,6 +731,7 @@ async def chat_completions(
     pricing_lookup: PricingLookup = Depends(get_pricing_lookup),
     cost_tracker: CostTracker = Depends(get_cost_tracker),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
 
@@ -699,6 +749,7 @@ async def chat_completions(
         authorization=authorization,
         user_ctx=user_ctx,
         concurrency_slot=_concurrency_slot,
+        streams=_streams,
         services=ChatServices(
             router=router_exec,
             model_router_registry=model_router_registry,
@@ -721,13 +772,15 @@ async def serve_chat_http(
     authorization: str | None,
     user_ctx: Mapping[str, Any],
     concurrency_slot: object,
+    streams: list[ChatStream],
     services: ChatServices,
     runtime_settings: RuntimeSettings | None,
 ) -> Any:
     """Serve a decoded chat request for an HTTP route and render the answer.
 
     For ``/v1/chat/completions`` and the compatibility routes, each under its
-    own concurrency dependency: *concurrency_slot* is what it yielded.
+    own concurrency dependency: *concurrency_slot* is what it yielded, and
+    *streams* what :func:`release_unstarted_chat_streams` yielded.
     """
     outcome = await execute_chat(
         body,
@@ -741,6 +794,8 @@ async def serve_chat_http(
         services,
         ChatOptions.online(runtime_settings),
     )
+    if isinstance(outcome, ChatStream):
+        streams.append(outcome)
     return await render_chat_http(outcome, request, http_response)
 
 

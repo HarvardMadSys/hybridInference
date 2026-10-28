@@ -22,7 +22,7 @@ from serving.servers.deps import (
     get_router,
 )
 
-from .completions import ChatServices, serve_chat_http
+from .completions import ChatServices, ChatStream, release_unstarted_chat_streams, serve_chat_http
 
 router = APIRouter()
 
@@ -42,6 +42,7 @@ async def single_completion(
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ):
     """Compatibility alias for single-shot completion requests.
 
@@ -58,6 +59,7 @@ async def single_completion(
         authorization=authorization,
         user_ctx=user_ctx,
         concurrency_slot=_concurrency_slot,
+        streams=_streams,
         services=_chat_services(
             request,
             router_exec,
@@ -87,6 +89,7 @@ async def legacy_completions(
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ):
     """OpenAI-style legacy completions endpoint: convert to chat format."""
     body = await request.json()
@@ -101,6 +104,7 @@ async def legacy_completions(
         authorization=authorization,
         user_ctx=user_ctx,
         concurrency_slot=_concurrency_slot,
+        streams=_streams,
         services=_chat_services(
             request,
             router_exec,
