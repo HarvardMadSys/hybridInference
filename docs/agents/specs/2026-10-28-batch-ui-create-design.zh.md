@@ -3,7 +3,7 @@
 - 日期：2026-10-28（Asia/Shanghai）
 - 编写与审阅：Claude Code（Opus 5.5 / high）起草，Codex 对照代码审阅并补充边界条件。
 - 状态：**产品范围已确认，已实现（未合并）。** 最新确认：上传后自动识别类型，只有信息不足时才补充选择。实现中按审阅意见修订了 I1、I2、I6、I7、I8 与提交顺序（见第 10 节）；验收记录见 [docs/reviews/2026-10-28-batch-ui-create.md](../../reviews/2026-10-28-batch-ui-create.md)。
-- 原调研基线：`dev` `5df326620b8dcc834f4fb8648f6dffa6dd708d7b`；本次设计修订以 [PR #1687](https://github.com/HarvardMadSys/hybridInference/pull/1687) 的统一 Batch 合同为目标基础。已核对 head `477f171ce3873415c19f2c66130b4634fc1d1416`，其基线为 `dev` `df40a9a82a6d5a39a9ffbdfebde3650f94cb5146`。#1687 当前为 OPEN、未合并；这是待整合的设计基础，不代表当前工作树或部署已经包含它。
+- 原调研基线：`dev` `5df326620b8dcc834f4fb8648f6dffa6dd708d7b`。设计初稿以 [PR #1687](https://github.com/HarvardMadSys/hybridInference/pull/1687) 的统一 Batch 合同为基础；交付前已核对并在隔离实现分支合入其最新 head `f7e5e9874aaa4ea3b1456fb1bbe5284689efe16b` 及 `dev` `453884a396a60f6df3a5dd04c73f8c1845e672e1`。#1687 与入口权限 #1680 仍为 OPEN、未合并；本地整合和测试不代表已上线。
 - 前置依赖：[PR #1680](https://github.com/HarvardMadSys/hybridInference/pull/1680)（Batch 入口与权限第一阶段，head `aba29b25e611096ffaff28d034a7aade95939f9c`）。交付本文时，Codex 已独立确认该 PR 为 OPEN 状态，**不在上述基线中、尚未合并**；本轮未核实部署状态。本文沿用它已批准的规则，不另行设计。
 - 本次修订：统一任务类型、输入方式、状态、计数和结果格式；删去按 OpenAI / Anthropic 分支展示的旧设计。首版创建范围仍然是 JSONL + Chat Completions / Embeddings，Messages / Responses 的网页创建与复制仍暂缓。
 - 读者：算法、数据与评测工程师，以及产品经理。第 1–3 节讲产品，第 4 节起讲技术。
@@ -20,7 +20,7 @@
 
 ## 1. 一页摘要（给产品经理）
 
-**目标**：在 **Tools → Batches** 加入「创建任务」。已登录用户不写代码、不粘贴 API 密钥，就能把 JSONL 提交为批处理任务，并在同一处管理、复制任务和下载结果。以 #1687 为基础，整个产品只有一个 Batch 资源；`/v1/batches` 提供程序化操作，`/user/batches` 是同一资源的登录用户入口，文件仍由文件服务管理。移除旧 `/v1/messages/batches` 等路由由 #1687 负责，本功能不重新引入这些路由，也不额外改变其合并后的公共 API 合同。
+**目标**：在 **Tools → Batches** 加入「创建任务」。已登录用户不写代码、不粘贴 API 密钥，就能把 JSONL 提交为批处理任务，并在同一处管理、复制任务和下载结果。以 #1687 为基础，整个产品只有一个 Batch 资源；`/v1/batches` 提供程序化操作，`/user/batches` 是同一资源的登录用户入口，文件仍由文件服务管理。停用旧 `/v1/messages/batches` 等接口并提供 HTTP 410 迁移提示由 #1687 负责，本功能不恢复旧接口的创建能力，也不额外改变其合并后的公共 API 合同。
 
 **用户看到的分类**：主要显示「任务类型 + 模型」，次要显示「JSONL 文件 / 直接提交」和来源（网页 / API）。不设置 OpenAI Batch、Anthropic Batch 两类产品，也不暴露 `api_surface` 作为选择项。管理页覆盖 Chat、Embeddings、Messages、Responses 以及兼容的历史任务；首版创建页仅开放已批准的前两类。Messages 是请求格式，不等于某个厂商的全部模型；能经 Chat Completions 调用的模型，按该接口的模型目录和能力校验提供。
 
@@ -273,14 +273,14 @@ SHA-256、状态与到期时间，任务类型，模型选择与实际执行的�
 ### 4.4 前置依赖 [PR #1680](https://github.com/HarvardMadSys/hybridInference/pull/1680)（交付时为 OPEN，尚未合并；本文沿用其已批准的设计）
 `GET /user/batch-capabilities` 返回 `role_may_submit`、`has_history`、`show_entry` 等字段；前端的 `useBatchCapabilities` 按账号缓存结果；统一的 Tools 区块里每个链接各自判断。当前基线**没有**这些代码（仍然是 `Internal Tools`，见 [DashboardView.tsx:156](../../../apps/frontend/src/components/features/dashboard/DashboardView.tsx#L156)）。实施前必须先合并 #1680。
 
-### 4.5 #1687 的统一合同及设计影响（核对 head `477f171c`）
+### 4.5 #1687 的统一合同及设计影响（核对 head `f7e5e987`）
 
-已阅读 [架构修订](https://github.com/HarvardMadSys/hybridInference/blob/477f171ce3873415c19f2c66130b4634fc1d1416/docs/agents/specs/2026-10-28-unified-batch-api-amendment.zh.md) 以及相关实际 diff：
-- [batch_console.py](https://github.com/HarvardMadSys/hybridInference/blob/477f171ce3873415c19f2c66130b4634fc1d1416/apps/backend/serving/servers/routers/batch_console.py) 返回统一的 `input`、`target`、`status`、`request_counts`；`api_surface` 只作内部诊断。用户列表仍未增加创建、单个任务详情、名称搜索或状态过滤，这些才是本功能需要补充的内容。
-- [renderers.py](https://github.com/HarvardMadSys/hybridInference/blob/477f171ce3873415c19f2c66130b4634fc1d1416/apps/backend/serving/batch/renderers.py) 使用 `display_status` / `result_line`；旧 Anthropic 状态和结果渲染器已删除。新的 [前端类型](https://github.com/HarvardMadSys/hybridInference/blob/477f171ce3873415c19f2c66130b4634fc1d1416/apps/frontend/src/lib/api/batches.ts) 定义 `BatchTarget`、`BatchInput` 和统一 `BatchStatus`；新增页面直接复用，不能另建供应商分类。
-- [管理员过滤](https://github.com/HarvardMadSys/hybridInference/blob/477f171ce3873415c19f2c66130b4634fc1d1416/apps/backend/serving/servers/routers/admin/batch.py) 已按显示状态过滤，包括 `finalizing`。用户过滤需要复用这一语义，不再将它列作要重新设计的基础能力。
-- [batches.py](https://github.com/HarvardMadSys/hybridInference/blob/477f171ce3873415c19f2c66130b4634fc1d1416/apps/backend/serving/servers/routers/batches.py) 统一直接提交与文件输入，新增 Messages 目标，并统一读取、取消、删除和结果下载。旧 `/v1/messages/batches` 与 `/anthropic/v1/messages/batches` 被删除，历史 `msgbatch_` 任务通过统一接口保留管理能力。
-- Messages 目标必须提供并冻结 `anthropic_version`，版本参与其幂等摘要；非 Messages 任务提供该字段被拒绝。因此首版 Chat/Embeddings 创建请求不携带这个字段，也不从历史任务复制 `protocol_profile`。若未来开放 Messages 网页创建，版本冻结和 profile 校验必须作为新的设计内容加入，本次不顺带实现。
+已阅读 [架构修订](https://github.com/HarvardMadSys/hybridInference/blob/f7e5e9874aaa4ea3b1456fb1bbe5284689efe16b/docs/agents/specs/2026-10-28-unified-batch-api-amendment.zh.md) 以及相关实际 diff：
+- [batch_console.py](https://github.com/HarvardMadSys/hybridInference/blob/f7e5e9874aaa4ea3b1456fb1bbe5284689efe16b/apps/backend/serving/servers/routers/batch_console.py) 返回统一的 `input`、`target`、`status`、`request_counts`；`api_surface` 只作内部诊断。用户列表仍未增加创建、单个任务详情、名称搜索或状态过滤，这些才是本功能需要补充的内容。
+- [renderers.py](https://github.com/HarvardMadSys/hybridInference/blob/f7e5e9874aaa4ea3b1456fb1bbe5284689efe16b/apps/backend/serving/batch/renderers.py) 使用 `display_status` / `result_line`；旧 Anthropic 状态和结果渲染器已删除。新的 [前端类型](https://github.com/HarvardMadSys/hybridInference/blob/f7e5e9874aaa4ea3b1456fb1bbe5284689efe16b/apps/frontend/src/lib/api/batches.ts) 定义 `BatchTarget`、`BatchInput` 和统一 `BatchStatus`；新增页面直接复用，不能另建供应商分类。
+- [管理员过滤](https://github.com/HarvardMadSys/hybridInference/blob/f7e5e9874aaa4ea3b1456fb1bbe5284689efe16b/apps/backend/serving/servers/routers/admin/batch.py) 已按显示状态过滤，包括 `finalizing`。用户过滤需要复用这一语义，不再将它列作要重新设计的基础能力。
+- [batches.py](https://github.com/HarvardMadSys/hybridInference/blob/f7e5e9874aaa4ea3b1456fb1bbe5284689efe16b/apps/backend/serving/servers/routers/batches.py) 统一直接提交与文件输入，新增 Messages 目标，并统一读取、取消、删除和结果下载。旧 `/v1/messages/batches` 与 `/anthropic/v1/messages/batches` 仅返回 HTTP 410 迁移提示且不在 OpenAPI 中展示；历史 `msgbatch_` 任务通过统一接口保留管理能力，原有终态 webhook 仍为 `message_batch.ended`。
+- Messages 目标必须通过 `anthropic-version` 请求头提供并冻结版本，版本参与其幂等摘要；JSON 中的 `anthropic_version` 字段被拒绝。因此首版 Chat/Embeddings 创建请求不携带 Messages 版本，也不从历史任务复制 `protocol_profile`。若未来开放 Messages 网页创建，版本冻结和 profile 校验必须作为新的设计内容加入，本次不顺带实现。
 - #1687 没有改动 `servers/auth.py`、`servers/deps.py`、`batch/scheduler.py` 或 `batch_file_store.py`。运行仍绑定 API Key；它不解决决定 A，也不提供本设计的源文件派生、预检或复制功能。
 
 实施以 #1687 与 #1680 整合后的 `dev` 为起点。两者都会影响 Batch 控制台代码，整合时保留 #1680 的 capability/权限判断和 #1687 的统一 DTO/渲染语义，再添加创建功能。本轮仅审查设计影响，没有重新执行 #1687 的测试，也不把 PR 描述中的验证结果当作本轮独立验收。
@@ -335,7 +335,7 @@ SHA-256、状态与到期时间，任务类型，模型选择与实际执行的�
 - **I9 解析有上限，不阻塞**：服务端每次读 4 个块，从不把整份文件读进内存；每处理 500 行让出一次事件循环；沿用现有的单行、总大小和行数上限，并且对覆盖后的结果也执行这些上限。每个进程最多同时扫描 2 个文件，同一进程内每个用户最多 1 个，超出返回 429 `scan_busy`；这是进程级保护，不宣称是跨实例全局限流。单次扫描最长 120 秒。返回内容也有上限：错误最多 1000 条，附带总数；预览 3 行，每行最多 16 KiB。日志不记录行内容。浏览器不解析文件。
 - **I10 清理**：上传中途中断时调用 `abort_upload`。提交失败或命中幂等记录时，在同一个请求里删除这次写出的 F′；即使这一步没执行，I8 的 GC 也会把它回收。预检不创建任务或派生文件、不保存校验报告，只维护扫描所需的短期读租约。
 - **I11 取消与费用**：沿用现有语义：未开始的请求取消，已在执行的请求完成并计费，封存后可以下载部分结果。只显示已知费用，未知次数单独列出，不按 0 计算，也不做预估。
-- **I12 继承 #1687 的 API 合同**：本功能不额外改变 #1687 合并后的 `/v1/*` 行为、错误和限额，也不恢复已移除的 Message Batches 路由。控制台独有的规则（BOM、重复键、补全 url、拒绝 `unsupported_parameter`、绑定规范模型）只在 `/user/*` 创建时生效；创建类型明确限定为 chat/embeddings，不能因为后端 `TARGET_URLS` 已包含 messages/responses 就自动开放首版 UI。
+- **I12 继承 #1687 的 API 合同**：本功能不额外改变 #1687 合并后的 `/v1/*` 行为、错误和限额，也不恢复已停用的 Message Batches 功能（保留 #1687 的 410 迁移提示）。控制台独有的规则（BOM、重复键、补全 url、拒绝 `unsupported_parameter`、绑定规范模型）只在 `/user/*` 创建时生效；创建类型明确限定为 chat/embeddings，不能因为后端 `TARGET_URLS` 已包含 messages/responses 就自动开放首版 UI。
 - **I13 预览与认证的边界**：预览展示的是存入任务的请求，不包括适配器在执行时做的协议转换；截断过的内容会明确标出「已截断」，不宣称预览是完整的。前端上传要复用现有的认证客户端：用 XHR 包装出上传进度，但令牌刷新、401 重试、账号一致性检查都走 `client.ts` 现有逻辑，不另写一套认证。
 
 ## 6. 技术附录：API、数据与代码触点（建议，未实现）
@@ -449,7 +449,7 @@ SHA-256、状态与到期时间，任务类型，模型选择与实际执行的�
 | A19 | 用户 B 访问 A 的批次、文件、`copied_from`、导出接口；同一浏览器先后登录 A 和 B | 全部返回 404，搜索结果中看不到 A 的任务；B 登录后看不到、也不会重放 A 待确认的提交 |
 | A20 | 预检 32 MiB / 50,000 行的文件，同时有交互请求；上传过程中访问令牌过期 | 交互请求延迟没有明显上升；预检在超时前完成；浏览器不卡顿；上传走现有的刷新流程，并且始终以同一账号完成 |
 | A21 | 只带 cookie、不带 Authorization 的跨站 POST；`BATCH_ENABLED` 关闭 | 分别返回 401 和 404，都不写入任何数据 |
-| A22 | 回归 #1687 的 `/v1/batches`、`/v1/files`、在线 Messages 及已移除路由 | 统一 API 的 Chat/Embeddings/Responses/Messages 行为保持，Messages 版本冻结与幂等保持；旧两条 Message Batches 路由仍为404且不在 OpenAPI；含 `max_completion_tokens` 的文件经 API 提交仍保持 #1687 后的行为 |
+| A22 | 回归 #1687 的 `/v1/batches`、`/v1/files`、在线 Messages 及已停用路由 | 统一 API 的 Chat/Embeddings/Responses/Messages 行为保持，Messages 版本冻结与幂等保持；旧两条 Message Batches 路由保持410且不在 OpenAPI；含 `max_completion_tokens` 的文件经 API 提交仍保持 #1687 后的行为 |
 | A23 | 同为 `input=file`，分别选择 chat 和 messages 任务复制；下载新的 Messages 文件任务和旧 msgbatch_ 结果 | 仅 chat 在首版可复制；Messages 提示网页暂不支持该类型，仍能查看/管理/下载。结果均使用统一外层，原生 Messages 响应留在 response.body，不恢复旧 result 格式；非文件任务只显示全部结果下载，不显示实际返回相同内容的成功/错误按钮 |
 
 | A24 | 带显式 url 的 Chat/Embeddings 文件；省略 url 但结构唯一的文件 | 自动识别整份文件，正常流程没有必选类型控件；模型与参数自动匹配；确认页显示识别结果 |
@@ -499,11 +499,11 @@ SHA-256、状态与到期时间，任务类型，模型选择与实际执行的�
   - 阿里云百炼（<https://help.aliyun.com/zh/model-studio/batch-inference>、<https://help.aliyun.com/zh/model-studio/openai-compatible-batch-file-input>）：「创建批量推理任务」需要填写名称、描述、最长等待时间，上传 JSONL，并提供示例文件下载；任务列表支持搜索和取消，可以下载错误文件；同一文件内的模型必须一致。
 - **借鉴与不借鉴**：借鉴了任务名称和描述、示例文件、列表搜索与状态、取消和错误文件下载、单文件单模型。没有借鉴价格、折扣、限额、保留期、执行窗口（例如百炼的 1–14 天）和任何承诺；本网关的计费规则见 [batches.md](../../developer/batches.md)。
 - **证据不足的部分**：调研中没有找到原生 Batch 产品在 UI 上提供列映射、试跑或费用预估的证据，但这不等于这些平台没有。本文也没有因为某个平台的 API 或 CLI 支持某项能力，就推断它的 UI 原生支持。
-- **事实与建议的区分**：第 4.1–4.3 节来自原基线；第 4.5 节来自 #1687 head `477f171c` 的实际代码和架构修订。[PR #1680](https://github.com/HarvardMadSys/hybridInference/pull/1680) 的内容依据其已批准的设计。Codex 本次核实 #1680 与 #1687 均为 OPEN、尚未合并；没有复跑它们的测试或核实部署。第 1–3 节和第 5–8 节中的新增行为都是设计建议，其中首版范围和自动识别流程已获准实施；其他扩展仍不在本次范围。本文不包含任何部署环境或私有基础设施的信息。
+- **事实与建议的区分**：第 4.1–4.3 节来自原基线；第 4.5 节已按 #1687 head `f7e5e987` 的实际代码和架构修订更新。[PR #1680](https://github.com/HarvardMadSys/hybridInference/pull/1680) 的内容依据其已批准的设计。Codex 本次核实 #1680 与 #1687 均为 OPEN、尚未合并；设计初稿未复跑这些测试；实现阶段的测试与独立验收另记于 [验收记录](../../reviews/2026-10-28-batch-ui-create.md)，未进行生产部署。第 1–3 节和第 5–8 节中的新增行为都是设计建议，其中首版范围和自动识别流程已获准实施；其他扩展仍不在本次范围。本文不包含任何部署环境或私有基础设施的信息。
 
 ## 10. 实现说明（2026-10-28，实现层面的选择，不改变已确认的产品行为）
 
-- **整合基线**：本地依次合并 #1687（`477f171c`）与 #1680（`aba29b25`）到 `dev` `df40a9a8` 之上，得到 `319544fc`；功能改动在其后。冲突按「保留 #1687 的统一 DTO/文案 + #1680 的能力判断/不可用状态」解决。
+- **整合基线**：本地依次合并 #1687（`477f171c`）与 #1680（`aba29b25`）到 `dev` `df40a9a8` 之上，得到 `319544fc`；功能改动在其后；交付前再合入 `dev` `453884a3` 与 #1687 `f7e5e987`。冲突按「保留 #1687 的统一 DTO/文案 + #1680 的能力判断/不可用状态」解决。
 - **代码位置**：扫描与预检 `apps/backend/serving/batch/console_prepare.py`；控制台创建路由 `servers/routers/batch_console_create.py`（上下文、源文件、预检、提交查询、创建）；详情、筛选、导出在 `servers/routers/batch_console.py`；`/v1/files` 与控制台共用抽出的 `files.store_upload`；模型准入共用 `targets.resolve_model`（从 `admit_item` 抽出，不另写一套）。
 - **两遍扫描**：第一遍识别（严格 JSON、信封、类型、统计），第二遍在类型确定后逐行严格校验（`model_validate(strict=True)` + 按请求模型运行时字段逐层查找未声明字段）、应用覆盖、准入并写出 F′。两遍都在同一个读租约下流式读取。
 - **类型判定细则**：显式 `url` 优先；无 `url` 时只有 `messages` 无 `input` 判为 Chat，只有 `input` 无 `messages` 判为 Embeddings；文件中确定类型的行只有一种时，无法判定的行按该类型完整校验；没有任何行能判定时才 `needs_type_choice`。选择与文件已确定的类型不同会报错。

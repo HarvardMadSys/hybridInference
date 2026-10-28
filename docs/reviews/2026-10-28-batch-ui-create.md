@@ -9,8 +9,8 @@
   clean-up. Messages/Responses creation and copy, trial runs, one-click
   retries, CSV/Excel input and cost estimates are out of scope, as designed.
 
-This record states what the author ran. It is not Codex's acceptance, which
-is recorded separately.
+The author checks and the subsequent independent Codex acceptance are recorded
+separately below.
 
 ## Baseline
 
@@ -28,7 +28,7 @@ Conflicts (`batch_console.py`, `BatchesView.tsx`, `zh-CN.json`,
 `batches.po`) were resolved keeping #1687's unified DTO, status and result
 behaviour and #1680's capabilities and unavailable state. On the base the
 batch backend tests and the frontend gates passed before any feature change.
-Review feature-only changes with `git diff 319544fcf..HEAD`.
+Review the initial feature-only commit with `git diff 319544fcf..22af7831`.
 
 ## Review rounds addressed
 
@@ -103,3 +103,65 @@ cover the create flow, recovery, cross-tab and account-switch cases in jsdom.
   this version (see the design's compatibility section).
 - A request may still be billed more than once when an attempt's result is
   lost; the idempotency key prevents duplicate batches, not duplicate billing.
+
+## Independent Codex integration and acceptance
+
+Before delivery, Codex integrated `dev` at `453884a3` and refreshed #1687 to
+`f7e5e987`. The latter retains HTTP 410 migration responses for retired Message
+Batches paths, requires the Messages version in the `anthropic-version` header,
+and preserves the legacy webhook event for old jobs. Both dependency PRs remain
+open; the local integration does not merge either PR or deploy it.
+
+Final executable code was checked at `4d23fa22`. Subsequent changes update this
+record, the design and the verified Chinese translation catalog only. Codex also
+fixed one remaining account-switch boundary: a pending IndexedDB clear must not
+publish the old account's settled submission into a new account's state. A
+deferred-clear hook regression fails before the guard and passes after it.
+The public-asset guard now explicitly permits the two neutral JSONL templates,
+and the deletion regression accepts a copy already removed by the background
+collector while still requiring no usable copy or created job.
+
+All independent execution used an isolated development machine, disposable
+PostgreSQL databases, synthetic identities and a loopback fake provider. No
+production data, real provider inference or shared deployment was used.
+
+| Final check | Result |
+|---|---|
+| `make format`, `make lint` | passed |
+| `make test` | 10,244 passed, 4 skipped |
+| Complete PostgreSQL integration tier | 781 passed |
+| Frontend type-check, lint, format, i18n and tests | passed; 168 files, 2,145 tests |
+| Frontend production build | passed |
+| `make docs-verify` | passed; English/Chinese catalog and local links checked |
+| Secret scan and production dependency audit | no leaks or reported vulnerabilities |
+
+The full live matrix ran on `860e41ce` (the feature plus current dev):
+
+- Real Chat and Embeddings upload, automatic recognition, preview, submission,
+  worker execution and result downloads. Preview, stored requests and provider
+  input agree after overrides; preflight makes no provider calls.
+- Copy, lost-response recovery, concurrent same-key submission, keyless guidance,
+  cross-owner and administrator isolation, unfinished exports, deleted-source
+  copy state, and retained management after role downgrade.
+- Key revocation and regeneration after one completed, one in-flight and one
+  queued request. The queued request never reached the provider; completed
+  output remained downloadable. Work authorized before revocation could finish.
+- Real desktop and 390px browser creation/download, copy defaults, committed
+  response loss with automatic recovery, and disabled submission without a key.
+  An old unknown intent performed a lookup without an automatic POST; only
+  ambiguous input showed a type choice. No page errors or horizontal overflow.
+- Independent regressions for source expiry during a row-lock wait (real
+  PostgreSQL store-level), oversized JSON integers, empty model capabilities,
+  rewritten total byte limits, and final-buffer storage exhaustion (real HTTP).
+
+After the dependency refresh, `4d23fa22` was exercised again for Chat and
+Embeddings creation through worker results, both original pre-feature API file
+jobs, all 12 retired Message Batches method/path combinations returning 410,
+and a real Chinese browser creation through completion. Desktop and 390px
+Chinese screenshots were visually inspected. The frontend source is identical
+to the source covered by the complete final frontend gates.
+
+Browser acceptance used Next.js development mode; the production build was
+verified separately. These checks do not establish real-provider billing or
+production-load behavior. Raw logs, synthetic credentials and screenshots are
+kept in task-local evidence, not committed with infrastructure details.
