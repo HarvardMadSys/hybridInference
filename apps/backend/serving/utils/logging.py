@@ -18,6 +18,10 @@ _STRUCTURED_LOG_KEYS = (
     "path",
     "status_code",
     "duration_ms",
+    # Time the request spent in Kubernetes proxy discovery, lock waits
+    # included (servers/middleware/proxy_trust.py). Kept apart from
+    # duration_ms, which measures only what runs inside the request log.
+    "proxy_discovery_ms",
     "remote_ip",
     "peer_ip",
     "ip_source",

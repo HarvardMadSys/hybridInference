@@ -55,6 +55,8 @@ def make_settings(monkeypatch) -> Callable[[dict[str, str] | None, str | None], 
                     "SMTP_",
                     "CORS_",
                     "BASE_URL",
+                    "KUBERNETES_PROXY_",
+                    "TRUST_",
                 )
             ):
                 monkeypatch.delenv(key, raising=False)
@@ -140,6 +142,125 @@ def test_settings_extra_fields_ignored(make_settings) -> None:
     """Unknown environment variables should be ignored."""
     settings = make_settings(env={"UNKNOWN_FIELD": "some_value"}, env_file=None)
     assert not hasattr(settings, "unknown_field")
+
+
+def _kubernetes_proxy_env() -> dict[str, str]:
+    return {
+        "TRUST_KUBERNETES_PROXY_DISCOVERY": "true",
+        "TRUST_PROXY_HEADERS": "true",
+        "KUBERNETES_PROXY_NAMESPACE": "test-namespace",
+        "KUBERNETES_PROXY_SERVICE_NAME": "frontend",
+        "KUBERNETES_PROXY_SERVICE_UID": "service-uid-123",
+        "KUBERNETES_PROXY_WORKLOAD_UID": "workload-uid-456",
+    }
+
+
+def test_kubernetes_proxy_discovery_defaults_off(make_settings) -> None:
+    settings = make_settings()
+    assert settings.trust_kubernetes_proxy_discovery is False
+    assert settings.kubernetes_proxy_max_age_seconds == 1.0
+    assert settings.kubernetes_proxy_api_url == "https://kubernetes.default.svc"
+    assert settings.kubernetes_proxy_ca_file.endswith("/serviceaccount/ca.crt")
+    assert settings.kubernetes_proxy_token_file.endswith("/serviceaccount/token")
+
+
+def test_kubernetes_proxy_discovery_accepts_explicit_identity_and_master_kill_switch(
+    make_settings,
+) -> None:
+    env = _kubernetes_proxy_env()
+    settings = make_settings(env)
+    assert settings.trust_kubernetes_proxy_discovery is True
+    assert settings.kubernetes_proxy_service_uid == "service-uid-123"
+    env["TRUST_PROXY_HEADERS"] = "false"
+    settings = make_settings(env)
+    assert settings.trust_proxy_headers is False
+    assert settings.broken_rules() == {}
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "KUBERNETES_PROXY_NAMESPACE",
+        "KUBERNETES_PROXY_SERVICE_NAME",
+        "KUBERNETES_PROXY_SERVICE_UID",
+        "KUBERNETES_PROXY_WORKLOAD_UID",
+        "KUBERNETES_PROXY_CA_FILE",
+        "KUBERNETES_PROXY_TOKEN_FILE",
+    ],
+)
+def test_kubernetes_proxy_discovery_requires_complete_identity(make_settings, key) -> None:
+    env = _kubernetes_proxy_env()
+    env[key] = ""
+    with pytest.raises(ValueError, match=key):
+        make_settings(env)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "5.001", "nan", "inf"])
+def test_kubernetes_proxy_snapshot_age_is_bounded(make_settings, value) -> None:
+    with pytest.raises(ValueError, match="kubernetes_proxy_max_age_seconds"):
+        make_settings({"KUBERNETES_PROXY_MAX_AGE_SECONDS": value})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://kubernetes.default.svc",
+        "https://user:password@kubernetes.default.svc",
+        "https://kubernetes.default.svc/api",
+        "https://kubernetes.default.svc?token=value",
+        "https://kubernetes.default.svc?",
+        "https://kubernetes.default.svc#",
+        "https://kubernetes.default.svc:0",
+        "https://kubernetes.default.svc:65536",
+        "https://kubernetes.default.svc\\other",
+        "https://kubernetes.default.svc\n",
+        "https:///",
+    ],
+)
+def test_kubernetes_proxy_api_requires_https_origin(make_settings, value) -> None:
+    with pytest.raises(ValueError, match="kubernetes_proxy_api_url"):
+        make_settings({"KUBERNETES_PROXY_API_URL": value})
+
+
+@pytest.mark.parametrize("value", ["https://kubernetes.default.svc/", "https://[fd00::1]:6443"])
+def test_kubernetes_proxy_api_accepts_tls_origin(make_settings, value) -> None:
+    settings = make_settings({"KUBERNETES_PROXY_API_URL": value})
+    assert settings.kubernetes_proxy_api_url == value.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("KUBERNETES_PROXY_NAMESPACE", "../other"),
+        ("KUBERNETES_PROXY_NAMESPACE", "UPPER"),
+        ("KUBERNETES_PROXY_SERVICE_NAME", "front.end"),
+        ("KUBERNETES_PROXY_SERVICE_NAME", "-frontend"),
+        ("KUBERNETES_PROXY_SERVICE_NAME", "a" * 64),
+        ("KUBERNETES_PROXY_SERVICE_UID", "uid with spaces"),
+        ("KUBERNETES_PROXY_WORKLOAD_UID", "uid/other"),
+        ("KUBERNETES_PROXY_WORKLOAD_UID", "a" * 129),
+    ],
+)
+def test_kubernetes_proxy_identity_rejects_malformed_names(make_settings, key, value) -> None:
+    env = _kubernetes_proxy_env()
+    env[key] = value
+    with pytest.raises(ValueError, match=key.lower()):
+        make_settings(env)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("TRUST_KUBERNETES_PROXY_DISCOVERY", "maybe"),
+        ("KUBERNETES_PROXY_API_URL", "http://kubernetes.default.svc"),
+        ("KUBERNETES_PROXY_MAX_AGE_SECONDS", "60"),
+        ("KUBERNETES_PROXY_SERVICE_UID", "contains spaces"),
+    ],
+)
+def test_kubernetes_proxy_invalid_environment_is_never_defaulted(monkeypatch, key, value) -> None:
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError, match=key.lower()):
+        get_settings()
 
 
 def test_cors_allowed_origins_accepts_comma_separated_env(make_settings) -> None:
