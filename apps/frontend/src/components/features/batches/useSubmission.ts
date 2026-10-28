@@ -90,6 +90,7 @@ export function useSubmission(userId: string | null, replaySeconds?: number): Su
         return;
       }
       await clear();
+      if (mine !== generation.current) return;
       attempts.current = 0;
       if (outcome.kind === 'created') setState({ phase: 'created', batch: outcome.batch });
       else if (outcome.kind === 'deleted') setState({ phase: 'deleted' });
