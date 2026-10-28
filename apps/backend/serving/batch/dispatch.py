@@ -354,24 +354,34 @@ async def _dispatch(
 # -- executors: one per target, every injected argument supplied ----------------
 
 
-async def _run_chat(services: Any, request: Request, caller: dict[str, Any], body: dict) -> Any:
-    from serving.servers.routers.completions import chat_completions
+async def _run_chat(
+    services: Any, ctx: ExecutionContext, body: dict, *, app: Any, protocol_profile: str | None
+) -> Any:
+    from serving.servers.routers.completions import ChatOptions, ChatStream, execute_chat
 
-    return await call_handler(
-        chat_completions,
-        request,
-        Response(),
-        authorization=None,
-        user_ctx=caller,
-        router_exec=services.router,
-        log_store=getattr(services, "log_store", None),
+    outcome = await execute_chat(
+        body, ctx, await _chat_services(services, app), ChatOptions.batch()
+    )
+    if isinstance(outcome, ChatStream):
+        # Never expected (stream is forced off); closed here, answered as a 502.
+        await outcome.aclose()
+    return outcome
+
+
+async def _chat_services(services: Any, app: Any) -> Any:
+    """The services the chat route would serve with, from the application's own."""
+    from serving.servers.routers.completions import ChatServices
+
+    return ChatServices(
+        router=services.router,
         model_router_registry=getattr(services, "model_router_registry", None),
-        model_visibility_resolver=getattr(services, "model_visibility_resolver", None),
-        runtime_settings=None,
+        visibility=getattr(services, "model_visibility_resolver", None),
+        log_store=getattr(services, "log_store", None),
         completions_logger=await get_completions_logger(services),
         pricing_lookup=await get_pricing_lookup(services),
         cost_tracker=await get_cost_tracker(services),
-        _concurrency_slot=None,
+        # The services the route reads off its application: auto-mode config.
+        app_services=getattr(getattr(app, "state", None), "services", None),
     )
 
 
@@ -408,10 +418,11 @@ async def _run_messages(
     from serving.servers.routers.anthropic_messages import (
         MessagesConstraints,
         MessagesServices,
+        MessagesStream,
         execute_messages,
     )
 
-    return await execute_messages(
+    outcome = await execute_messages(
         body,
         ctx,
         MessagesServices(
@@ -428,6 +439,11 @@ async def _run_messages(
         # rerouted, under the anthropic-version the batch was created with.
         MessagesConstraints.for_batch_item(body, protocol_profile),
     )
+    if isinstance(outcome, MessagesStream):
+        # Never expected (stream is forced off); its health claim is released
+        # here, in the item's own scope, and the attempt answered as a 502.
+        await outcome.aclose()
+    return outcome
 
 
 async def _run_responses(
@@ -456,20 +472,19 @@ async def _run_responses(
 
 #: Targets run through their protocol's execution function, with no request.
 _CORE_EXECUTORS = {
+    TARGET_CHAT: _run_chat,
     TARGET_EMBEDDINGS: _run_embeddings,
     TARGET_MESSAGES: _run_messages,
 }
 
 #: Targets still run through their route's handler (transitional, issue #1690).
 _HANDLER_EXECUTORS = {
-    TARGET_CHAT: _run_chat,
     TARGET_RESPONSES: _run_responses,
 }
 
 #: The handler each handler-run target calls, for the tests that hold every
 #: injected parameter of each to a supplied argument.
 HANDLERS: dict[str, tuple[str, str]] = {
-    TARGET_CHAT: ("serving.servers.routers.completions", "chat_completions"),
     TARGET_RESPONSES: ("serving.servers.routers.responses", "create_response"),
 }
 
@@ -623,8 +638,24 @@ def _messages_completed(result: Any) -> tuple[int, Any] | DispatchResult:
     return _failure(502, "The upstream response had an unexpected shape.")
 
 
+def _chat_completed(result: Any) -> Any:
+    """The body of a Chat outcome, or the failed attempt it is."""
+    from serving.servers.routers.completions import ChatResponse, ChatStream
+
+    if isinstance(result, ChatResponse):
+        return result.body
+    if isinstance(result, ChatStream):
+        # The item forced stream off; a stream here was never read.
+        return _failure(502, "The handler returned a stream for a batch request.")
+    return result
+
+
 def _completed(target: str, result: Any) -> DispatchResult:
     """Return the attempt that produced *result*, the execution's return value."""
+    if target == TARGET_CHAT:
+        result = _chat_completed(result)
+        if isinstance(result, DispatchResult):
+            return result
     if target == TARGET_MESSAGES:
         read = _messages_completed(result)
         if isinstance(read, DispatchResult):
