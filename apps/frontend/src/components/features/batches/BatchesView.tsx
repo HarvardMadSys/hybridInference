@@ -25,15 +25,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { roleLabel } from '@/lib/utils/roleLabel';
 
-import {
-  categoryLabel,
-  formatTime,
-  inputLabel,
-  originLabel,
-  outcomeCounts,
-  pauseText,
-  targetLabel,
-} from './batchText';
+import { categoryLabel, formatTime, outcomeCounts, pauseText, targetLabel } from './batchText';
 import { BatchCategoryBadge } from './BatchCategoryBadge';
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
@@ -56,154 +48,191 @@ function BatchRow({
   const t = useT();
   const counts = outcomeCounts(batch);
   const paused = pauseText(batch, t);
+  const name = batch.name || batch.id;
+  const outcome = [
+    counts.total > 0 &&
+      fill(t('batches.row.success_fraction', '{succeeded} / {total} succeeded'), {
+        succeeded: counts.succeeded.toLocaleString(),
+        total: counts.total.toLocaleString(),
+      }),
+    counts.failed > 0 &&
+      fill(t('batches.row.failed_nonzero', '{count} failed'), {
+        count: counts.failed.toLocaleString(),
+      }),
+    counts.expired > 0 &&
+      fill(t('batches.row.expired_nonzero', '{count} expired unrun'), {
+        count: counts.expired.toLocaleString(),
+      }),
+    counts.cancelled > 0 &&
+      fill(t('batches.row.cancelled_nonzero', '{count} cancelled'), {
+        count: counts.cancelled.toLocaleString(),
+      }),
+    counts.unfinished > 0 &&
+      fill(t('batches.row.unfinished_nonzero', '{count} unfinished'), {
+        count: counts.unfinished.toLocaleString(),
+      }),
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const primaryDownload: ResultKind | null = !batch.results_available
+    ? null
+    : batch.input !== 'file'
+      ? 'all'
+      : batch.error_file_id && counts.succeeded === 0
+        ? 'error'
+        : batch.output_file_id
+          ? 'output'
+          : batch.error_file_id
+            ? 'error'
+            : null;
+
   return (
-    <li className="py-4" data-testid={`batch-${batch.id}`}>
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+    <li className="py-5" data-testid={`batch-${batch.id}`}>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <Link
               href={`/dashboard/batches/${encodeURIComponent(batch.id)}`}
-              className="truncate text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline"
+              className="min-w-0 max-w-full truncate text-sm font-semibold text-gray-900 hover:text-blue-700 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+              title={name}
             >
-              {batch.name || <code>{batch.id}</code>}
+              {name}
             </Link>
             <BatchCategoryBadge batch={batch} />
           </div>
-          {batch.name && (
-            <code className="mt-0.5 block truncate text-xs text-gray-400">{batch.id}</code>
-          )}
-          <p className="mt-1 text-sm text-gray-700">
-            <span className="font-medium">{targetLabel(batch, t)}</span>
+          <p className="mt-1.5 break-words text-sm text-gray-600">
+            {targetLabel(batch, t)}
             {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
           </p>
-          <p className="mt-0.5 text-xs text-gray-500">
-            {inputLabel(batch, t)} · {originLabel(batch, t)}
-          </p>
-          <p className="mt-2 text-xs text-gray-600">
-            {fill(
-              t(
-                'batches.row.outcomes',
-                '{succeeded} succeeded · {failed} failed · {expired} expired unrun · {cancelled} cancelled · {unfinished} not finished · {total} total',
-              ),
-              {
-                succeeded: counts.succeeded.toLocaleString(),
-                failed: counts.failed.toLocaleString(),
-                expired: counts.expired.toLocaleString(),
-                cancelled: counts.cancelled.toLocaleString(),
-                unfinished: counts.unfinished.toLocaleString(),
-                total: counts.total.toLocaleString(),
-              },
-            )}
-          </p>
-          <dl className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-gray-600 sm:grid-cols-4">
-            <div>
-              <dt className="text-gray-400">{t('batches.row.tokens', 'Tokens')}</dt>
-              <dd>
-                {fill(t('batches.row.tokens_value', '{input} in · {output} out'), {
-                  input: batch.usage.input_tokens.toLocaleString(),
-                  output: batch.usage.output_tokens.toLocaleString(),
-                })}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-gray-400">{t('batches.row.cost', 'Known cost')}</dt>
-              <dd>
-                ${batch.cost_usd.toFixed(4)}
-                {batch.cost_unknown_attempts > 0 && (
-                  <span
-                    className="ml-1 text-amber-700"
-                    title={t(
-                      'batches.row.unknown_cost_hint',
-                      'Attempts whose result was lost after the request was sent; their cost is unknown and not included.',
-                    )}
-                  >
-                    {fill(t('batches.row.unknown_cost', '+ {count} unknown'), {
-                      count: String(batch.cost_unknown_attempts),
-                    })}
-                  </span>
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-gray-400">{t('batches.row.created', 'Created')}</dt>
-              <dd>{formatTime(batch.created_at)}</dd>
-            </div>
-            <div>
-              <dt className="text-gray-400">
-                {t('batches.row.results_until', 'Results kept until')}
-              </dt>
-              <dd>{formatTime(batch.results_expires_at)}</dd>
-            </div>
-          </dl>
+          {outcome && <p className="mt-2 text-sm text-gray-700">{outcome}</p>}
+          {batch.created_at && (
+            <p className="mt-1 text-xs text-gray-500">
+              {fill(t('batches.row.created_compact', 'Created {time}'), {
+                time: formatTime(batch.created_at),
+              })}
+            </p>
+          )}
           {paused && (
             <p role="note" className="mt-2 text-xs text-amber-800">
               ⚠ {paused}
             </p>
           )}
+          {batch.cost_unknown_attempts > 0 && (
+            <p role="note" className="mt-2 text-xs text-amber-800">
+              {fill(t('batches.row.unknown_cost_visible', 'Cost is unknown for {count} attempts'), {
+                count: batch.cost_unknown_attempts.toLocaleString(),
+              })}
+            </p>
+          )}
           {batch.validation_error?.data?.length ? (
-            <p className="mt-2 text-xs text-red-700">
-              {batch.validation_error.data
-                .slice(0, 3)
-                .map((problem) =>
-                  problem.line
-                    ? fill(t('batches.row.line_problem', 'Line {line}: {message}'), {
-                        line: String(problem.line),
-                        message: problem.message ?? '',
-                      })
-                    : (problem.message ?? ''),
-                )
-                .join(' · ')}
+            <p className="mt-2 break-words text-xs text-red-700">
+              {batch.validation_error.data.slice(0, 1).map((problem) =>
+                problem.line
+                  ? fill(t('batches.row.line_problem', 'Line {line}: {message}'), {
+                      line: String(problem.line),
+                      message: problem.message ?? '',
+                    })
+                  : (problem.message ?? ''),
+              )}
             </p>
           ) : null}
           {batch.error?.message ? (
-            <p className="mt-2 text-xs text-red-700">{batch.error.message}</p>
+            <p className="mt-2 break-words text-xs text-red-700">{batch.error.message}</p>
           ) : null}
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
-          {batch.results_available && batch.input !== 'file' && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {primaryDownload && (
             <Button
               size="sm"
               variant="secondary"
               disabled={busy}
-              onClick={() => onDownload(batch, 'all')}
+              onClick={() => {
+                if (primaryDownload) onDownload(batch, primaryDownload);
+              }}
             >
-              {t('batches.action.download', 'Download results')}
+              {primaryDownload === 'all'
+                ? t('batches.action.download', 'Download results')
+                : primaryDownload === 'output'
+                  ? t('batches.action.download_output', 'Download outputs')
+                  : t('batches.action.download_errors', 'Download errors')}
             </Button>
           )}
-          {batch.results_available && batch.output_file_id && (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={busy}
-              onClick={() => onDownload(batch, 'output')}
-            >
-              {t('batches.action.download_output', 'Download outputs')}
-            </Button>
-          )}
-          {batch.results_available && batch.error_file_id && (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={busy}
-              onClick={() => onDownload(batch, 'error')}
-            >
-              {t('batches.action.download_errors', 'Download errors')}
-            </Button>
-          )}
-          <Link
-            href={`/dashboard/batches/${encodeURIComponent(batch.id)}`}
-            className="inline-flex items-center rounded-lg px-3 py-1.5 text-sm font-medium text-blue-700 ring-1 ring-inset ring-blue-200 hover:bg-blue-50"
-          >
-            {t('batches.action.details', 'Details')}
-          </Link>
           {isCancellable(batch) && (
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => onCancel(batch)}>
               {t('batches.action.cancel', 'Cancel')}
             </Button>
           )}
-          <Button size="sm" variant="danger" disabled={busy} onClick={() => onDelete(batch)}>
-            {t('batches.action.delete', 'Delete')}
-          </Button>
+          <Link
+            href={`/dashboard/batches/${encodeURIComponent(batch.id)}`}
+            className="inline-flex h-9 items-center rounded-md px-3 text-sm font-medium text-blue-700 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+          >
+            {t('batches.action.details', 'Details')}
+          </Link>
+          <details
+            className="group relative"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && event.currentTarget.open) {
+                event.currentTarget.open = false;
+                event.currentTarget.querySelector('summary')?.focus();
+                event.stopPropagation();
+              }
+            }}
+          >
+            <summary
+              aria-label={fill(t('batches.action.more_for', 'More actions for {name}'), { name })}
+              className="flex h-9 cursor-pointer list-none items-center rounded-md px-3 text-sm font-medium text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 [&::-webkit-details-marker]:hidden"
+            >
+              {t('batches.action.more', 'More')}{' '}
+              <span aria-hidden="true" className="ml-1">
+                ▾
+              </span>
+            </summary>
+            <div className="absolute right-0 z-20 mt-1 w-44 rounded-lg bg-white p-1 shadow-lg ring-1 ring-gray-200">
+              {batch.results_available && batch.output_file_id && primaryDownload !== 'output' && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="block w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
+                  onClick={(event) => {
+                    const menu = event.currentTarget.closest('details');
+                    menu?.removeAttribute('open');
+                    menu?.querySelector('summary')?.focus();
+                    onDownload(batch, 'output');
+                  }}
+                >
+                  {t('batches.action.download_output', 'Download outputs')}
+                </button>
+              )}
+              {batch.results_available && batch.error_file_id && primaryDownload !== 'error' && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="block w-full rounded-md px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 disabled:opacity-50"
+                  onClick={(event) => {
+                    const menu = event.currentTarget.closest('details');
+                    menu?.removeAttribute('open');
+                    menu?.querySelector('summary')?.focus();
+                    onDownload(batch, 'error');
+                  }}
+                >
+                  {t('batches.action.download_errors', 'Download errors')}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={busy}
+                className="block w-full rounded-md px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-red-600 disabled:opacity-50"
+                onClick={(event) => {
+                  const menu = event.currentTarget.closest('details');
+                  menu?.removeAttribute('open');
+                  menu?.querySelector('summary')?.focus();
+                  onDelete(batch);
+                }}
+              >
+                {t('batches.action.delete', 'Delete')}
+              </button>
+            </div>
+          </details>
         </div>
       </div>
     </li>
@@ -377,12 +406,7 @@ function BatchesManager({
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        subtitle={t(
-          'batches.subtitle_create',
-          'Batches you created here or through /v1/batches, from a JSONL file or as direct requests. Results are kept for a limited time after a batch ends.',
-        )}
-      >
+      <PageHeader subtitle={t('batches.subtitle_create', 'Manage batch tasks and results.')}>
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => void reload()} disabled={loading}>
             {t('batches.refresh', 'Refresh')}

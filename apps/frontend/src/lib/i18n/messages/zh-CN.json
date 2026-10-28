@@ -1019,6 +1019,14 @@
     "source": "Export unfinished requests",
     "text": "导出未成功请求"
   },
+  "batches.action.more": {
+    "source": "More",
+    "text": "更多"
+  },
+  "batches.action.more_for": {
+    "source": "More actions for {name}",
+    "text": "任务 {name} 的更多操作"
+  },
   "batches.back": {
     "source": "Dashboard",
     "text": "控制台"
@@ -1799,25 +1807,37 @@
     "source": "Refresh",
     "text": "刷新"
   },
-  "batches.row.cost": {
-    "source": "Known cost",
-    "text": "已知费用"
+  "batches.row.cancelled_nonzero": {
+    "source": "{count} cancelled",
+    "text": "已取消 {count}"
   },
   "batches.row.created": {
     "source": "Created",
     "text": "创建时间"
   },
+  "batches.row.created_compact": {
+    "source": "Created {time}",
+    "text": "创建于 {time}"
+  },
+  "batches.row.expired_nonzero": {
+    "source": "{count} expired unrun",
+    "text": "超时未执行 {count}"
+  },
+  "batches.row.failed_nonzero": {
+    "source": "{count} failed",
+    "text": "失败 {count}"
+  },
   "batches.row.line_problem": {
     "source": "Line {line}: {message}",
     "text": "第 {line} 行：{message}"
   },
-  "batches.row.outcomes": {
-    "source": "{succeeded} succeeded · {failed} failed · {expired} expired unrun · {cancelled} cancelled · {unfinished} not finished · {total} total",
-    "text": "成功 {succeeded} · 失败 {failed} · 过期未执行 {expired} · 已取消 {cancelled} · 未结束 {unfinished} · 共 {total}"
-  },
   "batches.row.results_until": {
     "source": "Results kept until",
     "text": "结果保留到"
+  },
+  "batches.row.success_fraction": {
+    "source": "{succeeded} / {total} succeeded",
+    "text": "成功 {succeeded} / {total}"
   },
   "batches.row.tokens": {
     "source": "Tokens",
@@ -1827,13 +1847,13 @@
     "source": "{input} in · {output} out",
     "text": "输入 {input} · 输出 {output}"
   },
-  "batches.row.unknown_cost": {
-    "source": "+ {count} unknown",
-    "text": "另有 {count} 次费用未知"
+  "batches.row.unfinished_nonzero": {
+    "source": "{count} unfinished",
+    "text": "未结束 {count}"
   },
-  "batches.row.unknown_cost_hint": {
-    "source": "Attempts whose result was lost after the request was sent; their cost is unknown and not included.",
-    "text": "这些尝试在请求发出后丢失了结果，费用未知，未计入。"
+  "batches.row.unknown_cost_visible": {
+    "source": "Cost is unknown for {count} attempts",
+    "text": "有 {count} 次尝试的费用未知"
   },
   "batches.search.label": {
     "source": "Search by name or batch ID",
@@ -1876,8 +1896,8 @@
     "text": "校验中"
   },
   "batches.subtitle_create": {
-    "source": "Batches you created here or through /v1/batches, from a JSONL file or as direct requests. Results are kept for a limited time after a batch ends.",
-    "text": "你在这里或通过 /v1/batches 创建的批次，包括 JSONL 文件和直接提交的请求。任务结束后结果只保留一段时间。"
+    "source": "Manage batch tasks and results.",
+    "text": "查看并管理批处理任务与结果。"
   },
   "batches.target.chat": {
     "source": "Chat completions",
@@ -1959,6 +1979,10 @@
     "source": "Gave up",
     "text": "已放弃"
   },
+  "batches.webhook.failed_recent": {
+    "source": "Recent delivery failures",
+    "text": "最近有通知发送失败"
+  },
   "batches.webhook.pending": {
     "source": "Retrying",
     "text": "重试中"
@@ -1982,6 +2006,30 @@
   "batches.webhook.secret_once": {
     "source": "Signing secret — save it now, it is not shown again. Verify the webhook-signature header with it.",
     "text": "签名密钥——请现在保存，之后不再显示。用它验证 webhook-signature 请求头。"
+  },
+  "batches.webhook.secret_reminder": {
+    "source": "Save the signing secret now; it is shown only once.",
+    "text": "请立即保存签名密钥，仅显示一次。"
+  },
+  "batches.webhook.state.configured": {
+    "source": "Configured",
+    "text": "已配置"
+  },
+  "batches.webhook.state.disabled": {
+    "source": "Disabled",
+    "text": "已停用"
+  },
+  "batches.webhook.state.error": {
+    "source": "Could not load",
+    "text": "加载失败"
+  },
+  "batches.webhook.state.loading": {
+    "source": "Loading…",
+    "text": "加载中…"
+  },
+  "batches.webhook.state.unconfigured": {
+    "source": "Not configured",
+    "text": "未配置"
   },
   "batches.webhook.subtitle": {
     "source": "Get a signed POST when one of your batches ends and its results can be fetched. Events name the batch only; fetch the results with your API key.",
