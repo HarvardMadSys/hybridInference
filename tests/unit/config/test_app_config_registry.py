@@ -62,6 +62,24 @@ def test_unregistered_fields_name_a_reason() -> None:
         assert reason.strip()
 
 
+def test_kubernetes_proxy_discovery_stays_in_deployment_environment() -> None:
+    keys = {
+        "TRUST_KUBERNETES_PROXY_DISCOVERY",
+        "KUBERNETES_PROXY_NAMESPACE",
+        "KUBERNETES_PROXY_SERVICE_NAME",
+        "KUBERNETES_PROXY_SERVICE_UID",
+        "KUBERNETES_PROXY_WORKLOAD_UID",
+        "KUBERNETES_PROXY_API_URL",
+        "KUBERNETES_PROXY_CA_FILE",
+        "KUBERNETES_PROXY_TOKEN_FILE",
+        "KUBERNETES_PROXY_MAX_AGE_SECONDS",
+    }
+    for key in keys:
+        assert registry.is_environment_only(key)
+        assert registry.static_entry(key) is None
+        assert key.lower() in Settings.model_fields
+
+
 def test_static_entries_are_unique_and_well_formed() -> None:
     keys = [entry.key for entry in registry.static_entries()]
     assert len(keys) == len(set(keys))

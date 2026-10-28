@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from serving.config.settings import has_role
+from serving.config.settings import get_settings, has_role
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import db_disconnect_policy
@@ -20,6 +20,7 @@ from serving.servers.deps import (
     get_router,
     get_services,
 )
+from serving.servers.middleware.proxy_trust import proxy_discovery_ready
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -326,6 +327,7 @@ async def health(
 
 @router.get("/health/ready")
 async def health_ready(
+    request: Request,
     response: Response,
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
@@ -339,6 +341,10 @@ async def health_ready(
     from ``/health`` (liveness), which stays 200 with ``status:
     "degraded"`` to avoid container restart loops.
     """
+    if get_settings().trust_kubernetes_proxy_discovery and not proxy_discovery_ready(request):
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not_ready", "reason": "proxy_discovery_unavailable"}
+
     store_health = await _test_store_health(op_store, log_store)
 
     if store_health["all_healthy"]:

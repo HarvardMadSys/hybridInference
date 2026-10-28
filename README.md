@@ -122,6 +122,7 @@ row describes you:
 | Understand how a request becomes a routing decision | [Architecture](docs/developer/architecture.md) |
 | Add a model, a local server, or a new provider | [Adding a New Model](docs/developer/adding-models.md) |
 | Operate one in production | [Deployment Guide](docs/developer/deployment.md) |
+| Follow changing Kubernetes proxy Pod addresses | [Proxy discovery deployment guide](deploy/kubernetes/proxy-discovery/README.md) |
 | Send a change | [Contributing](docs/developer/contributing.md) |
 
 Bugs and questions go to the

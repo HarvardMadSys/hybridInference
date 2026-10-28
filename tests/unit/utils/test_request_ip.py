@@ -17,6 +17,7 @@ from starlette.datastructures import Headers
 
 from serving.config.settings import Settings
 from serving.utils.request_ip import (
+    DYNAMIC_PROXY_NETWORKS_STATE_KEY,
     MAX_FORWARDED_HOPS,
     ClientIpInfo,
     _is_in_networks,
@@ -36,6 +37,148 @@ def _request(headers: object, peer_ip: str = "10.0.0.2"):
 def _networks(*cidrs: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
     """Create a tuple of parsed networks from CIDR strings."""
     return tuple(ipaddress.ip_network(c) for c in cidrs)
+
+
+@contextmanager
+def _dynamic_settings(**overrides):
+    values = {
+        "trust_proxy_headers": True,
+        "trust_kubernetes_proxy_discovery": True,
+        "kubernetes_proxy_namespace": "test-namespace",
+        "kubernetes_proxy_service_name": "frontend",
+        "kubernetes_proxy_service_uid": "service-uid",
+        "kubernetes_proxy_workload_uid": "workload-uid",
+    }
+    values.update(overrides)
+    with patch("serving.utils.request_ip.get_settings", return_value=Settings(**values)):
+        yield
+
+
+def _dynamic_request(headers, peer_ip, networks):
+    request = _request(headers, peer_ip)
+    request.state = SimpleNamespace(**{DYNAMIC_PROXY_NETWORKS_STATE_KEY: networks})
+    return request
+
+
+@pytest.mark.parametrize(
+    ("peer", "networks"),
+    [
+        # Synthetic peers deliberately include a public-looking address; the
+        # resolver is called in memory and no request reaches either address.
+        ("21.0.0.22", _networks("21.0.0.22/32")),
+        ("fd00::22", _networks("fd00::22/128")),
+    ],
+)
+def test_dynamic_discovered_peer_resolves_forwarded_client(peer, networks):
+    with _dynamic_settings():
+        request = _dynamic_request({"x-forwarded-for": "8.8.8.8"}, peer, networks)
+        info = get_client_ip_info(request)
+    assert info.client_ip == "8.8.8.8"
+    assert info.peer_ip == peer
+    assert info.source == "x-forwarded-for"
+    assert info.resolved is True
+    assert info.trusted_forwarded_headers is True
+
+
+def test_dynamic_pod_replacement_revokes_old_peer_despite_static_trust():
+    old = "21.0.0.21"
+    new = "21.0.0.22"
+    headers = {"x-forwarded-for": "8.8.8.8"}
+    with _dynamic_settings(trusted_proxies=f"{old}/32"):
+        before = get_client_ip_info(_dynamic_request(headers, old, _networks(f"{old}/32")))
+        removed = get_client_ip_info(_dynamic_request(headers, old, _networks(f"{new}/32")))
+        replacement = get_client_ip_info(_dynamic_request(headers, new, _networks(f"{new}/32")))
+    assert before.client_ip == replacement.client_ip == "8.8.8.8"
+    assert removed.client_ip == "unknown"
+    assert removed.resolved is False
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [None, (), [], ("21.0.0.22/32",), _networks("21.0.0.0/24"), _networks("fd00::/64")],
+)
+def test_dynamic_missing_or_malformed_snapshot_never_uses_public_looking_peer(snapshot):
+    with _dynamic_settings(trusted_proxies="21.0.0.22/32"):
+        info = get_client_ip_info(
+            _dynamic_request({"x-forwarded-for": "8.8.8.8"}, "21.0.0.22", snapshot)
+        )
+    assert info.client_ip == "unknown"
+    assert info.resolved is False
+    assert info.trusted_forwarded_headers is False
+
+
+def test_dynamic_missing_state_does_not_fall_back_to_socket():
+    with _dynamic_settings():
+        info = get_client_ip_info(_request({"x-forwarded-for": "8.8.8.8"}, "21.0.0.22"))
+    assert info.client_ip == "unknown"
+    assert info.resolved is False
+
+
+def test_dynamic_unrecognized_peer_cannot_use_direct_client_exemption():
+    with _dynamic_settings(trusted_direct_client_networks="10.0.0.0/8"):
+        info = get_client_ip_info(_dynamic_request({}, "10.0.0.22", ()))
+    assert info.client_ip == "unknown"
+    assert info.resolved is False
+
+
+def test_dynamic_master_kill_switch_revokes_even_discovered_peer():
+    with _dynamic_settings(trust_proxy_headers=False):
+        info = get_client_ip_info(
+            _dynamic_request({"x-forwarded-for": "8.8.8.8"}, "21.0.0.22", _networks("21.0.0.22/32"))
+        )
+    assert info.client_ip == "unknown"
+    assert info.resolved is False
+    assert info.trusted_proxy_headers is False
+
+
+def test_dynamic_chain_does_not_skip_retired_static_proxy():
+    with _dynamic_settings(trusted_proxies="21.0.0.21/32"):
+        info = get_client_ip_info(
+            _dynamic_request(
+                {"x-forwarded-for": "9.9.9.9, 21.0.0.21"},
+                "21.0.0.22",
+                _networks("21.0.0.22/32"),
+            )
+        )
+    assert info.client_ip == "21.0.0.21"
+    assert info.client_ip != "9.9.9.9"
+
+
+@pytest.mark.parametrize("recognized", [False, True])
+def test_dynamic_mode_does_not_authorize_cloudflare_headers(recognized):
+    with _dynamic_settings(
+        trust_cloudflare_headers=True, trusted_cloudflare_networks="21.0.0.22/32"
+    ):
+        info = get_client_ip_info(
+            _dynamic_request(
+                {"cf-connecting-ip": "9.9.9.9", "x-forwarded-for": "8.8.8.8"},
+                "21.0.0.22",
+                _networks("21.0.0.22/32") if recognized else (),
+            )
+        )
+    assert info.client_ip == ("8.8.8.8" if recognized else "unknown")
+    assert info.trusted_cloudflare_headers is False
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_dynamic_x_real_ip_remains_an_explicit_opt_in(enabled):
+    with _dynamic_settings(trust_x_real_ip=enabled):
+        info = get_client_ip_info(
+            _dynamic_request({"x-real-ip": "8.8.8.8"}, "21.0.0.22", _networks("21.0.0.22/32"))
+        )
+    assert info.client_ip == ("8.8.8.8" if enabled else "unknown")
+    assert info.resolved is enabled
+
+
+@pytest.mark.parametrize("master", [False, True])
+def test_disabled_dynamic_mode_preserves_direct_public_clients(master):
+    with _dynamic_settings(trust_kubernetes_proxy_discovery=False, trust_proxy_headers=master):
+        info = get_client_ip_info(
+            _dynamic_request({"x-forwarded-for": "9.9.9.9"}, "8.8.8.8", _networks("8.8.8.8/32"))
+        )
+    assert info.client_ip == "8.8.8.8"
+    assert info.source == "socket"
+    assert info.resolved is True
 
 
 @contextmanager

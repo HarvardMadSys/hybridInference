@@ -1525,6 +1525,15 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "GUNICORN_WORKERS": "process wiring",
     "SUPERVISOR_RESTARTS_BACKEND": "process wiring: declares the supervisor's restart policy",
     "REFRESH_TOKEN_COOKIE_NAME": "process wiring: the console container reads the same name",
+    "TRUST_KUBERNETES_PROXY_DISCOVERY": "network wiring: opt-in authenticated proxy discovery",
+    "KUBERNETES_PROXY_NAMESPACE": "network wiring: namespace containing the proxy Service",
+    "KUBERNETES_PROXY_SERVICE_NAME": "network wiring: exact proxy Service identity",
+    "KUBERNETES_PROXY_SERVICE_UID": "network wiring: pins the proxy Service across replacement",
+    "KUBERNETES_PROXY_WORKLOAD_UID": "network wiring: pins the controller owning proxy Pods",
+    "KUBERNETES_PROXY_API_URL": "network wiring: trusted Kubernetes API origin",
+    "KUBERNETES_PROXY_CA_FILE": "network wiring: Kubernetes API TLS trust root",
+    "KUBERNETES_PROXY_TOKEN_FILE": "network wiring: projected read-only service-account token",
+    "KUBERNETES_PROXY_MAX_AGE_SECONDS": "network wiring: maximum lifetime of a proxy snapshot",
 }
 
 #: Settings an earlier version read that no longer control anything, with what

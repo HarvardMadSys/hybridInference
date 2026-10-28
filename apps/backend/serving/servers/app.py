@@ -13,6 +13,7 @@ from . import bootstrap, restart
 from .middleware.cors import SettingsCORSMiddleware
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
+from .middleware.proxy_trust import KubernetesProxyTrustMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
 from .middleware.timeout import TimeoutMiddleware
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     # Request ID, timeout, and request log middlewares
     app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(KubernetesProxyTrustMiddleware)
     app.add_middleware(FallbackErrorMiddleware)
     app.add_middleware(RequestIdMiddleware)
 

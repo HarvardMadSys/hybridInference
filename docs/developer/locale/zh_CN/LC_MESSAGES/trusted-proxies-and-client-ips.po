@@ -249,6 +249,79 @@ msgstr ""
 "无效的 CIDR 会被拒绝：**Configuration** "
 "标签页不会保存它；如果写在环境变量里，除非数据库里存有这个设置项的有效值，否则网关启动时就会因此停止。"
 
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Kubernetes proxy discovery (optional)"
+msgstr "Kubernetes 代理发现（可选）"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"For a controlled Kubernetes proxy whose Pod addresses change, opt in with "
+"`TRUST_KUBERNETES_PROXY_DISCOVERY=true`. This mode defaults off; installing "
+"the code leaves existing deployments unchanged. This switch and the "
+"`KUBERNETES_PROXY_*` settings are **environment-only deployment wiring**: "
+"they require a gateway restart and cannot be edited through Admin "
+"Configuration or overridden by `app_config`. The effective database-backed "
+"`TRUST_PROXY_HEADERS` setting remains the master kill switch."
+msgstr ""
+"如果受控的 Kubernetes 代理会更换 Pod 地址，可以通过 "
+"`TRUST_KUBERNETES_PROXY_DISCOVERY=true` 显式启用发现模式。该模式默认关闭，安装代码不会改变现有部署的行为。"
+"这个开关及 `KUBERNETES_PROXY_*` 设置都属于**只能通过环境变量配置的部署参数**：修改后需要重启网关，"
+"不能在管理控制台的 Configuration 页面编辑，也不能被 `app_config` 覆盖。数据库中实际生效的 "
+"`TRUST_PROXY_HEADERS` 仍是关闭转发头信任的总开关。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Read-only discovery pins a Service by immutable UID and checks matching Pods "
+"against their direct controller's UID. Only those Pods' exact `/32` or `/128` "
+"addresses are admitted. At runtime this set replaces the static proxy list "
+"for both the immediate peer and XFF chain traversal. Missing or expired "
+"discovery, unrecognized peers and a disabled master switch return `unknown` "
+"with `resolved=false`, even for public-looking Pod addresses; there is no "
+"fallback to static proxies, direct-client exemptions or the socket peer. "
+"Cloudflare trust is disabled in this mode; X-Real-IP remains a separate opt-in."
+msgstr ""
+"只读发现通过不可变的 UID 固定一个 Service，并检查匹配 Pod 的直接控制器 UID，"
+"只接受这些 Pod 的精确 `/32` 或 `/128` 地址。运行时，直接对端的信任判断和 XFF 链遍历都会使用这组地址替代静态代理列表。"
+"发现结果缺失或过期、对端不在发现集合中，或总开关关闭时，都会返回 `unknown` 和 `resolved=false`，"
+"即使 Pod 地址看起来属于公网也一样；不会退回静态代理、直连客户端豁免或套接字对端地址。"
+"该模式不信任 Cloudflare 头；X-Real-IP 仍需单独启用。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Each gateway worker refreshes independently. Membership can remain stale "
+"until its snapshot expires: one second by default, configurable up to five "
+"seconds. A failed refresh never extends that deadline. Requests arriving "
+"before a replacement is discovered can remain unresolved, so this is not a "
+"zero-window traffic gate. An admitted request keeps its identity throughout "
+"a stream; it is not reclassified when membership changes."
+msgstr ""
+"每个网关 worker 独立刷新。快照过期前，集合仍可能保留旧成员：默认有效期为 1 秒，最长可配置为 5 秒。"
+"刷新失败不会延长这个期限。在替换后的 Pod 被发现之前到达的请求可能仍无法确定来源，因此它不能提供无切换窗口的流量准入。"
+"已接收的请求会在整个流式响应期间保持同一个身份，不会因代理集合变化而重新归因。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Before enabling this mode, verify that the gateway sees the proxy Pod's "
+"actual socket address, protect Service selectors and Pod ownership with "
+"RBAC, and enforce network isolation and trusted ingress header handling. "
+"Metadata and exact IPs do not authenticate each connection or eliminate IP "
+"reuse during the cache window. Keep auth-failure blocking disabled during "
+"acceptance; discovery does not change its setting."
+msgstr ""
+"启用前，要验证网关实际看到的套接字对端就是代理 Pod，用 RBAC 保护 Service 选择器和 Pod 所有权，"
+"并确保网络隔离与可信入口的转发头处理真正生效。元数据和精确 IP 不能认证每条连接，也不能消除缓存窗口内的 IP 复用风险。"
+"验收期间保持认证失败封禁关闭；发现模式不会修改这项设置。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Download the deployment guide {download}`README.md <../../deploy/kubernetes/proxy-discovery/README.md>` "
+"and namespace-scoped RBAC example {download}`rbac.example.yaml <../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>` "
+"for the required identity, TLS, token and rollout checks."
+msgstr ""
+"请下载部署与验收指南 {download}`README.md <../../deploy/kubernetes/proxy-discovery/README.md>` 和"
+"限定命名空间的 RBAC 示例 {download}`rbac.example.yaml <../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>`，"
+"查看必要的身份、TLS、令牌与发布检查。"
+
 #: ../developer/trusted-proxies-and-client-ips.md:96
 msgid "Direct private client networks"
 msgstr "私有网络里的直连客户端"
@@ -394,8 +467,8 @@ msgstr ""
 "`trusted_cloudflare_headers` 字段则说明用的是哪一种授权。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:176
-msgid "Resolution walks the trust boundary correctly:"
-msgstr "解析过程严格遵守信任边界，依次是："
+msgid "In the default static mode, resolution walks the trust boundary as follows:"
+msgstr "在默认的静态模式下，解析会按以下顺序遵守信任边界："
 
 #: ../developer/trusted-proxies-and-client-ips.md:178
 msgid ""

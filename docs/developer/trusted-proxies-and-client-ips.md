@@ -93,6 +93,43 @@ An invalid CIDR is refused: the **Configuration** tab will not save it, and in
 the environment it stops the gateway at startup unless the database holds a
 valid value for the setting.
 
+### Kubernetes proxy discovery (optional)
+
+For a controlled Kubernetes proxy whose Pod addresses change, opt in with
+`TRUST_KUBERNETES_PROXY_DISCOVERY=true`. This mode defaults off; installing
+the code leaves existing deployments unchanged. This switch and the
+`KUBERNETES_PROXY_*` settings are **environment-only deployment wiring**:
+they require a gateway restart and cannot be edited through Admin
+Configuration or overridden by `app_config`. The effective database-backed
+`TRUST_PROXY_HEADERS` setting remains the master kill switch.
+
+Read-only discovery pins a Service by immutable UID and checks matching Pods
+against their direct controller's UID. Only those Pods' exact `/32` or `/128`
+addresses are admitted. At runtime this set replaces the static proxy list
+for both the immediate peer and XFF chain traversal. Missing or expired
+discovery, unrecognized peers and a disabled master switch return `unknown`
+with `resolved=false`, even for public-looking Pod addresses; there is no
+fallback to static proxies, direct-client exemptions or the socket peer.
+Cloudflare trust is disabled in this mode; X-Real-IP remains a separate opt-in.
+
+Each gateway worker refreshes independently. Membership can remain stale
+until its snapshot expires: one second by default, configurable up to five
+seconds. A failed refresh never extends that deadline. Requests arriving
+before a replacement is discovered can remain unresolved, so this is not a
+zero-window traffic gate. An admitted request keeps its identity throughout
+a stream; it is not reclassified when membership changes.
+
+Before enabling this mode, verify that the gateway sees the proxy Pod's
+actual socket address, protect Service selectors and Pod ownership with
+RBAC, and enforce network isolation and trusted ingress header handling.
+Metadata and exact IPs do not authenticate each connection or eliminate IP
+reuse during the cache window. Keep auth-failure blocking disabled during
+acceptance; discovery does not change its setting.
+
+Download the deployment guide {download}`README.md <../../deploy/kubernetes/proxy-discovery/README.md>`
+and namespace-scoped RBAC example {download}`rbac.example.yaml <../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>`
+for the required identity, TLS, token and rollout checks.
+
 ### Direct private client networks
 
 Private RFC1918, CGNAT, and ULA socket peers remain unresolved by default
@@ -173,7 +210,7 @@ forwarding identity header was **actually authorized** for this request. The
 more specific `trusted_forwarded_headers` and `trusted_cloudflare_headers`
 fields identify which authority applied.
 
-Resolution walks the trust boundary correctly:
+In the default static mode, resolution walks the trust boundary as follows:
 
 1. **Peer not authorized** — forwarding headers are ignored entirely. The
    socket peer is used if routable; otherwise `"unknown"`.
