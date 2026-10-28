@@ -1023,6 +1023,22 @@
     "source": "Dashboard",
     "text": "控制台"
   },
+  "batches.category.cancelled": {
+    "source": "Cancelled",
+    "text": "已取消"
+  },
+  "batches.category.completed": {
+    "source": "Completed",
+    "text": "已完成"
+  },
+  "batches.category.issues": {
+    "source": "With issues",
+    "text": "有异常"
+  },
+  "batches.category.processing": {
+    "source": "Processing",
+    "text": "处理中"
+  },
   "batches.confirm.cancel": {
     "source": "Cancel this batch? Requests that have not started will not run; running ones finish.",
     "text": "取消这个批次？尚未开始的请求不会再运行；正在运行的会完成。"
@@ -1695,9 +1711,9 @@
     "source": "Use this file",
     "text": "使用此文件"
   },
-  "batches.filter.any": {
-    "source": "Any status",
-    "text": "全部状态"
+  "batches.filter.all": {
+    "source": "All",
+    "text": "全部"
   },
   "batches.filter.status": {
     "source": "Status",
@@ -1718,6 +1734,34 @@
   "batches.more": {
     "source": "Show more",
     "text": "显示更多"
+  },
+  "batches.note.cancelling": {
+    "source": "Cancelling: requests already running will finish",
+    "text": "正在取消，进行中的请求会完成"
+  },
+  "batches.note.expired": {
+    "source": "Execution window ran out",
+    "text": "超过执行期限"
+  },
+  "batches.note.failed": {
+    "source": "The batch failed",
+    "text": "执行失败"
+  },
+  "batches.note.finalizing": {
+    "source": "Preparing results",
+    "text": "正在整理结果"
+  },
+  "batches.note.none_succeeded": {
+    "source": "No request succeeded",
+    "text": "所有请求均未成功"
+  },
+  "batches.note.partial": {
+    "source": "Some requests failed",
+    "text": "部分请求失败"
+  },
+  "batches.note.validating": {
+    "source": "Checking the data",
+    "text": "正在校验数据"
   },
   "batches.notice.cannot_submit": {
     "source": "Your plan cannot submit new batches: that needs the {role} plan or higher. Your existing batches stay manageable here: download their results, cancel or delete them, and view or remove your webhook.",

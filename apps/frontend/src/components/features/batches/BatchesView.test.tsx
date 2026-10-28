@@ -79,6 +79,7 @@ function batch(id: string, overrides: Partial<ConsoleBatch> = {}): ConsoleBatch 
     target: 'chat',
     endpoint: '/v1/chat/completions',
     status: 'in_progress',
+    category: 'processing',
     phase: 'runnable',
     models: ['m'],
     request_counts: { total: 4, completed: 2, failed: 1 },
@@ -169,6 +170,7 @@ describe('BatchesView', () => {
       target: 'messages',
       endpoint: '/v1/messages',
       status: 'completed',
+      category: 'issues',
       phase: 'sealed',
       request_counts: { total: 5, completed: 3, failed: 1 },
       cancelled: 1,
@@ -178,7 +180,8 @@ describe('BatchesView', () => {
     vi.mocked(listMyBatches).mockResolvedValue(page([legacy]));
     render(<BatchesView />);
     const row = await screen.findByTestId('batch-msgbatch_1');
-    expect(row).toHaveTextContent('Completed');
+    expect(row).toHaveTextContent('With issues');
+    expect(row).toHaveTextContent('Some requests failed');
     expect(row).not.toHaveTextContent('Ended');
     expect(row).toHaveTextContent(
       '3 succeeded · 1 failed · 0 expired unrun · 1 cancelled · 0 not finished · 5 total',
@@ -221,7 +224,9 @@ describe('BatchesView', () => {
 
     confirm.mockReturnValueOnce(true);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(await screen.findByText('Cancelling')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Cancelling: requests already running will finish'),
+    ).toBeInTheDocument();
     expect(cancelMyBatch).toHaveBeenCalledWith('batch_c');
 
     confirm.mockReturnValueOnce(true);
@@ -400,7 +405,7 @@ describe('WebhookSettings', () => {
       target: { value: 'eval' },
     });
     await waitFor(() =>
-      expect(listMyBatches).toHaveBeenLastCalledWith(null, 20, { status: '', q: 'eval' }),
+      expect(listMyBatches).toHaveBeenLastCalledWith(null, 20, { category: '', q: 'eval' }),
     );
   });
 
@@ -410,5 +415,87 @@ describe('WebhookSettings', () => {
     render(<BatchesView />);
     expect(await screen.findByText('You have no batches.')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Create batch' })).not.toBeInTheDocument();
+  });
+
+  it('filters by four categories plus All, asked of the server', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(page([]));
+    render(<BatchesView />);
+    await screen.findByText(/You have no batches/);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Status' }));
+    const options = screen.getAllByRole('option').map((option) => option.textContent);
+    expect(options).toEqual(['All', 'Processing', 'Completed', 'With issues', 'Cancelled']);
+    fireEvent.click(screen.getByRole('option', { name: 'With issues' }));
+    await waitFor(() =>
+      expect(listMyBatches).toHaveBeenLastCalledWith(null, 20, { category: 'issues', q: '' }),
+    );
+  });
+
+  it('never shows a partly failed batch as a green completion', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_partial', {
+          status: 'completed',
+          category: 'issues',
+          phase: 'sealed',
+          request_counts: { total: 1000, completed: 980, failed: 20 },
+          results_available: true,
+        }),
+        batch('batch_ok', {
+          status: 'completed',
+          category: 'completed',
+          phase: 'sealed',
+          request_counts: { total: 10, completed: 10, failed: 0 },
+          results_available: true,
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const partial = await screen.findByTestId('batch-batch_partial');
+    const badge = partial.querySelector('[data-category]') as HTMLElement;
+    expect(badge).toHaveTextContent('With issues');
+    expect(badge.className).not.toMatch(/green/);
+    expect(partial).toHaveTextContent('Some requests failed');
+    expect(partial).toHaveTextContent('980 succeeded · 20 failed');
+    const ok = screen.getByTestId('batch-batch_ok');
+    expect(ok.querySelector('[data-category]')).toHaveTextContent('Completed');
+    expect(ok).not.toHaveTextContent('Some requests failed');
+  });
+
+  it('keeps a pause warning beside a processing badge', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_paused', {
+          paused_until: 1_900_000_000,
+          paused_reason: 'quota',
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-batch_paused');
+    expect(row.querySelector('[data-category]')).toHaveTextContent('Processing');
+    expect(row).toHaveTextContent(/Paused: your daily quota is spent/);
+  });
+});
+
+describe('the category labels in Chinese', () => {
+  it('are the agreed five', async () => {
+    const catalog = (await import('@/lib/i18n/messages/zh-CN.json')).default as unknown as Record<
+      string,
+      { text: string }
+    >;
+    expect(
+      [
+        'batches.filter.all',
+        'batches.category.processing',
+        'batches.category.completed',
+        'batches.category.issues',
+        'batches.category.cancelled',
+      ].map((slot) => catalog[slot].text),
+    ).toEqual(['全部', '处理中', '已完成', '有异常', '已取消']);
+    expect(
+      ['batches.note.partial', 'batches.note.expired', 'batches.note.cancelling'].map(
+        (slot) => catalog[slot].text,
+      ),
+    ).toEqual(['部分请求失败', '超过执行期限', '正在取消，进行中的请求会完成']);
   });
 });

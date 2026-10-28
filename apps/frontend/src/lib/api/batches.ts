@@ -14,6 +14,17 @@ export type BatchStatus =
   | 'cancelling'
   | 'cancelled';
 
+/**
+ * How the console groups a batch, from the status it shows and (completed)
+ * its counts -- computed by the gateway, so the list, the filter and the
+ * details agree: `processing` (validating, running, finalizing results or
+ * cancelling), `completed` (every request succeeded), `issues` (failed,
+ * execution window ran out, or completed with an unsuccessful request) and
+ * `cancelled` (the cancel has finished).
+ */
+export type BatchCategory = 'processing' | 'completed' | 'issues' | 'cancelled';
+export const BATCH_CATEGORIES: BatchCategory[] = ['processing', 'completed', 'issues', 'cancelled'];
+
 /** What a batch runs: the endpoint each of its requests targets. */
 export type BatchTarget = 'chat' | 'embeddings' | 'messages' | 'responses';
 
@@ -34,6 +45,8 @@ export interface ConsoleBatch {
   target: BatchTarget | null;
   endpoint: string | null;
   status: BatchStatus;
+  /** The console's group of `status` (see `BatchCategory`); what the page shows first. */
+  category: BatchCategory;
   phase: string | null;
   models: string[];
   /** Requests in the batch, and how many have completed or failed (cancelled ones apart). */
@@ -141,8 +154,9 @@ export async function getMyBatchCapabilities(): Promise<BatchCapabilities> {
   return jsonOrThrow<BatchCapabilities>(resp);
 }
 
-/** Filters of the batch list: a status as shown, and a name or exact id. */
+/** Filters of the batch list: a category (or exact status), and a name or exact id. */
 export interface MyBatchFilters {
+  category?: BatchCategory | '';
   status?: BatchStatus | '';
   q?: string;
 }
@@ -155,6 +169,7 @@ export async function listMyBatches(
 ): Promise<ConsoleBatchPage> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (after) params.set('after', after);
+  if (filters.category) params.set('category', filters.category);
   if (filters.status) params.set('status', filters.status);
   if (filters.q?.trim()) params.set('q', filters.q.trim());
   const resp = await fetchWithAuth(API_BASE, `/user/batches?${params.toString()}`);

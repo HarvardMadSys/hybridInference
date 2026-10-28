@@ -256,6 +256,27 @@ def display_status_sql(alias: str) -> str:
     END)"""
 
 
+def display_category_sql(alias: str) -> str:
+    """The console's category of a batch, as SQL: the twin of ``renderers.display_category``.
+
+    ``processing``, ``completed`` (every request succeeded), ``issues``
+    (failed, expired, or completed with an unsuccessful request) or
+    ``cancelled``, from :func:`display_status_sql`.
+    """
+    status = display_status_sql(alias)
+    return f"""(CASE
+        WHEN {status} IN ('validating', 'in_progress', 'finalizing', 'cancelling')
+            THEN 'processing'
+        WHEN {status} = 'cancelled' THEN 'cancelled'
+        WHEN {status} = 'completed'
+             AND COALESCE({alias}.failed_count, 0) = 0
+             AND COALESCE({alias}.cancelled_count, 0) = 0
+             AND COALESCE({alias}.completed_count, 0) >= COALESCE({alias}.request_count, 0)
+            THEN 'completed'
+        ELSE 'issues'
+    END)"""
+
+
 def _claimable_job_sql(alias: str) -> str:
     """The one predicate for a batch whose items may be claimed now."""
     return (
@@ -1766,6 +1787,7 @@ class BatchStore:
         before: str | None = None,
         status: str | None = None,
         query: str | None = None,
+        category: str | None = None,
     ) -> list[dict[str, Any]]:
         """List batches, newest first.
 
@@ -1779,6 +1801,8 @@ class BatchStore:
                 ones just before it (still newest first).
             status: Only batches showing this status (:func:`display_status_sql`,
                 the status the API and the console report), not the stored one.
+            category: Only batches in this console category
+                (:func:`display_category_sql`), applied before the page is cut.
             query: Only batches whose id is exactly this, or whose console
                 name contains it (case-insensitive, taken literally).
 
@@ -1791,6 +1815,9 @@ class BatchStore:
             "j.delete_requested_at IS NULL",
             f"($3::text IS NULL OR {display_status_sql('j')} = $3)",
         ]
+        if category:
+            args.append(category)
+            conditions.append(f"{display_category_sql('j')} = ${len(args)}")
         if query:
             args.extend([query, f"%{_like_escape(query)}%"])
             conditions.append(

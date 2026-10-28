@@ -165,3 +165,23 @@ Browser acceptance used Next.js development mode; the production build was
 verified separately. These checks do not establish real-provider billing or
 production-load behavior. Raw logs, synthetic credentials and screenshots are
 kept in task-local evidence, not committed with infrastructure details.
+
+## Follow-up: four status categories for people (2026-10-28)
+
+The ordinary list and details now show and filter by four categories plus
+All -- Processing, Completed (every request succeeded), With issues and
+Cancelled -- instead of the eight API statuses; the API, worker, storage and
+admin views keep the eight. The mapping is defined once on the server (Python
+and its SQL twin) and applied before pagination. Checks the author ran for this
+change:
+
+| Check | Result |
+|---|---|
+| `make test-db-local ARGS="tests/integration/storage/test_batch_console_categories.py"` | 3 passed (every lifecycle state in Python and SQL alike; grouped pagination with non-matching rows, search, ownership; exact `status` filter and `/v1` status unchanged). Removing the completed-count condition from the SQL made it fail |
+| Frontend batch component tests | 55 passed (five filter choices and the request they make, Chinese labels, partial failure not green, pause note kept, no download while results are being prepared, list and details alike) |
+
+Repository gates run for this change: `make format` (clean), `make lint`
+(passed), `make test` (10,243 passed, 5 skipped), `make test-db-local` (784
+passed), frontend type-check, lint, format, i18n (zh-CN 952/952) and tests
+(168 files, 2,152 tests), and `make docs-verify` (passed). Live and browser
+acceptance of this change is Codex's, in its own environment.

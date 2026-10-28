@@ -1,5 +1,5 @@
 import type { Translate } from '@/components/providers/useT';
-import type { BatchStatus, ConsoleBatch, ConsoleTarget } from '@/lib/api/batches';
+import type { BatchCategory, BatchStatus, ConsoleBatch, ConsoleTarget } from '@/lib/api/batches';
 import { fill } from '@/lib/utils/interpolate';
 
 /** What a batch runs, as the console names it: the task type, whatever API shape it uses. */
@@ -135,4 +135,54 @@ export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/** A batch's category in words: the badge the list and the details show. */
+export function categoryLabel(category: BatchCategory, t: Translate): string {
+  switch (category) {
+    case 'processing':
+      return t('batches.category.processing', 'Processing');
+    case 'completed':
+      return t('batches.category.completed', 'Completed');
+    case 'issues':
+      return t('batches.category.issues', 'With issues');
+    case 'cancelled':
+      return t('batches.category.cancelled', 'Cancelled');
+    default:
+      return category;
+  }
+}
+
+/** The badge colour of each category; "completed" is green only when every request succeeded. */
+export const CATEGORY_TONE: Record<BatchCategory, string> = {
+  processing: 'bg-blue-50 text-blue-700 ring-blue-200',
+  completed: 'bg-green-50 text-green-700 ring-green-200',
+  issues: 'bg-amber-50 text-amber-800 ring-amber-200',
+  cancelled: 'bg-gray-100 text-gray-700 ring-gray-200',
+};
+
+/**
+ * What the category leaves out, in a few words: the stage of a batch in
+ * progress, or why one has issues. Null when the category says it all.
+ */
+export function categoryNote(batch: ConsoleBatch, t: Translate): string | null {
+  switch (batch.status) {
+    case 'validating':
+      return t('batches.note.validating', 'Checking the data');
+    case 'finalizing':
+      return t('batches.note.finalizing', 'Preparing results');
+    case 'cancelling':
+      return t('batches.note.cancelling', 'Cancelling: requests already running will finish');
+    case 'failed':
+      return t('batches.note.failed', 'The batch failed');
+    case 'expired':
+      return t('batches.note.expired', 'Execution window ran out');
+    case 'completed':
+      if (batch.category !== 'issues') return null;
+      return batch.request_counts.completed === 0
+        ? t('batches.note.none_succeeded', 'No request succeeded')
+        : t('batches.note.partial', 'Some requests failed');
+    default:
+      return null;
+  }
 }

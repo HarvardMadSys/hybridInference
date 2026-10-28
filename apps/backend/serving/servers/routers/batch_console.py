@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import UNFINISHED_STATUSES, stream_lines, stream_requests
-from serving.batch.renderers import display_status
+from serving.batch.renderers import CATEGORIES, display_category, display_status
 from serving.batch.targets import TARGET_PATHS
 from serving.batch.webhooks import (
     new_secret,
@@ -98,6 +98,9 @@ def batch_view(row: dict[str, Any]) -> dict[str, Any]:
         "target": row.get("target"),
         "endpoint": row.get("endpoint"),
         "status": display_status(row),
+        # The console's grouping of the status (and, for a completed batch,
+        # its counts): what people see and filter by.
+        "category": display_category(row),
         "phase": row.get("phase"),
         "models": row.get("model_ids") or [],
         "request_counts": {
@@ -233,26 +236,33 @@ async def list_my_batches(
     limit: int = Query(20, ge=1, le=100),
     after: str | None = Query(None),
     status: str | None = Query(None),
+    category: str | None = Query(None),
     q: str | None = Query(None, max_length=200),
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
 ) -> dict[str, Any]:
     """The signed-in user's batches, every target and input alike, newest first.
 
-    ``status`` keeps those showing that status (``finalizing`` included: the
-    status shown, not the stored one); ``q`` those whose id is exactly it or
-    whose name contains it. Only ever the signed-in user's, administrators
+    ``category`` keeps one of the console's four groups (``processing``,
+    ``completed`` -- every request succeeded --, ``issues``, ``cancelled``);
+    ``status`` keeps those showing exactly that status (``finalizing``
+    included: the status shown, not the stored one), as before; ``q`` those
+    whose id is exactly it or whose name contains it. Every filter applies
+    before the page is cut. Only ever the signed-in user's, administrators
     included.
     """
     store = _require_store(store)
     response.headers["Cache-Control"] = "no-store"
     if status is not None and status not in _STATUSES:
         raise HTTPException(400, f"status must be one of {', '.join(_STATUSES)}")
+    if category is not None and category not in CATEGORIES:
+        raise HTTPException(400, f"category must be one of {', '.join(CATEGORIES)}")
     rows = await store.list_batches(
         user_id=current_user["user_id"],
         limit=limit + 1,
         after=after,
         status=status,
+        category=category,
         query=(q or "").strip() or None,
     )
     data = [batch_view(row) for row in rows[:limit]]

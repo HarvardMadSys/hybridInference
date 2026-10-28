@@ -594,6 +594,19 @@ by outcome, tokens and known cost — and lets you search them by name or ID,
 filter them by status, open one for its details, cancel, delete and download
 results, and set up your webhook.
 
+The page groups the statuses into four, for both the badge and the filter;
+the `status` of `/v1/batches` is unchanged.
+
+| Shown as | Statuses |
+|---|---|
+| **Processing** | `validating`, `in_progress`, `finalizing` or `cancelling`; a short note says which stage, and that running requests still finish while cancelling |
+| **Completed** | `completed`, and every request succeeded |
+| **With issues** | `failed`, `expired` (the execution window ran out before every request started), or `completed` with a request that did not succeed |
+| **Cancelled** | `cancelled`, whatever its requests did before the cancel |
+
+A paused batch stays **Processing**, with a note saying why. Results can be
+downloaded only once the batch has finished, whatever it is shown as.
+
 The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and
 either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
 your own. With `BATCH_ENABLED` off there is no link, and the page says that

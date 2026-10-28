@@ -164,3 +164,39 @@ def display_status(row: dict[str, Any]) -> str:
     if status in ("expired", "failed"):
         return "in_progress"
     return status
+
+
+# -- the console's four categories ----------------------------------------------------
+
+#: The product categories the console groups batches into, for people.
+CATEGORIES = ("processing", "completed", "issues", "cancelled")
+#: Display statuses of a batch whose work or results are not final yet.
+PROCESSING_STATUSES = frozenset({"validating", "in_progress", "finalizing", "cancelling"})
+
+
+def display_category(row: dict[str, Any]) -> str:
+    """The console's category of a batch: ``processing``, ``completed``, ``issues`` or ``cancelled``.
+
+    Built on :func:`display_status`, the status shown -- never the stored
+    terminal status of a file batch still sealing or draining:
+
+    - ``processing``: validating, in progress, finalizing or cancelling.
+    - ``cancelled``: the cancel has finished, whatever its requests did.
+    - ``issues``: the batch failed, its execution window ran out
+      (``expired``), or it completed with a request that did not succeed.
+    - ``completed``: completed, and every request succeeded.
+
+    ``serving.storage.batch_store.display_category_sql`` is the same rule in
+    SQL, for filtering by category before a page is cut.
+    """
+    status = display_status(row)
+    if status in PROCESSING_STATUSES:
+        return "processing"
+    if status == "cancelled":
+        return "cancelled"
+    if status == "completed":
+        total = int(row.get("request_count") or 0)
+        completed = int(row.get("completed_count") or 0)
+        unsuccessful = int(row.get("failed_count") or 0) + int(row.get("cancelled_count") or 0)
+        return "completed" if unsuccessful == 0 and completed >= total else "issues"
+    return "issues"

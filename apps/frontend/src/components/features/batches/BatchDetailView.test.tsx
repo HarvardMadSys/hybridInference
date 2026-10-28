@@ -41,6 +41,7 @@ function detail(overrides: Partial<BatchDetail> = {}): BatchDetail {
     target: 'chat',
     endpoint: '/v1/chat/completions',
     status: 'completed',
+    category: 'issues',
     phase: 'sealed',
     models: ['model-z'],
     request_counts: { total: 10, completed: 6, failed: 3 },
@@ -149,5 +150,39 @@ describe('BatchDetailView', () => {
     render(<BatchDetailView batchId="batch_1" />);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.queryByText('eval-0420')).not.toBeInTheDocument();
+  });
+
+  it('shows the same category and note as the list', async () => {
+    vi.mocked(getMyBatch).mockResolvedValue(detail());
+    render(<BatchDetailView batchId="batch_1" />);
+    const badge = await screen.findByTestId('batch-category');
+    expect(badge).toHaveTextContent('With issues');
+    expect(badge).toHaveTextContent('Some requests failed');
+  });
+
+  it('offers no result download while results are being prepared', async () => {
+    vi.mocked(getMyBatch).mockResolvedValue(
+      detail({
+        status: 'finalizing',
+        category: 'processing',
+        phase: 'sealing',
+        results_available: false,
+      }),
+    );
+    render(<BatchDetailView batchId="batch_1" />);
+    const badge = await screen.findByTestId('batch-category');
+    expect(badge).toHaveTextContent('Processing');
+    expect(badge).toHaveTextContent('Preparing results');
+    for (const name of ['Download outputs', 'Download errors', 'Download results']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+  });
+
+  it('says an expired batch ran out of its execution window, not that its files expired', async () => {
+    vi.mocked(getMyBatch).mockResolvedValue(detail({ status: 'expired', category: 'issues' }));
+    render(<BatchDetailView batchId="batch_1" />);
+    expect(await screen.findByTestId('batch-category')).toHaveTextContent(
+      'With issues' + 'Execution window ran out',
+    );
   });
 });

@@ -32,9 +32,9 @@ import {
   originLabel,
   outcomeCounts,
   pauseText,
-  statusLabel,
   targetLabel,
 } from './batchText';
+import { BatchCategoryBadge } from './BatchCategoryBadge';
 
 function copyBlockedText(detail: BatchDetail, t: Translate): string | null {
   if (detail.copy.reason === 'inline_input') {
@@ -160,9 +160,11 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
           </h1>
           <p className="mt-1 text-sm text-gray-600">
             <span className="font-medium">{targetLabel(detail, t)}</span>
-            {detail.models.length ? ` · ${detail.models.join(', ')}` : ''} ·{' '}
-            {statusLabel(detail.status, t)}
+            {detail.models.length ? ` · ${detail.models.join(', ')}` : ''}
           </p>
+          <div className="mt-2">
+            <BatchCategoryBadge batch={detail} />
+          </div>
           {detail.description && (
             <p className="mt-1 whitespace-pre-wrap text-sm text-gray-500">{detail.description}</p>
           )}

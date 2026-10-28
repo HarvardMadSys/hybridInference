@@ -14,7 +14,8 @@ import {
   isCancellable,
   listMyBatches,
   type BatchCapabilities,
-  type BatchStatus,
+  BATCH_CATEGORIES,
+  type BatchCategory,
   type ConsoleBatch,
   type ResultKind,
 } from '@/lib/api/batches';
@@ -24,25 +25,17 @@ import { fill } from '@/lib/utils/interpolate';
 import { roleLabel } from '@/lib/utils/roleLabel';
 
 import {
-  ALL_STATUSES,
+  categoryLabel,
   formatTime,
   inputLabel,
   originLabel,
   outcomeCounts,
   pauseText,
-  statusLabel,
   targetLabel,
 } from './batchText';
+import { BatchCategoryBadge } from './BatchCategoryBadge';
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
-
-const STATUS_TONE: Partial<Record<BatchStatus, string>> = {
-  completed: 'bg-green-50 text-green-700 ring-green-200',
-  failed: 'bg-red-50 text-red-700 ring-red-200',
-  expired: 'bg-amber-50 text-amber-800 ring-amber-200',
-  cancelled: 'bg-gray-100 text-gray-700 ring-gray-200',
-  cancelling: 'bg-gray-100 text-gray-700 ring-gray-200',
-};
 
 export { inputLabel, progress, statusLabel, targetLabel } from './batchText';
 
@@ -61,7 +54,6 @@ function BatchRow({
 }) {
   const t = useT();
   const counts = outcomeCounts(batch);
-  const tone = STATUS_TONE[batch.status] ?? 'bg-blue-50 text-blue-700 ring-blue-200';
   const paused = pauseText(batch, t);
   return (
     <li className="py-4" data-testid={`batch-${batch.id}`}>
@@ -74,11 +66,7 @@ function BatchRow({
             >
               {batch.name || <code>{batch.id}</code>}
             </Link>
-            <span
-              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${tone}`}
-            >
-              {statusLabel(batch.status, t)}
-            </span>
+            <BatchCategoryBadge batch={batch} />
           </div>
           {batch.name && (
             <code className="mt-0.5 block truncate text-xs text-gray-400">{batch.id}</code>
@@ -314,7 +302,7 @@ function BatchesManager({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [appliedQuery, setAppliedQuery] = useState('');
-  const [status, setStatus] = useState<BatchStatus | ''>('');
+  const [category, setCategory] = useState<BatchCategory | ''>('');
   useEffect(() => {
     // Search as the user types, without a request per keystroke.
     const timer = setTimeout(() => setAppliedQuery(query.trim()), 300);
@@ -322,12 +310,12 @@ function BatchesManager({
   }, [query]);
   const { batches, hasMore, loading, loadingMore, error, reload, loadMore, replace, remove } =
     usePagedBatches(
-      (after) => listMyBatches(after, 20, { status, q: appliedQuery }),
-      `mine:${status}:${appliedQuery}`,
+      (after) => listMyBatches(after, 20, { category, q: appliedQuery }),
+      `mine:${category}:${appliedQuery}`,
     );
   // Only a known "no": without an answer the gateway decides each action.
   const cannotSubmit = capabilities?.role_may_submit === false;
-  const filtered = Boolean(status || appliedQuery);
+  const filtered = Boolean(category || appliedQuery);
   async function handleCancel(batch: ConsoleBatch) {
     const message = t(
       'batches.confirm.cancel',
@@ -433,13 +421,13 @@ function BatchesManager({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <Select<BatchStatus | ''>
+          <Select<BatchCategory | ''>
             aria-label={t('batches.filter.status', 'Status')}
-            value={status}
-            onValueChange={setStatus}
+            value={category}
+            onValueChange={setCategory}
             options={[
-              { value: '', label: t('batches.filter.any', 'Any status') },
-              ...ALL_STATUSES.map((value) => ({ value, label: statusLabel(value, t) })),
+              { value: '', label: t('batches.filter.all', 'All') },
+              ...BATCH_CATEGORIES.map((value) => ({ value, label: categoryLabel(value, t) })),
             ]}
             className="sm:w-48"
           />

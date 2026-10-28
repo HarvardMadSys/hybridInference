@@ -2247,6 +2247,64 @@ msgstr ""
 "回滚不会改写任何行：较新种类中已结束的批次仍留在数据库中。#1660 "
 "之前的版本会把它们当作内联聊天批次列出和清理，并且直到下次升级前都不会读取已上传的文件和 webhook。"
 
+#: ../developer/batches.md:597
+msgid ""
+"The page groups the statuses into four, for both the badge and the "
+"filter; the `status` of `/v1/batches` is unchanged."
+msgstr "页面把状态归为四类，徽标和筛选都使用这四类；`/v1/batches` 的 `status` 不变。"
+
+#: ../developer/batches.md:41
+msgid "Shown as"
+msgstr "显示为"
+
+#: ../developer/batches.md:41
+msgid "Statuses"
+msgstr "状态"
+
+#: ../developer/batches.md:41
+msgid "**Processing**"
+msgstr "**处理中**"
+
+#: ../developer/batches.md:41
+msgid ""
+"`validating`, `in_progress`, `finalizing` or `cancelling`; a short note "
+"says which stage, and that running requests still finish while cancelling"
+msgstr ""
+"`validating`、`in_progress`、`finalizing` 或 "
+"`cancelling`；简短说明会写明所处阶段，取消中时正在执行的请求仍会完成"
+
+#: ../developer/batches.md:41
+msgid "**Completed**"
+msgstr "**已完成**"
+
+#: ../developer/batches.md:41
+msgid "`completed`, and every request succeeded"
+msgstr "`completed`，且所有请求都成功"
+
+#: ../developer/batches.md:41
+msgid "**With issues**"
+msgstr "**有异常**"
+
+#: ../developer/batches.md:41
+msgid ""
+"`failed`, `expired` (the execution window ran out before every request "
+"started), or `completed` with a request that did not succeed"
+msgstr "`failed`、`expired`（执行窗口结束时仍有请求未开始），或 `completed` 但有请求未成功"
+
+#: ../developer/batches.md:41
+msgid "**Cancelled**"
+msgstr "**已取消**"
+
+#: ../developer/batches.md:41
+msgid "`cancelled`, whatever its requests did before the cancel"
+msgstr "`cancelled`，无论取消前请求的结果如何"
+
+#: ../developer/batches.md:607
+msgid ""
+"A paused batch stays **Processing**, with a note saying why. Results can "
+"be downloaded only once the batch has finished, whatever it is shown as."
+msgstr "暂停的批次仍显示为 **处理中**，并附说明原因。无论显示为哪一类，只有批次结束后才能下载结果。"
+
 #~ msgid ""
 #~ "The **Batches** page of the console "
 #~ "(from the dashboard) lists all your "
@@ -2688,4 +2746,3 @@ msgstr ""
 #~ "`400`（旧进程不认识该目标）；请重试，或等到所有进程都运行本版本。在最后一个旧进程退出之前，客户端仍可能在某个旧进程上访问到旧的 "
 #~ "`/v1/messages/batches`；在那里创建的批次由本版本按[从 Message Batches "
 #~ "迁移](#moving-from-message-batches)中所述的方式排空。"
-
