@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SettingsTab } from '../SettingsTab';
+import { EMPTY_CONFIG, renderSettings } from './settingsTabHarness';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/admin/settings',
@@ -54,25 +53,24 @@ vi.mock('@/lib/api/admin', async () => {
   };
 });
 
+vi.mock('@/lib/api/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/config')>()),
+  // The page also holds the configuration; these tests need none of it.
+  getConfig: vi.fn(async () => EMPTY_CONFIG),
+}));
+
 describe('SettingsTab batch concurrency', () => {
   afterEach(() => {
     cleanup();
   });
 
-  it('lists the section after Model Concurrency and shows update toasts', async () => {
+  it('lists the section on the Batch sub-tab and shows update toasts', async () => {
     const api = await import('@/lib/api/admin');
 
-    render(
-      <QueryClientProvider client={new QueryClient()}>
-        <SettingsTab />
-      </QueryClientProvider>,
-    );
-
-    const index = screen.getByRole('navigation', { name: 'Settings sections' });
-    const labels = within(index)
-      .getAllByRole('link')
-      .map((link) => link.textContent);
-    expect(labels.indexOf('Batch Concurrency')).toBe(labels.indexOf('Model Concurrency') + 1);
+    await renderSettings('Batch');
+    expect(
+      within(screen.getByRole('tabpanel')).getByRole('region', { name: 'Batch Concurrency' }),
+    ).toBeInTheDocument();
 
     expect(await screen.findByText('glm-4.7')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Max concurrent batch requests for glm-4.7'), {

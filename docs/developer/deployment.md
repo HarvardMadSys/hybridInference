@@ -224,7 +224,7 @@ copied, and the log names each with a warning:
   stored value wins and the environment's counts as unset. Check proxy trust
   after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` with a
   default of `0`, so a database that stored that `0` keeps the gateway off
-  forwarded headers whatever `.env` says. Change it on the Configuration tab;
+  forwarded headers whatever `.env` says. Change it on the Settings tab;
   see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md).
 - `ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in its
   place. Leave the variable out: while it is set, the backend refuses to
@@ -343,7 +343,7 @@ the routing-observation and `X-Provider` behaviour is unchanged.
 ## Alerting
 
 The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In
-**Admin → Configuration → Alerts**, choose a **Notification channel** and enter
+**Admin → Settings → Alerts**, choose a **Notification channel** and enter
 its webhook URL. Only the selected channel's field is shown; saved URLs remain
 write-only. Choose **None** to turn off notifications.
 
@@ -539,7 +539,7 @@ docker exec -it hybridinference-backend python -m serving.config.manage reset JW
 ```
 
 `list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the
-Configuration tab, with its validation, and never print a secret's value; see
+Settings tab, with its validation, and never print a secret's value; see
 [Without the console](configuration.md#without-the-console). The running
 backend picks the change up within about ten seconds, or after a restart for a
 setting marked **Restart required**.

@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, cleanup, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SettingsTab } from '../SettingsTab';
+import { EMPTY_CONFIG, openSettingsTab, renderSettings } from './settingsTabHarness';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/admin/settings',
@@ -62,40 +61,21 @@ vi.mock('@/lib/api/admin', async () => {
   };
 });
 
+vi.mock('@/lib/api/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/config')>()),
+  // The page also holds the configuration; these tests need none of it.
+  getConfig: vi.fn(async () => EMPTY_CONFIG),
+}));
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
 
-function renderSettings() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: { retry: false },
-      mutations: { retry: false },
-    },
-  });
-  render(
-    <QueryClientProvider client={queryClient}>
-      <SettingsTab />
-    </QueryClientProvider>,
-  );
-}
-
 describe('SettingsTab role quota', () => {
   it('renders Apply button only on quota settings and runs the confirm flow', async () => {
     const api = await import('@/lib/api/admin');
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: { retry: false },
-        mutations: { retry: false },
-      },
-    });
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <SettingsTab />
-      </QueryClientProvider>,
-    );
+    await renderSettings('Common');
 
     const applyBtn = await screen.findByRole('button', { name: /apply to existing users/i });
     fireEvent.click(applyBtn);
@@ -115,7 +95,7 @@ describe('SettingsTab role quota', () => {
 
   it('holds Apply back while its quota has an unsaved change', async () => {
     const api = await import('@/lib/api/admin');
-    renderSettings();
+    await renderSettings('Common');
 
     // Applying writes the saved quota, not the one being typed.
     const apply = await screen.findByRole('button', { name: /apply to existing users/i });
@@ -126,7 +106,7 @@ describe('SettingsTab role quota', () => {
     fireEvent.click(apply);
     expect(api.previewRoleQuotaApply).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Numeric Settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Daily Quotas' }));
     expect(apply).toBeEnabled();
   });
 
@@ -152,10 +132,11 @@ describe('SettingsTab role quota', () => {
           finishPreview = resolve;
         }),
     );
-    renderSettings();
+    await renderSettings('Common');
 
     fireEvent.click(await screen.findByRole('button', { name: /apply to existing users/i }));
     await waitFor(() => expect(api.previewRoleQuotaApply).toHaveBeenCalledWith('pro'));
+    await openSettingsTab('Access');
     fireEvent.click(await screen.findByRole('button', { name: 'Remove example.com' }));
     const review = screen.getByRole('dialog', {
       name: 'Remove example.com from the signup allowlist?',
@@ -179,6 +160,7 @@ describe('SettingsTab role quota', () => {
 
     // Applying was not queued behind it: it needs its own click and review.
     expect(screen.queryByRole('dialog')).toBeNull();
+    await openSettingsTab('Common');
     fireEvent.click(screen.getByRole('button', { name: /apply to existing users/i }));
     expect(
       await screen.findByRole('dialog', { name: 'Apply the pro quota to existing keys?' }),

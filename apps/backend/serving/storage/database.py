@@ -796,7 +796,7 @@ class DatabaseLogger:
             """)
 
             # Migration: token totals + cost on provider_hourly_stats.
-            # Added by per-provider Token Usage tab. Nullable so the
+            # Added for the Analytics overview's token usage. Nullable so the
             # change is metadata-only on existing tables; rows pre-dating
             # this migration are filled by backfill_token_columns at
             # startup and by subsequent hourly rollups.

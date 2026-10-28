@@ -819,6 +819,9 @@ async def test_describe_types_values_and_names_their_source(config_env, monkeypa
     assert entries["SITE_DOCS_URL"]["source"] == "default"
     assert entries["CORS_ALLOWED_ORIGINS"]["value"].startswith("http://localhost:3000,")
     assert entries["SMTP_PASSWORD"]["setup"] is True
+    assert entries["COOKIE_SECURE"]["one_time"] is True
+    assert entries["SMTP_PORT"]["one_time"] is True  # by its category
+    assert entries["ROUTING_AFFINITY_ENABLED"]["one_time"] is False
 
 
 @pytest.mark.asyncio

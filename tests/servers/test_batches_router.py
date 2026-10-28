@@ -988,6 +988,8 @@ async def test_every_target_is_accepted_without_any_opt_in(
 ):
     """BATCH_EXPANSION_ENABLED is retired: a value left behind, off or on, changes nothing."""
     services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    # An embedding model is admitted only with the access gate the registry records.
+    services.router.register_embedding_route(MODEL, [(services.embedding_adapters[MODEL], 1.0)])
     if retired_flag is not None:
         settings["BATCH_EXPANSION_ENABLED"] = retired_flag
     body = {"requests": [_request("only", _TARGET_BODIES[url], url=url)]}

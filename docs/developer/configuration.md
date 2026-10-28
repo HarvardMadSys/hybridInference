@@ -428,7 +428,7 @@ connection or container wiring is a *setting*: provider keys, SMTP, Slack
 webhooks, proxy trust, browser origins, logging, routing and timeout tuning,
 the cloud-agent contract, and the secrets that sign sessions and protect API
 keys. A gateway with a database keeps them in its `app_config` table, and an
-administrator edits them on the admin console's **Configuration** tab. A
+administrator edits them on the admin console's **Settings** tab. A
 gateway with `DB_ENABLED=false` has no stored settings and reads the
 environment and the built-in defaults only.
 
@@ -472,7 +472,7 @@ its default applies, the next start does not copy it in, and the log says so
 with a warning. With `TRUST_X_REAL_IP=1` in the environment and
 `TRUST_PROXY_HEADERS` stored as off, for example, the gateway runs with
 `TRUST_X_REAL_IP` off; to turn both on, change them together on the
-Configuration tab or with `python -m serving.config.manage set`. Only a rule
+Settings tab or with `python -m serving.config.manage set`. Only a rule
 the environment breaks on its own, with no stored value involved, stops the
 backend, which names the rule.
 
@@ -484,10 +484,35 @@ them; see [Database](database.md#secrets-for-deleting-accounts). The backend
 refuses to start rather than generate `API_KEY_SECRET` for a database that
 already holds API keys, since a new secret would invalidate every one of them.
 
-### The Configuration tab
+### Analytics sections
 
-The tab groups the settings by category, describes each one and shows where
-its value comes from. Besides every setting the gateway reads itself, it lists:
+In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, **Users
+and Requests**, **Performance Metrics** and **Growth Rate** independently, then
+select **Save changes**. These database-backed settings apply to
+**Analytics → Overview** for all administrators. Token Usage, Users and Requests
+and Performance Metrics default to on; Growth Rate defaults to off. Reopen
+Analytics after saving; no backend restart is needed. A disabled section is
+hidden and does not request its data. Data collection continues, so re-enabling
+a section can show existing history.
+
+The runtime keys are `analytics_token_usage_enabled`,
+`analytics_users_and_requests_enabled`, `analytics_performance_metrics_enabled`
+and `analytics_growth_rate_enabled`. The overview's Hour / Day / Week / Month
+control applies to Token Usage and Users and Requests. Performance Metrics keeps
+its existing windows, and Growth Rate has its own 30, 60 or 90-day range.
+
+### On the Settings tab
+
+The tab opens on **Common**, with the switches and limits changed most often:
+sign-up, per-user concurrency and the daily quotas among them. The rest is
+grouped by category, and each category is listed on the sub-tab of its topic:
+**Access** holds the sign-up settings and the signup allowlist, for instance.
+**Setup**, near the end, holds the categories usually set once, when the
+gateway is deployed: its addresses and name, email, network, privacy and
+integrations. Within any category, the settings usually set once come last,
+under **Usually set once**. The tab describes each setting and shows where its
+value comes from. A search, or **Missing only**, looks through every sub-tab at
+once. Besides every setting the gateway reads itself, it lists:
 
 - every `${VAR}` the active model registry and routing file name, under
   **Providers**, with the models that use it, and those of the alert rules
@@ -682,7 +707,7 @@ Some settings are required: the two generated secrets, every variable a model
 route needs to load (unless the route is `optional: true`), and `SMTP_USER`
 and `SMTP_PASSWORD` while public signup requires email verification. When one
 of them has no value, the console shows a banner to signed-in users.
-Administrators get a link to the Configuration tab, where **Missing only**
+Administrators get a link to the Settings tab, where **Missing only**
 lists what to fill in; everyone else is told that some features may not work
 and to contact the administrator. A model whose credential is missing is not
 loaded, and a request for it is answered with a `404`. When an administrator

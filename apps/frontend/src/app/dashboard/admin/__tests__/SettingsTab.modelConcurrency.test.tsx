@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SettingsTab } from '../SettingsTab';
+import { EMPTY_CONFIG, renderSettings } from './settingsTabHarness';
 
 const replaceMock = vi.fn();
 
@@ -60,6 +59,12 @@ vi.mock('@/lib/api/admin', async () => {
   };
 });
 
+vi.mock('@/lib/api/config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/config')>()),
+  // The page also holds the configuration; these tests need none of it.
+  getConfig: vi.fn(async () => EMPTY_CONFIG),
+}));
+
 vi.mock('react-hot-toast', () => ({
   default: {
     error: vi.fn(),
@@ -75,18 +80,7 @@ describe('SettingsTab model concurrency', () => {
 
   it('renders the section inside Admin Settings and shows update toasts', async () => {
     const api = await import('@/lib/api/admin');
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: { retry: false },
-        mutations: { retry: false },
-      },
-    });
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <SettingsTab />
-      </QueryClientProvider>,
-    );
+    await renderSettings('Models');
 
     expect(await screen.findByText('Model Concurrency Limit')).toBeInTheDocument();
     fireEvent.click(await screen.findByLabelText('Concurrency exemption for gpt-4o-mini'));

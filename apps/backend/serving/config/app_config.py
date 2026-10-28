@@ -1223,7 +1223,7 @@ async def _import_environment(
             logger.warning(
                 "Not importing %s from the environment: it breaks a rule with a value stored "
                 "in the database (%s), and the stored value wins, so %s keeps its default. "
-                "Change both on the Configuration tab (or with `python -m "
+                "Change both on the Settings tab (or with `python -m "
                 "serving.config.manage set`), or remove the variable.",
                 key,
                 rule,
@@ -2097,6 +2097,7 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 # Immutable and already settled: no value can be stored now.
                 "locked": _immutable_reason(entry, state.rows) is not None,
                 "setup": entry.setup,
+                "one_time": registry.is_one_time(entry),
                 "origin": entry.origin,
                 "custom": entry.origin == "custom",
                 "invalid": invalid,

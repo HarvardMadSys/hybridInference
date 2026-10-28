@@ -1,9 +1,17 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getAnalytics, getGeoAnalytics, getGrowthAnalytics } from '@/lib/api/admin';
+import {
+  getAnalytics,
+  getGeoAnalytics,
+  getGrowthAnalytics,
+  listRuntimeSettings,
+  type ListSettingsResponse,
+  getPerformanceMetrics,
+  getProviderTokenUsage,
+} from '@/lib/api/admin';
 import { AnalyticsTab } from './AnalyticsTab';
 
 vi.mock('recharts', () => ({
@@ -26,44 +34,252 @@ vi.mock('@/lib/api/admin', () => ({
   getAnalytics: vi.fn(),
   getGeoAnalytics: vi.fn(),
   getGrowthAnalytics: vi.fn(),
+  listRuntimeSettings: vi.fn(),
+  getPerformanceMetrics: vi.fn(),
+  getProviderTokenUsage: vi.fn(),
 }));
 
-describe('AnalyticsTab request-origins entry', () => {
-  beforeEach(() => {
-    vi.mocked(getAnalytics).mockImplementation(() => new Promise(() => undefined));
-    vi.mocked(getGrowthAnalytics).mockImplementation(() => new Promise(() => undefined));
-    vi.mocked(getGeoAnalytics).mockReset();
-  });
+const SECTION_KEYS = {
+  token: 'analytics_token_usage_enabled',
+  users: 'analytics_users_and_requests_enabled',
+  performance: 'analytics_performance_metrics_enabled',
+  growth: 'analytics_growth_rate_enabled',
+} as const;
+type Section = keyof typeof SECTION_KEYS;
+const SECTION_FETCHES = {
+  token: getProviderTokenUsage,
+  users: getAnalytics,
+  performance: getPerformanceMetrics,
+  growth: getGrowthAnalytics,
+};
 
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
-  });
+function settingsResponse(
+  values: Partial<Record<Section, boolean | string>>,
+): ListSettingsResponse {
+  return {
+    settings: (Object.entries(values) as [Section, boolean | string][]).map(([section, value]) => ({
+      key: SECTION_KEYS[section],
+      value,
+      value_type: 'bool',
+      default_value: section !== 'growth',
+      description: 'Show this Analytics section.',
+      min: null,
+      max: null,
+    })),
+  };
+}
 
-  it('links to Request origins without fetching its payload from the overview', async () => {
+const ALL_OFF = { token: false, users: false, performance: false, growth: false };
+
+beforeEach(() => {
+  vi.mocked(listRuntimeSettings).mockReset().mockResolvedValue({ settings: [] });
+  for (const fetch of Object.values(SECTION_FETCHES)) {
+    vi.mocked(fetch)
+      .mockReset()
+      .mockImplementation(() => new Promise<never>(() => undefined));
+  }
+  vi.mocked(getGeoAnalytics).mockReset();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe('AnalyticsTab overview', () => {
+  it('loads the overview without fetching the Request origins payload', async () => {
     render(<AnalyticsTab />);
-
-    const section = screen.getByRole('group', { name: 'Analytics section' });
-    expect(section).toHaveTextContent('Overview');
-    expect(screen.getByRole('link', { name: 'Request origins' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/analytics/geo',
-    );
-    // The Hour/Day/Week/Month period control scopes the overview only; the
-    // Request origins page carries its own range control.
-    expect(screen.getByRole('button', { name: 'Day' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Day' })).toBeInTheDocument();
     await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith('day'));
     expect(getGeoAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('waits for settings before requesting any section', async () => {
+    let finish!: (value: ListSettingsResponse) => void;
+    vi.mocked(listRuntimeSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<AnalyticsTab />);
+    expect(screen.getByRole('status')).toHaveTextContent('Loading Analytics settings');
+    for (const fetch of Object.values(SECTION_FETCHES)) expect(fetch).not.toHaveBeenCalled();
+    await act(async () => {
+      finish(settingsResponse({ ...ALL_OFF, token: true }));
+    });
+    expect(getProviderTokenUsage).toHaveBeenCalledWith('24h');
+    expect(getAnalytics).not.toHaveBeenCalled();
+    expect(getPerformanceMetrics).not.toHaveBeenCalled();
+    expect(getGrowthAnalytics).not.toHaveBeenCalled();
+  });
+
+  it.each(['token', 'users', 'performance', 'growth'] as const)(
+    'can enable %s on its own without requesting the other sections',
+    async (enabled) => {
+      vi.mocked(listRuntimeSettings).mockResolvedValue(
+        settingsResponse({ ...ALL_OFF, [enabled]: true }),
+      );
+      render(<AnalyticsTab />);
+      await waitFor(() => expect(SECTION_FETCHES[enabled]).toHaveBeenCalledTimes(1));
+      for (const [section, fetch] of Object.entries(SECTION_FETCHES)) {
+        if (section !== enabled) expect(fetch).not.toHaveBeenCalled();
+      }
+      expect(Boolean(screen.queryByRole('button', { name: 'Day' }))).toBe(
+        enabled === 'token' || enabled === 'users',
+      );
+      expect(Boolean(screen.queryByRole('heading', { name: 'Token usage' }))).toBe(
+        enabled === 'token',
+      );
+      expect(Boolean(screen.queryByRole('heading', { name: 'Users and requests' }))).toBe(
+        enabled === 'users',
+      );
+      expect(Boolean(screen.queryByRole('heading', { name: 'Performance metrics' }))).toBe(
+        enabled === 'performance',
+      );
+      expect(Boolean(screen.queryByText('Growth Rate'))).toBe(enabled === 'growth');
+    },
+  );
+
+  it('shows all enabled sections independently in their overview order', async () => {
+    vi.mocked(listRuntimeSettings).mockResolvedValue(
+      settingsResponse({ token: true, users: true, performance: true, growth: true }),
+    );
+    render(<AnalyticsTab />);
+    const growth = await screen.findByText('Growth Rate');
+    const sections = [
+      screen.getByRole('heading', { name: 'Token usage' }),
+      screen.getByRole('heading', { name: 'Users and requests' }),
+      screen.getByRole('heading', { name: 'Performance metrics' }),
+      growth,
+    ];
+    for (let i = 1; i < sections.length; i++) {
+      expect(
+        sections[i - 1].compareDocumentPosition(sections[i]) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+    for (const fetch of Object.values(SECTION_FETCHES)) expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, 'true'])(
+    'does not request growth unless the setting is boolean true (%s)',
+    async (value) => {
+      vi.mocked(listRuntimeSettings).mockResolvedValue(settingsResponse({ growth: value }));
+      await act(async () => {
+        render(<AnalyticsTab />);
+      });
+      expect(getGrowthAnalytics).not.toHaveBeenCalled();
+      expect(screen.queryByText('Growth Rate')).not.toBeInTheDocument();
+    },
+  );
+
+  it('uses the existing defaults when an older backend omits the keys', async () => {
+    await act(async () => {
+      render(<AnalyticsTab />);
+    });
+    expect(getAnalytics).toHaveBeenCalledWith('day');
+    expect(getProviderTokenUsage).toHaveBeenCalledWith('24h');
+    expect(getPerformanceMetrics).toHaveBeenCalled();
+    expect(getGrowthAnalytics).not.toHaveBeenCalled();
+    expect(screen.queryByText('Growth Rate')).not.toBeInTheDocument();
+  });
+
+  it('offers Settings when all sections are off and fetches no section data', async () => {
+    vi.mocked(listRuntimeSettings).mockResolvedValue(settingsResponse(ALL_OFF));
+    render(<AnalyticsTab />);
+    expect(
+      await screen.findByText('All Analytics overview sections are disabled.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Settings to enable a section' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/settings?tab=common#settings-analytics',
+    );
+    expect(screen.queryByRole('button', { name: 'Day' })).not.toBeInTheDocument();
+    for (const fetch of Object.values(SECTION_FETCHES)) expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('shows a settings error without fetching sections and retries the settings', async () => {
+    vi.mocked(listRuntimeSettings).mockRejectedValueOnce(new Error('Settings unavailable'));
+    vi.mocked(listRuntimeSettings).mockResolvedValueOnce(
+      settingsResponse({ ...ALL_OFF, users: true }),
+    );
+    render(<AnalyticsTab />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not load Analytics settings: Settings unavailable',
+    );
+    for (const fetch of Object.values(SECTION_FETCHES)) expect(fetch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith('day'));
+    expect(listRuntimeSettings).toHaveBeenCalledTimes(2);
+    expect(getProviderTokenUsage).not.toHaveBeenCalled();
+    expect(getPerformanceMetrics).not.toHaveBeenCalled();
+    expect(getGrowthAnalytics).not.toHaveBeenCalled();
+  });
+
+  it('loads enabled growth with its own range and re-reads settings on return', async () => {
+    vi.mocked(listRuntimeSettings).mockResolvedValueOnce(settingsResponse({ growth: true }));
+    const view = render(<AnalyticsTab />);
+    expect(await screen.findByText('Growth Rate')).toBeInTheDocument();
+    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenCalledWith(30, expect.anything()));
+    const signal = vi.mocked(getGrowthAnalytics).mock.calls[0][1]?.signal;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hour' }));
+    await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith('hour'));
+    expect(getGrowthAnalytics).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: '60d' }));
+    await waitFor(() => expect(getGrowthAnalytics).toHaveBeenLastCalledWith(60, expect.anything()));
+    expect(signal?.aborted).toBe(true);
+
+    const activeSignal = vi.mocked(getGrowthAnalytics).mock.calls[1][1]?.signal;
+    view.unmount();
+    expect(activeSignal?.aborted).toBe(true);
+    for (const fetch of Object.values(SECTION_FETCHES)) vi.mocked(fetch).mockClear();
+    vi.mocked(listRuntimeSettings).mockResolvedValueOnce(settingsResponse(ALL_OFF));
+    await act(async () => {
+      render(<AnalyticsTab />);
+    });
+    expect(listRuntimeSettings).toHaveBeenCalledTimes(2);
+    for (const fetch of Object.values(SECTION_FETCHES)) expect(fetch).not.toHaveBeenCalled();
+    expect(screen.queryByText('Growth Rate')).not.toBeInTheDocument();
+  });
+
+  it('does not let a departed page enable sections after returning with all sections off', async () => {
+    let finish!: (value: ListSettingsResponse) => void;
+    vi.mocked(listRuntimeSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const view = render(<AnalyticsTab />);
+    view.unmount();
+    vi.mocked(listRuntimeSettings).mockResolvedValueOnce(settingsResponse(ALL_OFF));
+    await act(async () => {
+      render(<AnalyticsTab />);
+      finish(settingsResponse({ growth: true }));
+    });
+    for (const fetch of Object.values(SECTION_FETCHES)) expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('shows token usage first, over the period the overview shows', async () => {
+    render(<AnalyticsTab />);
+    const tokenUsage = await screen.findByRole('heading', { name: 'Token usage' });
+    const users = screen.getByRole('heading', { name: 'Users and requests' });
+    expect(tokenUsage.compareDocumentPosition(users) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    await waitFor(() => expect(getProviderTokenUsage).toHaveBeenCalledWith('24h'));
+    for (const [button, period, range] of [
+      ['Hour', 'hour', '1h'],
+      ['Week', 'week', '7d'],
+      ['Month', 'month', '30d'],
+    ] as const) {
+      fireEvent.click(screen.getByRole('button', { name: button }));
+      await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith(period));
+      expect(getProviderTokenUsage).toHaveBeenLastCalledWith(range);
+    }
   });
 });
 
 describe('AnalyticsTab top users by model', () => {
-  beforeEach(() => {
-    // The growth card fetches on its own; park it so it neither resolves nor
-    // throws while this suite exercises the overview cards.
-    vi.mocked(getGrowthAnalytics).mockImplementation(() => new Promise(() => undefined));
-  });
-
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
