@@ -52,10 +52,19 @@ function when(epoch: number | null): string {
   return epoch ? new Date(epoch * 1000).toLocaleString('en-US') : '—';
 }
 
+function doneOfTotal(done: number, total: number): string {
+  return `${done.toLocaleString()}/${total.toLocaleString()}`;
+}
+
 /** Done / total of a batch: completed, failed and cancelled requests are done. */
 function progressText(batch: ConsoleBatch): string {
   const counts = batch.request_counts;
-  return `${counts.completed + counts.failed + batch.cancelled}/${counts.total}`;
+  return doneOfTotal(counts.completed + counts.failed + batch.cancelled, counts.total);
+}
+
+/** Done / total across a user's (or every user's) batches, counted as {@link progressText}. */
+function summaryProgressText(usage: AdminBatchSummary['totals']): string {
+  return doneOfTotal(usage.completed + usage.failed + usage.cancelled, usage.requests);
 }
 
 /**
@@ -147,7 +156,7 @@ export function BatchesTab() {
                   <th className={TABLE_HEAD_CELL}>User</th>
                   <th className={TABLE_HEAD_CELL}>Batches</th>
                   <th className={TABLE_HEAD_CELL}>Active</th>
-                  <th className={TABLE_HEAD_CELL}>Requests</th>
+                  <th className={TABLE_HEAD_CELL}>Requests done / total</th>
                   <th className={TABLE_HEAD_CELL}>Tokens in / out</th>
                   <th className={TABLE_HEAD_CELL}>Known cost</th>
                   <th className={TABLE_HEAD_CELL}>Unknown-cost attempts</th>
@@ -167,15 +176,13 @@ export function BatchesTab() {
                     </td>
                     <td className={TABLE_CELL}>{user.batches}</td>
                     <td className={TABLE_CELL}>{user.active}</td>
-                    <td className={TABLE_CELL}>
-                      {user.completed + user.failed}/{user.requests}
-                    </td>
+                    <td className={TABLE_CELL}>{summaryProgressText(user)}</td>
                     <td className={TABLE_CELL}>
                       {user.prompt_tokens.toLocaleString()} /{' '}
                       {user.completion_tokens.toLocaleString()}
                     </td>
                     <td className={TABLE_CELL}>{usd(user.cost_usd)}</td>
-                    <td className={TABLE_CELL}>{user.unknown_cost_attempts}</td>
+                    <td className={TABLE_CELL}>{user.unknown_cost_attempts.toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -185,15 +192,13 @@ export function BatchesTab() {
                     <td className={TABLE_CELL}>All users</td>
                     <td className={TABLE_CELL}>{totals.batches}</td>
                     <td className={TABLE_CELL}>{totals.active}</td>
-                    <td className={TABLE_CELL}>
-                      {totals.completed + totals.failed}/{totals.requests}
-                    </td>
+                    <td className={TABLE_CELL}>{summaryProgressText(totals)}</td>
                     <td className={TABLE_CELL}>
                       {totals.prompt_tokens.toLocaleString()} /{' '}
                       {totals.completion_tokens.toLocaleString()}
                     </td>
                     <td className={TABLE_CELL}>{usd(totals.cost_usd)}</td>
-                    <td className={TABLE_CELL}>{totals.unknown_cost_attempts}</td>
+                    <td className={TABLE_CELL}>{totals.unknown_cost_attempts.toLocaleString()}</td>
                   </tr>
                 </tfoot>
               )}
