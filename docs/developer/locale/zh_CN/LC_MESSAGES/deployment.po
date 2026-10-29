@@ -9,318 +9,329 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-27 05:52-0400\n"
+"POT-Creation-Date: 2026-10-29 13:35-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
-"Language: zh_CN\n"
 "Language-Team: zh_CN <LL@li.org>\n"
-"Plural-Forms: nplurals=1; plural=0;\n"
+"Language: zh_CN\n"
 "MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=utf-8\n"
+"Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
 "Generated-By: Babel 2.18.0\n"
 
-#: ../developer/deployment.md:1
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:1
 msgid "Deployment Guide"
 msgstr "部署指南"
 
-#: ../developer/deployment.md:3
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:3
 msgid ""
 "Running HybridInference as a long-lived deployment: what starts, how to "
-"reach it publicly or keep it private, how to create the first "
-"administrator, how to operate it, and how to reset it without losing (or "
-"accidentally keeping) data. A staging or scratch instance is the same "
-"stack; the sections on keeping it private and on the first admin account "
-"matter most there."
+"reach it publicly or keep it private, how to create the first administrator, "
+"how to operate it, and how to reset it without losing (or accidentally "
+"keeping) data. A staging or scratch instance is the same stack; the sections "
+"on keeping it private and on the first admin account matter most there."
 msgstr ""
-"本页讲怎样长期运行一套 "
-"HybridInference：会启动哪些服务，怎样放到公网上或者不对外暴露，怎样创建第一个管理员，日常怎么运维，以及重置时怎样既不丢数据、也不误留数据。staging"
-" 或临时实例用的是同一套服务栈，对它们最要紧的是「不对外暴露」和「第一个管理员账号」这两节。"
+"本页讲怎样长期运行一套 HybridInference：会启动哪些服务，怎样放到公网上或者不"
+"对外暴露，怎样创建第一个管理员，日常怎么运维，以及重置时怎样既不丢数据、也不"
+"误留数据。staging 或临时实例用的是同一套服务栈，对它们最要紧的是「不对外暴"
+"露」和「第一个管理员账号」这两节。"
 
-#: ../developer/deployment.md:9
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:9
 msgid ""
-"First-time setup — cloning, the database login in `.env`, the first `make"
-" up` and the console's setup page — is in [Installation](installation.md"
-"#running-with-docker). This page assumes the stack already comes up."
+"First-time setup — cloning, the database login in `.env`, the first `make "
+"up` and the console's setup page — is in [Installation]"
+"(installation.md#running-with-docker). This page assumes the stack already "
+"comes up."
 msgstr ""
-"首次搭建——克隆仓库、在 `.env` 里填写数据库登录信息、第一次 `make "
-"up`，以及控制台的设置页面——见[安装](installation.md#running-with-"
-"docker)。本页假定整套服务栈已经能起来。"
+"首次搭建——克隆仓库、在 `.env` 里填写数据库登录信息、第一次 `make up`，以及控"
+"制台的设置页面——见[安装](installation.md#running-with-docker)。本页假定整套服"
+"务栈已经能起来。"
 
-#: ../developer/deployment.md:14
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:14
 msgid "What the stack is"
 msgstr "服务栈的组成"
 
-#: ../developer/deployment.md:16
-msgid "`make up` starts three containers from `deploy/docker/docker-compose.yml`:"
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:16
+msgid ""
+"`make up` starts three containers from `deploy/docker/docker-compose.yml`:"
 msgstr "`make up` 会按 `deploy/docker/docker-compose.yml` 启动三个容器："
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Service"
 msgstr "服务"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Image / build"
 msgstr "镜像 / 构建"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Published on"
 msgstr "发布地址"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`backend`"
 msgstr ""
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "built from `deploy/docker/Dockerfile.backend`"
 msgstr "由 `deploy/docker/Dockerfile.backend` 构建"
 
-#: ../developer/deployment.md
-#, python-brace-format
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}`"
 msgstr ""
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`frontend`"
 msgstr ""
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "built from `deploy/docker/Dockerfile.frontend`"
 msgstr "由 `deploy/docker/Dockerfile.frontend` 构建"
 
-#: ../developer/deployment.md
-#, python-brace-format
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}`"
 msgstr "`${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}`"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`postgres`"
 msgstr ""
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`postgres:16`"
 msgstr ""
 
-#: ../developer/deployment.md
-#, python-brace-format
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`127.0.0.1:${DB_PORT:-5432}`"
 msgstr ""
 
-#: ../developer/deployment.md:24
-#, python-brace-format
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:24
 msgid ""
-"All three published ports default to loopback. A reverse proxy on the "
-"same host can reach the console at `127.0.0.1:3001`. The containers also "
-"join one bridge network defined in the same Compose file, on which the "
-"backend reaches the database as `postgres:5432`. Of the database address "
-"settings, only `DB_PORT` from `.env` reaches this file, and only as the "
-"host half of the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the host-"
-"side bind address is hard-coded to loopback. `DB_HOST` is pinned to "
-"`postgres` in the Compose file and is ignored under Compose — it matters "
-"only for a backend started directly from source."
+"All three published ports default to loopback. A reverse proxy on the same "
+"host can reach the console at `127.0.0.1:3001`. The containers also join one "
+"bridge network defined in the same Compose file, on which the backend "
+"reaches the database as `postgres:5432`. Of the database address settings, "
+"only `DB_PORT` from `.env` reaches this file, and only as the host half of "
+"the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the host-side bind address "
+"is hard-coded to loopback. `DB_HOST` is pinned to `postgres` in the Compose "
+"file and is ignored under Compose — it matters only for a backend started "
+"directly from source."
 msgstr ""
-"三个发布端口默认都绑定在回环地址上，同一台机器上的反向代理可以通过 `127.0.0.1:3001` 访问控制台。三个容器还会加入同一个 "
-"Compose 文件里定义的桥接网络，后端在这个网络里用 `postgres:5432` 连接数据库。在数据库地址相关的设置里，`.env` 只有"
-" `DB_PORT` "
-"会传进这个文件，而且只用作端口映射的宿主机一侧（`127.0.0.1:${DB_PORT:-5432}:5432`）；宿主机一侧的绑定地址写死为回环地址。`DB_HOST`"
-" 在 Compose 文件里固定为 `postgres`，所以在 Compose 下设置它不起作用，只有直接从源码启动后端时它才有意义。"
+"三个发布端口默认都绑定在回环地址上，同一台机器上的反向代理可以通过 "
+"`127.0.0.1:3001` 访问控制台。三个容器还会加入同一个 Compose 文件里定义的桥接"
+"网络，后端在这个网络里用 `postgres:5432` 连接数据库。在数据库地址相关的设置"
+"里，`.env` 只有 `DB_PORT` 会传进这个文件，而且只用作端口映射的宿主机一侧"
+"（`127.0.0.1:${DB_PORT:-5432}:5432`）；宿主机一侧的绑定地址写死为回环地址。"
+"`DB_HOST` 在 Compose 文件里固定为 `postgres`，所以在 Compose 下设置它不起作"
+"用，只有直接从源码启动后端时它才有意义。"
 
-#: ../developer/deployment.md:33
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:33
 msgid ""
-"One more service exists in the same file but starts only when its profile"
-" is named: `pgadmin` (profile `admin`)."
-msgstr "同一个文件里还有一个服务 `pgadmin`（profile 为 `admin`），只有指定这个 profile 时才会启动。"
+"One more service exists in the same file but starts only when its profile is "
+"named: `pgadmin` (profile `admin`)."
+msgstr ""
+"同一个文件里还有一个服务 `pgadmin`（profile 为 `admin`），只有指定这个 "
+"profile 时才会启动。"
 
-#: ../developer/deployment.md:36
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:36
 msgid ""
 "`frontend` depends on `backend` with `condition: service_started`, not "
 "`service_healthy` — deliberately, so that a backend reporting unhealthy "
-"because its database logging is down does not stop the console from "
-"starting."
+"because its database logging is down does not stop the console from starting."
 msgstr ""
 "`frontend` 依赖 `backend` 时用的是 `condition: service_started`，而不是 "
-"`service_healthy`。这是有意为之：后端可能因为数据库日志写不进去而报告 unhealthy，这时不应该连控制台也起不来。"
+"`service_healthy`。这是有意为之：后端可能因为数据库日志写不进去而报告 "
+"unhealthy，这时不应该连控制台也起不来。"
 
-#: ../developer/deployment.md:41
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:41
 msgid "Putting it on the public internet"
 msgstr "把它放到公网上"
 
-#: ../developer/deployment.md:43
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:43
 msgid ""
-"Nothing in the stack terminates TLS, and this repository ships no "
-"reverse-proxy config to copy: certificates and the proxy in front of the "
-"two published ports are yours to supply. A proxy running on the host can "
-"use `127.0.0.1:3001` for the console or `127.0.0.1:8080` for direct "
-"gateway access. A proxy container on the same Docker network can use "
-"`frontend:3001` or `backend:8080`."
+"Nothing in the stack terminates TLS, and this repository ships no reverse-"
+"proxy config to copy: certificates and the proxy in front of the two "
+"published ports are yours to supply. A proxy running on the host can use "
+"`127.0.0.1:3001` for the console or `127.0.0.1:8080` for direct gateway "
+"access. A proxy container on the same Docker network can use `frontend:3001` "
+"or `backend:8080`."
 msgstr ""
-"服务栈里没有任何组件负责 TLS "
-"终止，仓库也没有现成的反向代理配置可以直接套用：证书和两个发布端口前面的代理都要你自己准备。跑在宿主机上的代理，访问控制台用 "
-"`127.0.0.1:3001`，直接访问网关用 `127.0.0.1:8080`；和服务栈在同一个 Docker 网络里的代理容器，则用 "
-"`frontend:3001` 或 `backend:8080`。"
+"服务栈里没有任何组件负责 TLS 终止，仓库也没有现成的反向代理配置可以直接套用："
+"证书和两个发布端口前面的代理都要你自己准备。跑在宿主机上的代理，访问控制台用 "
+"`127.0.0.1:3001`，直接访问网关用 `127.0.0.1:8080`；和服务栈在同一个 Docker 网"
+"络里的代理容器，则用 `frontend:3001` 或 `backend:8080`。"
 
-#: ../developer/deployment.md:49
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:49
 msgid ""
-"If your proxy runs on another machine, set `FRONTEND_HOST` to a reachable"
-" host interface in `.env`; `0.0.0.0` binds all IPv4 interfaces. Restrict "
-"access to the intended proxy and run `make up` to recreate the port "
-"mapping. The console forwards API routes as well as serving pages, so "
-"exposing its port also exposes those routes. Set `BACKEND_HOST` "
-"separately only if direct gateway access is needed."
+"If your proxy runs on another machine, set `FRONTEND_HOST` to a reachable "
+"host interface in `.env`; `0.0.0.0` binds all IPv4 interfaces. Restrict "
+"access to the intended proxy and run `make up` to recreate the port mapping. "
+"The console forwards API routes as well as serving pages, so exposing its "
+"port also exposes those routes. Set `BACKEND_HOST` separately only if direct "
+"gateway access is needed."
 msgstr ""
-"如果代理跑在另一台机器上，就在 `.env` 里把 `FRONTEND_HOST` 设成代理能访问到的宿主机网卡地址；设成 `0.0.0.0` "
-"会绑定所有 IPv4 网卡。然后限制只让你的代理访问，再运行 `make up` 重建端口映射。控制台除了提供页面，还会转发 API "
-"路由，所以暴露它的端口也就暴露了这些路由。只有需要直接访问网关时，才另外设置 `BACKEND_HOST`。"
+"如果代理跑在另一台机器上，就在 `.env` 里把 `FRONTEND_HOST` 设成代理能访问到的"
+"宿主机网卡地址；设成 `0.0.0.0` 会绑定所有 IPv4 网卡。然后限制只让你的代理访"
+"问，再运行 `make up` 重建端口映射。控制台除了提供页面，还会转发 API 路由，所"
+"以暴露它的端口也就暴露了这些路由。只有需要直接访问网关时，才另外设置 "
+"`BACKEND_HOST`。"
 
-#: ../developer/deployment.md:56
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:56
 msgid ""
-"Releases before the loopback default bound the console to `0.0.0.0`. If a"
-" deployment relied on that, set `FRONTEND_HOST` explicitly before "
-"upgrading; see [Releases and upgrades](releases.md)."
+"Releases before the loopback default bound the console to `0.0.0.0`. If a "
+"deployment relied on that, set `FRONTEND_HOST` explicitly before upgrading; "
+"see [Releases and upgrades](releases.md)."
 msgstr ""
-"在默认改为回环地址之前，旧版本会把控制台绑定到 `0.0.0.0`。如果你的部署依赖这个行为，升级前要显式设置 "
-"`FRONTEND_HOST`；见[发布与升级](releases.md)。"
+"在默认改为回环地址之前，旧版本会把控制台绑定到 `0.0.0.0`。如果你的部署依赖这"
+"个行为，升级前要显式设置 `FRONTEND_HOST`；见[发布与升级](releases.md)。"
 
-#: ../developer/deployment.md:60
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:60
 msgid ""
-"Which public paths the console serves itself and which it forwards to the"
-" backend is a separate question, and the answer is in the console's own "
-"`next.config.js` rather than in any proxy config. See [The public path "
-"table](public-path-table.md)."
+"Which public paths the console serves itself and which it forwards to the "
+"backend is a separate question, and the answer is in the console's own "
+"`next.config.js` rather than in any proxy config. See [The public path table]"
+"(public-path-table.md)."
 msgstr ""
-"至于哪些公开路径由控制台自己处理、哪些转发给后端，那是另一个问题，由控制台自己的 `next.config.js` "
-"决定，和代理配置无关。见[公开路径表](public-path-table.md)。"
+"至于哪些公开路径由控制台自己处理、哪些转发给后端，那是另一个问题，由控制台自"
+"己的 `next.config.js` 决定，和代理配置无关。见[公开路径表](public-path-"
+"table.md)。"
 
-#: ../developer/deployment.md:65
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:65
 msgid "What your proxy still has to do"
 msgstr "代理仍然要负责的事"
 
-#: ../developer/deployment.md:67
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:67
 msgid ""
-"Three protections are commonly left to the reverse proxy, and nothing "
-"inside this stack provides them. A deployment that exposes the published "
-"ports without a proxy — a tunnel daemon connecting to `127.0.0.1:3001`, "
-"for instance — has none of them, and nothing warns you:"
+"Three protections are commonly left to the reverse proxy, and nothing inside "
+"this stack provides them. A deployment that exposes the published ports "
+"without a proxy — a tunnel daemon connecting to `127.0.0.1:3001`, for "
+"instance — has none of them, and nothing warns you:"
 msgstr ""
-"有三项防护通常交给反向代理来做，这套服务栈内部并不提供。如果部署不经过代理就直接暴露已发布的端口——比如让隧道守护进程直接连到 "
-"`127.0.0.1:3001`——这三项防护就一项都没有，而且不会有任何提示："
+"有三项防护通常交给反向代理来做，这套服务栈内部并不提供。如果部署不经过代理就"
+"直接暴露已发布的端口——比如让隧道守护进程直接连到 `127.0.0.1:3001`——这三项防护"
+"就一项都没有，而且不会有任何提示："
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Protection"
 msgstr "防护项"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "What a proxy in front typically does"
 msgstr "前置代理通常做什么"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Next.js Server Action guard"
 msgstr "Next.js Server Action 防护"
 
-#: ../developer/deployment.md
-#, python-brace-format
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
 "Refuse requests carrying a `Next-Action` header (`if ($http_next_action) "
-"{ return 403; }`), so console server actions cannot be invoked from "
-"outside the console"
+"{ return 403; }`), so console server actions cannot be invoked from outside "
+"the console"
 msgstr ""
-"拒绝带 `Next-Action` 头的请求（`if ($http_next_action) { return 403; "
-"}`），这样外部就调用不了控制台的 server action"
+"拒绝带 `Next-Action` 头的请求（`if ($http_next_action) { return 403; }`），这"
+"样外部就调用不了控制台的 server action"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Request body cap on `/v1/`"
 msgstr "`/v1/` 的请求体大小上限"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
-"Bound completion request bodies (commonly `client_max_body_size 50m`). "
-"The gateway enforces no size limit of its own"
-msgstr "限制补全请求的请求体大小（常见配置是 `client_max_body_size 50m`）。网关自己不做任何大小限制"
+"Bound completion request bodies (commonly `client_max_body_size 50m`). The "
+"gateway enforces no size limit of its own"
+msgstr ""
+"限制补全请求的请求体大小（常见配置是 `client_max_body_size 50m`）。网关自己不"
+"做任何大小限制"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`X-Forwarded-For` rewriting"
 msgstr "`X-Forwarded-For` 重写"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
-"Overwrite a client-supplied chain, so only hops the proxy inserted reach "
-"the gateway"
+"Overwrite a client-supplied chain, so only hops the proxy inserted reach the "
+"gateway"
 msgstr "覆盖客户端自带的转发链，让网关只看到代理自己加上的那几跳"
 
-#: ../developer/deployment.md:78
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:78
 msgid ""
-"The gateway reads forwarded headers only from the proxies you authorize "
-"(see [Trusted proxies and client IPs](trusted-proxies-and-client-"
-"ips.md)), but it never rewrites them. Without a proxy that does, the "
-"leftmost `X-Forwarded-For` entry is whatever the caller sent — which is "
-"why `CF-Connecting-IP` is preferred when Cloudflare is in front."
+"The gateway reads forwarded headers only from the proxies you authorize (see "
+"[Trusted proxies and client IPs](trusted-proxies-and-client-ips.md)), but it "
+"never rewrites them. Without a proxy that does, the leftmost `X-Forwarded-"
+"For` entry is whatever the caller sent — which is why `CF-Connecting-IP` is "
+"preferred when Cloudflare is in front."
 msgstr ""
-"网关只信任你授权过的代理发来的转发头（见[可信代理与客户端 IP](trusted-proxies-and-client-"
-"ips.md)），但从不改写这些头。如果前面没有负责改写的代理，`X-Forwarded-For` "
-"最左边的那一项就是调用方随便填的值——所以前面有 Cloudflare 时，优先用 `CF-Connecting-IP`。"
+"网关只信任你授权过的代理发来的转发头（见[可信代理与客户端 IP](trusted-"
+"proxies-and-client-ips.md)），但从不改写这些头。如果前面没有负责改写的代理，"
+"`X-Forwarded-For` 最左边的那一项就是调用方随便填的值——所以前面有 Cloudflare "
+"时，优先用 `CF-Connecting-IP`。"
 
-#: ../developer/deployment.md:84
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:84
 msgid "Keeping it private: an SSH tunnel"
 msgstr "不对外暴露：SSH 隧道"
 
-#: ../developer/deployment.md:86
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:86
 msgid ""
-"A staging or scratch instance, or any gateway you do not want on a "
-"network at all, can keep the loopback defaults. Reach it from your "
-"workstation by forwarding both ports:"
-msgstr "staging 或临时实例，以及任何你根本不想放到网络上的网关，都可以保留默认的回环绑定，然后在自己的工作机上转发这两个端口来访问："
+"A staging or scratch instance, or any gateway you do not want on a network "
+"at all, can keep the loopback defaults. Reach it from your workstation by "
+"forwarding both ports:"
+msgstr ""
+"staging 或临时实例，以及任何你根本不想放到网络上的网关，都可以保留默认的回环"
+"绑定，然后在自己的工作机上转发这两个端口来访问："
 
-#: ../developer/deployment.md:94
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:94
 msgid ""
 "Then open `http://localhost:3001`. Keep the local end on `localhost` or "
-"`127.0.0.1`: the refresh cookie is issued with the `Secure` flag by "
-"default (`COOKIE_SECURE`), and browsers accept `Secure` cookies only over"
-" HTTPS or from a loopback origin."
+"`127.0.0.1`: the refresh cookie is issued with the `Secure` flag by default "
+"(`COOKIE_SECURE`), and browsers accept `Secure` cookies only over HTTPS or "
+"from a loopback origin."
 msgstr ""
-"然后打开 `http://localhost:3001`。本地这一端只能用 `localhost` 或 `127.0.0.1`：存放 "
-"refresh token 的 cookie 默认带 `Secure` 标志（`COOKIE_SECURE`），而浏览器只在 HTTPS "
-"或回环地址的 origin 下才接受 `Secure` cookie。"
+"然后打开 `http://localhost:3001`。本地这一端只能用 `localhost` 或 "
+"`127.0.0.1`：存放 refresh token 的 cookie 默认带 `Secure` 标志"
+"（`COOKIE_SECURE`），而浏览器只在 HTTPS 或回环地址的 origin 下才接受 "
+"`Secure` cookie。"
 
-#: ../developer/deployment.md:99
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:99
 msgid ""
-"The console talks to the API at whatever `NEXT_PUBLIC_API_BASE` was baked"
-" in at image build time — `http://localhost:8080` by default — which is "
-"why the tunnel forwards 8080 as well. Changing it is a frontend rebuild, "
-"not a restart."
+"The console talks to the API at whatever `NEXT_PUBLIC_API_BASE` was baked in "
+"at image build time — `http://localhost:8080` by default — which is why the "
+"tunnel forwards 8080 as well. Changing it is a frontend rebuild, not a "
+"restart."
 msgstr ""
 "控制台访问 API 的地址，是镜像构建时编译进去的 `NEXT_PUBLIC_API_BASE`（默认 "
-"`http://localhost:8080`），所以隧道还要转发 8080。改这个值需要重新构建前端，光重启没用。"
+"`http://localhost:8080`），所以隧道还要转发 8080。改这个值需要重新构建前端，"
+"光重启没用。"
 
-#: ../developer/deployment.md:103
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:103
 msgid ""
-"VS Code-family editors can manage the same forwards from their ports "
-"panel."
+"VS Code-family editors can manage the same forwards from their ports panel."
 msgstr "VS Code 系列的编辑器可以在自带的端口面板里管理同样的转发。"
 
-#: ../developer/deployment.md:105
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:105
 msgid "Check the stack answers:"
 msgstr "检查服务栈是否正常响应："
 
-#: ../developer/deployment.md:112
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:112
 msgid ""
-"The default `CORS_ALLOWED_ORIGINS` already covers ports 3000, 3001 and "
-"3002 on `localhost` and `127.0.0.1`, plus HTTPS on port 8443, so a "
-"tunnelled instance needs no CORS entry. Add one only when you serve the "
-"console from another origin."
+"The default `CORS_ALLOWED_ORIGINS` already covers ports 3000, 3001 and 3002 "
+"on `localhost` and `127.0.0.1`, plus HTTPS on port 8443, so a tunnelled "
+"instance needs no CORS entry. Add one only when you serve the console from "
+"another origin."
 msgstr ""
 "`CORS_ALLOWED_ORIGINS` 的默认值已经覆盖 `localhost` 和 `127.0.0.1` 上的 "
-"3000、3001、3002 端口，外加 8443 端口上的 HTTPS，所以走隧道访问的实例不需要再加 CORS 条目。只有当控制台由别的 "
-"origin 提供时才需要加。"
+"3000、3001、3002 端口，外加 8443 端口上的 HTTPS，所以走隧道访问的实例不需要再"
+"加 CORS 条目。只有当控制台由别的 origin 提供时才需要加。"
 
-#: ../developer/deployment.md:117
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:117
 msgid "Everyday operations"
 msgstr "日常运维"
 
-#: ../developer/deployment.md:119
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:119
 msgid "All from the repository root:"
 msgstr "以下命令都在仓库根目录执行："
 
-#: ../developer/deployment.md:133
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:133
 msgid ""
 "`make up` and `make build` first run the `docker-volumes` target, which "
 "creates the external volume `hybridinference_postgres_data` when it is "
@@ -329,786 +340,870 @@ msgstr ""
 "`make up` 和 `make build` 会先执行 `docker-volumes` 这个 target，外部卷 "
 "`hybridinference_postgres_data` 不存在时由它创建。"
 
-#: ../developer/deployment.md:136
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:136
 msgid ""
 "To start an optional profile, pass it on the `make` command line — a "
 "variable set there is exported into the environment of the recipe, and a "
 "shell variable outranks every `--env-file` in Compose:"
 msgstr ""
-"要启动可选的 profile，在 `make` 命令行上传入即可。命令行上设置的变量会导出到 recipe 的环境里，而在 Compose "
-"中，shell 变量比任何 `--env-file` 都优先："
+"要启动可选的 profile，在 `make` 命令行上传入即可。命令行上设置的变量会导出到 "
+"recipe 的环境里，而在 Compose 中，shell 变量比任何 `--env-file` 都优先："
 
-#: ../developer/deployment.md:144
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:144
 msgid ""
 "`COMPOSE_PROFILES` is a comma-separated list, so you can name several "
-"profiles at once. It can also be set in `.env` (as `.env.example` notes),"
-" but the command line is the form to reach for when you want certainty "
-"about which profiles are active."
+"profiles at once. It can also be set in `.env` (as `.env.example` notes), "
+"but the command line is the form to reach for when you want certainty about "
+"which profiles are active."
 msgstr ""
-"`COMPOSE_PROFILES` 是逗号分隔的列表，所以可以一次指定多个 profile。它也可以写在 `.env` "
-"里（`.env.example` 有说明），但想确定哪些 profile 真的生效时，优先用命令行这种写法。"
+"`COMPOSE_PROFILES` 是逗号分隔的列表，所以可以一次指定多个 profile。它也可以写"
+"在 `.env` 里（`.env.example` 有说明），但想确定哪些 profile 真的生效时，优先"
+"用命令行这种写法。"
 
-#: ../developer/deployment.md:149
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:149
 msgid "What a change actually requires"
 msgstr "改动之后到底要做什么"
 
-#: ../developer/deployment.md:151
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:151
 msgid ""
-"Three different answers, and picking the wrong one looks like the change "
-"not taking effect:"
+"Three different answers, and picking the wrong one looks like the change not "
+"taking effect:"
 msgstr "答案有三种，选错了，看起来就像改动没生效："
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "You changed"
 msgstr "你改了什么"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Do this"
 msgstr "该怎么做"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "A setting on the admin **Configuration** tab"
 msgstr "管理后台 **Configuration** 标签页上的某个设置项"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
 "Nothing, unless it is marked **Restart required**: then select **Restart "
 "backend** on that tab, or run `make restart s=backend`"
 msgstr ""
-"什么都不用做，除非它标着 **Restart required**：那就在这个标签页上点 **Restart backend**，或者运行 "
-"`make restart s=backend`"
+"什么都不用做，除非它标着 **Restart required**：那就在这个标签页上点 "
+"**Restart backend**，或者运行 `make restart s=backend`"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
-"A value in `.env` that stays in the environment — the database "
-"connection, ports, config paths, console values"
-msgstr "`.env` 里留在环境变量中的值——数据库连接、端口、配置文件路径、控制台的取值"
+"A value in `.env` that stays in the environment — the database connection, "
+"ports, config paths, console values"
+msgstr ""
+"`.env` 里留在环境变量中的值——数据库连接、端口、配置文件路径、控制台的取值"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
 "`make up` — a container reads its `env_file` when it is *created*, so "
 "`docker compose restart` keeps the old environment"
-msgstr "`make up`——容器只在*创建*时读取自己的 `env_file`，所以 `docker compose restart` 会沿用旧的环境变量"
+msgstr ""
+"`make up`——容器只在*创建*时读取自己的 `env_file`，所以 `docker compose "
+"restart` 会沿用旧的环境变量"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Any other value in `.env`"
 msgstr "`.env` 里的其他值"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
 "Nothing happens once the database has the setting: change it on the "
 "**Configuration** tab instead. See [Upgrading a deployment that kept its "
-"settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-"
-"env)"
+"settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env)"
 msgstr ""
-"数据库里有了这个设置项之后，改它不会有任何效果：改为在 **Configuration** 标签页上修改。见[升级一个把设置项放在 `.env` "
-"里的部署](#upgrading-a-deployment-that-kept-its-settings-in-env)"
+"数据库里有了这个设置项之后，改它不会有任何效果：改为在 **Configuration** 标签"
+"页上修改。见[升级一个把设置项放在 `.env` 里的部署](#upgrading-a-deployment-"
+"that-kept-its-settings-in-env)"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "A model registry or routing YAML"
 msgstr "模型注册表或路由 YAML"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
-"`make restart s=backend` — `config/` and `distributions/` are bind-"
-"mounted read-only, so no rebuild is needed"
+"`make restart s=backend` — `config/` and `distributions/` are bind-mounted "
+"read-only, so no rebuild is needed"
 msgstr ""
-"`make restart s=backend`——`config/` 和 `distributions/` 是以只读方式 bind-mount "
-"进去的，不需要重新构建"
+"`make restart s=backend`——`config/` 和 `distributions/` 是以只读方式 bind-"
+"mount 进去的，不需要重新构建"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "A distribution branding YAML"
 msgstr "发行版的品牌 YAML"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
 "`make restart s=backend` — `/site-config` serves the validated snapshot "
 "loaded at backend startup"
-msgstr "`make restart s=backend`——`/site-config` 返回的是后端启动时加载并校验过的快照"
+msgstr ""
+"`make restart s=backend`——`/site-config` 返回的是后端启动时加载并校验过的快照"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "A file in the mounted site-assets directory"
 msgstr "挂载的 site-assets 目录中的文件"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "No image rebuild; replace the file in the deployment overlay"
 msgstr "不用重建镜像，直接替换部署 overlay 里的文件"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`AGENT_WEB_INTERNAL_URL` or `AGENT_CONTROL_PLANE_INTERNAL_URL`"
 msgstr "`AGENT_WEB_INTERNAL_URL` 或 `AGENT_CONTROL_PLANE_INTERNAL_URL`"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid ""
 "`make up` — the `/agents` route handler reads them at runtime in the "
 "recreated frontend container"
-msgstr "`make up`——前端容器重建后，`/agents` 的 route handler 会在运行时读到它们"
+msgstr ""
+"`make up`——前端容器重建后，`/agents` 的 route handler 会在运行时读到它们"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "A true build-only `NEXT_PUBLIC_*` compatibility value"
 msgstr "真正只在构建时生效的 `NEXT_PUBLIC_*` 兼容值"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`make build s=frontend` — see below"
 msgstr "`make build s=frontend`——见下文"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Backend or frontend source"
 msgstr "后端或前端的源码"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`make build`, or `make build s=<service>`"
 msgstr "`make build`，或 `make build s=<service>`"
 
-#: ../developer/deployment.md:166
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:166
 msgid ""
-"The console gets its name and branding from the backend's `/site-config` "
-"at runtime, and the `/agents` destinations from its own runtime "
-"environment, so neither needs a new frontend image: restart the backend "
-"after editing the branding file, and run `make up` after changing the "
-"console's environment."
+"The console gets its name and branding from the backend's `/site-config` at "
+"runtime, and the `/agents` destinations from its own runtime environment, so "
+"neither needs a new frontend image: restart the backend after editing the "
+"branding file, and run `make up` after changing the console's environment."
 msgstr ""
-"控制台在运行时从后端的 `/site-config` 获取名称和品牌，从自己的运行时环境获取 `/agents` "
-"的目标地址，所以两者都不需要新的前端镜像：改了品牌文件就重启后端，改了控制台的环境变量就运行 `make up`。"
+"控制台在运行时从后端的 `/site-config` 获取名称和品牌，从自己的运行时环境获取 "
+"`/agents` 的目标地址，所以两者都不需要新的前端镜像：改了品牌文件就重启后端，"
+"改了控制台的环境变量就运行 `make up`。"
 
-#: ../developer/deployment.md:171
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:171
 msgid ""
-"The console will not render its normal pages without a valid `/site-"
-"config` answer. If the backend is unreachable, slow (over three seconds) "
-"or returns something invalid, the console shows a configuration error "
-"with a retry button instead of guessing. Check the frontend logs and "
-"whether the backend is up, then retry. The example deployment needs no "
-"extra settings for this."
+"The console will not render its normal pages without a valid `/site-config` "
+"answer. If the backend is unreachable, slow (over three seconds) or returns "
+"something invalid, the console shows a configuration error with a retry "
+"button instead of guessing. Check the frontend logs and whether the backend "
+"is up, then retry. The example deployment needs no extra settings for this."
 msgstr ""
-"拿不到有效的 `/site-config` "
-"响应，控制台就不会渲染正常页面。如果后端连不上、太慢（超过三秒）或者返回了无效内容，控制台会显示一个带重试按钮的配置错误，而不会自己去猜。先查看前端日志，确认后端是否在运行，然后重试。示例部署不需要为此做任何额外设置。"
+"拿不到有效的 `/site-config` 响应，控制台就不会渲染正常页面。如果后端连不上、"
+"太慢（超过三秒）或者返回了无效内容，控制台会显示一个带重试按钮的配置错误，而"
+"不会自己去猜。先查看前端日志，确认后端是否在运行，然后重试。示例部署不需要为"
+"此做任何额外设置。"
 
-#: ../developer/deployment.md:177
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:177
 msgid ""
-"A few older build-time options remain for existing build pipelines: the "
-"old branding variables, which Compose still accepts as build arguments, "
-"and two agent build arguments that it no longer sets. Standard builds do "
-"not need them. Anything that really is a `NEXT_PUBLIC_*` build value is "
-"compiled into the browser bundle and needs `make build s=frontend`; see "
-"[The public path table](public-path-table.md)."
+"A few older build-time options remain for existing build pipelines: the old "
+"branding variables, which Compose still accepts as build arguments, and two "
+"agent build arguments that it no longer sets. Standard builds do not need "
+"them. Anything that really is a `NEXT_PUBLIC_*` build value is compiled into "
+"the browser bundle and needs `make build s=frontend`; see [The public path "
+"table](public-path-table.md)."
 msgstr ""
-"为了兼容现有的构建流水线，还保留了几个旧的构建期选项：旧的品牌变量（Compose 仍然接受这些构建参数），以及两个 Compose "
-"已经不再设置的 agent 构建参数。标准构建用不到它们。真正的 `NEXT_PUBLIC_*` 构建值会编译进浏览器 bundle，改了就要运行"
-" `make build s=frontend`；见[公开路径表](public-path-table.md)。"
+"为了兼容现有的构建流水线，还保留了几个旧的构建期选项：旧的品牌变量（Compose "
+"仍然接受这些构建参数），以及两个 Compose 已经不再设置的 agent 构建参数。标准"
+"构建用不到它们。真正的 `NEXT_PUBLIC_*` 构建值会编译进浏览器 bundle，改了就要"
+"运行 `make build s=frontend`；见[公开路径表](public-path-table.md)。"
 
-#: ../developer/deployment.md:184
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:184
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/deployment.md:186
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:186
 msgid "Environment"
 msgstr "环境变量"
 
-#: ../developer/deployment.md:188
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:188
 msgid ""
 "`.env` at the repository root holds the database connection and the "
-"container settings; `.env.example` is the annotated list. Compose is "
-"invoked with `--env-file .env` and the backend service also loads it as "
-"`env_file`. The variables Compose itself requires are in "
-"[Installation](installation.md#running-with-docker). Everything else is a"
-" setting stored in the database and edited on the admin console's "
-"**Configuration** tab; see [Settings stored in the "
-"database](configuration.md#settings-stored-in-the-database)."
+"container settings; `.env.example` is the annotated list. Compose is invoked "
+"with `--env-file .env` and the backend service also loads it as `env_file`. "
+"The variables Compose itself requires are in [Installation]"
+"(installation.md#running-with-docker). Everything else is a setting stored "
+"in the database and edited on the admin console's **Configuration** tab; see "
+"[Settings stored in the database](configuration.md#settings-stored-in-the-"
+"database)."
 msgstr ""
-"仓库根目录的 `.env` 里放的是数据库连接和容器相关的设置，`.env.example` 是带注释的清单。调用 Compose 时会带上 "
-"`--env-file .env`，后端服务也通过 `env_file` 加载它。Compose "
-"本身要求必填的变量见[安装](installation.md#running-with-docker)。其余都是存储在数据库里、在管理控制台 "
-"**Configuration** 标签页上编辑的设置项；见[存储在数据库中的设置项](configuration.md#settings-"
-"stored-in-the-database)。"
+"仓库根目录的 `.env` 里放的是数据库连接和容器相关的设置，`.env.example` 是带注"
+"释的清单。调用 Compose 时会带上 `--env-file .env`，后端服务也通过 `env_file` "
+"加载它。Compose 本身要求必填的变量见[安装](installation.md#running-with-"
+"docker)。其余都是存储在数据库里、在管理控制台 **Configuration** 标签页上编辑"
+"的设置项；见[存储在数据库中的设置项](configuration.md#settings-stored-in-the-"
+"database)。"
 
-#: ../developer/deployment.md:197
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:197
 msgid "Upgrading a deployment that kept its settings in `.env`"
 msgstr "升级一个把设置项放在 `.env` 里的部署"
 
-#: ../developer/deployment.md:199
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:199
 msgid ""
-"Nothing has to change before the upgrade. At its first start the new "
-"backend copies every setting that has a value in its environment into the"
-" database — from `.env`, from an overlay's `deploy/*.env`, and from the "
-"values the Compose file passes through — and logs `Imported N setting(s) "
-"from the environment into the database`, with the exceptions below. The "
-"switches on the **Settings** tab are copied into their own store the same"
-" way. The existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the "
-"copied values, so sessions and API keys keep working, and a database that"
-" already has accounts never shows the setup page. If the console then "
-"reports missing settings for credentials the deployment leaves unset on "
-"purpose, mark those routes `optional: true` in the model registry; see "
-"[Missing settings](configuration.md#missing-settings)."
+"Nothing has to change before the upgrade. At its first start the new backend "
+"copies every setting that has a value in its environment into the database — "
+"from `.env`, from an overlay's `deploy/*.env`, and from the values the "
+"Compose file passes through — and logs `Imported N setting(s) from the "
+"environment into the database`, with the exceptions below. The switches on "
+"the **Settings** tab are copied into their own store the same way. The "
+"existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the copied values, "
+"so sessions and API keys keep working, and a database that already has "
+"accounts never shows the setup page. If the console then reports missing "
+"settings for credentials the deployment leaves unset on purpose, mark those "
+"routes `optional: true` in the model registry; see [Missing settings]"
+"(configuration.md#missing-settings)."
 msgstr ""
-"升级之前什么都不用改。新后端第一次启动时，会把环境变量里有值的每个设置项都复制进数据库——来自 `.env`、来自 overlay 的 "
-"`deploy/*.env`，以及 Compose 文件透传进来的值——并记录 `Imported N setting(s) from the "
-"environment into the database`，下文列出的例外除外。**Settings** "
-"标签页上的开关也以同样的方式复制进它们自己的存储。现有的 `JWT_SECRET_KEY` 和 `API_KEY_SECRET` "
-"也在复制之列，所以会话和 API key "
-"继续可用；已经有账号的数据库也永远不会出现设置页面。如果控制台随后把部署有意不设置的凭据报告为缺失的设置项，就在模型注册表里给那些路由标上 "
-"`optional: true`；见[缺失的设置项](configuration.md#missing-settings)。"
+"升级之前什么都不用改。新后端第一次启动时，会把环境变量里有值的每个设置项都复"
+"制进数据库——来自 `.env`、来自 overlay 的 `deploy/*.env`，以及 Compose 文件透"
+"传进来的值——并记录 `Imported N setting(s) from the environment into the "
+"database`，下文列出的例外除外。**Settings** 标签页上的开关也以同样的方式复制"
+"进它们自己的存储。现有的 `JWT_SECRET_KEY` 和 `API_KEY_SECRET` 也在复制之列，"
+"所以会话和 API key 继续可用；已经有账号的数据库也永远不会出现设置页面。如果控"
+"制台随后把部署有意不设置的凭据报告为缺失的设置项，就在模型注册表里给那些路由"
+"标上 `optional: true`；见[缺失的设置项](configuration.md#missing-settings)。"
 
-#: ../developer/deployment.md:213
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:213
 msgid ""
-"From then on the database value wins. Editing such a line in `.env` "
-"changes nothing — the **Configuration** tab marks it **Environment "
-"ignored** — so make changes on the tab and delete the lines from `.env` "
-"when convenient. Keep a copy until a rollback is no longer possible: a "
-"release from before the settings moved into the database reads them only "
-"from the environment."
+"From then on the database value wins. Editing such a line in `.env` changes "
+"nothing — the **Configuration** tab marks it **Environment ignored** — so "
+"make changes on the tab and delete the lines from `.env` when convenient. "
+"Keep a copy until a rollback is no longer possible: a release from before "
+"the settings moved into the database reads them only from the environment."
 msgstr ""
-"从此以数据库里的值为准。再改 `.env` 里的这类行不会有任何效果（**Configuration** 标签页会把它标为 "
-"**Environment ignored**），所以要在标签页上修改，方便时把这些行从 `.env` "
-"里删掉。在还可能回滚的时候保留一份副本：设置项搬进数据库之前的版本只从环境变量读取它们。"
+"从此以数据库里的值为准。再改 `.env` 里的这类行不会有任何效果"
+"（**Configuration** 标签页会把它标为 **Environment ignored**），所以要在标签"
+"页上修改，方便时把这些行从 `.env` 里删掉。在还可能回滚的时候保留一份副本：设"
+"置项搬进数据库之前的版本只从环境变量读取它们。"
 
-#: ../developer/deployment.md:219
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:219
 msgid ""
 "Besides a value that is not valid on its own, two kinds of value are not "
 "copied, and the log names each with a warning:"
 msgstr "除了本身就不合法的值，还有两类值不会被复制，日志会用警告逐一指出："
 
-#: ../developer/deployment.md:222
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:222
 msgid ""
 "A value that breaks a rule with a setting already stored, such as "
 "`TRUST_X_REAL_IP=1` while the stored `TRUST_PROXY_HEADERS` is off. The "
-"stored value wins and the environment's counts as unset. Check proxy "
-"trust after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` "
-"with a default of `0`, so a database that stored that `0` keeps the "
-"gateway off forwarded headers whatever `.env` says. Change it on the "
-"Settings tab; see [Trusted Proxies and Client IPs](trusted-proxies-and-"
-"client-ips.md)."
+"stored value wins and the environment's counts as unset. Check proxy trust "
+"after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` with a "
+"default of `0`, so a database that stored that `0` keeps the gateway off "
+"forwarded headers whatever `.env` says. Change it on the Settings tab; see "
+"[Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md)."
 msgstr ""
 "与已存储的设置项一起违反规则的值，比如存储的 `TRUST_PROXY_HEADERS` 是关闭的，"
-"而环境变量里是 `TRUST_X_REAL_IP=1`。存储的值优先，环境变量里的值被当作未设置。"
-"升级之后要检查代理信任：Compose 文件透传 `TRUST_PROXY_HEADERS` 时默认值是 "
-"`0`，所以如果数据库存下的是这个 `0`，无论 `.env` 怎么写，网关都不会处理转发头。请在 "
-"Settings 标签页上修改；见[可信代理与客户端 "
-"IP](trusted-proxies-and-client-ips.md)。"
+"而环境变量里是 `TRUST_X_REAL_IP=1`。存储的值优先，环境变量里的值被当作未设"
+"置。升级之后要检查代理信任：Compose 文件透传 `TRUST_PROXY_HEADERS` 时默认值"
+"是 `0`，所以如果数据库存下的是这个 `0`，无论 `.env` 怎么写，网关都不会处理转"
+"发头。请在 Settings 标签页上修改；见[可信代理与客户端 IP](trusted-proxies-"
+"and-client-ips.md)。"
 
-#: ../developer/deployment.md:229
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:229
 msgid ""
-"`ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in "
-"its place. Leave the variable out: while it is set, the backend refuses "
-"to start; see [Database](database.md#secrets-for-deleting-accounts)."
+"`ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in its "
+"place. Leave the variable out: while it is set, the backend refuses to "
+"start; see [Database](database.md#secrets-for-deleting-accounts)."
 msgstr ""
-"`ERASURE_FENCE_SECRET`，前提是 erasure fence 已经改用 `API_KEY_SECRET` "
-"代替它。不要设置这个变量：只要它还在，后端就会拒绝启动；见[数据库](database.md#secrets-for-deleting-"
-"accounts)。"
+"`ERASURE_FENCE_SECRET`，前提是 erasure fence 已经改用 `API_KEY_SECRET` 代替"
+"它。不要设置这个变量：只要它还在，后端就会拒绝启动；见[数据库]"
+"(database.md#secrets-for-deleting-accounts)。"
 
-#: ../developer/deployment.md:233
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:233
 msgid ""
-"The `environment:` passthroughs in `deploy/docker/docker-compose.yml` "
-"work the same way: they carry an overlay's values into the container, "
-"where they are imported once. Their built-in defaults are imported too, "
-"so on a new deployment `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, "
-"`SITE_NAME` and the sender address of outgoing mail start out as those "
-"defaults until you change them on the tab."
+"The `environment:` passthroughs in `deploy/docker/docker-compose.yml` work "
+"the same way: they carry an overlay's values into the container, where they "
+"are imported once. Their built-in defaults are imported too, so on a new "
+"deployment `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, `SITE_NAME` and the "
+"sender address of outgoing mail start out as those defaults until you change "
+"them on the tab."
 msgstr ""
-"`deploy/docker/docker-compose.yml` 里 `environment:` 的透传也是同样的道理：它们把 "
-"overlay "
-"的值带进容器，在那里导入一次。它们的内置默认值也会被导入，所以在新部署上，`FRONTEND_URL`、`CORS_ALLOWED_ORIGINS`、`SITE_NAME`"
-" 和外发邮件的发件地址一开始都是这些默认值，直到你在标签页上改掉。"
+"`deploy/docker/docker-compose.yml` 里 `environment:` 的透传也是同样的道理：它"
+"们把 overlay 的值带进容器，在那里导入一次。它们的内置默认值也会被导入，所以在"
+"新部署上，`FRONTEND_URL`、`CORS_ALLOWED_ORIGINS`、`SITE_NAME` 和外发邮件的发"
+"件地址一开始都是这些默认值，直到你在标签页上改掉。"
 
-#: ../developer/deployment.md:240
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:240
 msgid "Config file resolution"
 msgstr "配置文件的解析顺序"
 
-#: ../developer/deployment.md:242
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:242
 msgid ""
 "The gateway picks each configuration file from an explicit "
-"`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, then"
-" an active distribution manifest, then the examples under "
-"`config/examples/`; see [How a gateway finds its "
-"config](configuration.md#how-a-gateway-finds-its-config)."
+"`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, then an "
+"active distribution manifest, then the examples under `config/examples/`; "
+"see [How a gateway finds its config](configuration.md#how-a-gateway-finds-"
+"its-config)."
 msgstr ""
-"网关按以下顺序选取每个配置文件：先是显式设置的 `MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / "
-"`ALERTS_CONFIG_PATH`，然后是已启用的发行版 manifest，最后是 `config/examples/` "
-"下的示例；见[网关如何找到自己的配置](configuration.md#how-a-gateway-finds-its-config)。"
+"网关按以下顺序选取每个配置文件：先是显式设置的 `MODELS_CONFIG_PATH` / "
+"`ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`，然后是已启用的发行版 manifest，"
+"最后是 `config/examples/` 下的示例；见[网关如何找到自己的配置]"
+"(configuration.md#how-a-gateway-finds-its-config)。"
 
-#: ../developer/deployment.md:247
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:247
 msgid "Note that the Compose file passes these through explicitly:"
 msgstr "注意，Compose 文件是显式把它们透传进去的："
 
-#: ../developer/deployment.md:255
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:255
 msgid ""
 "An `--env-file` alone does not put a variable into a container's "
 "environment; these lines are what carry it in. Without them the gateway "
 "would silently fall back to the default files."
-msgstr "光有 `--env-file` 并不能把变量放进容器的环境里；真正把它带进去的是这几行。没有它们，网关就会悄悄回退到默认文件。"
+msgstr ""
+"光有 `--env-file` 并不能把变量放进容器的环境里；真正把它带进去的是这几行。没"
+"有它们，网关就会悄悄回退到默认文件。"
 
-#: ../developer/deployment.md:259
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:259
 msgid "Local inference servers"
 msgstr "本地推理服务器"
 
-#: ../developer/deployment.md:261
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:261
 msgid ""
 "The backend container reaches servers on the host through "
 "`host.docker.internal`, which the Compose file wires with `extra_hosts: "
 "host.docker.internal:host-gateway`. Write that address explicitly in the "
 "model registry:"
 msgstr ""
-"后端容器通过 `host.docker.internal` 访问宿主机上的服务器，这个主机名由 Compose 文件里的 "
-"`extra_hosts: host.docker.internal:host-gateway` 配置。在模型注册表里要显式写出这个地址："
+"后端容器通过 `host.docker.internal` 访问宿主机上的服务器，这个主机名由 "
+"Compose 文件里的 `extra_hosts: host.docker.internal:host-gateway` 配置。在模"
+"型注册表里要显式写出这个地址："
 
-#: ../developer/deployment.md:272
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:272
 msgid ""
 "For a backend running directly on the host, use `localhost` instead. The "
 "gateway never rewrites provider URLs. See [Adding a New Local Model](add-"
 "local-model.md)."
 msgstr ""
-"如果后端直接跑在宿主机上，就改用 `localhost`。网关从不改写 provider 的 URL。见[添加新的本地模型](add-local-"
-"model.md)。"
+"如果后端直接跑在宿主机上，就改用 `localhost`。网关从不改写 provider 的 URL。"
+"见[添加新的本地模型](add-local-model.md)。"
 
-#: ../developer/deployment.md:276
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:276
 msgid "Health checks"
 msgstr "健康检查"
 
-#: ../developer/deployment.md:295
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:295
 msgid ""
-"`routes_configured` counts published route entries — one per model id in "
-"the active registry, plus one per alias. It is whatever *your* registry "
-"defines."
+"`routes_configured` counts published route entries — one per model id in the "
+"active registry, plus one per alias. It is whatever *your* registry defines."
 msgstr ""
-"`routes_configured` 统计的是已发布的路由条目——生效的注册表里每个模型 id "
-"一条，每个别名再加一条。它完全取决于*你自己的*注册表定义了什么。"
+"`routes_configured` 统计的是已发布的路由条目——生效的注册表里每个模型 id 一"
+"条，每个别名再加一条。它完全取决于*你自己的*注册表定义了什么。"
 
-#: ../developer/deployment.md:297
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:297
 msgid ""
 "`database_configured` distinguishes \"this deployment asked for no "
 "database\" from \"the database is down\": with `DB_ENABLED=false` it is "
-"`false` and the status is still `healthy`; with a database configured but"
-" unreachable at startup, `/health` answers **503** with `\"reason\": "
+"`false` and the status is still `healthy`; with a database configured but "
+"unreachable at startup, `/health` answers **503** with `\"reason\": "
 "\"database_unavailable_at_startup\"`."
 msgstr ""
-"`database_configured` 区分的是「这个部署本来就不要数据库」和「数据库挂了」：`DB_ENABLED=false` 时它是 "
-"`false`，状态仍然是 `healthy`；而配置了数据库、启动时却连不上时，`/health` 返回 **503**，并带上 "
-"`\"reason\": \"database_unavailable_at_startup\"`。"
+"`database_configured` 区分的是「这个部署本来就不要数据库」和「数据库挂了」："
+"`DB_ENABLED=false` 时它是 `false`，状态仍然是 `healthy`；而配置了数据库、启动"
+"时却连不上时，`/health` 返回 **503**，并带上 `\"reason\": "
+"\"database_unavailable_at_startup\"`。"
 
-#: ../developer/deployment.md:302
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:302
 msgid ""
-"`status` becomes `degraded` — still HTTP 200 — when one configured store "
-"is down but the other is serving. That shape is deliberate: the container"
-" `HEALTHCHECK` uses `curl -f /health`, so returning 503 for partial "
+"`status` becomes `degraded` — still HTTP 200 — when one configured store is "
+"down but the other is serving. That shape is deliberate: the container "
+"`HEALTHCHECK` uses `curl -f /health`, so returning 503 for partial "
 "degradation would tear down backends that are still answering requests."
 msgstr ""
-"已配置的两个存储中，如果一个挂了、另一个还能用，`status` 会变成 `degraded`，但 HTTP 状态码仍是 "
-"200。这是有意这样设计的：容器的 `HEALTHCHECK` 用的是 `curl -f /health`，如果部分降级也返回 "
-"503，还在正常响应请求的后端就会被下线。"
+"已配置的两个存储中，如果一个挂了、另一个还能用，`status` 会变成 `degraded`，"
+"但 HTTP 状态码仍是 200。这是有意这样设计的：容器的 `HEALTHCHECK` 用的是 "
+"`curl -f /health`，如果部分降级也返回 503，还在正常响应请求的后端就会被下线。"
 
-#: ../developer/deployment.md:307
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:307
 msgid ""
 "Use `/health/ready` for a strict readiness probe: it applies AND-logic "
-"across configured stores and returns 503 unless every one of them is up. "
-"`/health/deep` additionally reports per-endpoint health."
+"across configured stores and returns 503 unless every one of them is up. `/"
+"health/deep` additionally reports per-endpoint health."
 msgstr ""
-"需要严格的就绪探针（readiness probe）时，用 `/health/ready`：它要求已配置的存储全部正常，有任何一个没起来就返回 "
-"503。`/health/deep` 还会额外报告每个端点的健康状况。"
+"需要严格的就绪探针（readiness probe）时，用 `/health/ready`：它要求已配置的存"
+"储全部正常，有任何一个没起来就返回 503。`/health/deep` 还会额外报告每个端点的"
+"健康状况。"
 
-#: ../developer/deployment.md:311
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:311
 msgid "Marking monitor traffic"
 msgstr "给监控流量打标记"
 
-#: ../developer/deployment.md:313
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:313
 msgid ""
-"A monitor that drives real inference — hitting `/v1/chat/completions` on "
-"a schedule to measure a backend end to end, rather than just polling "
-"`/health` — would otherwise land in `api_logs`, skew the dashboards, and "
-"feed RouteWise's online learning as if it were user demand. Send "
-"`X-Probe: synthetic` on those requests to keep them out: a marked request"
-" is left out of `api_logs` (and its rejections out of the rejection log),"
-" does not record a routing observation, and carries an `X-Provider` "
-"response header naming the backend that answered, so the monitor can "
-"confirm which route it exercised."
+"A monitor that drives real inference — hitting `/v1/chat/completions` on a "
+"schedule to measure a backend end to end, rather than just polling `/health` "
+"— would otherwise land in `api_logs`, skew the dashboards, and feed "
+"RouteWise's online learning as if it were user demand. Send `X-Probe: "
+"synthetic` on those requests to keep them out: a marked request is left out "
+"of `api_logs` (and its rejections out of the rejection log), does not record "
+"a routing observation, and carries an `X-Provider` response header naming "
+"the backend that answered, so the monitor can confirm which route it "
+"exercised."
 msgstr ""
-"有些监控会真的发起推理：按计划请求 `/v1/chat/completions`，端到端地测量某个后端，而不只是轮询 "
-"`/health`。不做标记的话，这类请求会写进 `api_logs`，把仪表盘的数据带偏，还会被 RouteWise "
-"的在线学习当成真实的用户需求。给这些请求加上 `X-Probe: synthetic` 就能把它们排除在外：带标记的请求不写入 "
-"`api_logs`（被拒绝时也不进拒绝日志），不记录路由观测，并且响应里会带一个 `X-Provider` "
-"头，写明是哪个后端回答的，方便监控确认自己测的是哪条路由。"
+"有些监控会真的发起推理：按计划请求 `/v1/chat/completions`，端到端地测量某个后"
+"端，而不只是轮询 `/health`。不做标记的话，这类请求会写进 `api_logs`，把仪表盘"
+"的数据带偏，还会被 RouteWise 的在线学习当成真实的用户需求。给这些请求加上 `X-"
+"Probe: synthetic` 就能把它们排除在外：带标记的请求不写入 `api_logs`（被拒绝时"
+"也不进拒绝日志），不记录路由观测，并且响应里会带一个 `X-Provider` 头，写明是"
+"哪个后端回答的，方便监控确认自己测的是哪条路由。"
 
-#: ../developer/deployment.md:322
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:322
 msgid ""
-"The marker is honoured **only from an authenticated internal- or admin-"
-"role API key** — never a free/pro key, an agent-sandbox grant, or, "
-"importantly, an anonymous caller on a deployment running with "
-"`USER_AUTH_ENABLED=0` (auth-off hands every caller the admin role, which "
-"is not the same as holding a monitor identity). From any other caller the"
-" header is ignored and the request is logged like ordinary traffic. A "
-"deployment that needs probes without auth wants an explicit mechanism — a"
-" shared secret, a source allowlist — not this header."
+"The marker is honoured **only from an authenticated internal- or admin-role "
+"API key** — never a free/pro key, an agent-sandbox grant, or, importantly, "
+"an anonymous caller on a deployment running with `USER_AUTH_ENABLED=0` (auth-"
+"off hands every caller the admin role, which is not the same as holding a "
+"monitor identity). From any other caller the header is ignored and the "
+"request is logged like ordinary traffic. A deployment that needs probes "
+"without auth wants an explicit mechanism — a shared secret, a source "
+"allowlist — not this header."
 msgstr ""
-"这个标记**只认已通过鉴权的 internal 或 admin 角色 API key**——free/pro key 不行，agent 沙箱的 "
-"grant 不行，在 `USER_AUTH_ENABLED=0` 的部署上，匿名调用方尤其不行（关掉鉴权后，每个调用方都会拿到 admin "
-"角色，但这不等于持有监控身份）。其他调用方带这个头会被忽略，请求照普通流量记录。如果部署不开鉴权又需要探测，应该用显式的机制，比如共享密钥或来源白名单，而不是这个头。"
+"这个标记**只认已通过鉴权的 internal 或 admin 角色 API key**——free/pro key 不"
+"行，agent 沙箱的 grant 不行，在 `USER_AUTH_ENABLED=0` 的部署上，匿名调用方尤"
+"其不行（关掉鉴权后，每个调用方都会拿到 admin 角色，但这不等于持有监控身份）。"
+"其他调用方带这个头会被忽略，请求照普通流量记录。如果部署不开鉴权又需要探测，"
+"应该用显式的机制，比如共享密钥或来源白名单，而不是这个头。"
 
-#: ../developer/deployment.md:330
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:330
 msgid ""
-"The marker is about noise, not access. It cannot keep a monitor's own "
-"auth failures from tripping the repeated-auth-failure blocklist, because "
-"that decision is made before the presented key is read — see [A monitor "
-"or service account is suddenly getting 429s](#a-monitor-or-service-"
-"account-is-suddenly-getting-429s)."
+"The marker is about noise, not access. It cannot keep a monitor's own auth "
+"failures from tripping the repeated-auth-failure blocklist, because that "
+"decision is made before the presented key is read — see [A monitor or "
+"service account is suddenly getting 429s](#a-monitor-or-service-account-is-"
+"suddenly-getting-429s)."
 msgstr ""
-"这个标记只管噪声，不管访问权限。监控自己的认证失败照样可能触发针对反复认证失败的黑名单，因为是否封禁是在读取请求带的 key "
-"之前就判断的——见[监控或服务账号突然开始收到 429](#a-monitor-or-service-account-is-suddenly-"
-"getting-429s)。"
+"这个标记只管噪声，不管访问权限。监控自己的认证失败照样可能触发针对反复认证失"
+"败的黑名单，因为是否封禁是在读取请求带的 key 之前就判断的——见[监控或服务账号"
+"突然开始收到 429](#a-monitor-or-service-account-is-suddenly-getting-429s)。"
 
-#: ../developer/deployment.md:336
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:336
 msgid ""
 "The one thing the marker never touches is billing: cost and quota are "
 "incremented unconditionally on every surface, for trusted and untrusted "
-"callers alike, so a probe cannot be used to obtain unmetered inference. "
-"To keep marked traffic in `api_logs` after all — to see a monitor's real "
+"callers alike, so a probe cannot be used to obtain unmetered inference. To "
+"keep marked traffic in `api_logs` after all — to see a monitor's real "
 "latency and spend in the requests dashboard — turn on the "
-"`log_synthetic_probes` runtime setting; the routing-observation and "
-"`X-Provider` behaviour is unchanged."
+"`log_synthetic_probes` runtime setting; the routing-observation and `X-"
+"Provider` behaviour is unchanged."
 msgstr ""
-"标记唯一不影响的是计费：无论走哪个接口、调用方是否可信，成本和配额都会照常累加，所以没法用探测标记来获得免计费的推理。如果你还是想让带标记的流量写进"
-" `api_logs`，比如想在请求仪表盘里看到监控的真实延迟和花费，就打开 `log_synthetic_probes` "
-"这个运行时设置；路由观测和 `X-Provider` 的行为不受影响。"
+"标记唯一不影响的是计费：无论走哪个接口、调用方是否可信，成本和配额都会照常累"
+"加，所以没法用探测标记来获得免计费的推理。如果你还是想让带标记的流量写进 "
+"`api_logs`，比如想在请求仪表盘里看到监控的真实延迟和花费，就打开 "
+"`log_synthetic_probes` 这个运行时设置；路由观测和 `X-Provider` 的行为不受影"
+"响。"
 
-#: ../developer/deployment.md:343
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:343
 msgid "Alerting"
 msgstr "告警"
 
-#: ../developer/deployment.md:345
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:345
 msgid ""
 "The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In "
-"**Admin → Settings → Alerts**, choose a **Notification channel** and "
-"enter its webhook URL. Only the selected channel's field is shown; saved "
-"URLs remain write-only. Choose **None** to turn off notifications."
+"**Admin → Settings → Alerts**, choose a **Notification channel** and enter "
+"its webhook URL. Only the selected channel's field is shown; saved URLs "
+"remain write-only. Choose **None** to turn off notifications."
 msgstr ""
 "后端将告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → "
-"Alerts** 中选择 **Notification channel**（通知渠道），并填入对应的 "
-"webhook URL。界面只显示所选渠道的配置字段；已保存的 URL 只可写入，不会回显。选择 "
+"Alerts** 中选择 **Notification channel**（通知渠道），并填入对应的 webhook "
+"URL。界面只显示所选渠道的配置字段；已保存的 URL 只可写入，不会回显。选择 "
 "**None** 可关闭通知。"
 
-#: ../developer/deployment.md:350
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:350
 msgid ""
 "The in-process engine is off unless you enable `ALERTS_ENABLED`. Its "
 "underlying configuration keys are:"
-msgstr "进程内告警引擎默认关闭，需要启用 `ALERTS_ENABLED` 才会运行。对应的底层配置键如下："
+msgstr ""
+"进程内告警引擎默认关闭，需要启用 `ALERTS_ENABLED` 才会运行。对应的底层配置键"
+"如下："
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Setting"
 msgstr "设置项"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Value"
 msgstr "取值"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`ALERTS_ENABLED`"
 msgstr ""
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "on; applies after a backend restart"
 msgstr "打开；重启后端后生效"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`SLACK_ALERTS_WEBHOOK_URL`"
 msgstr ""
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "optional dedicated Slack webhook"
 msgstr "可选的专用 Slack webhook"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`SLACK_WEBHOOK_URL`"
 msgstr "`SLACK_WEBHOOK_URL`"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "Slack fallback; also enables the failed-request detector"
 msgstr "Slack 回退地址；同时启用失败请求检测器"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "`WECOM_ALERTS_WEBHOOK_URL`"
 msgstr "`WECOM_ALERTS_WEBHOOK_URL`"
 
-#: ../developer/deployment.md
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:0
 msgid "WeCom group webhook; also enables the failed-request detector"
 msgstr "企业微信群 webhook；同时启用失败请求检测器"
 
-#: ../developer/deployment.md:360
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:360
 msgid ""
-"If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to "
-"`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths. The "
-"console preserves existing dedicated Slack settings and uses the fallback"
-" key for a new Slack configuration."
+"If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to `SLACK_WEBHOOK_URL`, "
+"so one webhook can serve both code paths. The console preserves existing "
+"dedicated Slack settings and uses the fallback key for a new Slack "
+"configuration."
 msgstr ""
-"`SLACK_ALERTS_WEBHOOK_URL` 为空时会改用 `SLACK_WEBHOOK_URL`，所以两条代码路径可以共用一个 "
-"webhook。控制台会保留已有的专用 Slack 配置；首次配置 Slack 时使用回退配置键。"
+"`SLACK_ALERTS_WEBHOOK_URL` 为空时会改用 `SLACK_WEBHOOK_URL`，所以两条代码路径"
+"可以共用一个 webhook。控制台会保留已有的专用 Slack 配置；首次配置 Slack 时使"
+"用回退配置键。"
 
-#: ../developer/deployment.md:364
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:364
 msgid ""
-"Slack and WeCom are mutually exclusive. Saving a channel switch clears "
-"the old channel in the same update. Webhook changes apply after a backend"
-" restart until an operator activates the `alerts.runtime` live group; "
-"from then on they apply in every backend process within about ten "
-"seconds, without a restart. See [Settings that apply without a "
-"restart](configuration.md#settings-that-apply-without-a-restart). Until a"
-" change applies, normal alerts continue using the previous channel. "
-"**Restart pending**, or the **Applied in each backend process** panel "
-"once the group is active, shows what is still waiting."
+"Slack and WeCom are mutually exclusive. Saving a channel switch clears the "
+"old channel in the same update. Webhook changes apply after a backend "
+"restart until an operator activates the `alerts.runtime` live group; from "
+"then on they apply in every backend process within about ten seconds, "
+"without a restart. See [Settings that apply without a restart]"
+"(configuration.md#settings-that-apply-without-a-restart). Until a change "
+"applies, normal alerts continue using the previous channel. **Restart "
+"pending**, or the **Applied in each backend process** panel once the group "
+"is active, shows what is still waiting."
 msgstr ""
-"Slack 和企业微信互斥。保存渠道切换时，会在同一次更新中清空旧渠道。在操作者激活 `alerts.runtime` 实时配置组之前，webhook 改动在后端重启后生效；激活之后，改动在约十秒内、无需重启就在每个后端进程中生效。参见[无需重启即可生效的设置项](configuration.md#settings-that-apply-without-a-restart)。改动生效之前，普通告警继续使用之前的渠道。**Restart pending**，或组激活后的 **Applied in each backend process** 面板，会显示仍在等待的内容。"
+"Slack 和企业微信互斥。保存渠道切换时，会在同一次更新中清空旧渠道。在操作者激"
+"活 `alerts.runtime` 实时配置组之前，webhook 改动在后端重启后生效；激活之后，"
+"改动在约十秒内、无需重启就在每个后端进程中生效。参见[无需重启即可生效的设置"
+"项](configuration.md#settings-that-apply-without-a-restart)。改动生效之前，普"
+"通告警继续使用之前的渠道。**Restart pending**，或组激活后的 **Applied in "
+"each backend process** 面板，会显示仍在等待的内容。"
 
-#: ../developer/deployment.md:373
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:373
 msgid ""
 "**Send test notification** sends a marked test using the URL currently "
-"entered, or the latest saved URL when no draft is entered. It works "
-"before a restart and does not save changes, enable alerting or change "
-"incident/cooldown state. The success message includes a test ID to check "
-"in the receiving group."
+"entered, or the latest saved URL when no draft is entered. It works before a "
+"restart and does not save changes, enable alerting or change incident/"
+"cooldown state. The success message includes a test ID to check in the "
+"receiving group."
 msgstr ""
-"**Send test notification** 使用当前输入的 URL 发送一条带有测试标识的消息；没有输入草稿时，使用最新保存的 "
-"URL。重启前也可以测试，测试不会保存变更、启用告警，也不会改变告警事件或冷却状态。成功提示会包含测试 ID，可在接收群里核对。"
+"**Send test notification** 使用当前输入的 URL 发送一条带有测试标识的消息；没"
+"有输入草稿时，使用最新保存的 URL。重启前也可以测试，测试不会保存变更、启用告"
+"警，也不会改变告警事件或冷却状态。成功提示会包含测试 ID，可在接收群里核对。"
 
-#: ../developer/deployment.md:378
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:378
 msgid ""
 "A URL typed into the test field must be the selected platform's official "
 "HTTPS endpoint (`hooks.slack.com` / `hooks.slack-gov.com`, or "
-"`qyapi.weixin.qq.com/cgi-bin/webhook/send`); that restriction exists so "
-"an admin session cannot make the server request an arbitrary address. A "
-"**saved** URL is not held to that host list: normal delivery already "
-"posts to it, so a Slack-compatible destination (Mattermost, Rocket.Chat, "
-"an egress proxy) tests normally. It must still be `https`. Discord, "
-"Telegram and arbitrary webhook formats are not supported by this "
-"selector."
+"`qyapi.weixin.qq.com/cgi-bin/webhook/send`); that restriction exists so an "
+"admin session cannot make the server request an arbitrary address. A "
+"**saved** URL is not held to that host list: normal delivery already posts "
+"to it, so a Slack-compatible destination (Mattermost, Rocket.Chat, an egress "
+"proxy) tests normally. It must still be `https`. Discord, Telegram and "
+"arbitrary webhook formats are not supported by this selector."
 msgstr ""
-"在测试输入框中新填写的 URL 必须是所选平台的官方 HTTPS 端点（`hooks.slack.com` / `hooks.slack-"
-"gov.com`，或 `qyapi.weixin.qq.com/cgi-"
-"bin/webhook/send`）；这条限制是为了防止借管理员会话让服务器请求任意地址。**已保存**的 URL "
-"不受这份域名列表限制：正常告警本来就会发送到它，因此兼容 Slack "
-"的目标（Mattermost、Rocket.Chat、出口代理）也能正常测试，但仍必须是 `https`。此选择器不支持 "
-"Discord、Telegram 或任意自定义 webhook 格式。"
+"在测试输入框中新填写的 URL 必须是所选平台的官方 HTTPS 端点"
+"（`hooks.slack.com` / `hooks.slack-gov.com`，或 `qyapi.weixin.qq.com/cgi-bin/"
+"webhook/send`）；这条限制是为了防止借管理员会话让服务器请求任意地址。**已保存"
+"**的 URL 不受这份域名列表限制：正常告警本来就会发送到它，因此兼容 Slack 的目"
+"标（Mattermost、Rocket.Chat、出口代理）也能正常测试，但仍必须是 `https`。此选"
+"择器不支持 Discord、Telegram 或任意自定义 webhook 格式。"
 
-#: ../developer/deployment.md:387
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:387
 msgid ""
-"Rules and thresholds are a deployment's own; this repository ships no "
-"alerts file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and "
-"the built-in thresholds apply. The rule types and evaluation live in "
-"`apps/backend/serving/observability/`."
+"Rules and thresholds are a deployment's own; this repository ships no alerts "
+"file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-"
+"in thresholds apply. The rule types and evaluation live in `apps/backend/"
+"serving/observability/`."
 msgstr ""
-"规则和阈值由各个部署自己决定，本仓库不带告警文件。把 `ALERTS_CONFIG_PATH` "
-"指向你自己的文件；不设置的话就用内置阈值。规则类型和求值逻辑在 `apps/backend/serving/observability/` 里。"
+"规则和阈值由各个部署自己决定，本仓库不带告警文件。把 `ALERTS_CONFIG_PATH` 指"
+"向你自己的文件；不设置的话就用内置阈值。规则类型和求值逻辑在 `apps/backend/"
+"serving/observability/` 里。"
 
-#: ../developer/deployment.md:392
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:392
 msgid ""
 "Two auth rules are worth knowing apart, because their defaults differ on "
 "purpose:"
 msgstr "有两条认证规则要分清楚，它们的默认值是故意设成不一样的："
 
-#: ../developer/deployment.md:395
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:395
 msgid ""
 "`rules.auth_failure_spike` is **off**. Bad keys are internet background "
-"noise, and a count of them names nothing to act on. The `auth_failure` "
-"log records are emitted regardless."
+"noise, and a count of them names nothing to act on. The `auth_failure` log "
+"records are emitted regardless."
 msgstr ""
-"`rules.auth_failure_spike` 默认**关闭**。错误的 key "
-"在互联网上就是背景噪声，光看数量指不出该处理什么。不管这条规则开不开，`auth_failure` 日志都照常输出。"
+"`rules.auth_failure_spike` 默认**关闭**。错误的 key 在互联网上就是背景噪声，"
+"光看数量指不出该处理什么。不管这条规则开不开，`auth_failure` 日志都照常输出。"
 
-#: ../developer/deployment.md:398
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:398
 msgid ""
-"`rules.auth_ip_blocked` is **on**. This one fires when the blocklist "
-"starts *refusing* a source — a discrete decision at a much higher "
-"threshold, naming an address. It is on because the source is sometimes "
-"the deployment's own; see the troubleshooting entry below."
+"`rules.auth_ip_blocked` is **on**. This one fires when the blocklist starts "
+"*refusing* a source — a discrete decision at a much higher threshold, naming "
+"an address. It is on because the source is sometimes the deployment's own; "
+"see the troubleshooting entry below."
 msgstr ""
-"`rules.auth_ip_blocked` "
-"默认**开启**。它在黑名单开始*拒绝*某个来源时触发：这是一个明确的判断，阈值高得多，而且指向具体地址。默认开启是因为被拒的来源有时就是部署自己的调用方；见下面的故障排查条目。"
+"`rules.auth_ip_blocked` 默认**开启**。它在黑名单开始*拒绝*某个来源时触发：这"
+"是一个明确的判断，阈值高得多，而且指向具体地址。默认开启是因为被拒的来源有时"
+"就是部署自己的调用方；见下面的故障排查条目。"
 
-#: ../developer/deployment.md:403
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:403
 msgid "What an auth alert tells you"
 msgstr "认证告警里有什么"
 
-#: ../developer/deployment.md:405
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:405
 msgid ""
 "An auth-failure card names the sources and, where it can, the accounts "
 "behind them — the addresses they came from, how many distinct ones, the "
 "leading characters of the keys presented, why each failed, and the paths "
-"being hit. The recovery card carries the same picture of the incident "
-"that just closed, rather than only the rule's name: by the time a spike "
-"resolves, the window it breached on is empty, so the numbers have to come"
-" from a tally kept across the incident."
+"being hit. The recovery card carries the same picture of the incident that "
+"just closed, rather than only the rule's name: by the time a spike resolves, "
+"the window it breached on is empty, so the numbers have to come from a tally "
+"kept across the incident."
 msgstr ""
-"认证失败的告警卡片会列出失败的来源，能查到的话还会给出背后的账号：来源地址、不同地址的个数、所出示 key "
-"的前几个字符、每次失败的原因，以及被访问的路径。恢复卡片给出的也是刚结束的这次事件的完整情况，而不只是规则名：等尖峰恢复时，当初越过阈值的那个时间窗口里已经没有数据了，所以这些数字只能来自整个事件期间持续累计的统计。"
+"认证失败的告警卡片会列出失败的来源，能查到的话还会给出背后的账号：来源地址、"
+"不同地址的个数、所出示 key 的前几个字符、每次失败的原因，以及被访问的路径。恢"
+"复卡片给出的也是刚结束的这次事件的完整情况，而不只是规则名：等尖峰恢复时，当"
+"初越过阈值的那个时间窗口里已经没有数据了，所以这些数字只能来自整个事件期间持"
+"续累计的统计。"
 
-#: ../developer/deployment.md:412
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:412
 msgid "Two of those lines are worth reading carefully:"
 msgstr "其中有两行值得仔细读："
 
-#: ../developer/deployment.md:414
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:414
 msgid ""
 "**Known accounts.** Most auth failures are anonymous by construction — "
-"nobody was authenticated, which is the failure. A named account means a "
-"key this deployment *did* issue was presented and refused, with "
-"`credential_state` saying why (`revoked`, `expired`, `user_suspended`). "
-"That is the actionable case: a monitor, CI job or service account whose "
+"nobody was authenticated, which is the failure. A named account means a key "
+"this deployment *did* issue was presented and refused, with "
+"`credential_state` saying why (`revoked`, `expired`, `user_suspended`). That "
+"is the actionable case: a monitor, CI job or service account whose "
 "credential went stale. Resolving the owner costs one indexed lookup per "
 "failed auth, bounded by the shared rejection-enrichment budget and shed "
-"instantly under a flood; set `AUTH_FAILURE_IDENTIFY_CALLER=false` to "
-"spend nothing and lose the line. Read a named account as evidence and no "
-"named account as *unknown*, never as proof the traffic is external: the "
-"lookup is shed during exactly the flood you are investigating, and "
-"answers nothing on a timeout, a failed lookup, or with the setting off."
+"instantly under a flood; set `AUTH_FAILURE_IDENTIFY_CALLER=false` to spend "
+"nothing and lose the line. Read a named account as evidence and no named "
+"account as *unknown*, never as proof the traffic is external: the lookup is "
+"shed during exactly the flood you are investigating, and answers nothing on "
+"a timeout, a failed lookup, or with the setting off."
 msgstr ""
-"**Known "
-"accounts**（已知账号）。大多数认证失败天生就是匿名的——正因为没有人通过认证，才叫认证失败。出现账号，说明有人出示了本部署*确实*签发过的"
-" key 并被拒绝，`credential_state` "
-"会说明原因（`revoked`、`expired`、`user_suspended`）。这才是需要处理的情况：某个监控、CI "
-"任务或服务账号的凭据已经失效。查出持有者，每次认证失败要多做一次走索引的查询；这些查询和其他拒绝请求的信息补全共用一份预算，遇到流量洪峰会立即放弃。设置"
-" `AUTH_FAILURE_IDENTIFY_CALLER=false` "
-"就没有这笔开销，但也看不到这一行了。看到账号可以当作证据；看不到账号只能算*未知*，不能当作流量来自外部的证据：查询恰恰会在你正在排查的洪峰期间被放弃，而且查询超时、查询失败或这个设置关闭时，它都不会给出结果。"
+"**Known accounts**（已知账号）。大多数认证失败天生就是匿名的——正因为没有人通"
+"过认证，才叫认证失败。出现账号，说明有人出示了本部署*确实*签发过的 key 并被拒"
+"绝，`credential_state` 会说明原因（`revoked`、`expired`、`user_suspended`）。"
+"这才是需要处理的情况：某个监控、CI 任务或服务账号的凭据已经失效。查出持有者，"
+"每次认证失败要多做一次走索引的查询；这些查询和其他拒绝请求的信息补全共用一份"
+"预算，遇到流量洪峰会立即放弃。设置 `AUTH_FAILURE_IDENTIFY_CALLER=false` 就没"
+"有这笔开销，但也看不到这一行了。看到账号可以当作证据；看不到账号只能算*未知"
+"*，不能当作流量来自外部的证据：查询恰恰会在你正在排查的洪峰期间被放弃，而且查"
+"询超时、查询失败或这个设置关闭时，它都不会给出结果。"
 
-#: ../developer/deployment.md:426
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:426
 msgid ""
-"**Arrived via peers.** Present only when the reported addresses did not "
-"come off the socket. They are then only as trustworthy as the proxy that "
-"set them, and a forged `X-Forwarded-For` is exactly how a source spreads "
-"its failures across the blocklist's buckets. The line names the sockets "
-"they actually arrived on."
+"**Arrived via peers.** Present only when the reported addresses did not come "
+"off the socket. They are then only as trustworthy as the proxy that set "
+"them, and a forged `X-Forwarded-For` is exactly how a source spreads its "
+"failures across the blocklist's buckets. The line names the sockets they "
+"actually arrived on."
 msgstr ""
 "**Arrived via peers**（实际经由的对端）。只有上报的地址不是直接取自 socket "
-"时，才会出现这一行。这时这些地址是否可信，完全取决于写入它们的那层代理；而伪造 `X-Forwarded-"
-"For`，正是一个来源把自己的失败次数分散到黑名单各个分桶里的手段。这一行列出这些请求实际是从哪些 套接字对端进来的。"
+"时，才会出现这一行。这时这些地址是否可信，完全取决于写入它们的那层代理；而伪"
+"造 `X-Forwarded-For`，正是一个来源把自己的失败次数分散到黑名单各个分桶里的手"
+"段。这一行列出这些请求实际是从哪些 套接字对端进来的。"
 
-#: ../developer/deployment.md:432
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:432
 msgid ""
-"Counts marked `(capped)` are floors, not totals: a source rotating "
-"addresses faster than the tally tracks them stops being counted rather "
-"than being allowed to grow it without bound. Do not size an incident from"
-" a capped number."
+"Counts marked `(capped)` are floors, not totals: a source rotating addresses "
+"faster than the tally tracks them stops being counted rather than being "
+"allowed to grow it without bound. Do not size an incident from a capped "
+"number."
 msgstr ""
-"带 `(capped)` "
-"标记的计数是下限，不是总数：某个来源换地址的速度一旦超过统计能跟踪的范围，超出的部分就不再计入，而不是任由统计无限增长。不要根据封顶的数字估计事件规模。"
+"带 `(capped)` 标记的计数是下限，不是总数：某个来源换地址的速度一旦超过统计能"
+"跟踪的范围，超出的部分就不再计入，而不是任由统计无限增长。不要根据封顶的数字"
+"估计事件规模。"
 
-#: ../developer/deployment.md:436
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:436
 msgid "Silencing alerts from the dashboard"
 msgstr "在仪表盘中静音告警"
 
-#: ../developer/deployment.md:438
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:438
 msgid ""
 "The admin dashboard's Settings tab has two controls, and neither changes "
 "your alerts file:"
 msgstr "管理仪表盘的 Settings 标签页里有两个开关，两者都不会改动你的告警文件："
 
-#: ../developer/deployment.md:441
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:441
 msgid "**Slack Alerts** snoozes every alert for up to seven days."
 msgstr "**Slack Alerts** 可以暂停所有告警，最长七天。"
 
-#: ../developer/deployment.md:442
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:442
 msgid ""
 "**Alert Types** mutes one type of alert, such as `auth_ip_blocked` or "
-"`circuit_open`, for an hour, a day, a week, or until it is unmuted. Every"
-" other type keeps sending."
+"`circuit_open`, for an hour, a day, a week, or until it is unmuted. Every "
+"other type keeps sending."
 msgstr ""
 "**Alert Types** 可以静音某一类告警，例如 `auth_ip_blocked` 或 "
-"`circuit_open`，时长为一小时、一天、一周，或直到手动取消静音。其他类型照常发送。"
+"`circuit_open`，时长为一小时、一天、一周，或直到手动取消静音。其他类型照常发"
+"送。"
 
-#: ../developer/deployment.md:446
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:446
 msgid ""
-"A mute is stored in the database, so it survives a restart and reaches "
-"every gateway process within a few seconds. While a type is muted nothing"
-" of it is sent, and an incident that opens during the mute also closes "
-"without a recovery message. An incident that was posted before the mute "
-"still gets its recovery, and a breach still live when the mute lifts "
-"pages at its next evaluation. A mute is for an alert you want back later;"
-" to retire a rule for good, turn it off in your alerts file instead."
-msgstr "静音保存在数据库里，所以重启后依然有效，几秒内就会同步到所有网关进程。某类告警被静音期间，它的任何消息都不会发出；静音期间开始的事件在关闭时也不会发送恢复消息。静音之前已经发出的事件仍会收到恢复消息；静音解除时如果越限仍在持续，会在下一次评估时立即告警。静音适合那些你以后还想恢复的告警；要彻底停用某条规则，应该在告警文件里把它关掉。"
+"A mute is stored in the database, so it survives a restart and reaches every "
+"gateway process within a few seconds. While a type is muted nothing of it is "
+"sent, and an incident that opens during the mute also closes without a "
+"recovery message. An incident that was posted before the mute still gets its "
+"recovery, and a breach still live when the mute lifts pages at its next "
+"evaluation. A mute is for an alert you want back later; to retire a rule for "
+"good, turn it off in your alerts file instead."
+msgstr ""
+"静音保存在数据库里，所以重启后依然有效，几秒内就会同步到所有网关进程。某类告"
+"警被静音期间，它的任何消息都不会发出；静音期间开始的事件在关闭时也不会发送恢"
+"复消息。静音之前已经发出的事件仍会收到恢复消息；静音解除时如果越限仍在持续，"
+"会在下一次评估时立即告警。静音适合那些你以后还想恢复的告警；要彻底停用某条规"
+"则，应该在告警文件里把它关掉。"
 
-#: ../developer/deployment.md:454
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:454
 msgid "The first admin account"
 msgstr "第一个管理员账号"
 
-#: ../developer/deployment.md:456
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:456
 msgid ""
 "A new deployment creates its first administrator on the console's setup "
-"page. Until then the backend refuses every sign-up, by email or by phone,"
-" so nobody else can claim the account:"
-msgstr "新部署在控制台的设置页面上创建第一个管理员。在那之前，后端拒绝一切注册，无论是用邮箱还是手机号，所以别人抢不走这个账号："
-
-#: ../developer/deployment.md:460
-msgid ""
-"Read the setup code from the backend's log. The code is kept in the "
-"database and stays the same, across restarts and worker processes, until "
-"setup is complete; every start logs it again, whatever `LOG_LEVEL` is set"
-" to:"
+"page. Until then the backend refuses every sign-up, by email or by phone, so "
+"nobody else can claim the account:"
 msgstr ""
-"从后端日志里读出设置码。设置码保存在数据库里，在设置完成之前，无论重启多少次、有几个 worker 进程，它都保持不变；不管 "
-"`LOG_LEVEL` 设成什么，每次启动都会再把它记进日志："
+"新部署在控制台的设置页面上创建第一个管理员。在那之前，后端拒绝一切注册，无论"
+"是用邮箱还是手机号，所以别人抢不走这个账号："
 
-#: ../developer/deployment.md:469
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:460
 msgid ""
-"Open the console. While setup is pending, every page sends you to "
-"`/setup`."
+"Read the setup code from the backend's log. The code is kept in the database "
+"and stays the same, across restarts and worker processes, until setup is "
+"complete; every start logs it again, whatever `LOG_LEVEL` is set to:"
+msgstr ""
+"从后端日志里读出设置码。设置码保存在数据库里，在设置完成之前，无论重启多少"
+"次、有几个 worker 进程，它都保持不变；不管 `LOG_LEVEL` 设成什么，每次启动都会"
+"再把它记进日志："
+
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:469
+msgid ""
+"Open the console. While setup is pending, every page sends you to `/setup`."
 msgstr "打开控制台。设置完成之前，每个页面都会把你带到 `/setup`。"
 
-#: ../developer/deployment.md:470
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:470
 msgid ""
-"Enter the code and choose a username and a password. This administrator "
-"has no email address and signs in with the username."
-msgstr "输入设置码，再选一个用户名和密码。这个管理员没有邮箱地址，用用户名登录。"
-
-#: ../developer/deployment.md:473
-msgid ""
-"Once email delivery is configured, this administrator can bind an email "
-"in **Account Settings → Email Address**. Confirm the current password and"
-" follow the verification link sent to the new address. The username "
-"continues to work after binding; the same settings section also lets you "
-"change a bound email."
+"Enter the code and choose a username and a password. This administrator has "
+"no email address and signs in with the username."
 msgstr ""
-"配置好邮件发送之后，这个管理员可以在 **Account Settings → Email Address**（账户设置 → "
-"邮箱地址）中绑定邮箱：先确认当前密码，再打开发到新地址的验证链接。绑定之后，用户名仍然可以用来登录；在同一个设置区域里也可以更换已绑定的邮箱。"
+"输入设置码，再选一个用户名和密码。这个管理员没有邮箱地址，用用户名登录。"
 
-#: ../developer/deployment.md:478
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:473
 msgid ""
-"Whoever can read the backend log, or the database that holds the code, "
-"can create this account, so keep both as private as the host. Wrong codes"
-" are rate limited per client address, ten in 15 minutes; the right code "
-"is never refused."
+"Once email delivery is configured, this administrator can bind an email in "
+"**Account Settings → Email Address**. Confirm the current password and "
+"follow the verification link sent to the new address. The username continues "
+"to work after binding; the same settings section also lets you change a "
+"bound email."
 msgstr ""
-"能读到后端日志的人，或者能读到保存设置码的数据库的人，就能创建这个账号，所以要像保护主机本身一样保护这两者。输错的设置码会按客户端地址限流，每 "
-"15 分钟十次；正确的设置码从不会被拒绝。"
+"配置好邮件发送之后，这个管理员可以在 **Account Settings → Email Address**（账"
+"户设置 → 邮箱地址）中绑定邮箱：先确认当前密码，再打开发到新地址的验证链接。绑"
+"定之后，用户名仍然可以用来登录；在同一个设置区域里也可以更换已绑定的邮箱。"
 
-#: ../developer/deployment.md:478
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:478
 msgid ""
-"**Choose a username that is hard to guess.** Sign-in counts each attempt "
-"before it checks the password: five per username from one address in 15 "
-"minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all "
-"addresses together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only "
-"the attempts the other limits let through), and twenty per address in an "
-"hour (`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in "
-"to the account before, including the one you used for setup, holds a "
-"device cookie (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to "
-"`/auth`, kept on sign-out, valid for 180 days) and gets five attempts per"
-" 15 minutes of its own, so other people's guesses never lock it out. "
-"Changing `JWT_SECRET_KEY` invalidates every device cookie until that "
-"browser's next sign-in."
+"Whoever can read the backend log, or the database that holds the code, can "
+"create this account, so keep both as private as the host. Wrong codes are "
+"rate limited per client address, ten in 15 minutes; the right code is never "
+"refused."
 msgstr ""
-"**选一个难猜的用户名**。登录在检查密码之前就为每次尝试计数：同一个用户名从同一个地址每 15 "
-"分钟五次（`LOGIN_RATE_LIMIT_PER_15MIN`），同一个用户名从所有地址合计五十次（`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`，只计入其他限制放行的尝试），每个地址每小时二十次（`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`）。以前登录过这个账号的浏览器——包括你做首次运行设置时用的那个——持有一个设备"
-" cookie（`<REFRESH_TOKEN_COOKIE_NAME>_device`，只发给 `/auth`，退出登录后仍保留，有效期 180"
-" 天），并单独享有每 15 分钟五次的尝试额度，所以别人的猜测永远锁不住它。修改 `JWT_SECRET_KEY` 会让所有设备 cookie "
-"失效，直到那个浏览器下次登录。"
+"能读到后端日志的人，或者能读到保存设置码的数据库的人，就能创建这个账号，所以"
+"要像保护主机本身一样保护这两者。输错的设置码会按客户端地址限流，每 15 分钟十"
+"次；正确的设置码从不会被拒绝。"
 
-#: ../developer/deployment.md:490
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:483
 msgid ""
-"Other browsers share the limits with their address, and behind the "
-"bundled Compose file's console proxy every browser has the same address "
-"unless [trusted-proxy settings](trusted-proxies-and-client-ips.md) name "
-"the console; `admin` is the first username anyone tries. The counts are "
-"held in memory, so a backend restart clears them. Nothing below needs a "
-"sign-in: `ADMIN_TOKEN`, when set, still reaches the admin API, and the "
-"command-line tools work on the database directly."
+"**Choose a username that is hard to guess.** Sign-in admits a limited number "
+"of attempts before it checks the password, recording each admitted attempt: "
+"five per username from one address in 15 minutes "
+"(`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all addresses "
+"together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only the attempts "
+"the other limits let through), and twenty per address in an hour "
+"(`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in to the "
+"account before, including the one you used for setup, holds a device cookie "
+"(`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/auth`, kept on sign-"
+"out, valid for 180 days) and gets five attempts per 15 minutes of its own, "
+"so other people's guesses never lock it out. Changing `JWT_SECRET_KEY` "
+"invalidates every device cookie until that browser's next sign-in."
 msgstr ""
-"其他浏览器与它们的地址共用这些限制；而在仓库自带 Compose 文件的控制台代理后面，除非[可信代理设置](trusted-proxies-"
-"and-client-ips.md)指明了控制台，所有浏览器的地址都相同；`admin` "
-"又恰恰是谁都会先试的用户名。这些计数只保存在内存里，所以重启后端会把它们清空。下面这些都不需要登录：设置了 `ADMIN_TOKEN` "
-"时，它照样能访问管理 API，命令行工具则直接操作数据库。"
+"**选一个难猜的用户名**。登录在检查密码之前就为每次尝试计数：同一个用户名从同"
+"一个地址每 15 分钟五次（`LOGIN_RATE_LIMIT_PER_15MIN`），同一个用户名从所有地"
+"址合计五十次（`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`，只计入其他限制放行的尝"
+"试），每个地址每小时二十次（`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`）。以前登录过"
+"这个账号的浏览器——包括你做首次运行设置时用的那个——持有一个设备 cookie"
+"（`<REFRESH_TOKEN_COOKIE_NAME>_device`，只发给 `/auth`，退出登录后仍保留，有"
+"效期 180 天），并单独享有每 15 分钟五次的尝试额度，所以别人的猜测永远锁不住"
+"它。修改 `JWT_SECRET_KEY` 会让所有设备 cookie 失效，直到那个浏览器下次登录。"
 
-#: ../developer/deployment.md:498
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:496
+msgid ""
+"When no client address can be resolved — every browser behind the bundled "
+"Compose file's console proxy, without trusted-proxy settings — the sign-in "
+"is not attributed to a synthetic per-client address. It still gets the five "
+"per username in 15 minutes account/address window, the fifty per username "
+"account-wide window, and a separate coarse hourly budget shared by every "
+"unresolved client (`UNRESOLVED_LOGIN_RATE_LIMIT_PER_HOUR`, default twenty "
+"per hour per worker). Refused requests do not enter the admitted account "
+"windows. Resolved address and account refusals add bounded pressure to the "
+"source IP's hourly window; repeated refusals can therefore apply the IP-wide "
+"limit to other accounts from that address. When a limiter map fills, expired "
+"windows are reclaimed first and additional identities use fixed-size "
+"overflow buckets selected by a randomized per-process hash. A hash collision "
+"can conservatively make unrelated identities share a limit until their "
+"window expires, but admitted attempts remain counted. Existing device "
+"cookies keep their independent windows; at most 64 active device windows per "
+"account are stored directly, and additional device IDs share the account's "
+"overflow window. Capacity pressure is counted per limiter scope and warning "
+"logs are rate-limited."
+msgstr ""
+"当无法解析出任何客户端地址时——也就是在没有配置可信代理的情况下，仓库自带 "
+"Compose 文件的控制台代理后面的所有浏览器——这次登录不会被归到某个虚拟的「每客"
+"户端地址」上。它仍然受「同一用户名每 15 分钟五次」的账号/地址窗口、「同一用户"
+"名五十次」的账号级窗口约束，并额外共享一笔所有未解析客户端合用的粗粒度每小时"
+"预算（`UNRESOLVED_LOGIN_RATE_LIMIT_PER_HOUR`，默认为每工作进程每小时二十"
+"次）。被拒绝的请求不会计入已准入的账号窗口。对于已解析的地址，地址级或账号级"
+"拒绝会增加该来源 IP 的有界小时压力计数；重复拒绝因此可能对来自该地址的其他账"
+"号应用 IP 级限额。限流映射达到上限后会先回收过期窗口，再把其他身份的计数写入"
+"固定大小、按进程随机哈希分配的溢出桶。哈希碰撞可能会让无关身份在窗口过期前共"
+"享限额，但获准的尝试仍会计数。已识别设备的 cookie 保留各自窗口；每个账户最多"
+"直接保存 64 个活跃设备窗口，更多设备标识共享该账户的溢出窗口。容量压力按限流"
+"范围计数，并对警告日志限频。"
+
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:515
+msgid ""
+"Other browsers share the limits with their address, and behind the bundled "
+"Compose file's console proxy every browser has the same address unless "
+"[trusted-proxy settings](trusted-proxies-and-client-ips.md) name the "
+"console; `admin` is the first username anyone tries. The counts are held in "
+"memory, so a backend restart clears them. Nothing below needs a sign-in: "
+"`ADMIN_TOKEN`, when set, still reaches the admin API, and the command-line "
+"tools work on the database directly."
+msgstr ""
+"其他浏览器与它们的地址共用这些限制；而在仓库自带 Compose 文件的控制台代理后"
+"面，除非[可信代理设置](trusted-proxies-and-client-ips.md)指明了控制台，所有浏"
+"览器的地址都相同；`admin` 又恰恰是谁都会先试的用户名。这些计数只保存在内存"
+"里，所以重启后端会把它们清空。下面这些都不需要登录：设置了 `ADMIN_TOKEN` 时，"
+"它照样能访问管理 API，命令行工具则直接操作数据库。"
+
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:523
 msgid ""
 "**Without the browser.** `ops/admin/create_admin.py` writes the account "
 "directly: it creates it with `role='admin'`, `status='active'`, "
@@ -1117,164 +1212,175 @@ msgid ""
 "least once (the backend creates the schema):"
 msgstr ""
 "**不用浏览器**。`ops/admin/create_admin.py` 直接往数据库写账号：新建一个 "
-"`role='admin'`、`status='active'`、`email_verified=TRUE` "
-"的账号；如果同一地址的账号已经存在，就把它提升为管理员。后端至少启动过一次之后（表结构由后端创建），在仓库根目录运行："
+"`role='admin'`、`status='active'`、`email_verified=TRUE` 的账号；如果同一地址"
+"的账号已经存在，就把它提升为管理员。后端至少启动过一次之后（表结构由后端创"
+"建），在仓库根目录运行："
 
-#: ../developer/deployment.md:508
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:533
 msgid ""
 "Run it inside the project environment (`source .venv/bin/activate` after "
 "`make setup-dev`) so the `serving` package is importable. It reads "
-"`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`,"
-" and Postgres publishes on `127.0.0.1:5432`, so it works from the host "
-"shell. Omit `--password` and it prompts, keeping the password out of your"
-" shell history. Creating any account this way also completes first-run "
-"setup: a database that has accounts never shows the setup page."
+"`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`, "
+"and Postgres publishes on `127.0.0.1:5432`, so it works from the host shell. "
+"Omit `--password` and it prompts, keeping the password out of your shell "
+"history. Creating any account this way also completes first-run setup: a "
+"database that has accounts never shows the setup page."
 msgstr ""
-"要在项目环境里运行它（`make setup-dev` 之后执行 `source .venv/bin/activate`），这样才能 import"
-" `serving` 包。它从 `.env` 读取 `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER` 和 "
-"`DB_PASSWORD`，而 Postgres 发布在 `127.0.0.1:5432`，所以直接在宿主机的 shell 里就能运行。不带 "
-"`--password` 时它会提示你输入密码，这样密码就不会留在 shell "
-"历史里。用这种方式创建任何账号，也同样完成了首次运行设置：有账号的数据库永远不会出现设置页面。"
+"要在项目环境里运行它（`make setup-dev` 之后执行 `source .venv/bin/"
+"activate`），这样才能 import `serving` 包。它从 `.env` 读取 `DB_HOST`、"
+"`DB_PORT`、`DB_NAME`、`DB_USER` 和 `DB_PASSWORD`，而 Postgres 发布在 "
+"`127.0.0.1:5432`，所以直接在宿主机的 shell 里就能运行。不带 `--password` 时它"
+"会提示你输入密码，这样密码就不会留在 shell 历史里。用这种方式创建任何账号，也"
+"同样完成了首次运行设置：有账号的数据库永远不会出现设置页面。"
 
-#: ../developer/deployment.md:516
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:541
 msgid ""
-"**A forgotten password.** The setup administrator has no email address, "
-"so there is no reset link to send. Reset its password where the backend "
-"runs:"
-msgstr "**忘记密码**。首次运行设置创建的管理员没有邮箱地址，所以没有重置链接可发。在后端运行的地方重置它的密码："
+"**A forgotten password.** The setup administrator has no email address, so "
+"there is no reset link to send. Reset its password where the backend runs:"
+msgstr ""
+"**忘记密码**。首次运行设置创建的管理员没有邮箱地址，所以没有重置链接可发。在"
+"后端运行的地方重置它的密码："
 
-#: ../developer/deployment.md:523
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:548
 msgid ""
 "It reads only the `DB_*` settings, asks twice for the new password — or, "
-"with `--generate`, prints a strong one — and revokes the account's "
-"sessions, so every browser must sign in again. It takes an email address "
-"as well, for any other account. From a source checkout, run `uv run "
-"python -m serving.auth.reset_password <username>` in the repository root."
-" It also works on a database the backend's upgrade has not migrated yet —"
-" while an upgrade's users migration is still waiting for the table's "
-"lock, say — and changes no schema. Such a database has no login names "
-"yet, so name the account by its email address there."
+"with `--generate`, prints a strong one — and revokes the account's sessions, "
+"so every browser must sign in again. It takes an email address as well, for "
+"any other account. From a source checkout, run `uv run python -m "
+"serving.auth.reset_password <username>` in the repository root. It also "
+"works on a database the backend's upgrade has not migrated yet — while an "
+"upgrade's users migration is still waiting for the table's lock, say — and "
+"changes no schema. Such a database has no login names yet, so name the "
+"account by its email address there."
 msgstr ""
-"它只读取 `DB_*` 这几个设置，会让你输入两次新密码（加上 `--generate` "
-"则直接生成并打印一个强密码），并吊销这个账号的所有会话，所以每个浏览器都得重新登录。对其他账号，它也接受邮箱地址。从源码运行时，在仓库根目录执行 "
-"`uv run python -m serving.auth.reset_password "
-"<username>`。它也能在后端的升级还没迁移过的数据库上运行（比如升级对 users "
-"表的迁移还在等待表锁时），而且不改动任何表结构。这样的数据库里还没有登录名，所以在那里要用邮箱地址指定账号。"
+"它只读取 `DB_*` 这几个设置，会让你输入两次新密码（加上 `--generate` 则直接生"
+"成并打印一个强密码），并吊销这个账号的所有会话，所以每个浏览器都得重新登录。"
+"对其他账号，它也接受邮箱地址。从源码运行时，在仓库根目录执行 `uv run python "
+"-m serving.auth.reset_password <username>`。它也能在后端的升级还没迁移过的数"
+"据库上运行（比如升级对 users 表的迁移还在等待表锁时），而且不改动任何表结构。"
+"这样的数据库里还没有登录名，所以在那里要用邮箱地址指定账号。"
 
-#: ../developer/deployment.md:533
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:558
 msgid ""
-"**A setting that breaks the console.** Settings live in the database, so "
-"a value that stops sign-in from working cannot be fixed by editing "
-"`.env`, nor from a console nobody can sign in to. Change it back from the"
-" command line:"
+"**A setting that breaks the console.** Settings live in the database, so a "
+"value that stops sign-in from working cannot be fixed by editing `.env`, nor "
+"from a console nobody can sign in to. Change it back from the command line:"
 msgstr ""
-"**把控制台弄坏的设置项**。设置项存放在数据库里，所以一个让登录失效的值，既没法靠改 `.env` "
-"修好，也没法在谁都登录不了的控制台里修好。用命令行把它改回来："
+"**把控制台弄坏的设置项**。设置项存放在数据库里，所以一个让登录失效的值，既没"
+"法靠改 `.env` 修好，也没法在谁都登录不了的控制台里修好。用命令行把它改回来："
 
-#: ../developer/deployment.md:541
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:566
 msgid ""
-"`list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the Settings"
-" tab, with its validation, and never print a secret's value; see [Without"
-" the console](configuration.md#without-the-console). The running backend "
-"picks the change up within about ten seconds, or after a restart for a "
-"setting marked **Restart required**."
+"`list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the Settings "
+"tab, with its validation, and never print a secret's value; see [Without the "
+"console](configuration.md#without-the-console). The running backend picks "
+"the change up within about ten seconds, or after a restart for a setting "
+"marked **Restart required**."
 msgstr ""
-"`list`、`get KEY`、`set KEY VALUE` 和 `reset KEY` 的作用和 "
-"Settings 标签页一样，校验规则也相同，而且从不打印密钥的值；"
-"见[不通过控制台](configuration.md#without-the-console)。"
-"正在运行的后端会在大约十秒内读到改动；标着 **Restart required** "
-"的设置项则要重启之后才生效。"
+"`list`、`get KEY`、`set KEY VALUE` 和 `reset KEY` 的作用和 Settings 标签页一"
+"样，校验规则也相同，而且从不打印密钥的值；见[不通过控制台]"
+"(configuration.md#without-the-console)。正在运行的后端会在大约十秒内读到改"
+"动；标着 **Restart required** 的设置项则要重启之后才生效。"
 
-#: ../developer/deployment.md:547
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:572
 msgid ""
-"With an administrator in place the instance can run with signup closed: "
-"turn off `signup_enabled` on the **Settings** tab."
-msgstr "有了管理员，实例就可以关闭注册运行：在 **Settings** 标签页上关掉 `signup_enabled`。"
+"With an administrator in place the instance can run with signup closed: turn "
+"off `signup_enabled` on the **Settings** tab."
+msgstr ""
+"有了管理员，实例就可以关闭注册运行：在 **Settings** 标签页上关掉 "
+"`signup_enabled`。"
 
-#: ../developer/deployment.md:550
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:575
 msgid "Promoting accounts with `ADMIN_EMAILS`"
 msgstr "用 `ADMIN_EMAILS` 提升账号"
 
-#: ../developer/deployment.md:552
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:577
 msgid ""
 "`ADMIN_EMAILS`, under **Security** on the **Configuration** tab, makes a "
-"listed address an administrator when that account signs in. It is not "
-"needed for the first administrator, and it is unsafe without email "
-"verification:"
+"listed address an administrator when that account signs in. It is not needed "
+"for the first administrator, and it is unsafe without email verification:"
 msgstr ""
-"`ADMIN_EMAILS` 位于 **Configuration** 标签页的 **Security** "
-"分类下，列在其中的地址对应的账号登录时会成为管理员。创建第一个管理员用不到它，而且在没有邮箱验证时它并不安全："
+"`ADMIN_EMAILS` 位于 **Configuration** 标签页的 **Security** 分类下，列在其中"
+"的地址对应的账号登录时会成为管理员。创建第一个管理员用不到它，而且在没有邮箱"
+"验证时它并不安全："
 
-#: ../developer/deployment.md:557
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:582
 msgid ""
-"Do not combine open signup (`signup_enabled`), disabled email "
-"verification (`signup_require_email_verification` off) and `ADMIN_EMAILS`"
-" on an instance anyone else can reach. Together they are a privilege-"
-"escalation recipe:"
+"Do not combine open signup (`signup_enabled`), disabled email verification "
+"(`signup_require_email_verification` off) and `ADMIN_EMAILS` on an instance "
+"anyone else can reach. Together they are a privilege-escalation recipe:"
 msgstr ""
-"在别人能访问到的实例上，不要同时开放注册（`signup_enabled`）、关闭邮箱验证（`signup_require_email_verification`"
-" 关掉）并使用 `ADMIN_EMAILS`。三者组合起来就是一条现成的提权路径："
+"在别人能访问到的实例上，不要同时开放注册（`signup_enabled`）、关闭邮箱验证"
+"（`signup_require_email_verification` 关掉）并使用 `ADMIN_EMAILS`。三者组合起"
+"来就是一条现成的提权路径："
 
-#: ../developer/deployment.md:561
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:586
 msgid ""
 "with verification disabled, `POST /auth/signup` marks any address as "
 "verified without sending mail to it;"
-msgstr "关闭验证后，`POST /auth/signup` 会把任何地址都标记为已验证，却根本不往这个地址发邮件；"
+msgstr ""
+"关闭验证后，`POST /auth/signup` 会把任何地址都标记为已验证，却根本不往这个地"
+"址发邮件；"
 
-#: ../developer/deployment.md:563
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:588
 msgid ""
 "on login *and* on every token refresh, the backend promotes any account "
-"whose address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no"
-" check that the person signing up owns that address."
+"whose address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no "
+"check that the person signing up owns that address."
 msgstr ""
-"登录时*以及*每一次 token 刷新时，后端都会把地址列在 `ADMIN_EMAILS` 里的账号从 `free` 提升为 "
-"`admin`，并不检查注册的人是否真的拥有那个地址。"
+"登录时*以及*每一次 token 刷新时，后端都会把地址列在 `ADMIN_EMAILS` 里的账号"
+"从 `free` 提升为 `admin`，并不检查注册的人是否真的拥有那个地址。"
 
-#: ../developer/deployment.md:567
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:592
 msgid ""
-"So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up "
-"with that address and is an admin on their first login."
-msgstr "于是，陌生人只要猜到或看到了你的 `ADMIN_EMAILS`，用那个地址注册，第一次登录就是管理员。"
+"So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up with "
+"that address and is an admin on their first login."
+msgstr ""
+"于是，陌生人只要猜到或看到了你的 `ADMIN_EMAILS`，用那个地址注册，第一次登录就"
+"是管理员。"
 
-#: ../developer/deployment.md:571
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:596
 msgid ""
-"Email verification is on by default, and with it on an account cannot log"
-" in until it has followed a link sent to the address, which restores the "
+"Email verification is on by default, and with it on an account cannot log in "
+"until it has followed a link sent to the address, which restores the "
 "ownership check that `ADMIN_EMAILS` itself does not perform. This needs "
 "working SMTP; without it nobody can complete a signup, and the console "
 "reports `SMTP_USER` and `SMTP_PASSWORD` as missing settings."
 msgstr ""
-"邮箱验证默认是打开的。打开时，账号必须先点击发送到该地址的验证链接才能登录，这就补上了 `ADMIN_EMAILS` "
-"自己不做的地址归属检查。这需要一套可用的 SMTP；没有 SMTP，谁都无法完成注册，控制台也会把 `SMTP_USER` 和 "
-"`SMTP_PASSWORD` 报为缺失的设置项。"
+"邮箱验证默认是打开的。打开时，账号必须先点击发送到该地址的验证链接才能登录，"
+"这就补上了 `ADMIN_EMAILS` 自己不做的地址归属检查。这需要一套可用的 SMTP；没"
+"有 SMTP，谁都无法完成注册，控制台也会把 `SMTP_USER` 和 `SMTP_PASSWORD` 报为缺"
+"失的设置项。"
 
-#: ../developer/deployment.md:577
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:602
 msgid ""
-"`ADMIN_EMAILS` also picks the default recipients for signup approval "
-"mail. To narrow the notification list without changing who holds the "
-"admin role, set `SIGNUP_NOTIFY_EMAILS` (comma-separated); when it is "
-"empty, notifications fall back to `ADMIN_EMAILS`."
+"`ADMIN_EMAILS` also picks the default recipients for signup approval mail. "
+"To narrow the notification list without changing who holds the admin role, "
+"set `SIGNUP_NOTIFY_EMAILS` (comma-separated); when it is empty, "
+"notifications fall back to `ADMIN_EMAILS`."
 msgstr ""
-"`ADMIN_EMAILS` 还决定注册审批邮件的默认收件人。如果只想缩小通知名单、不想改变谁是管理员，就设置 "
-"`SIGNUP_NOTIFY_EMAILS`（逗号分隔）；它为空时，通知仍发给 `ADMIN_EMAILS`。"
+"`ADMIN_EMAILS` 还决定注册审批邮件的默认收件人。如果只想缩小通知名单、不想改变"
+"谁是管理员，就设置 `SIGNUP_NOTIFY_EMAILS`（逗号分隔）；它为空时，通知仍发给 "
+"`ADMIN_EMAILS`。"
 
-#: ../developer/deployment.md:582
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:607
 msgid ""
-"Both `signup_enabled` and `signup_require_email_verification` are runtime"
-" settings on the **Settings** tab. A `SIGNUP_ENABLED` or "
-"`SIGNUP_REQUIRE_EMAIL_VERIFICATION` line in `.env` is copied into that "
-"store at startup while it has no value of its own, and the stored value "
-"wins afterwards."
+"Both `signup_enabled` and `signup_require_email_verification` are runtime "
+"settings on the **Settings** tab. A `SIGNUP_ENABLED` or "
+"`SIGNUP_REQUIRE_EMAIL_VERIFICATION` line in `.env` is copied into that store "
+"at startup while it has no value of its own, and the stored value wins "
+"afterwards."
 msgstr ""
-"`signup_enabled` 和 `signup_require_email_verification` 都是 **Settings** "
-"标签页上的运行时设置。`.env` 里的 `SIGNUP_ENABLED` 或 "
-"`SIGNUP_REQUIRE_EMAIL_VERIFICATION` 只在那个存储里还没有值时，才会在启动时被复制过去，此后以存储里的值为准。"
+"`signup_enabled` 和 `signup_require_email_verification` 都是 **Settings** 标"
+"签页上的运行时设置。`.env` 里的 `SIGNUP_ENABLED` 或 "
+"`SIGNUP_REQUIRE_EMAIL_VERIFICATION` 只在那个存储里还没有值时，才会在启动时被"
+"复制过去，此后以存储里的值为准。"
 
-#: ../developer/deployment.md:588
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:613
 msgid "Database"
 msgstr "数据库"
 
-#: ../developer/deployment.md:590
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:615
 msgid ""
 "PostgreSQL 16 runs in the `postgres` service with its data in the Docker "
 "volume `hybridinference_postgres_data`. A psql shell:"
@@ -1282,280 +1388,349 @@ msgstr ""
 "PostgreSQL 16 跑在 `postgres` 服务里，数据放在 Docker 卷 "
 "`hybridinference_postgres_data` 中。开一个 psql shell："
 
-#: ../developer/deployment.md:597
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:622
 msgid "Schema details are in [Database](database.md)."
 msgstr "表结构细节见[数据库](database.md)。"
 
-#: ../developer/deployment.md:600
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:625
 msgid ""
 "The database holds every setting in plaintext: provider keys, the SMTP "
-"password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` "
-"that sign sessions and protect API keys. A `pg_dump`, a backup, or a psql"
-" or pgAdmin session therefore reveals all of them, and lets its holder "
-"call your providers, decrypt users' stored API keys and sign "
-"administrator tokens. Protect database backups and database access as you"
-" would a `.env` that held those credentials."
+"password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that "
+"sign sessions and protect API keys. A `pg_dump`, a backup, or a psql or "
+"pgAdmin session therefore reveals all of them, and lets its holder call your "
+"providers, decrypt users' stored API keys and sign administrator tokens. "
+"Protect database backups and database access as you would a `.env` that held "
+"those credentials."
 msgstr ""
-"数据库以明文保存每一个设置项：provider key、SMTP 密码、webhook URL，以及签发会话、保护 API key 的 "
-"`JWT_SECRET_KEY` 和 `API_KEY_SECRET`。因此一次 `pg_dump`、一份备份，或者一个 psql、pgAdmin"
-" 会话，就能看到所有这些内容，持有者可以用它们调用你的 provider、解密用户存下的 API key，并签发管理员 "
-"token。要像保护一份存着这些凭据的 `.env` 那样，保护数据库备份和数据库访问权限。"
+"数据库以明文保存每一个设置项：provider key、SMTP 密码、webhook URL，以及签发"
+"会话、保护 API key 的 `JWT_SECRET_KEY` 和 `API_KEY_SECRET`。因此一次 "
+"`pg_dump`、一份备份，或者一个 psql、pgAdmin 会话，就能看到所有这些内容，持有"
+"者可以用它们调用你的 provider、解密用户存下的 API key，并签发管理员 token。要"
+"像保护一份存着这些凭据的 `.env` 那样，保护数据库备份和数据库访问权限。"
 
-#: ../developer/deployment.md:609
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:634
 msgid "pgAdmin (optional)"
 msgstr "pgAdmin（可选）"
 
-#: ../developer/deployment.md:615
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:640
 msgid ""
-"pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so "
-"an SSH tunnel to that port is enough to reach it. The console can also "
-"proxy it at `/pgadmin/`, gated on an admin session by "
-"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on "
-"every unexpected condition, including a backend it cannot reach."
+"pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so an "
+"SSH tunnel to that port is enough to reach it. The console can also proxy it "
+"at `/pgadmin/`, gated on an admin session by `apps/frontend/src/app/pgadmin/"
+"[[...path]]/route.ts`, which denies on every unexpected condition, including "
+"a backend it cannot reach."
 msgstr ""
-"之后 pgAdmin 会监听 `127.0.0.1:5050`，并设置了 `SCRIPT_NAME=/pgadmin`，所以开一条到这个端口的 "
-"SSH 隧道就能访问。控制台也可以在 `/pgadmin/` 下代理它，由 "
-"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` "
-"检查是否为管理员会话；遇到任何意外情况它都会拒绝访问，包括连不上后端的时候。"
+"之后 pgAdmin 会监听 `127.0.0.1:5050`，并设置了 `SCRIPT_NAME=/pgadmin`，所以开"
+"一条到这个端口的 SSH 隧道就能访问。控制台也可以在 `/pgadmin/` 下代理它，由 "
+"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` 检查是否为管理员会话；遇"
+"到任何意外情况它都会拒绝访问，包括连不上后端的时候。"
 
-#: ../developer/deployment.md:621
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:646
 msgid ""
-"One thing to get right: whether pgAdmin *also* asks for its own login is "
-"set by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The "
-"Compose service falls back to `False`, which serves pgAdmin with no login"
-" at all; `.env.example` suggests `True`, which turns pgAdmin's own login "
-"on behind the console's gate. `True` is the safer of the two."
+"One thing to get right: whether pgAdmin *also* asks for its own login is set "
+"by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The Compose "
+"service falls back to `False`, which serves pgAdmin with no login at all; "
+"`.env.example` suggests `True`, which turns pgAdmin's own login on behind "
+"the console's gate. `True` is the safer of the two."
 msgstr ""
-"有一点要注意：pgAdmin 是否*还*要求登录它自己的账号，由 `PGADMIN_CONFIG_SERVER_MODE` "
-"决定，而两处的默认值不一致。Compose 服务在未设置时取 `False`，pgAdmin 完全不需要登录；`.env.example` "
-"建议设为 `True`，即在控制台这道关卡之后，再加一道 pgAdmin 自己的登录。`True` 更安全。"
+"有一点要注意：pgAdmin 是否*还*要求登录它自己的账号，由 "
+"`PGADMIN_CONFIG_SERVER_MODE` 决定，而两处的默认值不一致。Compose 服务在未设置"
+"时取 `False`，pgAdmin 完全不需要登录；`.env.example` 建议设为 `True`，即在控"
+"制台这道关卡之后，再加一道 pgAdmin 自己的登录。`True` 更安全。"
 
-#: ../developer/deployment.md:627
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:652
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/deployment.md:629
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:654
 msgid "A service will not start"
 msgstr "某个服务起不来"
 
-#: ../developer/deployment.md:636
-#, python-brace-format
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:661
 msgid ""
-"`required variable DB_NAME is missing a value: DB_NAME must be set in "
-".env file` — Compose stopped at interpolation before starting anything. "
-"`DB_NAME`, `DB_USER` and `DB_PASSWORD` are declared required with the "
-"`${VAR:?message}` form, so the half after the colon is the Compose file's"
-" own text and the most greppable part of the line."
+"`required variable DB_NAME is missing a value: DB_NAME must be set in .env "
+"file` — Compose stopped at interpolation before starting anything. "
+"`DB_NAME`, `DB_USER` and `DB_PASSWORD` are declared required with the `$"
+"{VAR:?message}` form, so the half after the colon is the Compose file's own "
+"text and the most greppable part of the line."
 msgstr ""
-"`required variable DB_NAME is missing a value: DB_NAME must be set in "
-".env file`——Compose 在变量插值阶段就停下了，什么都还没启动。`DB_NAME`、`DB_USER` 和 "
-"`DB_PASSWORD` 是用 `${VAR:?message}` 形式声明为必填的，所以冒号之后那半句是 Compose "
-"文件自己写的文案，也是这一行里最好 grep 的部分。"
+"`required variable DB_NAME is missing a value: DB_NAME must be set in .env "
+"file`——Compose 在变量插值阶段就停下了，什么都还没启动。`DB_NAME`、`DB_USER` "
+"和 `DB_PASSWORD` 是用 `${VAR:?message}` 形式声明为必填的，所以冒号之后那半句"
+"是 Compose 文件自己写的文案，也是这一行里最好 grep 的部分。"
 
-#: ../developer/deployment.md:641
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:666
 msgid ""
-"Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or "
-"`DB_PORT`."
+"Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`."
 msgstr "端口已被占用——换一个 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
 
-#: ../developer/deployment.md:642
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:667
 msgid ""
 "Database connection failed — check `make ps` for the `postgres` health "
 "status."
 msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
 
-#: ../developer/deployment.md:643
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:668
 msgid ""
 "`Configuration load failed after 3 attempts`, then `Authentication "
-"configuration incomplete` — the backend could not read its settings from "
-"the database and fell back to the environment, which holds no secrets. "
-"Fix the database connection rather than adding secrets to `.env`."
+"configuration incomplete` — the backend could not read its settings from the "
+"database and fell back to the environment, which holds no secrets. Fix the "
+"database connection rather than adding secrets to `.env`."
 msgstr ""
 "先出现 `Configuration load failed after 3 attempts`，接着是 `Authentication "
-"configuration "
-"incomplete`——后端没能从数据库读到它的设置项，退回到了环境变量，而环境变量里没有密钥。应该修好数据库连接，而不是往 `.env` "
-"里加密钥。"
+"configuration incomplete`——后端没能从数据库读到它的设置项，退回到了环境变量，"
+"而环境变量里没有密钥。应该修好数据库连接，而不是往 `.env` 里加密钥。"
 
-#: ../developer/deployment.md:648
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:673
 msgid "A monitor or service account is suddenly getting 429s"
 msgstr "监控或服务账号突然开始收到 429"
 
-#: ../developer/deployment.md:650
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:675
 msgid ""
-"`Too many authentication failures from this IP. Temporarily blocked.` is "
-"the gateway's own abuse defense, not a provider error and not a quota. "
-"Once a source accumulates `AUTH_FAILURE_BLOCK_THRESHOLD` failed "
-"authentications inside `AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day, by "
-"default) it is refused for `AUTH_FAILURE_BLOCK_DURATION_SEC` (a day)."
+"`Too many authentication failures from this IP. Temporarily blocked.` is the "
+"gateway's own abuse defense, not a provider error and not a quota. Once a "
+"source accumulates `AUTH_FAILURE_BLOCK_THRESHOLD` failed authentications "
+"inside `AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day, by default) it is "
+"refused for `AUTH_FAILURE_BLOCK_DURATION_SEC` (a day)."
 msgstr ""
-"`Too many authentication failures from this IP. Temporarily blocked.` "
-"是网关自己的防滥用机制，既不是 provider 报的错，也不是配额限制。一个来源在 "
-"`AUTH_FAILURE_BLOCK_WINDOW_SEC` 内累计 `AUTH_FAILURE_BLOCK_THRESHOLD` "
-"次认证失败（默认是一天 200 次）后，接下来的 `AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）内都会被拒绝。"
+"`Too many authentication failures from this IP. Temporarily blocked.` 是网关"
+"自己的防滥用机制，既不是 provider 报的错，也不是配额限制。一个来源在 "
+"`AUTH_FAILURE_BLOCK_WINDOW_SEC` 内累计 `AUTH_FAILURE_BLOCK_THRESHOLD` 次认证"
+"失败（默认是一天 200 次）后，接下来的 `AUTH_FAILURE_BLOCK_DURATION_SEC`（一"
+"天）内都会被拒绝。"
 
-#: ../developer/deployment.md:656
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:681
 msgid ""
-"The awkward case is a caller you own — a status monitor, a CI job, a "
-"service account — whose key was rotated, revoked, or never reached its "
-"environment. It retries on a schedule, crosses the threshold, and is then"
-" refused *ahead of the key check*, which has two consequences:"
+"The awkward case is a caller you own — a status monitor, a CI job, a service "
+"account — whose key was rotated, revoked, or never reached its environment. "
+"It retries on a schedule, crosses the threshold, and is then refused *ahead "
+"of the key check*, which has two consequences:"
 msgstr ""
-"麻烦的是你自己的调用方——状态监控、CI 任务、服务账号——它的 key "
-"被轮换或吊销了，或者压根没配置到它的运行环境里。它按计划不断重试，越过阈值，然后在*检查 key 之前*就被拒绝。这会带来两个后果："
+"麻烦的是你自己的调用方——状态监控、CI 任务、服务账号——它的 key 被轮换或吊销"
+"了，或者压根没配置到它的运行环境里。它按计划不断重试，越过阈值，然后在*检查 "
+"key 之前*就被拒绝。这会带来两个后果："
 
-#: ../developer/deployment.md:661
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:686
 msgid ""
 "**Repairing the credential does not lift the block.** The blocklist is "
-"consulted before the presented key is read, so a corrected key gets the "
-"same 429 until the deadline passes."
-msgstr "**修好凭据并不会解除封禁**。黑名单在读取请求带的 key 之前就做了判断，所以在封禁到期之前，换上正确的 key 也还是 429。"
-
-#: ../developer/deployment.md:664
-msgid ""
-"**The 429 hides the original error.** Whatever the caller reports after "
-"the block is in place says nothing about whether the underlying 401/403 "
-"was fixed."
-msgstr "**429 掩盖了原始错误**。封禁生效之后，调用方报什么都说明不了底层那个 401/403 究竟修好了没有。"
-
-#: ../developer/deployment.md:667
-msgid ""
-"Which caller is it? Turn on the `log_rejected_requests` admin setting and"
-" the refusals land in Recent Requests as `ip_blocked` rows. Each row "
-"names the account behind the key the caller presented — including a key "
-"that was revoked or expired, which is what a stuck monitor is presenting "
-"— and labels it with the credential's state (`revoked`, `expired`, "
-"`user_suspended`) beside the user. A row with no user is unresolved, not "
-"proof of a stranger: the key may be one this deployment never issued, or "
-"the lookup may have been shed, since it runs on a strict budget that "
-"gives up first under exactly the flood a block is holding back."
+"consulted before the presented key is read, so a corrected key gets the same "
+"429 until the deadline passes."
 msgstr ""
-"到底是哪个调用方？打开 `log_rejected_requests` 这个管理设置，被拒绝的请求就会以 `ip_blocked` 行的形式出现在"
-" Recent Requests 里。每一行都会写出调用方所带 key 背后的账号，包括已吊销或已过期的 "
-"key（卡住的监控带的正是这种），并在用户旁边标出凭据状态（`revoked`、`expired`、`user_suspended`）。没有用户的行只是没查出来，不能证明是陌生人：可能这个"
-" key 根本不是本部署签发的，也可能查询被放弃了。这个查询的预算很紧，而封禁正在挡的那种流量洪峰，恰恰最容易让它放弃。"
+"**修好凭据并不会解除封禁**。黑名单在读取请求带的 key 之前就做了判断，所以在封"
+"禁到期之前，换上正确的 key 也还是 429。"
 
-#: ../developer/deployment.md:677
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:689
+msgid ""
+"**The 429 hides the original error.** Whatever the caller reports after the "
+"block is in place says nothing about whether the underlying 401/403 was "
+"fixed."
+msgstr ""
+"**429 掩盖了原始错误**。封禁生效之后，调用方报什么都说明不了底层那个 401/403 "
+"究竟修好了没有。"
+
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:692
+msgid ""
+"Which caller is it? Turn on the `log_rejected_requests` admin setting and "
+"the refusals land in Recent Requests as `ip_blocked` rows. Each row names "
+"the account behind the key the caller presented — including a key that was "
+"revoked or expired, which is what a stuck monitor is presenting — and labels "
+"it with the credential's state (`revoked`, `expired`, `user_suspended`) "
+"beside the user. A row with no user is unresolved, not proof of a stranger: "
+"the key may be one this deployment never issued, or the lookup may have been "
+"shed, since it runs on a strict budget that gives up first under exactly the "
+"flood a block is holding back."
+msgstr ""
+"到底是哪个调用方？打开 `log_rejected_requests` 这个管理设置，被拒绝的请求就会"
+"以 `ip_blocked` 行的形式出现在 Recent Requests 里。每一行都会写出调用方所带 "
+"key 背后的账号，包括已吊销或已过期的 key（卡住的监控带的正是这种），并在用户"
+"旁边标出凭据状态（`revoked`、`expired`、`user_suspended`）。没有用户的行只是"
+"没查出来，不能证明是陌生人：可能这个 key 根本不是本部署签发的，也可能查询被放"
+"弃了。这个查询的预算很紧，而封禁正在挡的那种流量洪峰，恰恰最容易让它放弃。"
+
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:702
 msgid "To recover, first fix the credential, then clear the block:"
 msgstr "要恢复，先修好凭据，再解除封禁："
 
-#: ../developer/deployment.md:692
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:717
 msgid ""
-"`cleared: false` means there was nothing to lift — it lapsed, or that "
-"bucket was never blocked. Clearing grants no immunity: a caller still "
-"presenting a bad key is blocked again on crossing the threshold. For a "
-"source that should never be blocked at all, list it in "
-"`AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated addresses or CIDRs) "
-"instead."
+"`cleared: false` means there was nothing to lift — it lapsed, or that bucket "
+"was never blocked. Clearing grants no immunity: a caller still presenting a "
+"bad key is blocked again on crossing the threshold. For a source that should "
+"never be blocked at all, list it in `AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-"
+"separated addresses or CIDRs) instead."
 msgstr ""
-"`cleared: false` 表示没有需要解除的封禁：要么已经到期，要么那个分桶从来没被封过。解除封禁不等于豁免：调用方如果还在用错误的 "
-"key，越过阈值后会再次被封。对于永远不该被封的来源，应该把它加进 "
-"`AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。"
+"`cleared: false` 表示没有需要解除的封禁：要么已经到期，要么那个分桶从来没被封"
+"过。解除封禁不等于豁免：调用方如果还在用错误的 key，越过阈值后会再次被封。对"
+"于永远不该被封的来源，应该把它加进 `AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔"
+"的地址或 CIDR）。"
 
-#: ../developer/deployment.md:698
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:723
 msgid ""
-"The blocklist is per-process, in-memory state. On the single-process "
-"default both endpoints are exact, and a restart also clears every block. "
-"Run multiple workers and each holds its own counts, so a listing shows "
-"only the worker that answered and clearing may take more than one call."
+"The blocklist is per-process, in-memory state. On the single-process default "
+"both endpoints are exact, and a restart also clears every block. Run "
+"multiple workers and each holds its own counts, so a listing shows only the "
+"worker that answered and clearing may take more than one call."
 msgstr ""
-"黑名单是进程内的内存状态。在默认的单进程部署下，这两个接口给出的都是准确结果，而且重启也会清掉所有封禁。跑多个 worker 时，每个 "
-"worker 各记一份计数，所以列表只反映应答的那个 worker，解除也可能需要调用多次。"
+"黑名单是进程内的内存状态。在默认的单进程部署下，这两个接口给出的都是准确结"
+"果，而且重启也会清掉所有封禁。跑多个 worker 时，每个 worker 各记一份计数，所"
+"以列表只反映应答的那个 worker，解除也可能需要调用多次。"
 
-#: ../developer/deployment.md:703
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:728
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:705
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:730
 msgid "**Stop and start, keeping data:**"
 msgstr "**停止再启动，保留数据：**"
 
-#: ../developer/deployment.md:711
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:736
 msgid ""
 "**Destroy the database and start clean.** `docker compose down -v` does "
-"*not* do this. `postgres_data` is declared `external: true` in "
-"`deploy/docker/docker-compose.yml`, and Compose never removes an external"
-" volume — `down -v` returns success and leaves it fully intact, so `make "
-"up` comes back on exactly the same data. Remove it by name:"
+"*not* do this. `postgres_data` is declared `external: true` in `deploy/"
+"docker/docker-compose.yml`, and Compose never removes an external volume — "
+"`down -v` returns success and leaves it fully intact, so `make up` comes "
+"back on exactly the same data. Remove it by name:"
 msgstr ""
-"**销毁数据库、从干净状态开始**。`docker compose down -v` 做*不到*这件事。`postgres_data` 在 "
-"`deploy/docker/docker-compose.yml` 里声明为 `external: true`，而 Compose "
-"从不删除外部卷——`down -v` 会返回成功，却把卷原封不动地留着，所以 `make up` 之后还是原来那份数据。要按名字删除这个卷："
+"**销毁数据库、从干净状态开始**。`docker compose down -v` 做*不到*这件事。"
+"`postgres_data` 在 `deploy/docker/docker-compose.yml` 里声明为 `external: "
+"true`，而 Compose 从不删除外部卷——`down -v` 会返回成功，却把卷原封不动地留"
+"着，所以 `make up` 之后还是原来那份数据。要按名字删除这个卷："
 
-#: ../developer/deployment.md:723
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:748
 msgid ""
 "The backend then starts as on a new deployment: it generates new secrets "
-"unless `.env` supplies them, imports whatever settings `.env` still "
-"holds, and prints a setup code for a new administrator."
+"unless `.env` supplies them, imports whatever settings `.env` still holds, "
+"and prints a setup code for a new administrator."
 msgstr ""
-"随后后端会像在新部署上一样启动：生成新的密钥（除非 `.env` 里已经提供），导入 `.env` "
-"里还留着的设置项，并打印一个设置码，供创建新的管理员。"
+"随后后端会像在新部署上一样启动：生成新的密钥（除非 `.env` 里已经提供），导入 "
+"`.env` 里还留着的设置项，并打印一个设置码，供创建新的管理员。"
 
-#: ../developer/deployment.md:728
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:753
 msgid ""
-"`docker volume rm` is irreversible and takes every account, API key, "
-"request log and stored setting with it. Take a `pg_dump` first if any of "
-"it matters."
+"`docker volume rm` is irreversible and takes every account, API key, request "
+"log and stored setting with it. Take a `pg_dump` first if any of it matters."
 msgstr ""
-"`docker volume rm` 不可逆，所有账号、API key、请求日志和已存储的设置项都会随之删除。只要其中有任何数据还有用，先做一次 "
-"`pg_dump`。"
+"`docker volume rm` 不可逆，所有账号、API key、请求日志和已存储的设置项都会随"
+"之删除。只要其中有任何数据还有用，先做一次 `pg_dump`。"
 
-#: ../developer/deployment.md:732
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:757
 msgid ""
-"pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary "
-"local volume that `make down` leaves in place. To clear pgAdmin's saved "
-"state, remove it by name as described in [Resetting pgAdmin](database.md"
-"#resetting-pgadmin)."
+"pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary local "
+"volume that `make down` leaves in place. To clear pgAdmin's saved state, "
+"remove it by name as described in [Resetting pgAdmin](database.md#resetting-"
+"pgadmin)."
 msgstr ""
-"pgAdmin 自己的卷（`hybridinference_pgadmin_data`）是普通的本地卷，`make down` 不会动它。要清掉 "
-"pgAdmin 保存的状态，参照[重置 pgAdmin](database.md#resetting-pgadmin)，按名字删除这个卷。"
+"pgAdmin 自己的卷（`hybridinference_pgadmin_data`）是普通的本地卷，`make "
+"down` 不会动它。要清掉 pgAdmin 保存的状态，参照[重置 pgAdmin]"
+"(database.md#resetting-pgadmin)，按名字删除这个卷。"
 
-#: ../developer/deployment.md:736
+#: ../hybridinference-pr1468-reconcile-c/docs/developer/deployment.md:761
 msgid "Rebuilding after code changes"
 msgstr "改动代码后重新构建"
+
+#~ msgid ""
+#~ "**Choose a username that is hard to guess.** Sign-in counts each attempt "
+#~ "before it checks the password: five per username from one address in 15 "
+#~ "minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all "
+#~ "addresses together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only "
+#~ "the attempts the other limits let through), and twenty per address in an "
+#~ "hour (`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in "
+#~ "to the account before, including the one you used for setup, holds a "
+#~ "device cookie (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/"
+#~ "auth`, kept on sign-out, valid for 180 days) and gets five attempts per "
+#~ "15 minutes of its own, so other people's guesses never lock it out. "
+#~ "Changing `JWT_SECRET_KEY` invalidates every device cookie until that "
+#~ "browser's next sign-in."
+#~ msgstr ""
+#~ "**选一个难猜的用户名**。登录在检查密码之前就为每次尝试计数：同一个用户名从"
+#~ "同一个地址每 15 分钟五次（`LOGIN_RATE_LIMIT_PER_15MIN`），同一个用户名从所"
+#~ "有地址合计五十次（`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`，只计入其他限制放行"
+#~ "的尝试），每个地址每小时二十次（`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`）。以前"
+#~ "登录过这个账号的浏览器——包括你做首次运行设置时用的那个——持有一个设备 "
+#~ "cookie（`<REFRESH_TOKEN_COOKIE_NAME>_device`，只发给 `/auth`，退出登录后仍"
+#~ "保留，有效期 180 天），并单独享有每 15 分钟五次的尝试额度，所以别人的猜测"
+#~ "永远锁不住它。修改 `JWT_SECRET_KEY` 会让所有设备 cookie 失效，直到那个浏览"
+#~ "器下次登录。"
+
+#~ msgid ""
+#~ "A value that breaks a rule with a setting already stored, such as "
+#~ "`TRUST_X_REAL_IP=1` while the stored `TRUST_PROXY_HEADERS` is off. The "
+#~ "stored value wins and the environment's counts as unset. Check proxy "
+#~ "trust after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` "
+#~ "with a default of `0`, so a database that stored that `0` keeps the "
+#~ "gateway off forwarded headers whatever `.env` says. Change it on the "
+#~ "Configuration tab; see [Trusted Proxies and Client IPs](trusted-proxies-"
+#~ "and-client-ips.md)."
+#~ msgstr ""
+#~ "与已存储的设置项一起违反规则的值，比如存储的 `TRUST_PROXY_HEADERS` 是关闭"
+#~ "的，而环境变量里是 `TRUST_X_REAL_IP=1`。存储的值优先，环境变量里的值被当作"
+#~ "未设置。升级之后要检查代理信任：Compose 文件透传 `TRUST_PROXY_HEADERS` 时"
+#~ "默认值是 `0`，所以如果数据库存下的是这个 `0`，无论 `.env` 怎么写，网关都不"
+#~ "会处理转发头。请在 Configuration 标签页上修改；见[可信代理与客户端 IP]"
+#~ "(trusted-proxies-and-client-ips.md)。"
+
+#~ msgid ""
+#~ "The backend has an in-process alert engine that posts to a Slack webhook. "
+#~ "It is off unless you turn it on, with two settings under **Alerts** on "
+#~ "the **Configuration** tab:"
+#~ msgstr ""
+#~ "后端内置了一个进程内的告警引擎，会把告警推送到 Slack webhook。它默认关闭，"
+#~ "要用 **Configuration** 标签页 **Alerts** 分类下的两个设置项打开："
+
+#~ msgid ""
+#~ "If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to "
+#~ "`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths."
+#~ msgstr ""
+#~ "`SLACK_ALERTS_WEBHOOK_URL` 为空时会改用 `SLACK_WEBHOOK_URL`，所以两条代码"
+#~ "路径可以共用一个 webhook。"
+
+#~ msgid ""
+#~ "`list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the "
+#~ "Configuration tab, with its validation, and never print a secret's value; "
+#~ "see [Without the console](configuration.md#without-the-console). The "
+#~ "running backend picks the change up within about ten seconds, or after a "
+#~ "restart for a setting marked **Restart required**."
+#~ msgstr ""
+#~ "`list`、`get KEY`、`set KEY VALUE` 和 `reset KEY` 的作用和 Configuration "
+#~ "标签页一样，校验规则也相同，而且从不打印密钥的值；见[不通过控制台]"
+#~ "(configuration.md#without-the-console)。正在运行的后端会在大约十秒内读到改"
+#~ "动；标着 **Restart required** 的设置项则要重启之后才生效。"
 
 #~ msgid "A `NEXT_PUBLIC_*` or `AGENT_*` console value"
 #~ msgstr "控制台的某个 `NEXT_PUBLIC_*` 或 `AGENT_*` 取值"
 
 #~ msgid ""
-#~ "The console's identity and its `/agents`"
-#~ " rewrites are Next.js **build args** "
-#~ "(`deploy/docker/docker-compose.yml`, "
-#~ "`frontend.build.args`), and Next resolves "
-#~ "`rewrites()` at build time into `.next"
-#~ "/routes-manifest.json`. Changing any "
-#~ "`NEXT_PUBLIC_*` value or the `AGENT_*` "
-#~ "URLs therefore takes a `make build "
-#~ "s=frontend`; a value supplied only at"
-#~ " container start is read by nothing,"
-#~ " and the symptom is the old "
-#~ "pages continuing to serve while `docker"
-#~ " inspect` shows the new value. "
-#~ "Adopting or rolling back those settings"
-#~ " is therefore a rebuild, not a "
-#~ "restart."
+#~ "The console's identity and its `/agents` rewrites are Next.js **build "
+#~ "args** (`deploy/docker/docker-compose.yml`, `frontend.build.args`), and "
+#~ "Next resolves `rewrites()` at build time into `.next/routes-"
+#~ "manifest.json`. Changing any `NEXT_PUBLIC_*` value or the `AGENT_*` URLs "
+#~ "therefore takes a `make build s=frontend`; a value supplied only at "
+#~ "container start is read by nothing, and the symptom is the old pages "
+#~ "continuing to serve while `docker inspect` shows the new value. Adopting "
+#~ "or rolling back those settings is therefore a rebuild, not a restart."
 #~ msgstr ""
-#~ "控制台的身份标识和它的 `/agents` rewrites 是 Next.js "
-#~ "的 **build args**（`deploy/docker/docker-compose.yml`"
-#~ " 的 `frontend.build.args`），而 Next 会在构建时把 "
-#~ "`rewrites()` 解析进 `.next/routes-manifest.json`。因此改动任何"
-#~ " `NEXT_PUBLIC_*` 取值或 `AGENT_*` URL 都需要一次"
-#~ " `make build "
-#~ "s=frontend`；只在容器启动时提供的值没有任何东西会去读，症状就是旧页面照常提供服务，而 `docker "
-#~ "inspect` 显示的却是新值。所以启用或回滚这些设置属于重新构建，不是重启。"
+#~ "控制台的身份标识和它的 `/agents` rewrites 是 Next.js 的 **build args**"
+#~ "（`deploy/docker/docker-compose.yml` 的 `frontend.build.args`），而 Next "
+#~ "会在构建时把 `rewrites()` 解析进 `.next/routes-manifest.json`。因此改动任"
+#~ "何 `NEXT_PUBLIC_*` 取值或 `AGENT_*` URL 都需要一次 `make build "
+#~ "s=frontend`；只在容器启动时提供的值没有任何东西会去读，症状就是旧页面照常"
+#~ "提供服务，而 `docker inspect` 显示的却是新值。所以启用或回滚这些设置属于重"
+#~ "新构建，不是重启。"
 
 #~ msgid ""
-#~ "For asynchronous read-only Codex "
-#~ "investigation of alerts, see [Codex "
-#~ "On-Call](codex-oncall.md)."
-#~ msgstr "要让 Codex 以异步、只读的方式排查告警，见 [Codex On-Call](codex-oncall.md)。"
+#~ "For asynchronous read-only Codex investigation of alerts, see [Codex On-"
+#~ "Call](codex-oncall.md)."
+#~ msgstr ""
+#~ "要让 Codex 以异步、只读的方式排查告警，见 [Codex On-Call](codex-"
+#~ "oncall.md)。"
 
 #~ msgid ""
-#~ "Running HybridInference as a long-lived"
-#~ " deployment: what starts, how to "
-#~ "operate it, and how to reset it"
-#~ " without losing (or accidentally keeping)"
-#~ " data."
-#~ msgstr "把 HybridInference 作为长期运行的部署来跑：会启动些什么、怎么运维，以及怎样在不丢数据（也不会意外留下数据）的前提下重置它。"
+#~ "Running HybridInference as a long-lived deployment: what starts, how to "
+#~ "operate it, and how to reset it without losing (or accidentally keeping) "
+#~ "data."
+#~ msgstr ""
+#~ "把 HybridInference 作为长期运行的部署来跑：会启动些什么、怎么运维，以及怎"
+#~ "样在不丢数据（也不会意外留下数据）的前提下重置它。"
 
 #~ msgid "Known gap: protections the stack does not provide itself"
 #~ msgstr "已知缺口：这套服务栈自身不提供的防护"
@@ -1564,143 +1739,107 @@ msgstr "改动代码后重新构建"
 #~ msgstr "未实现"
 
 #~ msgid ""
-#~ "The third is worth separating from "
-#~ "what the gateway *does* do: it "
-#~ "reads forwarded headers, gated on the"
-#~ " relevant trust flag **and** an "
-#~ "explicitly configured CIDR list "
-#~ "(`TRUSTED_PROXIES` or `TRUSTED_CLOUDFLARE_NETWORKS`), "
-#~ "but it never rewrites them. Enabling "
-#~ "a flag without authorizing the immediate"
-#~ " peer therefore remains fail-closed. "
-#~ "With no rewriting hop in front, "
-#~ "the leftmost `X-Forwarded-For` entry is"
-#~ " whatever the caller sent — which "
-#~ "is why `CF-Connecting-IP` is "
-#~ "preferred when Cloudflare is the "
-#~ "immediate proxy. See [Trusted proxies "
-#~ "and client IPs](trusted-proxies-and-"
-#~ "client-ips.md)."
+#~ "The third is worth separating from what the gateway *does* do: it reads "
+#~ "forwarded headers, gated on the relevant trust flag **and** an explicitly "
+#~ "configured CIDR list (`TRUSTED_PROXIES` or "
+#~ "`TRUSTED_CLOUDFLARE_NETWORKS`), but it never rewrites them. Enabling a "
+#~ "flag without authorizing the immediate peer therefore remains fail-"
+#~ "closed. With no rewriting hop in front, the leftmost `X-Forwarded-For` "
+#~ "entry is whatever the caller sent — which is why `CF-Connecting-IP` is "
+#~ "preferred when Cloudflare is the immediate proxy. See [Trusted proxies "
+#~ "and client IPs](trusted-proxies-and-client-ips.md)."
 #~ msgstr ""
-#~ "第三条需要与网关*确实*会做的事区分开：网关会读取转发头，但前提是启用了相应的信任开关**并且**显式配置了 CIDR "
-#~ "列表（`TRUSTED_PROXIES` 或 "
-#~ "`TRUSTED_CLOUDFLARE_NETWORKS`），但从不重写这些头。未授权直接对端时启用开关仍然会安全失败。前面没有重写转发链的一跳时，最左侧的"
-#~ " `X-Forwarded-For` 条目就是调用方发送的任意值——这也是 Cloudflare"
-#~ " 作为直接代理时优先采用 `CF-Connecting-IP` "
-#~ "的原因。参见[可信代理与客户端 IP](trusted-proxies-and-"
+#~ "第三条需要与网关*确实*会做的事区分开：网关会读取转发头，但前提是启用了相应"
+#~ "的信任开关**并且**显式配置了 CIDR 列表（`TRUSTED_PROXIES` 或 "
+#~ "`TRUSTED_CLOUDFLARE_NETWORKS`），但从不重写这些头。未授权直接对端时启用开"
+#~ "关仍然会安全失败。前面没有重写转发链的一跳时，最左侧的 `X-Forwarded-For` "
+#~ "条目就是调用方发送的任意值——这也是 Cloudflare 作为直接代理时优先采用 `CF-"
+#~ "Connecting-IP` 的原因。参见[可信代理与客户端 IP](trusted-proxies-and-"
 #~ "client-ips.md)。"
 
 #~ msgid ""
-#~ "This is recorded as a known gap,"
-#~ " not a regression: whether to "
-#~ "reimplement any of it in the "
-#~ "application is an open decision."
-#~ msgstr "这里记录为已知缺口，而非回归问题：是否要在应用层重新实现其中任何一条，仍是一个待定决策。"
+#~ "This is recorded as a known gap, not a regression: whether to reimplement "
+#~ "any of it in the application is an open decision."
+#~ msgstr ""
+#~ "这里记录为已知缺口，而非回归问题：是否要在应用层重新实现其中任何一条，仍是"
+#~ "一个待定决策。"
 
 #~ msgid ""
-#~ "Canonical console identity comes from "
-#~ "the active distribution's versioned branding"
-#~ " YAML through `/site-config`, and "
-#~ "`/agents` gets its two destinations from"
-#~ " server-only runtime environment. Neither"
-#~ " change requires a frontend image "
-#~ "rebuild. Recreate the frontend with "
-#~ "`make up` after changing its runtime "
-#~ "environment; restart the backend after "
+#~ "Canonical console identity comes from the active distribution's versioned "
+#~ "branding YAML through `/site-config`, and `/agents` gets its two "
+#~ "destinations from server-only runtime environment. Neither change "
+#~ "requires a frontend image rebuild. Recreate the frontend with `make up` "
+#~ "after changing its runtime environment; restart the backend after "
 #~ "changing the branding document it loads."
 #~ msgstr ""
-#~ "规范的控制台身份由当前分发版的版本化品牌 YAML 通过 `/site-config`"
-#~ " 提供；`/agents` "
-#~ "的两个目标地址来自仅服务端可见的运行时环境。这两类修改都不需要重建前端镜像。修改前端运行时环境后用 `make "
-#~ "up` 重新创建 frontend；修改后端加载的品牌文档后重启 backend。"
+#~ "规范的控制台身份由当前分发版的版本化品牌 YAML 通过 `/site-config` 提供；`/"
+#~ "agents` 的两个目标地址来自仅服务端可见的运行时环境。这两类修改都不需要重建"
+#~ "前端镜像。修改前端运行时环境后用 `make up` 重新创建 frontend；修改后端加载"
+#~ "的品牌文档后重启 backend。"
 
 #~ msgid ""
-#~ "The console requires a valid `/site-"
-#~ "config` response before rendering normal "
-#~ "pages. A failed HTTP request, a "
-#~ "three-second timeout, or invalid "
-#~ "JSON/schema shows a retryable configuration"
-#~ " error instead of silently enabling "
-#~ "build-time feature defaults. Check the "
-#~ "frontend logs and backend connectivity, "
-#~ "then retry the page after recovery. "
-#~ "Valid neutral defaults and legacy "
-#~ "documents remain supported; operators do "
-#~ "not need to add custom settings "
-#~ "just to start the example deployment."
+#~ "The console requires a valid `/site-config` response before rendering "
+#~ "normal pages. A failed HTTP request, a three-second timeout, or invalid "
+#~ "JSON/schema shows a retryable configuration error instead of silently "
+#~ "enabling build-time feature defaults. Check the frontend logs and backend "
+#~ "connectivity, then retry the page after recovery. Valid neutral defaults "
+#~ "and legacy documents remain supported; operators do not need to add "
+#~ "custom settings just to start the example deployment."
 #~ msgstr ""
-#~ "控制台只有收到有效的 `/site-config` 响应才会渲染正常页面。HTTP "
-#~ "请求失败、超过三秒的超时或无效的 "
-#~ "JSON/配置格式会显示可重试的配置错误，而不会悄悄启用构建时的默认功能。请检查前端日志和后端连通性，恢复后重试页面。有效的中性默认配置和旧版配置仍受支持；部署者不必为了启动示例部署而添加自定义设置。"
+#~ "控制台只有收到有效的 `/site-config` 响应才会渲染正常页面。HTTP 请求失败、"
+#~ "超过三秒的超时或无效的 JSON/配置格式会显示可重试的配置错误，而不会悄悄启用"
+#~ "构建时的默认功能。请检查前端日志和后端连通性，恢复后重试页面。有效的中性默"
+#~ "认配置和旧版配置仍受支持；部署者不必为了启动示例部署而添加自定义设置。"
 
 #~ msgid ""
-#~ "The Compose file still exposes the "
-#~ "old branding variables as build "
-#~ "arguments for source compatibility. The "
-#~ "Dockerfile also retains the two legacy"
-#~ " agent arguments for explicit pre-W7 "
-#~ "downstream build pipelines, but upstream "
-#~ "Compose does not populate them. Those"
-#~ " are transition bridges, not the "
-#~ "canonical release path: neutral published "
-#~ "images omit them. Values that genuinely"
-#~ " remain `NEXT_PUBLIC_*` build metadata or"
-#~ " compatibility settings are compiled into"
-#~ " the browser bundle and still require"
-#~ " `make build s=frontend`. See [The "
-#~ "public path table](public-path-table.md) "
-#~ "for the distinction between runtime "
-#~ "handlers and legacy build-time rewrites."
+#~ "The Compose file still exposes the old branding variables as build "
+#~ "arguments for source compatibility. The Dockerfile also retains the two "
+#~ "legacy agent arguments for explicit pre-W7 downstream build pipelines, "
+#~ "but upstream Compose does not populate them. Those are transition "
+#~ "bridges, not the canonical release path: neutral published images omit "
+#~ "them. Values that genuinely remain `NEXT_PUBLIC_*` build metadata or "
+#~ "compatibility settings are compiled into the browser bundle and still "
+#~ "require `make build s=frontend`. See [The public path table](public-path-"
+#~ "table.md) for the distinction between runtime handlers and legacy build-"
+#~ "time rewrites."
 #~ msgstr ""
-#~ "为保持源码兼容，Compose 文件仍把旧的品牌变量暴露为构建参数。Dockerfile 也保留两个旧版 "
-#~ "agent 参数，供 W7 之前的下游流水线显式使用，但上游 Compose "
-#~ "不会为它们赋值。这些都是迁移期兼容桥，不是规范发布路径：发布的中立镜像会省略它们。真正仍属于 `NEXT_PUBLIC_*`"
-#~ " 的构建元数据或兼容设置会被编译进浏览器 bundle，因此仍需执行 `make build"
-#~ " s=frontend`。运行时 handler 与旧版构建期 rewrites "
-#~ "的区别见[公网路径表](public-path-table.md)。"
+#~ "为保持源码兼容，Compose 文件仍把旧的品牌变量暴露为构建参数。Dockerfile 也"
+#~ "保留两个旧版 agent 参数，供 W7 之前的下游流水线显式使用，但上游 Compose 不"
+#~ "会为它们赋值。这些都是迁移期兼容桥，不是规范发布路径：发布的中立镜像会省略"
+#~ "它们。真正仍属于 `NEXT_PUBLIC_*` 的构建元数据或兼容设置会被编译进浏览器 "
+#~ "bundle，因此仍需执行 `make build s=frontend`。运行时 handler 与旧版构建期 "
+#~ "rewrites 的区别见[公网路径表](public-path-table.md)。"
 
 #~ msgid ""
-#~ "There is no `config/models.yaml` or "
-#~ "`config/routing.yaml` in this repository. "
-#~ "`resolve_config_path` "
-#~ "(`apps/backend/serving/config/distribution.py`) picks each"
-#~ " file by precedence: an explicit "
-#~ "`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / "
-#~ "`ALERTS_CONFIG_PATH`, then an active "
-#~ "distribution manifest, then the built-in"
-#~ " defaults under `config/examples/`. The "
-#~ "full rules, including why "
-#~ "`DISTRIBUTION_CONFIG_MODE` defaults to `dark`, "
-#~ "are in [Installation](installation.md#where-the-"
+#~ "There is no `config/models.yaml` or `config/routing.yaml` in this "
+#~ "repository. `resolve_config_path` (`apps/backend/serving/config/"
+#~ "distribution.py`) picks each file by precedence: an explicit "
+#~ "`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, then "
+#~ "an active distribution manifest, then the built-in defaults under `config/"
+#~ "examples/`. The full rules, including why `DISTRIBUTION_CONFIG_MODE` "
+#~ "defaults to `dark`, are in [Installation](installation.md#where-the-"
 #~ "config-files-live)."
 #~ msgstr ""
-#~ "本仓库里没有 `config/models.yaml`，也没有 "
-#~ "`config/routing.yaml`。`resolve_config_path`（`apps/backend/serving/config/distribution.py`）按优先级挑选每个文件：先看显式的"
-#~ " `MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` /"
-#~ " `ALERTS_CONFIG_PATH`，再看处于 active 的 distribution"
-#~ " manifest，最后是 `config/examples/` 下的内置默认值。完整规则（包括 "
-#~ "`DISTRIBUTION_CONFIG_MODE` 为什么默认是 "
-#~ "`dark`）见[安装](installation.md#where-the-config-"
-#~ "files-live)。"
+#~ "本仓库里没有 `config/models.yaml`，也没有 `config/routing.yaml`。"
+#~ "`resolve_config_path`（`apps/backend/serving/config/distribution.py`）按优"
+#~ "先级挑选每个文件：先看显式的 `MODELS_CONFIG_PATH` / "
+#~ "`ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`，再看处于 active 的 "
+#~ "distribution manifest，最后是 `config/examples/` 下的内置默认值。完整规则"
+#~ "（包括 `DISTRIBUTION_CONFIG_MODE` 为什么默认是 `dark`）见[安装]"
+#~ "(installation.md#where-the-config-files-live)。"
 
 #~ msgid ""
-#~ "pgAdmin's own volume "
-#~ "(`hybridinference_pgadmin_data`) is an ordinary "
-#~ "local volume, so a `down -v` "
-#~ "*would* remove it. `make down` never "
-#~ "passes `-v`; run `docker compose "
-#~ "--profile admin down -v` yourself, or"
-#~ " remove the volume by name as "
-#~ "above."
+#~ "pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary "
+#~ "local volume, so a `down -v` *would* remove it. `make down` never passes "
+#~ "`-v`; run `docker compose --profile admin down -v` yourself, or remove "
+#~ "the volume by name as above."
 #~ msgstr ""
 #~ "pgAdmin 自己的卷（`hybridinference_pgadmin_data`）是普通的本地卷，所以 "
-#~ "`down -v` 确实*会*把它删掉。`make down` 从不带 "
-#~ "`-v`；要么自己运行 `docker compose --profile admin"
-#~ " down -v`，要么像上面那样按名字删除这个卷。"
+#~ "`down -v` 确实*会*把它删掉。`make down` 从不带 `-v`；要么自己运行 `docker "
+#~ "compose --profile admin down -v`，要么像上面那样按名字删除这个卷。"
 
 #~ msgid ""
-#~ "Every deployment needs one administrator "
-#~ "to start with. Choose how you "
+#~ "Every deployment needs one administrator to start with. Choose how you "
 #~ "create it with care:"
 #~ msgstr "每个部署一开始都需要一个管理员。创建方式要慎重选择："
 
@@ -1708,65 +1847,46 @@ msgstr "改动代码后重新构建"
 #~ msgstr "改用下面两种做法之一。"
 
 #~ msgid ""
-#~ "Both `signup_enabled` and "
-#~ "`signup_require_email_verification` can also be "
-#~ "flipped at runtime through the settings"
-#~ " store, and the runtime value wins"
-#~ " over the environment. A `.env` line"
-#~ " is the starting point, not a "
+#~ "Both `signup_enabled` and `signup_require_email_verification` can also be "
+#~ "flipped at runtime through the settings store, and the runtime value wins "
+#~ "over the environment. A `.env` line is the starting point, not a "
 #~ "guarantee."
 #~ msgstr ""
-#~ "`signup_enabled` 和 `signup_require_email_verification` "
-#~ "也可以在运行时通过 settings store 修改，而且运行时的值优先于环境变量。`.env`"
-#~ " 里写的只是初始值，不能保证一直生效。"
+#~ "`signup_enabled` 和 `signup_require_email_verification` 也可以在运行时通"
+#~ "过 settings store 修改，而且运行时的值优先于环境变量。`.env` 里写的只是初"
+#~ "始值，不能保证一直生效。"
 
 #~ msgid ""
-#~ "Read the setup code from the "
-#~ "backend's log. The backend prints a "
-#~ "new one every time it starts until"
-#~ " setup is complete, so use the "
-#~ "newest:"
-#~ msgstr "从后端日志里读出设置码。在设置完成之前，后端每次启动都会打印一个新的，所以要用最新的那个："
+#~ "Read the setup code from the backend's log. The backend prints a new one "
+#~ "every time it starts until setup is complete, so use the newest:"
+#~ msgstr ""
+#~ "从后端日志里读出设置码。在设置完成之前，后端每次启动都会打印一个新的，所以"
+#~ "要用最新的那个："
 
 #~ msgid ""
-#~ "**Choose a username that is hard "
-#~ "to guess.** Sign-in allows five "
-#~ "attempts per username in 15 minutes "
-#~ "(`LOGIN_RATE_LIMIT_PER_15MIN`), and counts each "
-#~ "attempt before it checks the password,"
-#~ " so anyone who knows a username "
-#~ "can keep that account locked out —"
-#~ " and `admin` is the first name "
-#~ "anyone tries. A lockout lasts as "
-#~ "long as the attempts keep coming "
-#~ "and ends 15 minutes after they "
-#~ "stop, or when the backend restarts, "
-#~ "because the counts are held in "
-#~ "memory. Nothing below needs a sign-"
-#~ "in: `ADMIN_TOKEN`, when set, still "
-#~ "reaches the admin API, and the "
-#~ "command-line tools work on the "
-#~ "database directly."
+#~ "**Choose a username that is hard to guess.** Sign-in allows five attempts "
+#~ "per username in 15 minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), and counts "
+#~ "each attempt before it checks the password, so anyone who knows a "
+#~ "username can keep that account locked out — and `admin` is the first name "
+#~ "anyone tries. A lockout lasts as long as the attempts keep coming and "
+#~ "ends 15 minutes after they stop, or when the backend restarts, because "
+#~ "the counts are held in memory. Nothing below needs a sign-in: "
+#~ "`ADMIN_TOKEN`, when set, still reaches the admin API, and the command-"
+#~ "line tools work on the database directly."
 #~ msgstr ""
-#~ "**选一个难猜的用户名**。登录对每个用户名每 15 "
-#~ "分钟只允许尝试五次（`LOGIN_RATE_LIMIT_PER_15MIN`），而且在检查密码之前就计数，所以知道用户名的人可以让这个账号一直处于锁定状态——`admin`"
-#~ " 又恰恰是谁都会先试的名字。只要尝试还在继续，锁定就一直持续，尝试停止 15 "
-#~ "分钟后解除；后端重启也会解除，因为这些计数只保存在内存里。下面这些都不需要登录：设置了 `ADMIN_TOKEN` "
-#~ "时，它照样能访问管理 API，命令行工具则直接操作数据库。"
-
-#~ msgid "`https://hooks.slack.com/services/...`"
-#~ msgstr ""
+#~ "**选一个难猜的用户名**。登录对每个用户名每 15 分钟只允许尝试五次"
+#~ "（`LOGIN_RATE_LIMIT_PER_15MIN`），而且在检查密码之前就计数，所以知道用户名"
+#~ "的人可以让这个账号一直处于锁定状态——`admin` 又恰恰是谁都会先试的名字。只要"
+#~ "尝试还在继续，锁定就一直持续，尝试停止 15 分钟后解除；后端重启也会解除，因"
+#~ "为这些计数只保存在内存里。下面这些都不需要登录：设置了 `ADMIN_TOKEN` 时，"
+#~ "它照样能访问管理 API，命令行工具则直接操作数据库。"
 
 #~ msgid ""
-#~ "Slack and WeCom are mutually exclusive."
-#~ " Saving a channel switch clears the"
-#~ " old channel in the same update. "
-#~ "All webhook changes require a backend"
-#~ " restart; until then, normal alerts "
-#~ "continue using the previous channel. "
-#~ "**Pending restart** identifies saved changes"
-#~ " waiting to take effect."
+#~ "Slack and WeCom are mutually exclusive. Saving a channel switch clears "
+#~ "the old channel in the same update. All webhook changes require a backend "
+#~ "restart; until then, normal alerts continue using the previous channel. "
+#~ "**Pending restart** identifies saved changes waiting to take effect."
 #~ msgstr ""
-#~ "Slack 和企业微信互斥。保存渠道切换时，会在同一次更新中清空旧渠道。所有 webhook "
-#~ "变更都需要重启后端才能生效；在此之前，正常告警继续使用原来的渠道。**Pending restart** "
-#~ "表示变更已保存，等待重启后生效。"
+#~ "Slack 和企业微信互斥。保存渠道切换时，会在同一次更新中清空旧渠道。所有 "
+#~ "webhook 变更都需要重启后端才能生效；在此之前，正常告警继续使用原来的渠道。"
+#~ "**Pending restart** 表示变更已保存，等待重启后生效。"

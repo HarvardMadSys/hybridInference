@@ -84,7 +84,7 @@ from serving.utils.jwt import (
 from serving.utils.logging import get_logger
 from serving.utils.login_rate_limit import check_and_record_login
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip, get_client_ip_info
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.turnstile import verify_turnstile_token
 
@@ -381,6 +381,7 @@ async def login(
     - 5 attempts per 15 minutes per email or login name from one client address
     - 50 attempts per 15 minutes per email or login name from all addresses
     - 20 attempts per hour per IP
+    - unresolved callers share a separate coarse hourly admission budget
     A browser presenting a device cookie entry for the identifier, from an
     earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead.
     """
@@ -389,8 +390,10 @@ async def login(
 
     identifier = body.email
 
-    # Record on entry so probing varied passwords cannot bypass the limit.
-    client_ip = get_client_ip(request)
+    # Every admitted password check counts, including a wrong password.
+    # Refused attempts do not grow the limiter's admission queues.
+    client_ip_info = get_client_ip_info(request)
+    client_ip = client_ip_info.client_ip if client_ip_info.resolved else "unknown"
 
     async def _record(
         outcome: str,
@@ -422,16 +425,23 @@ async def login(
     # Only rate limiting differs for a recognized browser: the password is
     # checked, and every outcome answered, exactly as for any other client.
     device = recognized_device(request, identifier)
-    allowed, reason = await check_and_record_login(identifier, client_ip, device=device)
+    allowed, reason = await check_and_record_login(identifier, client_ip_info, device=device)
     if not allowed:
         # "ip" is the hourly per-IP window; "email" (this account from this
         # address), "account" (from every address) and "device" (this
         # browser) are 15-minute windows.
-        retry_after = "3600" if reason == "ip" else "900"
-        await _record("failure", failure_reason="rate_limited", user_id=None)
+        retry_after = "3600" if reason in {"ip", "unresolved"} else "900"
+        failure_reason = (
+            "unresolved_traffic_rate_limited" if reason == "unresolved" else "rate_limited"
+        )
+        await _record("failure", failure_reason=failure_reason, user_id=None)
         raise HTTPException(
             status_code=429,
-            detail="Too many login attempts. Please try again later.",
+            detail=(
+                "Too many unresolved login attempts. Please try again later."
+                if reason == "unresolved"
+                else "Too many login attempts. Please try again later."
+            ),
             headers={"Retry-After": retry_after},
         )
 
