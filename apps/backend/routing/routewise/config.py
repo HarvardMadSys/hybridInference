@@ -6,6 +6,7 @@ unified effective cost plus a cost-budgeted mean-TTFT LP.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -131,6 +132,12 @@ class RouteWiseConfig:
     # available in the cache scope.
     prefix_cache_cost_adjustment_enabled: bool = False
 
+    # Shared PrefillLoadTracker features are opt-in. With both RouteWise load
+    # routing and endpoint priority disabled, RouteWise does not acquire leases.
+    prefill_load_routing_enabled: bool = False
+    prefill_load_scale_ms_per_1k: float = 1.0
+    prefill_load_max_penalty_ms: float = 5000.0
+
     def __post_init__(self) -> None:
         if self.latency_hedge_mode not in VALID_LATENCY_HEDGE_MODES:
             allowed = ", ".join(sorted(VALID_LATENCY_HEDGE_MODES))
@@ -142,4 +149,18 @@ class RouteWiseConfig:
             allowed = ", ".join(sorted(VALID_FALLBACK_MODES))
             raise ValueError(
                 f"Unsupported fallback_mode {self.fallback_mode!r}; expected one of: {allowed}"
+            )
+        if self.prefill_load_scale_ms_per_1k < 0 or not math.isfinite(
+            self.prefill_load_scale_ms_per_1k
+        ):
+            raise ValueError(
+                "prefill_load_scale_ms_per_1k must be finite and >= 0, "
+                f"got {self.prefill_load_scale_ms_per_1k}"
+            )
+        if self.prefill_load_max_penalty_ms < 0 or not math.isfinite(
+            self.prefill_load_max_penalty_ms
+        ):
+            raise ValueError(
+                "prefill_load_max_penalty_ms must be finite and >= 0, "
+                f"got {self.prefill_load_max_penalty_ms}"
             )

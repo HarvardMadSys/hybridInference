@@ -41,9 +41,6 @@ _MOVED_TO_ROUTE_LEVEL = {
 # changed what a deployment provisions, so a models.yaml that still sets one
 # keeps booting: the key is dropped and has no effect, whatever its value.
 _RETIRED_PARAMS: dict[str, str] = {
-    "prefill_load_routing_enabled": "prefill-load-aware routing (#1419) was withdrawn",
-    "prefill_load_scale_ms_per_1k": "prefill-load-aware routing (#1419) was withdrawn",
-    "prefill_load_max_penalty_ms": "prefill-load-aware routing (#1419) was withdrawn",
     "latency_min_samples": "provider selection never read it",
 }
 _warned_retired_params: set[str] = set()

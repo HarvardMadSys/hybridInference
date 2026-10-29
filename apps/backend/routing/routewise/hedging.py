@@ -72,11 +72,14 @@ class HedgedAdapter(BaseAdapter):
         backup: BaseAdapter | None = None,
         hedge_threshold_sec: float | None = None,
         event_sink: EndpointHealthRegistry | None = None,
+        endpoint_failure_hook: Callable[[str], None] | None = None,
         backup_start_hook: Callable[[], bool] | None = None,
         backup_release: Callable[[], None] | None = None,
         checkpoint_backup_selector: CheckpointBackupSelector[BaseAdapter] | None = None,
+        backup_dispatch_hook: Callable[[BaseAdapter], None] | None = None,
         hedge_checkpoints_sec: Sequence[float] = (),
         stream_race_deadline_sec: float | None = _STREAM_RACE_DEADLINE_SECONDS,
+        primary_priority: int | None = None,
     ) -> None:
         if event_sink is None:
             raise TypeError("event_sink is required")
@@ -100,9 +103,12 @@ class HedgedAdapter(BaseAdapter):
             else _first_checkpoint(hedge_checkpoints_sec)
         )
         self.event_sink = event_sink
+        self.endpoint_failure_hook = endpoint_failure_hook
         self.backup_start_hook = backup_start_hook
         self.backup_release = backup_release
         self.checkpoint_backup_selector = checkpoint_backup_selector
+        self.backup_dispatch_hook = backup_dispatch_hook
+        self.primary_priority = primary_priority
         self.hedge_checkpoints_sec = _normalize_checkpoints(
             hedge_checkpoints_sec
             if checkpoint_backup_selector is not None
@@ -117,6 +123,8 @@ class HedgedAdapter(BaseAdapter):
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
         self._stream_backup_gen: AsyncGenerator[str, None] | None = None
         self._stream_backup_released = False
+        self._stream_backup_prefill_released = False
+        self._backup_prefill_confirmed = False
         self._stream_backup_cleanup_task: asyncio.Task[None] | None = None
         self._stream_backup_cleanup_owns_generator = False
         self.stream_race_deadline_sec = (
@@ -154,6 +162,8 @@ class HedgedAdapter(BaseAdapter):
         self.hedge_triggered = True
         self.hedge_delay_sec = dispatch.elapsed_sec
         self.hedge_success_probability = dispatch.success_probability
+        if self.backup_dispatch_hook is not None:
+            self.backup_dispatch_hook(dispatch.backup)
         return dispatch
 
     def _finish_backup(
@@ -162,6 +172,44 @@ class HedgedAdapter(BaseAdapter):
     ) -> None:
         if dispatch is not None and dispatch.release is not None:
             dispatch.release()
+
+    @staticmethod
+    def _leg_priority(adapter: BaseAdapter, priority: Any) -> int | None:
+        """Return a priority only for endpoints configured to accept it."""
+        if getattr(adapter.config, "priority_scheduling", False) is not True:
+            return None
+        if isinstance(priority, int) and not isinstance(priority, bool):
+            return priority
+        return None
+
+    @contextlib.contextmanager
+    def _priority_scope(self, adapter: BaseAdapter, priority: Any):
+        """Set one leg's priority in a context that is reset after dispatch."""
+        with req_ctx.push(**{req_ctx.UPSTREAM_PRIORITY: self._leg_priority(adapter, priority)}):
+            yield
+
+    def _confirm_backup_prefill(
+        self,
+        dispatch: CheckpointBackupDispatch[BaseAdapter] | None,
+    ) -> None:
+        """Confirm a backup's prefill when its first response proves completion."""
+        if dispatch is None or self._backup_prefill_confirmed:
+            return
+        callback = dispatch.metadata.get("prefill_confirm")
+        if callable(callback):
+            callback()
+            self._backup_prefill_confirmed = True
+            self._stream_backup_prefill_released = True
+
+    async def _next_leg_chunk(
+        self,
+        generator: AsyncGenerator[str, None],
+        adapter: BaseAdapter,
+        priority: Any,
+    ) -> str:
+        """Advance one stream under that endpoint's task-local priority."""
+        with self._priority_scope(adapter, priority):
+            return await generator.__anext__()
 
     async def _finish_stream_backup(
         self,
@@ -181,6 +229,7 @@ class HedgedAdapter(BaseAdapter):
             return
         # Provider capacity remains held until the generator/task has
         # actually stopped.
+        self._release_stream_backup_prefill(dispatch)
         try:
             _cancel_task(next_task)
             await _safe_await_task(next_task)
@@ -220,6 +269,8 @@ class HedgedAdapter(BaseAdapter):
     async def chat_completion(
         self,
         messages: list[dict[str, Any]],
+        *,
+        primary_prefill_release: Callable[[], None] | None = None,
         **params: Any,
     ) -> dict[str, Any]:
         """Race primary against delayed backup for non-streaming completion.
@@ -227,20 +278,45 @@ class HedgedAdapter(BaseAdapter):
         When backup wins, ``self.config`` is swapped to the backup adapter's
         config so that RouteWise execution reads the real winner's provider/endpoint_id
         for ``_routing`` metadata and ``req_ctx``.
+
+        ``primary_prefill_release`` is invoked when the primary leg fails, so
+        the RouteWise wrapper stops charging an endpoint that is no longer
+        prefilling while an already-running backup continues.
         """
         primary_endpoint = _endpoint_id_from_adapter(self.primary)
+        primary_prefill_released = False
+
+        def _release_primary_prefill() -> None:
+            nonlocal primary_prefill_released
+            if primary_prefill_released or primary_prefill_release is None:
+                return
+            primary_prefill_released = True
+            primary_prefill_release()
 
         # Tracks whether the backup task has progressed past its initial
         # sleep(h*) delay.  When primary fails, we only cancel+relaunch the
         # backup if it is still sleeping; if the real request is already
         # in-flight, cancelling it would waste an otherwise-useful attempt.
         backup_past_sleep = False
+        backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
+        backup_prefill_released = False
+
+        def _release_backup_prefill() -> None:
+            """Drop a losing backup's load charge before awaiting cancellation."""
+            nonlocal backup_prefill_released
+            if backup_dispatch is None or backup_prefill_released:
+                return
+            backup_prefill_released = True
+            callback = backup_dispatch.metadata.get("prefill_release")
+            if callable(callback):
+                callback()
 
         async def _run_primary() -> dict[str, Any]:
-            return await self.primary.chat_completion(messages, **params)
+            with self._priority_scope(self.primary, self.primary_priority):
+                return await self.primary.chat_completion(messages, **params)
 
         async def _run_backup_delayed() -> dict[str, Any]:
-            nonlocal backup_past_sleep
+            nonlocal backup_dispatch, backup_past_sleep
             loop = asyncio.get_running_loop()
             schedule_start = loop.time()
             for checkpoint_sec in self.hedge_checkpoints_sec:
@@ -250,15 +326,21 @@ class HedgedAdapter(BaseAdapter):
                 dispatch = self._start_backup_at(checkpoint_sec)
                 if dispatch is None:
                     continue
+                backup_dispatch = dispatch
                 backup_past_sleep = True
                 try:
-                    return await dispatch.backup.chat_completion(messages, **params)
+                    with self._priority_scope(
+                        dispatch.backup, dispatch.metadata.get("upstream_priority")
+                    ):
+                        result = await dispatch.backup.chat_completion(messages, **params)
+                    self._confirm_backup_prefill(dispatch)
+                    return result
                 finally:
                     self._finish_backup(dispatch)
             raise HedgeBackupUnavailable("no checkpoint hedge backup selected")
 
         async def _run_backup_immediate() -> dict[str, Any]:
-            nonlocal backup_past_sleep
+            nonlocal backup_dispatch, backup_past_sleep
             elapsed_sec = max(
                 0.0,
                 asyncio.get_running_loop().time() - schedule_start,
@@ -266,9 +348,15 @@ class HedgedAdapter(BaseAdapter):
             dispatch = self._start_backup_at(elapsed_sec)
             if dispatch is None:
                 raise HedgeBackupUnavailable("no checkpoint hedge backup selected")
+            backup_dispatch = dispatch
             backup_past_sleep = True
             try:
-                return await dispatch.backup.chat_completion(messages, **params)
+                with self._priority_scope(
+                    dispatch.backup, dispatch.metadata.get("upstream_priority")
+                ):
+                    result = await dispatch.backup.chat_completion(messages, **params)
+                self._confirm_backup_prefill(dispatch)
+                return result
             finally:
                 self._finish_backup(dispatch)
 
@@ -286,13 +374,14 @@ class HedgedAdapter(BaseAdapter):
                     exc = task.exception()
                     if exc is not None:
                         if task is primary_task:
-                            self.event_sink.record_failure(
+                            primary_error = exc
+                            _release_primary_prefill()
+                            self._record_leg_failure(
                                 primary_endpoint,
                                 reason=exc.__class__.__name__,
                                 exc=exc,
                             )
                             self.failed_attempts.append(failed_attempt(self.primary, exc))
-                            primary_error = exc
                             # Primary failed.  If the backup is still in its
                             # initial sleep(h*), cancel it and re-launch without
                             # the delay.  If the backup is already executing
@@ -306,7 +395,7 @@ class HedgedAdapter(BaseAdapter):
                                 pending.add(backup_task)
                         else:
                             if not isinstance(exc, HedgeBackupUnavailable):
-                                self.event_sink.record_failure(
+                                self._record_leg_failure(
                                     _endpoint_id_from_adapter(self.backup),
                                     reason=exc.__class__.__name__,
                                     exc=exc,
@@ -318,6 +407,8 @@ class HedgedAdapter(BaseAdapter):
                         if task is primary_task:
                             self.event_sink.record_success(primary_endpoint)
                             # self.config stays as primary.config (already correct).
+                            if backup_task in pending:
+                                _release_backup_prefill()
                             backup_task.cancel()
                             await _safe_await_task(backup_task)
                         else:
@@ -326,6 +417,11 @@ class HedgedAdapter(BaseAdapter):
                             assert self.backup is not None
                             self.config = self.backup.config
                             self.backup_won = True
+                            # The primary is no longer prefilling once the
+                            # backup has won.  Release its load charge before
+                            # awaiting cancellation so slow loser cleanup does
+                            # not distort concurrent endpoint selection.
+                            _release_primary_prefill()
                             primary_task.cancel()
                             await _safe_await_task(primary_task)
                         return winner_result
@@ -340,6 +436,36 @@ class HedgedAdapter(BaseAdapter):
             for t in pending:
                 await _safe_await_task(t)
             raise
+
+    def _release_stream_backup_prefill(
+        self,
+        dispatch: CheckpointBackupDispatch[BaseAdapter] | None,
+    ) -> None:
+        """Release a stream backup's prefill charge at most once."""
+        if dispatch is None or self._stream_backup_prefill_released:
+            return
+        callback = dispatch.metadata.get("prefill_release")
+        if callable(callback):
+            callback()
+        self._stream_backup_prefill_released = True
+
+    def _record_leg_failure(
+        self,
+        endpoint_id: str,
+        *,
+        reason: str,
+        detail: str | None = None,
+        exc: BaseException | None = None,
+    ) -> None:
+        """Record one genuine leg failure and invalidate its endpoint state."""
+        self.event_sink.record_failure(
+            endpoint_id,
+            reason=reason,
+            detail=detail,
+            exc=exc,
+        )
+        if self.endpoint_failure_hook is not None:
+            self.endpoint_failure_hook(endpoint_id)
 
     # ---------------------------------------------------------------
     # Streaming race
@@ -500,7 +626,13 @@ class HedgedAdapter(BaseAdapter):
             backup_gen = self._stream_backup_gen
             backup_provider = dispatch.backup.config.provider
             backup_endpoint = _endpoint_id_from_adapter(dispatch.backup)
-            backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
+            backup_next_task = asyncio.ensure_future(
+                self._next_leg_chunk(
+                    backup_gen,
+                    dispatch.backup,
+                    dispatch.metadata.get("upstream_priority"),
+                )
+            )
             return True
 
         primary_next_task: asyncio.Task[str] | None = None
@@ -514,7 +646,9 @@ class HedgedAdapter(BaseAdapter):
 
         try:
             # Start pulling from primary immediately.
-            primary_next_task = asyncio.ensure_future(primary_gen.__anext__())
+            primary_next_task = asyncio.ensure_future(
+                self._next_leg_chunk(primary_gen, self.primary, self.primary_priority)
+            )
 
             while True:
                 wait_set: set[asyncio.Task[Any]] = set()
@@ -682,9 +816,17 @@ class HedgedAdapter(BaseAdapter):
 
                 # No content yet; continue pulling from active streams.
                 if primary_next_task in done and not primary_done:
-                    primary_next_task = asyncio.ensure_future(primary_gen.__anext__())
+                    primary_next_task = asyncio.ensure_future(
+                        self._next_leg_chunk(primary_gen, self.primary, self.primary_priority)
+                    )
                 if backup_started and backup_next_task is not None and backup_next_task in done:
-                    backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
+                    dispatch = self._stream_backup_dispatch
+                    if dispatch is None or backup_gen is None:
+                        raise RuntimeError("started backup stream is missing its dispatch state")
+                    backup_priority = dispatch.metadata.get("upstream_priority")
+                    backup_next_task = asyncio.ensure_future(
+                        self._next_leg_chunk(backup_gen, dispatch.backup, backup_priority)
+                    )
 
             # Both streams exhausted without content.
             # If primary had an error, raise it.

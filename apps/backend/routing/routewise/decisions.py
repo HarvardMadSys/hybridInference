@@ -129,10 +129,18 @@ class RoutingDecision:
     reservation: ProviderReservation
     metadata: dict[str, Any]
     trace: RoutingTrace
+    # The shared prefill lease belongs to this dispatch attempt, not the router
+    # lifetime. Its release callback keeps tracker internals out of this type.
+    prefill_lease: Any = None
+    prefill_release: Callable[[], None] | None = None
 
     def release(self) -> None:
-        """Release dispatch-owned refundable capacity idempotently."""
+        """Release dispatch-owned resources idempotently."""
         self.reservation.release()
+        release = self.prefill_release
+        self.prefill_release = None
+        if release is not None:
+            release()
 
 
 __all__ = [
