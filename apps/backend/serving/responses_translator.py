@@ -365,7 +365,27 @@ def _map_status(finish_reason: str | None) -> tuple[str, dict[str, Any] | None]:
 
 
 def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Translate chat ``usage`` to the Responses usage shape."""
+    """Translate chat ``usage`` to the Responses usage shape.
+
+    Preserve three distinct cache-evidence states that downstream consumers
+    (the FI gateway, RouteWise locality learning, billing) rely on:
+
+    - UNKNOWN: the provider reported no cache measurement at all. Emit
+      ``cache_read_reported: false``; ``cached_tokens`` stays 0 only because
+      the public Responses schema requires a number there, and is NOT
+      evidence of a miss.
+    - MISS: the provider explicitly reported a count of 0. Emit
+      ``cache_read_reported: true`` with ``cached_tokens: 0``.
+    - HIT: the provider reported a positive count. Emit
+      ``cache_read_reported: true`` with ``cached_tokens: N``.
+
+    The indicator is the single authority for the state. A consumer that
+    reads only ``cached_tokens`` cannot tell UNKNOWN from MISS, which is the
+    defect that made staging MiniMax-M3 traffic score a fabricated miss on
+    every request: the upstream chat surface there omits cache fields
+    entirely, so the previous code emitted ``cached_tokens: 0`` and every
+    downstream reader saw a measured miss.
+    """
     if not chat_usage:
         return None
     input_tokens = int(chat_usage.get("prompt_tokens", 0) or 0)
@@ -378,6 +398,11 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized = normalize_usage(chat_usage) or {}
     completion_details = normalized.get("completion_tokens_details") or {}
     cached = normalized.get("cache_read_tokens")
+    # "cache_read_tokens" is present in the normalized dict only when a
+    # provider actually reported a count (extract_cache_tokens emits it for
+    # both a measured 0 and a measured positive). Its absence means the
+    # provider reported nothing, which must not be coerced into a miss.
+    cache_reported = "cache_read_tokens" in normalized
     reasoning = int(
         normalized.get("reasoning_tokens") or completion_details.get("reasoning_tokens") or 0
     )
@@ -388,6 +413,11 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
             # measurement is serialized as 0 for SDK compatibility.
             "cached_tokens": cached if cached is not None else 0,
         },
+        # Distinguishes a provider-reported miss (true) from an unreported
+        # measurement (false). Consumers that need the three-state contract
+        # read this flag; a consumer reading only cached_tokens cannot tell
+        # UNKNOWN from MISS.
+        "cache_read_reported": cache_reported,
         "output_tokens": output_tokens,
         "output_tokens_details": {"reasoning_tokens": reasoning},
         "total_tokens": total,

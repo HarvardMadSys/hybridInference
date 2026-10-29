@@ -320,9 +320,12 @@ def test_chat_response_text():
         "text": "Hello world",
         "annotations": [],
     }
+    # cached_tokens is 0 because the provider reported nothing — NOT a
+    # measured miss. cache_read_reported is the state discriminator.
     assert r["usage"] == {
         "input_tokens": 9,
         "input_tokens_details": {"cached_tokens": 0},
+        "cache_read_reported": False,
         "output_tokens": 3,
         "output_tokens_details": {"reasoning_tokens": 0},
         "total_tokens": 12,
@@ -698,3 +701,153 @@ def test_stream_events_are_well_formed_sse():
         assert lines[0].startswith("event: ")
         assert lines[1].startswith("data: ")
         json.loads(lines[1][len("data: ") :])
+
+
+# --- cache evidence: UNKNOWN / MISS / HIT are distinct ---------------------
+
+
+class TestCacheEvidenceStates:
+    """The Responses surface must preserve the three cache-evidence states.
+
+    `extract_cache_tokens` yields None when the provider reported nothing and
+    an explicit 0 when it reported a miss. The public Responses schema
+    requires a numeric `input_tokens_details.cached_tokens`, so the
+    translator emits 0 for both — but MUST also emit `cache_read_reported`
+    so downstream consumers (the FI gateway, RouteWise locality learning,
+    billing) can tell a measured miss from an unreported measurement. A
+    fabricated miss poisons locality learning and can mis-bill an endpoint
+    that never reports cache usage at all.
+    """
+
+    @staticmethod
+    def _chat(usage: dict) -> dict:
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}], "usage": usage}
+
+    def test_unobserved_reports_nothing(self):
+        """No cache fields anywhere => UNKNOWN, never a fabricated miss."""
+        out = chat_response_to_responses(
+            self._chat({"prompt_tokens": 100, "completion_tokens": 5}),
+            response_id="r1",
+            created_at=1,
+            model="m",
+            request_body={},
+        )
+        assert out["usage"]["input_tokens_details"]["cached_tokens"] == 0
+        assert out["usage"]["cache_read_reported"] is False
+
+    def test_measured_miss_is_reported_zero(self):
+        """An explicit 0 stays 0, flagged as measured."""
+        out = chat_response_to_responses(
+            self._chat(
+                {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "cache_read_tokens": 0,
+                    "cached_tokens": 0,
+                    "prompt_tokens_details": {"cached_tokens": 0},
+                }
+            ),
+            response_id="r2",
+            created_at=2,
+            model="m",
+            request_body={},
+        )
+        assert out["usage"]["input_tokens_details"]["cached_tokens"] == 0
+        assert out["usage"]["cache_read_reported"] is True
+
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            {"prompt_tokens_details": {"cached_tokens": 79}},
+            {"cache_read_tokens": 79},
+            {"prompt_cache_hit_tokens": 79},  # DeepSeek
+            {"cache_read_input_tokens": 79},  # Anthropic
+        ],
+    )
+    def test_measured_hits_are_positive_and_reported(self, shape):
+        usage = {"prompt_tokens": 100, "completion_tokens": 5, **shape}
+        out = chat_response_to_responses(
+            self._chat(usage),
+            response_id="r3",
+            created_at=3,
+            model="m",
+            request_body={},
+        )
+        assert out["usage"]["input_tokens_details"]["cached_tokens"] == 79
+        assert out["usage"]["cache_read_reported"] is True
+
+    @staticmethod
+    def _completed_response(translator):
+        """Drive a translator and return the ``response.completed`` payload.
+
+        ``feed`` and ``finalize`` are both generators of SSE frames; they must
+        be consumed for the state machine to advance.
+        """
+        import json as _json
+
+        events = list(translator.finalize())
+        for frame in events:
+            if not isinstance(frame, str) or "response.completed" not in frame:
+                continue
+            for line in frame.splitlines():
+                if line.startswith("data: "):
+                    payload = _json.loads(line[len("data: ") :])
+                    if payload.get("type") == "response.completed":
+                        return payload["response"]
+        return None
+
+    def test_streaming_preserves_the_same_three_states(self):
+        """The stream translator funnels through _map_usage too."""
+        t = ResponsesStreamTranslator(
+            response_id="s1",
+            created_at=1,
+            model="m",
+            request_body={},
+        )
+        list(t.feed('data: {"id":"c1","choices":[{"delta":{"content":"Hi"}}]}\n\n'))
+        # UNKNOWN: final chat chunk carries no cache fields
+        list(
+            t.feed(
+                'data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1}}\n\n'
+            )
+        )
+        list(t.feed("data: [DONE]\n\n"))
+        final = self._completed_response(t)
+        assert final is not None and final.get("usage")
+        assert final["usage"]["cache_read_reported"] is False
+
+        t2 = ResponsesStreamTranslator(
+            response_id="s2",
+            created_at=1,
+            model="m",
+            request_body={},
+        )
+        list(t2.feed('data: {"id":"c2","choices":[{"delta":{"content":"Hi"}}]}\n\n'))
+        # MISS: final chat chunk explicitly reports cache_read_tokens: 0
+        list(
+            t2.feed(
+                'data: {"id":"c2","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"cache_read_tokens":0}}\n\n'
+            )
+        )
+        list(t2.feed("data: [DONE]\n\n"))
+        final2 = self._completed_response(t2)
+        assert final2 is not None and final2.get("usage")
+        assert final2["usage"]["cache_read_reported"] is True
+        assert final2["usage"]["input_tokens_details"]["cached_tokens"] == 0
+
+    def test_public_shape_stays_openai_compatible(self):
+        """The SDK-facing field is still a number in every state."""
+        for usage in (
+            {"prompt_tokens": 1, "completion_tokens": 1},
+            {"prompt_tokens": 1, "completion_tokens": 1, "cache_read_tokens": 0},
+            {"prompt_tokens": 1, "completion_tokens": 1, "cache_read_tokens": 7},
+        ):
+            out = chat_response_to_responses(
+                self._chat(usage),
+                response_id="x",
+                created_at=1,
+                model="m",
+                request_body={},
+            )
+            v = out["usage"]["input_tokens_details"]["cached_tokens"]
+            assert isinstance(v, int) and v >= 0

@@ -466,6 +466,123 @@ def test_normalize_usage_hands_billing_readable_counts():
     assert (normalized["prompt_tokens"], normalized["completion_tokens"]) == (0, 7)
 
 
+class TestExplicitCacheReportedFlag:
+    """A producer's explicit state flag outranks field presence.
+
+    The Responses surface emits ``cache_read_reported: false`` when the
+    provider reported no cache measurement, while still serializing
+    ``input_tokens_details.cached_tokens: 0`` because the public schema
+    requires a number there. Reading that nested 0 as a measurement would
+    score a miss that was never made, poisoning RouteWise locality learning
+    and the api_logs cache columns.
+    """
+
+    def test_unknown_flag_suppresses_a_nested_zero(self):
+        usage = {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 0},
+            "cache_read_reported": False,
+        }
+        read, _write = extract_cache_tokens(usage)
+        assert read is None
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        # The count is absent, not zero: a consumer reading cache_read_tokens
+        # must not see a measured miss.
+        assert "cache_read_tokens" not in normalized
+        assert normalized.get("cache_read_reported") is False
+
+    def test_measured_miss_with_flag_is_a_zero_count(self):
+        usage = {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 0},
+            "cache_read_reported": True,
+        }
+        read, _write = extract_cache_tokens(usage)
+        assert read == 0
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert normalized.get("cache_read_tokens") == 0
+
+    def test_measured_hit_with_flag_is_positive(self):
+        usage = {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 79},
+            "cache_read_reported": True,
+        }
+        read, _write = extract_cache_tokens(usage)
+        assert read == 79
+
+    def test_absent_flag_keeps_the_legacy_field_inference(self):
+        """No flag: the shared extractor still reads the provider's own
+        shapes, so a provider that reports a nested 0 is a measured miss."""
+        read, _write = extract_cache_tokens(
+            {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 0}}
+        )
+        assert read == 0
+
+    def test_flag_false_does_not_suppress_cache_write_accounting(self):
+        usage = {
+            "input_tokens": 100,
+            "cache_read_reported": False,
+            "cache_write_tokens": 12,
+        }
+        read, write = extract_cache_tokens(usage)
+        assert read is None
+        assert write == 12
+
+
+class TestUnknownFlagDropsALeftoverFlatCounter:
+    """A flat counter copied in from the source must not survive UNKNOWN.
+
+    ``normalize_usage`` copies the original usage dict, so a flat
+    ``cache_read_tokens: 0`` that the producer serialized alongside
+    ``cache_read_reported: false`` would otherwise be published as a
+    measured miss — the schema placeholder read as a real measurement.
+    """
+
+    def test_flat_zero_does_not_survive_an_unknown_flag(self):
+        usage = {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "cache_read_tokens": 0,
+            "cache_read_reported": False,
+        }
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert "cache_read_tokens" not in normalized
+        assert normalized.get("cache_read_reported") is False
+
+    def test_nested_zero_does_not_survive_an_unknown_flag(self):
+        usage = {
+            "prompt_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 0},
+            "cache_read_reported": False,
+        }
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert "cache_read_tokens" not in normalized
+
+    def test_a_measured_miss_keeps_its_zero(self):
+        """The fix must not erase a real measurement."""
+        usage = {
+            "prompt_tokens": 100,
+            "cache_read_tokens": 0,
+            "cache_read_reported": True,
+        }
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert normalized.get("cache_read_tokens") == 0
+        assert normalized.get("cache_read_reported") is True
+
+    def test_without_the_flag_a_flat_zero_is_still_a_measured_miss(self):
+        usage = {"prompt_tokens": 100, "cache_read_tokens": 0}
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert normalized.get("cache_read_tokens") == 0
+
+
 # ---------------------------------------------------------------------------
 # optional_token_count
 # ---------------------------------------------------------------------------
