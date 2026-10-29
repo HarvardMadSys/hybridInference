@@ -2173,9 +2173,9 @@ msgstr "为请求选定端点，按容量做准入，按回退顺序逐个尝试
 msgid "Execution"
 msgstr "执行"
 
-#: ../developer/routing.md:661
-msgid "`backends.py` + `dispatch.py`"
-msgstr "`backends.py` + `dispatch.py`"
+#: ../developer/routing.md:884
+msgid "`backends.py` (public re-exports), `backends_leaf.py`, `backends_tree.py`, `backends_domains.py`, `backends_routewise.py` + `dispatch.py`"
+msgstr "`backends.py`（公共重导出）、`backends_leaf.py`、`backends_tree.py`、`backends_domains.py`、`backends_routewise.py` + `dispatch.py`"
 
 #: ../developer/routing.md:661
 msgid ""
