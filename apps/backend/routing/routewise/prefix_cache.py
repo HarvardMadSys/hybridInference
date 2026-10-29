@@ -269,6 +269,20 @@ class SessionProviderPrefixMemory:
             self._entries.move_to_end(scope)
             self._evict_locked()
 
+    def refresh_liveness(self, scope: CacheScope, *, now: float | None = None) -> bool:
+        """Refresh recency for an existing prefix without replacing its blocks."""
+        ts = self._time() if now is None else now
+        with self._lock:
+            entry = self._entries.get(scope)
+            if entry is None:
+                return False
+            if self._is_expired(entry, ts):
+                del self._entries[scope]
+                return False
+            entry.last_seen_at = ts
+            self._entries.move_to_end(scope)
+            return True
+
     def __len__(self) -> int:
         """Return the number of scopes currently held."""
         with self._lock:
@@ -451,6 +465,10 @@ class PrefixCacheCoordinator:
             blocks,
             now=now,
         )
+
+    def refresh_liveness(self, scope: CacheScope, *, now: float | None = None) -> bool:
+        """Keep existing prefix memory alive without changing its contents."""
+        return self._memory.refresh_liveness(scope, now=now)
 
     def _hash(self, value: str) -> str:
         if not value:

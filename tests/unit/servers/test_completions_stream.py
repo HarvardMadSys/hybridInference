@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1525,3 +1526,71 @@ async def test_arguments_json_loads_cannot_handle_still_finish_the_stream():
     assert log_data["status_code"] == 200
     message = log_data["response"]["choices"][0]["message"]
     assert message["tool_calls"][0]["function"]["arguments"] == arguments
+
+
+@pytest.mark.anyio
+async def test_stream_warmup_notice_classifies_transient_through_finalizer():
+    """The streaming finalizer must hand the real text to the classifier.
+
+    Regression for the review's C1 follow-up: the handler used to pass no
+    response body at all, so a warmup notice streamed with output tokens
+    classified PROGRESS and warmed prefix memory. This drives the real
+    StreamSession._finalize_success path and asserts the observation the
+    router receives is TRANSIENT_NO_PROGRESS.
+    """
+    from routing.completion_outcome import CompletionOutcome
+
+    session = _make_session()
+    session._final_text = "The model is starting up - this takes about 120 seconds. Please wait..."
+    session._final_reasoning = ""
+    session._finish_reason_for_db = "stop"
+    session._usage_data = {"prompt_tokens": 10, "completion_tokens": 20}
+    session._messages = [{"role": "user", "content": "hi"}]
+    session._params = {"stream": True}
+    session._metadata = {}
+    session._request_payload = None
+    session._get_adapter_config_for_provider = lambda _p, _b: None
+    session._adapter_routing = False
+    session._log_store = None  # skip DB scheduling
+    session._suppress_synthetic_logging = True  # skip DB log
+    session._response_model = None
+
+    captured: dict[str, Any] = {}
+
+    def _record(
+        active_router,
+        model_id,
+        routing,
+        *,
+        request_id,
+        ttft_ms,
+        total_latency_ms,
+        prompt_tokens,
+        completion_tokens,
+        success,
+        cached_tokens=None,
+        response_body=None,
+    ):
+        captured.update(
+            success=success,
+            response_body=response_body,
+            completion_tokens=completion_tokens,
+        )
+
+    session._completions_logger = SimpleNamespace(
+        record_routing_observation=_record,
+        schedule_log=lambda *a, **k: None,
+        build_db_params=lambda params, provider, base_url, get_cfg: params,
+    )
+
+    await session._finalize_success()
+
+    body = captured["response_body"]
+    assert isinstance(body, dict), "finalizer must pass the structured body"
+    message = body["choices"][0]["message"]
+    assert "starting up" in (message.get("content") or "")
+
+    outcome = CompletionsLogger.classify_outcome(
+        success=captured["success"], response_body=body, usage={"completion_tokens": 20}
+    )
+    assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS

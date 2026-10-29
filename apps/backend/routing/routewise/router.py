@@ -2566,10 +2566,12 @@ class RouteWiseRouter:
         scope = stashed.scopes.get(obs.endpoint_id)
         if scope is None:
             return
-        self.prefix_cache.remember(
-            scope,
-            stashed.blocks,
-        )
+        if obs.admits_real_work:
+            self.prefix_cache.remember(scope, stashed.blocks)
+        else:
+            # A successful transport can still be only a warmup notice. Keep
+            # prior prefix memory alive, but do not replace it with that stub.
+            self.prefix_cache.refresh_liveness(scope)
 
     @staticmethod
     def _cache_affecting_params(params: Any) -> str:
