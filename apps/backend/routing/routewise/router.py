@@ -53,9 +53,15 @@ if TYPE_CHECKING:
     from .config import RouteWiseConfig
 
 from routing.backends import LeafBackend
+from routing.completion_outcome import (
+    CompletionOutcome,
+    classify_completion_outcome,
+    classify_stream_prefix,
+)
 from routing.dispatch import DispatchMismatchError, binding_for_adapter, execution_adapter
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
+from routing.response_text import accumulate_stream_prefix, response_text, response_usage
 from routing.route_scope import adapter_in_endpoint_scope
 from routing.routers import (
     AllCircuitsOpenError,
@@ -480,8 +486,47 @@ class RouteWiseRouter:
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
 
-    def _on_success(self, endpoint_id: str) -> None:
-        self._health_registry.record_success(endpoint_id)
+    def _on_success(self, endpoint_id: str, response: Any) -> None:
+        """Record a semantic serving success, which requires a real response.
+
+        A transport-level 200 is not sufficient. The response is classified here
+        so endpoint health and prefix locality judge it by the same rule. A
+        caller that cannot classify a response must call ``_on_liveness``
+        instead; a missing response is never positive evidence.
+        """
+        self._health_registry.record_success(
+            endpoint_id,
+            outcome=classify_completion_outcome(
+                content=response_text(response),
+                usage=response_usage(response),
+                http_status=200,
+                terminal=True,
+            ),
+        )
+
+    def _on_stream_first_content(
+        self,
+        endpoint_id: str,
+        chunks: list[Any],
+        *,
+        terminal: bool = False,
+    ) -> CompletionOutcome | None:
+        """Record health only when a bounded stream prefix proves real progress."""
+        outcome = classify_stream_prefix(
+            accumulate_stream_prefix(chunks),
+            terminal=terminal,
+        )
+        if outcome is not None:
+            self._health_registry.record_success(endpoint_id, outcome=outcome)
+        return outcome
+
+    @staticmethod
+    def _stream_prefix_is_transient(chunks: list[Any]) -> bool:
+        """Return whether the current prefix could still become a warmup notice."""
+        return classify_stream_prefix(accumulate_stream_prefix(chunks)) is None
+
+    def _on_liveness(self, endpoint_id: str) -> None:
+        self._health_registry.record_liveness(endpoint_id)
 
     def _on_failure(
         self,
@@ -2566,10 +2611,12 @@ class RouteWiseRouter:
         scope = stashed.scopes.get(obs.endpoint_id)
         if scope is None:
             return
-        self.prefix_cache.remember(
-            scope,
-            stashed.blocks,
-        )
+        if obs.admits_real_work:
+            self.prefix_cache.remember(scope, stashed.blocks)
+        else:
+            # A successful transport can still be only a warmup notice. Keep
+            # prior prefix memory alive, but do not replace it with that stub.
+            self.prefix_cache.refresh_liveness(scope)
 
     @staticmethod
     def _cache_affecting_params(params: Any) -> str:
@@ -2585,12 +2632,12 @@ class RouteWiseRouter:
         if self.prefix_cache.enabled:
             self._commit_prefix_cache_observation(obs)
         model_id = self.canonical_model_id(obs.model_id)
-        if obs.completion_tokens > 0:
+        real_work = bool(obs.success and obs.terminal and obs.outcome.admits_real_work)
+        if real_work and obs.completion_tokens > 0:
             self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
         if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:
             now = time.time()
-            error_type: str | None = None if obs.success else "error"
             latency_ms = (
                 obs.ttft_ms
                 if obs.ttft_ms is not None
@@ -2598,12 +2645,15 @@ class RouteWiseRouter:
                 if obs.success
                 else -1.0
             )
-            if error_type is None and latency_ms > 0:
+            if not obs.success:
+                # Keep transport failures visible to availability/liveness logic.
+                self._latency_profiles[obs.endpoint_id].record(now, latency_ms, "error")
+            elif real_work and latency_ms > 0:
                 self._record_latency_success(obs.endpoint_id, now, latency_ms)
-            else:
-                self._latency_profiles[obs.endpoint_id].record(now, latency_ms, error_type)
+            elif real_work:
+                self._latency_profiles[obs.endpoint_id].record(now, latency_ms, None)
 
-        if obs.prompt_tokens > 0 and obs.completion_tokens > 0:
+        if real_work and obs.prompt_tokens > 0 and obs.completion_tokens > 0:
             sample_cost = self._reference_api_cost(
                 model_id,
                 prompt_tokens=obs.prompt_tokens,
@@ -2835,7 +2885,7 @@ class RouteWiseRouter:
                 if not getattr(adapter, "reports_leg_outcomes", False):
                     # A composite adapter may replace its config with the leg
                     # that actually served, so resolve the endpoint after the call.
-                    self._on_success(endpoint_id_for_adapter(adapter))
+                    self._on_success(endpoint_id_for_adapter(adapter), result)
             if getattr(adapter, "config", None) is not original_config:
                 decision.metadata["backup_won"] = True
             return result
@@ -2874,15 +2924,29 @@ class RouteWiseRouter:
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 first = True
+                stream_prefix: list[Any] = []
+                reports_leg_outcomes = getattr(adapter, "reports_leg_outcomes", False)
                 async for chunk in adapter.stream_chat_completion(messages, **params):
-                    if first and has_non_empty_content(chunk):
+                    if first:
+                        if not has_non_empty_content(chunk):
+                            yield chunk
+                            continue
+                        stream_prefix.append(chunk)
+                        if self._stream_prefix_is_transient(stream_prefix):
+                            yield chunk
+                            continue
                         first = False
-                        # HedgedAdapter already records the winning leg. For
-                        # other adapters, resolve the endpoint after first output
-                        # in case the adapter swapped its serving config.
-                        if not getattr(adapter, "reports_leg_outcomes", False):
-                            self._on_success(endpoint_id_for_adapter(adapter))
+                        if not reports_leg_outcomes:
+                            self._on_stream_first_content(
+                                endpoint_id_for_adapter(adapter), stream_prefix
+                            )
                     yield chunk
+                if first and not reports_leg_outcomes:
+                    self._on_stream_first_content(
+                        endpoint_id_for_adapter(adapter),
+                        stream_prefix,
+                        terminal=True,
+                    )
         finally:
             if getattr(adapter, "config", None) is not original_config:
                 decision.metadata["backup_won"] = True

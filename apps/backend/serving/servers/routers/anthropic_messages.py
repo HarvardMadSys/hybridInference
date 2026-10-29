@@ -29,6 +29,10 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from routing.completion_outcome import (
+    CompletionOutcome,
+    classify_completion_outcome,
+)
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     conversation_fingerprint,
@@ -113,7 +117,6 @@ router = APIRouter()
 # legitimately slow -- a full 1M-token prompt measures 138s on the local sglang
 # replicas -- so _MAX_FIRST_FRAME_IDLE stays at the historical 300s. After the
 # first frame the upstream is decoding, and _MAX_STREAM_IDLE applies instead.
-# Both are re-read whenever the configuration changes (_load_stream_limits).
 #
 # The idle timer only resets on a frame the adapter actually yields, but a
 # provider can be actively streaming while producing no forwardable frame for a
@@ -161,6 +164,7 @@ def _load_stream_limits() -> None:
     _MAX_FIRST_FRAME_IDLE = max(max_first_frame_idle, max_stream_idle)
 
 
+# Both limits are re-read whenever the configuration changes (_load_stream_limits).
 _load_stream_limits()
 on_change(_load_stream_limits)
 _STREAM_SENTINEL: Any = object()
@@ -237,6 +241,21 @@ def _map_upstream_status(status: int) -> tuple[int, str]:
     if status in (401, 402, 403):
         return 502, "api_error"
     return status, _ERROR_TYPE_BY_STATUS.get(status, "api_error")
+
+
+def _anthropic_completion_text(response: Any) -> str | None:
+    """Extract generated Anthropic content, including text and tool use."""
+    if not isinstance(response, dict):
+        return None
+    text_parts = []
+    for block in response.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            text_parts.append(block["text"])
+        elif block.get("type") == "tool_use" and block.get("input") is not None:
+            text_parts.append(json.dumps(block["input"], sort_keys=True))
+    return "\n".join(text_parts) if text_parts else None
 
 
 _ANTHROPIC_PATHS = ("/v1/messages", "/anthropic/")
@@ -2236,8 +2255,10 @@ async def execute_messages(
             stream_status_code: int = 200
             stream_error_message: str | None = None
             stream_error_operator: str | None = None
-            # Whether this stream's success has already been reported to the
-            # health registry. Recorded once, on the first content delta.
+            # Whether any content delta has flowed. The semantic verdict is
+            # deferred to the end of the stream so a thinking-first stream is
+            # not classified EMPTY from its first delta.
+            saw_content_delta = False
             health_success_recorded = False
             ttft_ms: int | None = None
             ttft_buffer = b""
@@ -2291,7 +2312,7 @@ async def execute_messages(
                     nothing either way; the return exists so the wire and the
                     accounting cannot disagree about what was delivered.
                     """
-                    nonlocal sse_buffer, response_acc, health_success_recorded
+                    nonlocal sse_buffer, response_acc, saw_content_delta, health_success_recorded
                     events, sse_buffer = _parse_sse_chunk(sse_buffer, raw)
                     well_formed = bool(events)
                     for event_type, data in events:
@@ -2300,15 +2321,21 @@ async def execute_messages(
                         except (json.JSONDecodeError, ValueError):
                             well_formed = False
                         response_acc = _apply_sse_event(response_acc, event_type, data)
-                        if not health_success_recorded and _is_non_empty_content_event(
-                            event_type, data
-                        ):
-                            # Same success signal as
-                            # FixedRouter.stream_chat_completion: the first
-                            # delta that carries content, not the mere fact
-                            # that the upstream accepted the connection.
+                        if not saw_content_delta and _is_non_empty_content_event(event_type, data):
+                            # Remember that real content flowed; the semantic
+                            # verdict waits for the accumulated response so a
+                            # thinking-first stream is not classified EMPTY from
+                            # its first delta.
+                            saw_content_delta = True
+                            # The first useful output proves recovery while the
+                            # response is still streaming. Waiting for terminal
+                            # classification held a half-open probe (and allowed
+                            # no other dispatch) for a whole Claude Code turn.
+                            health_registry.record_success(
+                                dispatch_endpoint_id,
+                                outcome=CompletionOutcome.PROGRESS,
+                            )
                             health_success_recorded = True
-                            health_registry.record_success(dispatch_endpoint_id)
                             # Prefill is done once content flows; the prompt
                             # is resident, so the endpoint is decoding and
                             # its prefix is safe to remember.
@@ -2552,11 +2579,24 @@ async def execute_messages(
                 # client disconnect mid-prefill -- unwinds here, and must not
                 # leave the endpoint charged for a prefill nobody is doing.
                 prefill_load.release(prefill_lease)
+                if not stream_failed and saw_content_delta and not health_success_recorded:
+                    # Record serving health after the accumulated response can
+                    # be classified, not at the first delta. A thinking-first
+                    # stream has no prose yet at that point; the final
+                    # accumulator sees the full text/tool/thinking evidence.
+                    health_registry.record_success(
+                        dispatch_endpoint_id,
+                        outcome=classify_completion_outcome(
+                            content=_accumulated_output_text(response_acc),
+                            http_status=200,
+                            terminal=True,
+                        ),
+                    )
                 # Same unwind for the probe. This surface is Claude Code's, where
                 # cancelling a turn mid-stream is routine, and a cancelled stream
-                # records no success -- ``health_success_recorded`` is gated on
-                # first content -- so without this one ESC would cost a
-                # recovering endpoint its whole cooldown.
+                # records no success -- success is gated on the accumulated
+                # response -- so without this one ESC would cost a recovering
+                # endpoint its whole cooldown.
                 health_registry.end_dispatch(dispatch_claim)
                 latency_ms = int((time.time() - start) * 1000)
                 if log_store:
@@ -2824,7 +2864,16 @@ async def execute_messages(
     # Every branch above returns, so reaching here means the adapter produced a
     # response. Recorded before logging so a slow log store can't delay the
     # recovery signal that closes an open circuit.
-    health_registry.record_success(dispatch_endpoint_id)
+    health_registry.record_success(
+        dispatch_endpoint_id,
+        outcome=classify_completion_outcome(
+            content=_anthropic_completion_text(resp),
+            usage=resp.get("usage") if isinstance(resp, dict) else None,
+            http_status=200,
+            terminal=True,
+        ),
+    )
+
     if auto_selection is not None and isinstance(resp, dict) and "model" in resp:
         resp["model"] = auto_selection.requested
 

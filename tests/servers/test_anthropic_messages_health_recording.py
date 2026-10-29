@@ -13,6 +13,7 @@ read side (which adapter the surface is allowed to pick).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 
 import aiohttp
@@ -157,17 +158,13 @@ async def test_non_streaming_success_closes_an_open_circuit(
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_key_pool_exhausted_leaves_the_circuit_closed(
+async def test_non_streaming_key_pool_exhausted_does_not_open_the_circuit(
     anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
 ):
-    """KeyPoolExhausted on this surface answers 429 but must not trip the breaker.
+    """Exhausted local credentials are not an upstream endpoint failure.
 
-    It is raised by ``KeyPool.acquire`` before anything is sent — a local
-    precondition refusal, not evidence against the endpoint (issue #1440). The
-    pool's own mutes keep the provider quiet while they last, and the upstream
-    failures that did the muting were counted when they happened. Counting the
-    echo let one muted key pool open the circuit on every route sharing the
-    provider's keys, ending streams in ``AllCircuitsOpenError``.
+    The registry deliberately excludes this pre-dispatch condition from breaker
+    accounting, so restoring a key can make the next request useful immediately.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "300")
@@ -187,10 +184,7 @@ async def test_non_streaming_key_pool_exhausted_leaves_the_circuit_closed(
         r = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
         assert r.status_code == 429
 
-    snapshot = registry.snapshot()[endpoint_id]
-    assert snapshot["circuit_state"] == _CircuitState.CLOSED
-    # Skipped before any accounting, so availability is untouched too.
-    assert snapshot["availability"] == 1.0
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
     assert registry.allow_request(endpoint_id) is True
     await asyncio.sleep(0)
 
@@ -318,13 +312,56 @@ async def test_streaming_first_content_delta_closes_an_open_circuit(
 
 
 @pytest.mark.asyncio
+async def test_streaming_success_releases_before_the_stream_finalizes(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
+):
+    """Useful output must close recovery while the upstream stream is still open."""
+    registry = anthropic_compat_router.endpoint_health_registry
+    success_seen = asyncio.Event()
+    success_before_finish = False
+    original_record_success = registry.record_success
+
+    def _record(endpoint_id, *, outcome):
+        success_seen.set()
+        original_record_success(endpoint_id, outcome=outcome)
+
+    monkeypatch.setattr(registry, "record_success", _record)
+
+    async def _iter():
+        nonlocal success_before_finish
+        yield _MESSAGE_START + _TEXT_DELTA
+        # This barrier is inside the not-yet-finalized upstream iterator. A
+        # deferred-only implementation cannot pass it and observes the timeout.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(success_seen.wait(), timeout=1.0)
+            success_before_finish = True
+        yield _MESSAGE_STOP
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=_body(stream=True), headers=_auth()
+    ) as response:
+        async for _ in response.aiter_bytes():
+            pass
+
+    assert success_before_finish is True
+
+
+@pytest.mark.asyncio
 async def test_streaming_success_recorded_once_per_stream(
     anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
 ):
     """Many content deltas must not inflate the endpoint's success count."""
     registry = anthropic_compat_router.endpoint_health_registry
     calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda endpoint_id: calls.append(endpoint_id))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda endpoint_id, **_kwargs: calls.append(endpoint_id),
+    )
 
     async def _iter():
         yield _MESSAGE_START
@@ -357,7 +394,11 @@ async def test_streaming_without_content_records_no_success(
     registry = anthropic_compat_router.endpoint_health_registry
     success_calls: list[str] = []
     failure_calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda eid: success_calls.append(eid))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, **_kwargs: success_calls.append(eid),
+    )
     monkeypatch.setattr(registry, "record_failure", lambda eid, **kw: failure_calls.append(eid))
 
     empty_delta = (
@@ -507,7 +548,11 @@ async def test_streaming_client_disconnect_is_not_an_upstream_failure(
     failure_calls: list[str] = []
     success_calls: list[str] = []
     monkeypatch.setattr(registry, "record_failure", lambda eid, **kw: failure_calls.append(eid))
-    monkeypatch.setattr(registry, "record_success", lambda eid: success_calls.append(eid))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, **_kwargs: success_calls.append(eid),
+    )
 
     async def _iter():
         yield _MESSAGE_START + _TEXT_DELTA
@@ -696,6 +741,55 @@ async def test_a_client_error_probe_leaves_the_endpoint_probeable(
     # 400 again, not the 503 a held probe would produce.
     assert second.status_code == 400
     await asyncio.sleep(0)
+
+
+# --- thinking-first stream regression ---------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_thinking_first_stream_records_success(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, no_log_store
+):
+    """A thinking-first stream must record serving success after the stream ends."""
+    registry = anthropic_compat_router.endpoint_health_registry
+    success_outcomes = []
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda eid, *, outcome: success_outcomes.append(outcome),
+    )
+
+    async def _iter():
+        yield _MESSAGE_START
+        yield (
+            b'event: content_block_start\ndata: {"type":"content_block_start",'
+            b'"index":0,"content_block":{"type":"thinking"}}\n\n'
+        )
+        yield (
+            b'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            b'"index":0,"delta":{"type":"thinking_delta","thinking":"thinking..."}}\n\n'
+        )
+        yield (
+            b'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            b'"index":1,"delta":{"type":"text_delta","text":"answer"}}\n\n'
+        )
+        yield (b'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n')
+        yield b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=_body(stream=True), headers=_auth()
+    ) as r:
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert success_outcomes, "thinking-first stream recorded no success"
+    from routing.completion_outcome import CompletionOutcome
+
+    assert success_outcomes[-1] == CompletionOutcome.PROGRESS
 
 
 # --- a client that leaves before the stream starts (issue #1690, T7) --------

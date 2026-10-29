@@ -30,6 +30,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoints import endpoint_id_for_adapter, endpoint_id_for_config
 from routing.routers import FixedRouter
 from serving.config.runtime_settings import get_runtime_settings
@@ -240,7 +241,13 @@ async def test_messages_endpoint_id_matches_the_health_registry_key(
     """
     registry = endpointed_router.endpoint_health_registry
     recorded: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda eid: recorded.append(eid))
+    outcomes: list[CompletionOutcome | None] = []
+
+    def record_success(eid: str, *, outcome: CompletionOutcome | None = None) -> None:
+        recorded.append(eid)
+        outcomes.append(outcome)
+
+    monkeypatch.setattr(registry, "record_success", record_success)
 
     async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
         return {
@@ -261,6 +268,7 @@ async def test_messages_endpoint_id_matches_the_health_registry_key(
     assert r.status_code == 200
 
     assert recorded == [captured_log["metadata"]["endpoint_id"]]
+    assert outcomes == [CompletionOutcome.PROGRESS]
 
 
 # --- /v1/embeddings --------------------------------------------------------

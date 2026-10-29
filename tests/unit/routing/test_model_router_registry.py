@@ -396,6 +396,7 @@ class TestModelRouterRegistry:
             reg.runtime_override_for_router(fixed)
 
     def test_runtime_rebuilt_routewise_router_keeps_shared_health_state(self):
+        from routing.completion_outcome import CompletionOutcome
         from routing.dependencies import RouterBuildDependencies
         from routing.endpoint_health import EndpointHealthRegistry
         from routing.model_router_registry import ModelRouterRegistry
@@ -411,7 +412,7 @@ class TestModelRouterRegistry:
         )
 
         first_routewise = reg.get_router("model")
-        health_registry.record_success("shared:endpoint")
+        health_registry.record_success("shared:endpoint", outcome=CompletionOutcome.PROGRESS)
 
         _switch_strategy(reg, "model", "fixed")
         assert reg.get_router("model") is fixed

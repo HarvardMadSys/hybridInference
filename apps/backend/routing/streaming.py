@@ -10,9 +10,8 @@ def has_non_empty_content(chunk: Any) -> bool:
 
     The streaming protocol emits lines like ``"data: {json}\n\n"`` and a
     terminal ``"data: [DONE]\n\n"``. We consider a chunk as having started
-    output when delta.content, delta.reasoning_content, delta.reasoning, or
-    delta.thinking is a non-empty string **or** delta.tool_calls is a non-empty
-    list.
+    output when delta.content, reasoning/thinking text, or a structured
+    ``tool_calls``/legacy ``function_call`` delta is non-empty.
     """
     try:
         if not isinstance(chunk, str | bytes):
@@ -40,7 +39,9 @@ def has_non_empty_content(chunk: Any) -> bool:
         if isinstance(reasoning, str) and len(reasoning) > 0:
             return True
         tool_calls = delta.get("tool_calls")
-        return isinstance(tool_calls, list) and len(tool_calls) > 0
+        if isinstance(tool_calls, list) and len(tool_calls) > 0:
+            return True
+        return bool(delta.get("function_call"))
     except Exception:
         # Be conservative and treat as content to avoid missing TTFT altogether
         return True

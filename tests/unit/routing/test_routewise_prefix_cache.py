@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.route_table import EffectiveRoute
 from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
@@ -171,6 +172,16 @@ class TestSessionProviderPrefixMemory:
         mem.observe(scope, _blocks(("a", 100)), now=0.0)
         assert mem.lookup(scope, _blocks(("a", 100)), now=50.0).has_history is True
         assert mem.lookup(scope, _blocks(("a", 100)), now=200.0).has_history is False
+
+    def test_refresh_liveness_preserves_blocks_and_ttl(self):
+        mem = SessionProviderPrefixMemory(ttl_sec=10.0, min_match_tokens=1)
+        scope = _scope()
+        old_blocks = _blocks(("old", 100))
+        mem.observe(scope, old_blocks, now=0.0)
+
+        assert mem.refresh_liveness(scope, now=9.0) is True
+        assert mem.lookup(scope, old_blocks, now=11.0).matched_prefix_tokens == 100
+        assert mem.lookup(scope, _blocks(("new", 100)), now=11.0).matched_prefix_tokens == 0
 
     def test_lru_evicts_oldest_over_cap(self):
         mem = SessionProviderPrefixMemory(max_entries=2, ttl_sec=0.0, min_match_tokens=1)
@@ -343,6 +354,7 @@ def _obs(
         total_latency_ms=1.0,
         token_count=1,
         success=success,
+        outcome=(CompletionOutcome.PROGRESS if success else CompletionOutcome.PROVIDER_ERROR),
         request_id=request_id,
         terminal=terminal,
         strategy_metadata={"routewise": {"quota_committed": 0.0}},
@@ -465,6 +477,42 @@ class TestRouteWiseRouterPrefixCacheWarm:
         signal = self._lookup(router, scope_a)
         assert signal.has_history is True
         assert signal.matched_prefix_tokens > 0
+
+    def test_transient_success_refreshes_without_replacing_prefix(self):
+        now = [0.0]
+        router = RouteWiseRouter(config=RouteWiseConfig(prefix_cache_cost_adjustment_enabled=True))
+        router.prefix_cache = PrefixCacheCoordinator(
+            enabled=True,
+            memory=SessionProviderPrefixMemory(
+                ttl_sec=10.0,
+                min_match_tokens=1,
+                time_source=lambda: now[0],
+            ),
+            block_size=8,
+            secret=SECRET,
+            tokenize=_chars,
+        )
+        scope = self._scope(router, "prov-a", "prov-a:h:1")
+        old_blocks = router.prefix_cache.build_blocks(_MSGS1)
+        router.prefix_cache.remember(scope, old_blocks, now=0.0)
+        self._stash(
+            router, "warmup", {"prov-a:h:1": scope}, messages=[{"role": "user", "content": "new"}]
+        )
+        now[0] = 9.0
+
+        router._commit_prefix_cache_observation(
+            replace(
+                _obs("prov-a:h:1", request_id="warmup"),
+                outcome=CompletionOutcome.TRANSIENT_NO_PROGRESS,
+            )
+        )
+
+        retained = router.prefix_cache.memory.lookup(scope, old_blocks, now=11.0)
+        new_blocks = router.prefix_cache.build_blocks([{"role": "user", "content": "new"}])
+        replaced = router.prefix_cache.memory.lookup(scope, new_blocks, now=11.0)
+        assert retained.has_history is True
+        assert retained.matched_prefix_tokens == sum(block.token_count for block in old_blocks)
+        assert replaced.matched_prefix_tokens < sum(block.token_count for block in new_blocks)
 
     def test_reported_cache_usage_neither_gates_nor_creates_the_discount(self):
         # Observed-reuse evidence was withdrawn: a success that reported a cache
