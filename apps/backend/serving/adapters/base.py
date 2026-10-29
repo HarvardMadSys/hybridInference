@@ -198,7 +198,8 @@ class ModelConfig:
     # OpenAI-compatible providers; see servers/registry.py _make_adapter for the
     # enabled set). Leave False for providers that strictly validate the request
     # body and reject unknown fields (e.g. some Ollama/Chutes/Featherless
-    # deployments).
+    # deployments). A route may set `include_usage_in_stream:` in models.yaml to
+    # override the kind default in either direction; see the registry loader.
     include_usage_in_stream: bool = False
     # When set, OpenRouterAdapter pins requests to this OpenRouter upstream
     # provider via `provider.order=[<slug>]` and `allow_fallbacks=false`.
