@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from serving.grant_auth import ledger_attribution
@@ -29,7 +30,7 @@ from serving.utils.request_ip import get_client_ip
 from serving.utils.synthetic_probe import is_trusted_probe_caller
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Callable, Coroutine
 
     from fastapi import Request
 
@@ -153,6 +154,43 @@ def _resolve_services(
     return log_store, runtime_settings
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RejectionSource:
+    """What a rejection row records about the request, held apart from the request.
+
+    The four things :func:`log_rejection` reads off a ``Request``: the route
+    path, the client address (resolved only when a row is actually written),
+    whether it carried the ``X-Probe: synthetic`` marker, and the log store and
+    runtime settings it is persisted under. A protocol's execution function,
+    which never holds a ``Request``, logs its rejections through one of these
+    (:func:`log_rejection_from`); a batch item's says what its synthetic request
+    used to: its target path, an unknown client, no marker.
+    """
+
+    route_path: str
+    client_ip: Callable[[], str]
+    probe_marker: bool
+    log_store: BaseLogStore | None
+    runtime_settings: RuntimeSettings | None
+
+
+def rejection_source(
+    request: Request,
+    *,
+    log_store: BaseLogStore | None = None,
+    runtime_settings: RuntimeSettings | None = None,
+) -> RejectionSource:
+    """The :class:`RejectionSource` of *request*, services filled in from its app."""
+    log_store, runtime_settings = _resolve_services(request, log_store, runtime_settings)
+    return RejectionSource(
+        route_path=request.url.path,
+        client_ip=lambda: get_client_ip(request),
+        probe_marker=_is_synthetic_probe(request),
+        log_store=log_store,
+        runtime_settings=runtime_settings,
+    )
+
+
 async def bounded_enrichment(
     work: Coroutine[Any, Any, Any],
     *,
@@ -210,10 +248,18 @@ async def rejection_logging_enabled(
 
     Never raises.
     """
-    log_store, runtime_settings = _resolve_services(request, log_store, runtime_settings)
+    source = rejection_source(request, log_store=log_store, runtime_settings=runtime_settings)
+    return await _logging_enabled(source, status_code=status_code, user=user)
+
+
+async def _logging_enabled(
+    source: RejectionSource, *, status_code: int, user: dict[str, Any] | None
+) -> bool:
+    """:func:`rejection_logging_enabled` for a :class:`RejectionSource`."""
+    log_store, runtime_settings = source.log_store, source.runtime_settings
     if log_store is None or runtime_settings is None:
         return False
-    if not _is_inference_path(request.url.path):
+    if not _is_inference_path(source.route_path):
         return False
     if status_code == 401:
         return False
@@ -234,7 +280,7 @@ async def rejection_logging_enabled(
     # is meant to detect) does not pollute api_logs while probe logging is off.
     # Only a trusted caller's marker counts; an untrusted or unidentified
     # caller's probe header is ignored and their rejection logs like any other.
-    if _is_synthetic_probe(request) and is_trusted_probe_caller(user):
+    if source.probe_marker and is_trusted_probe_caller(user):
         try:
             return await runtime_settings.get_bool("log_synthetic_probes")
         except Exception:
@@ -421,16 +467,32 @@ async def log_rejection(
     when the store's content-retention policy (``store_full_content``) allows,
     exactly as on the success path.
     """
-    log_store, runtime_settings = _resolve_services(request, log_store, runtime_settings)
-    if not await rejection_logging_enabled(
-        request,
+    await log_rejection_from(
+        source=rejection_source(request, log_store=log_store, runtime_settings=runtime_settings),
         status_code=status_code,
+        error_code=error_code,
+        reason=reason,
         user=user,
-        log_store=log_store,
-        runtime_settings=runtime_settings,
-    ):
+        model_id=model_id,
+        prompt=prompt,
+    )
+
+
+async def log_rejection_from(
+    *,
+    source: RejectionSource,
+    status_code: int,
+    error_code: str,
+    reason: str,
+    user: dict[str, Any] | None,
+    model_id: str = "",
+    prompt: list[dict[str, Any]] | str = "",
+) -> None:
+    """:func:`log_rejection` for a request known only by its :class:`RejectionSource`."""
+    log_store = source.log_store
+    if not await _logging_enabled(source, status_code=status_code, user=user):
         return
-    is_synthetic_probe = _is_synthetic_probe(request) and is_trusted_probe_caller(user)
+    is_synthetic_probe = source.probe_marker and is_trusted_probe_caller(user)
 
     ctx = req_ctx.get()
     request_id = ctx.get("request_id") or ""
@@ -455,10 +517,10 @@ async def log_rejection(
     metadata: dict[str, Any] = {
         "rejection": True,
         "reason": reason,
-        "route": request.url.path,
+        "route": source.route_path,
         "role": user.get("role") if user else None,
         "user_id": None if identified_not_authenticated else resolved_user_id,
-        "ip": get_client_ip(request),
+        "ip": source.client_ip(),
     }
     if credential_state:
         metadata["credential_state"] = credential_state
@@ -478,7 +540,7 @@ async def log_rejection(
     # Classify embedding rejections so they match the success-path tagging and
     # are excluded from chat-performance aggregates (deps like verify_api_key /
     # enforce_user_concurrency reject before the handler sets this metadata).
-    if request.url.path.startswith("/v1/embeddings"):
+    if source.route_path.startswith("/v1/embeddings"):
         metadata["request_type"] = "embedding"
 
     try:

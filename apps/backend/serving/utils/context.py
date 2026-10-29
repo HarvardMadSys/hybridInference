@@ -80,18 +80,12 @@ UPSTREAM_DISPATCH_WATCH = "upstream_dispatch_watch"
 UPSTREAM_ENGINE_HOLD = "upstream_engine_hold"
 
 # req_ctx key holding the ``anthropic-version`` a batch item was created under
-# (serving/batch/profiles.py). Published only by the batch worker, in the
-# request scope it opens for one item; the native Anthropic adapter sends it
+# (serving/batch/profiles.py). Published only by the Messages execution for a
+# batch item (``MessagesConstraints.for_batch_item``), in the request scope the
+# batch worker opens for that item; the native Anthropic adapter sends it
 # upstream instead of its fixed default when it is one of the versions it
 # knows. Interactive requests never carry it, so their behaviour is unchanged.
 ANTHROPIC_VERSION = "anthropic_version"
-
-# req_ctx key holding the capability constraint of a batch item
-# (``serving.batch.targets.AdapterRequirement``): which of a route's adapters
-# can serve the item without dropping a parameter it carries. Published only by
-# the batch worker; the Anthropic surface filters its candidates through it, and
-# skips its small-call reroute (which would change the model).
-BATCH_EXECUTION = "batch_execution"
 
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
@@ -139,9 +133,8 @@ REQUEST_SCOPED_KEYS = (
     # A leftover value would rewrite the next request's error messages, for a
     # model it did not ask for.
     CONCEALED_MODEL,
-    # Batch-only; cleared anyway so no later scope on a task could inherit them.
+    # Batch-only; cleared anyway so no later scope on a task could inherit it.
     ANTHROPIC_VERSION,
-    BATCH_EXECUTION,
 )
 
 

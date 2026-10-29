@@ -50,7 +50,16 @@ PROBE_HEADER_VALUE = "synthetic"
 
 def probe_header_present(request: Request) -> bool:
     """Return whether the request carries the synthetic-probe marker at all."""
-    return request.headers.get(PROBE_HEADER, "").lower() == PROBE_HEADER_VALUE
+    return probe_marker_in(request.headers)
+
+
+def probe_marker_in(headers: Mapping[str, str]) -> bool:
+    """Return whether *headers* carry the synthetic-probe marker at all.
+
+    *headers* is looked up as Starlette's ``Headers`` is: case-insensitively,
+    the first value of a repeated header.
+    """
+    return headers.get(PROBE_HEADER, "").lower() == PROBE_HEADER_VALUE
 
 
 def is_trusted_probe_caller(user_ctx: Mapping[str, Any] | None) -> bool:
@@ -71,4 +80,11 @@ def is_trusted_probe_caller(user_ctx: Mapping[str, Any] | None) -> bool:
 
 def is_trusted_probe(request: Request, user_ctx: Mapping[str, Any] | None) -> bool:
     """Marker present *and* the caller is allowed to mean it."""
-    return probe_header_present(request) and is_trusted_probe_caller(user_ctx)
+    return is_trusted_probe_headers(request.headers, user_ctx)
+
+
+def is_trusted_probe_headers(
+    headers: Mapping[str, str], user_ctx: Mapping[str, Any] | None
+) -> bool:
+    """:func:`is_trusted_probe` for request headers held apart from their request."""
+    return probe_marker_in(headers) and is_trusted_probe_caller(user_ctx)

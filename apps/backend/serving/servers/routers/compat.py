@@ -1,10 +1,13 @@
-"""Compatibility wrappers for legacy completion endpoints."""
+"""Compatibility wrappers for legacy completion endpoints.
+
+Both are served by the chat execution (``completions.execute_chat``) under
+their own concurrency dependency, with the runtime settings the chat route
+uses, and answered in the chat route's shape.
+"""
 
 from __future__ import annotations
 
-import json
-
-from fastapi import APIRouter, Depends, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.servers.auth import verify_api_key
@@ -19,7 +22,7 @@ from serving.servers.deps import (
     get_router,
 )
 
-from .completions import chat_completions
+from .completions import ChatServices, ChatStream, release_unstarted_chat_streams, serve_chat_http
 
 router = APIRouter()
 
@@ -39,24 +42,35 @@ async def single_completion(
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ):
     """Compatibility alias for single-shot completion requests.
 
-    Forwards to /v1/chat/completions using the provided payload.
+    Served as /v1/chat/completions serves the provided payload.
     """
-    return await chat_completions(
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, "Invalid JSON or schema in request body") from e
+    return await serve_chat_http(
+        body,
         request,
         http_response,
         authorization=authorization,
         user_ctx=user_ctx,
-        router_exec=router_exec,
-        log_store=log_store,
-        model_router_registry=model_router_registry,
-        model_visibility_resolver=model_visibility_resolver,
+        concurrency_slot=_concurrency_slot,
+        streams=_streams,
+        services=_chat_services(
+            request,
+            router_exec,
+            log_store,
+            model_router_registry,
+            model_visibility_resolver,
+            completions_logger,
+            pricing_lookup,
+            cost_tracker,
+        ),
         runtime_settings=runtime_settings,
-        completions_logger=completions_logger,
-        pricing_lookup=pricing_lookup,
-        cost_tracker=cost_tracker,
     )
 
 
@@ -75,6 +89,7 @@ async def legacy_completions(
     pricing_lookup=Depends(get_pricing_lookup),
     cost_tracker=Depends(get_cost_tracker),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ):
     """OpenAI-style legacy completions endpoint: convert to chat format."""
     body = await request.json()
@@ -82,18 +97,45 @@ async def legacy_completions(
     messages = [{"role": "user", "content": prompt}]
     body["messages"] = messages
     body.pop("prompt", None)
-    request._body = json.dumps(body).encode()  # type: ignore[attr-defined]
-    return await chat_completions(
+    return await serve_chat_http(
+        body,
         request,
         http_response,
         authorization=authorization,
         user_ctx=user_ctx,
-        router_exec=router_exec,
-        log_store=log_store,
-        model_router_registry=model_router_registry,
-        model_visibility_resolver=model_visibility_resolver,
+        concurrency_slot=_concurrency_slot,
+        streams=_streams,
+        services=_chat_services(
+            request,
+            router_exec,
+            log_store,
+            model_router_registry,
+            model_visibility_resolver,
+            completions_logger,
+            pricing_lookup,
+            cost_tracker,
+        ),
         runtime_settings=runtime_settings,
+    )
+
+
+def _chat_services(
+    request: Request,
+    router_exec,
+    log_store,
+    model_router_registry,
+    model_visibility_resolver,
+    completions_logger,
+    pricing_lookup,
+    cost_tracker,
+) -> ChatServices:
+    return ChatServices(
+        router=router_exec,
+        model_router_registry=model_router_registry,
+        visibility=model_visibility_resolver,
+        log_store=log_store,
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        app_services=getattr(request.app.state, "services", None),
     )

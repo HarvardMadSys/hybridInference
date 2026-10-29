@@ -305,7 +305,7 @@ async def test_an_unexpected_exception_is_reported_not_raised(monkeypatch):
 
     from serving.servers.routers import completions
 
-    monkeypatch.setattr(completions, "chat_completions", broken)
+    monkeypatch.setattr(completions, "execute_chat", broken)
     app, services = _setup(_Upstream())
 
     result = await _dispatch(app, services)

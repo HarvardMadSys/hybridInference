@@ -22,7 +22,7 @@ async def test_anthropic_unknown_model_logs_rejection(monkeypatch):
         log_calls.append(kwargs)
 
     monkeypatch.setattr(
-        "serving.servers.routers.anthropic_messages.log_rejection",
+        "serving.servers.routers.anthropic_messages.log_rejection_from",
         fake_log_rejection,
     )
 
@@ -98,7 +98,7 @@ async def test_anthropic_rejection_passes_probe_trust_fields(monkeypatch):
         log_calls.append(kwargs)
 
     monkeypatch.setattr(
-        "serving.servers.routers.anthropic_messages.log_rejection",
+        "serving.servers.routers.anthropic_messages.log_rejection_from",
         fake_log_rejection,
     )
 

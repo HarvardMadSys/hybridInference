@@ -2011,8 +2011,8 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
     """Start the in-process batch worker when there is a batch store.
 
     Called from the app lifespan once ``app.state.services`` is set: the worker
-    runs each batch request through the handler of its target with a
-    synthetic request whose scope carries the live app. It starts whether or not
+    runs each batch request through the protocol execution of its target, which
+    reads services off the live app as the routes do. It starts whether or not
     ``BATCH_ENABLED`` is on, reads the setting every round and claims nothing
     while it is off, so turning batches on needs no restart.
 
