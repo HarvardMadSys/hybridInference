@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -36,8 +37,7 @@ from serving.batch.renderers import (
     FINAL_ITEM_STATUSES,
     OUTPUT_STATUSES,
     RENDERER_VERSION,
-    anthropic_line,
-    openai_line,
+    result_line,
 )
 from serving.storage.batch_file_store import new_file_id
 from serving.storage.batch_store import terminal_event
@@ -69,11 +69,6 @@ def _wanted(kind: str) -> Callable[[dict[str, Any]], bool]:
     return lambda item: item.get("status") in FINAL_ITEM_STATUSES
 
 
-def renderer_for(surface: str) -> Callable[[dict[str, Any], int], bytes]:
-    """The line renderer of an API surface."""
-    return anthropic_line if surface == "anthropic" else openai_line
-
-
 async def seal_file_batch(
     *, store: Any, batch: dict[str, Any], worker_id: str, lease_seconds: int
 ) -> dict[str, Any] | None:
@@ -92,7 +87,7 @@ async def seal_file_batch(
         for item in items:
             after = item["id"]
             kind = "output" if item.get("status") in OUTPUT_STATUSES else "error"
-            line = openai_line(item, RENDERER_VERSION)
+            line = result_line(item, RENDERER_VERSION)
             digests[kind].update(line)
             sizes[kind] += len(line)
             lines[kind] += 1
@@ -121,7 +116,7 @@ async def seal_file_batch(
         worker_id=worker_id,
         generation=generation,
         files=files,
-        event=terminal_event(batch_id, batch.get("api_surface") or "openai_file", final),
+        event=terminal_event(batch_id, final, api_surface=batch.get("api_surface")),
     )
     if sealed is not None:
         logger.info(
@@ -135,7 +130,7 @@ async def seal_file_batch(
     return sealed
 
 
-class _LeaseKeeper:
+class LeaseKeeper:
     """Renews a download's read lease on its own schedule, however slowly the client reads.
 
     A client that stops reading suspends the response generator, so renewing
@@ -169,6 +164,7 @@ class _LeaseKeeper:
                 logger.warning("could not renew a batch read lease", exc_info=True)
 
     async def close(self) -> None:
+        """Stop renewing and drop the lease."""
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await self._task
@@ -182,7 +178,6 @@ async def stream_lines(
     *,
     store: Any,
     batch_id: str,
-    surface: str,
     kind: str,
     version: int = RENDERER_VERSION,
     expected: dict[str, Any] | None = None,
@@ -190,7 +185,7 @@ async def stream_lines(
     """Yield the lines of one of a batch's result files, a page at a time.
 
     ``kind`` is ``output`` or ``error`` (a file batch's two files), or ``all``
-    (an Anthropic results file, or an inline batch's export). With
+    (every result, an inline batch's export). With
     ``expected`` (a manifest), the stream's size and digest are checked as it
     goes: more bytes than the manifest, or fewer or different ones at the end,
     fail the download instead of ending it as complete.
@@ -199,13 +194,12 @@ async def stream_lines(
         DownloadInterrupted: The batch was removed under the download, its
             read lease was lost, or the rendering does not match its manifest.
     """
-    render = renderer_for(surface)
     wanted = _wanted(kind)
     try:
         lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
     except LookupError:
         raise DownloadInterrupted(batch_id) from None
-    keeper = _LeaseKeeper(store, lease)
+    keeper = LeaseKeeper(store, lease)
     digest = hashlib.sha256()
     size = 0
     limit = int(expected["bytes"]) if expected is not None else None
@@ -221,7 +215,7 @@ async def stream_lines(
             for item in items:
                 after = item["id"]
                 if wanted(item):
-                    chunk += render(item, version)
+                    chunk += result_line(item, version)
             if chunk:
                 digest.update(chunk)
                 size += len(chunk)
@@ -266,7 +260,7 @@ async def stream_upload(*, store: Any, file_store: Any, file_id: str) -> AsyncIt
         lease = await store.take_read_lease(file_id=file_id, ttl_seconds=READ_LEASE_SECONDS)
     except LookupError:
         raise DownloadInterrupted(file_id) from None
-    keeper = _LeaseKeeper(store, lease)
+    keeper = LeaseKeeper(store, lease)
     size = 0
     try:
         after = -1
@@ -284,5 +278,58 @@ async def stream_upload(*, store: Any, file_store: Any, file_id: str) -> AsyncIt
                 yield data
         if size != expected:
             raise DownloadInterrupted(file_id)
+    finally:
+        await keeper.close()
+
+
+#: Item statuses whose requests "unfinished requests" exports: they never
+#: produced a result (failed, expired before they ran, cancelled).
+UNFINISHED_STATUSES = frozenset({"failed", "expired", "cancelled"})
+
+
+async def stream_requests(
+    *, store: Any, batch_id: str, url: str, statuses: frozenset[str] | None = None
+) -> AsyncIterator[bytes]:
+    """Yield a batch's stored requests as input lines, under a read lease on the batch.
+
+    Each line is ``{"custom_id", "method": "POST", "url", "body"}`` -- the
+    request as it was stored, ready to upload again -- in submission order;
+    only the items in ``statuses`` when given.
+
+    Raises:
+        DownloadInterrupted: The batch was removed under the download.
+    """
+    try:
+        lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
+    except LookupError:
+        raise DownloadInterrupted(batch_id) from None
+    keeper = LeaseKeeper(store, lease)
+    try:
+        after = 0
+        while True:
+            page = await store.iter_item_requests(
+                batch_id, statuses=statuses, after=after, limit=PAGE
+            )
+            if keeper.lost:
+                raise DownloadInterrupted(batch_id)
+            if not page:
+                break
+            lines = []
+            for item in page:
+                after = item["id"]
+                lines.append(
+                    json.dumps(
+                        {
+                            "custom_id": item["custom_id"],
+                            "method": "POST",
+                            "url": url,
+                            "body": item["request"],
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            yield "".join(lines).encode("utf-8")
     finally:
         await keeper.close()

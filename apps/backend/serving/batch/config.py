@@ -2,7 +2,7 @@
 
 Every value resolves through :func:`serving.config.app_config.config_value`
 (database row, then environment, then the default here) on each call, so an
-administrator's change in Admin -> Configuration applies to the next request
+administrator's change in Admin -> Settings applies to the next request
 and the next worker round without a restart. The entries themselves are
 registered in ``serving.config.app_config_registry`` under the ``batch``
 category.
@@ -18,8 +18,8 @@ slots they need.
 
 ``BATCH_ENABLED`` is the one switch: off, every batch route answers 404
 (results and management included) and nothing is claimed. On, every batch kind
-this version runs is available -- inline and file batches, Anthropic Message
-Batches, the Chat, Embeddings and Responses targets, and webhooks -- to the
+this version runs is available -- inline and file batches, the Chat,
+Embeddings, Messages and Responses targets, and webhooks -- to the
 roles ``BATCH_MIN_ROLE`` admits. ``BATCH_EXPANSION_ENABLED``, which once held
 the newer kinds back, is retired (``RETIRED_SETTINGS`` in the registry): a
 value left in the environment or the database controls nothing here. See
@@ -73,7 +73,7 @@ ROLE_CONCURRENCY_KEYS: dict[str, str] = {
 }
 #: Slots of every model's batch cap kept free for interactive traffic.
 INTERACTIVE_RESERVE_KEY = "BATCH_INTERACTIVE_RESERVE"
-#: Anthropic API versions a Message Batch may be created under.
+#: Anthropic API versions a new Messages batch may name (its ``anthropic-version`` header).
 ANTHROPIC_VERSIONS_KEY = "BATCH_ANTHROPIC_VERSIONS"
 #: Webhooks may target private, loopback or link-local addresses (testing only).
 WEBHOOK_ALLOW_PRIVATE_KEY = "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS"
@@ -100,7 +100,7 @@ DEFAULT_INTERACTIVE_RESERVE = 0
 KNOWN_ANTHROPIC_VERSIONS: tuple[str, ...] = ("2023-06-01", "2026-10-21")
 DEFAULT_ANTHROPIC_VERSIONS = ",".join(KNOWN_ANTHROPIC_VERSIONS)
 
-#: The window of file and Anthropic batches: the protocols fix it at 24 hours.
+#: The window of file batches: the protocol fixes it at 24 hours.
 PROTOCOL_WINDOW_SECONDS = 24 * 3600
 
 

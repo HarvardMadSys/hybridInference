@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from serving.config.revisions import GroupContract
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
 # settings_init_name is re-exported: callers map a registry entry's field to
@@ -49,7 +50,7 @@ Origin = Literal["static", "discovered", "numbered", "custom"]
 
 @dataclass(frozen=True)
 class Category:
-    """A group of entries in the admin Configuration tab."""
+    """A group of entries on the admin Settings tab."""
 
     id: str
     label: str
@@ -57,6 +58,8 @@ class Category:
     #: Whether its settings can take effect in this deployment; the console
     #: offers none of them while it returns false. ``None`` is always.
     in_effect: Callable[[], bool] | None = None
+    #: Every setting in it is usually set once (:attr:`ConfigEntry.one_time`).
+    one_time: bool = False
 
 
 def _sms_provider_registered() -> bool:
@@ -82,6 +85,7 @@ CATEGORIES: tuple[Category, ...] = (
         "email",
         "Email",
         "Outgoing mail for verification, password reset and notifications.",
+        one_time=True,
     ),
     Category(
         "phone",
@@ -107,13 +111,17 @@ CATEGORIES: tuple[Category, ...] = (
         "and results are kept.",
     ),
     Category(
-        "network", "Network", "Browser origins and which proxies may report client addresses."
+        "network",
+        "Network",
+        "Browser origins and which proxies may report client addresses.",
+        one_time=True,
     ),
     Category("alerts", "Alerts", "Backend alert notifications."),
     Category(
         "integrations",
         "Integrations",
         "Cloud agent identity, the documentation assistant and Qdrant.",
+        one_time=True,
     ),
     Category("privacy", "Privacy", "Request content storage and account deletion."),
 )
@@ -158,6 +166,10 @@ class ConfigEntry:
     restart_required: bool = False
     #: Shown on the first-run configuration step.
     setup: bool = False
+    #: Usually set once, when the gateway is deployed, and seldom changed
+    #: afterwards: the console lists it after the settings changed more often.
+    #: A category can say this of all its settings (:attr:`Category.one_time`).
+    one_time: bool = False
     #: Cannot be changed once set.
     immutable: bool = False
     #: Generated on first boot when neither the database nor the environment has it.
@@ -262,6 +274,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "behind a TLS-terminating proxy; set it on any HTTPS deployment.",
         "str",
         setup=True,
+        one_time=True,
     ),
     _setting(
         "frontend_url",
@@ -270,6 +283,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "approval). Must be absolute and reachable by your users.",
         "str",
         setup=True,
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_NAME",
@@ -277,12 +291,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Name rendered into emails, broadcast templates and the docs assistant. Falls "
         "back to the active distribution manifest, then to HybridInference.",
         setup=True,
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_PUBLIC_BASE_URL",
         "general",
         "Public site URL rendered into backend-produced content. Falls back to the "
         "active distribution manifest.",
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_SUPPORT_EMAIL",
@@ -290,12 +306,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Support address rendered into emails and help text. Falls back to the active "
         "distribution manifest.",
         setup=True,
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_DOCS_URL",
         "general",
         "HTTPS documentation URL rendered into backend-produced content. Overrides the "
         "manifest's branding.",
+        one_time=True,
     ),
     ConfigEntry(
         "LOG_LEVEL",
@@ -312,6 +330,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         # The logger treats every value but "json" as plain text; "text" is
         # the spelling older deployments and the installation guide use.
         choices=("plain", "text", "json"),
+        one_time=True,
     ),
     # --- security ----------------------------------------------------------
     _setting(
@@ -322,6 +341,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         secret=True,
         required=_auth_secret_required,
         generated=True,
+        one_time=True,
     ),
     _setting(
         "api_key_secret",
@@ -333,6 +353,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         required=_auth_secret_required,
         generated=True,
         immutable=True,
+        one_time=True,
     ),
     _setting(
         "admin_token",
@@ -340,6 +361,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Optional legacy bearer token for the admin API. Blank disables only this login path.",
         "str",
         secret=True,
+        one_time=True,
     ),
     _setting(
         "admin_emails",
@@ -357,6 +379,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "str",
         choices=("HS256", "HS384", "HS512"),
         case_sensitive=True,
+        one_time=True,
     ),
     _setting(
         "jwt_access_token_expire_minutes",
@@ -365,6 +388,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "int",
         minimum=1,
         maximum=43_200,
+        one_time=True,
     ),
     _setting(
         "jwt_refresh_token_expire_days",
@@ -373,6 +397,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "int",
         minimum=1,
         maximum=3650,
+        one_time=True,
     ),
     _setting(
         "cookie_secure",
@@ -380,12 +405,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Mark the refresh-token cookie Secure (sent over HTTPS only). Turn it off only "
         "for a plain-http local run.",
         "bool",
+        one_time=True,
     ),
     _setting(
         "cookie_domain",
         "security",
         "Domain attribute of the refresh-token cookie. Empty for a host-only cookie.",
         "str",
+        one_time=True,
     ),
     _setting(
         "cookie_samesite",
@@ -393,6 +420,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "SameSite attribute of the refresh-token cookie.",
         "str",
         choices=("lax", "strict", "none"),
+        one_time=True,
     ),
     _setting(
         "login_rate_limit_per_15min",
@@ -496,6 +524,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "runtime setting applies.",
         "float",
         minimum=0,
+        one_time=True,
     ),
     _setting(
         "signup_rate_limit_per_hour",
@@ -537,6 +566,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Cloudflare Turnstile secret for the signup captcha. Empty turns verification off.",
         "str",
         secret=True,
+        one_time=True,
     ),
     # --- phone authentication -----------------------------------------------
     _setting(
@@ -552,12 +582,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "str",
         choices=("none",),
         case_sensitive=True,
+        one_time=True,
     ),
     _setting(
         "sms_default_country_code",
         "phone",
         "Optional country calling code for local input, without +; empty requires international format.",
         "str",
+        one_time=True,
     ),
     _setting(
         "sms_allowed_prefixes",
@@ -663,24 +695,28 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "provider=type[|type] entries (for example chutes=quota,openrouter=concurrency|"
         "on_demand). Unlisted providers may use any type.",
         "str",
+        one_time=True,
     ),
     ConfigEntry(
         "CHUTES_BASE_URL",
         "providers",
         "Default base URL offered for new Chutes routes.",
         default="https://llm.chutes.ai/v1",
+        one_time=True,
     ),
     ConfigEntry(
         "FEATHERLESS_BASE_URL",
         "providers",
         "Default base URL offered for new Featherless routes.",
         default="https://api.featherless.ai/v1",
+        one_time=True,
     ),
     ConfigEntry(
         "MINIMAX_BASE_URL",
         "providers",
         "Default base URL offered for new MiniMax routes.",
         default="https://api.minimax.io/v1",
+        one_time=True,
     ),
     ConfigEntry(
         "LOCAL_API_KEY",
@@ -689,6 +725,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "assistant's ingest key when RAG_GATEWAY_API_KEY is empty.",
         secret=True,
         restart_required=True,
+        one_time=True,
     ),
     # --- routing -----------------------------------------------------------
     _setting(
@@ -1037,6 +1074,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="bool",
         default="1",
         flag=True,
+        one_time=True,
     ),
     ConfigEntry(
         "BATCH_MAX_QUEUED_REQUESTS_PER_USER",
@@ -1115,10 +1153,11 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_ANTHROPIC_VERSIONS",
         "batch",
-        "Comma-separated anthropic-version values a Message Batch may be created under. "
-        "Known versions: 2023-06-01, 2026-10-21. A request with any other version is "
+        "Comma-separated anthropic-version values a new /v1/messages batch may name. "
+        "Known versions: 2023-06-01, 2026-10-21. A batch with any other version is "
         "refused.",
         default="2023-06-01,2026-10-21",
+        one_time=True,
     ),
     ConfigEntry(
         "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
@@ -1129,6 +1168,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="bool",
         default="0",
         flag=True,
+        one_time=True,
     ),
     # --- network -----------------------------------------------------------
     _setting(
@@ -1187,30 +1227,35 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "slack_alerts_webhook_url",
         "alerts",
-        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL. "
-        "Takes effect after a restart, together with the WeCom channel it alternates with.",
+        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL. Saved together with the "
+        "WeCom channel it alternates with. Part of the alerts.runtime group: applies without "
+        "a restart once the group is activated, after a restart until then.",
         "str",
         secret=True,
         fallback_key="SLACK_WEBHOOK_URL",
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "wecom_alerts_webhook_url",
         "alerts",
-        "WeCom group-bot webhook for alerts. Empty disables the WeCom channel. "
-        "Takes effect after a restart, like the failed-request detector it enables.",
+        "WeCom group-bot webhook for alerts. Empty disables the WeCom channel; setting it also "
+        "runs the failed-request detector. Part of the alerts.runtime group.",
         "str",
         secret=True,
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "slack_webhook_url",
         "alerts",
         "Slack webhook for the failed-request alerter, and for alerts when "
-        "SLACK_ALERTS_WEBHOOK_URL is empty. Empty turns the failed-request alerter off.",
+        "SLACK_ALERTS_WEBHOOK_URL is empty. Empty, with WECOM_ALERTS_WEBHOOK_URL empty too, "
+        "pauses the failed-request alerter. Part of the alerts.runtime group.",
         "str",
         secret=True,
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "failed_request_alert_threshold",
@@ -1252,11 +1297,13 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "alerts",
         "Environment name shown on alerts, such as production or staging. Empty infers "
         "it from BASE_URL.",
+        one_time=True,
     ),
     ConfigEntry(
         "ENVIRONMENT",
         "alerts",
         "Older name of DEPLOYMENT_ENV, used while DEPLOYMENT_ENV is empty.",
+        one_time=True,
     ),
     ConfigEntry(
         "ALERT_HISTORY_ENABLED",
@@ -1268,6 +1315,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="bool",
         default="true",
         restart_required=True,
+        one_time=True,
     ),
     ConfigEntry(
         "ALERT_HISTORY_DEPLOYMENT_ID",
@@ -1275,6 +1323,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Deployment id written on this gateway's alert history and matched by reader "
         "credentials. Empty is 'default'.",
         restart_required=True,
+        one_time=True,
     ),
     ConfigEntry(
         "ALERT_HISTORY_READ_CREDENTIALS",
@@ -1284,6 +1333,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "never stored.",
         type="text",
         secret=True,
+        one_time=True,
     ),
     ConfigEntry(
         "ALERT_HISTORY_WRITER_CREDENTIALS",
@@ -1292,6 +1342,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "source, namespace, deployment and environments it may write, and its expiry.",
         type="text",
         secret=True,
+        one_time=True,
     ),
     # --- integrations ------------------------------------------------------
     ConfigEntry(
@@ -1427,6 +1478,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "written. Weigh your users' expectations before turning it on.",
         "bool",
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "erasure_fence_secret",
@@ -1439,6 +1491,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         restart_required=True,
         immutable=True,
         fallback_key="API_KEY_SECRET",
+        one_time=True,
     ),
     _setting(
         "erasure_fence_protocol_ready",
@@ -1446,6 +1499,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Allow permanent account deletion. Leave it off until every process that writes "
         "the request log checks the erasure fence.",
         "bool",
+        one_time=True,
     ),
 )
 
@@ -1474,6 +1528,15 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "GUNICORN_WORKERS": "process wiring",
     "SUPERVISOR_RESTARTS_BACKEND": "process wiring: declares the supervisor's restart policy",
     "REFRESH_TOKEN_COOKIE_NAME": "process wiring: the console container reads the same name",
+    "TRUST_KUBERNETES_PROXY_DISCOVERY": "network wiring: opt-in authenticated proxy discovery",
+    "KUBERNETES_PROXY_NAMESPACE": "network wiring: namespace containing the proxy Service",
+    "KUBERNETES_PROXY_SERVICE_NAME": "network wiring: exact proxy Service identity",
+    "KUBERNETES_PROXY_SERVICE_UID": "network wiring: pins the proxy Service across replacement",
+    "KUBERNETES_PROXY_WORKLOAD_UID": "network wiring: pins the controller owning proxy Pods",
+    "KUBERNETES_PROXY_API_URL": "network wiring: trusted Kubernetes API origin",
+    "KUBERNETES_PROXY_CA_FILE": "network wiring: Kubernetes API TLS trust root",
+    "KUBERNETES_PROXY_TOKEN_FILE": "network wiring: projected read-only service-account token",
+    "KUBERNETES_PROXY_MAX_AGE_SECONDS": "network wiring: maximum lifetime of a proxy snapshot",
 }
 
 #: Settings an earlier version read that no longer control anything, with what
@@ -1501,6 +1564,70 @@ DERIVED_SETTINGS_FIELDS: tuple[str, ...] = (
     "trusted_direct_client_parsed",
     "trusted_cloudflare_parsed",
 )
+
+#: The first live configuration group (:mod:`serving.config.live`).
+ALERTS_RUNTIME_GROUP = "alerts.runtime"
+
+#: Live configuration groups and the keys each one owns. A key belongs to at
+#: most one group. Every owned key stays ``restart_required`` here: that is how
+#: it behaves until an operator activates the group's persisted contract
+#: (``python -m serving.config.manage live activate``), and again after one
+#: deactivates it in a process that never applied it. A key moves into a group
+#: only once its adapter, every reader on its execution path and the tests
+#: are in place; ``tests/unit/config/test_live_groups.py`` holds the list to
+#: the readers.
+MANAGED_GROUPS: Mapping[str, GroupContract] = {
+    ALERTS_RUNTIME_GROUP: GroupContract(
+        ALERTS_RUNTIME_GROUP,
+        schema_version=1,
+        keys=(
+            "SLACK_ALERTS_WEBHOOK_URL",
+            "SLACK_WEBHOOK_URL",
+            "WECOM_ALERTS_WEBHOOK_URL",
+            "FAILED_REQUEST_ALERT_THRESHOLD",
+            "FAILED_REQUEST_ALERT_WINDOW_MINUTES",
+            "FAILED_REQUEST_ALERT_COOLDOWN_MINUTES",
+            "FAILED_REQUEST_ALERT_RATE",
+            "FAILED_REQUEST_ALERT_RATE_MIN_COUNT",
+        ),
+    ),
+}
+
+_GROUP_OF_KEY: dict[str, str] = {
+    key: name for name, contract in MANAGED_GROUPS.items() for key in contract.keys
+}
+
+#: How a change to a setting reaches the code that reads it.
+ApplyMode = Literal["live", "managed", "restart", "immutable"]
+
+
+def managed_group(key: str) -> str | None:
+    """Return the live configuration group that owns *key*, if one does."""
+    return _GROUP_OF_KEY.get(key)
+
+
+def apply_mode(entry: ConfigEntry, *, group_managed: bool = False) -> ApplyMode:
+    """Return how a change to *entry* applies.
+
+    ``live`` is the older in-place apply (the overlay and :func:`on_change`
+    listeners, read at use), ``managed`` a group the live protocol applies and
+    acknowledges, ``restart`` a value captured at startup and ``immutable`` a
+    value that cannot change once set.
+
+    Args:
+        entry: The setting.
+        group_managed: Whether this process applies *entry*'s group through
+            the live protocol now (its contract is active). Otherwise an owned
+            key is restart-required, as declared.
+    """
+    if entry.immutable:
+        return "immutable"
+    if group_managed and managed_group(entry.key) is not None:
+        return "managed"
+    if entry.restart_required:
+        return "restart"
+    return "live"
+
 
 #: Environment-variable spellings of the runtime settings, which ``site_settings``
 #: holds and the Settings tab edits.
@@ -1643,6 +1770,12 @@ def is_offered(entry: ConfigEntry) -> bool:
         return False
     category = _CATEGORY_BY_ID.get(entry.category)
     return category is None or category.in_effect is None or category.in_effect()
+
+
+def is_one_time(entry: ConfigEntry) -> bool:
+    """Return whether *entry* is usually set once, by its own flag or its category's."""
+    category = _CATEGORY_BY_ID.get(entry.category)
+    return entry.one_time or (category is not None and category.one_time)
 
 
 def is_environment_only(key: str) -> bool:

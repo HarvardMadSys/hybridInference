@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
@@ -12,10 +12,9 @@ import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
-  AdminEmptyState,
   AdminLoading,
   AdminNotice,
-  AdminSectionNav,
+  AdminSection,
 } from '@/components/features/admin/AdminPrimitives';
 import {
   BUTTON_GHOST,
@@ -23,8 +22,8 @@ import {
   BUTTON_SECONDARY,
   CHECKBOX,
   CONTROL,
+  FIELD_LABEL,
   FORM_LABEL,
-  INDEXED_LAYOUT,
   NOTICE_ACTION,
   PANEL,
   TEXT_FIELD,
@@ -45,7 +44,15 @@ import {
   type AlertChannelChoice,
 } from '@/components/features/configuration/alertNotificationDrafts';
 import { KeyList } from '@/components/features/configuration/KeyList';
-import { CONFIGURATION_TAB_PATH } from '@/components/features/configuration/paths';
+import { LiveConfigStatus } from '@/components/features/configuration/LiveConfigStatus';
+import {
+  chainVersions,
+  noteEdit,
+  saveBase,
+  withoutVersions,
+  type DraftVersions,
+} from '@/components/features/configuration/draftVersions';
+import { ADMIN_SETTINGS_PATH } from '@/components/features/configuration/paths';
 import {
   ManualRestartHint,
   RestartBackendButton,
@@ -74,6 +81,7 @@ import {
   type ConfigEntry,
   type ConfigResponse,
   type ConfigScalar,
+  type ConfigSourceVersion,
 } from '@/lib/api/config';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
@@ -109,6 +117,52 @@ interface CategorySave {
   secrets: string[];
   /** Keys whose stored row the save removes, one DELETE each after the PATCH. */
   resets: string[];
+  /**
+   * The version the category's changes were made on, pinned when the save
+   * starts: a read that completes while it is in flight cannot move it.
+   */
+  expectedVersion: ConfigSourceVersion | null;
+}
+
+/**
+ * The `If-Match` for a write: the version the category's changes were made on,
+ * or, within one save, the previous request's own `saved_version`. An older
+ * backend reports none, and its writes stay unconditional.
+ */
+function versioned(
+  version: ConfigSourceVersion | null | undefined,
+): [] | [{ expectedVersion: ConfigSourceVersion }] {
+  return version ? [{ expectedVersion: version }] : [];
+}
+
+/**
+ * The version to chain the next request of the same save on: the one this
+ * write committed. Never the response's `source_version`, which can include a
+ * save made elsewhere in the meantime. A write that stored nothing commits no
+ * version, and the chain stays where it was.
+ */
+function committedVersion(
+  next: ConfigResponse,
+  base: ConfigSourceVersion | null,
+): ConfigSourceVersion | null {
+  return next.saved_version ?? base;
+}
+
+/** Whether a write was refused because the configuration changed since it was read. */
+function isVersionConflict(error: unknown): boolean {
+  return error instanceof APIError && error.code === 'CONFIG_VERSION_CONFLICT';
+}
+
+/**
+ * The Add variable form's entry in `draftVersions`: the version it opened on,
+ * moved like a category's by this page's own writes and by a reload after a
+ * conflict. Not a category id.
+ */
+const ADD_VARIABLE_DRAFT = '\u0000add-variable';
+
+/** The live configuration groups a category's settings belong to, once each. */
+function liveGroupNames(group: ConfigGroup): string[] {
+  return [...new Set(group.entries.flatMap((entry) => (entry.group ? [entry.group] : [])))];
 }
 
 /** Keys of `record` that belong to `group`. */
@@ -117,21 +171,30 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
 }
 
 /**
- * Admin → Configuration: every database-backed setting, grouped by category.
+ * The configuration on Admin → Settings: every database-backed setting,
+ * grouped by category, with the categories spread over the page's sub-tabs.
  *
- * Settings are edited in place, and several categories can hold unsaved
- * changes at once. Each category's Save writes its own changes as one batch
- * (the backend validates a batch together, so related settings can change in
- * one save). After any write the page asks the server
- * components to re-render, which re-reads the public site configuration and
- * so updates the "required settings are missing" banner.
+ * One editor holds every category's state, so a change waits unsaved while
+ * the administrator looks at another sub-tab. Settings are edited in place,
+ * and several categories can hold unsaved changes at once. Each category's
+ * Save writes its own changes as one batch (the backend validates a batch
+ * together, so related settings can change in one save). After any write the
+ * page asks the server components to re-render, which re-reads the public site
+ * configuration and so updates the "required settings are missing" banner.
+ *
+ * The components below draw the editor's parts: its notices, its filters, a
+ * category, the Add variable form and the backup.
  */
-export function ConfigurationTab({ initialMissingOnly = false }: { initialMissingOnly?: boolean }) {
+export function useConfigurationEditor({
+  initialMissingOnly = false,
+}: { initialMissingOnly?: boolean } = {}) {
   const toast = useAccountToast();
   const router = useRouter();
-  const searchId = useId();
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // Whether the first load has answered, successfully or not: until then the
+  // page has nothing to place in its sub-tabs.
+  const [settled, setSettled] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<ConfigDrafts>({});
   const [entryErrors, setEntryErrors] = useState<Record<string, string>>({});
@@ -142,15 +205,36 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
   // Staged like drafts: nothing is written until the category is saved.
   const [pendingResets, setPendingResets] = useState<Record<string, true>>({});
   const [pendingSecrets, setPendingSecrets] = useState<Record<string, true>>({});
-  const [adding, setAdding] = useState(false);
   const [alertChannelDraft, setAlertChannelDraft] = useState<AlertChannelChoice | null>(null);
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
   // Restoring a backup overwrites everything, so it is confirmed; a download is not.
   const backupConfirmation = useConfirmAction();
-  const restoreInputRef = useRef<HTMLInputElement | null>(null);
   const saveInFlight = useRef(false);
+  // The version each category's unsaved changes were made on (draftVersions).
+  const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
+  // The version on screen when the administrator acts: set once each render
+  // is committed, so an event handler reads the version its page showed.
+  const shownVersion = useRef<ConfigSourceVersion | null>(null);
+  useEffect(() => {
+    shownVersion.current = config?.source_version ?? null;
+  }, [config]);
+  const categoryOf = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    categoryOf.current = new Map(
+      (config?.entries ?? []).map((entry) => [entry.key, entry.category]),
+    );
+  }, [config]);
+  /** A change is staged in the categories of `keys`: they keep the version shown now. */
+  const noteEdits = useCallback((keys: readonly string[]) => {
+    setDraftVersions((prev) =>
+      keys.reduce((versions, key) => {
+        const groupId = categoryOf.current.get(key);
+        return groupId === undefined ? versions : noteEdit(versions, groupId, shownVersion.current);
+      }, prev),
+    );
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -165,6 +249,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       );
     } finally {
       setLoading(false);
+      setSettled(true);
     }
   }, []);
 
@@ -187,16 +272,20 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     [router],
   );
 
-  const onDraftChange = useCallback((key: string, draft: ConfigDraft | undefined) => {
-    setDrafts((prev) => {
-      const next = { ...prev };
-      if (draft) next[key] = draft;
-      else delete next[key];
-      return next;
-    });
-    setEntryErrors((prev) => withoutKeys(prev, [key]));
-    if (isAlertWebhook(key)) setAlertTestResult(null);
-  }, []);
+  const onDraftChange = useCallback(
+    (key: string, draft: ConfigDraft | undefined) => {
+      if (draft) noteEdits([key]);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        if (draft) next[key] = draft;
+        else delete next[key];
+        return next;
+      });
+      setEntryErrors((prev) => withoutKeys(prev, [key]));
+      if (isAlertWebhook(key)) setAlertTestResult(null);
+    },
+    [noteEdits],
+  );
 
   const webhookEntries = config ? alertWebhookEntries(config.entries) : null;
   const alertChannel =
@@ -204,6 +293,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
 
   const changeAlertChannel = (channel: AlertChannelChoice) => {
     if (!webhookEntries || alertTestInFlight.current) return;
+    noteEdits(ALERT_WEBHOOK_KEYS);
     setAlertChannelDraft(channel === savedAlertChannel(webhookEntries) ? null : channel);
     setDrafts((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
     setEntryErrors((prev) => withoutKeys(prev, ALERT_WEBHOOK_KEYS));
@@ -274,6 +364,8 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     [drafts, pendingResets, pendingSecrets, alertChannel, alertChannelDraft],
   );
 
+  const filtering = missingOnly || query.trim() !== '';
+
   const visibleGroups = useMemo(
     () =>
       groups.flatMap((group) => {
@@ -324,10 +416,18 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     for (const key of resets) delete values[key];
     const secrets = groupKeys(group, pendingSecrets);
     if (Object.keys(values).length + secrets.length + resets.length === 0) return;
-    void commitSave({ group, values, secrets, resets });
+    void commitSave({
+      group,
+      values,
+      secrets,
+      resets,
+      // Taken now, from the version this category's changes were made on: a read
+      // that completes while the save is in flight cannot move it.
+      expectedVersion: saveBase(draftVersions, group.id, config?.source_version),
+    });
   };
 
-  const commitSave = async ({ group, values, secrets, resets }: CategorySave) => {
+  const commitSave = async ({ group, values, secrets, resets, expectedVersion }: CategorySave) => {
     if (saveInFlight.current) return;
     saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
@@ -347,6 +447,14 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     let attempted = keys;
     // What was written before a failure, so the message can say so.
     let written = 0;
+    // The version this category's changes were made on. Each request after the
+    // first is conditional on the one before it committed, never on a version
+    // some other read brought in: anything saved in between is a conflict.
+    let base = expectedVersion;
+    /** Move every draft made on `from` along to what this page's own write committed. */
+    const chain = (from: ConfigSourceVersion | null, to: ConfigSourceVersion | null) => {
+      if (from) setDraftVersions((prev) => chainVersions(prev, from, to));
+    };
     let failedReset: string | null = null;
     try {
       if (keys.length > 0 || secrets.length > 0) {
@@ -355,7 +463,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           secrets.length > 0
             ? { values, secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
             : { values },
+          ...versioned(base),
         );
+        const committed = committedVersion(next, base);
+        chain(base, committed);
+        base = committed;
         // Claim nothing the response does not show: a backend that ignored the
         // flag would answer with the variable unchanged.
         const unmarked = secrets.find(
@@ -374,7 +486,11 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       for (const key of resets) {
         attempted = [key];
         failedReset = key;
-        applyResponse(await resetConfigKey(key), [key]);
+        const next = await resetConfigKey(key, ...versioned(base));
+        const committed = committedVersion(next, base);
+        chain(base, committed);
+        base = committed;
+        applyResponse(next, [key]);
         failedReset = null;
         written += 1;
       }
@@ -383,10 +499,33 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         setAlertTestResult(null);
       }
       const count = new Set([...keys, ...secrets, ...resets]).size;
+      setDraftVersions((prev) => withoutVersions(prev, [group.id]));
       toast.success(
         count === 1 ? `Saved ${group.label}.` : `Saved ${count} changes to ${group.label}.`,
       );
     } catch (e) {
+      if (isVersionConflict(e)) {
+        // Saved elsewhere since this page read it: nothing of this request was
+        // written. Show the latest values and keep the drafts for a second look.
+        let message =
+          'The configuration was changed elsewhere since this page loaded, so this was not saved. The latest values are shown now; your unsaved changes are kept. Review them and save again.';
+        if (written > 0) {
+          message += ` ${plural(written, 'change')} ${written === 1 ? 'was' : 'were'} saved before that.`;
+        }
+        setGroupErrors((prev) => ({ ...prev, [group.id]: message }));
+        // The one place a draft moves to a version this page did not write:
+        // the administrator has been told, and is shown the newer values.
+        void getConfig()
+          .then((fresh) => {
+            setConfig(fresh);
+            const shown = fresh.source_version;
+            setDraftVersions((prev) =>
+              shown ? { ...prev, [group.id]: shown } : withoutVersions(prev, [group.id]),
+            );
+          })
+          .catch(() => undefined);
+        return;
+      }
       // What was not written stays as a draft, with the reason beside the save.
       const reason = typedSecrets.reduce(
         (message, secret) => withoutSecret(message, secret),
@@ -425,6 +564,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     setPendingResets((prev) => withoutKeys(prev, keys));
     setPendingSecrets((prev) => withoutKeys(prev, keys));
     setGroupErrors((prev) => withoutKeys(prev, [group.id]));
+    setDraftVersions((prev) => withoutVersions(prev, [group.id]));
   };
 
   const toggleReset = (target: ConfigEntry) => {
@@ -434,6 +574,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
       return;
     }
     // The row goes, so an edit to it or a flag on it would be lost: drop them now.
+    noteEdits([key]);
     setPendingResets((prev) => ({ ...prev, [key]: true }));
     setDrafts((prev) => withoutKeys(prev, [key]));
     setEntryErrors((prev) => withoutKeys(prev, [key]));
@@ -441,8 +582,60 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     if (isAlertWebhook(key)) setAlertTestResult(null);
   };
 
+  // Bumped as the Add variable form opens and closes: a reload it asked for
+  // that completes after it closed moves nothing. The form's open state is
+  // AddVariableControl's; its version is kept here, with the categories'.
+  const addSession = useRef(0);
+
+  /** The Add variable form opens: it adds on the version shown now. */
+  const openAddForm = () => {
+    addSession.current += 1;
+    const shown = shownVersion.current;
+    setDraftVersions((prev) => {
+      const rest = withoutVersions(prev, [ADD_VARIABLE_DRAFT]);
+      return shown ? { ...rest, [ADD_VARIABLE_DRAFT]: shown } : rest;
+    });
+  };
+
+  const closeAddForm = () => {
+    addSession.current += 1;
+    setDraftVersions((prev) => withoutVersions(prev, [ADD_VARIABLE_DRAFT]));
+  };
+
+  /** The form's add was written, conditional on `base`: what else was made on it moves along. */
+  const variableAdded = (next: ConfigResponse, key: string, base: ConfigSourceVersion | null) => {
+    if (base) setDraftVersions((prev) => chainVersions(prev, base, next.saved_version));
+    applyResponse(next, [key]);
+    closeAddForm();
+  };
+
+  /**
+   * After the form's add met a conflict: show the latest configuration, and
+   * move the form onto it, for the administrator to review and add again.
+   * `null`, and the form's version left where it was, when the read fails.
+   */
+  const reloadForAdd = async (): Promise<ConfigResponse | null> => {
+    const session = addSession.current;
+    let fresh: ConfigResponse;
+    try {
+      fresh = await getConfig();
+    } catch {
+      return null;
+    }
+    if (session !== addSession.current) return null;
+    setConfig(fresh);
+    const shown = fresh.source_version;
+    setDraftVersions((prev) =>
+      shown
+        ? { ...prev, [ADD_VARIABLE_DRAFT]: shown }
+        : withoutVersions(prev, [ADD_VARIABLE_DRAFT]),
+    );
+    return fresh;
+  };
+
   const toggleMarkSecret = (target: ConfigEntry) => {
     const { key } = target;
+    if (!pendingSecrets[key]) noteEdits([key]);
     setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
@@ -460,11 +653,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     if (failure) toast.error(`The backup could not be downloaded: ${failure}`);
   };
 
-  const onRestoreFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-
+  const restoreFromFile = async (file: File) => {
     let parsed: ConfigBackupPayload;
     try {
       const text = await file.text();
@@ -527,6 +716,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         const res = await restoreConfigBackup(parsed);
         setConfig(res.config);
         setDrafts({});
+        setDraftVersions({});
         setEntryErrors({});
         setGroupErrors({});
         setPendingResets({});
@@ -545,67 +735,88 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
     });
   };
 
-  if (loading && !config) {
-    return (
-      <div className="mt-6">
-        <AdminLoading />
-      </div>
-    );
-  }
+  return {
+    config,
+    loading,
+    settled,
+    loadError,
+    load,
+    query,
+    setQuery,
+    missingOnly,
+    setMissingOnly,
+    /** Whether a search or Missing only narrows the categories. */
+    filtering,
+    groups,
+    /** The categories the filters leave, each with the entries they leave. */
+    visibleGroups,
+    dirtyCount,
+    drafts,
+    entryErrors,
+    groupErrors,
+    savingGroup,
+    pendingResets,
+    pendingSecrets,
+    alertChannel,
+    testingAlert,
+    alertTestResult,
+    onDraftChange,
+    changeAlertChannel,
+    sendAlertTest,
+    saveGroup,
+    discardGroup,
+    toggleReset,
+    toggleMarkSecret,
+    applyResponse,
+    /**
+     * The version the Add variable form's add is conditional on: the one it
+     * opened on, moved only by this page's own writes and by `reloadForAdd`.
+     */
+    addVariableVersion: saveBase(draftVersions, ADD_VARIABLE_DRAFT, config?.source_version),
+    openAddForm,
+    closeAddForm,
+    reloadForAdd,
+    variableAdded,
+    downloadBackup,
+    restoreFromFile,
+    /** Render its `dialog` once, where no sub-tab can hide it. */
+    backupConfirmation,
+  };
+}
+
+export type ConfigurationEditor = ReturnType<typeof useConfigurationEditor>;
+
+/** How many settings the filters leave, across every category. */
+export function matchingSettingCount(editor: ConfigurationEditor): number {
+  return editor.visibleGroups.reduce((total, group) => total + group.entries.length, 0);
+}
+
+/**
+ * What needs attention whatever sub-tab is open: a configuration that could
+ * not be loaded, a restart a saved setting waits for, and required settings
+ * that have no value.
+ */
+export function ConfigurationNotices({ editor }: { editor: ConfigurationEditor }) {
+  const { config, missingOnly, setMissingOnly } = editor;
 
   if (!config) {
+    if (editor.loading) return <AdminLoading size="sm" label="Loading configuration..." />;
     return (
-      <div className="mt-6">
-        <AdminNotice
-          role="alert"
-          action={
-            <button type="button" onClick={() => void load()} className={NOTICE_ACTION}>
-              Retry
-            </button>
-          }
-        >
-          {loadError ?? 'Configuration could not be loaded.'}
-        </AdminNotice>
-      </div>
+      <AdminNotice
+        role="alert"
+        action={
+          <button type="button" onClick={() => void editor.load()} className={NOTICE_ACTION}>
+            Retry
+          </button>
+        }
+      >
+        {editor.loadError ?? 'Configuration could not be loaded.'}
+      </AdminNotice>
     );
   }
 
-  const existingKeys = new Set(config.entries.map((entry) => entry.key));
-  const resetKeys = new Set(Object.keys(pendingResets));
-
-  const fullGroup = (visible: ConfigGroup) =>
-    groups.find((candidate) => candidate.id === visible.id) ?? visible;
-  const sectionAnchor = (group: ConfigGroup) => `config-${group.id.replace(/[^\w-]/g, '-')}`;
-
-  // The index lists the categories the filters leave, and flags those with a
-  // missing required setting or unsaved changes.
-  const navItems = visibleGroups.map((visible) => {
-    const group = fullGroup(visible);
-    const missing = group.entries.filter((entry) => entry.missing).length;
-    const dirty = dirtyCount(group);
-    return {
-      id: sectionAnchor(group),
-      label: group.label,
-      meta:
-        missing > 0 || dirty > 0 ? (
-          <span className="flex shrink-0 items-center gap-1.5">
-            {dirty > 0 ? (
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
-            ) : null}
-            {dirty > 0 ? <span className="sr-only">, unsaved changes</span> : null}
-            {missing > 0 ? (
-              <span className="rounded bg-red-50 px-1 text-[11px] font-medium tabular-nums text-red-700">
-                {missing}
-                <span className="sr-only"> missing</span>
-              </span>
-            ) : null}
-          </span>
-        ) : undefined,
-    };
-  });
-
   return (
-    <div className="mt-6 space-y-4">
+    <>
       {config.pending_restart.length > 0 ? (
         <section
           aria-label="Restart pending"
@@ -618,7 +829,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           </p>
           <div className="mt-3">
             {config.restart_supported ? (
-              <RestartBackendButton onRestarted={() => navigateTo(CONFIGURATION_TAB_PATH)} />
+              <RestartBackendButton onRestarted={() => navigateTo(ADMIN_SETTINGS_PATH)} />
             ) : (
               <ManualRestartHint />
             )}
@@ -647,54 +858,307 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           ) : null}
         </div>
       ) : null}
+    </>
+  );
+}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor={searchId} className="sr-only">
-          Search settings
-        </label>
-        <div className="relative min-w-[14rem] flex-1">
-          <svg
-            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
-            viewBox="0 0 20 20"
-            fill="currentColor"
-            aria-hidden="true"
-          >
-            <path
-              fillRule="evenodd"
-              d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
-              clipRule="evenodd"
-            />
-          </svg>
-          <input
-            id={searchId}
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search by name, description or model"
-            className={`${CONTROL} w-full pl-8`}
-          />
-        </div>
-        <label className="flex h-8 items-center gap-1.5 px-1 text-[13px] text-gray-700">
-          <input
-            type="checkbox"
-            checked={missingOnly}
-            onChange={(event) => setMissingOnly(event.target.checked)}
-            className={CHECKBOX}
-          />
-          Missing only
-        </label>
-        <button
-          type="button"
-          onClick={() => setAdding(true)}
-          disabled={adding}
-          className={BUTTON_SECONDARY}
+/** The search and the Missing only filter. They look through every category, whatever its sub-tab. */
+export function ConfigurationFilters({ editor }: { editor: ConfigurationEditor }) {
+  const searchId = useId();
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor={searchId} className="sr-only">
+        Search settings
+      </label>
+      <div className="relative min-w-[14rem] flex-1">
+        <svg
+          className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          aria-hidden="true"
         >
-          Add variable
-        </button>
+          <path
+            fillRule="evenodd"
+            d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+            clipRule="evenodd"
+          />
+        </svg>
+        <input
+          id={searchId}
+          type="search"
+          value={editor.query}
+          onChange={(event) => editor.setQuery(event.target.value)}
+          placeholder="Search by name, description or model"
+          className={`${CONTROL} w-full pl-8`}
+        />
+      </div>
+      <label className="flex h-8 items-center gap-1.5 px-1 text-[13px] text-gray-700">
+        <input
+          type="checkbox"
+          checked={editor.missingOnly}
+          onChange={(event) => editor.setMissingOnly(event.target.checked)}
+          className={CHECKBOX}
+        />
+        Missing only
+      </label>
+    </div>
+  );
+}
+
+/** The anchor of a category's section. */
+export function configSectionId(categoryId: string): string {
+  return `config-${categoryId.replace(/[^\w-]/g, '-')}`;
+}
+
+/**
+ * One configuration category, edited in place, with its own Save. Nothing
+ * when the backend has no such category or the filters leave nothing of it.
+ */
+export function ConfigCategorySection({
+  editor,
+  categoryId,
+  tag,
+}: {
+  editor: ConfigurationEditor;
+  categoryId: string;
+  /** Shown beside the title: the sub-tab the category belongs to, while a filter lists every tab's. */
+  tag?: ReactNode;
+}) {
+  const headingId = `${useId()}-title`;
+  const visible = editor.visibleGroups.find((candidate) => candidate.id === categoryId);
+  if (!visible) return null;
+
+  const {
+    drafts,
+    entryErrors,
+    pendingResets,
+    pendingSecrets,
+    savingGroup,
+    testingAlert,
+    onDraftChange,
+    toggleReset,
+    toggleMarkSecret,
+  } = editor;
+  // The whole category, including entries a filter is hiding.
+  const group = editor.groups.find((candidate) => candidate.id === visible.id) ?? visible;
+  const channelEntries = alertWebhookEntries(group.entries);
+  const dirty = editor.dirtyCount(group);
+  const hidden = group.entries.length - visible.entries.length;
+  const saving = savingGroup === group.id;
+  const busy = saving || Boolean(channelEntries && testingAlert);
+  // One save at a time: while any category saves, every bar waits.
+  const barHeld = busy || savingGroup !== null;
+  const groupError = editor.groupErrors[group.id];
+
+  // What is usually set once follows the rest, under a heading of its own
+  // when the category has both. The alert channel stands in for its webhooks,
+  // and leads the category unless they are set once.
+  const webhooks = channelEntries
+    ? visible.entries.filter((entry) => isAlertWebhook(entry.key))
+    : [];
+  const fields = visible.entries.filter((entry) => !channelEntries || !isAlertWebhook(entry.key));
+  const everyday = fields.filter((entry) => entry.one_time !== true);
+  const oneTime = fields.filter((entry) => entry.one_time === true);
+  const channel =
+    channelEntries && webhooks.length > 0 ? (
+      <AlertNotificationFields
+        entries={channelEntries}
+        channel={editor.alertChannel}
+        onChannelChange={editor.changeAlertChannel}
+        drafts={drafts}
+        onDraftChange={onDraftChange}
+        errors={entryErrors}
+        disabled={busy}
+        testing={testingAlert}
+        testResult={editor.alertTestResult}
+        onTest={() => void editor.sendAlertTest()}
+        onReset={toggleReset}
+        pendingResets={new Set(Object.keys(pendingResets))}
+      />
+    ) : null;
+  const channelOneTime = webhooks.some((entry) => entry.one_time === true);
+  const channelFirst = channel !== null && !channelOneTime;
+  const oneTimeHeading =
+    (everyday.length > 0 || channelFirst) && (oneTime.length > 0 || channelOneTime);
+  const field = (entry: ConfigEntry) => (
+    <ConfigEntryField
+      key={entry.key}
+      entry={entry}
+      draft={drafts[entry.key]}
+      onChange={onDraftChange}
+      serverError={entryErrors[entry.key]}
+      onReset={toggleReset}
+      onMarkSecret={toggleMarkSecret}
+      layout="split"
+      resetPending={Boolean(pendingResets[entry.key])}
+      markSecretPending={Boolean(pendingSecrets[entry.key])}
+      disabled={busy}
+    />
+  );
+
+  return (
+    <section
+      id={configSectionId(group.id)}
+      aria-labelledby={headingId}
+      className="scroll-mt-4 focus:outline-none"
+    >
+      <div className="mb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
+            {group.label}
+          </h2>
+          {tag ? (
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">
+              {tag}
+            </span>
+          ) : null}
+        </div>
+        {group.description ? (
+          <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">{group.description}</p>
+        ) : null}
+      </div>
+
+      {/* A form, so Enter saves the category, and one browsers do not
+          offer to remember: a secret typed here is not a login. The
+          console checks the values itself, so the browser does not. */}
+      <form
+        autoComplete="off"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!barHeld && dirty > 0) editor.saveGroup(group);
+        }}
+      >
+        {dirty > 0 && hidden > 0 ? (
+          <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
+            {hidden === group.entries.length
+              ? 'Every setting in this category is hidden by the current filter.'
+              : `${plural(hidden, 'setting')} in this category ${hidden === 1 ? 'is' : 'are'} hidden by the current filter.`}{' '}
+            Unsaved changes to them are kept and saved with the rest.
+          </p>
+        ) : null}
+        {liveGroupNames(group).map((name) => (
+          <LiveConfigStatus
+            key={name}
+            groupName={name}
+            refreshKey={editor.config?.source_version?.revision ?? null}
+          />
+        ))}
+        <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
+          <div className="divide-y divide-gray-100 px-4">
+            {channelFirst ? channel : null}
+            {everyday.map(field)}
+            {oneTimeHeading ? (
+              <h3 className={`-mx-4 bg-gray-50 px-4 py-1.5 ${FIELD_LABEL}`}>Usually set once</h3>
+            ) : null}
+            {channelFirst ? null : channel}
+            {oneTime.map(field)}
+          </div>
+
+          {/* Appears with the first change, or a reason to show, and stays
+              at the bottom of the window while its category is on screen.
+              Not the shared EditBar, whose busy state reads "Saving…": a
+              test notification also holds the Alerts category, and saves
+              nothing. */}
+          {dirty > 0 || groupError || saving ? (
+            <div className="animate-admin-reveal sticky bottom-0 z-10 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
+              {groupError ? (
+                <div className="mb-2">
+                  <AdminNotice role="alert">{groupError}</AdminNotice>
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <span
+                  className={`mr-auto text-[12px] ${dirty > 0 ? 'font-medium text-amber-700' : 'text-gray-500'}`}
+                  role="status"
+                >
+                  {dirty > 0 ? plural(dirty, 'unsaved change') : 'No changes yet'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => editor.discardGroup(group)}
+                  disabled={barHeld}
+                  aria-label={`Discard changes to ${group.label}`}
+                  className={BUTTON_GHOST}
+                >
+                  Discard
+                </button>
+                <button
+                  type="submit"
+                  disabled={barHeld || dirty === 0}
+                  aria-busy={saving || undefined}
+                  aria-label={`Save changes to ${group.label}`}
+                  className={BUTTON_PRIMARY}
+                >
+                  {saving ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+/** Add variable, and the form it opens: for a variable no category lists yet. */
+export function AddVariableControl({ editor }: { editor: ConfigurationEditor }) {
+  const toast = useAccountToast();
+  const [adding, setAdding] = useState(false);
+  if (!editor.config) return null;
+  const close = () => {
+    editor.closeAddForm();
+    setAdding(false);
+  };
+  if (adding) {
+    return (
+      <AddVariableForm
+        existingKeys={new Set(editor.config.entries.map((entry) => entry.key))}
+        expectedVersion={editor.addVariableVersion}
+        onCancel={close}
+        onConflict={editor.reloadForAdd}
+        onAdded={(next, key, base) => {
+          editor.variableAdded(next, key, base);
+          setAdding(false);
+          toast.success(`Added ${key}.`);
+        }}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2">
+      <p className="text-[12px] text-gray-600">
+        A <code className="rounded bg-gray-100 px-1">{'${VAR}'}</code> reference in a configuration
+        file that is not listed here needs a variable of its own.
+      </p>
+      <button
+        type="button"
+        onClick={() => {
+          editor.openAddForm();
+          setAdding(true);
+        }}
+        className={BUTTON_SECONDARY}
+      >
+        Add variable
+      </button>
+    </div>
+  );
+}
+
+/** Download every setting as a file, or replace them all from one. */
+export function ConfigurationBackupSection({ editor }: { editor: ConfigurationEditor }) {
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
+  const busy = editor.backupConfirmation.busy;
+  return (
+    <AdminSection
+      title="Backup & Restore"
+      description="A backup holds the configuration, custom providers and their API keys, routes and runtime settings. Restoring one replaces all of them. The file holds API keys and secrets in plain text: store it securely."
+    >
+      <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => void downloadBackup()}
-          disabled={backupConfirmation.busy}
+          onClick={() => void editor.downloadBackup()}
+          disabled={busy}
           title="Downloads every setting and provider key as JSON, with secrets in plain text"
           className={BUTTON_SECONDARY}
         >
@@ -703,7 +1167,7 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
         <button
           type="button"
           onClick={() => restoreInputRef.current?.click()}
-          disabled={backupConfirmation.busy}
+          disabled={busy}
           className={BUTTON_SECONDARY}
         >
           Restore
@@ -713,189 +1177,43 @@ export function ConfigurationTab({ initialMissingOnly = false }: { initialMissin
           type="file"
           accept=".json,application/json"
           aria-label="Select configuration backup file"
-          onChange={(event) => void onRestoreFileSelected(event)}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (file) void editor.restoreFromFile(file);
+          }}
           className="sr-only"
         />
       </div>
-
-      {adding ? (
-        <AddVariableForm
-          existingKeys={existingKeys}
-          onCancel={() => setAdding(false)}
-          onAdded={(next, key) => {
-            applyResponse(next, [key]);
-            setAdding(false);
-            toast.success(`Added ${key}.`);
-          }}
-        />
-      ) : null}
-
-      {visibleGroups.length === 0 ? (
-        <AdminEmptyState
-          title={
-            missingOnly && config.missing.length === 0 && !query.trim()
-              ? 'No required settings are missing.'
-              : 'No settings match.'
-          }
-        />
-      ) : null}
-
-      {navItems.length > 0 ? (
-        // A category index beside full-width categories, one after another.
-        <div className={INDEXED_LAYOUT}>
-          <AdminSectionNav label="Configuration categories" items={navItems} />
-          <div className="min-w-0 space-y-8">
-            {visibleGroups.map((visible) => {
-              const group = fullGroup(visible);
-              const channelEntries = alertWebhookEntries(group.entries);
-              const dirty = dirtyCount(group);
-              const hidden = group.entries.length - visible.entries.length;
-              const saving = savingGroup === group.id;
-              const busy = saving || Boolean(channelEntries && testingAlert);
-              // One save at a time: while any category saves, every bar waits.
-              const barHeld = busy || savingGroup !== null;
-              const groupError = groupErrors[group.id];
-              const headingId = `${searchId}-${group.id}`;
-              return (
-                <section
-                  key={group.id}
-                  id={sectionAnchor(group)}
-                  aria-labelledby={headingId}
-                  className="scroll-mt-4 focus:outline-none"
-                >
-                  <div className="mb-3">
-                    <h2 id={headingId} className="text-[14px] font-semibold text-gray-900">
-                      {group.label}
-                    </h2>
-                    {group.description ? (
-                      <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
-                        {group.description}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {/* A form, so Enter saves the category, and one browsers do not
-                      offer to remember: a secret typed here is not a login. The
-                      console checks the values itself, so the browser does not. */}
-                  <form
-                    autoComplete="off"
-                    noValidate
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (!barHeld && dirty > 0) saveGroup(group);
-                    }}
-                  >
-                    {dirty > 0 && hidden > 0 ? (
-                      <p className="mb-3 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
-                        {hidden === group.entries.length
-                          ? 'Every setting in this category is hidden by the current filter.'
-                          : `${plural(hidden, 'setting')} in this category ${hidden === 1 ? 'is' : 'are'} hidden by the current filter.`}{' '}
-                        Unsaved changes to them are kept and saved with the rest.
-                      </p>
-                    ) : null}
-                    <div className={`${PANEL} ${dirty > 0 ? 'border-gray-400 shadow-sm' : ''}`}>
-                      <div className="divide-y divide-gray-100 px-4">
-                        {channelEntries &&
-                        visible.entries.some((entry) => isAlertWebhook(entry.key)) ? (
-                          <AlertNotificationFields
-                            entries={channelEntries}
-                            channel={alertChannel}
-                            onChannelChange={changeAlertChannel}
-                            drafts={drafts}
-                            onDraftChange={onDraftChange}
-                            errors={entryErrors}
-                            disabled={busy}
-                            testing={testingAlert}
-                            testResult={alertTestResult}
-                            onTest={() => void sendAlertTest()}
-                            onReset={toggleReset}
-                            pendingResets={resetKeys}
-                          />
-                        ) : null}
-                        {visible.entries
-                          .filter((entry) => !channelEntries || !isAlertWebhook(entry.key))
-                          .map((entry) => (
-                            <ConfigEntryField
-                              key={entry.key}
-                              entry={entry}
-                              draft={drafts[entry.key]}
-                              onChange={onDraftChange}
-                              serverError={entryErrors[entry.key]}
-                              onReset={toggleReset}
-                              onMarkSecret={toggleMarkSecret}
-                              layout="split"
-                              resetPending={Boolean(pendingResets[entry.key])}
-                              markSecretPending={Boolean(pendingSecrets[entry.key])}
-                              disabled={busy}
-                            />
-                          ))}
-                      </div>
-
-                      {/* Appears with the first change, or a reason to show, and stays
-                          at the bottom of the window while its category is on screen.
-                          Not the shared EditBar, whose busy state reads "Saving…": a
-                          test notification also holds the Alerts category, and saves
-                          nothing. */}
-                      {dirty > 0 || groupError || saving ? (
-                        <div className="animate-admin-reveal sticky bottom-0 z-10 rounded-b-lg border-t border-gray-200 bg-white/95 px-4 py-3 backdrop-blur">
-                          {groupError ? (
-                            <div className="mb-2">
-                              <AdminNotice role="alert">{groupError}</AdminNotice>
-                            </div>
-                          ) : null}
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            <span
-                              className={`mr-auto text-[12px] ${dirty > 0 ? 'font-medium text-amber-700' : 'text-gray-500'}`}
-                              role="status"
-                            >
-                              {dirty > 0 ? plural(dirty, 'unsaved change') : 'No changes yet'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => discardGroup(group)}
-                              disabled={barHeld}
-                              aria-label={`Discard changes to ${group.label}`}
-                              className={BUTTON_GHOST}
-                            >
-                              Discard
-                            </button>
-                            <button
-                              type="submit"
-                              disabled={barHeld || dirty === 0}
-                              aria-busy={saving || undefined}
-                              aria-label={`Save changes to ${group.label}`}
-                              className={BUTTON_PRIMARY}
-                            >
-                              {saving ? 'Saving…' : 'Save changes'}
-                            </button>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  </form>
-                </section>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-
-      {backupConfirmation.dialog}
-    </div>
+    </AdminSection>
   );
 }
 
 /** A custom variable: a `${VAR}` reference in models.yaml the registry cannot see. */
 function AddVariableForm({
   existingKeys,
+  expectedVersion,
   onAdded,
   onCancel,
+  onConflict,
 }: {
   existingKeys: ReadonlySet<string>;
-  onAdded: (next: ConfigResponse, key: string) => void;
+  /**
+   * The version the add is conditional on: the one the form opened on, moved
+   * only by this page's own writes and by `onConflict`. A save elsewhere since
+   * is a conflict to review, not something to write over.
+   */
+  expectedVersion: ConfigSourceVersion | null;
+  onAdded: (next: ConfigResponse, key: string, base: ConfigSourceVersion | null) => void;
   onCancel: () => void;
+  /** Show the latest configuration after a conflict; `null` when it could not be read. */
+  onConflict: () => Promise<ConfigResponse | null>;
 }) {
   const baseId = useId();
+  // After a conflict: the latest configuration is being read, then the
+  // administrator reviews it and adds again. Nothing is retried for them.
+  const [reloading, setReloading] = useState(false);
+  const [conflicted, setConflicted] = useState(false);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
   // The backend's rule: a name that looks like a credential's is secret
@@ -908,8 +1226,38 @@ function AddVariableForm({
   const secretByName = looksSecret(name);
   const secret = secretByName || secretChoice;
 
+  /** A conflict: nothing was written. Read the latest values and say what to do next. */
+  const reviewConflict = async (key: string) => {
+    setReloading(true);
+    setConflicted(true);
+    setError(null);
+    const fresh = await onConflict();
+    setReloading(false);
+    if (fresh === null) {
+      // The form's version stays: adding again meets the same conflict, and reads again.
+      setError(
+        'The configuration was changed elsewhere since this form opened, so the variable was not added, and the latest configuration could not be loaded. Your entry is kept; try adding it again.',
+      );
+      return;
+    }
+    const existing = fresh.entries.find((candidate) => candidate.key === key);
+    if (existing) {
+      const category =
+        fresh.categories.find((candidate) => candidate.id === existing.category)?.label ??
+        existing.category;
+      setError(
+        `${key} was added elsewhere in the meantime, so it was not added here. Edit it in its category (${category}).`,
+      );
+      return;
+    }
+    setError(
+      'The configuration was changed elsewhere since this form opened, so the variable was not added. The latest configuration is shown now and your entry is kept. Review it, then add it again.',
+    );
+  };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (reloading) return;
     const key = name.trim();
     if (!CUSTOM_KEY_PATTERN.test(key)) {
       setError(
@@ -922,18 +1270,32 @@ function AddVariableForm({
       return;
     }
     setError(null);
+    // Taken now: the version this attempt is conditional on, whatever a read
+    // brings in while it is in flight.
+    const base = expectedVersion;
+    let conflict = false;
     // A refusal that echoes a secret's value shows it masked; the form keeps what was typed.
     const failure = await writes.perform({
       run: async () => {
-        const next = await patchConfig({
-          values: { [key]: value },
-          secrets: { [key]: secret },
-        }).catch((err: unknown) => {
+        const next = await patchConfig(
+          {
+            values: { [key]: value },
+            secrets: { [key]: secret },
+          },
+          ...versioned(base),
+        ).catch((err: unknown) => {
+          // Told apart here, while the error still has its type: the message
+          // the write flow returns, and the masking below, lose it.
+          if (isVersionConflict(err)) conflict = true;
           throw secret ? new Error(withoutSecret(getErrorMessage(err), value)) : err;
         });
-        onAdded(next, key);
+        onAdded(next, key, base);
       },
     });
+    if (conflict) {
+      await reviewConflict(key);
+      return;
+    }
     if (failure) setError(failure);
   };
 
@@ -1015,11 +1377,17 @@ function AddVariableForm({
         </button>
         <button
           type="submit"
-          disabled={saving}
-          aria-busy={saving || undefined}
+          disabled={saving || reloading}
+          aria-busy={saving || reloading || undefined}
           className={BUTTON_PRIMARY}
         >
-          {saving ? 'Adding…' : 'Add variable'}
+          {saving
+            ? 'Adding…'
+            : reloading
+              ? 'Loading latest…'
+              : conflicted
+                ? 'Add again'
+                : 'Add variable'}
         </button>
       </div>
     </form>

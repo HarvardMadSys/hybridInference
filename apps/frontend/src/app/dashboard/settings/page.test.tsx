@@ -105,6 +105,69 @@ describe('account phone binding', () => {
   });
 });
 
+describe('an account that signs in with a login name', () => {
+  const setupAdmin = () => ({
+    ...user,
+    id: 'setup-admin',
+    email: null,
+    login_name: 'admin',
+    role: 'admin',
+    is_admin: true,
+    has_password: true,
+  });
+  const emailSection = () =>
+    screen.getByRole('heading', { name: 'Email Address' }).closest('section')!;
+
+  it('binds a first email after confirming the current password', async () => {
+    user = setupAdmin();
+    renderSettings(false);
+    const section = emailSection();
+    fireEvent.change(section.querySelector('input[type=email]')!, {
+      target: { value: 'admin@e2e-mail.org' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send verification email' }));
+    expect(
+      await screen.findByText('Enter your current password to confirm this change.'),
+    ).toBeInTheDocument();
+    expect(api.bindEmail).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/^Current password/), { target: { value: 'Secret-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send verification email' }));
+    await waitFor(() =>
+      expect(api.bindEmail).toHaveBeenCalledWith({
+        email: 'admin@e2e-mail.org',
+        password: 'Secret-1',
+      }),
+    );
+  });
+
+  it('changes an email it has already bound', () => {
+    user = { ...setupAdmin(), email: 'admin@e2e-mail.org' };
+    renderSettings(false);
+    expect(emailSection()).toContainElement(screen.getByDisplayValue('admin@e2e-mail.org'));
+    expect(screen.getByRole('button', { name: 'Change Email' })).toBeInTheDocument();
+  });
+
+  it('confirms with its password, not a code, when it also has a verified phone', async () => {
+    user = { ...setupAdmin(), phone: '+8613812345678', phone_verified: true };
+    renderSettings(true);
+    const section = emailSection();
+    expect(section.querySelector('input[inputmode=numeric]')).toBeNull();
+    fireEvent.change(section.querySelector('input[type=email]')!, {
+      target: { value: 'admin@e2e-mail.org' },
+    });
+    fireEvent.change(screen.getByLabelText(/^Current password/), { target: { value: 'Secret-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send verification email' }));
+    await waitFor(() =>
+      expect(api.bindEmail).toHaveBeenCalledWith({
+        email: 'admin@e2e-mail.org',
+        password: 'Secret-1',
+      }),
+    );
+    expect(api.sendPhoneCode).not.toHaveBeenCalled();
+  });
+});
+
 describe('changes that need the owner', () => {
   const phoneOnly = () => ({
     ...user,

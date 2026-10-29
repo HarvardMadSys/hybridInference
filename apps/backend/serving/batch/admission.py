@@ -1,16 +1,17 @@
 """Admission steps the batch entry points share, in the order they must run.
 
-Every create route -- inline and file ``/v1/batches``, and the Anthropic
-``/v1/messages/batches`` -- goes through the same sequence:
+Every create -- ``POST /v1/batches``, inline or from a file, for any target --
+goes through the same sequence:
 
 1. **Identity**: the full key and account checks, without the daily quota
    (``verify_batch_management_identity``). A revoked key or a suspended account
    is refused here, before anything else.
 2. **Body**: read under ``BATCH_MAX_BODY_MB``.
 3. **Idempotency** (optional ``Idempotency-Key`` header, our extension): a key
-   the same owner already used on the same API surface returns that batch when
-   the request is the same (its digest: the normalized body, endpoint,
-   metadata, protocol version), answers 409 when it differs and 410 when that
+   the same owner already used for the same input method returns that batch
+   when the request is the same (its digest: the normalized body, endpoint,
+   metadata and, for a Messages batch, its ``anthropic-version``), answers 409
+   when it differs and 410 when that
    batch was deleted. A replay is decided **before** the role, quota and caps
    below, so an owner whose quota ran out or whose role was lowered can still
    learn what their earlier request created; it never changes the batch, and
@@ -91,23 +92,25 @@ async def find_replay(
     if record is None:
         return None
     if record["request_digest"] != digest:
-        raise _conflict()
+        raise conflict_error()
     if record["deleted"]:
-        raise _gone()
+        raise gone_error()
     row = await store.get_batch(record["batch_id"], user_id=owner)
     if row is None:
-        raise _gone()
+        raise gone_error()
     return row
 
 
-def _conflict() -> HTTPException:
+def conflict_error() -> HTTPException:
+    """The 409 for an ``Idempotency-Key`` already used for a different request."""
     return HTTPException(
         409,
         "This Idempotency-Key was already used for a different request; use a new key",
     )
 
 
-def _gone() -> HTTPException:
+def gone_error() -> HTTPException:
+    """The 410 for an ``Idempotency-Key`` whose batch was deleted."""
     return HTTPException(
         410,
         "The batch this Idempotency-Key created has been deleted; use a new key to create another",
@@ -210,9 +213,9 @@ async def create(store: Any, **kwargs: Any) -> dict[str, Any]:
     except BatchLimitExceeded as exc:
         raise limit_error(exc) from None
     except IdempotencyConflict:
-        raise _conflict() from None
+        raise conflict_error() from None
     except IdempotencyTombstoned:
-        raise _gone() from None
+        raise gone_error() from None
     except ValueError as exc:
         # The store refuses what it cannot hold (a repeated or unstorable
         # custom_id). Validation catches those first; this keeps a 400, with

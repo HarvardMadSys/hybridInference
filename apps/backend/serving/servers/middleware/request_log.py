@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from starlette.requests import Request
 
+from serving.servers.middleware.proxy_trust import proxy_discovery_ms
 from serving.utils import context as req_ctx
 from serving.utils.logging import _QUIET_PATHS, get_logger
 from serving.utils.request_ip import get_client_ip_info
@@ -67,6 +68,9 @@ class RequestLogMiddleware:
             "path": request.url.path,
             "status_code": status_code,
             "duration_ms": duration_ms,
+            # Proxy discovery runs outside this middleware, so it is not part
+            # of duration_ms; reported separately, None when it did not run.
+            "proxy_discovery_ms": proxy_discovery_ms(request),
             "model": ctx.get("model"),
             "provider": ctx.get(req_ctx.PROVIDER),
             "remote_ip": remote_ip,

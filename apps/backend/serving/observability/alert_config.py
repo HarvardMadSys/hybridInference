@@ -171,6 +171,28 @@ class TrackedTaskFailureRateConfig(BaseModel):
     cooldown_sec: int = 1800
 
 
+class RequestLogQueueSaturationConfig(BaseModel):
+    """Config for ``RequestLogQueueSaturationRule``.
+
+    Fires when at least ``threshold_count`` ``request_log_queue_saturated``
+    events arrive within ``window_sec``. The producer emits that warning on the
+    first dropped row, every 100th drop, and at least once per 60 seconds while
+    drops continue, so this counts loss *events*, not lost rows; the warning
+    carries the cumulative ``dropped_total`` for the card. The default threshold
+    of 1 means the first observed loss pages, matching ``AuthIpBlockedConfig``:
+    there is no background rate of discarded report rows to tolerate.
+
+    The emit cadence plus ``cooldown_sec`` bound a sustained database stall to
+    one page per cooldown. Set ``enabled: false`` to keep only the log record;
+    no existing configuration key changes meaning.
+    """
+
+    enabled: bool = True
+    window_sec: int = 600
+    threshold_count: int = 1
+    cooldown_sec: int = 1800
+
+
 class ClientErrorBurstConfig(BaseModel):
     """Config for ``ClientErrorBurstRule``.
 
@@ -286,6 +308,12 @@ class Rules(BaseModel):
     )
     tracked_task_failure_rate: TrackedTaskFailureRateConfig = Field(
         default_factory=TrackedTaskFailureRateConfig
+    )
+    # On by default: any discarded api_logs row is a bounded report-data gap,
+    # and the producer's own warning cadence keeps a stall from paging in a
+    # storm. See RequestLogQueueSaturationConfig.
+    request_log_queue_saturation: RequestLogQueueSaturationConfig = Field(
+        default_factory=RequestLogQueueSaturationConfig
     )
     # Both on by default: these watch authenticated, routed requests that failed
     # in front of a user, and nothing else in this file can see either symptom.

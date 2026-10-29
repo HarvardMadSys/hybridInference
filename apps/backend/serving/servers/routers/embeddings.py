@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -13,7 +14,7 @@ from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
 from serving.adapters.key_pool import KeyPoolExhausted
-from serving.batch.attempts import batch_log_attribution, note_request_id, observe_billing
+from serving.batch.attempts import note_request_id, observe_billing
 from serving.config.runtime_settings import get_runtime_settings
 from serving.grant_auth import ledger_attribution
 from serving.model_access import ModelAccessDenial, model_access_denial
@@ -31,13 +32,18 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.model_availability import model_not_found_detail
+from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import calculate_cost
+from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import derive_affinity_key, get_client_ip_info
+from serving.utils.request_ip import derive_affinity_key
 from serving.utils.session_identity import session_identity
-from serving.utils.synthetic_probe import is_trusted_probe
+from serving.utils.synthetic_probe import is_trusted_probe_headers
 from serving.utils.token_utils import normalize_usage
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -64,7 +70,8 @@ def _schedule_cost_increment(
     """
     if op_store is None or not user_id:
         return
-    cost = calculate_cost(normalize_usage(usage) or usage, pricing)
+    normalized_usage = normalize_usage(usage)
+    cost = calculate_cost(normalized_usage if normalized_usage is not None else usage, pricing)
     if not cost or cost <= 0:
         return
 
@@ -120,6 +127,22 @@ def _response_summary(response: Any, model: str) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EmbeddingServices:
+    """What :func:`execute_embeddings` serves a request with."""
+
+    #: The embedding adapters by the names a request may use (canonical and aliases).
+    embedding_adapters: Mapping[str, Any]
+    #: The router, read only for the access gates it records (``embedding_routes``).
+    router: Any
+    visibility: Any
+    log_store: Any
+    completions_logger: Any
+    op_store: Any
+    #: Read only for the ``log_synthetic_probes`` toggle; None reads as off.
+    runtime_settings: Any
+
+
 @router.post(
     "/v1/embeddings",
     response_model=EmbeddingResponse,
@@ -148,8 +171,62 @@ async def create_embeddings(
     Routes to the appropriate embedding adapter based on the requested model.
     The request is logged to the shared ``api_logs`` store (tagged
     ``request_type=embedding``) so it surfaces in the dashboards alongside
-    chat/completions traffic.
+    chat/completions traffic. Served by :func:`execute_embeddings`, which the
+    batch worker calls too.
     """
+    # The validated model drops anything the embeddings schema does not
+    # declare, so the body is read back raw for the session declaration --
+    # FastAPI has already parsed and cached it, so this costs nothing and
+    # cannot fail on a request that got this far.
+    try:
+        raw_body: Any = await http_request.json()
+    except Exception:  # pragma: no cover - validation would have rejected it
+        raw_body = None
+    return await execute_embeddings(
+        request,
+        raw_body,
+        ExecutionContext(
+            user_ctx=read_only(user_ctx),
+            origin=client_origin(http_request, authorization=authorization),
+            admission=admission_from(_concurrency_slot),
+            batch=None,
+            timeout_probe=timeout_probe(http_request),
+        ),
+        EmbeddingServices(
+            embedding_adapters=embedding_adapters,
+            router=router_exec,
+            visibility=model_visibility_resolver,
+            log_store=log_store,
+            completions_logger=completions_logger,
+            op_store=op_store,
+            runtime_settings=runtime_settings,
+        ),
+    )
+
+
+async def execute_embeddings(
+    request: EmbeddingRequest,
+    raw_body: Any,
+    ctx: ExecutionContext,
+    services: EmbeddingServices,
+) -> dict[str, Any]:
+    """Serve one embeddings request, online or as a batch item.
+
+    Holds the request to the model's access gate, dispatches it to the model's
+    own embedding adapter (a fallback chain falls back inside the adapter),
+    logs it and charges it. Raises ``HTTPException`` with the status and
+    message the route answers with. ``raw_body`` is the request as sent, read
+    only for a session declared in it. Interactive admission is the route's:
+    this surface has no auto model, so it never retargets the load count.
+    """
+    user_ctx = ctx.user_ctx
+    embedding_adapters = services.embedding_adapters
+    router_exec = services.router
+    model_visibility_resolver = services.visibility
+    log_store = services.log_store
+    completions_logger = services.completions_logger
+    op_store = services.op_store
+    runtime_settings = services.runtime_settings
     model = request.model
     request_id = f"emb_{uuid.uuid4().hex}"
     # The log row's id, for a batch attempt running this request.
@@ -157,16 +234,8 @@ async def create_embeddings(
     start_time = time.time()
     is_authenticated = bool(user_ctx.get("authenticated"))
     # Resolved the same way as on the chat surfaces, so a client that labels its
-    # session one way does not have to label it another way here. The validated
-    # model drops anything the embeddings schema does not declare, so the body
-    # is read back raw for the declaration -- FastAPI has already parsed and
-    # cached it, so this costs nothing and cannot fail on a request that got
-    # this far.
-    try:
-        raw_body: Any = await http_request.json()
-    except Exception:  # pragma: no cover - validation would have rejected it
-        raw_body = None
-    declared_session = session_identity(http_request.headers, raw_body)
+    # session one way does not have to label it another way here.
+    declared_session = session_identity(ctx.origin.headers, raw_body)
 
     # Synthetic health-probe traffic is suppressed from api_logs unless the
     # ``log_synthetic_probes`` toggle opts it in — mirrors the chat-completions
@@ -174,7 +243,7 @@ async def create_embeddings(
     # marker counts (authenticated internal/admin, never a grant; see
     # serving/utils/synthetic_probe.py) — and billing is unconditional either
     # way. A setting read failure defaults to suppression.
-    is_synthetic_probe = is_trusted_probe(http_request, user_ctx)
+    is_synthetic_probe = is_trusted_probe_headers(ctx.origin.headers, user_ctx)
     log_synthetic_probes = False
     if (
         is_synthetic_probe
@@ -192,7 +261,7 @@ async def create_embeddings(
     # several), or the caller's IP bucket when unauthenticated. Without it every
     # caller on this surface shared one process-wide ``_anon`` binding, so nobody
     # kept a stable upstream key.
-    ip_info = get_client_ip_info(http_request)
+    ip_info = ctx.origin.ip
     auth_key_hash = user_ctx.get("auth_key_hash")
     req_ctx.update(
         {
@@ -207,12 +276,12 @@ async def create_embeddings(
 
     metadata: dict[str, Any] = {
         "request_type": "embedding",
-        "user_agent": http_request.headers.get("user-agent"),
-        "referer": http_request.headers.get("referer"),
+        "user_agent": ctx.origin.user_agent,
+        "referer": ctx.origin.referer,
         "ip": ip_info.client_ip,
         "peer_ip": ip_info.peer_ip,
         "ip_source": ip_info.source,
-        "authorization": bool(authorization) or is_authenticated,
+        "authorization": ctx.origin.authorization_header or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
         # Agent-sandbox attribution (issue #1041); None for ordinary traffic.
@@ -220,7 +289,7 @@ async def create_embeddings(
     }
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
-    metadata.update(batch_log_attribution(user_ctx))
+    metadata.update(ctx.batch_log_metadata())
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
     if declared_session is not None:

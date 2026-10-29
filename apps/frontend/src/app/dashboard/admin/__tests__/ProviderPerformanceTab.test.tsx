@@ -69,7 +69,8 @@ vi.mock('@/lib/api/admin', async () => {
         cache_eligible_count: 10,
         cache_hit_count: 4,
         input_tokens: 1200,
-        cache_read_tokens: 320,
+        cache_eligible_input_tokens: 2000,
+        cache_read_tokens: 900,
         cache_write_tokens: 80,
       },
       buckets: [
@@ -79,8 +80,9 @@ vi.mock('@/lib/api/admin', async () => {
           error_count: 12,
           cache_eligible_count: 10,
           cache_hit_count: 4,
-          cache_read_tokens: 320,
+          cache_read_tokens: 900,
           input_tokens: 1200,
+          cache_eligible_input_tokens: 2000,
         },
       ],
       error_types: [
@@ -135,6 +137,8 @@ describe('ProviderPerformanceTab', () => {
     expect(screen.getByRole('heading', { name: 'Cache' })).toBeInTheDocument();
     expect(screen.queryByText('Cache by model')).not.toBeInTheDocument();
     expect(screen.getByText('Eligible reqs')).toBeInTheDocument();
+    const cachedInputLabel = screen.getByText('Cached input');
+    expect(cachedInputLabel.nextElementSibling?.textContent).toBe('45.00%');
     expect(screen.getByText('Error breakdown')).toBeInTheDocument();
     expect(screen.getByText('rate_limited')).toBeInTheDocument();
     expect(screen.getByText('other')).toBeInTheDocument();

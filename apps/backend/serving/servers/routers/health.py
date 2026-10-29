@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from serving.config.settings import has_role
+from serving.config.settings import get_settings, has_role
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import db_disconnect_policy
@@ -19,6 +19,10 @@ from serving.servers.deps import (
     get_operational_store,
     get_router,
     get_services,
+)
+from serving.servers.middleware.proxy_trust import (
+    proxy_discovery_ready,
+    proxy_discovery_required,
 )
 
 if TYPE_CHECKING:
@@ -326,6 +330,7 @@ async def health(
 
 @router.get("/health/ready")
 async def health_ready(
+    request: Request,
     response: Response,
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
@@ -339,6 +344,13 @@ async def health_ready(
     from ``/health`` (liveness), which stays 200 with ``status:
     "degraded"`` to avoid container restart loops.
     """
+    # Membership gates readiness only while it gates identity: with the master
+    # TRUST_PROXY_HEADERS switch off, discovery is skipped and identities stay
+    # unknown, so the store checks below decide alone.
+    if proxy_discovery_required(get_settings()) and not proxy_discovery_ready(request):
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not_ready", "reason": "proxy_discovery_unavailable"}
+
     store_health = await _test_store_health(op_store, log_store)
 
     if store_health["all_healthy"]:
@@ -407,6 +419,21 @@ async def deep_health(
         router_exec.get_route_exclusions() if hasattr(router_exec, "get_route_exclusions") else []
     )
 
+    # Live configuration groups, alerting first among them. Like the route
+    # exclusions, deliberately not part of `overall`: a group that failed to
+    # apply keeps its previous state, and alerting is degradable -- its own
+    # state says so, without taking inference out of a load balancer.
+    from serving.config import live
+
+    config_groups = {
+        name: {
+            "state": group.status.state,
+            "reconciled_revision": group.status.reconciled_revision,
+            "error_code": group.status.error_code,
+        }
+        for name, group in live.COORDINATOR.groups.items()
+    }
+
     return {
         "status": overall,
         "routes_configured": routes_count,
@@ -417,6 +444,7 @@ async def deep_health(
         },
         "providers": provider_status,
         "route_exclusions": route_exclusions,
+        "config_groups": config_groups,
     }
 
 

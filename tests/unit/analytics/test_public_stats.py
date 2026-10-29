@@ -357,7 +357,7 @@ async def test_schema_is_idempotent_ddl_without_identifying_columns():
     await ps.ensure_public_stats_schema(conn)
     await ps.ensure_public_stats_schema(conn)
     statements = [call.args[0] for call in conn.execute.await_args_list]
-    assert len(statements) == 6
+    assert len(statements) == 2 * len(ps._SCHEMA_STATEMENTS)
     assert all("IF NOT EXISTS" in s for s in statements)
     joined = " ".join(statements).lower()
     for identifier in ("user_id", " ip ", "metadata", "prompt"):
@@ -368,9 +368,15 @@ def _fake_conn(
     *,
     server_version="160004",
     sample_texts=None,
+    sample_by_week=None,
     overrides_table=True,
     retained_rows=None,
     first_retained=None,
+    first_log=START,
+    live_clients=None,
+    retained_languages=None,
+    retained_language_samples=None,
+    retained_clients=None,
 ):
     sample_texts = sample_texts or []
 
@@ -388,7 +394,15 @@ def _fake_conn(
             ]
         if sql is ps.RETAINED_DAILY_SQL:
             return retained_rows or []
+        if sql is ps.RETAINED_LANGUAGE_SQL:
+            return retained_languages or []
+        if sql is ps.RETAINED_LANGUAGE_SAMPLE_SQL:
+            return retained_language_samples or []
+        if sql is ps.RETAINED_CLIENT_SQL:
+            return retained_clients or []
         if sql is ps.CLIENTS_SQL:
+            if live_clients is not None:
+                return live_clients
             return [
                 {
                     "week": W2,
@@ -404,7 +418,10 @@ def _fake_conn(
         if sql is ps.VISIBILITY_OVERRIDES_SQL:
             return [{"model_id": "internal-model", "required_role": "free"}]
         assert "jsonb_array_elements" in sql
-        return [{"user_id": "u1", "text": t} for t in sample_texts]
+        texts = sample_texts
+        if sample_by_week is not None:
+            texts = sample_by_week.get(ps.week_start(args[0].date()), [])
+        return [{"user_id": "u1", "text": t} for t in texts]
 
     async def fetchval(sql, *args):
         if sql == "SHOW server_version_num":
@@ -414,7 +431,7 @@ def _fake_conn(
         if sql is ps.RETAINED_FIRST_DAY_SQL:
             return first_retained
         assert sql is ps.FIRST_LOG_SQL
-        return START
+        return first_log
 
     async def fetchrow(sql, *args):
         assert sql is ps.REGISTRATIONS_SQL
@@ -493,3 +510,206 @@ async def test_store_snapshot_inserts_and_prunes_in_one_transaction():
     calls = [c.args for c in conn.execute.await_args_list]
     assert calls[-2] == (ps.INSERT_SNAPSHOT_SQL, '{"schema_version":1}')
     assert calls[-1] == (ps.PRUNE_SNAPSHOTS_SQL, ps.KEEP_SNAPSHOTS)
+
+
+_FRENCH = [
+    "Bonjour, pouvez-vous m'expliquer pourquoi le serveur renvoie une erreur après le déploiement ?",
+    "Merci, et comment puis-je configurer la limite de requêtes pour chaque utilisateur ?",
+]
+
+
+@pytest.mark.asyncio
+async def test_missing_prompt_text_does_not_wipe_a_language_checkpoint():
+    conn = _fake_conn(
+        sample_texts=[],
+        retained_languages=[{"week": W2, "account_key": ps.account_key("old"), "language": "de"}],
+        retained_language_samples=[{"week": W2, "messages_sampled": 6}],
+    )
+    held: list[ps.RetentionWrite] = []
+    payload = await ps.compute_snapshot(
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC), retention_out=held
+    )
+    assert [item["code"] for item in payload["languages"]["items"]] == ["de"]
+    assert payload["languages"]["messages_sampled"] == 6
+    assert W2 not in held[0].language_weeks
+
+
+def test_account_key_is_stable_and_not_the_account_id():
+    assert ps.account_key("same-account") == ps.account_key("same-account")
+    assert ps.account_key("same-account") != "same-account"
+    assert ps.account_key(None) == ""
+    assert ps.account_key("") == ""
+
+
+@pytest.mark.asyncio
+async def test_pruned_weeks_keep_languages_agents_and_accounts():
+    # Regression: a prune used to drop every public stat that is not a token
+    # or request total. Languages, agents and the account total come back
+    # from the checkpoint, and the same account is not counted twice.
+    now = datetime(2026, 8, 12, 14, 27, tzinfo=UTC)
+    conn = _fake_conn(
+        first_log=datetime(2026, 8, 3, tzinfo=UTC),
+        first_retained=date(2026, 7, 20),
+        retained_languages=[
+            {
+                "week": datetime(2026, 7, 27, tzinfo=UTC),
+                "account_key": ps.account_key("same-account"),
+                "language": "de",
+            },
+            {
+                "week": W1,
+                "account_key": ps.account_key("only-old"),
+                "language": "ja",
+            },
+        ],
+        retained_language_samples=[{"week": W1, "messages_sampled": 8}],
+        retained_clients=[
+            {
+                "week": W1,
+                "account_key": ps.account_key("same-account"),
+                "agent": "Claude",
+                "user_agent": "claude-cli/1.0",
+                "requests": 30,
+                "tokens": 400,
+            }
+        ],
+        live_clients=[
+            {
+                "week": W2,
+                "user_id": "same-account",
+                "agent": "Claude",
+                "user_agent": "claude-cli/2.1",
+                "requests": 20,
+                "tokens": 55,
+            }
+        ],
+        sample_by_week={W1: _FRENCH, W2: _FRENCH},
+    )
+    held: list[ps.RetentionWrite] = []
+    payload = await ps.compute_snapshot(conn, now=now, retention_out=held)
+    languages = payload["languages"]
+    assert [item["code"] for item in languages["items"]] == ["de", "fr", "ja"]
+    assert languages["weekly"] == [0, 2, 1, 0]
+    assert languages["messages_sampled"] == 10
+    # de and ja are checkpointed accounts; fr is the account still in the logs.
+    assert languages["accounts_classified"] == 3
+    assert payload["totals"]["accounts"] == 1
+    claude = payload["agents"]["products"][0]
+    assert claude["name"] == "Claude Code"
+    assert claude["tokens"] == 455
+    assert payload["agents"]["clients_total"] == 1
+    assert [week["products"] for week in payload["agents"]["weekly"]] == [0, 1, 1, 0]
+    text = json.dumps(payload)
+    assert "same-account" not in text
+    assert "only-old" not in text
+    assert "claude-cli/1.0" not in text
+    assert ps.account_key("same-account") not in text
+
+    write = held[0]
+    assert W1 not in write.language_weeks
+    assert W1 not in write.client_weeks
+    assert W2 in write.language_weeks
+    assert (W2, ps.account_key("u1"), "fr") in write.language_rows
+    assert (
+        W2,
+        ps.account_key("same-account"),
+        "Claude",
+        "claude-cli/2.1",
+        20,
+        55,
+    ) in write.client_rows
+
+
+@pytest.mark.asyncio
+async def test_partial_week_does_not_add_the_remaining_tail_twice():
+    # The checkpoint for a week the cutoff splits was taken while the week
+    # was complete. Adding the tail still in the logs would count it twice.
+    conn = _fake_conn(
+        first_log=START,
+        first_retained=date(2026, 7, 20),
+        retained_languages=[{"week": W1, "account_key": ps.account_key("old"), "language": "de"}],
+        retained_language_samples=[{"week": W1, "messages_sampled": 4}],
+        retained_clients=[
+            {
+                "week": W1,
+                "account_key": ps.account_key("old"),
+                "agent": "Claude",
+                "user_agent": "claude-cli/1.0",
+                "requests": 100,
+                "tokens": 1000,
+            }
+        ],
+        live_clients=[
+            {
+                "week": W1,
+                "user_id": "other",
+                "agent": "codex",
+                "user_agent": "codex-tui/1.0",
+                "requests": 40,
+                "tokens": 400,
+            },
+            {
+                "week": W2,
+                "user_id": "u1",
+                "agent": "Claude",
+                "user_agent": "claude-cli/2.1",
+                "requests": 20,
+                "tokens": 55,
+            },
+        ],
+        sample_by_week={W1: _FRENCH},
+    )
+    held: list[ps.RetentionWrite] = []
+    payload = await ps.compute_snapshot(
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC), retention_out=held
+    )
+    assert [item["code"] for item in payload["languages"]["items"]] == ["de"]
+    assert payload["languages"]["messages_sampled"] == 4
+    names = [product["name"] for product in payload["agents"]["products"]]
+    assert names == ["Claude Code"]
+    assert payload["agents"]["products"][0]["tokens"] == 1055
+    assert [week["products"] for week in payload["agents"]["weekly"]] == [0, 1, 1, 0]
+    assert W1 not in held[0].language_weeks
+    assert W1 not in held[0].client_weeks
+
+
+@pytest.mark.asyncio
+async def test_store_snapshot_refreshes_language_and_client_checkpoints():
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    tx = MagicMock()
+    tx.__aenter__ = AsyncMock(return_value=None)
+    tx.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=tx)
+    retention = ps.RetentionWrite(
+        language_weeks=(W2,),
+        language_rows=((W2, "digest", "fr"),),
+        language_messages=((W2, 2),),
+        client_weeks=(W2, W3),
+        client_rows=((W2, "digest", "Claude", "claude-cli/2.1", 20, 55),),
+    )
+    await ps.store_snapshot(conn, {"schema_version": 1}, retention)
+    statements = [call.args[0] for call in conn.execute.await_args_list]
+    assert ps.DELETE_RETAINED_LANGUAGE_WEEKS_SQL in statements
+    assert ps.INSERT_RETAINED_LANGUAGE_SQL in statements
+    assert ps.INSERT_RETAINED_CLIENT_SQL in statements
+    delete_clients = next(
+        call
+        for call in conn.execute.await_args_list
+        if call.args[0] is ps.DELETE_RETAINED_CLIENT_WEEKS_SQL
+    )
+    assert delete_clients.args[1] == [W2, W3]
+    assert statements[-2] == ps.INSERT_SNAPSHOT_SQL
+
+
+@pytest.mark.asyncio
+async def test_purge_retained_account_deletes_language_and_client_rows():
+    conn = MagicMock()
+    conn.execute = AsyncMock(side_effect=["DELETE 2", "DELETE 1"])
+    removed = await ps.purge_retained_account(conn, "same-account")
+    assert removed == 3
+    statements = [call.args for call in conn.execute.await_args_list]
+    assert statements[0][0] is ps.DELETE_RETAINED_LANGUAGE_ACCOUNT_SQL
+    assert statements[1][0] is ps.DELETE_RETAINED_CLIENT_ACCOUNT_SQL
+    assert statements[0][1] == ps.account_key("same-account")
+    assert "user_id" not in statements[0][0]

@@ -50,7 +50,7 @@ def _may_explain(user_ctx: Mapping[str, Any] | None) -> bool:
     """Return whether the caller may learn that a model exists but was skipped.
 
     An administrator passes every role gate and can already read the missing
-    settings, and the models that need them, on the Configuration tab. A grant
+    settings, and the models that need them, on the Settings tab. A grant
     names the only models its holder may know of, whoever's role it carries.
     """
     if not user_ctx or user_ctx.get(GRANT_ALLOWED_MODELS_KEY) is not None:

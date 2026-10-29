@@ -877,6 +877,60 @@ async def test_non_streaming_logs_prompt_response_and_cache_inclusive_tokens(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reported_cache", "expected_cache"),
+    [({}, None), ({"cache_read_input_tokens": 0}, 0), ({"cache_read_input_tokens": True}, None)],
+)
+async def test_non_streaming_preserves_valid_cache_measurement_state(
+    anthropic_test_client, monkeypatch, reported_cache, expected_cache
+):
+    upstream_resp = {
+        "id": "msg_cache_state",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hello"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 7, "output_tokens": 3, **reported_cache},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    import asyncio
+
+    captured: dict = {}
+    captured_event = asyncio.Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    response = await anthropic_test_client.post(
+        "/v1/messages",
+        json={
+            "model": NATIVE_MODEL,
+            "max_tokens": 50,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+        headers=_auth(),
+    )
+    assert response.status_code == 200
+    await asyncio.wait_for(captured_event.wait(), timeout=2)
+
+    usage = captured["usage"]
+    assert usage.get("cache_read_tokens") == expected_cache
+    assert usage["prompt_tokens"] == 7
+
+
+@pytest.mark.asyncio
 async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_client, monkeypatch):
     """Streaming path must persist the request prompt and accumulated response.
     ``prompt_tokens`` follows OpenAI semantics — it includes the cached subset
@@ -1382,6 +1436,27 @@ def test_resolve_stream_usage_trusts_real_usage():
     usage, estimated = amod._resolve_stream_usage(req, {"usage": {"input_tokens": 999}}, None)
     assert usage["input_tokens"] == 12
     assert usage["output_tokens"] == 5
+    assert usage["cache_read_input_tokens"] == 0
+    assert usage["cache_creation_input_tokens"] == 0
+    assert estimated is False
+
+
+def test_resolve_stream_usage_preserves_unknown_cache_counts():
+    """Missing cache fields stay absent through a normal stream and recovery."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    request_usage = {"input_tokens": 12, "output_tokens": 5}
+    usage, estimated = amod._resolve_stream_usage(request_usage, None, None)
+    assert usage == {"input_tokens": 12, "output_tokens": 5}
+    assert estimated is False
+
+    recovered, estimated = amod._resolve_stream_usage(
+        {"input_tokens": 0, "output_tokens": 0},
+        {"usage": {"input_tokens": 12, "cache_read_input_tokens": 0}},
+        None,
+    )
+    assert recovered["cache_read_input_tokens"] == 0
+    assert "cache_creation_input_tokens" not in recovered
     assert estimated is False
 
 
@@ -1396,8 +1471,6 @@ def test_resolve_stream_usage_recovers_partial_from_response_acc():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     acc = {
         "usage": {"input_tokens": 37, "output_tokens": 1, "cache_read_input_tokens": 4},
@@ -1422,8 +1495,6 @@ def test_resolve_stream_usage_placeholder_output_does_not_suppress_estimate():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     acc = {
         "usage": {"input_tokens": 50, "output_tokens": 1},
@@ -1442,8 +1513,6 @@ def test_resolve_stream_usage_keeps_real_observed_output_over_estimate():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     acc = {
         "usage": {"input_tokens": 20, "output_tokens": 999},  # real, e.g. late message_delta
@@ -1469,8 +1538,6 @@ def test_resolve_stream_usage_estimates_input_on_pure_hang():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     payload = {
         "system": "You are a helpful coding assistant.",
@@ -1489,8 +1556,6 @@ def test_resolve_stream_usage_zero_when_nothing_available():
     empty = {
         "input_tokens": 0,
         "output_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cache_creation_input_tokens": 0,
     }
     usage, estimated = amod._resolve_stream_usage(empty, None, None)
     assert usage["input_tokens"] == 0
@@ -1601,6 +1666,7 @@ async def test_streaming_recovers_usage_on_client_disconnect(anthropic_test_clie
     usage = captured["usage"]
     assert usage["input_tokens"] == 41  # recovered from message_start, not 0
     assert usage["output_tokens"] > 1  # estimated from forwarded content, not the placeholder
+    assert "cache_read_tokens" not in usage
     assert captured["metadata"].get("usage_estimated") is True
 
 
@@ -1660,9 +1726,16 @@ def _fake_session_from_iter(iter_factory):
         def iter_any(self):
             return iter_factory()
 
+        async def iter_chunked(self, n):
+            # OpenAI-compatible streaming reads through iter_chunked;
+            # native Anthropic passthrough reads through iter_any.
+            async for chunk in iter_factory():
+                yield chunk
+
     class _FakeResp:
         status = 200
         content = _FakeContent()
+        headers: dict = {"Content-Type": "text/event-stream"}  # noqa: RUF012
 
         async def __aenter__(self):
             return self
@@ -1902,6 +1975,253 @@ async def test_silence_after_the_first_frame_aborts_at_the_mid_stream_ceiling(
 
     assert b"event: error" in collected
     assert captured.get("status_code") == 504
+
+
+@pytest.mark.asyncio
+async def test_translated_stream_after_complete_tool_keeps_idle_watchdog_fed(
+    anthropic_test_client, monkeypatch
+):
+    """Text after complete tool args must stream, not sit behind finalize.
+
+    The full route is exercised: OpenAI tool call -> translator -> Anthropic
+    SSE -> router queue. With the old per-type buffers every post-tool text
+    delta was withheld, so a 100ms frame-level idle ceiling killed a healthy
+    300ms generation and logged a 504.
+    """
+    import asyncio
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.1)
+    monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 0.1)
+
+    def _chunk(delta, finish_reason=None):
+        payload = {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "model": OPENAI_MODEL,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return f"data: {json.dumps(payload)}\n\n".encode()
+
+    async def _iter():
+        yield _chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"x":1}'},
+                    }
+                ]
+            }
+        )
+        for i in range(30):
+            await asyncio.sleep(0.01)
+            yield _chunk({"content": f"fragment-{i} "})
+        yield _chunk({}, finish_reason="stop")
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        amod, "_schedule_log_store_task", lambda log_store, **kw: captured.update(kw)
+    )
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    collected = b""
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for raw in r.aiter_bytes():
+            collected += raw
+
+    assert b"event: error" not in collected, collected[-2000:]
+    assert b"event: message_stop" in collected
+    for i in range(30):
+        assert f"fragment-{i} ".encode() in collected
+    assert captured.get("status_code") == 200
+    assert captured.get("error") is None
+
+
+@pytest.mark.asyncio
+async def test_translated_stream_incomplete_tool_then_silence_still_hits_idle_ceiling(
+    anthropic_test_client, monkeypatch
+):
+    """Activity comments are emitted only for received data, not on a timer.
+
+    A provider that sends an incomplete tool call plus one interleaved text
+    fragment and then wedges must still be aborted; the translator's
+    comment frame must not keep a genuinely stalled upstream alive.
+    """
+    import asyncio
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.1)
+    monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 0.1)
+    monkeypatch.setattr(amod, "_MAX_FIRST_FRAME_IDLE", 30)
+
+    def _chunk(delta):
+        payload = {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "model": OPENAI_MODEL,
+            "choices": [{"index": 0, "delta": delta}],
+        }
+        return f"data: {json.dumps(payload)}\n\n".encode()
+
+    async def _iter():
+        yield _chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"a":'},
+                    }
+                ]
+            }
+        )
+        yield _chunk({"content": "buffered-but-stalled"})
+        await asyncio.sleep(30)
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        amod, "_schedule_log_store_task", lambda log_store, **kw: captured.update(kw)
+    )
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    collected = b""
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for raw in r.aiter_bytes():
+            collected += raw
+
+    assert b"event: error" in collected
+    assert b"event: message_stop" not in collected
+    assert captured.get("status_code") == 504
+
+
+@pytest.mark.asyncio
+async def test_translated_stream_null_tool_index_is_an_error_not_a_200(
+    anthropic_test_client, monkeypatch
+):
+    """An explicit null tool-call index fails the stream through the error path.
+
+    Normalizing it to call 0 (or giving it its own state) would end with a
+    logged 200 and a message_stop around a call the client cannot attribute.
+    The blocks already on the wire must still be closed exactly once.
+    """
+    from serving.servers.routers import anthropic_messages as amod
+
+    def _chunk(delta, finish_reason=None):
+        payload = {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "model": OPENAI_MODEL,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return f"data: {json.dumps(payload)}\n\n".encode()
+
+    def _tool(index, call_id, arguments):
+        return {
+            "index": index,
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "lookup", "arguments": arguments},
+        }
+
+    async def _iter():
+        yield _chunk({"tool_calls": [_tool(0, "call_0", '{"a":')]})
+        yield _chunk({"content": "queued-before-error"})
+        yield _chunk({"tool_calls": [_tool(None, "call_null", '{"b":1}')]})
+        yield _chunk({"content": "after-error"})
+        # A well-formed ending: without the index check this stream would be
+        # a successful, logged 200.
+        yield _chunk({}, finish_reason="tool_calls")
+        yield b"data: [DONE]\n\n"
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        amod, "_schedule_log_store_task", lambda log_store, **kw: captured.update(kw)
+    )
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    collected = b""
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for raw in r.aiter_bytes():
+            collected += raw
+
+    events = []
+    event_type = None
+    for line in collected.decode().splitlines():
+        if line.startswith("event: "):
+            event_type = line[len("event: ") :]
+        elif line.startswith("data: "):
+            events.append((event_type, json.loads(line[len("data: ") :])))
+
+    names = [name for name, _ in events]
+    assert names[-1] == "error"
+    assert "message_stop" not in names
+    assert "message_delta" not in names
+    assert b"call_null" not in collected
+    assert b"after-error" not in collected
+    assert b"queued-before-error" in collected
+
+    open_blocks: set[int] = set()
+    started: list[tuple] = []
+    for name, data in events:
+        if name == "content_block_start":
+            assert not open_blocks, (open_blocks, data)
+            open_blocks.add(data["index"])
+            block = data["content_block"]
+            started.append((block["type"], block.get("id")))
+        elif name == "content_block_delta":
+            assert data["index"] in open_blocks, data
+        elif name == "content_block_stop":
+            assert data["index"] in open_blocks, data
+            open_blocks.discard(data["index"])
+    assert not open_blocks
+    assert started == [("tool_use", "call_0"), ("text", None)]
+
+    assert captured.get("status_code") == 502
+    assert captured.get("error")
+    # The client sees a scrubbed message; the operator record names the cause.
+    assert "tool call index must be an integer" in (captured.get("operator_error") or "")
 
 
 # ---------------------------------------------------------------------------

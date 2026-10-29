@@ -796,7 +796,7 @@ class DatabaseLogger:
             """)
 
             # Migration: token totals + cost on provider_hourly_stats.
-            # Added by per-provider Token Usage tab. Nullable so the
+            # Added for the Analytics overview's token usage. Nullable so the
             # change is metadata-only on existing tables; rows pre-dating
             # this migration are filled by backfill_token_columns at
             # startup and by subsequent hourly rollups.
@@ -906,7 +906,10 @@ class DatabaseLogger:
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
 
-        usage = normalize_usage(usage) or usage
+        # Same explicit-None rule as the router paths: an all-invalid usage dict
+        # must not be restored to its raw form.
+        normalized = normalize_usage(usage)
+        usage = normalized if normalized is not None else usage
 
         # Privacy control: use per-request override or instance default
         should_store_full = (

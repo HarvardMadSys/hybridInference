@@ -224,7 +224,7 @@ copied, and the log names each with a warning:
   stored value wins and the environment's counts as unset. Check proxy trust
   after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` with a
   default of `0`, so a database that stored that `0` keeps the gateway off
-  forwarded headers whatever `.env` says. Change it on the Configuration tab;
+  forwarded headers whatever `.env` says. Change it on the Settings tab;
   see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md).
 - `ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in its
   place. Leave the variable out: while it is set, the backend refuses to
@@ -343,7 +343,7 @@ the routing-observation and `X-Provider` behaviour is unchanged.
 ## Alerting
 
 The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In
-**Admin → Configuration → Alerts**, choose a **Notification channel** and enter
+**Admin → Settings → Alerts**, choose a **Notification channel** and enter
 its webhook URL. Only the selected channel's field is shown; saved URLs remain
 write-only. Choose **None** to turn off notifications.
 
@@ -362,9 +362,13 @@ one webhook can serve both code paths. The console preserves existing dedicated
 Slack settings and uses the fallback key for a new Slack configuration.
 
 Slack and WeCom are mutually exclusive. Saving a channel switch clears the old
-channel in the same update. All webhook changes require a backend restart;
-until then, normal alerts continue using the previous channel. **Pending
-restart** identifies saved changes waiting to take effect.
+channel in the same update. Webhook changes apply after a backend restart until
+an operator activates the `alerts.runtime` live group; from then on they apply
+in every backend process within about ten seconds, without a restart. See
+[Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart).
+Until a change applies, normal alerts continue using the previous channel.
+**Restart pending**, or the **Applied in each backend process** panel once the
+group is active, shows what is still waiting.
 
 **Send test notification** sends a marked test using the URL currently entered,
 or the latest saved URL when no draft is entered. It works before a restart and
@@ -466,6 +470,11 @@ else can claim the account:
 3. Enter the code and choose a username and a password. This administrator has
    no email address and signs in with the username.
 
+Once email delivery is configured, this administrator can bind an email in
+**Account Settings → Email Address**. Confirm the current password and follow
+the verification link sent to the new address. The username continues to work
+after binding; the same settings section also lets you change a bound email.
+
 Whoever can read the backend log, or the database that holds the code, can
 create this account, so keep both as private as the host. Wrong codes are
 rate limited per client address, ten in 15 minutes; the right code is never
@@ -535,7 +544,7 @@ docker exec -it hybridinference-backend python -m serving.config.manage reset JW
 ```
 
 `list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the
-Configuration tab, with its validation, and never print a secret's value; see
+Settings tab, with its validation, and never print a secret's value; see
 [Without the console](configuration.md#without-the-console). The running
 backend picks the change up within about ten seconds, or after a restart for a
 setting marked **Restart required**.

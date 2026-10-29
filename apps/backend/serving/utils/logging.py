@@ -18,6 +18,10 @@ _STRUCTURED_LOG_KEYS = (
     "path",
     "status_code",
     "duration_ms",
+    # Time the request spent in Kubernetes proxy discovery, lock waits
+    # included (servers/middleware/proxy_trust.py). Kept apart from
+    # duration_ms, which measures only what runs inside the request log.
+    "proxy_discovery_ms",
     "remote_ip",
     "peer_ip",
     "ip_source",
@@ -64,6 +68,13 @@ _STRUCTURED_LOG_KEYS = (
     # depend on.
     "task_name",
     "success",
+    # Request-log queue health: preserve counts and bounds without adding
+    # request payloads to the structured field allowlist.
+    "dropped_total",
+    "queue_maxsize",
+    "queued_rows_discarded",
+    "inflight_writes_uncertain",
+    "pending_rows",
     "from_provider",
     "to_provider",
     "ttft_ms",

@@ -23,8 +23,12 @@ import {
   TEXT_FIELD,
 } from '@/components/features/admin/adminStyles';
 
+import { useReportUnsaved } from './useReportUnsaved';
+
 interface UsageInsightsSettingsSectionProps {
   onToast: (msg: string) => void;
+  /** Called with the number of unsaved changes whenever it changes. */
+  onUnsavedChange?: (count: number) => void;
 }
 
 /**
@@ -34,7 +38,10 @@ interface UsageInsightsSettingsSectionProps {
  * Analyze action lives on each user's detail panel; this section only manages
  * credentials.
  */
-export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsSectionProps) {
+export function UsageInsightsSettingsSection({
+  onToast,
+  onUnsavedChange,
+}: UsageInsightsSettingsSectionProps) {
   const [settings, setSettings] = useState<UsageInsightsSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -82,6 +89,7 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
 
   // An emptied model is unsaved too: it keeps the bar up, with Save held back.
   const unsaved = Number(modelChanged) + Number(keyTyped);
+  useReportUnsaved(unsaved, onUnsavedChange);
   const blocked = unsaved > 0 && !trimmedModel ? 'Model name cannot be empty.' : null;
   // Clear key shares the write flow, but runs only with nothing unsaved.
   const saving = busy && unsaved > 0;

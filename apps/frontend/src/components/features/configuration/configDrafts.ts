@@ -1,6 +1,6 @@
 // Unsaved edits to configuration entries, and the PATCH body they become.
 //
-// Shared by the admin Configuration tab and the first-run setup wizard, so the
+// Shared by the admin Settings tab and the first-run setup wizard, so the
 // rule for what counts as a change, and the JSON type each setting is sent as,
 // exist once.
 

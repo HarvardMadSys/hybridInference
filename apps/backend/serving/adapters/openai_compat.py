@@ -640,9 +640,17 @@ class OpenAICompatAdapter(BaseAdapter):
             "reasoning_effort",
             "thinking",
             "tool_stream",
+            # The Anthropic translator spells tool_choice's
+            # disable_parallel_tool_use as this top-level switch (issue #876
+            # P3). Like reasoning_effort it only travels for models whose
+            # supported_params declare it: a provider that rejects the field
+            # must not start seeing it.
+            "parallel_tool_calls",
         )
         for name in passthrough_params:
             if name in params and name in self.config.supported_params:
+                if name == "parallel_tool_calls" and not payload.get("tools"):
+                    continue
                 payload[name] = params[name]
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1255,14 +1263,14 @@ class OpenAICompatAdapter(BaseAdapter):
             "model": self._get_model_identifier(),
             **validated,
         }
-        self._apply_supported_passthrough_params(payload, params)
-
         # Add optional features
         if params.get("tools") and self.config.supports_tools:
             payload["tools"] = self._normalize_tools(params["tools"])
             tool_choice = self._resolve_tool_choice(params.get("tool_choice"))
             if tool_choice is not None:
                 payload["tool_choice"] = tool_choice
+
+        self._apply_supported_passthrough_params(payload, params)
 
         filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
         if filtered_rf and self.config.supports_structured_output:
@@ -1317,14 +1325,14 @@ class OpenAICompatAdapter(BaseAdapter):
             "stream": True,
             **validated,
         }
-        self._apply_supported_passthrough_params(payload, params)
-
         # Add optional features
         if params.get("tools") and self.config.supports_tools:
             payload["tools"] = self._normalize_tools(params["tools"])
             tool_choice = self._resolve_tool_choice(params.get("tool_choice"))
             if tool_choice is not None:
                 payload["tool_choice"] = tool_choice
+
+        self._apply_supported_passthrough_params(payload, params)
 
         filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
         if filtered_rf and self.config.supports_structured_output:

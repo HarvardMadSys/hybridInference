@@ -190,6 +190,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import Depends, HTTPException, Request
 
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
+from serving.surfaces.context import InteractiveAdmission
 
 from .auth import verify_api_key
 from .deps import (
@@ -203,41 +204,17 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
 
 
-_INTERACTIVE_LOAD_SCOPE_STATE_KEY = "_interactive_load_tracker"
-_NO_TRACKER = object()
-
-
 @contextmanager
-def _track_interactive_request(
-    request: Request, canonical: str | None
-) -> Iterator[InteractiveLoadTracker]:
-    """Publish a retargetable load tracker for this request's full lifetime."""
-    state = request.scope.setdefault("state", {})
-    previous = state.get(_INTERACTIVE_LOAD_SCOPE_STATE_KEY, _NO_TRACKER)
-    tracker = INTERACTIVE_LOAD.track(canonical)
-    state[_INTERACTIVE_LOAD_SCOPE_STATE_KEY] = tracker
-    try:
-        with tracker:
-            yield tracker
-    finally:
-        if previous is _NO_TRACKER:
-            state.pop(_INTERACTIVE_LOAD_SCOPE_STATE_KEY, None)
-        else:
-            state[_INTERACTIVE_LOAD_SCOPE_STATE_KEY] = previous
+def _track_interactive_request(canonical: str | None) -> Iterator[InteractiveLoadTracker]:
+    """Count this request as interactive load for its full lifetime.
 
-
-def retarget_interactive_load(request: Request, canonical: str) -> None:
-    """Count this request on the concrete model selected after admission.
-
-    The HTTP concurrency dependency publishes the tracker in the request scope,
-    so handlers called directly by compatibility and Responses routes retarget
-    the same request. Calls without that dependency (notably batch dispatch)
-    intentionally do nothing: they are not interactive traffic.
+    The tracker is retargetable: the route's execution moves the count to the
+    concrete model once an auto model is resolved, through the
+    :class:`~serving.surfaces.context.InteractiveAdmission` the dependency
+    yields. A batch item holds no tracker; it is not interactive traffic.
     """
-    state = request.scope.get("state")
-    tracker = state.get(_INTERACTIVE_LOAD_SCOPE_STATE_KEY) if isinstance(state, dict) else None
-    if isinstance(tracker, InteractiveLoadTracker):
-        tracker.retarget(canonical)
+    with INTERACTIVE_LOAD.track(canonical) as tracker:
+        yield tracker
 
 
 def _exempt_slot_key(user_id: str) -> str:
@@ -366,7 +343,7 @@ async def enforce_user_concurrency(
     router: Any = Depends(get_router),
     concurrency_resolver: Any = Depends(get_model_concurrency_resolver),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[InteractiveAdmission, None]:
     """Acquire a per-user concurrency slot or raise 429.
 
     Models flagged as concurrency-exempt ("not limited by concurrency") do not
@@ -380,6 +357,10 @@ async def enforce_user_concurrency(
     on client disconnect. For as long as the slot is held, the request is also
     counted as interactive load on its model (:data:`INTERACTIVE_LOAD`), which
     batch work on the model yields to.
+
+    Yields the request's :class:`~serving.surfaces.context.InteractiveAdmission`,
+    through which the route's execution moves that count to the concrete model
+    once an auto model has been resolved. Acquiring and releasing stay here.
     """
     # An exemption resolver needs the model before admission to choose its slot.
     # Without one, acquire the normal slot first so a slow POST body is counted.
@@ -397,8 +378,8 @@ async def enforce_user_concurrency(
         # fail open for per-user admission. Interactive load is independent and
         # remains visible to the batch worker, including a later auto retarget.
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        with _track_interactive_request(request, canonical):
-            yield
+        with _track_interactive_request(canonical) as tracker:
+            yield InteractiveAdmission(tracker)
         return
 
     user_id = user["user_id"]
@@ -460,8 +441,8 @@ async def enforce_user_concurrency(
             model, canonical = await _request_model(
                 request, router=router, embedding_adapters=embedding_adapters
             )
-        with _track_interactive_request(request, canonical):
-            yield
+        with _track_interactive_request(canonical) as tracker:
+            yield InteractiveAdmission(tracker)
     finally:
         try:
             limiter.release(slot_key)

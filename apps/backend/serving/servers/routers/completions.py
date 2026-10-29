@@ -7,6 +7,7 @@ import contextlib
 import json
 import time
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -25,7 +26,6 @@ from serving.auto_mode import (
     openai_features,
     session_key,
 )
-from serving.batch.attempts import batch_log_attribution
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.exceptions import scrub_error_for_user
 from serving.grant_auth import ledger_attribution
@@ -39,7 +39,7 @@ from serving.schemas import (
     ErrorResponse,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.concurrency import enforce_user_concurrency, retarget_interactive_load
+from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
     get_completions_logger,
     get_cost_tracker,
@@ -58,21 +58,24 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
-from serving.servers.streaming_state import (
-    REQUEST_TIMEOUT_SCOPE_STATE_KEY,
-    STREAMING_RESPONSE_SCOPE_STATE_KEY,
-)
+from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
+from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
+from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import derive_affinity_key, get_client_ip, get_client_ip_info
+from serving.utils.request_ip import derive_affinity_key
 from serving.utils.session_identity import session_identity
-from serving.utils.synthetic_probe import is_trusted_probe
-from serving.utils.token_utils import normalize_usage, sanitize_usage
+from serving.utils.synthetic_probe import is_trusted_probe_headers
+from serving.utils.token_utils import (
+    normalize_usage,
+    optional_token_count,
+    sanitize_usage,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Mapping
 
     from serving.auto_mode import AutoSelection
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -178,22 +181,6 @@ async def _should_force_chat_completions_streaming(
 _FORCE_STREAMING_KEEPALIVE_S = 15
 
 
-def _timeout_fired_probe(request: Request) -> Callable[[], bool]:
-    """Build a probe telling whether TimeoutMiddleware's deadline has fired.
-
-    Read lazily at exception time (not at request entry): the middleware's
-    ``CancelScope.cancel_called`` only flips once the deadline expires, which
-    is what distinguishes a gateway timeout from a client disconnect.
-    """
-
-    def _fired() -> bool:
-        state = request.scope.get("state") or {}
-        timeout_scope = state.get(REQUEST_TIMEOUT_SCOPE_STATE_KEY)
-        return bool(getattr(timeout_scope, "cancel_called", False))
-
-    return _fired
-
-
 async def _close_stream_quietly(stream: Any) -> None:
     aclose = getattr(stream, "aclose", None)
     if not callable(aclose):
@@ -231,16 +218,6 @@ def _pre_commit_error(chunk: str | None) -> tuple[int, str | None] | None:
         code if is_status else 500,
         message if isinstance(message, str) and message.strip() else None,
     )
-
-
-async def _chain_first_then_rest(first: bytes | str | None, stream: Any) -> Any:
-    try:
-        if first is not None:
-            yield first
-        async for data in stream:
-            yield data
-    finally:
-        await _close_stream_quietly(stream)
 
 
 async def _streaming_response_with_keepalive(
@@ -353,7 +330,9 @@ async def _streaming_response_with_keepalive(
             response_id = chunk_json.get("id") or response_id
             created = int(chunk_json.get("created") or created)
             if chunk_json.get("usage"):
-                usage = normalize_usage(chunk_json.get("usage")) or chunk_json.get("usage")
+                raw_usage = chunk_json.get("usage")
+                normalized_usage = normalize_usage(raw_usage)
+                usage = normalized_usage if normalized_usage is not None else raw_usage
 
             choices = chunk_json.get("choices") or []
             if not choices:
@@ -430,6 +409,302 @@ def _metadata_with_fallback_diagnostic(
     return {**metadata, "upstream_error": fallback_error}
 
 
+# --- Protocol execution, shared with Responses, compat and Batch (issue #1690) --
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChatOptions:
+    """How a caller of :func:`execute_chat` has the response delivered.
+
+    ``runtime_settings`` decides two things only: whether a non-streaming
+    request is streamed upstream and buffered (``force_chat_completions_streaming``),
+    and whether a trusted probe is logged (``log_synthetic_probes``). Without
+    settings neither applies. Nothing here touches access, billing or routing.
+    """
+
+    runtime_settings: RuntimeSettings | None
+
+    @classmethod
+    def online(cls, runtime_settings: RuntimeSettings | None) -> ChatOptions:
+        """``/v1/chat/completions`` and the compatibility routes."""
+        return cls(runtime_settings=runtime_settings)
+
+    @classmethod
+    def delegated(cls) -> ChatOptions:
+        """The Responses API: answered as requested, never force-streamed."""
+        return cls(runtime_settings=None)
+
+    @classmethod
+    def batch(cls) -> ChatOptions:
+        """A batch item: never streamed."""
+        return cls(runtime_settings=None)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ChatServices:
+    """What :func:`execute_chat` serves a request with."""
+
+    #: The routing manager; a pinned request goes to it directly.
+    router: Any
+    #: Per-model routers (Fixed, RouteWise, ...); None routes everything via ``router``.
+    model_router_registry: Any
+    visibility: Any
+    log_store: Any
+    completions_logger: CompletionsLogger
+    pricing_lookup: PricingLookup
+    cost_tracker: CostTracker
+    #: The application's services, for the auto-mode configuration.
+    app_services: Any
+
+
+@dataclass(frozen=True, slots=True)
+class ChatResponse:
+    """A served non-streaming request."""
+
+    #: The response as the route returns it (before its response model).
+    body: Any
+    #: ``X-Provider`` for a trusted probe, else None.
+    provider_header: str | None
+
+
+class ChatStream:
+    """A streaming request past every check, its upstream not yet read.
+
+    The router's stream has been created but not iterated, and the session that
+    turns it into SSE frames (billing, logging and routing observation at its
+    end) is built. :meth:`prime` reads the first item -- before a response is
+    started, as the SSE route always has -- and raises ``HTTPException`` when
+    that item is a failure nothing was committed for; :meth:`frames` then yields
+    everything, unbuffered. A forced (buffered) stream is rendered by the HTTP
+    route from :meth:`session_stream` instead (see :meth:`adopt`).
+
+    Once primed, the session stream is running. If the response body is then
+    never iterated (a client already gone when the response starts),
+    :meth:`close_if_unstarted` closes it, so it ends as a client disconnect
+    rather than whenever the abandoned generator happens to be collected.
+    """
+
+    __slots__ = (
+        "_frames_started",
+        "_head",
+        "_sse",
+        "_tail",
+        "adapter_chunks",
+        "buffered",
+        "model",
+        "provider_header",
+        "request_headers",
+        "request_id",
+        "session",
+    )
+
+    def __init__(
+        self,
+        *,
+        session: StreamSession,
+        adapter_chunks: Any,
+        buffered: bool,
+        request_id: str,
+        model: str,
+        request_headers: Mapping[str, str],
+        provider_header: str | None,
+    ) -> None:
+        """Hold the session and the router stream it reads."""
+        self.session = session
+        self.adapter_chunks = adapter_chunks
+        self.buffered = buffered
+        self.request_id = request_id
+        self.model = model
+        self.request_headers = request_headers
+        self.provider_header = provider_header
+        self._sse: Any = None
+        # What the response body yields: a first item already read, then the
+        # rest of the started stream it came from.
+        self._head: Any = None
+        self._tail: Any = None
+        self._frames_started = False
+
+    async def prime(self) -> str | None:
+        """Read the first SSE item; refuse with its status if it is an uncommitted failure.
+
+        A 200 is committed with the first byte, and everything the stream could
+        say after it arrives in-band: a failure becomes an error frame and a
+        close with no [DONE], which a client that is itself a gateway (every
+        `kind: staging` / `openai_compat` hop) reads as a truncated generation
+        and scores against this endpoint. StreamSession holds its bytes back
+        until it has something to send, so a failure that came back first -- a
+        4xx the upstream answered in milliseconds, every circuit open -- is the
+        first item, with nothing committed yet, and the client can be told the
+        real status instead.
+        """
+        self._sse = self.session.stream(self.adapter_chunks)
+        first_sse: str | None
+        try:
+            first_sse = await self._sse.__anext__()
+        except StopAsyncIteration:
+            first_sse = None
+        pre_commit_error = (
+            None if self.session.yielded_first_chunk else _pre_commit_error(first_sse)
+        )
+        if pre_commit_error is not None:
+            await _close_stream_quietly(self._sse)
+            # This now relays the upstream's status to the client, so attribute
+            # it, as the buffered path does: a relayed 401 with no label reads as
+            # the gateway's own routine auth churn to RequestLogMiddleware and the
+            # failed-request rule. The session only records the label.
+            req_ctx.publish_upstream_provider(self.session.error_provider)
+            status_code, message = pre_commit_error
+            raise HTTPException(
+                status_code=status_code,
+                detail=message or scrub_error_for_user(None, self.request_id, status_code),
+            )
+        self.adopt(first_sse, self._sse)
+        return first_sse
+
+    def adopt(self, first: Any, rest: Any) -> None:
+        """Make *first*, then the rest of the started stream *rest*, the response body."""
+        self._head, self._tail = first, rest
+
+    def frames(self) -> AsyncIterator[Any]:
+        """The first item already read, then the rest of the stream; closed when done."""
+        return self._frames()
+
+    async def _frames(self) -> AsyncIterator[Any]:
+        self._frames_started = True
+        try:
+            if self._head is not None:
+                yield self._head
+            async for data in self._tail:
+                yield data
+        finally:
+            await _close_stream_quietly(self._tail)
+
+    def session_stream(self) -> AsyncIterator[str]:
+        """The session's SSE items from the start, for a forced (buffered) stream."""
+        return self.session.stream(self.adapter_chunks)
+
+    async def close_if_unstarted(self) -> None:
+        """Close a stream read ahead whose response body never started; else nothing.
+
+        A body that started closes the stream in its own ``finally``.
+        """
+        if self._tail is not None and not self._frames_started:
+            await _close_stream_quietly(self._tail)
+
+    async def aclose(self) -> None:
+        """Close whatever has been started."""
+        if self._tail is not None:
+            await _close_stream_quietly(self._tail)
+        else:
+            await _close_stream_quietly(self._sse if self._sse is not None else self.adapter_chunks)
+
+
+async def release_unstarted_chat_streams() -> AsyncIterator[list[ChatStream]]:
+    """Hold a route's chat stream; once the response is over, close it if it never ran.
+
+    Declared with ``scope="request"``, so this ends after the response has been
+    sent -- or abandoned. The stream was read ahead to choose the response's
+    status, so its session and upstream are running; a client already gone when
+    the response starts can leave Starlette never iterating the body (an ASGI
+    server reporting spec 2.4+ fails the first send). Closed here, the session
+    ends as a client disconnect (499, no charge) and the upstream stream, its
+    reader task and the router's claim are released at the end of the request,
+    instead of whenever the abandoned generator is collected -- which an
+    exception traceback kept alive can postpone indefinitely. A stream whose
+    body started is left to close itself, as before.
+    """
+    held: list[ChatStream] = []
+    try:
+        yield held
+    finally:
+        for stream in held:
+            await stream.close_if_unstarted()
+
+
+ChatOutcome = ChatResponse | ChatStream
+
+
+async def render_chat_http(outcome: ChatOutcome, request: Request, http_response: Response) -> Any:
+    """Return what the Chat route answers *outcome* with.
+
+    A streaming outcome is primed before the response starts (an uncommitted
+    failure raises ``HTTPException``); a forced stream is buffered behind
+    whitespace keepalives and answered as one JSON body.
+    """
+    if isinstance(outcome, ChatResponse):
+        if outcome.provider_header is not None:
+            http_response.headers["X-Provider"] = outcome.provider_header
+        return outcome.body
+    return await _render_chat_stream(outcome, request, http_response)
+
+
+async def _render_chat_stream(
+    stream: ChatStream, request: Request, http_response: Response
+) -> StreamingResponse:
+    if stream.buffered:
+        keepalive_gen = _streaming_response_with_keepalive(
+            stream.session_stream(),
+            request_id=stream.request_id,
+            model=stream.model,
+            request_headers=stream.request_headers,
+        )
+        first_chunk: bytes | None = None
+        try:
+            first_chunk = await keepalive_gen.__anext__()
+        except StopAsyncIteration:
+            first_chunk = None
+        except HTTPException:
+            # A pre-first-byte upstream error on this path is relayed to the
+            # client with the upstream's own status: the stream converts it to
+            # an in-band error frame and the buffering wrapper re-raises that
+            # frame's ``code`` as a fresh HTTPException carrying no
+            # ``_routing``. So the handler's own attribution below resolves to
+            # the "router" sentinel and publishes nothing, and a relayed 401
+            # arrives at RequestLogMiddleware and the failed-request rule as a
+            # bare, unattributed 401 — filed as routine client-auth churn, the
+            # exact silence this alerting exists to break. The label has to be
+            # republished *here*, in the request's own context: the stream
+            # generator runs inside the wrapper's reader task, so its own
+            # publish landed in a context copy that ends with the task.
+            req_ctx.publish_upstream_provider(stream.session.error_provider)
+            raise
+        if stream.provider_header:
+            http_response.headers["X-Provider"] = stream.provider_header
+
+        # This path emits keepalive whitespace to keep intermediaries alive;
+        # without no-transform / no-buffering a CDN (e.g. Cloudflare) can
+        # buffer it and defeat the keepalive on long completions.
+        request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
+        streaming_headers: dict[str, str] = {
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        }
+        if stream.provider_header:
+            streaming_headers["X-Provider"] = stream.provider_header
+
+        stream.adopt(first_chunk, keepalive_gen)
+        return StreamingResponse(
+            stream.frames(),
+            media_type="application/json",
+            headers=streaming_headers or None,
+        )
+
+    await stream.prime()
+    # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering
+    # the stream to compress it, which collapses TTFT to total latency.
+    response_headers = {
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+    }
+    if stream.provider_header:
+        response_headers["X-Provider"] = stream.provider_header
+    return StreamingResponse(
+        stream.frames(),
+        media_type="text/event-stream",
+        headers=response_headers,
+    )
+
+
 @router.post(
     "/v1/chat/completions",
     response_model=ChatCompletionResponse,
@@ -456,15 +731,101 @@ async def chat_completions(
     pricing_lookup: PricingLookup = Depends(get_pricing_lookup),
     cost_tracker: CostTracker = Depends(get_cost_tracker),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ) -> dict[str, Any]:
     """Handle chat completion requests with routing and fallback.
 
-    Parses the request body using Pydantic for validation, then routes
-    to the appropriate adapter. Streaming and non-streaming flows are
-    both supported.
+    Reads the request and serves it through :func:`execute_chat`, which the
+    Responses API, the compatibility routes and the batch worker call too.
     """
     try:
         body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, "Invalid JSON or schema in request body") from e
+    return await serve_chat_http(
+        body,
+        request,
+        http_response,
+        authorization=authorization,
+        user_ctx=user_ctx,
+        concurrency_slot=_concurrency_slot,
+        streams=_streams,
+        services=ChatServices(
+            router=router_exec,
+            model_router_registry=model_router_registry,
+            visibility=model_visibility_resolver,
+            log_store=log_store,
+            completions_logger=completions_logger,
+            pricing_lookup=pricing_lookup,
+            cost_tracker=cost_tracker,
+            app_services=getattr(request.app.state, "services", None),
+        ),
+        runtime_settings=runtime_settings,
+    )
+
+
+async def serve_chat_http(
+    body: Any,
+    request: Request,
+    http_response: Response,
+    *,
+    authorization: str | None,
+    user_ctx: Mapping[str, Any],
+    concurrency_slot: object,
+    streams: list[ChatStream],
+    services: ChatServices,
+    runtime_settings: RuntimeSettings | None,
+) -> Any:
+    """Serve a decoded chat request for an HTTP route and render the answer.
+
+    For ``/v1/chat/completions`` and the compatibility routes, each under its
+    own concurrency dependency: *concurrency_slot* is what it yielded, and
+    *streams* what :func:`release_unstarted_chat_streams` yielded.
+    """
+    outcome = await execute_chat(
+        body,
+        ExecutionContext(
+            user_ctx=read_only(user_ctx),
+            origin=client_origin(request, authorization=authorization),
+            admission=admission_from(concurrency_slot),
+            batch=None,
+            timeout_probe=timeout_probe(request),
+        ),
+        services,
+        ChatOptions.online(runtime_settings),
+    )
+    if isinstance(outcome, ChatStream):
+        streams.append(outcome)
+    return await render_chat_http(outcome, request, http_response)
+
+
+async def execute_chat(
+    body: Any,
+    ctx: ExecutionContext,
+    services: ChatServices,
+    options: ChatOptions,
+) -> ChatOutcome:
+    """Serve one chat completion request: online, delegated, or as a batch item.
+
+    *body* is the decoded request body; it is validated here, so a caller that
+    translated it (the Responses API) gets the same 400 for an invalid one.
+    Routes through the model's own router (FixedRouter, RouteWise, ...), whose
+    selection, retries, fallback and health this does not touch; bills, logs
+    and reports the routing observation of a non-streaming request within the
+    call. A streaming request is returned as a :class:`ChatStream`, not yet
+    read. Errors are raised as ``HTTPException`` with the status and message
+    the route answers with.
+    """
+    user_ctx = ctx.user_ctx
+    router_exec = services.router
+    log_store = services.log_store
+    model_router_registry = services.model_router_registry
+    model_visibility_resolver = services.visibility
+    runtime_settings = options.runtime_settings
+    completions_logger = services.completions_logger
+    pricing_lookup = services.pricing_lookup
+    cost_tracker = services.cost_tracker
+    try:
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
@@ -474,7 +835,7 @@ async def chat_completions(
     # An untrusted caller's header is simply ignored — the request logs,
     # records routing observations and gets no X-Provider header, like any
     # other traffic. See serving/utils/synthetic_probe.py.
-    is_synthetic_probe = is_trusted_probe(request, user_ctx)
+    is_synthetic_probe = is_trusted_probe_headers(ctx.origin.headers, user_ctx)
     # Published immediately, before any of the early 404/403 exits below:
     # RequestLogMiddleware demotes probe request lines from this ctx key, so a
     # later publish would leave a trusted probe's unknown-model 404 suppressed
@@ -522,7 +883,7 @@ async def chat_completions(
     # alone logged the whole agent fleet as session_id = NULL -- and left it out
     # of RouteWise's prefix-cache cost adjustment, which is gated on the
     # ``session_id`` this puts in ``params`` below.
-    declared_session = session_identity(request.headers, body)
+    declared_session = session_identity(ctx.origin.headers, body)
     session_id = declared_session.session_id if declared_session is not None else None
     requested_stream = bool(payload.stream)
     force_streaming = await _should_force_chat_completions_streaming(
@@ -532,10 +893,10 @@ async def chat_completions(
     effective_stream = requested_stream or force_streaming
 
     metadata = {
-        "user_agent": request.headers.get("user-agent"),
-        "referer": request.headers.get("referer"),
-        "ip": get_client_ip(request),
-        "authorization": bool(authorization) or is_authenticated,
+        "user_agent": ctx.origin.user_agent,
+        "referer": ctx.origin.referer,
+        "ip": ctx.origin.ip.client_ip,
+        "authorization": ctx.origin.authorization_header or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
     }
@@ -552,7 +913,7 @@ async def chat_completions(
     # Present only when the batch worker runs the request for a batch
     # (serving/batch/dispatch.py); lands in api_logs.batch_job_id, the batch's
     # cost and usage attribution, with the item and attempt in the metadata.
-    metadata.update(batch_log_attribution(user_ctx))
+    metadata.update(ctx.batch_log_metadata())
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
 
     early_params: dict[str, Any] = {"stream": effective_stream}
@@ -565,11 +926,9 @@ async def chat_completions(
     # router picks the endpoint, and it is logged and billed under it with the
     # decision in ``metadata.auto`` (serving/auto_mode.py). The caller is not
     # told which model that is: responses name the auto model, and so do error
-    # messages. The services are read off the app rather than injected, because
-    # the Responses API and the legacy completions route call this handler
-    # directly.
+    # messages.
     auto_selection: AutoSelection | None = None
-    auto_mode = await auto_mode_for(model, getattr(request.app.state, "services", None))
+    auto_mode = await auto_mode_for(model, services.app_services)
     if auto_mode is not None:
         features = openai_features(
             messages,
@@ -694,10 +1053,8 @@ async def chat_completions(
 
     # The concurrency dependency saw the caller's virtual auto model before
     # selection. Move its full-lifetime load count to the concrete canonical
-    # model now that dispatch has resolved it. This also works when this handler
-    # is called directly by the Responses and compatibility surfaces because
-    # they reuse the dependency-owned Request scope.
-    retarget_interactive_load(request, route_canonical_model_id(route, model))
+    # model now that dispatch has resolved it (nothing to move for a batch item).
+    ctx.admission.retarget(route_canonical_model_id(route, model))
 
     require_route_pricing(route)
 
@@ -743,7 +1100,7 @@ async def chat_completions(
     # hyi-xxx key in use (not user_id, since a user may have multiple keys),
     # or to the grant for a sandbox, which presents no key hash.
     auth_key_hash = user_ctx.get("auth_key_hash")
-    ip_info = get_client_ip_info(request)
+    ip_info = ctx.origin.ip
     affinity_key = derive_affinity_key(
         auth_key_hash,
         ip_info,
@@ -766,7 +1123,7 @@ async def chat_completions(
 
     # Provider pinning: allows the harness (or admin tooling) to force routing
     # to a specific backend.  Only honoured for admin users to prevent abuse.
-    pin_provider = request.headers.get("X-Route-Pin")
+    pin_provider = ctx.origin.headers.get("X-Route-Pin")
     if pin_provider and not user_ctx.get("is_admin", False):
         pin_provider = None  # silently ignore for non-admin
 
@@ -900,7 +1257,7 @@ async def chat_completions(
             params=params,
             request_id=request_id,
             start_time=start_time,
-            request_headers=request.headers,
+            request_headers=ctx.origin.headers,
             metadata=metadata,
             user_id=user_id,
             is_synthetic_probe=is_synthetic_probe,
@@ -912,107 +1269,20 @@ async def chat_completions(
             pricing_lookup=pricing_lookup,
             get_adapter_config_for_provider=get_adapter_config_for_provider,
             request_payload=body,
-            timeout_fired_probe=_timeout_fired_probe(request),
+            timeout_fired_probe=ctx.timeout_probe,
             response_model=response_model,
         )
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
-        if force_streaming:
-            keepalive_gen = _streaming_response_with_keepalive(
-                session.stream(adapter_chunks),
-                request_id=request_id,
-                model=response_model or model,
-                request_headers=request.headers,
-            )
-            first_chunk: bytes | None = None
-            try:
-                first_chunk = await keepalive_gen.__anext__()
-            except StopAsyncIteration:
-                first_chunk = None
-            except HTTPException:
-                # A pre-first-byte upstream error on this path is relayed to the
-                # client with the upstream's own status: the stream converts it to
-                # an in-band error frame and the buffering wrapper re-raises that
-                # frame's ``code`` as a fresh HTTPException carrying no
-                # ``_routing``. So the handler's own attribution below resolves to
-                # the "router" sentinel and publishes nothing, and a relayed 401
-                # arrives at RequestLogMiddleware and the failed-request rule as a
-                # bare, unattributed 401 — filed as routine client-auth churn, the
-                # exact silence this alerting exists to break. The label has to be
-                # republished *here*, in the request's own context: the stream
-                # generator runs inside the wrapper's reader task, so its own
-                # publish landed in a context copy that ends with the task.
-                req_ctx.publish_upstream_provider(session.error_provider)
-                raise
-            if is_synthetic_probe:
-                provider_header = get_single_route_provider()
-                if provider_header:
-                    http_response.headers["X-Provider"] = provider_header
-
-            # This path emits keepalive whitespace to keep intermediaries alive;
-            # without no-transform / no-buffering a CDN (e.g. Cloudflare) can
-            # buffer it and defeat the keepalive on long completions.
-            request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
-            streaming_headers: dict[str, str] = {
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-            }
-            if is_synthetic_probe:
-                provider_header = get_single_route_provider()
-                if provider_header:
-                    streaming_headers["X-Provider"] = provider_header
-
-            return StreamingResponse(
-                _chain_first_then_rest(first_chunk, keepalive_gen),
-                media_type="application/json",
-                headers=streaming_headers or None,
-            )
-
-        # Pull the first item before the response starts, as the buffered path
-        # above does. A 200 is committed with the first byte, and everything the
-        # stream could say after it arrives in-band: a failure becomes an error
-        # frame and a close with no [DONE], which a client that is itself a
-        # gateway (every `kind: staging` / `openai_compat` hop) reads as a
-        # truncated generation and scores against this endpoint. StreamSession
-        # holds its bytes back until it has something to send, so a failure that
-        # came back first -- a 4xx the upstream answered in milliseconds, every
-        # circuit open -- is the first item, with nothing committed yet, and the
-        # client can be told the real status instead.
-        sse_stream = session.stream(adapter_chunks)
-        first_sse: str | None
-        try:
-            first_sse = await sse_stream.__anext__()
-        except StopAsyncIteration:
-            first_sse = None
-        pre_commit_error = None if session.yielded_first_chunk else _pre_commit_error(first_sse)
-        if pre_commit_error is not None:
-            await _close_stream_quietly(sse_stream)
-            # This now relays the upstream's status to the client, so attribute
-            # it, as the buffered path does: a relayed 401 with no label reads as
-            # the gateway's own routine auth churn to RequestLogMiddleware and the
-            # failed-request rule. The session only records the label.
-            req_ctx.publish_upstream_provider(session.error_provider)
-            status_code, message = pre_commit_error
-            raise HTTPException(
-                status_code=status_code,
-                detail=message or scrub_error_for_user(None, request_id, status_code),
-            )
-
-        # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering
-        # the stream to compress it, which collapses TTFT to total latency.
-        response_headers = {
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-        }
-        if is_synthetic_probe:
-            provider_header = get_single_route_provider()
-            if provider_header:
-                response_headers["X-Provider"] = provider_header
-        return StreamingResponse(
-            _chain_first_then_rest(first_sse, sse_stream),
-            media_type="text/event-stream",
-            headers=response_headers,
+        return ChatStream(
+            session=session,
+            adapter_chunks=adapter_chunks,
+            buffered=force_streaming,
+            request_id=request_id,
+            model=response_model or model,
+            request_headers=ctx.origin.headers,
+            provider_header=get_single_route_provider() if is_synthetic_probe else None,
         )
 
     # Non-streaming path
@@ -1022,7 +1292,7 @@ async def chat_completions(
             messages,
             **router_params,
         )
-        serializer_mode = resolve_mode(request.headers)
+        serializer_mode = resolve_mode(ctx.origin.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content
         # policy (strict / passthrough), mirroring the streaming path contract.
@@ -1078,8 +1348,8 @@ async def chat_completions(
                     if _ns_usage.get("total_tokens") is not None
                     else None
                 ),
-                cache_read_tokens=int(_ns_usage.get("cache_read_tokens", 0) or 0),
-                cache_write_tokens=int(_ns_usage.get("cache_write_tokens", 0) or 0),
+                cache_read_tokens=_ns_usage.get("cache_read_tokens"),
+                cache_write_tokens=_ns_usage.get("cache_write_tokens"),
                 reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
             )
 
@@ -1121,7 +1391,8 @@ async def chat_completions(
         # Emit token counters when usage is available, with anomaly checks
         # Normalize usage to extract reasoning_tokens from nested locations
         raw_usage = response.get("usage", {}) if isinstance(response, dict) else {}
-        usage = normalize_usage(raw_usage) or {}
+        normalized_usage = normalize_usage(raw_usage)
+        usage = normalized_usage if normalized_usage is not None else {}
         if usage and not is_synthetic_probe:
             prompt_tokens_raw = usage.get("prompt_tokens")
             completion_tokens_raw = usage.get("completion_tokens")
@@ -1153,18 +1424,13 @@ async def chat_completions(
 
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
-            ns_usage = normalize_usage(raw_usage) or {}
-            # Authoritative observed cache usage from the provider.
-            # None means "provider did not report" (NOT equivalent to 0).
-            cached_tokens_raw = ns_usage.get("cache_read_tokens")
-            cached_tokens: int | None = None
-            if cached_tokens_raw is not None:
-                try:
-                    cached_tokens = int(cached_tokens_raw)
-                    if cached_tokens < 0:
-                        cached_tokens = None
-                except (TypeError, ValueError):
-                    cached_tokens = None
+            normalized_usage = normalize_usage(raw_usage)
+            ns_usage = normalized_usage if normalized_usage is not None else {}
+            # Authoritative observed cache usage from the provider, through the
+            # canonical helper so this path shares one validation rule with
+            # cost and persistence. None means "provider did not report" (NOT
+            # equivalent to 0).
+            cached_tokens = optional_token_count(ns_usage.get("cache_read_tokens"))
             completions_logger.record_routing_observation(
                 active_router,
                 model,
@@ -1178,12 +1444,14 @@ async def chat_completions(
                 cached_tokens=cached_tokens,
             )
 
-        if is_synthetic_probe and provider != "router":
-            http_response.headers["X-Provider"] = provider
+        provider_header = provider if is_synthetic_probe and provider != "router" else None
         if isinstance(response, dict) and isinstance(response.get("usage"), dict):
             # The client's copy only: the response model requires all three totals.
-            return {**response, "usage": sanitize_usage(response["usage"], complete=True)}
-        return response
+            return ChatResponse(
+                {**response, "usage": sanitize_usage(response["usage"], complete=True)},
+                provider_header,
+            )
+        return ChatResponse(response, provider_header)
 
     except ProviderPinError as exc:
         raise HTTPException(

@@ -177,10 +177,11 @@ def convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return claude_tools
 
 
-def convert_tool_choice(tool_choice: str | dict[str, Any], payload: dict[str, Any]) -> None:
+def convert_tool_choice(tool_choice: str | dict[str, Any] | None, payload: dict[str, Any]) -> None:
     """Convert OpenAI tool_choice to Claude format, mutating payload in place.
 
-    May remove ``payload["tools"]`` if tool_choice is ``"none"``.
+    Keep tool declarations when ``tool_choice`` is ``"none"``: prior tool-use
+    history may still refer to them.
     """
     if isinstance(tool_choice, str):
         if tool_choice == "auto":
@@ -188,7 +189,7 @@ def convert_tool_choice(tool_choice: str | dict[str, Any], payload: dict[str, An
         elif tool_choice in ("required", "any"):
             payload["tool_choice"] = {"type": "any"}
         elif tool_choice == "none":
-            payload.pop("tools", None)
+            payload["tool_choice"] = {"type": "none"}
     elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
         func_name = tool_choice.get("function", {}).get("name")
         if func_name:

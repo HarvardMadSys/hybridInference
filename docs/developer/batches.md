@@ -5,45 +5,58 @@ answered later. You submit the whole job, poll it, then collect the results.
 The gateway runs the requests in the background, a few at a time per model,
 beside its interactive traffic.
 
-There are three ways to submit one, and each speaks its own protocol:
+There is one batch API, `/v1/batches`. Every batch has one **target**, the
+endpoint each of its requests is for:
 
-| API | Submit | Results |
+| Target | `url` / `endpoint` | Request body |
 |---|---|---|
-| OpenAI, inline | `POST /v1/batches` with the requests in a `requests` array | Paged from `/v1/batches/{id}/results`, or one JSONL export |
-| OpenAI, from a file | Upload a JSONL file to `/v1/files`, then `POST /v1/batches` with its `input_file_id` | An output file and an error file, downloaded from `/v1/files` |
-| Anthropic Message Batches | `POST /v1/messages/batches` (also under `/anthropic`) | JSONL from `/v1/messages/batches/{id}/results` |
+| Chat completions | `/v1/chat/completions` | A chat completion request |
+| Embeddings | `/v1/embeddings` | An embeddings request |
+| Responses | `/v1/responses` | An independent Responses request |
+| Messages | `/v1/messages` | An Anthropic Messages request; the create call also sends the `anthropic-version` header |
 
-A batch request can be a chat completion (`/v1/chat/completions`), an embedding
-(`/v1/embeddings`), an independent Responses request (`/v1/responses`) or an
-Anthropic message. The shapes follow OpenAI's Batch API and Anthropic's Message
-Batches API; the differences are listed at the end of this page.
+Its requests arrive in one of two ways, the **input methods** of the same
+batch resource:
 
-The official OpenAI and Anthropic SDKs work against these routes: point the
-SDK's base URL at the gateway — `https://your-gateway.example/v1` for OpenAI's,
-`https://your-gateway.example` for Anthropic's — and pass your gateway API key.
-There is no HybridInference SDK of its own, and the gateway does not offer every
-batch feature of either provider. The inline form and the results pages are
-this gateway's own, so the SDKs have no methods for them; call them over HTTP,
-as the examples below do.
+| Input method | Submit | Results |
+|---|---|---|
+| Direct requests | `POST /v1/batches` with the requests in a `requests` array | Paged from `/v1/batches/{id}/results`, or one JSONL export |
+| JSONL file | Upload a JSONL file to `/v1/files`, then `POST /v1/batches` with its `input_file_id` | An output file and an error file, downloaded from `/v1/files` |
+
+Whatever the target and input method, a batch is the same object, with the
+same statuses, counts, results, cancel and delete. The shapes follow OpenAI's
+Batch API; the differences are listed at the end of this page.
+
+The official OpenAI SDKs work with the file flow for the chat, embeddings and
+Responses targets: point the SDK's base URL at
+`https://your-gateway.example/v1` and pass your gateway API key. The Messages
+target is this gateway's extension of that shape. Anthropic's own Message
+Batches API (`/v1/messages/batches`, the Anthropic SDKs' `messages.batches`) is
+no longer served: its routes answer `410`; see
+[Moving from Message Batches](#moving-from-message-batches).
+There is no HybridInference SDK of its own. Direct requests and the results
+pages are this gateway's own, so the SDKs have no methods for them; call them
+over HTTP, as the examples below do.
 
 ```{note}
 Only **internal** users and administrators can create batches unless the
 operator opens them to other roles. A gateway with batch inference turned off,
-or without a database, answers every batch route with `404`. Otherwise every
-way in on this page is available: inline and file batches, Anthropic Message
-Batches, chat, embedding and Responses requests, and webhooks.
+or without a database, answers every batch route with `404`. Otherwise
+everything on this page is available: both input methods, every target, and
+webhooks.
 ```
 
 ## How it works
 
-Creating a batch stores its requests; nothing runs during that call. When the
-requests are checked depends on the API: an inline batch is checked whole before
-the call answers ([Create a batch](#create-a-batch)), a file batch is checked
-whole in the background ([Batches from a file](#batches-from-a-file)), and a
-Message Batch's requests are checked one by one, each invalid one becoming an
-error result ([Anthropic Message Batches](#anthropic-message-batches)). An
-OpenAI batch starts as `validating`, and the gateway's worker starts the
-requests of any batch as soon as their models have room.
+Creating a batch stores its requests; nothing runs during that call. Every
+request is checked before any of them runs: direct requests are checked whole
+before the call answers ([Create a batch](#create-a-batch)), and a file is
+checked whole in the background ([Batches from a file](#batches-from-a-file)).
+One invalid request refuses the whole batch, and a refused batch has made no
+inference call at all. A batch starts as `validating`, and the gateway's worker
+starts its requests as soon as their models have room. From then on each
+request succeeds or fails on its own: a request the model rejects, or that
+still fails after its retries, fails alone, and the others keep running.
 
 Each request then runs exactly as if you had sent it to its endpoint yourself:
 the same models, routing and fallback, the same price, logged under your
@@ -112,7 +125,7 @@ curl -s https://your-gateway.example/v1/batches \
 | `requests` | yes | The requests, at least one |
 | `requests[].custom_id` | yes | Your name for the request, 1–512 characters, unique in the batch. Results carry it back |
 | `requests[].method` | no | `POST`, the default |
-| `requests[].url` | no | `/v1/chat/completions` (the default), `/v1/embeddings` or `/v1/responses`. Every request of one batch uses the same `url` |
+| `requests[].url` | no | The target: `/v1/chat/completions` (the default), `/v1/embeddings`, `/v1/responses` or `/v1/messages`. Every request of one batch uses the same `url` |
 | `requests[].body` | yes | The request body, as you would send it to that endpoint. `stream` must not be `true` |
 | `metadata` | no | Up to 16 string pairs for your own use; keys up to 64 characters, values up to 512 |
 
@@ -137,6 +150,9 @@ the gateway's usual `{"error": {...}}` shape, and its message names the request:
 ```
 
 A model you may not use is reported exactly like one that does not exist.
+
+A Messages batch also sends the `anthropic-version` header with this call; see
+[Messages in a batch](#messages-in-a-batch).
 
 The answer is the new batch:
 
@@ -167,8 +183,9 @@ The answer is the new batch:
 }
 ```
 
-An inline batch has no files, so its file fields are `null`. Several fields are
-not in OpenAI's object: `cost_usd`, what the batch's finished requests were
+A batch of direct requests has no files, so its file fields are `null`. Several
+fields are not in OpenAI's object: `anthropic_version`, the version a Messages
+batch was created with (`null` otherwise); `cost_usd`, what the batch's finished requests were
 billed so far; `cost_unknown_attempts`, attempts whose cost is unknown and not
 in `cost_usd` (see [Costs](#costs)); `results_expires_at`, when the results will
 be deleted; and `error`, why the whole batch failed. `usage` totals the tokens
@@ -251,8 +268,9 @@ listed, finished or not. A request still `queued` or `running` has no
 `response` yet, but may retain its last `error` while being retried. Read the
 results once the batch is in a final status, or read them again later.
 
-A finished request has a `status` of `completed`, with the chat completion in
-`response.body`, or `failed`, with an `error` instead. A request that never ran
+A finished request has a `status` of `completed`, with its endpoint's response
+(a chat completion, an embeddings list, a Responses object or a Messages
+`message`) in `response.body`, or `failed`, with an `error` instead. A request that never ran
 is `cancelled`, `expired` or `failed`. Error codes:
 
 | `code` | Meaning |
@@ -337,9 +355,9 @@ period, seven days by default, so collect its results before then.
 `GET /v1/batches` lists your own batches, newest first. `limit` is 1–100
 (default 20); for the next page pass `after` set to the `last_id` of the
 previous one. The answer has the shape of a results page, with batch objects in
-`data`. It lists OpenAI batches, inline and from files; Message Batches are
-listed by `GET /v1/messages/batches`, and an id of one API reads as not found on
-the other.
+`data`. It lists every batch of yours, of every target and input method,
+including those created through the former `/v1/messages/batches` (their ids
+start with `msgbatch_`).
 
 Reading, downloading, cancelling, deleting and listing your batches work even if
 your role no longer allows creating them or your daily quota is used up, so you
@@ -349,8 +367,8 @@ delete any batch.
 
 ## Batches from a file
 
-The OpenAI flow: upload a JSONL file whose every line is one request, then
-create a batch from it.
+Upload a JSONL file whose every line is one request, then create a batch from
+it.
 
 ```bash
 curl -s https://your-gateway.example/v1/files \
@@ -363,7 +381,9 @@ curl -s https://your-gateway.example/v1/batches \
 ```
 
 Each line is `{"custom_id", "method": "POST", "url", "body"}`, the `url` equal
-to the batch's `endpoint`. Every line must use the same model.
+to the batch's `endpoint`. Every line must use the same model. A file batch for
+`/v1/messages` also sends the `anthropic-version` header with the create call,
+and every line is checked under that version.
 
 The batch starts as `validating` while the gateway reads the file in the
 background. If any line is invalid — not JSON, a repeated `custom_id`, another
@@ -395,58 +415,111 @@ batch = client.batches.create(
 output = client.files.content(batch.output_file_id).text
 ```
 
-An inline batch's results are also available as one JSONL file, in the same
-line shape, once it has ended: `GET /v1/batches/{id}/output.jsonl`.
+The results of a batch of direct requests are also available as one JSONL file,
+in the same line shape, once it has ended: `GET /v1/batches/{id}/output.jsonl`.
 
-## Anthropic Message Batches
+## Messages in a batch
 
-`/v1/messages/batches` (and `/anthropic/v1/messages/batches`) speak Anthropic's
-Message Batches API, so the official Anthropic SDKs work against it:
+A batch whose target is `/v1/messages` carries Anthropic Messages request
+bodies, and its create call names the Anthropic API version they are written
+for in the `anthropic-version` header, as Anthropic's API does:
 
-```python
-import anthropic
-
-client = anthropic.Anthropic(base_url="https://your-gateway.example", api_key="hyi-...")
-batch = client.messages.batches.create(
-    requests=[
-        {
-            "custom_id": "q-1",
-            "params": {
-                "model": "your-model-id",
-                "max_tokens": 512,
-                "messages": [{"role": "user", "content": "Summarize the plot of Hamlet."}],
-            },
+```bash
+curl -s https://your-gateway.example/v1/batches \
+  -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{
+    "requests": [
+      {
+        "custom_id": "q-1",
+        "url": "/v1/messages",
+        "body": {
+          "model": "your-model-id",
+          "max_tokens": 512,
+          "messages": [{"role": "user", "content": "Summarize the plot of Hamlet."}]
         }
+      }
     ]
-)
-# ... poll client.messages.batches.retrieve(batch.id) until processing_status is "ended"
-for result in client.messages.batches.results(batch.id):
-    print(result.custom_id, result.result.type)
+  }'
 ```
 
-Every request needs the `anthropic-version` header. `2023-06-01` and
-`2026-10-21` are accepted; a batch keeps the version it was created with, and
-each of its requests is checked against that version's rules (under
-`2026-10-21`, `temperature`, `top_p` and `top_k` are refused, as are document
-blocks in assistant messages and citations on user text). `anthropic-beta` is
-refused.
+From a file, every line has `"url": "/v1/messages"`, and the create call
+(`{"input_file_id": "file-…", "endpoint": "/v1/messages", "completion_window":
+"24h"}`) sends the same header. With the OpenAI SDK:
 
-The envelope — `custom_id` (up to 64 letters, digits, `_` and `-`, unique),
-the number of requests, the body size — is checked at once and any problem
-refuses the batch. Each request's `params` is then checked on its own: one the
-gateway cannot run as written, including one naming a model you may not use,
-becomes an `errored` result and the others still run. A request is never sent
-with a parameter silently dropped: when a model's route cannot carry a
-parameter (extended thinking, cache control or structured output on a
-non-Anthropic backend, for example), the request errors instead.
+```python
+batch = client.batches.create(
+    input_file_id=upload.id,
+    endpoint="/v1/messages",
+    completion_window="24h",
+    extra_headers={"anthropic-version": "2023-06-01"},
+)
+```
 
-`request_counts` hold every request as `processing` until the whole batch has
-`ended`; `results_url` appears then. Cancelling makes it `canceling` until its
-running requests finish. A batch can be deleted only once it has ended.
+- The header is required for a Messages batch, and refused on any other.
+  `2023-06-01` and `2026-10-21` are known; the operator chooses which of them
+  new batches may use (`BATCH_ANTHROPIC_VERSIONS`). A batch keeps its version
+  (the batch object shows it as `anthropic_version`), and every request is
+  checked, and runs, under it: under `2026-10-21`, `temperature`, `top_p` and
+  `top_k` are refused, as are document blocks in assistant messages and
+  citations on user text. Only the header names it: an `anthropic_version`
+  field in the body is refused, and so is one inside a request's body.
+- Reading, listing, cancelling, deleting and downloading a batch need no
+  version header.
+- `anthropic-beta` is refused: batches support no beta, and a request body
+  cannot carry `betas` either.
+- Each request is checked like any batch request: one the gateway cannot run as
+  written refuses the whole batch, naming it. That includes a model you may not
+  use (reported exactly as an unknown one), server tools, Files API sources,
+  MCP servers and containers, and any parameter a model's route cannot carry —
+  extended thinking, cache control or structured output on a non-Anthropic
+  backend, for example. A parameter is never silently dropped.
+- The result of a request is the same line as for any target, with the
+  Messages `message` in `response.body`.
 
 Each request is a single inference turn. A result that asks for a tool call is
 for your program to carry out and send back in a new request; the gateway never
 runs your tools.
+
+## Moving from Message Batches
+
+The Anthropic Message Batches routes — `/v1/messages/batches` and
+`/anthropic/v1/messages/batches` with every operation under them — have been
+removed. Each of their operations answers `410 Gone` with a short note on
+where to go instead, whoever calls it and whatever the id; nothing of the old
+API runs. The Anthropic SDKs' `messages.batches` methods therefore fail
+against this gateway. Online `/v1/messages` (and `/anthropic/v1/messages`) is
+unchanged. Use `/v1/batches` with the Messages target instead:
+
+| Before | Now |
+|---|---|
+| `POST /v1/messages/batches`, header `anthropic-version`, body `{"requests": [{"custom_id", "params"}]}` | `POST /v1/batches`, header `anthropic-version`, body `{"requests": [{"custom_id", "url": "/v1/messages", "body"}]}` |
+| `GET /v1/messages/batches`, `GET …/{id}` | `GET /v1/batches`, `GET /v1/batches/{id}` |
+| `POST …/{id}/cancel` | `POST /v1/batches/{id}/cancel` |
+| `DELETE …/{id}`, only once ended | `DELETE /v1/batches/{id}`, refused only while a request is running |
+| `GET …/{id}/results` (`{"custom_id", "result"}` lines) | `GET /v1/batches/{id}/results` (pages) or `/output.jsonl` (the line shape above) |
+| `processing_status` `in_progress` / `canceling` / `ended` | `status`, as for every batch (`completed`, `cancelled`, `expired`, …) |
+| `request_counts` `processing` / `succeeded` / `errored` / `canceled` / `expired` | `request_counts` `total` / `completed` / `failed` |
+| An invalid request became one `errored` result and the others ran | An invalid request refuses the whole batch before anything runs, naming it |
+| `custom_id` up to 64 letters, digits, `_`, `-` | `custom_id` of 1–512 characters |
+| Webhook event `message_batch.ended` | `batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled` for a new batch |
+
+Batches created through the removed routes are kept and still run. They are
+listed, read, cancelled, deleted and downloaded through `/v1/batches` and the
+console like any other batch (their ids start with `msgbatch_`), in the shapes
+above: their results come as the common result lines, no longer as
+`{"custom_id", "result"}` lines. When one of them ends, its webhook event is
+still `message_batch.ended`, the event it was created under; its id works on
+`/v1/batches`. An `Idempotency-Key` used on the removed routes does not replay
+through `/v1/batches`.
+
+The change to invalid requests needs care when migrating. The removed API
+checked each request on its own: one with a bad parameter or a model you may
+not use became an `errored` result and the rest of the batch ran. `/v1/batches`
+checks every request first, for every target alike, and refuses the whole
+batch when any request is invalid, before it makes any inference call. A
+program that relied on submitting mixed good and bad requests in one batch has
+to check its requests itself, or resubmit without the request the error names.
 
 ## Embeddings and Responses in a batch
 
@@ -458,8 +531,9 @@ other field the gateway would have to drop are refused.
 
 ## Submitting safely twice
 
-Send an `Idempotency-Key` header with a create call (any of the three APIs) to
-make it safe to retry. The same key with the same request returns the batch
+Send an `Idempotency-Key` header with a create call (either input method) to
+make it safe to retry. The same key with the same request — for a Messages
+batch, the same `anthropic-version` header too — returns the batch
 the first call created, even if your quota has since run out or your role
 changed; the same key with a different request answers `409`. After the batch
 is deleted the key answers `410` for at least a day; a key is remembered until a
@@ -496,8 +570,10 @@ webhook, list its deliveries and delete it, and events for your existing
 batches are still delivered while it stays enabled.
 
 When a batch ends, after its results can be read, the gateway POSTs an event:
-`batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled` for an
-OpenAI batch, `message_batch.ended` for a Message Batch. The body names the
+`batch.completed`, `batch.failed`, `batch.expired` or `batch.cancelled`,
+whatever the batch's target. A batch created through the removed Message
+Batches API ends with `message_batch.ended` instead, as it did when it was
+created; events already queued are delivered as they were written. The body names the
 batch only (`{"id", "object": "event", "type", "created_at", "data": {"id"}}`);
 fetch the results with your API key. Deliveries are signed as Standard Webhooks
 are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 of
@@ -512,9 +588,29 @@ on every redirect, and again on every connection.
 
 ## Batches in the console
 
-The **Batches** page of the console (from the dashboard) lists your batches
-across all three APIs with their progress, tokens and known cost, and lets you
-cancel, delete and download results, and set up your webhook.
+The **Batches** page of the console (from the dashboard) lists all your
+batches — each with its name, target, model and input method, status, requests
+by outcome, tokens and known cost — and lets you search them by name or ID,
+filter them by status, open one for its details, cancel, delete and download
+results, and set up your webhook.
+
+The page groups the statuses into four, for both the badge and the filter;
+the `status` of `/v1/batches` is unchanged.
+
+| Shown as | Statuses |
+|---|---|
+| **Processing** | `validating`, `in_progress`, `finalizing` or `cancelling`; a short note says which stage, and that running requests still finish while cancelling |
+| **Completed** | `completed`, and every request succeeded |
+| **With issues** | `failed`, `expired` (the execution window ran out before every request started), or `completed` with a request that did not succeed |
+| **Cancelled** | `cancelled`, whatever its requests did before the cancel |
+
+A paused batch stays **Processing**, with a note saying why. Results can be
+downloaded only once the batch has finished, whatever it is shown as.
+
+While gateways are being upgraded, a console newer than the gateway that
+answers still shows each batch in its group, by the same rule; filtering by a
+group then says it is not available for the moment rather than show every
+batch as filtered. Showing all batches keeps working.
 
 The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and
 either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
@@ -524,13 +620,80 @@ Batch is not available. Quotas and API keys play no part in either.
 Below `BATCH_MIN_ROLE` you cannot submit batches or change your webhook, and the
 page says so; what you already have stays yours to manage: list your batches,
 download their results, cancel and delete them, and read and remove your
-webhook. Batches are submitted through the API; the page has no create button.
+webhook. The page then offers no **Create batch** button.
 
 The console asks `GET /user/batch-capabilities` (signed-in session) for this:
 `status` (`enabled`, `disabled`, or `unavailable` while the batch store is not
 ready), `min_role`, `role_may_submit` (your role only, not your quotas),
 `has_history` (null when it could not be checked; the link then stays) and
 `show_entry`.
+
+### Creating a batch in the console
+
+**Create batch** turns a JSONL file into a Chat Completions or Embeddings batch
+in three steps; nothing runs until you confirm the last one:
+
+1. **Upload data.** The file has the lines described in
+   [Batches from a file](#batches-from-a-file); `url` and `method` may be left
+   out. The page recognises the type from each line's `url`, or from the body
+   when there is none (`messages`: Chat; `input`: Embeddings). It asks you to
+   choose only when no line says. A file mixing both types, a `url` the body
+   contradicts, and any other endpoint are errors that no choice overrides.
+2. **Configure.** Give the batch a name, and optionally a description. Keep the
+   file's model, or choose one model for every request, which you must do when
+   the file names several models or one you cannot use. For Chat you may also
+   set `temperature` and `max_tokens` for every request. Every other field is
+   kept as the file has it.
+3. **Check and confirm.** The gateway checks every line without running or
+   billing anything. Each problem names its line, `custom_id` and field, never
+   the request's content, and the list can be downloaded as CSV or JSONL. When
+   the file is valid, the page shows the first stored requests, the canonical
+   model the batch will run on, its 24-hour window, how it is billed and how
+   long its results are kept.
+
+The console is stricter than `/v1/batches`. A field the gateway would not
+forward is an error rather than dropped silently: for example
+`max_completion_tokens` (rename it to `max_tokens`) or `user`. So are a
+byte-order mark, a key repeated within an object, and `NaN` or `Infinity`.
+Fields such as `tools` and a JSON schema are passed on as written. The stored
+requests name the canonical model, so a later change to an alias does not move
+the batch to another model. The stored requests, filled-in fields and overrides
+included, are held to the same file size limit as an upload.
+
+A batch created in the console runs under your active API key, as a batch you
+submit with that key would. The page shows the key's prefix only and never
+creates a key: without one you can upload and check files, and the page links to
+the dashboard to create a key before you submit. Signing out or closing the
+browser does not stop a submitted batch; revoking or regenerating the key fails
+its unfinished requests. If the key, or the model the choice resolves to, changes
+between the check and the submission, the submission is refused and you check
+again. Uploading and checking cost nothing, even with a daily quota of zero;
+submitting needs quota left.
+
+Each submission keeps its own `Idempotency-Key` in your browser until its outcome
+is known. A timeout, a reload or a second tab therefore finds the batch it
+created instead of creating another. When a submission's answer never arrived
+and more than a day has passed, the page can no longer be sure, so it stops and
+asks you: submitting again then makes a new submission, which can create and
+bill a second batch. A request in a batch may still be billed more than once
+when an attempt's result is lost; see [Costs](#costs).
+
+**Copy as new batch** opens the create page on a batch's source file and
+settings, for a batch created in the console and for an API file batch of
+target Chat or Embeddings whose input file is still stored. When that file has
+been deleted or has expired, you upload it again and the settings are kept. A
+batch of direct requests, or of target Messages or Responses, cannot be copied
+yet. Copying runs nothing and does not extend the file's retention.
+
+Uploaded files are kept for `BATCH_FILE_RETENTION_DAYS`. **Uploaded files** on
+the create page lists yours and deletes them; a batch already submitted keeps
+running. When the settings change what is stored, the batch keeps its own copy
+of the requests: it counts toward your storage and is deleted with the batch or
+its source file.
+
+A finished Chat or Embeddings batch's details offer **Export unfinished
+requests**: its failed, expired and cancelled requests as an input file, to fix
+and submit as a new batch.
 
 ## Limits
 
@@ -542,7 +705,7 @@ ready), `min_role`, `role_may_submit` (your role only, not your quotas),
 | Unfinished requests across all your batches | 100,000 (`429` above it) |
 | Size of an input file, and of one of its lines | 32 MiB; 4 MiB per line |
 | Input files you may keep, and upload per hour | 512 MiB; 60 |
-| Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches and Message Batches) |
+| Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches) |
 | Time a finished batch is kept | 7 days |
 
 The operator may have changed any of them. A larger job is several batches.
@@ -551,7 +714,7 @@ The operator may have changed any of them. A larger job is several batches.
 
 | Status | When |
 |---|---|
-| `400` | The body is not valid JSON or not a batch; a request is invalid, uses an unknown or auto model, or repeats a `custom_id`; too many requests; or the request carries `X-On-Behalf-Of` |
+| `400` | The body is not valid JSON or not a batch; a request is invalid, uses an unknown or auto model, or repeats a `custom_id`; too many requests; a Messages batch without a known, allowed `anthropic-version` header, or another batch with one; an `anthropic_version` field in the body; an `anthropic-beta` header; or the request carries `X-On-Behalf-Of` |
 | `401` | The API key is invalid or expired when authentication runs, or the account becomes unavailable before the batch is stored |
 | `403` | Your role may not create batches |
 | `404` | Batch inference is not available on this gateway |
@@ -564,29 +727,28 @@ A file batch is counted against the limit on unfinished requests while its file
 is read, after the create call has answered: over the limit, the batch is
 `failed` with `queued_request_limit` in `errors`.
 
-Message Batch routes answer every error in Anthropic's shape: a top-level
-`"type": "error"` and an `error` object with its own `type` and `message`.
-
-## Compared with OpenAI's and Anthropic's batch APIs
+## Compared with OpenAI's batch API
 
 - Batch requests cost the same as interactive ones: there is no batch discount,
   and the gateway runs each request itself rather than handing the batch to a
   provider's own batch service.
 - The limits are the deployment's (see [Limits](#limits)), lower than the
   providers' own: 50,000 requests and 32 MiB per batch by default.
-- The 24-hour window of file batches and Message Batches is when the gateway
-  stops *starting* requests. Requests already running when it ends finish, so
+- The 24-hour window of file batches is when the gateway stops *starting*
+  requests. Requests already running when it ends finish, so
   a batch may reach its final status after `expires_at`.
-- The inline form, `GET /v1/batches/{id}/results`, the JSONL export,
-  `DELETE /v1/batches/{id}`, `Idempotency-Key` and the cost fields are this
-  gateway's own.
+- Direct requests, `GET /v1/batches/{id}/results`, the JSONL export,
+  `DELETE /v1/batches/{id}`, `Idempotency-Key`, the Messages target with its
+  `anthropic-version` header, and the cost fields are this gateway's own. OpenAI's
+  file flow is compatible for the chat, embeddings and Responses targets.
 - Only `purpose=batch` files exist, and they serve batches only.
 - Responses requests in a batch are independent: `store: true`,
   `previous_response_id`, `conversation`, `background` and hosted tools are
   refused.
-- Message Batches belong to your account; there are no workspaces.
-  `anthropic-beta` is refused, and so are server tools, Files API sources, MCP
-  servers and containers.
+- Messages batches belong to your account; there are no workspaces. Betas,
+  server tools, Files API sources, MCP servers and containers are refused.
+  Messages requests run through the gateway's own routing, not a provider's
+  batch service.
 
 ## Running batch inference
 
@@ -614,15 +776,16 @@ and to the worker's next round.
 | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` | 512 | Uploaded input files one user may keep |
 | `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour |
 | `BATCH_FILE_RETENTION_DAYS` | 30 | Days an uploaded input file is kept |
-| `BATCH_ANTHROPIC_VERSIONS` | `2023-06-01,2026-10-21` | `anthropic-version` values a Message Batch may be created under |
+| `BATCH_ANTHROPIC_VERSIONS` | `2023-06-01,2026-10-21` | `anthropic-version` values a new `/v1/messages` batch may name. A stored batch keeps running under its own, and a create it made still replays |
 | `BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS` | off | Let webhooks reach private and loopback addresses. For isolated test deployments only |
 
 `BATCH_EXPANSION_ENABLED`, which earlier versions used to hold back file
 batches, Message Batches, embedding and Responses batches and webhooks, no
 longer controls anything. A value left in the environment or the database
-changes nothing, is not listed on the Configuration tab and cannot be set
-there; the gateway keeps it, so that a rollback reads it again, and warns about
-it once at startup. Once no earlier version will run, delete the stored row
+changes nothing, is not listed on the Settings tab and cannot be set
+there; the gateway keeps it, so that a rollback to a release that still
+implements it (#1660 up to, but not including, #1673) reads it again, and warns
+about it once at startup. Once no such release will run, delete the stored row
 (`DELETE /admin/config/BATCH_EXPANSION_ENABLED`, or
 `python -m serving.config.manage reset BATCH_EXPANSION_ENABLED`) and unset the
 variable.
@@ -656,27 +819,50 @@ user and lets an administrator cancel one.
 ### Upgrading a deployment
 
 A worker only runs the kinds of batch it knows: claims, expiry, finalizing,
-validation, sealing and cleanup all skip a batch whose surface, target or
-schema version is newer than the worker's. The workers that do not know this
-are the old ones: a gateway older than the one that added file batches and
-Message Batches (before #1660) has no such filter and would run their requests
-as chat completions. New code cannot change what an old process already
-running does, so before upgrading from one of those versions, make sure no old
-worker is running alongside the new version:
+validation, sealing and cleanup all filter, in the database query itself, on
+a batch's surface, target and schema version. That filter is what makes a
+rolling upgrade safe, and it exists from #1660 on: **a rolling upgrade is
+supported from a release that includes #1660.** Its workers skip the Messages
+batches this version creates through `/v1/batches`, inline or from a file, so
+while they still run only this version's workers run, validate, seal or expire
+those. While both versions run:
 
-1. On the old version, turn `BATCH_ENABLED` off (Configuration tab, or
-   `python -m serving.config.manage set BATCH_ENABLED false`). Within about ten
-   seconds every old process stops claiming and sweeping, and logs that its
-   batch worker is disabled. A request it was already running finishes or is
-   handed back; those are chat batches, which the new version runs too.
-2. Upgrade every gateway process. The new processes start with
-   `BATCH_ENABLED` still off.
-3. Once no process of the old version is left (check your process manager or
-   orchestrator, not only the health endpoint), turn `BATCH_ENABLED` on.
+- a create for the Messages target that an old process happens to answer is
+  refused with `400` (it does not know the target); retry it, or wait until
+  every process runs this version;
+- an old process ignores an `anthropic-version` header or `anthropic_version`
+  field on a non-Messages batch, which this version refuses;
+- an old process still serves `/v1/messages/batches`, where this version
+  answers `410`; batches created there are drained by this version as
+  described in [Moving from Message Batches](#moving-from-message-batches).
 
-Stopping every old process before any new one starts is equally safe. From a
-version that already has file batches and Message Batches (#1660 or later), a
-rolling upgrade needs none of this: its workers know every kind.
+A release that has a batch worker but not #1660 has no such filter: it would
+run any batch it finds, Messages batches included, as chat completions.
+Nothing this version stores, and no check it makes at startup, can change what
+such a process already running does, or even tell that one is running. Upgrade
+from such a release only with every old process stopped, and when you do not
+know which release every process runs, assume this case:
+
+1. On the old version, turn `BATCH_ENABLED` off (Settings tab, or
+   `python -m serving.config.manage set BATCH_ENABLED false`). Its workers read
+   the setting every round: within about ten seconds every old process stops
+   claiming and sweeping, and logs that its batch worker is disabled. A
+   request it was already running finishes or is handed back; those are chat
+   batches, which the new version runs too.
+2. Stop every gateway process of the old version, every replica and worker,
+   and keep them stopped: turn off whatever would start one again on its own
+   (restart policies, autoscaling, health-check replacement, deploy jobs).
+3. Confirm that none is left with your orchestrator's own identity of each
+   process: its image, revision, release or deployment id. A database
+   session's client address does not show which version holds it — NAT,
+   shared hosts and connection poolers all hide that — and the health endpoint
+   does not either.
+4. Wait for the database to finish their work: no session of the gateway's
+   database user is left (the query in step 5 of
+   [Rolling back](#rolling-back)).
+5. Start this version. It keeps `BATCH_ENABLED` off, as step 1 stored it.
+6. Once only this version runs, confirmed as in step 3, turn `BATCH_ENABLED`
+   on.
 
 Upgrading from a version without `BATCH_ROLE_CONCURRENCY_<ROLE>` changes three
 things:
@@ -691,29 +877,43 @@ things:
 
 ### Rolling back
 
-To a version that already has file batches and Message Batches (#1660 or
-later), roll back as usual. That version reads `BATCH_EXPANSION_ENABLED` again,
-off by default, so new batches of the newer kinds are refused until it is on;
-those already accepted keep running.
+Whatever version you roll back to, drain with this version the batches that
+version cannot run, and start it only once every process of this version has
+stopped and the database shows none left. Which batches those are depends on the
+version, and so does the query that lists them (the *drain query* below):
 
-To an older version, drain the newer batches with this version, which alone
-can manage them, and start the older version only once every process of this
-version has stopped and the database shows none left:
+- To a version that already has file batches and the former Message Batches
+  (#1660 or later): the Messages batches created through `/v1/batches`. That
+  version neither runs nor expires them, though it can still cancel and delete
+  them.
 
-1. Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches. Other
-   users' queued requests then stop starting too, so their batches have to be
-   cancelled rather than waited for. To let them finish instead, skip this
-   step; step 6 still catches a batch created meanwhile.
-2. Cancel (or let finish) every batch that is not an inline chat batch: the
-   admin **Batches** tab lists and cancels anyone's. A cancelled file batch
-   still needs a moment to seal. Wait until this returns no rows:
+  ```sql
+  SELECT id, phase, status FROM batch_jobs
+  WHERE target = 'messages' AND api_surface <> 'anthropic' AND phase <> 'sealed';
+  ```
 
-   ```sql
-   SELECT api_surface, target, phase, status, count(*)
-   FROM batch_jobs
-   WHERE (api_surface, target) <> ('openai_inline', 'chat') AND phase <> 'sealed'
-   GROUP BY 1, 2, 3, 4;
-   ```
+- To an older version (before #1660): every batch that is not an inline chat
+  batch. That version would run them as chat completions.
+
+  ```sql
+  SELECT api_surface, target, phase, status, count(*)
+  FROM batch_jobs
+  WHERE (api_surface, target) <> ('openai_inline', 'chat') AND phase <> 'sealed'
+  GROUP BY 1, 2, 3, 4;
+  ```
+
+Either way, one empty drain query is not enough while a process of this version
+is still running: a create admitted a moment before can still store a new
+batch. Follow every step:
+
+1. Set `BATCH_MIN_ROLE` to `admin`, so no one else can create batches, and
+   create none yourself. Other users' queued requests then stop starting too,
+   so their batches have to be cancelled rather than waited for. To let them
+   finish instead, skip this step; step 6 still catches a batch created
+   meanwhile.
+2. Cancel (or let finish) every batch the drain query lists: the admin
+   **Batches** tab lists and cancels anyone's. A cancelled file batch still
+   needs a moment to seal. Wait until the drain query returns no rows.
 
 3. Turn `BATCH_ENABLED` off. New batch requests now answer `404`, but a
    request that had already passed its checks may still be on its way to the
@@ -741,9 +941,9 @@ version has stopped and the database shows none left:
    connection is gone. Wait for it to end. If a session stays and you have
    confirmed its host no longer runs a gateway, `pg_terminate_backend(pid)`
    ends it and rolls back its open transaction.
-6. Only then run the batch query from step 2 again. Only if it returns no
-   rows, start the older version. It keeps `BATCH_ENABLED` off; turn it on,
-   and set `BATCH_MIN_ROLE` back, once only the older version runs.
+6. Only then run the drain query again. Only if it returns no rows, start the
+   older version. It keeps `BATCH_ENABLED` off; turn it on, and set
+   `BATCH_MIN_ROLE` back, once only the older version runs.
 
 Why the last check waits until the database is quiet: turning `BATCH_ENABLED`
 off refuses new requests, but it does not stop a create that was admitted a
@@ -754,13 +954,23 @@ transaction and only gateway processes write batches, so once no gateway
 session is left and none can start, every create has either committed or
 rolled back, and the query sees everything that will ever be there.
 
-If step 6 returns rows, do not start the older version: it would run them as
-chat completions. Start this version again, and only this version, turn
-`BATCH_ENABLED` on so its worker can run or seal those batches, cancel them or
-let them finish (step 2), then repeat steps 3 to 6.
+If step 6 returns rows, do not start the older version: one before #1660 would
+run them as chat completions, and a later one would leave them unrun for good.
+Start this version again, and only this version, turn `BATCH_ENABLED` on so its
+worker can run or seal those batches, cancel them or let them finish (step 2),
+then repeat steps 3 to 6. Turning `BATCH_ENABLED` off is not enough on its own:
+it stops this version's worker too, so those batches would never drain.
 
-Finished batches of the newer kinds stay in the database; the older version
-lists and purges them as if they were inline chat batches. Uploaded files and
-webhooks stay unread until the next upgrade. Turning `BATCH_ENABLED` off is
-not enough on its own: it stops the newer version's worker too, so the
-newer batches would never drain.
+What the older version does once it runs:
+
+- A release that still implements `BATCH_EXPANSION_ENABLED` (from #1660 up to,
+  but not including, #1673, which retired it) reads it again, off by default,
+  so creating its newer batch kinds is refused until it is turned on; batches
+  already accepted keep running. From #1673 on the setting controls nothing, as
+  in this version.
+- Any release from #1660 on serves `/v1/messages/batches` again, and shows there
+  only the batches stored through it.
+- Rows are never rewritten by a rollback: finished batches of the newer kinds
+  stay in the database. A version before #1660 lists and purges them as if they
+  were inline chat batches, and leaves uploaded files and webhooks unread until
+  the next upgrade.

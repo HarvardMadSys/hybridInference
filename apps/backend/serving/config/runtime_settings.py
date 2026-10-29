@@ -37,6 +37,26 @@ logger = get_logger(__name__)
 REFRESH_INTERVAL_SECONDS = 10.0
 
 RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
+    "analytics_token_usage_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": "Show Token Usage on Admin Analytics for all administrators.",
+    },
+    "analytics_users_and_requests_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": "Show Users and Requests on Admin Analytics for all administrators.",
+    },
+    "analytics_performance_metrics_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": "Show Performance Metrics on Admin Analytics for all administrators.",
+    },
+    "analytics_growth_rate_enabled": {
+        "type": "bool",
+        "default": False,
+        "description": "Show the Growth Rate card on Admin Analytics for all administrators.",
+    },
     "user_auth_enabled": {
         "type": "bool",
         "default": True,

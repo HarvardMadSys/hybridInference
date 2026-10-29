@@ -185,6 +185,31 @@ async def upload_file(
         raise HTTPException(
             403, f"Uploading batch files requires the {config.min_role!r} role or higher"
         )
+    row = await store_upload(
+        request,
+        file_store=file_store,
+        owner=_owner(user_ctx),
+        check_owner=bool(user_ctx.get("authenticated")),
+        config=config,
+    )
+    return JSONResponse(file_object(row))
+
+
+async def store_upload(
+    request: Request, *, file_store: Any, owner: str, check_owner: bool, config: Any
+) -> dict[str, Any]:
+    """Stream a ``multipart/form-data`` batch upload into the store; return the ready file row.
+
+    The one upload path, for ``/v1/files`` and the console alike: the body and
+    file size limits, the owner's storage cap and hourly upload rate, a size
+    and SHA-256 computed as the bytes arrive, and nothing usable left behind
+    when anything fails. The caller has checked the role.
+
+    Raises:
+        HTTPException: 400 for a malformed upload, 401 when the owner went
+            inactive meanwhile, 413 over a size or storage limit, 429 over the
+            upload rate.
+    """
     try:
         boundary = boundary_of(request.headers.get("content-type"))
     except MultipartError:
@@ -201,7 +226,6 @@ async def upload_file(
             413,
             f"The file exceeds the batch size limit of {config.max_body_bytes // (1024 * 1024)} MiB",
         )
-    owner = _owner(user_ctx)
     try:
         file_id = await file_store.create_upload(
             user_id=owner,
@@ -255,7 +279,7 @@ async def upload_file(
             sha256=upload.digest.hexdigest(),
             line_count=upload.lines + (0 if upload.ends_with_newline else 1),
             retention_seconds=config.file_retention_days * 86400,
-            check_owner=bool(user_ctx.get("authenticated")),
+            check_owner=check_owner,
             filename=upload.filename,
         )
     except MultipartError:
@@ -276,7 +300,7 @@ async def upload_file(
         await file_store.abort_upload(file_id)
         raise
     logger.info("File %s uploaded: %d bytes", file_id, upload.size, extra={"user_id": owner})
-    return JSONResponse(file_object(row))
+    return row
 
 
 def _quota_error(kind: str, limit: int) -> HTTPException:
@@ -360,7 +384,6 @@ async def file_content(
             stream_lines(
                 store=store,
                 batch_id=batch_id,
-                surface="openai_file",
                 kind=row["kind"],
                 version=int(row.get("renderer_version") or 1),
                 expected=row,

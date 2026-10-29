@@ -4,8 +4,9 @@
 // docs/agents/specs/2026-10-10-db-backed-config-first-run-setup-design.md.
 
 import { fetchWithAuth } from './client';
-import { readJson } from './detail';
+import { apiErrorFromResponse, readJson } from './detail';
 import { config as env } from '@/config/env';
+import { APIError } from '@/lib/utils/errors';
 
 const API_BASE = env.apiBase;
 
@@ -64,6 +65,11 @@ export interface ConfigEntry {
   locked?: boolean;
   /** Shown on the first-run configuration step. */
   setup: boolean;
+  /**
+   * Usually set once, when the gateway is deployed: listed after the settings
+   * changed more often. An older backend omits it, and its order stays.
+   */
+  one_time?: boolean;
   /** Absent from an older backend, which cannot mark a stored variable secret. */
   origin?: ConfigOrigin;
   /** Added by an administrator (`origin` is `custom`); removed by a reset. */
@@ -78,6 +84,29 @@ export interface ConfigEntry {
   /** When the database row was last written; `null` when there is none. */
   updated_at: string | null;
   updated_by: string | null;
+  /** The live configuration group that owns the key; absent from an older backend. */
+  group?: string | null;
+  /**
+   * How a saved change applies in this process: in place at once (`live`),
+   * through its group's prepare-and-publish with acknowledgement (`managed`),
+   * after a restart, or never. Absent from an older backend.
+   */
+  apply_mode?: ConfigApplyMode;
+}
+
+export type ConfigApplyMode = 'live' | 'managed' | 'restart' | 'immutable';
+
+/** A configuration source's version. */
+export interface ConfigSourceVersion {
+  epoch: string;
+  revision: number;
+}
+
+/** A live configuration group as the answering process applies it. */
+export interface ConfigGroupSummary {
+  name: string;
+  state: string;
+  managed: boolean;
 }
 
 export interface ConfigResponse {
@@ -89,6 +118,120 @@ export interface ConfigResponse {
   pending_restart: string[];
   /** Whether `POST /admin/system/restart` can bring the process back. */
   restart_supported: boolean;
+  /** The saved configuration's version; absent from an older backend. */
+  source_version?: ConfigSourceVersion | null;
+  /** On a write: the version the write committed. */
+  saved_version?: ConfigSourceVersion | null;
+  groups?: ConfigGroupSummary[];
+}
+
+/** One registered backend process and its report on a group. Never a value. */
+export interface LiveGroupInstance {
+  instance_id: string;
+  this_process: boolean;
+  build: string;
+  host: string | null;
+  lifecycle: string;
+  started_at: string | null;
+  heartbeat_age_seconds: number | null;
+  /** No heartbeat recently: unknown, possibly offline — never counted as applied. */
+  stale: boolean;
+  /** Its build supports the group's schema version. */
+  supports: boolean;
+  status: LiveGroupReport | null;
+}
+
+export interface LiveGroupReport {
+  state?: string;
+  epoch?: string | null;
+  checked_revision?: number | null;
+  reconciled_revision?: number | null;
+  generation?: number;
+  error_code?: string | null;
+  error_keys?: string[];
+  cleanup_degraded?: boolean;
+  pending_keys?: string[];
+  regressed?: boolean;
+  read_stale?: boolean;
+  pending_since?: number | null;
+  detail?: Record<string, unknown>;
+}
+
+export interface LiveGroupCoverage {
+  registered: number;
+  live: number;
+  converged: number;
+  applying: number;
+  failed: number;
+  unsupported: number;
+  dormant: number;
+  unknown: number;
+  stopped: number;
+  /** Always false: a process on an older build never registers. */
+  verified: boolean;
+}
+
+export interface LiveGroupStatus {
+  name: string;
+  keys: string[];
+  schema_version: number;
+  contract: {
+    active: boolean;
+    schema_version: number;
+    changed_at?: string | null;
+    changed_by?: string | null;
+  } | null;
+  coverage: LiveGroupCoverage;
+  instances: LiveGroupInstance[];
+  local: LiveGroupReport | null;
+}
+
+export interface LiveConfigStatus {
+  database: boolean;
+  source: string;
+  version: ConfigSourceVersion | null;
+  this_instance: string | null;
+  stale_after_seconds: number | null;
+  read_ok: boolean | null;
+  groups: LiveGroupStatus[];
+  unknown_groups: string[];
+}
+
+/** How every registered backend process stands on each live configuration group. */
+export async function getLiveConfigStatus(): Promise<LiveConfigStatus> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/config/live', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  return readJson<LiveConfigStatus>(resp);
+}
+
+/**
+ * A write refused because the saved configuration changed after this page read
+ * it. Nothing was stored; reload, review and save again.
+ */
+export class ConfigVersionConflictError extends APIError {
+  constructor(message: string) {
+    super('CONFIG_VERSION_CONFLICT', message, 409);
+    this.name = 'ConfigVersionConflictError';
+  }
+}
+
+/** Options for a configuration write. */
+export interface ConfigWriteOptions {
+  /**
+   * The version the editing view was loaded at: the write is refused (a
+   * `ConfigVersionConflictError`) if anything was saved since. Pass the
+   * `source_version` of the response the view shows, and, for a second
+   * request in the same save, the first one's `saved_version`. Omit only for
+   * an older backend that reports no version.
+   */
+  expectedVersion?: ConfigSourceVersion | null;
+}
+
+function ifMatch(options?: ConfigWriteOptions): Record<string, string> {
+  const version = options?.expectedVersion;
+  return version ? { 'If-Match': `"${version.epoch}:${version.revision}"` } : {};
 }
 
 export interface ConfigPatchRequest {
@@ -153,6 +296,12 @@ function withoutSecretValues(config: ConfigResponse): ConfigResponse {
 }
 
 async function readConfig(resp: Response): Promise<ConfigResponse> {
+  if (resp.status === 409 && resp.headers.get('ETag')) {
+    // Only a version conflict names the current version; an immutable
+    // setting's 409 does not.
+    const error = await apiErrorFromResponse(resp);
+    throw new ConfigVersionConflictError(error.message);
+  }
   return withoutSecretValues(await readJson<ConfigResponse>(resp));
 }
 
@@ -175,12 +324,21 @@ export async function getConfig(): Promise<ConfigResponse> {
  * as a whole. Returns the full configuration after the write.
  *
  * Errors: 400 `{detail: "KEY: reason"}`, 403 for an environment-only name,
- * 409 for an immutable key that is already set.
+ * 409 for an immutable key that is already set, and
+ * `ConfigVersionConflictError` (409) when the configuration changed since this
+ * page last read it.
  */
-export async function patchConfig(request: ConfigPatchRequest): Promise<ConfigResponse> {
+export async function patchConfig(
+  request: ConfigPatchRequest,
+  options?: ConfigWriteOptions,
+): Promise<ConfigResponse> {
   const resp = await fetchWithAuth(API_BASE, '/admin/config', {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      accept: 'application/json',
+      ...ifMatch(options),
+    },
     body: JSON.stringify(request),
   });
   return readConfig(resp);
@@ -197,18 +355,24 @@ export async function patchConfig(request: ConfigPatchRequest): Promise<ConfigRe
  * predates this sends entries without `origin`, and would answer 200 without
  * marking anything.
  */
-export async function markConfigSecret(key: string): Promise<ConfigResponse> {
-  return patchConfig({ values: {}, secrets: { [key]: true } });
+export async function markConfigSecret(
+  key: string,
+  options?: ConfigWriteOptions,
+): Promise<ConfigResponse> {
+  return patchConfig({ values: {}, secrets: { [key]: true } }, options);
 }
 
 /**
  * Remove a setting's database row: it falls back to the environment, then its
  * default, and a custom variable disappears. 409 for an immutable key.
  */
-export async function resetConfigKey(key: string): Promise<ConfigResponse> {
+export async function resetConfigKey(
+  key: string,
+  options?: ConfigWriteOptions,
+): Promise<ConfigResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/config/${encodeURIComponent(key)}`, {
     method: 'DELETE',
-    headers: { accept: 'application/json' },
+    headers: { accept: 'application/json', ...ifMatch(options) },
   });
   return readConfig(resp);
 }

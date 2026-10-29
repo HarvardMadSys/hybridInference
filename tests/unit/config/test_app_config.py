@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import textwrap
 
@@ -579,19 +580,25 @@ async def test_a_stale_refresh_never_replaces_a_newer_apply(config_env) -> None:
     await _boot(store)
 
     class _SlowStore(FakeAppConfigStore):
-        intercepted = False
+        writer: asyncio.Task | None = None
 
         async def fetch_all(self, **options):
             snapshot = await super().fetch_all(**options)
-            if not self.intercepted:
-                self.intercepted = True
-                # An administrator's write lands while this read is in flight.
-                await app_config.update({"SITE_NAME": "new"}, updated_by="admin")
+            if self.writer is None:
+                # An administrator's write, served by another request, lands
+                # while this read is in flight.
+                self.writer = asyncio.create_task(
+                    app_config.update({"SITE_NAME": "new"}, updated_by="admin")
+                )
+                for _ in range(5):
+                    await asyncio.sleep(0)
             return snapshot
 
     slow = _SlowStore(store.rows.values())
     app_config.attach(slow)
-    await app_config.refresh()
+    await asyncio.wait_for(app_config.refresh(), timeout=5)
+    assert slow.writer is not None
+    await asyncio.wait_for(slow.writer, timeout=5)
 
     assert app_config.config_value("SITE_NAME") == "new"
 
@@ -812,6 +819,9 @@ async def test_describe_types_values_and_names_their_source(config_env, monkeypa
     assert entries["SITE_DOCS_URL"]["source"] == "default"
     assert entries["CORS_ALLOWED_ORIGINS"]["value"].startswith("http://localhost:3000,")
     assert entries["SMTP_PASSWORD"]["setup"] is True
+    assert entries["COOKIE_SECURE"]["one_time"] is True
+    assert entries["SMTP_PORT"]["one_time"] is True  # by its category
+    assert entries["ROUTING_AFFINITY_ENABLED"]["one_time"] is False
 
 
 @pytest.mark.asyncio

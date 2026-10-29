@@ -1,31 +1,28 @@
-"""dispatch_item on every target, through the real handlers.
+"""dispatch_item on every target, through the real protocol executions.
 
-Each target runs the handler behind its endpoint; only the upstream adapters
-are stand-ins. What is held here: every argument FastAPI would inject reaches
-the handler explicitly (never a ``Depends`` marker), each target's own billing
-point charges exactly once and the attempt observes exactly that charge, an
-error a handler answers with (rather than raises) is read by its status, a
-Messages item never reaches an adapter that would drop one of its parameters,
-and an embeddings item is held to the model's access gate (role, visibility
-override, the owner's denylist, a missing gate) at admission and at dispatch.
+Each target runs the execution its online route calls; only the upstream
+adapters are stand-ins. What is held here: no target builds a ``Request`` or
+calls a route handler, each target's own billing point charges exactly once and
+the attempt observes exactly that charge, an error an execution answers with
+(rather than raises) is read by its status, a Messages item never reaches an
+adapter that would drop one of its parameters, and an embeddings item is held
+to the model's access gate (role, visibility override, the owner's denylist, a
+missing gate) at admission and at dispatch.
 """
 
 from __future__ import annotations
 
 import asyncio
-import functools
-import importlib
-import inspect
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI, params as fastapi_params
+from fastapi import FastAPI
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.batch import dispatch
-from serving.batch.dispatch import HANDLERS, call_handler, dispatch_item
+from serving.batch.dispatch import dispatch_item
 from serving.servers.deps import AppServices
 
 MODEL = "target-model"
@@ -209,43 +206,6 @@ async def test_the_targets_answer_in_their_own_shapes():
     assert (response["object"], response["store"]) == ("response", False)
 
 
-@pytest.mark.parametrize("target", sorted(HANDLERS))
-async def test_every_injected_argument_reaches_the_handler_explicitly(monkeypatch, target):
-    """No handler parameter may arrive as a FastAPI marker (a truthy ``Depends``)."""
-    module_name, function_name = HANDLERS[target]
-    module = importlib.import_module(module_name)
-    real = getattr(module, function_name)
-    seen: dict[str, Any] = {}
-
-    @functools.wraps(real)
-    async def spy(*args: Any, **kwargs: Any) -> Any:
-        bound = inspect.signature(real).bind(*args, **kwargs)
-        seen.update(bound.arguments)
-        return await real(*args, **kwargs)
-
-    monkeypatch.setattr(module, function_name, spy)
-    app, services, _upstream, _embedder = _setup()
-    result = await dispatch_item(
-        app=app,
-        services=services,
-        user_ctx=_owner(),
-        body=_BODIES[target],
-        batch_id="b",
-        target=target,
-    )
-    assert result.error is None, result
-    parameters = inspect.signature(real).parameters
-    injected = [
-        name
-        for name, parameter in parameters.items()
-        if isinstance(parameter.default, (fastapi_params.Depends, fastapi_params.Param))
-    ]
-    assert injected, f"{function_name} has no injected parameters to check"
-    for name in injected:
-        assert name in seen, f"{function_name}: {name} was left to its default"
-        assert not isinstance(seen[name], (fastapi_params.Depends, fastapi_params.Param))
-
-
 # -- embeddings: the access gate holds on the batch path --------------------------
 
 
@@ -392,19 +352,6 @@ async def test_admission_refuses_an_embedding_model_the_owner_may_not_use(
     assert problem.message == unknown.message.replace("no-such-embedding", model)
 
 
-def test_call_handler_refuses_a_missing_injected_argument():
-    from fastapi import Depends, Header
-
-    async def handler(request, user=Depends(lambda: None), key=Header(None), plain=1):
-        return None
-
-    with pytest.raises(TypeError, match="user"):
-        call_handler(handler, object(), key=None)
-    with pytest.raises(TypeError, match="key"):
-        call_handler(handler, object(), user={})
-    call_handler(handler, object(), user={}, key=None).close()
-
-
 async def test_a_messages_item_never_reaches_an_adapter_that_would_drop_a_parameter():
     app, services, upstream, _embedder = _setup()
     body = {**_BODIES["messages"], "thinking": {"type": "enabled", "budget_tokens": 1024}}
@@ -420,18 +367,15 @@ async def test_a_messages_item_never_reaches_an_adapter_that_would_drop_a_parame
 
 
 async def test_a_native_error_response_is_read_by_its_status(monkeypatch):
-    from fastapi.responses import JSONResponse
-
     from serving.servers.routers import anthropic_messages
 
     app, services, _upstream, _embedder = _setup()
     monkeypatch.setattr(
         anthropic_messages,
-        "anthropic_messages",
+        "execute_messages",
         AsyncMock(
-            return_value=JSONResponse(
-                {"type": "error", "error": {"type": "overloaded_error", "message": "busy"}},
-                status_code=529,
+            return_value=anthropic_messages.MessagesError(
+                status=529, message="busy", error_type="overloaded_error"
             )
         ),
     )
@@ -477,7 +421,40 @@ async def test_a_success_its_billing_point_could_not_price_is_unknown(monkeypatc
     assert (result.cost_status, result.cost_usd) == ("unknown", None)
 
 
-def test_each_target_has_an_executor_and_a_handler():
-    assert (
-        set(dispatch._EXECUTORS) == set(HANDLERS) == {"chat", "embeddings", "messages", "responses"}
+def test_each_target_has_an_executor():
+    assert set(dispatch._EXECUTORS) == {"chat", "embeddings", "messages", "responses"}
+
+
+@pytest.mark.parametrize("target", sorted(dispatch._EXECUTORS))
+async def test_a_target_runs_without_a_request_or_a_handler(monkeypatch, target):
+    """No synthetic HTTP request and no route handler on the batch execution path."""
+    from starlette import requests
+
+    from serving.servers.routers import anthropic_messages, completions, embeddings, responses
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a batch item built a Request or called a route handler")
+
+    monkeypatch.setattr(requests.Request, "__init__", refuse)
+    for module, handler in (
+        (completions, "chat_completions"),
+        (embeddings, "create_embeddings"),
+        (anthropic_messages, "anthropic_messages"),
+        (responses, "create_response"),
+    ):
+        monkeypatch.setattr(module, handler, refuse)
+    app, services, upstream, embedder = _setup()
+
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=_owner(),
+        body=_BODIES[target],
+        batch_id="b",
+        target=target,
+        protocol_profile="2023-06-01" if target == "messages" else None,
     )
+
+    assert result.error is None, result
+    assert result.cost_status == "billed"
+    assert len(embedder.calls if target == "embeddings" else upstream.calls) == 1

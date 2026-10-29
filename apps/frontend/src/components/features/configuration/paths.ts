@@ -1,2 +1,2 @@
-/** The admin Configuration tab: where setup ends and the missing-settings banner points. */
-export const CONFIGURATION_TAB_PATH = '/dashboard/admin/configuration';
+/** Admin → Settings, which holds the configuration: where setup ends and the missing-settings banner points. */
+export const ADMIN_SETTINGS_PATH = '/dashboard/admin/settings';

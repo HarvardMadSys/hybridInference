@@ -46,6 +46,26 @@ starts, serves `/health`, and answers `GET /v1/models` with an empty list.
 Without a routing file each route keeps the weight the registry gives it, and
 without an alerts file the built-in thresholds apply.
 
+The built-in `rules.request_log_queue_saturation` rule pages when the bounded
+request-log queue drops `api_logs` report rows. It is on by default but still
+only runs when alerting is otherwise enabled (`ALERTS_ENABLED` and a configured
+channel). Tune or disable it in `alerts.yaml`:
+
+```yaml
+rules:
+  request_log_queue_saturation:
+    enabled: true       # default
+    window_sec: 600     # default
+    threshold_count: 1  # warning events in the window; default = first loss
+    cooldown_sec: 1800  # default
+```
+
+`threshold_count` counts the producer's loss warnings, not dropped rows. The
+producer warns on the first drop, every 100th drop, and at least once per
+60 seconds while drops continue, so a second small burst after a quiet period
+is still observable. The rule uses the alert engine's existing cooldown, so a
+sustained loss episode does not page once per warning.
+
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded
@@ -428,7 +448,7 @@ connection or container wiring is a *setting*: provider keys, SMTP, Slack
 webhooks, proxy trust, browser origins, logging, routing and timeout tuning,
 the cloud-agent contract, and the secrets that sign sessions and protect API
 keys. A gateway with a database keeps them in its `app_config` table, and an
-administrator edits them on the admin console's **Configuration** tab. A
+administrator edits them on the admin console's **Settings** tab. A
 gateway with `DB_ENABLED=false` has no stored settings and reads the
 environment and the built-in defaults only.
 
@@ -472,7 +492,7 @@ its default applies, the next start does not copy it in, and the log says so
 with a warning. With `TRUST_X_REAL_IP=1` in the environment and
 `TRUST_PROXY_HEADERS` stored as off, for example, the gateway runs with
 `TRUST_X_REAL_IP` off; to turn both on, change them together on the
-Configuration tab or with `python -m serving.config.manage set`. Only a rule
+Settings tab or with `python -m serving.config.manage set`. Only a rule
 the environment breaks on its own, with no stored value involved, stops the
 backend, which names the rule.
 
@@ -484,10 +504,35 @@ them; see [Database](database.md#secrets-for-deleting-accounts). The backend
 refuses to start rather than generate `API_KEY_SECRET` for a database that
 already holds API keys, since a new secret would invalidate every one of them.
 
-### The Configuration tab
+### Analytics sections
 
-The tab groups the settings by category, describes each one and shows where
-its value comes from. Besides every setting the gateway reads itself, it lists:
+In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, **Users
+and Requests**, **Performance Metrics** and **Growth Rate** independently, then
+select **Save changes**. These database-backed settings apply to
+**Analytics → Overview** for all administrators. Token Usage, Users and Requests
+and Performance Metrics default to on; Growth Rate defaults to off. Reopen
+Analytics after saving; no backend restart is needed. A disabled section is
+hidden and does not request its data. Data collection continues, so re-enabling
+a section can show existing history.
+
+The runtime keys are `analytics_token_usage_enabled`,
+`analytics_users_and_requests_enabled`, `analytics_performance_metrics_enabled`
+and `analytics_growth_rate_enabled`. The overview's Hour / Day / Week / Month
+control applies to Token Usage and Users and Requests. Performance Metrics keeps
+its existing windows, and Growth Rate has its own 30, 60 or 90-day range.
+
+### On the Settings tab
+
+The tab opens on **Common**, with the switches and limits changed most often:
+sign-up, per-user concurrency and the daily quotas among them. The rest is
+grouped by category, and each category is listed on the sub-tab of its topic:
+**Access** holds the sign-up settings and the signup allowlist, for instance.
+**Setup**, near the end, holds the categories usually set once, when the
+gateway is deployed: its addresses and name, email, network, privacy and
+integrations. Within any category, the settings usually set once come last,
+under **Usually set once**. The tab describes each setting and shows where its
+value comes from. A search, or **Missing only**, looks through every sub-tab at
+once. Besides every setting the gateway reads itself, it lists:
 
 - every `${VAR}` the active model registry and routing file name, under
   **Providers**, with the models that use it, and those of the alert rules
@@ -537,7 +582,9 @@ that served the save, and within ten seconds in every other one. A setting
 marked **Restart required** is read only at startup, and the process keeps the
 value it started with until it restarts. Provider credentials and every
 variable the registry names are among them, as are the circuit-breaker and
-outbound-concurrency tuning, alerting and `DB_STORE_FULL_CONTENT`.
+outbound-concurrency tuning, `ALERTS_ENABLED` and `DB_STORE_FULL_CONTENT`. The
+alert channels and the failed-request alert thresholds are too, until an
+operator activates their [live group](#settings-that-apply-without-a-restart).
 
 While such a change is waiting, the tab shows a **Restart pending** notice with
 a **Restart backend** button. The button (`POST /admin/system/restart`) makes
@@ -555,6 +602,95 @@ shows a command to run yourself instead, such as
 flight, streams included. The console knows the restart is over once `/health`
 names a different process in its `instance` field, however quickly the backend
 came back.
+
+### Settings that apply without a restart
+
+A live group is a set of settings the backend applies together, without a
+restart, once an operator has activated it. The first one, `alerts.runtime`,
+holds the alert channel and the failed-request alert:
+
+| Settings | What they choose |
+|---|---|
+| `SLACK_ALERTS_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `WECOM_ALERTS_WEBHOOK_URL` | The one channel alerts go to |
+| `FAILED_REQUEST_ALERT_THRESHOLD`, `FAILED_REQUEST_ALERT_WINDOW_MINUTES`, `FAILED_REQUEST_ALERT_COOLDOWN_MINUTES`, `FAILED_REQUEST_ALERT_RATE`, `FAILED_REQUEST_ALERT_RATE_MIN_COUNT` | When the failed-request alert pages |
+
+Once the group is active, a save reaches every backend process within about
+ten seconds. Each process checks the whole group first: a pair of channels
+that conflict, or a value out of range, keeps the values it already uses and
+reports the group as invalid, while the saved values stay for you to correct.
+To move from Slack to WeCom, clear the Slack webhooks and fill in the WeCom
+one in the same save. Clearing every webhook pauses alert delivery and the
+failed-request alert on purpose; it is not a failure. The failed-request alert
+runs while `SLACK_WEBHOOK_URL` or `WECOM_ALERTS_WEBHOOK_URL` is set, as before;
+`SLACK_ALERTS_WEBHOOK_URL` alone does not start it.
+
+The Alerts category shows where the saved configuration stands. **Applied in
+each backend process** names the saved version — for example
+`app_config / epoch 3f1c… / revision 42` — and, for every process that has
+registered, whether it has applied that revision, is still applying it, failed
+or has not reported. A process whose heartbeat stopped more than a minute ago
+counts as unknown, never as applied. A backend running an older build does not
+register at all, so the panel cannot prove that every process is covered:
+compare its list with your deployment's own list of processes. **Applied**
+means the process uses the saved channel and thresholds; it says nothing about
+whether a message reached the channel, which **Send test** checks. **Send
+test** uses the saved webhook (or the address you typed), not necessarily the
+one a process is using.
+
+After a channel change, alerts already under way finish on the old channel,
+and the recovery message of an incident opened earlier goes to the new one.
+The failed-request alert keeps its cooldown and its open incident across the
+change. It still checks once a minute, so a new threshold takes effect at the
+next check after the change has applied.
+
+The console saves conditionally: if someone else saved the configuration after
+you started editing a category, your save is refused, nothing is stored, and
+the tab reloads the latest values and keeps your unsaved changes for you to
+review and save again. A reload, or a save in another category, never moves
+unsaved changes onto values you have not seen.
+
+`ALERTS_ENABLED`, the alert rules file and the alert engine still apply only
+after a restart. Other settings join live groups later, one group at a time.
+
+#### Activating a live group
+
+A group stays inactive until an operator activates it, and a backend upgrade
+never activates one by itself. Until then its settings behave as **Restart
+required**. Activate it once every backend process runs a build that supports
+it:
+
+1. Deploy the build everywhere and check that each process registered:
+   `python -m serving.config.manage live status`.
+2. Preview what activation applies. It shows each setting's saved value (a
+   secret only as set or not set) and the processes whose value in use differs
+   — values saved while a restart was pending apply as soon as you activate,
+   which can change where alerts go:
+   `python -m serving.config.manage live preview alerts.runtime`.
+3. Activate with the version the preview printed, and the number of backend
+   processes your deployment runs:
+   `python -m serving.config.manage live activate alerts.runtime --expect <epoch>:<revision> --expect-instances <N>`.
+   It refuses when the configuration changed after the preview, when a running
+   process does not support the group, or when the count differs.
+4. Check `live status`, or the Alerts category, until every process has
+   applied the latest revision.
+
+If a process cannot apply the group when it is activated — a saved value is
+invalid, say — the group stays active and the process keeps the values it was
+using. Correct the setting and save it again: it applies without a restart.
+
+`live deactivate alerts.runtime --expect <epoch>:<revision>` turns the group
+off. A running process then keeps the values it last applied until it
+restarts, instead of returning to the ones it started with, and a process that
+starts afterwards uses the saved values. Until every process has restarted the
+two can differ, and the status shows it. Going back to a build that does not
+know the group is a deployment, not a configuration change.
+
+A configuration backup does not include this status. Restoring a backup
+applies its `app_config` rows to live groups like any other save; the other
+tables in the backup are written separately, so a failure there can leave them
+partly restored. After restoring a whole database, run
+`python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`:
+it starts a new version history and makes every process register again.
 
 ### Without the console
 
@@ -591,7 +727,7 @@ Some settings are required: the two generated secrets, every variable a model
 route needs to load (unless the route is `optional: true`), and `SMTP_USER`
 and `SMTP_PASSWORD` while public signup requires email verification. When one
 of them has no value, the console shows a banner to signed-in users.
-Administrators get a link to the Configuration tab, where **Missing only**
+Administrators get a link to the Settings tab, where **Missing only**
 lists what to fill in; everyone else is told that some features may not work
 and to contact the administrator. A model whose credential is missing is not
 loaded, and a request for it is answered with a `404`. When an administrator

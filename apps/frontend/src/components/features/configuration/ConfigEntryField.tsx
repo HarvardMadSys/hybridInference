@@ -38,6 +38,15 @@ const BADGE_TONES: Record<BadgeTone, string> = {
   gray: 'bg-gray-100 text-gray-600',
 };
 
+/**
+ * Whether a saved change waits for a restart in the process that answered. A
+ * key a live group owns is declared restart-required, and is until the group
+ * is active; `apply_mode` says which applies now. An older backend omits it.
+ */
+export function appliesAfterRestart(entry: ConfigEntry): boolean {
+  return entry.apply_mode ? entry.apply_mode === 'restart' : entry.restart_required;
+}
+
 function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTone }> {
   const badges: Array<{ label: string; tone: BadgeTone }> = [];
   if (entry.missing) badges.push({ label: 'Missing', tone: 'red' });
@@ -45,7 +54,8 @@ function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTon
   if (entry.required) badges.push({ label: 'Required', tone: 'gray' });
   if (entry.secret) badges.push({ label: 'Secret', tone: 'gray' });
   if (entry.pending_restart) badges.push({ label: 'Pending restart', tone: 'amber' });
-  else if (entry.restart_required) badges.push({ label: 'Restart required', tone: 'gray' });
+  else if (entry.apply_mode === 'managed') badges.push({ label: 'Applies live', tone: 'blue' });
+  else if (appliesAfterRestart(entry)) badges.push({ label: 'Restart required', tone: 'gray' });
   // Only a value comes from somewhere: an empty variable in the environment is
   // reported as its source, but "From environment" beside "Missing" misleads.
   if (entry.source === 'environment' && entry.is_set) {
@@ -90,7 +100,7 @@ const LINK_BUTTON_CLASS =
  * Render it inside a `<form autoComplete="off">`, so that browsers do not
  * offer to save a secret typed here as a password for the console.
  *
- * In the admin Configuration tab, Reset and "Mark as secret" are staged like
+ * In Admin → Settings, Reset and "Mark as secret" are staged like
  * any other edit (`resetPending`, `markSecretPending`) and written only when
  * the category is saved.
  */
@@ -262,7 +272,9 @@ export function ConfigEntryField({
   const compact = presentation === 'compact';
   const split = layout === 'split';
   const badges = configBadges(entry).filter(
-    (badge) => !compact || !['Secret', 'Restart required', 'Pending restart'].includes(badge.label),
+    (badge) =>
+      !compact ||
+      !['Secret', 'Restart required', 'Pending restart', 'Applies live'].includes(badge.label),
   );
 
   return (

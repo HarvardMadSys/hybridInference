@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BatchesView, progress } from './BatchesView';
 import { WebhookSettings } from './WebhookSettings';
+import { AccountToastContext } from '@/lib/hooks/useAccountToast';
 import type { BatchAccess } from '@/lib/hooks/queries/useBatchCapabilities';
 import {
   cancelMyBatch,
@@ -15,6 +16,7 @@ import {
   listMyBatches,
   listMyWebhookEvents,
   saveMyWebhook,
+  BatchCategoryFilterUnavailable,
   type BatchCapabilities,
   type ConsoleBatch,
   type ConsoleBatchPage,
@@ -53,21 +55,30 @@ vi.mock('@/lib/api/batches', async (importOriginal) => {
     listMyWebhookEvents: vi.fn(),
   };
 });
-vi.mock('@/lib/hooks/useAccountToast', () => ({
+vi.mock('@/lib/hooks/useAccountToast', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/hooks/useAccountToast')>()),
   useAccountToast: () => ({ success: vi.fn(), error: vi.fn() }),
 }));
 vi.mock('next/link', () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
+  default: ({
+    children,
+    href,
+    ...rest
+  }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => (
+    <a href={href} {...rest}>
+      {children}
+    </a>
   ),
 }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function batch(id: string, overrides: Partial<ConsoleBatch> = {}): ConsoleBatch {
@@ -75,9 +86,11 @@ function batch(id: string, overrides: Partial<ConsoleBatch> = {}): ConsoleBatch 
     id,
     user_id: 'me',
     api_surface: 'openai_inline',
+    input: 'inline',
     target: 'chat',
     endpoint: '/v1/chat/completions',
     status: 'in_progress',
+    category: 'processing',
     phase: 'runnable',
     models: ['m'],
     request_counts: { total: 4, completed: 2, failed: 1 },
@@ -115,24 +128,204 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('BatchesView', () => {
-  it('shows progress, tokens, known cost and unknown-cost attempts', async () => {
+  it('shows useful progress and unknown costs without routine technical metadata', async () => {
     vi.mocked(listMyBatches).mockResolvedValue(
       page([batch('batch_a', { cost_unknown_attempts: 2 })]),
     );
     render(<BatchesView />);
     expect(await screen.findByText('batch_a')).toBeInTheDocument();
-    expect(screen.getByText('3 of 4 done · 1 failed')).toBeInTheDocument();
-    expect(screen.getByText('100 in · 50 out')).toBeInTheDocument();
-    expect(screen.getByText(/\$0\.2500/)).toBeInTheDocument();
-    expect(screen.getByText('+ 2 unknown')).toBeInTheDocument();
+    expect(screen.getByText('2 / 4 succeeded · 1 failed · 1 unfinished')).toBeInTheDocument();
+    expect(screen.queryByText('100 in · 50 out')).toBeNull();
+    expect(screen.queryByText(/\$0\.2500/)).toBeNull();
+    expect(screen.getByText('Cost is unknown for 2 attempts')).toBeInTheDocument();
   });
 
-  it('counts an Anthropic batch done from its tallies', () => {
-    const row = batch('msgbatch_1', {
+  it('does not repeat the opaque id for a named task, but keeps a detail link', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([batch('batch_long_id', { name: 'Eval run' })]),
+    );
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-batch_long_id');
+    expect(row).not.toHaveTextContent('batch_long_id');
+    expect(within(row).getByRole('link', { name: 'Eval run' })).toHaveAttribute(
+      'href',
+      '/dashboard/batches/batch_long_id',
+    );
+    expect(within(row).getByRole('link', { name: 'Details for Eval run' })).toHaveAttribute(
+      'href',
+      '/dashboard/batches/batch_long_id',
+    );
+  });
+
+  it('shows the results deadline beside creation only while results are kept and dated', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_kept', {
+          status: 'completed',
+          results_available: true,
+          results_expires_at: 1_790_086_400,
+        }),
+        batch('batch_undated', { status: 'completed', results_available: true }),
+        batch('batch_gone', { status: 'completed', results_expires_at: 1_790_086_400 }),
+      ]),
+    );
+    render(<BatchesView />);
+    const kept = await screen.findByTestId('batch-batch_kept');
+    expect(kept).toHaveTextContent(
+      `Created ${new Date(1_790_000_000_000).toLocaleString()} · Results kept until ${new Date(
+        1_790_086_400_000,
+      ).toLocaleString()}`,
+    );
+    expect(screen.getByTestId('batch-batch_undated')).not.toHaveTextContent('Results kept until');
+    expect(screen.getByTestId('batch-batch_gone')).not.toHaveTextContent('Results kept until');
+  });
+
+  it('shows the first input problem and how many more the details list', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_bad', {
+          input: 'file',
+          status: 'failed',
+          category: 'issues',
+          request_counts: { total: 0, completed: 0, failed: 0 },
+          validation_error: {
+            data: [
+              { line: 2, message: 'invalid JSON' },
+              { line: 5, message: 'missing model' },
+              { message: 'duplicate custom_id' },
+            ],
+          },
+        }),
+        batch('batch_one', {
+          input: 'file',
+          status: 'failed',
+          category: 'issues',
+          request_counts: { total: 0, completed: 0, failed: 0 },
+          validation_error: { data: [{ line: 1, message: 'empty line' }] },
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const bad = await screen.findByTestId('batch-batch_bad');
+    expect(bad).toHaveTextContent('Line 2: invalid JSON · and 2 more errors');
+    expect(bad).not.toHaveTextContent('missing model');
+    const one = screen.getByTestId('batch-batch_one');
+    expect(one).toHaveTextContent('Line 1: empty line');
+    expect(one).not.toHaveTextContent('more errors');
+  });
+
+  it('keeps one row menu open at a time', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(page([batch('batch_1'), batch('batch_2')]));
+    render(<BatchesView />);
+    const first = await screen.findByLabelText('More actions for batch_1');
+    const second = screen.getByLabelText('More actions for batch_2');
+    fireEvent.click(first);
+    await waitFor(() => expect(first.closest('details')).toHaveAttribute('open'));
+    fireEvent.click(second);
+    await waitFor(() => expect(first.closest('details')).not.toHaveAttribute('open'));
+    expect(second.closest('details')).toHaveAttribute('open');
+    fireEvent.keyDown(second, { key: 'Escape' });
+    expect(second.closest('details')).not.toHaveAttribute('open');
+    expect(second).toHaveFocus();
+  });
+
+  it('does not imply zero requests during file validation', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_check', {
+          input: 'file',
+          status: 'validating',
+          phase: 'validating',
+          request_counts: { total: 0, completed: 0, failed: 0 },
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-batch_check');
+    expect(row).toHaveTextContent('Checking the data');
+    expect(row).not.toHaveTextContent('0 / 0 succeeded');
+  });
+
+  it('offers the error file first when all requests failed, and retains output in More', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_failed', {
+          input: 'file',
+          status: 'completed',
+          category: 'issues',
+          phase: 'sealed',
+          request_counts: { total: 2, completed: 0, failed: 2 },
+          results_available: true,
+          output_file_id: 'file-empty',
+          error_file_id: 'file-errors',
+        }),
+      ]),
+    );
+    vi.mocked(downloadMyResults).mockResolvedValue();
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-batch_failed');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download errors' }));
+    expect(downloadMyResults).toHaveBeenCalledWith('batch_failed', 'error');
+    const more = within(row).getByLabelText('More actions for batch_failed');
+    fireEvent.click(more);
+    expect(within(row).getByRole('button', { name: 'Download outputs' })).toBeInTheDocument();
+    fireEvent.keyDown(more, { key: 'Escape' });
+    expect(more.closest('details')).not.toHaveAttribute('open');
+    expect(more).toHaveFocus();
+  });
+
+  it('shows target and model without repeating input provenance in the list', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_m', {
+          target: 'messages',
+          endpoint: '/v1/messages',
+          models: ['claude-x'],
+          protocol_profile: '2023-06-01',
+        }),
+        batch('batch_f', {
+          api_surface: 'openai_file',
+          input: 'file',
+          target: 'embeddings',
+          endpoint: '/v1/embeddings',
+          models: ['embed-1'],
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const messages = await screen.findByTestId('batch-batch_m');
+    expect(messages).toHaveTextContent('Messages · claude-x');
+    expect(messages).not.toHaveTextContent('Direct requests');
+    const file = screen.getByTestId('batch-batch_f');
+    expect(file).toHaveTextContent('Embeddings · embed-1');
+    expect(file).not.toHaveTextContent('JSONL file');
+    // No vendor-named products, no separate API surfaces.
+    for (const text of [/OpenAI batch/, /Anthropic/, /Message Batch/, /\/v1\/messages\/batches/]) {
+      expect(screen.queryByText(text)).toBeNull();
+    }
+  });
+
+  it('shows a legacy Message Batch with the common status words and counts', async () => {
+    const legacy = batch('msgbatch_1', {
       api_surface: 'anthropic',
-      request_counts: { processing: 1, succeeded: 2, errored: 1, canceled: 0, expired: 1 },
+      target: 'messages',
+      endpoint: '/v1/messages',
+      status: 'completed',
+      category: 'issues',
+      phase: 'sealed',
+      request_counts: { total: 5, completed: 3, failed: 1 },
+      cancelled: 1,
+      results_available: true,
     });
-    expect(progress(row)).toEqual({ done: 4, total: 5, failed: 2 });
+    expect(progress(legacy)).toEqual({ done: 5, total: 5, failed: 1 });
+    vi.mocked(listMyBatches).mockResolvedValue(page([legacy]));
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-msgbatch_1');
+    expect(row).toHaveTextContent('With issues');
+    expect(row).toHaveTextContent('Some requests failed');
+    expect(row).not.toHaveTextContent('Ended');
+    expect(row).toHaveTextContent('3 / 5 succeeded · 1 failed · 1 cancelled');
+    expect(screen.getByRole('button', { name: 'Download results' })).toBeInTheDocument();
   });
 
   it('requests the next page once while it loads, and lists each batch once', async () => {
@@ -170,33 +363,54 @@ describe('BatchesView', () => {
 
     confirm.mockReturnValueOnce(true);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(await screen.findByText('Cancelling')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Cancelling: requests already running will finish'),
+    ).toBeInTheDocument();
     expect(cancelMyBatch).toHaveBeenCalledWith('batch_c');
 
     confirm.mockReturnValueOnce(true);
+    fireEvent.click(screen.getByLabelText('More actions for batch_c'));
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(screen.queryByText('batch_c')).toBeNull());
     confirm.mockRestore();
   });
 
-  it('offers downloads only for finished results, by file kind', async () => {
+  it('offers both result files of a partially failed file batch directly', async () => {
     vi.mocked(listMyBatches).mockResolvedValue(
       page([
         batch('batch_file', {
           api_surface: 'openai_file',
+          input: 'file',
           status: 'completed',
+          category: 'issues',
           phase: 'sealed',
+          request_counts: { total: 4, completed: 3, failed: 1 },
           results_available: true,
           output_file_id: 'file-out',
           error_file_id: 'file-err',
         }),
+        batch('batch_running', {
+          input: 'file',
+          output_file_id: 'file-out-2',
+          error_file_id: 'file-err-2',
+        }),
       ]),
     );
+    vi.mocked(downloadMyResults).mockResolvedValue();
     render(<BatchesView />);
-    expect(await screen.findByRole('button', { name: 'Download outputs' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Download errors' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Download results' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    const row = await screen.findByTestId('batch-batch_file');
+    fireEvent.click(within(row).getByRole('button', { name: 'Download outputs' }));
+    expect(downloadMyResults).toHaveBeenCalledWith('batch_file', 'output');
+    await waitFor(() =>
+      expect(within(row).getByRole('button', { name: 'Download errors' })).toBeEnabled(),
+    );
+    fireEvent.click(within(row).getByRole('button', { name: 'Download errors' }));
+    expect(downloadMyResults).toHaveBeenCalledWith('batch_file', 'error');
+    expect(within(row).queryByRole('button', { name: 'Download results' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    // Nothing is downloadable before the results are.
+    const running = screen.getByTestId('batch-batch_running');
+    expect(within(running).queryByRole('button', { name: /Download/ })).toBeNull();
   });
 });
 
@@ -247,6 +461,8 @@ describe('BatchesView capabilities', () => {
     expect(await screen.findByText('batch_run')).toBeInTheDocument();
     expect(screen.getByText(/cannot submit new batches: that needs the pro plan/)).toBeVisible();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+    fireEvent.click(screen.getByLabelText('More actions for batch_run'));
+    fireEvent.click(screen.getByLabelText('More actions for batch_done'));
     expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(2);
     fireEvent.click(screen.getByRole('button', { name: 'Download results' }));
     expect(downloadMyResults).toHaveBeenCalledWith('batch_done', 'all');
@@ -263,7 +479,8 @@ describe('BatchesView capabilities', () => {
     render(<BatchesView />);
 
     expect(await screen.findByText('You have no batches.')).toBeInTheDocument();
-    expect(screen.getByText('Your plan cannot set up a webhook.')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Webhook'));
+    expect(screen.getByText('Your plan cannot set up a webhook.')).toBeVisible();
     expect(screen.queryByLabelText('Endpoint URL (https)')).toBeNull();
   });
 
@@ -274,11 +491,163 @@ describe('BatchesView capabilities', () => {
 
     expect(await screen.findByText('batch_x')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('Gateway timeout');
+    fireEvent.click(screen.getByLabelText('More actions for batch_x'));
     expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled();
   });
 });
 
 describe('WebhookSettings', () => {
+  it('keeps the webhook entry compact but exposes configuration and delivery failures', async () => {
+    vi.mocked(getMyWebhook).mockResolvedValue({
+      configured: true,
+      url: 'https://example.com/h',
+      enabled: true,
+    });
+    vi.mocked(listMyWebhookEvents).mockResolvedValue({
+      data: [
+        {
+          id: 'event-1',
+          type: 'batch.completed',
+          batch_id: 'batch_x',
+          status: 'failed',
+          attempts: 1,
+          last_status_code: null,
+          last_error: null,
+          created_at: null,
+          delivered_at: null,
+          next_attempt_at: null,
+        },
+      ],
+    });
+    render(<WebhookSettings />);
+    expect(await screen.findByText('Configured')).toBeVisible();
+    expect(await screen.findByText('Recent delivery failures')).toBeVisible();
+    const form = screen.getByLabelText('Endpoint URL (https)');
+    expect(form).not.toBeVisible();
+    fireEvent.click(screen.getByText('Webhook'));
+    expect(form).toBeVisible();
+  });
+
+  it('does not hide a webhook loading error when the settings are collapsed', async () => {
+    vi.mocked(getMyWebhook).mockRejectedValue(new Error('Webhook unavailable'));
+    render(<WebhookSettings />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Webhook unavailable');
+    expect(screen.getByText('Could not load')).toBeVisible();
+  });
+
+  it.each(['create', 'rotate'] as const)(
+    'reopens a collapsed webhook after %s returns a one-time secret',
+    async (action) => {
+      const request = deferred<Awaited<ReturnType<typeof saveMyWebhook>>>();
+      vi.mocked(saveMyWebhook).mockReturnValue(request.promise);
+      vi.mocked(getMyWebhook).mockResolvedValue(
+        action === 'rotate'
+          ? { configured: true, url: 'https://example.com/h', enabled: true }
+          : { configured: false },
+      );
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      render(<WebhookSettings />);
+      fireEvent.click(screen.getByText('Webhook'));
+      const field = screen.getByLabelText('Endpoint URL (https)');
+      await waitFor(() => expect(field).toBeEnabled());
+      if (action === 'create') {
+        fireEvent.change(field, { target: { value: 'https://example.com/h' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Create webhook' }));
+      } else {
+        fireEvent.click(screen.getByRole('button', { name: 'Rotate secret' }));
+      }
+      expect(saveMyWebhook).toHaveBeenCalledWith({
+        url: 'https://example.com/h',
+        enabled: true,
+        rotate_secret: action === 'rotate',
+      });
+      fireEvent.click(screen.getByText('Webhook'));
+      expect(field).not.toBeVisible();
+      await act(async () => {
+        request.resolve({
+          configured: true,
+          url: 'https://example.com/h',
+          enabled: true,
+          secret: 'whsec_once',
+        });
+        await request.promise;
+      });
+      expect(screen.getByText('whsec_once')).toBeVisible();
+      expect(screen.getByRole('status')).toHaveTextContent(
+        'Save the signing secret now; it is shown only once.',
+      );
+      fireEvent.click(screen.getByText('Webhook'));
+      expect(screen.getByRole('status')).toBeVisible();
+      confirm.mockRestore();
+    },
+  );
+
+  it('reopens after a failed save and preserves an earlier one-time secret', async () => {
+    const failure = deferred<Awaited<ReturnType<typeof saveMyWebhook>>>();
+    vi.mocked(saveMyWebhook)
+      .mockResolvedValueOnce({
+        configured: true,
+        url: 'https://example.com/h',
+        secret: 'whsec_first',
+      })
+      .mockReturnValueOnce(failure.promise);
+    render(<WebhookSettings />);
+    fireEvent.click(screen.getByText('Webhook'));
+    const field = screen.getByLabelText('Endpoint URL (https)');
+    await waitFor(() => expect(field).toBeEnabled());
+    fireEvent.change(field, { target: { value: 'https://example.com/h' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create webhook' }));
+    expect(await screen.findByText('whsec_first')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByText('Webhook'));
+    await act(async () => {
+      failure.reject(new Error('Save failed'));
+      await failure.promise.catch(() => {});
+    });
+    const alert = screen.getByRole('alert');
+    expect(alert).toBeVisible();
+    expect(alert).toHaveTextContent('Save failed');
+    expect(screen.getAllByText('Save failed')).toHaveLength(1);
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAttribute('aria-describedby', alert.id);
+    expect(screen.getByText('whsec_first')).toBeVisible();
+  });
+
+  it.each(['before', 'after'] as const)(
+    'does not reveal a pending secret when its account is invalidated %s the page remounts',
+    async (settle) => {
+      const request = deferred<Awaited<ReturnType<typeof saveMyWebhook>>>();
+      vi.mocked(saveMyWebhook).mockReturnValue(request.promise);
+      const oldScope = { userId: 'old', active: true };
+      const newScope = { userId: 'new', active: true };
+      const view = render(
+        <AccountToastContext.Provider value={oldScope}>
+          <WebhookSettings key="old" />
+        </AccountToastContext.Provider>,
+      );
+      fireEvent.click(screen.getByText('Webhook'));
+      const field = screen.getByLabelText('Endpoint URL (https)');
+      await waitFor(() => expect(field).toBeEnabled());
+      fireEvent.change(field, { target: { value: 'https://example.com/h' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create webhook' }));
+      oldScope.active = false;
+      const showNewAccount = () =>
+        view.rerender(
+          <AccountToastContext.Provider value={newScope}>
+            <WebhookSettings key="new" />
+          </AccountToastContext.Provider>,
+        );
+      if (settle === 'after') showNewAccount();
+      await act(async () => {
+        request.resolve({ configured: true, url: 'https://example.com/h', secret: 'whsec_old' });
+        await request.promise;
+      });
+      expect(screen.queryByText('whsec_old')).toBeNull();
+      if (settle === 'before') showNewAccount();
+      expect(screen.queryByText('Save the signing secret now; it is shown only once.')).toBeNull();
+    },
+  );
+
   it('below the submission role, shows the webhook read-only and lets it be removed', async () => {
     vi.mocked(getMyWebhook).mockResolvedValue({
       configured: true,
@@ -288,6 +657,7 @@ describe('WebhookSettings', () => {
     vi.mocked(deleteMyWebhook).mockResolvedValue({ deleted: true });
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<WebhookSettings canEdit={false} />);
+    fireEvent.click(screen.getByText('Webhook'));
 
     const field = await screen.findByDisplayValue('https://old.example.com/h');
     expect(field).toBeDisabled();
@@ -313,6 +683,7 @@ describe('WebhookSettings', () => {
       secret: 'whsec_new',
     });
     render(<WebhookSettings />);
+    fireEvent.click(screen.getByText('Webhook'));
     const field = screen.getByLabelText('Endpoint URL (https)');
     expect(field).toBeDisabled();
     fireEvent.submit(field.closest('form') as HTMLFormElement);
@@ -334,5 +705,165 @@ describe('WebhookSettings', () => {
       enabled: true,
       rotate_secret: false,
     });
+  });
+
+  it('filters by name or id and by the status shown, and links to creating a batch', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(page([batch('batch_a', { name: 'eval-0420' })]));
+    render(<BatchesView />);
+    expect(await screen.findByText('eval-0420')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Create batch' })).toHaveAttribute(
+      'href',
+      '/dashboard/batches/new',
+    );
+    fireEvent.change(screen.getByLabelText('Search by name or batch ID'), {
+      target: { value: 'eval' },
+    });
+    await waitFor(() =>
+      expect(listMyBatches).toHaveBeenLastCalledWith(null, 20, { category: '', q: 'eval' }),
+    );
+  });
+
+  it('offers no create button to a role that cannot submit', async () => {
+    access = { capabilities: caps({ role_may_submit: false }), loading: false, error: null };
+    vi.mocked(listMyBatches).mockResolvedValue(page([]));
+    render(<BatchesView />);
+    expect(await screen.findByText('You have no batches.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Create batch' })).not.toBeInTheDocument();
+  });
+
+  it('filters by four categories plus All, asked of the server', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(page([]));
+    render(<BatchesView />);
+    await screen.findByText(/You have no batches/);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Status' }));
+    const options = screen.getAllByRole('option').map((option) => option.textContent);
+    expect(options).toEqual(['All', 'Processing', 'Completed', 'With issues', 'Cancelled']);
+    fireEvent.click(screen.getByRole('option', { name: 'With issues' }));
+    await waitFor(() =>
+      expect(listMyBatches).toHaveBeenLastCalledWith(null, 20, { category: 'issues', q: '' }),
+    );
+  });
+
+  it('never shows a partly failed batch as a green completion', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_partial', {
+          status: 'completed',
+          category: 'issues',
+          phase: 'sealed',
+          request_counts: { total: 1000, completed: 980, failed: 20 },
+          results_available: true,
+        }),
+        batch('batch_ok', {
+          status: 'completed',
+          category: 'completed',
+          phase: 'sealed',
+          request_counts: { total: 10, completed: 10, failed: 0 },
+          results_available: true,
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const partial = await screen.findByTestId('batch-batch_partial');
+    const badge = partial.querySelector('[data-category]') as HTMLElement;
+    expect(badge).toHaveTextContent('With issues');
+    expect(badge.className).not.toMatch(/green/);
+    expect(partial).toHaveTextContent('Some requests failed');
+    expect(partial).toHaveTextContent('980 / 1,000 succeeded · 20 failed');
+    const ok = screen.getByTestId('batch-batch_ok');
+    expect(ok.querySelector('[data-category]')).toHaveTextContent('Completed');
+    expect(ok).not.toHaveTextContent('Some requests failed');
+  });
+
+  it('keeps a pause warning beside a processing badge', async () => {
+    vi.mocked(listMyBatches).mockResolvedValue(
+      page([
+        batch('batch_paused', {
+          paused_until: 1_900_000_000,
+          paused_reason: 'quota',
+        }),
+      ]),
+    );
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-batch_paused');
+    expect(row.querySelector('[data-category]')).toHaveTextContent('Processing');
+    expect(row).toHaveTextContent(/Paused: your daily quota is spent/);
+  });
+});
+
+describe('BatchesView with a gateway older than the categories', () => {
+  it('shows a partly failed batch without a category as with issues, never green', async () => {
+    const { category: _omitted, ...withoutCategory } = batch('batch_old', {
+      status: 'completed',
+      phase: 'sealed',
+      request_counts: { total: 10, completed: 8, failed: 2 },
+      results_available: true,
+    });
+    vi.mocked(listMyBatches).mockResolvedValue(page([withoutCategory as ConsoleBatch]));
+    render(<BatchesView />);
+    const row = await screen.findByTestId('batch-batch_old');
+    const badge = row.querySelector('[data-category]') as HTMLElement;
+    expect(badge).toHaveTextContent('With issues');
+    expect(badge.className).not.toMatch(/green/);
+    expect(row).toHaveTextContent('Some requests failed');
+  });
+
+  it('says filtering is unavailable instead of showing an unfiltered page', async () => {
+    vi.mocked(listMyBatches).mockImplementation(async (_after, _limit, filters) => {
+      if (filters?.category) throw new BatchCategoryFilterUnavailable();
+      return page([batch('batch_any')]);
+    });
+    render(<BatchesView />);
+    await screen.findByTestId('batch-batch_any');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Status' }));
+    fireEvent.click(screen.getByRole('option', { name: 'With issues' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Filtering by status is not available right now',
+    );
+    expect(screen.queryByTestId('batch-batch_any')).not.toBeInTheDocument();
+  });
+
+  it('does not add a later page an older gateway answered unfiltered', async () => {
+    vi.mocked(listMyBatches).mockImplementation(async (after, _limit, filters) => {
+      if (filters?.category && after) throw new BatchCategoryFilterUnavailable();
+      return filters?.category
+        ? page([batch('batch_issue', { status: 'failed', category: 'issues' })], true)
+        : page([batch('batch_any')]);
+    });
+    render(<BatchesView />);
+    await screen.findByTestId('batch-batch_any');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Status' }));
+    fireEvent.click(screen.getByRole('option', { name: 'With issues' }));
+    await screen.findByTestId('batch-batch_issue');
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Filtering by status is not available right now',
+    );
+    expect(screen.getAllByRole('listitem').map((item) => item.getAttribute('data-testid'))).toEqual(
+      ['batch-batch_issue'],
+    );
+  });
+});
+
+describe('the category labels in Chinese', () => {
+  it('are the agreed five', async () => {
+    const catalog = (await import('@/lib/i18n/messages/zh-CN.json')).default as unknown as Record<
+      string,
+      { text: string }
+    >;
+    expect(
+      [
+        'batches.filter.all',
+        'batches.category.processing',
+        'batches.category.completed',
+        'batches.category.issues',
+        'batches.category.cancelled',
+      ].map((slot) => catalog[slot].text),
+    ).toEqual(['全部', '处理中', '已完成', '有异常', '已取消']);
+    expect(
+      ['batches.note.partial', 'batches.note.expired', 'batches.note.cancelling'].map(
+        (slot) => catalog[slot].text,
+      ),
+    ).toEqual(['部分请求失败', '超过执行期限', '正在取消，进行中的请求会完成']);
   });
 });

@@ -696,3 +696,156 @@ async def test_a_client_error_probe_leaves_the_endpoint_probeable(
     # 400 again, not the 503 a held probe would produce.
     assert second.status_code == 400
     await asyncio.sleep(0)
+
+
+# --- a client that leaves before the stream starts (issue #1690, T7) --------
+
+
+def _raw_stream_scope(payload: bytes, spec_version: str) -> dict:
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/messages",
+        "raw_path": b"/v1/messages",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+            (b"x-api-key", _auth()["x-api-key"].encode()),
+        ],
+        "client": ("127.0.0.1", 45679),
+        "server": ("test", 80),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "spec_version",
+    [
+        # uvicorn 0.46 (the locked server) reports 2.3: Starlette races the body
+        # against a disconnect listener, which here wins before the body starts.
+        "2.3",
+        # 2.4+: Starlette sends directly; a peer already gone fails the first send.
+        "2.4",
+    ],
+)
+async def test_a_stream_the_client_left_before_it_started_frees_the_probe(
+    anthropic_test_app,
+    anthropic_compat_router,
+    monkeypatch,
+    quiet_alerts,
+    no_log_store,
+    spec_version,
+):
+    """The half-open probe claimed in preflight comes back when no byte was ever sent.
+
+    The claim is taken before the response starts and released in the stream
+    generator's ``finally``. A client that leaves while preflight runs (an ESC
+    in Claude Code) means Starlette never starts that generator, and a
+    generator that never started runs no ``finally``: without a release at the
+    end of the request the endpoint would stay unprobeable for its whole
+    cooldown, every request behind it answered 503. Nothing reaches upstream.
+    """
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    registry = anthropic_compat_router.endpoint_health_registry
+    endpoint_id = _endpoint_id(anthropic_compat_router)
+    _half_open(registry, endpoint_id)
+    contacted: list[str] = []
+
+    async def _iter():
+        contacted.append("upstream")
+        yield _MESSAGE_START
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+    payload = json.dumps(_body(stream=True)).encode()
+    delivered = False
+
+    async def receive():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        return {"type": "http.disconnect"}  # already gone, without a wait
+
+    sent: list[str] = []
+
+    async def send(message):
+        sent.append(message["type"])
+        if spec_version == "2.4":
+            raise OSError("peer closed")
+
+    try:
+        await asyncio.wait_for(
+            anthropic_test_app(_raw_stream_scope(payload, spec_version), receive, send), timeout=10
+        )
+    except Exception as exc:  # the 2.4 path surfaces the dead peer as ClientDisconnect
+        assert spec_version == "2.4", exc
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert "http.response.body" not in sent
+    if spec_version == "2.4":
+        # The generator never started: nothing reached the upstream.
+        assert contacted == []
+    # (On 2.3 the generator does start before the listener's cancellation lands,
+    # so its own ``finally`` returns the claim; the upstream may be contacted.)
+    claim = registry.begin_dispatch(endpoint_id)
+    assert claim is not None, "the probe is still held by a stream that never started"
+    registry.end_dispatch(claim)
+
+
+@pytest.mark.asyncio
+async def test_a_running_stream_holds_the_probe_until_it_ends(
+    anthropic_test_app, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
+):
+    """Releasing an unstarted stream's claim must not release a started one early."""
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    registry = anthropic_compat_router.endpoint_health_registry
+    endpoint_id = _endpoint_id(anthropic_compat_router)
+    _half_open(registry, endpoint_id)
+
+    async def _iter():
+        yield _MESSAGE_START
+        await asyncio.sleep(0.05)
+        yield _TEXT_DELTA + _MESSAGE_STOP
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+    payload = json.dumps(_body(stream=True)).encode()
+    delivered = False
+    finished = asyncio.Event()
+
+    async def receive():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        await finished.wait()
+        return {"type": "http.disconnect"}
+
+    held_at_first_frame: list[bool] = []
+
+    async def send(message):
+        body = message.get("body", b"") if message["type"] == "http.response.body" else b""
+        if body.startswith(b"event: message_start"):
+            # Before the first content delta (whose success closes the circuit),
+            # the probe must still be this stream's.
+            held_at_first_frame.append(registry.begin_dispatch(endpoint_id) is None)
+        if message["type"] == "http.response.body" and not message.get("more_body", False):
+            finished.set()
+
+    await asyncio.wait_for(
+        anthropic_test_app(_raw_stream_scope(payload, "2.3"), receive, send), timeout=10
+    )
+
+    assert held_at_first_frame == [True]
+    # The stream's own finally returned it (and its success closed the circuit).
+    assert registry.begin_dispatch(endpoint_id) is not None

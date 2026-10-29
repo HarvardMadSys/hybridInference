@@ -110,9 +110,10 @@ class AnthropicAdapter(BaseAdapter):
     def _api_version(self) -> str:
         """The ``anthropic-version`` to send: a batch item's own, else the fixed default.
 
-        Only the batch worker publishes a version (the one a Message Batch was
-        created under, see ``serving.batch.profiles``), and only a known one is
-        honoured; every other request keeps :attr:`ANTHROPIC_VERSION`.
+        Only the Messages execution of a batch item publishes a version (the
+        ``anthropic-version`` a Messages batch was created with, see
+        ``serving.batch.profiles``), and only a known one is honoured; every
+        other request keeps :attr:`ANTHROPIC_VERSION`.
         """
         requested = req_ctx.get().get(req_ctx.ANTHROPIC_VERSION)
         if isinstance(requested, str) and requested in _KNOWN_BATCH_VERSIONS:
@@ -439,8 +440,6 @@ class AnthropicAdapter(BaseAdapter):
         usage = {
             "input_tokens": 0,
             "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
         }
 
         # Slot held for the whole passthrough stream; see stream_chat_completion.

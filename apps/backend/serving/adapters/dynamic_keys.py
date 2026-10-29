@@ -489,7 +489,7 @@ def configured_env_keys_for_provider(provider: str) -> list[str]:
     first and the environment variable second.
 
     The base setting, then every numbered one from ``1`` to
-    :data:`_MAX_NUMBERED_ENV_KEYS` — the names the Configuration tab accepts as
+    :data:`_MAX_NUMBERED_ENV_KEYS` — the names the Settings tab accepts as
     pooled with the base. A blank one is skipped rather than ending the scan,
     so a key cleared from the middle does not drop the ones after it, and a
     value already listed is not listed twice.

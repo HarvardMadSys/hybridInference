@@ -4,7 +4,7 @@ An administrator caps how many batch requests each model runs at once across
 the whole deployment: the worker enforces the cap in the query that claims
 work (``serving.batch.scheduler``), however many gateway processes run. A model
 without a cap of its own takes ``BATCH_MODEL_CONCURRENCY``, set with the other
-batch settings in Admin -> Configuration -> Batch inference; a cap of 0 pauses
+batch settings in Admin -> Settings -> Batch; a cap of 0 pauses
 batch work on the model. Every process reads the caps through
 ``BatchModelLimits``: the process that serves a write sees it at once, the
 others within seconds.
@@ -15,12 +15,13 @@ It also gives administrators an overview of every user's batches
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from serving.audit import AuditActor, AuditTarget
 from serving.batch.config import batch_config
+from serving.batch.schemas import BatchStatus
 from serving.schemas_admin import (
     BatchModelLimitItem,
     ListBatchModelLimitsResponse,
@@ -38,6 +39,9 @@ from serving.servers.deps import (
 )
 
 router = APIRouter(prefix="/admin")
+
+#: The statuses a batch shows; the overview filters on these, not the stored ones.
+_STATUS_PATTERN = f"^({'|'.join(get_args(BatchStatus))})$"
 
 
 def _is_canonical_model(model_id: str, route: Any) -> bool:
@@ -161,8 +165,11 @@ async def update_batch_model_limit(
 @router.get("/batch/jobs")
 async def list_all_batches(
     user_id: str | None = Query(None, description="Only this user's batches"),
-    status: str | None = Query(None, description="Only batches in this internal status"),
-    surface: str | None = Query(None, description="openai_inline, openai_file or anthropic"),
+    status: str | None = Query(
+        None,
+        pattern=_STATUS_PATTERN,
+        description="Only batches showing this status (the one listed with them)",
+    ),
     limit: int = Query(50, ge=1, le=200),
     after: str | None = Query(None),
     _admin_id: str = Depends(verify_admin_access),
@@ -174,11 +181,7 @@ async def list_all_batches(
     from serving.servers.routers.batch_console import batch_view
 
     rows = await batch_store.list_batches(
-        user_id=user_id,
-        limit=limit + 1,
-        after=after,
-        surfaces={surface} if surface else None,
-        status=status,
+        user_id=user_id, limit=limit + 1, after=after, status=status
     )
     data = [batch_view(row) for row in rows[:limit]]
     return {
@@ -209,6 +212,7 @@ async def batch_summary(
             "requests",
             "completed",
             "failed",
+            "cancelled",
             "prompt_tokens",
             "completion_tokens",
             "unknown_cost_attempts",

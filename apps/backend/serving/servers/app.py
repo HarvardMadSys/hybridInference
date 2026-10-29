@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 
@@ -13,6 +13,7 @@ from . import bootstrap, restart
 from .middleware.cors import SettingsCORSMiddleware
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
+from .middleware.proxy_trust import KubernetesProxyTrustMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
 from .middleware.timeout import TimeoutMiddleware
@@ -23,6 +24,7 @@ from .routers import (
     anthropic_messages,
     auth_routes,
     batch_console,
+    batch_console_create,
     batches,
     compat,
     completions,
@@ -32,13 +34,13 @@ from .routers import (
     identity,
     internal,
     internal_lookups,
-    message_batches,
     models,
     playground,
     public_stats,
     qdrant_proxy,
     rag,
     responses,
+    retired_message_batches,
     setup,
     site_config,
     site_updates,
@@ -68,7 +70,7 @@ async def lifespan(app: FastAPI):
         await stop_runtime()
         raise
     app.state.services = services  # type: ignore[attr-defined]
-    # The batch worker runs each request through this app's handlers, so it
+    # The batch worker reads services off this app (as the routes do), so it
     # starts only once the services are reachable from the app.
     bootstrap.start_batch_scheduler(app, services)
 
@@ -90,6 +92,18 @@ async def lifespan(app: FastAPI):
                 restart.exit_for_restart()
 
 
+#: CORS options besides the origins. ``ETag`` is exposed because a console
+#: served from another origin reads it to tell a configuration version conflict
+#: (409 with the version now stored) from any other 409; a browser hides every
+#: response header CORS does not expose.
+CORS_OPTIONS: dict[str, Any] = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+    "expose_headers": ["ETag"],
+}
+
+
 def create_app() -> FastAPI:
     """Create and configure a FastAPI app instance with modular routers."""
     app = FastAPI(
@@ -101,16 +115,12 @@ def create_app() -> FastAPI:
 
     # CORS: use specific origins when credentials are enabled. The origins are
     # read per request (CORS_ALLOWED_ORIGINS is database-backed).
-    app.add_middleware(
-        SettingsCORSMiddleware,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app.add_middleware(SettingsCORSMiddleware, **CORS_OPTIONS)
 
     # Request ID, timeout, and request log middlewares
     app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(KubernetesProxyTrustMiddleware)
     app.add_middleware(FallbackErrorMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
@@ -126,9 +136,10 @@ def create_app() -> FastAPI:
     app.include_router(completions.router)
     app.include_router(embeddings.router)
     app.include_router(batches.router)
-    app.include_router(message_batches.router)
+    app.include_router(retired_message_batches.router)
     app.include_router(files.router)
     app.include_router(batch_console.router)
+    app.include_router(batch_console_create.router)
     app.include_router(rag.router)
     app.include_router(responses.router)
     app.include_router(anthropic_messages.router)

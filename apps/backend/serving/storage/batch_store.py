@@ -1,4 +1,4 @@
-"""Persistence for batch inference (``/v1/batches``, ``/v1/messages/batches``).
+"""Persistence for batch inference (``/v1/batches``).
 
 A batch is one row of ``batch_jobs`` plus one row of ``batch_items`` per
 request; ``batch_model_limits`` holds the per-model concurrency caps an
@@ -12,9 +12,11 @@ the rest of the batch schema, so one migration orders every foreign key.
 Every gateway process runs a worker (:mod:`serving.batch.scheduler`) that claims
 items from here, so whatever coordinates the processes lives in SQL:
 
-- **Kinds and phases.** A batch has an ``api_surface`` (``openai_inline``,
-  ``openai_file``, ``anthropic``), a ``target`` (``chat``, ``embeddings``,
-  ``messages``, ``responses``) and a ``schema_version``. A worker only touches
+- **Kinds and phases.** A batch has an ``api_surface`` -- how its requests
+  arrived: ``openai_inline`` (a ``requests`` array) or ``openai_file`` (an
+  uploaded JSONL file); ``anthropic`` only on batches the retired Message
+  Batches API stored -- a ``target`` (``chat``, ``embeddings``, ``messages``,
+  ``responses``) and a ``schema_version``. A worker only touches
   the kinds it knows (:data:`SUPPORTED_JOB_KINDS`): the claim, the list of
   models with work and the sweep all share one predicate
   (``_CLAIMABLE_JOB``), so a batch a newer worker created is never run, settled
@@ -49,7 +51,7 @@ items from here, so whatever coordinates the processes lives in SQL:
   transition: a ``cancelling``, ``failed`` or ``expired`` batch passes its
   verdict on to its queued items (and to running items whose lease ran out,
   which no worker can claim back), and a batch with no open item left is
-  finalized. Inline and Anthropic batches are sealed in that same transaction;
+  finalized. Inline (and legacy Anthropic) batches are sealed in that same transaction;
   a file batch freezes its final status in ``pending_terminal_status`` and
   enters ``sealing``, where a worker renders its output files and publishes
   them together with the final status. Neither expiry nor a cancel changes a
@@ -109,14 +111,6 @@ class BatchDeleteInProgress(RuntimeError):
         super().__init__(f"Batch {batch_id!r} still has a running request.")
 
 
-class BatchNotEnded(RuntimeError):
-    """The operation needs a batch whose results are published (sealed)."""
-
-    def __init__(self, batch_id: str) -> None:
-        self.batch_id = batch_id
-        super().__init__(f"Batch {batch_id!r} has not ended.")
-
-
 class BatchInputUnavailable(RuntimeError):
     """A file batch's input upload is no longer available to create it from."""
 
@@ -158,10 +152,13 @@ class IdempotencyTombstoned(RuntimeError):
 
 # -- batch kinds ----------------------------------------------------------------
 
+#: How a batch's requests arrived. The values keep the names they were first
+#: stored under; they are internal and never shown as separate APIs.
 SURFACE_OPENAI_INLINE = "openai_inline"
 SURFACE_OPENAI_FILE = "openai_file"
+#: Batches the retired Message Batches API (``/v1/messages/batches``) stored.
+#: Nothing creates one any more; they are still run, read and purged.
 SURFACE_ANTHROPIC = "anthropic"
-OPENAI_SURFACES: frozenset[str] = frozenset({SURFACE_OPENAI_INLINE, SURFACE_OPENAI_FILE})
 
 TARGET_CHAT = "chat"
 TARGET_EMBEDDINGS = "embeddings"
@@ -174,15 +171,19 @@ SCHEMA_VERSION = 2
 
 #: The (surface, target) pairs this worker can run, at :data:`SCHEMA_VERSION`
 #: or below. Claims, the list of models with work and every sweep step are
-#: restricted to them.
+#: restricted to them. Messages through ``/v1/batches`` (inline or from a file)
+#: are pairs a worker of an earlier version does not list, so during a rolling
+#: upgrade only this version runs, validates, seals or expires them.
 SUPPORTED_JOB_KINDS: frozenset[tuple[str, str]] = frozenset(
     {
         (SURFACE_OPENAI_INLINE, TARGET_CHAT),
         (SURFACE_OPENAI_INLINE, TARGET_EMBEDDINGS),
         (SURFACE_OPENAI_INLINE, TARGET_RESPONSES),
+        (SURFACE_OPENAI_INLINE, TARGET_MESSAGES),
         (SURFACE_OPENAI_FILE, TARGET_CHAT),
         (SURFACE_OPENAI_FILE, TARGET_EMBEDDINGS),
         (SURFACE_OPENAI_FILE, TARGET_RESPONSES),
+        (SURFACE_OPENAI_FILE, TARGET_MESSAGES),
         (SURFACE_ANTHROPIC, TARGET_MESSAGES),
     }
 )
@@ -225,12 +226,55 @@ _PURGE_LIMIT = 100
 _JSON_ENVELOPE_MARKER = "hybridinference:batch-json:v1"
 
 
-def _supported_kinds_sql(alias: str) -> str:
+def _supported_kinds_sql(
+    alias: str, kinds: frozenset[tuple[str, str]] = SUPPORTED_JOB_KINDS
+) -> str:
     """SQL matching the batches this worker supports (``alias`` is the jobs alias)."""
-    pairs = ", ".join(
-        f"('{surface}', '{target}')" for surface, target in sorted(SUPPORTED_JOB_KINDS)
-    )
+    pairs = ", ".join(f"('{surface}', '{target}')" for surface, target in sorted(kinds))
     return f"({alias}.schema_version <= {SCHEMA_VERSION} AND ({alias}.api_surface, {alias}.target) IN ({pairs}))"
+
+
+def display_status_sql(alias: str) -> str:
+    """A batch's status as the API and the console show it, as SQL (``alias``: the jobs alias).
+
+    The twin of ``serving.batch.renderers.display_status``, so filtering on a
+    status matches exactly the batches listed with it: a file batch is
+    ``validating`` until its input is checked, ``finalizing`` (or
+    ``cancelling``) while its result files are sealed, and shows its final
+    status only once they are published; any other batch shows its status.
+    """
+    return f"""(CASE
+        WHEN {alias}.api_surface <> '{SURFACE_OPENAI_FILE}' THEN {alias}.status
+        WHEN {alias}.phase = '{PHASE_VALIDATING}' THEN
+            CASE WHEN {alias}.status = 'cancelling' THEN 'cancelling' ELSE 'validating' END
+        WHEN {alias}.phase = '{PHASE_SEALING}' THEN
+            CASE WHEN {alias}.pending_terminal_status = 'cancelled'
+                 THEN 'cancelling' ELSE 'finalizing' END
+        WHEN {alias}.phase = '{PHASE_SEALED}' THEN {alias}.status
+        WHEN {alias}.status IN ('expired', 'failed') THEN 'in_progress'
+        ELSE {alias}.status
+    END)"""
+
+
+def display_category_sql(alias: str) -> str:
+    """The console's category of a batch, as SQL: the twin of ``renderers.display_category``.
+
+    ``processing``, ``completed`` (every request succeeded), ``issues``
+    (failed, expired, or completed with an unsuccessful request) or
+    ``cancelled``, from :func:`display_status_sql`.
+    """
+    status = display_status_sql(alias)
+    return f"""(CASE
+        WHEN {status} IN ('validating', 'in_progress', 'finalizing', 'cancelling')
+            THEN 'processing'
+        WHEN {status} = 'cancelled' THEN 'cancelled'
+        WHEN {status} = 'completed'
+             AND COALESCE({alias}.failed_count, 0) = 0
+             AND COALESCE({alias}.cancelled_count, 0) = 0
+             AND COALESCE({alias}.completed_count, 0) >= COALESCE({alias}.request_count, 0)
+            THEN 'completed'
+        ELSE 'issues'
+    END)"""
 
 
 def _claimable_job_sql(alias: str) -> str:
@@ -505,6 +549,26 @@ _COLUMN_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("idempotency_key", "TEXT"),
             ("claim_seq", "BIGINT"),
             ("read_lease_until", "TIMESTAMPTZ"),
+            # Batches created in the console (``created_via = 'console'``): the
+            # name and description the owner gave, and how it was configured
+            # (source file, overrides, confirmed model, credential revision,
+            # request digest). NULL for every batch the API created.
+            ("display_name", "TEXT"),
+            ("description", "TEXT"),
+            ("created_via", "TEXT"),
+            ("console_spec", "JSONB"),
+            # Why the batch is paused (``quota`` or ``role``); NULL from a
+            # worker of an earlier version, which only sets ``paused_until``.
+            ("paused_reason", "TEXT"),
+        ),
+    ),
+    (
+        # The stored-request copy a console batch makes of its source file
+        # (``derived_from_file_id``), owned by the batch that adopted it.
+        "batch_files",
+        (
+            ("derived_from_file_id", "TEXT"),
+            ("adopted_by_batch_id", "TEXT"),
         ),
     ),
     (
@@ -618,7 +682,8 @@ _BATCH_COLUMNS = (
     "api_surface, target, schema_version, protocol_profile, phase, pending_terminal_status, "
     "validation_error, input_file_id, output_file_id, error_file_id, results_expires_at, "
     "finalizing_at, sealed_at, cancelled_count, expired_count, prompt_tokens, "
-    "completion_tokens, unknown_cost_count, idempotency_key"
+    "completion_tokens, unknown_cost_count, idempotency_key, display_name, description, "
+    "created_via, console_spec, paused_reason"
 )
 _RESULT_COLUMNS = (
     "id, custom_id, status, status_code, response, error, prompt_tokens, completion_tokens, "
@@ -936,6 +1001,13 @@ _PURGE_ONE_SQL = f"""
         FROM victim
         WHERE r.batch_id = victim.id
         RETURNING r.batch_id
+    ),
+    derived AS (
+        UPDATE batch_files AS f
+        SET deleted_at = COALESCE(f.deleted_at, now())
+        FROM victim
+        WHERE f.adopted_by_batch_id = victim.id
+        RETURNING f.id
     )
     DELETE FROM batch_jobs WHERE id IN (SELECT id FROM victim)
     RETURNING id
@@ -1083,10 +1155,11 @@ class BatchStore:
             metadata: The caller's metadata, or None.
             completion_window_seconds: Time the batch has before its
                 unstarted items expire.
-            api_surface: ``openai_inline``, ``openai_file`` or ``anthropic``.
+            api_surface: ``openai_inline`` or ``openai_file`` (``anthropic`` only
+                for a batch stored the way the retired Message Batches API stored them).
             target: ``chat``, ``embeddings``, ``messages`` or ``responses``.
             protocol_profile: The protocol version the batch was created under
-                (the ``anthropic-version`` of an Anthropic batch).
+                (the ``anthropic-version`` of a Messages batch).
             phase: ``runnable``, or ``validating`` for a file batch whose items
                 the validator adds later.
             status: The initial status.
@@ -1138,12 +1211,7 @@ class BatchStore:
         failed_items = [item for item in items if item.get("error") is not None]
         async with self._pool.acquire() as conn, conn.transaction():
             if key_hash is not None:
-                owner = await conn.fetchrow(
-                    "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR SHARE",
-                    user_id,
-                )
-                if owner is None or owner["status"] != "active" or owner["hard_delete_pending"]:
-                    raise BatchOwnerUnavailable(user_id)
+                await self._lock_owner(conn, user_id)
             await conn.execute(_CLAIM_LOCK_SQL, _USER_ADMISSION_LOCK_CLASS, user_id)
             if idempotency is not None:
                 replay = await self._idempotent_replay(
@@ -1160,68 +1228,389 @@ class BatchStore:
             )
             if input_file_id is not None:
                 await self._pin_input(conn, input_file_id, user_id)
-            row = await conn.fetchrow(
-                f"""
-                INSERT INTO batch_jobs
-                    (id, user_id, key_hash, endpoint, model_ids, request_count,
-                     metadata, expires_at, api_surface, target, schema_version,
-                     protocol_profile, phase, status, input_file_id, retention_seconds,
-                     idempotency_key, in_progress_at)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
-                        now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14,
-                        $15, $16, $17, CASE WHEN $14 = 'in_progress' THEN now() END)
-                RETURNING {_BATCH_COLUMNS}
-                """,
-                batch_id,
-                user_id,
-                key_hash,
-                endpoint,
-                json.dumps(models),
-                len(items),
-                _dump_json(metadata),
-                float(completion_window_seconds),
-                api_surface,
-                target,
-                SCHEMA_VERSION,
-                protocol_profile,
-                phase,
-                status,
-                input_file_id,
-                retention_seconds,
-                idempotency["key"] if idempotency else None,
+            return await self._insert_batch(
+                conn,
+                batch_id=batch_id,
+                user_id=user_id,
+                key_hash=key_hash,
+                endpoint=endpoint,
+                models=models,
+                request_count=len(items),
+                metadata=metadata,
+                completion_window_seconds=completion_window_seconds,
+                api_surface=api_surface,
+                target=target,
+                protocol_profile=protocol_profile,
+                phase=phase,
+                status=status,
+                input_file_id=input_file_id,
+                retention_seconds=retention_seconds,
+                idempotency=idempotency,
+                queued_records=queued_records,
+                failed_items=failed_items,
             )
-            if idempotency is not None:
-                await conn.execute(
-                    """
-                    INSERT INTO batch_idempotency
-                        (owner_id, api_surface, idem_key, request_digest, batch_id)
-                    VALUES ($1, $2, $3, $4, $5)
-                    """,
-                    user_id,
-                    api_surface,
-                    idempotency["key"],
-                    idempotency["digest"],
-                    batch_id,
-                )
-            if queued_records:
-                await conn.copy_records_to_table(
-                    "batch_items", records=queued_records, columns=_ITEM_COPY_COLUMNS
-                )
-            if failed_items:
-                await self._insert_failed_items(conn, batch_id, failed_items)
-                await conn.execute(
-                    "UPDATE batch_jobs SET failed_count = failed_count + $2 WHERE id = $1",
-                    batch_id,
-                    len(failed_items),
-                )
-            if phase == PHASE_RUNNABLE and (failed_items or not queued_records):
-                # Every request may have failed admission: no item will ever
-                # report back, so the batch is final now.
-                await self._settle(conn, batch_id, status)
-                row = await conn.fetchrow(
-                    f"SELECT {_BATCH_COLUMNS} FROM batch_jobs WHERE id = $1", batch_id
-                )
+
+    async def _lock_owner(self, conn: Any, user_id: str) -> None:
+        """Hold the owner's row (``FOR SHARE``) and refuse an owner no longer active.
+
+        Raises:
+            BatchOwnerUnavailable: The owner is gone, inactive or being hard-deleted.
+        """
+        owner = await conn.fetchrow(
+            "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR SHARE",
+            user_id,
+        )
+        if owner is None or owner["status"] != "active" or owner["hard_delete_pending"]:
+            raise BatchOwnerUnavailable(user_id)
+
+    async def _insert_batch(
+        self,
+        conn: Any,
+        *,
+        batch_id: str,
+        user_id: str,
+        key_hash: str | None,
+        endpoint: str,
+        models: list[str],
+        request_count: int,
+        metadata: dict[str, Any] | None,
+        completion_window_seconds: int,
+        api_surface: str,
+        target: str,
+        protocol_profile: str | None,
+        phase: str,
+        status: str,
+        input_file_id: str | None,
+        retention_seconds: int | None,
+        idempotency: dict[str, str] | None,
+        queued_records: list[tuple[Any, ...]],
+        failed_items: list[dict[str, Any]],
+        console: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Insert a batch, its idempotency record and its items on *conn*.
+
+        Runs inside the caller's transaction, after the caller took the
+        owner's admission lock and checked replay and caps; it neither opens a
+        connection nor commits. ``console`` carries the columns of a batch
+        created in the console (``display_name``, ``description``,
+        ``console_spec``); ``created_via`` is then ``console``.
+        """
+        console = console or {}
+        row = await conn.fetchrow(
+            f"""
+            INSERT INTO batch_jobs
+                (id, user_id, key_hash, endpoint, model_ids, request_count,
+                 metadata, expires_at, api_surface, target, schema_version,
+                 protocol_profile, phase, status, input_file_id, retention_seconds,
+                 idempotency_key, in_progress_at, display_name, description,
+                 created_via, console_spec)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
+                    now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14,
+                    $15, $16, $17, CASE WHEN $14 = 'in_progress' THEN now() END,
+                    $18, $19, $20, $21::jsonb)
+            RETURNING {_BATCH_COLUMNS}
+            """,
+            batch_id,
+            user_id,
+            key_hash,
+            endpoint,
+            json.dumps(models),
+            request_count,
+            _dump_json(metadata),
+            float(completion_window_seconds),
+            api_surface,
+            target,
+            SCHEMA_VERSION,
+            protocol_profile,
+            phase,
+            status,
+            input_file_id,
+            retention_seconds,
+            idempotency["key"] if idempotency else None,
+            console.get("display_name"),
+            console.get("description"),
+            "console" if console else None,
+            _dump_json(console.get("console_spec")),
+        )
+        if idempotency is not None:
+            await conn.execute(
+                """
+                INSERT INTO batch_idempotency
+                    (owner_id, api_surface, idem_key, request_digest, batch_id)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                user_id,
+                api_surface,
+                idempotency["key"],
+                idempotency["digest"],
+                batch_id,
+            )
+        if queued_records:
+            await conn.copy_records_to_table(
+                "batch_items", records=queued_records, columns=_ITEM_COPY_COLUMNS
+            )
+        if failed_items:
+            await self._insert_failed_items(conn, batch_id, failed_items)
+            await conn.execute(
+                "UPDATE batch_jobs SET failed_count = failed_count + $2 WHERE id = $1",
+                batch_id,
+                len(failed_items),
+            )
+        if phase == PHASE_RUNNABLE and (failed_items or not queued_records):
+            # Every request may have failed admission: no item will ever
+            # report back, so the batch is final now.
+            await self._settle(conn, batch_id, status)
+            row = await conn.fetchrow(
+                f"SELECT {_BATCH_COLUMNS} FROM batch_jobs WHERE id = $1", batch_id
+            )
         return _batch_row(row)
+
+    async def create_console_batch(
+        self,
+        *,
+        batch_id: str,
+        user_id: str,
+        key_hash: str,
+        endpoint: str,
+        target: str,
+        source_file_id: str,
+        source_sha256: str,
+        derived: dict[str, Any] | None,
+        file_retention_seconds: int,
+        completion_window_seconds: int,
+        retention_seconds: int,
+        idempotency: dict[str, str],
+        max_active: int | None,
+        max_queued: int | None,
+        console: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Store a console batch over its source file, adopting its stored-request copy.
+
+        One transaction, with locks in the admission order -- the owner's row,
+        the owner's admission lock, the source file, then the derived file:
+
+        1. The idempotency key is looked up under the lock **before** the
+           caps, so a retry of a submission that already committed returns
+           that batch even when the active-batch cap is now full. A console
+           batch also answers a key whose record has expired, as long as the
+           batch itself is still stored (its row keeps the key and the
+           request digest), so a late retry never creates a second batch.
+        2. The caps.
+        3. The source file is locked ``FOR UPDATE`` -- which waits for, and
+           is waited for by, a deletion's ``UPDATE`` of the row -- and checked
+           again: the owner's, a ready upload, not deleted, not expired, not
+           itself a derived file, and the bytes previewed (``source_sha256``).
+        4. The derived file (``derived``: ``{"file_id", "sha256",
+           "line_count"}``, written ``uploading`` beforehand), when there is
+           one, becomes ready, adopted by this batch and expiring no later
+           than its source; the batch reads it as its input. Without one the
+           batch reads the source itself.
+        5. The batch row, as a file batch in ``validating``, and its
+           idempotency record.
+
+        Nothing is visible until it commits. On a replay or a refusal the
+        derived file is left ``uploading`` for the caller (or the collector)
+        to remove.
+
+        Returns:
+            The batch row; the replayed batch's with ``"replayed": True``.
+
+        Raises:
+            BatchOwnerUnavailable: The owner is no longer active.
+            BatchLimitExceeded: A per-user cap would be exceeded.
+            BatchInputUnavailable: The source (or the derived file) is gone.
+            IdempotencyConflict: The key was used for a different submission.
+            IdempotencyTombstoned: The key's batch was deleted.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._lock_owner(conn, user_id)
+            await conn.execute(_CLAIM_LOCK_SQL, _USER_ADMISSION_LOCK_CLASS, user_id)
+            replay = await self._idempotent_replay(
+                conn, user_id, SURFACE_OPENAI_FILE, idempotency["key"], idempotency["digest"]
+            )
+            if replay is None:
+                replay = await self._console_row_replay(
+                    conn, user_id, idempotency["key"], idempotency["digest"]
+                )
+            if replay is not None:
+                return replay
+            await self._check_user_caps(
+                conn, user_id, max_active=max_active, max_queued=max_queued, requested=0
+            )
+            # Lock first, then judge the row in a statement of its own. A
+            # ``FOR UPDATE`` that waited for another holder returns the row as
+            # it read it before waiting when nobody changed it, with
+            # ``now()`` the transaction's start: a source that expired during
+            # the wait would still pass. The second statement reads the row
+            # as committed after the lock and the clock as it is now.
+            locked = await conn.fetchval(
+                "SELECT id FROM batch_files WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                source_file_id,
+                user_id,
+            )
+            source = None
+            if locked is not None:
+                source = await conn.fetchrow(
+                    """
+                    SELECT id, sha256, expires_at FROM batch_files
+                    WHERE id = $1 AND user_id = $2 AND kind = 'upload' AND purpose = 'batch'
+                      AND status = 'ready' AND deleted_at IS NULL
+                      AND (expires_at IS NULL OR expires_at > clock_timestamp())
+                      AND derived_from_file_id IS NULL
+                    """,
+                    source_file_id,
+                    user_id,
+                )
+            if source is None or source["sha256"] != source_sha256:
+                raise BatchInputUnavailable(source_file_id)
+            input_file_id = source_file_id
+            if derived is not None:
+                adopted = await conn.fetchval(
+                    """
+                    UPDATE batch_files
+                    SET status = 'ready', sha256 = $4, line_count = $5, ready_at = now(),
+                        adopted_by_batch_id = $3,
+                        expires_at = LEAST($6::timestamptz,
+                                           clock_timestamp() + make_interval(secs => $7))
+                    WHERE id = $1 AND user_id = $2 AND kind = 'upload'
+                      AND status = 'uploading' AND derived_from_file_id = $8
+                      AND adopted_by_batch_id IS NULL AND deleted_at IS NULL
+                    RETURNING id
+                    """,
+                    derived["file_id"],
+                    user_id,
+                    batch_id,
+                    derived["sha256"],
+                    derived["line_count"],
+                    source["expires_at"],
+                    float(file_retention_seconds),
+                    source_file_id,
+                )
+                if adopted is None:
+                    raise BatchInputUnavailable(derived["file_id"])
+                input_file_id = derived["file_id"]
+            return await self._insert_batch(
+                conn,
+                batch_id=batch_id,
+                user_id=user_id,
+                key_hash=key_hash,
+                endpoint=endpoint,
+                models=[],
+                request_count=0,
+                metadata=None,
+                completion_window_seconds=completion_window_seconds,
+                api_surface=SURFACE_OPENAI_FILE,
+                target=target,
+                protocol_profile=None,
+                phase=PHASE_VALIDATING,
+                status="validating",
+                input_file_id=input_file_id,
+                retention_seconds=retention_seconds,
+                idempotency=idempotency,
+                queued_records=[],
+                failed_items=[],
+                console=console,
+            )
+
+    async def _console_row_replay(
+        self, conn: Any, owner_id: str, key: str, digest: str
+    ) -> dict[str, Any] | None:
+        """A console batch still stored under *key*, once its idempotency record is gone.
+
+        The record lives until a day after the batch ends; the batch itself
+        until its retention runs out. In between, the row (which keeps the key
+        and, in ``console_spec``, the request digest) still answers a retry.
+
+        Raises:
+            IdempotencyConflict: The batch was created from a different submission.
+        """
+        row = await conn.fetchrow(
+            f"SELECT {_BATCH_COLUMNS} FROM batch_jobs "
+            "WHERE user_id = $1 AND created_via = 'console' AND idempotency_key = $2 "
+            "AND delete_requested_at IS NULL ORDER BY created_at DESC LIMIT 1",
+            owner_id,
+            key,
+        )
+        if row is None:
+            return None
+        batch = _batch_row(row)
+        spec = batch.get("console_spec") or {}
+        if spec.get("request_digest") != digest:
+            raise IdempotencyConflict(batch["id"])
+        return {**batch, "replayed": True}
+
+    async def find_console_submission(self, *, user_id: str, key: str) -> dict[str, Any]:
+        """What a console submission key is known to have created, read only.
+
+        Returns:
+            ``{"batch": row or None, "record": "live" | "deleted" | None}``:
+            the console batch still stored under the key (whether or not its
+            idempotency record has expired), and the state of that record.
+            Neither means the outcome can no longer be established here.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {_BATCH_COLUMNS} FROM batch_jobs "
+                "WHERE user_id = $1 AND created_via = 'console' AND idempotency_key = $2 "
+                "AND delete_requested_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                user_id,
+                key,
+            )
+        record = await self.find_idempotent(
+            owner_id=user_id, api_surface=SURFACE_OPENAI_FILE, key=key
+        )
+        state = None if record is None else ("deleted" if record["deleted"] else "live")
+        return {"batch": _batch_row(row) if row is not None else None, "record": state}
+
+    async def active_batch_credential(self, user_id: str) -> dict[str, Any] | None:
+        """The account's active, unexpired API key a console batch would run under, or None.
+
+        ``{"key_id", "key_prefix", "key_hash"}``. The hash never leaves the
+        server; callers show the prefix and confirm a revision derived from it.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, key_prefix, key_hash FROM api_keys "
+                "WHERE user_id = $1 AND status = 'active' "
+                "AND (expires_at IS NULL OR expires_at > now()) "
+                "ORDER BY created_at DESC LIMIT 1",
+                user_id,
+            )
+        if row is None:
+            return None
+        return {"key_id": row["id"], "key_prefix": row["key_prefix"], "key_hash": row["key_hash"]}
+
+    async def iter_item_requests(
+        self,
+        batch_id: str,
+        *,
+        statuses: frozenset[str] | None = None,
+        after: int = 0,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """A page of a batch's stored requests in submission order: ``id, custom_id, request``.
+
+        Only items in ``statuses`` when given.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, custom_id, request, status FROM batch_items "
+                "WHERE batch_id = $1 AND id > $2 "
+                "AND ($3::text[] IS NULL OR status = ANY($3::text[])) ORDER BY id LIMIT $4",
+                batch_id,
+                after,
+                sorted(statuses) if statuses is not None else None,
+                limit,
+            )
+        return [
+            {
+                "id": row["id"],
+                "custom_id": row["custom_id"],
+                "request": _load_json(row["request"]),
+                "status": row["status"],
+            }
+            for row in rows
+        ]
 
     async def _pin_input(self, conn: Any, file_id: str, user_id: str) -> None:
         """Hold a file batch's input for the batch being created, or refuse it.
@@ -1376,26 +1765,16 @@ class BatchStore:
             )
 
     async def get_batch(
-        self,
-        batch_id: str,
-        *,
-        user_id: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
+        self, batch_id: str, *, user_id: str | None = None
     ) -> dict[str, Any] | None:
-        """Fetch a batch row, or None when absent (or not *user_id*'s, when given).
-
-        ``surfaces`` restricts the lookup to batches of those API surfaces, so
-        an id of another protocol family reads as absent.
-        """
+        """Fetch a batch row, or None when absent (or not *user_id*'s, when given)."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 f"SELECT {_BATCH_COLUMNS} FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
-                "AND delete_requested_at IS NULL "
-                "AND ($3::text[] IS NULL OR api_surface = ANY($3::text[]))",
+                "AND delete_requested_at IS NULL",
                 batch_id,
                 user_id,
-                sorted(surfaces) if surfaces is not None else None,
             )
         return _batch_row(row) if row is not None else None
 
@@ -1406,8 +1785,9 @@ class BatchStore:
         limit: int,
         after: str | None = None,
         before: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
         status: str | None = None,
+        query: str | None = None,
+        category: str | None = None,
     ) -> list[dict[str, Any]]:
         """List batches, newest first.
 
@@ -1419,37 +1799,39 @@ class BatchStore:
                 else's, ends the listing.
             before: Id of the first batch of the next page: return the newer
                 ones just before it (still newest first).
-            surfaces: Only batches of these API surfaces.
-            status: Only batches in this internal status.
+            status: Only batches showing this status (:func:`display_status_sql`,
+                the status the API and the console report), not the stored one.
+            category: Only batches in this console category
+                (:func:`display_category_sql`), applied before the page is cut.
+            query: Only batches whose id is exactly this, or whose console
+                name contains it (case-insensitive, taken literally).
 
         Returns:
             Up to ``limit`` batch rows ordered by ``created_at DESC, id DESC``.
         """
+        args: list[Any] = [user_id, limit, status]
         conditions = [
             "($1::text IS NULL OR j.user_id = $1)",
             "j.delete_requested_at IS NULL",
-            "($3::text[] IS NULL OR j.api_surface = ANY($3::text[]))",
-            "($4::text IS NULL OR j.status = $4)",
+            f"($3::text IS NULL OR {display_status_sql('j')} = $3)",
         ]
-        args: list[Any] = [
-            user_id,
-            limit,
-            sorted(surfaces) if surfaces is not None else None,
-            status,
-        ]
-        order = "DESC"
-        if after is not None:
-            args.append(after)
+        if category:
+            args.append(category)
+            conditions.append(f"{display_category_sql('j')} = ${len(args)}")
+        if query:
+            args.extend([query, f"%{_like_escape(query)}%"])
             conditions.append(
-                "(j.created_at, j.id) < (SELECT created_at, id FROM batch_jobs "
-                "WHERE id = $5 AND ($1::text IS NULL OR user_id = $1))"
+                f"(j.id = ${len(args) - 1} OR j.display_name ILIKE ${len(args)} ESCAPE '\\')"
             )
-        elif before is not None:
-            args.append(before)
-            order = "ASC"
+        order = "DESC"
+        cursor = after if after is not None else before
+        if cursor is not None:
+            args.append(cursor)
+            comparison = "<" if after is not None else ">"
+            order = "DESC" if after is not None else "ASC"
             conditions.append(
-                "(j.created_at, j.id) > (SELECT created_at, id FROM batch_jobs "
-                "WHERE id = $5 AND ($1::text IS NULL OR user_id = $1))"
+                f"(j.created_at, j.id) {comparison} (SELECT created_at, id FROM batch_jobs "
+                f"WHERE id = ${len(args)} AND ($1::text IS NULL OR user_id = $1))"
             )
         columns = ", ".join(f"j.{name.strip()}" for name in _BATCH_COLUMNS.split(","))
         async with self._pool.acquire() as conn:
@@ -1477,6 +1859,7 @@ class BatchStore:
                        COALESCE(sum(request_count), 0) AS requests,
                        COALESCE(sum(completed_count), 0) AS completed,
                        COALESCE(sum(failed_count), 0) AS failed,
+                       COALESCE(sum(cancelled_count), 0) AS cancelled,
                        COALESCE(sum(cost_usd), 0) AS cost_usd,
                        COALESCE(sum(prompt_tokens), 0) AS prompt_tokens,
                        COALESCE(sum(completion_tokens), 0) AS completion_tokens,
@@ -1496,6 +1879,7 @@ class BatchStore:
                 "requests": int(row["requests"]),
                 "completed": int(row["completed"]),
                 "failed": int(row["failed"]),
+                "cancelled": int(row["cancelled"]),
                 "cost_usd": float(row["cost_usd"] or 0),
                 "prompt_tokens": int(row["prompt_tokens"]),
                 "completion_tokens": int(row["completion_tokens"]),
@@ -1532,11 +1916,7 @@ class BatchStore:
         return [_result_row(row) for row in rows]
 
     async def cancel_batch(
-        self,
-        batch_id: str,
-        *,
-        user_id: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
+        self, batch_id: str, *, user_id: str | None = None
     ) -> dict[str, Any] | None:
         """Cancel a validating or in-progress batch.
 
@@ -1555,11 +1935,9 @@ class BatchStore:
             row = await conn.fetchrow(
                 "SELECT status, phase FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
-                "AND delete_requested_at IS NULL "
-                "AND ($3::text[] IS NULL OR api_surface = ANY($3::text[])) FOR NO KEY UPDATE",
+                "AND delete_requested_at IS NULL FOR NO KEY UPDATE",
                 batch_id,
                 user_id,
-                sorted(surfaces) if surfaces is not None else None,
             )
             if row is None:
                 return None
@@ -1578,17 +1956,10 @@ class BatchStore:
             )
         return _batch_row(batch)
 
-    async def delete_batch(
-        self,
-        batch_id: str,
-        *,
-        user_id: str | None = None,
-        surfaces: frozenset[str] | set[str] | None = None,
-        require_ended: bool = False,
-    ) -> bool:
+    async def delete_batch(self, batch_id: str, *, user_id: str | None = None) -> bool:
         """Delete a batch with no live upstream call, including its items.
 
-        Scoped to *user_id* (and *surfaces*) when given. The batch's immutable
+        Scoped to *user_id* when given. The batch's immutable
         model ids are read first, then their claim/heartbeat advisory locks are
         taken in sorted order before the batch is locked and rechecked. A
         heartbeat therefore waits rather than skipping an item lock and losing
@@ -1601,18 +1972,14 @@ class BatchStore:
         Raises:
             BatchDeleteInProgress: At least one item has an unexpired running
                 lease and may still be making an upstream call.
-            BatchNotEnded: ``require_ended`` and the batch is not sealed.
         """
-        scope = sorted(surfaces) if surfaces is not None else None
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT model_ids FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
-                "AND delete_requested_at IS NULL "
-                "AND ($3::text[] IS NULL OR api_surface = ANY($3::text[]))",
+                "AND delete_requested_at IS NULL",
                 batch_id,
                 user_id,
-                scope,
             )
             if row is None:
                 return False
@@ -1626,7 +1993,7 @@ class BatchStore:
             for model_id in sorted(set(model_ids)):
                 await conn.execute(_CLAIM_LOCK_SQL, _CLAIM_LOCK_CLASS, model_id)
             found = await conn.fetchrow(
-                "SELECT phase FROM batch_jobs "
+                "SELECT id FROM batch_jobs "
                 "WHERE id = $1 AND ($2::text IS NULL OR user_id = $2) "
                 "AND delete_requested_at IS NULL FOR UPDATE",
                 batch_id,
@@ -1634,8 +2001,6 @@ class BatchStore:
             )
             if found is None:
                 return False
-            if require_ended and found["phase"] != PHASE_SEALED:
-                raise BatchNotEnded(batch_id)
             live = await conn.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM batch_items "
                 "WHERE batch_id = $1 AND status = 'running' "
@@ -1657,6 +2022,13 @@ class BatchStore:
             )
             await conn.execute(
                 "DELETE FROM batch_webhook_events WHERE batch_id = $1 AND status = 'pending'",
+                batch_id,
+            )
+            # The stored-request copy this batch adopted goes with it; the
+            # collector removes its bytes once nothing pins or reads them.
+            await conn.execute(
+                "UPDATE batch_files SET deleted_at = now() "
+                "WHERE adopted_by_batch_id = $1 AND deleted_at IS NULL",
                 batch_id,
             )
             reading = await conn.fetchval(
@@ -2230,8 +2602,12 @@ class BatchStore:
             await self._settle(conn, batch_id, "failed")
         return True
 
-    async def pause_user_batches(self, user_id: str, until: datetime) -> int:
+    async def pause_user_batches(
+        self, user_id: str, until: datetime, reason: str | None = None
+    ) -> int:
         """Hold a user's validating and in-progress batches back from claims until *until*.
+
+        ``reason`` (``quota`` or ``role``) is what the console shows.
 
         Returns:
             The number of batches paused.
@@ -2239,7 +2615,7 @@ class BatchStore:
         async with self._pool.acquire() as conn:
             result = await conn.execute(
                 """
-                UPDATE batch_jobs SET paused_until = $2
+                UPDATE batch_jobs SET paused_until = $2, paused_reason = $3
                 WHERE id IN (
                     SELECT id FROM batch_jobs
                     WHERE user_id = $1 AND status IN ('validating', 'in_progress')
@@ -2249,6 +2625,7 @@ class BatchStore:
                 """,
                 user_id,
                 until,
+                reason,
             )
         return _rowcount(result)
 
@@ -3005,12 +3382,21 @@ class BatchStore:
             conn,
             row["user_id"],
             batch_id,
-            terminal_event(batch_id, row["api_surface"], final),
+            terminal_event(batch_id, final, api_surface=row["api_surface"]),
         )
 
 
-def terminal_event(batch_id: str, api_surface: str, final_status: str) -> dict[str, Any]:
-    """The webhook event a batch's end publishes. Never carries prompts or results."""
+def terminal_event(
+    batch_id: str, final_status: str, *, api_surface: str | None = None
+) -> dict[str, Any]:
+    """The webhook event a batch's end publishes. Never carries prompts or results.
+
+    ``batch.<final status>`` for every batch created through ``/v1/batches``.
+    A batch the retired Message Batches API stored (``api_surface`` is
+    ``anthropic``) still ends with ``message_batch.ended``, the event its
+    owner subscribed to when it was created; its id works on ``/v1/batches``.
+    Events already in the outbox are delivered as they were written.
+    """
     import time
 
     event_id = new_event_id()
@@ -3139,6 +3525,11 @@ def _batch_row(row: Any) -> dict[str, Any]:
         "completion_tokens": int(row["completion_tokens"] or 0),
         "unknown_cost_count": row["unknown_cost_count"],
         "idempotency_key": row["idempotency_key"],
+        "display_name": row["display_name"],
+        "description": row["description"],
+        "created_via": row["created_via"],
+        "console_spec": _load_json(row["console_spec"]),
+        "paused_reason": row["paused_reason"],
     }
 
 
@@ -3161,6 +3552,11 @@ def _result_row(row: Any) -> dict[str, Any]:
         "attempts": row["attempts"],
         "model_id": row["model_id"],
     }
+
+
+def _like_escape(text: str) -> str:
+    """*text* with the ``LIKE`` wildcards and the escape character taken literally."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _rowcount(result: Any) -> int:
@@ -3261,15 +3657,14 @@ def _load_json_envelope(value: list[Any] | tuple[Any, ...]) -> Any:
 
 __all__ = [
     "ACTIVE_BATCH_STATUSES",
-    "OPENAI_SURFACES",
     "SUPPORTED_JOB_KINDS",
     "TERMINAL_BATCH_STATUSES",
     "BatchDeleteInProgress",
     "BatchInputUnavailable",
     "BatchLimitExceeded",
-    "BatchNotEnded",
     "BatchOwnerUnavailable",
     "BatchStore",
     "IdempotencyConflict",
     "IdempotencyTombstoned",
+    "display_status_sql",
 ]
