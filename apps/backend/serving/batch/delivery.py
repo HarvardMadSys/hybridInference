@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -129,7 +130,7 @@ async def seal_file_batch(
     return sealed
 
 
-class _LeaseKeeper:
+class LeaseKeeper:
     """Renews a download's read lease on its own schedule, however slowly the client reads.
 
     A client that stops reading suspends the response generator, so renewing
@@ -163,6 +164,7 @@ class _LeaseKeeper:
                 logger.warning("could not renew a batch read lease", exc_info=True)
 
     async def close(self) -> None:
+        """Stop renewing and drop the lease."""
         self._task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await self._task
@@ -197,7 +199,7 @@ async def stream_lines(
         lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
     except LookupError:
         raise DownloadInterrupted(batch_id) from None
-    keeper = _LeaseKeeper(store, lease)
+    keeper = LeaseKeeper(store, lease)
     digest = hashlib.sha256()
     size = 0
     limit = int(expected["bytes"]) if expected is not None else None
@@ -258,7 +260,7 @@ async def stream_upload(*, store: Any, file_store: Any, file_id: str) -> AsyncIt
         lease = await store.take_read_lease(file_id=file_id, ttl_seconds=READ_LEASE_SECONDS)
     except LookupError:
         raise DownloadInterrupted(file_id) from None
-    keeper = _LeaseKeeper(store, lease)
+    keeper = LeaseKeeper(store, lease)
     size = 0
     try:
         after = -1
@@ -276,5 +278,58 @@ async def stream_upload(*, store: Any, file_store: Any, file_id: str) -> AsyncIt
                 yield data
         if size != expected:
             raise DownloadInterrupted(file_id)
+    finally:
+        await keeper.close()
+
+
+#: Item statuses whose requests "unfinished requests" exports: they never
+#: produced a result (failed, expired before they ran, cancelled).
+UNFINISHED_STATUSES = frozenset({"failed", "expired", "cancelled"})
+
+
+async def stream_requests(
+    *, store: Any, batch_id: str, url: str, statuses: frozenset[str] | None = None
+) -> AsyncIterator[bytes]:
+    """Yield a batch's stored requests as input lines, under a read lease on the batch.
+
+    Each line is ``{"custom_id", "method": "POST", "url", "body"}`` -- the
+    request as it was stored, ready to upload again -- in submission order;
+    only the items in ``statuses`` when given.
+
+    Raises:
+        DownloadInterrupted: The batch was removed under the download.
+    """
+    try:
+        lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
+    except LookupError:
+        raise DownloadInterrupted(batch_id) from None
+    keeper = LeaseKeeper(store, lease)
+    try:
+        after = 0
+        while True:
+            page = await store.iter_item_requests(
+                batch_id, statuses=statuses, after=after, limit=PAGE
+            )
+            if keeper.lost:
+                raise DownloadInterrupted(batch_id)
+            if not page:
+                break
+            lines = []
+            for item in page:
+                after = item["id"]
+                lines.append(
+                    json.dumps(
+                        {
+                            "custom_id": item["custom_id"],
+                            "method": "POST",
+                            "url": url,
+                            "body": item["request"],
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            yield "".join(lines).encode("utf-8")
     finally:
         await keeper.close()

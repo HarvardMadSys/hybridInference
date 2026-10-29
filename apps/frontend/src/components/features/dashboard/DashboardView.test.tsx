@@ -37,6 +37,16 @@ vi.mock('@/components/features/dashboard/RecentRequests', () => ({ RecentRequest
 vi.mock('@/components/features/dashboard/UsageStats', () => ({ UsageStats: () => null }));
 vi.mock('@/components/ui/UpdatesBanner', () => ({ UpdatesBanner: () => null }));
 
+let batchEntry: boolean | null = false;
+let batchError: string | null = null;
+vi.mock('@/lib/hooks/queries/useBatchCapabilities', () => ({
+  useBatchCapabilities: () => ({
+    capabilities: batchEntry === null ? null : { show_entry: batchEntry },
+    loading: false,
+    error: batchError,
+  }),
+}));
+
 import { DashboardView } from './DashboardView';
 
 describe('DashboardView runtime agents gate', () => {
@@ -46,6 +56,8 @@ describe('DashboardView runtime agents gate', () => {
     agentsEnabled = false;
     agentsUrl = '';
     role = 'internal';
+    batchEntry = false;
+    batchError = null;
     identity = { email: 'internal@example.test', user_name: 'Internal User' };
   });
 
@@ -119,5 +131,99 @@ describe('DashboardView account identity', () => {
     expect(screen.getByText('Welcome back, Ops')).toBeInTheDocument();
     expect(screen.getByText('Email:').nextElementSibling).toHaveTextContent('ops@example.test');
     expect(screen.queryByText('Login name:')).not.toBeInTheDocument();
+  });
+});
+
+describe('DashboardView tools', () => {
+  afterEach(() => cleanup());
+
+  beforeEach(() => {
+    agentsEnabled = true;
+    agentsUrl = '/agents';
+    batchEntry = false;
+    batchError = null;
+    identity = { email: 'user@example.test', user_name: 'User' };
+  });
+
+  function tools(): string[] {
+    const heading = screen.queryByRole('heading', { name: 'Tools' });
+    if (!heading) return [];
+    const box = heading.parentElement as HTMLElement;
+    return Array.from(box.querySelectorAll('a')).map((link) => link.textContent?.trim() ?? '');
+  }
+
+  it.each([
+    ['free', false, []],
+    ['free', true, ['Batches']],
+    ['pro', true, ['Batches']],
+    ['internal', false, ['Agents', 'API Playground']],
+    ['internal', true, ['Agents', 'API Playground', 'Batches']],
+    ['admin', true, ['Agents', 'API Playground', 'Batches', 'Admin Console', 'pgAdmin']],
+    ['admin', false, ['Agents', 'API Playground', 'Admin Console', 'pgAdmin']],
+  ])(
+    'a %s user with the Batches entry %s sees only the tools each permits',
+    (userRole, entry, visibleTools) => {
+      role = userRole;
+      batchEntry = entry;
+
+      render(<DashboardView />);
+
+      expect(tools()).toEqual(visibleTools);
+      expect(screen.queryAllByRole('heading', { name: /tools/i })).toHaveLength(
+        visibleTools.length ? 1 : 0,
+      );
+    },
+  );
+
+  it('shows no Batches entry while the capabilities are unknown', () => {
+    role = 'internal';
+    batchEntry = null;
+
+    render(<DashboardView />);
+
+    expect(screen.queryByRole('link', { name: /batches/i })).not.toBeInTheDocument();
+  });
+
+  it.each(['internal', 'admin'])(
+    'keeps the legacy entry for %s when the first lookup fails',
+    (userRole) => {
+      role = userRole;
+      batchEntry = null;
+      batchError = 'offline';
+
+      render(<DashboardView />);
+
+      expect(screen.getByRole('link', { name: 'Batches' })).toBeInTheDocument();
+    },
+  );
+
+  it('does not infer a free account has history when its first lookup fails', () => {
+    role = 'free';
+    batchEntry = null;
+    batchError = 'offline';
+
+    render(<DashboardView />);
+
+    expect(screen.queryByRole('link', { name: 'Batches' })).not.toBeInTheDocument();
+  });
+
+  it('keeps a known disabled entry hidden through a failed refresh', () => {
+    role = 'internal';
+    batchEntry = false;
+    batchError = 'offline';
+
+    render(<DashboardView />);
+
+    expect(screen.queryByRole('link', { name: 'Batches' })).not.toBeInTheDocument();
+  });
+
+  it('keeps Agents behind its feature flag for internal users', () => {
+    role = 'internal';
+    agentsEnabled = false;
+    batchEntry = true;
+
+    render(<DashboardView />);
+
+    expect(tools()).toEqual(['API Playground', 'Batches']);
   });
 });

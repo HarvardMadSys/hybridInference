@@ -727,7 +727,7 @@ class BatchScheduler:
             return
         except StoredKeyQuotaExceeded as exc:
             await self._release(entry, delay=self._timings.owner_retry_seconds)
-            await self._pause_owner(owner, exc.reset_at, "daily cost quota spent")
+            await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
             return
         except Exception:
             logger.warning(
@@ -746,6 +746,7 @@ class BatchScheduler:
                 owner,
                 datetime.now(UTC) + timedelta(seconds=self._timings.role_pause_seconds),
                 f"role {role!r} is below {cfg.min_role!r}",
+                kind="role",
             )
             return
 
@@ -982,8 +983,8 @@ class BatchScheduler:
                 extra={"event": "batch_owner_unauthorized", "reason": reason},
             )
 
-    async def _pause_owner(self, user_id: str, until: datetime, reason: str) -> None:
-        paused = await self._store.pause_user_batches(user_id, until)
+    async def _pause_owner(self, user_id: str, until: datetime, reason: str, *, kind: str) -> None:
+        paused = await self._store.pause_user_batches(user_id, until, kind)
         logger.info(
             "batch: paused %d batch(es) of user %s until %s: %s",
             paused,

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { usePagedBatches } from './usePagedBatches';
 import type { ConsoleBatch, ConsoleBatchPage } from '@/lib/api/batches';
@@ -64,5 +64,25 @@ describe('usePagedBatches', () => {
       await second.promise;
     });
     expect(result.current.batches.map((b) => b.id)).toEqual(['b-1']);
+  });
+
+  it('clears a page error when retry succeeds and preserves the valid rows', async () => {
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValueOnce(page(['first'], true))
+      .mockRejectedValueOnce(new Error('Filtering is temporarily unavailable'))
+      .mockResolvedValueOnce(page(['second']));
+    const { result } = renderHook(() => usePagedBatches(fetchPage, 'issues'));
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['first']));
+
+    await act(async () => result.current.loadMore());
+    expect(result.current.error).toBe('Filtering is temporarily unavailable');
+    expect(result.current.batches.map((row) => row.id)).toEqual(['first']);
+    expect(result.current.hasMore).toBe(true);
+
+    await act(async () => result.current.loadMore());
+    expect(result.current.error).toBeNull();
+    expect(result.current.batches.map((row) => row.id)).toEqual(['first', 'second']);
+    expect(result.current.hasMore).toBe(false);
   });
 });

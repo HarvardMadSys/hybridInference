@@ -5,10 +5,11 @@ interface InputFieldProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label: string;
   hint?: string;
   error?: string;
+  errorAlertId?: string;
 }
 
 export const InputField = React.forwardRef<HTMLInputElement, InputFieldProps>(
-  ({ label, hint, error, className, ...props }, ref) => (
+  ({ label, hint, error, errorAlertId, className, ...props }, ref) => (
     <label className="block">
       <span className="text-sm font-medium text-gray-700">{label}</span>
       <input
@@ -25,7 +26,15 @@ export const InputField = React.forwardRef<HTMLInputElement, InputFieldProps>(
         {...props}
       />
       {hint && !error && <span className="mt-1.5 block text-xs text-gray-500">{hint}</span>}
-      {error && <span className="mt-1.5 block text-xs text-red-600">{error}</span>}
+      {error && (
+        <span
+          id={errorAlertId}
+          role={errorAlertId ? 'alert' : undefined}
+          className="mt-1.5 block text-xs text-red-600"
+        >
+          {error}
+        </span>
+      )}
     </label>
   ),
 );

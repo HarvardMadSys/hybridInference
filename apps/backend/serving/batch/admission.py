@@ -92,23 +92,25 @@ async def find_replay(
     if record is None:
         return None
     if record["request_digest"] != digest:
-        raise _conflict()
+        raise conflict_error()
     if record["deleted"]:
-        raise _gone()
+        raise gone_error()
     row = await store.get_batch(record["batch_id"], user_id=owner)
     if row is None:
-        raise _gone()
+        raise gone_error()
     return row
 
 
-def _conflict() -> HTTPException:
+def conflict_error() -> HTTPException:
+    """The 409 for an ``Idempotency-Key`` already used for a different request."""
     return HTTPException(
         409,
         "This Idempotency-Key was already used for a different request; use a new key",
     )
 
 
-def _gone() -> HTTPException:
+def gone_error() -> HTTPException:
+    """The 410 for an ``Idempotency-Key`` whose batch was deleted."""
     return HTTPException(
         410,
         "The batch this Idempotency-Key created has been deleted; use a new key to create another",
@@ -211,9 +213,9 @@ async def create(store: Any, **kwargs: Any) -> dict[str, Any]:
     except BatchLimitExceeded as exc:
         raise limit_error(exc) from None
     except IdempotencyConflict:
-        raise _conflict() from None
+        raise conflict_error() from None
     except IdempotencyTombstoned:
-        raise _gone() from None
+        raise gone_error() from None
     except ValueError as exc:
         # The store refuses what it cannot hold (a repeated or unstorable
         # custom_id). Validation catches those first; this keeps a 400, with

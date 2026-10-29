@@ -62,6 +62,7 @@ class FakeStore:
         self.items: dict[int, dict[str, Any]] = {}
         self.batches: dict[str, dict[str, Any]] = {}
         self.paused: dict[str, datetime] = {}
+        self.pause_reasons: dict[str, str | None] = {}
         self.claims: list[dict[str, Any]] = []
         self.calls: Counter[str] = Counter()
         self.heartbeats: list[list[int]] = []
@@ -221,8 +222,9 @@ class FakeStore:
                 item.update(status="failed", error={"code": "batch_failed", "message": "failed"})
         return True
 
-    async def pause_user_batches(self, user_id, until):
+    async def pause_user_batches(self, user_id, until, reason=None):
         self.paused[user_id] = until
+        self.pause_reasons[user_id] = reason
         return sum(1 for b in self.batches.values() if b["user_id"] == user_id)
 
     async def sweep(self, *, retention_days):
@@ -570,6 +572,7 @@ async def test_a_spent_quota_pauses_the_owners_batches_until_it_renews(worker, d
     await settle()
 
     assert store.paused[OWNER] == reset_at
+    assert store.pause_reasons[OWNER] == "quota"
     assert store.count("queued") == 2
     assert {item["attempts"] for item in store.items.values()} == {0}
     assert dispatch.calls == []
@@ -586,6 +589,7 @@ async def test_a_role_that_no_longer_qualifies_pauses_the_owner(worker, dispatch
     await until(lambda: OWNER in store.paused)
 
     assert store.paused[OWNER] >= before + timedelta(seconds=SLOW.role_pause_seconds)
+    assert store.pause_reasons[OWNER] == "role"
     assert store.status(1) == "queued"
     assert store.items[1]["attempts"] == 0
     assert dispatch.calls == []

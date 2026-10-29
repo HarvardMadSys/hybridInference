@@ -24,6 +24,7 @@ from .routers import (
     anthropic_messages,
     auth_routes,
     batch_console,
+    batch_console_create,
     batches,
     compat,
     completions,
@@ -138,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(retired_message_batches.router)
     app.include_router(files.router)
     app.include_router(batch_console.router)
+    app.include_router(batch_console_create.router)
     app.include_router(rag.router)
     app.include_router(responses.router)
     app.include_router(anthropic_messages.router)
