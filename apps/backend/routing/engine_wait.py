@@ -80,9 +80,20 @@ class FirstTokenWatch:
     answering.
     """
 
-    def __init__(self, endpoint_id: str, *, wait_seconds: float) -> None:
+    def __init__(
+        self,
+        endpoint_id: str,
+        *,
+        wait_seconds: float,
+        base_wait_seconds: float | None = None,
+        uncached_prefill_tokens: int = 0,
+    ) -> None:
         self.endpoint_id = endpoint_id
         self.wait_seconds = wait_seconds
+        self.base_wait_seconds = (
+            wait_seconds if base_wait_seconds is None else float(base_wait_seconds)
+        )
+        self.uncached_prefill_tokens = max(int(uncached_prefill_tokens), 0)
         self._deadline: asyncio.Timeout | None = None
         self._stopped = False
         self._answered = False

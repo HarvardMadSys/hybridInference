@@ -1022,8 +1022,17 @@ class FixedRouter:
         reason: str,
         policy: OffloadPolicy | None,
         failed_attempts: Sequence[dict[str, str]],
+        *,
+        engine_wait_seconds: float | None = None,
+        engine_wait_uncached_tokens: int | None = None,
     ) -> None:
-        """Record that a request is being sent to its model's offload route."""
+        """Record that a request is being sent to its model's offload route.
+
+        ``wait_seconds`` remains the configured base/queue budget. For an engine
+        wait, ``engine_wait_seconds`` and ``engine_wait_uncached_tokens`` report
+        the effective deadline actually armed for the abandoned attempt so
+        staging telemetry cannot mistake a calibrated wait for the base wait.
+        """
         logger.info(
             "route_offload",
             extra={
@@ -1032,6 +1041,8 @@ class FixedRouter:
                 "endpoint_id": endpoint_id_for_adapter(adapter),
                 "reason": reason,
                 "wait_seconds": policy.wait_seconds if policy is not None else None,
+                "engine_wait_seconds": engine_wait_seconds,
+                "engine_wait_uncached_tokens": engine_wait_uncached_tokens,
                 "after_endpoint_id": (
                     failed_attempts[-1].get("endpoint_id") if failed_attempts else None
                 ),
@@ -1045,6 +1056,8 @@ class FixedRouter:
         adapter: BaseAdapter,
         policy: OffloadPolicy | None,
         deadline: float | None,
+        *,
+        uncached_tokens: int = 0,
     ) -> FirstTokenWatch | None:
         """Return the first-token watch for one streaming attempt, or None.
 
@@ -1053,10 +1066,21 @@ class FixedRouter:
         request waits as long as the engine needs. The watch is this attempt's
         alone, and nothing it sees outlives the attempt: the next request to the
         same endpoint gets a watch, and a wait, of its own.
+
+        The wait is ``policy.engine_wait_seconds(uncached_tokens)``, not the flat
+        ``wait_seconds``: the deadline bounds prefill plus time-to-first-token,
+        so a request that must prefill a long prompt cold is given the time that
+        work needs rather than being cancelled mid-prefill. The caller passes the
+        endpoint's estimated un-cached prefill; ``0`` keeps the base wait.
         """
         if policy is None or deadline is None:
             return None
-        return FirstTokenWatch(endpoint_id_for_adapter(adapter), wait_seconds=policy.wait_seconds)
+        return FirstTokenWatch(
+            endpoint_id_for_adapter(adapter),
+            wait_seconds=policy.engine_wait_seconds(uncached_tokens),
+            base_wait_seconds=policy.wait_seconds,
+            uncached_prefill_tokens=uncached_tokens,
+        )
 
     def _engine_queue_limit(self, model_id: str) -> int | None:
         """Return the engine queue limit the model's stored offload policy sets, or None.
@@ -2217,6 +2241,39 @@ class FixedRouter:
         """Return the leaf that executes ``binding``."""
         return LeafBackend.for_binding(binding)
 
+    def _engine_wait_tokens(
+        self,
+        endpoint_id: str,
+        prefill_tokens: int,
+        affinity_key: str | None,
+        fingerprint: str | None,
+        messages: Sequence[dict[str, Any]] | None,
+    ) -> int:
+        """Un-cached prefill the engine wait is sized on, with strict evidence.
+
+        The same argument as selection, with the opposite failure direction.
+        A locality verdict on loose evidence moves a request it should not have
+        moved; a *wait* on loose evidence is merely too short, and a short wait
+        is exactly what cancels a legitimate cold prefill, aborts it at the
+        engine and re-sends it cold elsewhere. ``affinity_key`` is the API-key
+        hash and the hint table keeps one prefix per (key, endpoint), so a
+        sibling conversation's hint reads as "warm" for a prompt this engine has
+        never seen.
+
+        With no conversation identity the request is charged in full rather than
+        on that hint. Over-waiting costs nothing while the engine answers, and
+        the ceiling bounds it when the engine does not.
+        """
+        if affinity_key is None or fingerprint is None:
+            return prefill_tokens
+        return self._prefill_load.uncached_estimate(
+            endpoint_id,
+            prefill_tokens,
+            affinity_key,
+            fingerprint=fingerprint,
+            messages=messages,
+        )
+
     def _dispatch_priority(
         self,
         endpoint_id: str,
@@ -2670,9 +2727,29 @@ class FixedRouter:
         chunks_yielded = False
         try:
             primary_endpoint_id = endpoint_id_for_adapter(primary)
+            primary_uncached_tokens = self._engine_wait_tokens(
+                primary_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+            )
             if primary_plan.reason is not None:
-                self._log_offload(model_id, primary, primary_plan.reason, primary_plan.policy, ())
-            primary_watch = self._watch_for(primary, primary_plan.policy, primary_plan.deadline)
+                self._log_offload(
+                    model_id,
+                    primary,
+                    primary_plan.reason,
+                    primary_plan.policy,
+                    (),
+                    engine_wait_seconds=(
+                        primary_plan.policy.engine_wait_seconds(primary_uncached_tokens)
+                        if primary_plan.policy is not None
+                        else None
+                    ),
+                    engine_wait_uncached_tokens=primary_uncached_tokens,
+                )
+            primary_watch = self._watch_for(
+                primary,
+                primary_plan.policy,
+                primary_plan.deadline,
+                uncached_tokens=primary_uncached_tokens,
+            )
             with req_ctx.push(
                 model=model_id,
                 provider=execution.config.provider,
@@ -2823,9 +2900,22 @@ class FixedRouter:
                 fallback_claim = self._health_registry.begin_dispatch(adapter_endpoint_id)
                 if fallback_claim is None:
                     continue
+                fallback_uncached_tokens = self._engine_wait_tokens(
+                    adapter_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                )
                 if offload_reason is not None:
                     self._log_offload(
-                        model_id, adapter, offload_reason, offload_policy, failed_attempts
+                        model_id,
+                        adapter,
+                        offload_reason,
+                        offload_policy,
+                        failed_attempts,
+                        engine_wait_seconds=(
+                            offload_policy.engine_wait_seconds(fallback_uncached_tokens)
+                            if offload_policy is not None
+                            else None
+                        ),
+                        engine_wait_uncached_tokens=fallback_uncached_tokens,
                     )
                 try:
                     # The offload attempt queues normally and is not watched:
@@ -2839,7 +2929,12 @@ class FixedRouter:
                             refused_window=refused_window,
                         )
                     )
-                    fallback_watch = self._watch_for(adapter, offload_policy, queue_deadline)
+                    fallback_watch = self._watch_for(
+                        adapter,
+                        offload_policy,
+                        queue_deadline,
+                        uncached_tokens=fallback_uncached_tokens,
+                    )
                     with req_ctx.push(
                         model=model_id,
                         provider=execution.config.provider,

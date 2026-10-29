@@ -75,6 +75,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from routing.engine_wait import EngineWaitExpired
 from serving.adapters.upstream_limiter import UpstreamQueueWaitExpired, UpstreamSaturated
+from serving.config.app_config import config_value, on_change
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -84,6 +85,8 @@ if TYPE_CHECKING:
 __all__ = [
     "OFFLOAD_ENGINE_WAIT",
     "OFFLOAD_LAST_RESORT",
+    "OFFLOAD_MAX_WAIT_SECONDS",
+    "OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC",
     "OFFLOAD_QUEUE_WAIT",
     "FallbackOrder",
     "OffloadPolicy",
@@ -99,6 +102,59 @@ OFFLOAD_QUEUE_WAIT = "queue_wait"
 OFFLOAD_ENGINE_WAIT = "engine_wait"
 #: ``_routing["offload"]`` when no other route could serve the request.
 OFFLOAD_LAST_RESORT = "last_resort"
+
+#: Whether cold-prefill engine waits are extended beyond the configured base.
+#: Setting ``ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION=0`` is the rollback control:
+#: the next requests keep the admin-configured first-token wait, without a
+#: restart or route edit.
+OFFLOAD_ENGINE_WAIT_EXTENSION: bool = True
+
+#: Tokens per second used to convert un-cached prefill into engine-wait budget.
+#: The formula is additive, ``base + uncached / rate``, so changing the base
+#: wait does not silently change the prefill calibration. At 2,560 tokens/s, a
+#: 0.3 s base still budgets 7.46 s for the measured 18.3k/1.79 s tail, while a
+#: 2 s base receives the same 7.16 s prefill allowance instead of reaching the
+#: cap at roughly 12k tokens.
+OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC: float = 2_560.0
+
+#: Ceiling on the extended engine wait, so an engine that is genuinely wedged
+#: still fails over. Also bounds the extra latency a cold prompt may add before
+#: the fallback the policy already had. The configured base itself is never
+#: shortened by this ceiling.
+OFFLOAD_MAX_WAIT_SECONDS: float = 8.0
+
+
+def _positive_float_setting(name: str, default: float) -> float:
+    """Read a positive finite routing setting, preserving ``default`` on bad input."""
+    raw = config_value(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    return value
+
+
+def _load_engine_wait_settings() -> None:
+    """Reload the bounded engine-wait controls for the next routing decision."""
+    global OFFLOAD_ENGINE_WAIT_EXTENSION, OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC
+    global OFFLOAD_MAX_WAIT_SECONDS
+    OFFLOAD_ENGINE_WAIT_EXTENSION = (
+        config_value("ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION", "1") != "0"
+    )
+    OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC = _positive_float_setting(
+        "ROUTING_OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC", 2_560.0
+    )
+    OFFLOAD_MAX_WAIT_SECONDS = _positive_float_setting(
+        "ROUTING_OFFLOAD_MAX_ENGINE_WAIT_SECONDS", 8.0
+    )
+
+
+_load_engine_wait_settings()
+on_change(_load_engine_wait_settings)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +207,31 @@ class OffloadPolicy:
         True up to and including the max input, and always when there is none.
         """
         return self.max_input_tokens is None or prompt_tokens <= self.max_input_tokens
+
+    def engine_wait_seconds(self, uncached_tokens: int) -> float:
+        """Return the first-token budget for a request needing ``uncached_tokens`` prefill.
+
+        The budget this attempt's engine wait runs under: the configured
+        ``wait_seconds`` covers queueing, scheduling and the first decode step,
+        and un-cached prefill adds time at the calibrated
+        :data:`OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC`, independent of the base. A
+        warm continuation -- which prefills only the growth since the caller's
+        last turn -- stays at or just above the floor; a cold prompt gets time
+        for the work it actually has to do.
+
+        Bounded by construction: the ceiling is configurable but fixed with
+        respect to load, so a wedged engine still fails over within a known
+        time. The result never drops below ``wait_seconds``. Setting
+        :data:`OFFLOAD_ENGINE_WAIT_EXTENSION` false restores the flat base wait
+        without changing queue-wait policy. Nothing here reads or writes
+        endpoint health -- a busy engine stays healthy, exactly as before.
+        """
+        base = self.wait_seconds
+        if uncached_tokens <= 0 or not OFFLOAD_ENGINE_WAIT_EXTENSION:
+            return base
+        rate = max(OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC, 1.0)
+        effective = base + uncached_tokens / rate
+        return float(min(effective, max(OFFLOAD_MAX_WAIT_SECONDS, base)))
 
 
 @runtime_checkable

@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from routing import offload
 from routing.endpoint_health import _CircuitState
 from routing.engine_wait import EngineWaitExpired
 from routing.offload import (
     OFFLOAD_ENGINE_WAIT,
     OFFLOAD_LAST_RESORT,
+    OFFLOAD_MAX_WAIT_SECONDS,
     OFFLOAD_QUEUE_WAIT,
     FallbackOrder,
     OffloadPolicy,
@@ -186,6 +188,113 @@ def test_policy_normalizes_an_integer_wait_to_float():
     policy = OffloadPolicy(route_id="r", wait_seconds=3)
     assert policy.wait_seconds == 3.0
     assert isinstance(policy.wait_seconds, float)
+
+
+def test_engine_wait_keeps_the_base_for_a_warm_prompt():
+    """A prefix already resident prefills ~nothing and waits the base, unchanged."""
+    policy = _policy(wait_seconds=0.05)
+    assert policy.engine_wait_seconds(0) == 0.05
+    assert policy.engine_wait_seconds(-1) == 0.05
+
+
+def test_engine_wait_adds_a_prefill_allowance_to_the_base():
+    """The allowance is calibrated in tokens/second, independent of the base.
+
+    The old proportional form made a low base cancel the same measured prefills
+    it was meant to protect. With an additive rate, 0.3 s still covers the
+    measured 18.3k case, while a 2 s base receives the same 3.58 s prefill
+    allowance rather than reaching the cap at ~12k tokens.
+    """
+    measured_tail = [
+        (1_819, 0.56),
+        (2_659, 0.97),
+        (4_519, 0.86),
+        (9_119, 1.79),
+        (18_319, 1.79),
+    ]
+    for base in (0.3, 0.8, 2.0):
+        policy = _policy(wait_seconds=base)
+        for tokens, measured in measured_tail:
+            assert measured < policy.engine_wait_seconds(tokens)
+
+    policy = _policy(wait_seconds=0.8)
+    assert policy.engine_wait_seconds(4_096) == pytest.approx(2.4)
+    assert policy.engine_wait_seconds(2_659) == pytest.approx(1.84, abs=0.01)
+    assert policy.engine_wait_seconds(4_519) == pytest.approx(2.57, abs=0.01)
+    assert policy.engine_wait_seconds(9_119) == pytest.approx(4.36, abs=0.01)
+    assert policy.engine_wait_seconds(18_319) == pytest.approx(7.95, abs=0.01)
+    # Below the cap, the prefill allowance is independent of the base.
+    uncapped = [
+        _policy(wait_seconds=base).engine_wait_seconds(9_119) - base for base in (0.3, 0.8, 2.0)
+    ]
+    assert all(abs(value - uncapped[0]) < 1e-9 for value in uncapped[1:])
+
+
+def test_engine_wait_extends_with_the_uncached_prefill():
+    """A cold prefill of a long prompt gets time proportional to the work."""
+    policy = _policy(wait_seconds=0.05)
+    assert policy.engine_wait_seconds(4_096) == pytest.approx(1.65)
+    assert policy.engine_wait_seconds(8_192) == pytest.approx(3.25)
+    assert policy.engine_wait_seconds(16_384) == pytest.approx(6.45)
+
+
+def test_engine_wait_extension_can_be_disabled_without_restarting_routing(monkeypatch):
+    """Rollback restores the configured base on the next request."""
+    policy = _policy(wait_seconds=0.3)
+    assert policy.engine_wait_seconds(18_319) > policy.wait_seconds
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", False)
+    assert policy.engine_wait_seconds(18_319) == policy.wait_seconds
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, 2_560.0),
+        ("1024", 1024.0),
+        ("0", 2_560.0),
+        ("-1", 2_560.0),
+        ("not-a-number", 2_560.0),
+    ],
+)
+def test_engine_wait_rate_setting_rejects_non_positive_values(monkeypatch, raw, expected):
+    monkeypatch.setattr(offload, "config_value", lambda _name: raw)
+    assert offload._positive_float_setting("TEST_RATE", 2_560.0) == expected
+
+
+def test_engine_wait_controls_reload_from_configuration(monkeypatch):
+    values = {
+        "ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION": "0",
+        "ROUTING_OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC": "2048",
+        "ROUTING_OFFLOAD_MAX_ENGINE_WAIT_SECONDS": "3",
+    }
+    monkeypatch.setattr(offload, "config_value", lambda name, default=None: values[name])
+    offload._load_engine_wait_settings()
+    try:
+        assert offload.OFFLOAD_ENGINE_WAIT_EXTENSION is False
+        assert offload.OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC == 2048.0
+        assert offload.OFFLOAD_MAX_WAIT_SECONDS == 3.0
+    finally:
+        monkeypatch.setattr(
+            offload,
+            "config_value",
+            lambda name, default=None: None,
+        )
+        offload._load_engine_wait_settings()
+
+
+def test_engine_wait_is_capped_so_a_wedged_engine_still_fails_over():
+    policy = _policy(wait_seconds=0.05)
+    assert policy.engine_wait_seconds(10_000_000) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
+    # Monotone up to the ceiling, never past it.
+    huge = policy.engine_wait_seconds(40_960_000)
+    assert huge == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
+
+
+def test_engine_wait_never_shortens_a_base_wait_longer_than_the_ceiling():
+    """A deployment that set a wait above the ceiling keeps its own wait."""
+    policy = _policy(wait_seconds=OFFLOAD_MAX_WAIT_SECONDS * 2)
+    assert policy.engine_wait_seconds(0) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS * 2)
+    assert policy.engine_wait_seconds(10_000_000) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS * 2)
 
 
 def test_only_gateway_queue_refusals_count_as_a_queue_wait():
