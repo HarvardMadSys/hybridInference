@@ -8,10 +8,18 @@ module keeps the store wrapper and re-exports the backend for compatibility.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import TYPE_CHECKING, Any
 
-from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from .base import (
+    HardDeleteClaim,
+    HardDeleteRecoveryMode,
+    OperationalStore,
+    ProviderDefinitionRow,
+    ProviderKeyRow,
+    Row,
+)
 from .cache_backend import (
     CacheBackend,
     InMemoryCache as InMemoryCache,
@@ -99,6 +107,7 @@ class CachedOperationalStore(OperationalStore):
     def __init__(self, store: OperationalStore, cache: CacheBackend) -> None:
         self._store = store
         self._cache = cache
+        self._background_cleanup_tasks: set[asyncio.Task[None]] = set()
 
     # -- cache key helpers ---------------------------------------------------
 
@@ -247,16 +256,39 @@ class CachedOperationalStore(OperationalStore):
 
     # -- user writes (invalidate user cache) ---------------------------------
 
-    async def update_user_fields(self, user_id: str, **fields: Any) -> None:
+    async def update_user_fields(
+        self,
+        user_id: str,
+        *,
+        expected_status: str | None = None,
+        **fields: Any,
+    ) -> None:
         """Delegate then invalidate user cache (and auth caches if role/status changed)."""
-        await self._store.update_user_fields(user_id, **fields)
+        if expected_status is None:
+            await self._store.update_user_fields(user_id, **fields)
+        else:
+            await self._store.update_user_fields(
+                user_id,
+                expected_status=expected_status,
+                **fields,
+            )
         await self._cache.delete(self._user_key(user_id))
         if fields.keys() & {"role", "status"}:
             await self.invalidate_auth_caches()
 
-    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+    async def suspend_user(
+        self,
+        user_id: str,
+        *,
+        expected_status: str | None = None,
+        **fields: Any,
+    ) -> None:
         """Delegate then invalidate the user and every auth entry (status and keys changed)."""
-        await self._store.suspend_user(user_id, **fields)
+        await self._store.suspend_user(
+            user_id,
+            expected_status=expected_status,
+            **fields,
+        )
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_auth_caches()
 
@@ -290,12 +322,71 @@ class CachedOperationalStore(OperationalStore):
         # Also purge any auth entries referencing this user's keys
         await self.invalidate_auth_caches()
 
-    async def begin_hard_delete_user(self, user_id: str) -> str:
-        """Claim a hard-delete in the wrapped store and invalidate caches."""
-        claim_token = await self._store.begin_hard_delete_user(user_id)
-        await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
-        return claim_token
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        recovery_mode: HardDeleteRecoveryMode | None = None,
+    ) -> HardDeleteClaim:
+        """Claim a hard-delete and invalidate caches.
+
+        The server supplies a recovery mode only after verifying a durable
+        fence or an explicit operator request. The durable store atomically
+        replaces a stale token before returning the recovered claim.
+        """
+        if recovery_mode is None:
+            claim_task = asyncio.create_task(self._store.begin_hard_delete_user(user_id))
+        else:
+            claim_task = asyncio.create_task(
+                self._store.begin_hard_delete_user(user_id, recovery_mode=recovery_mode)
+            )
+
+        def _release_completed_claim(task: asyncio.Task[HardDeleteClaim]) -> None:
+            if task.cancelled():
+                return
+            try:
+                completed_claim = task.result()
+            except BaseException:
+                return
+            cleanup_task = asyncio.create_task(self._release_claim_safely(user_id, completed_claim))
+            self._background_cleanup_tasks.add(cleanup_task)
+            cleanup_task.add_done_callback(self._background_cleanup_tasks.discard)
+
+        try:
+            # Shield the durable claim from cancellation while we obtain its
+            # token. If the caller is cancelled at this boundary, the done
+            # callback releases it only when this request obtained a fresh
+            # pre-fence claim.
+            claim = await asyncio.shield(claim_task)
+        except BaseException:
+            claim_task.add_done_callback(_release_completed_claim)
+            raise
+
+        try:
+            await self._cache.delete(self._user_key(user_id))
+            await self.invalidate_auth_caches()
+        except BaseException:
+            # A claim obtained from a durable fence or stale recovery remains
+            # fail-closed; only a new pre-fence claim may be released here.
+            await self._release_claim_safely(user_id, claim)
+            raise
+        return claim
+
+    async def _release_claim_safely(self, user_id: str, claim: HardDeleteClaim) -> None:
+        """Release a claim after a cancelled/failed claim wrapper operation."""
+        if not claim.newly_acquired:
+            return
+        try:
+            await asyncio.shield(self._store.release_hard_delete_user_claim(user_id, claim.token))
+        except BaseException:
+            # Cleanup must not replace the original cancellation or cache
+            # failure. A retained claim remains fail-closed and is recoverable
+            # through the explicit stale-claim path.
+            return
+
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Renew and validate a hard-delete claim in the wrapped store."""
+        await self._store.renew_hard_delete_user_claim(user_id, claim_token)
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Release a failed pre-fence claim and invalidate user caches."""
@@ -311,6 +402,7 @@ class CachedOperationalStore(OperationalStore):
         admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        recover_stale_claim: bool = False,
         actor: AuditActor | None = None,
     ) -> None:
         """Delegate then invalidate user + auth caches."""
@@ -320,6 +412,7 @@ class CachedOperationalStore(OperationalStore):
             admin_id=admin_id,
             reason=reason,
             email=email,
+            recover_stale_claim=recover_stale_claim,
             actor=actor,
         )
         await self._cache.delete(self._user_key(user_id))

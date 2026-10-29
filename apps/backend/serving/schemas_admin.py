@@ -549,6 +549,13 @@ class ResumeUserRequest(BaseModel):
     """Request payload for resuming a soft-deleted user."""
 
     reason: str | None = Field(None, max_length=500, description="Optional reason (audit trail)")
+    recover_stale_claim: bool = Field(
+        False,
+        description=(
+            "Confirm that prior hard-delete workers are stopped before clearing a claim "
+            "whose lease has exceeded the recovery grace period"
+        ),
+    )
 
 
 class ResumeUserResponse(BaseModel):
@@ -571,6 +578,13 @@ class HardDeleteUserRequest(BaseModel):
 
     confirm: bool = Field(..., description="Must be true to proceed")
     reason: str | None = Field(None, max_length=500, description="Optional reason (audit trail)")
+    recover_stale_claim: bool = Field(
+        False,
+        description=(
+            "Explicitly take over a stale hard-delete claim after confirming the "
+            "previous worker is no longer running"
+        ),
+    )
 
 
 class HardDeleteUserResponse(BaseModel):

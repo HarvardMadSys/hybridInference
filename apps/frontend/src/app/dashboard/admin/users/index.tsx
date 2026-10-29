@@ -260,9 +260,9 @@ export default function UsersTab() {
       toast.success('Suspended');
       void refreshUsers();
     },
-    onResume: async (id: string) => {
+    onResume: async (id: string, recoverStaleClaim = false) => {
       const label = labelOf(id);
-      await resumeUser(id);
+      await resumeUser(id, undefined, recoverStaleClaim);
       toast.success(`Resumed ${label}`);
       void refreshUsers();
     },
@@ -272,9 +272,9 @@ export default function UsersTab() {
       toast.success(`Deleted ${label}`);
       void refreshUsers();
     },
-    onHardDelete: async (id: string, reason: string) => {
+    onHardDelete: async (id: string, reason: string, recoverStaleClaim = false) => {
       const label = labelOf(id);
-      await hardDeleteUser(id, reason || undefined);
+      await hardDeleteUser(id, reason || undefined, recoverStaleClaim);
       toast.success(`Permanently deleted ${label}`);
       void refreshUsers();
     },

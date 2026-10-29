@@ -230,7 +230,7 @@ async def test_hard_delete_purges_recipient_abuse_state_and_prevents_orphan_rese
     await phone_store.delete_user(user_id, admin_ip=IP, admin_id="synthetic-admin")
     claim = await phone_store.begin_hard_delete_user(user_id)
     await phone_store.hard_delete_user(
-        user_id, claim_token=claim, admin_ip=IP, admin_id="synthetic-admin"
+        user_id, claim_token=claim.token, admin_ip=IP, admin_id="synthetic-admin"
     )
     retry, _ = await _reserve(phone_store, user_id=user_id, cooldown=0)
     assert retry > 0
@@ -273,7 +273,7 @@ async def _erase_phone_user(store, user_id):
     await store.delete_user(user_id, admin_ip=IP, admin_id="synthetic-admin")
     claim = await store.begin_hard_delete_user(user_id)
     await store.hard_delete_user(
-        user_id, claim_token=claim, admin_ip=IP, admin_id="synthetic-admin"
+        user_id, claim_token=claim.token, admin_ip=IP, admin_id="synthetic-admin"
     )
 
 

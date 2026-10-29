@@ -414,7 +414,7 @@ describe('UserTable phone-only identity', () => {
       fireEvent.change(input, { target: { value: identifier } });
       expect(confirm).toBeEnabled();
       fireEvent.click(confirm);
-      await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('user-1', ''));
+      await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('user-1', '', false));
       expect(onHardDelete).toHaveBeenCalledTimes(1);
     },
   );
@@ -713,7 +713,7 @@ describe('UserTable for an account without an email', () => {
     expect(dialogSubmit).toBeEnabled();
 
     fireEvent.click(dialogSubmit);
-    await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('admin-1', ''));
+    await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('admin-1', '', false));
   });
 });
 
@@ -1219,9 +1219,12 @@ describe('UserTable account actions', () => {
 
     expect(screen.getByText(/its API keys stay revoked/)).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
-    await waitFor(() => expect(onResume).toHaveBeenCalledTimes(1));
-    expect(onResume).toHaveBeenCalledWith('user-1');
+    expect(dialog()).toHaveAccessibleName('Resume user@example.com?');
+    expect(dialog()).toHaveTextContent('API keys stay revoked');
+    clickInDialog('Resume');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(onResume).toHaveBeenCalledTimes(1);
+    expect(onResume).toHaveBeenCalledWith('user-1', false);
     await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull());
   });
 
@@ -1299,7 +1302,7 @@ describe('UserTable account actions', () => {
       target: { value: ' GDPR request ' },
     });
     clickInDialog('Permanently delete');
-    await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('user-1', 'GDPR request'));
+    await waitFor(() => expect(onHardDelete).toHaveBeenCalledWith('user-1', 'GDPR request', false));
     expect(onHardDelete).toHaveBeenCalledTimes(1);
   });
 

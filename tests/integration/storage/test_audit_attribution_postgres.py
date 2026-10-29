@@ -200,7 +200,9 @@ async def test_lifecycle_rows_are_attributed_and_erasure_spares_actor_rows(store
     assert json.loads(lifecycle[0]["details"])["admin_id"] == "ops"
 
     claim = await op_store.begin_hard_delete_user("u-attr-target")
-    await op_store.hard_delete_user("u-attr-target", claim_token=claim, admin_id="ops", actor=admin)
+    await op_store.hard_delete_user(
+        "u-attr-target", claim_token=claim.token, admin_id="ops", actor=admin
+    )
 
     async with pool.acquire() as conn:
         about_target = await conn.fetch(

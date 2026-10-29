@@ -11,7 +11,11 @@ import type {
   UserDetail,
   UserTurnAverages,
 } from '@/lib/api/admin';
-import { getUserDetail, listModelVisibility } from '@/lib/api/admin';
+import {
+  getUserDetail,
+  HardDeleteRecoveryAvailableError,
+  listModelVisibility,
+} from '@/lib/api/admin';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { userAccountLabel, userAccountLabelKind } from '@/lib/utils/userLabel';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
@@ -39,9 +43,9 @@ interface UserTableProps {
   onReject: (userId: string, reason: string) => Promise<void>;
   onUpdate: (userId: string, patch: UpdateUserData) => Promise<void>;
   onSuspend: (userId: string, suspensionMessage?: string | null) => Promise<void>;
-  onResume: (userId: string) => Promise<void>;
+  onResume: (userId: string, recoverStaleClaim?: boolean) => Promise<void>;
   onDelete: (userId: string, reason: string) => Promise<void>;
-  onHardDelete: (userId: string, reason: string) => Promise<void>;
+  onHardDelete: (userId: string, reason: string, recoverStaleClaim?: boolean) => Promise<void>;
 }
 
 /** Whether the open confirmation is writing; fields inside it lock meanwhile. */
@@ -92,6 +96,32 @@ const IDENTIFIER_NAME = {
   phone: 'phone number',
   id: 'user ID',
 } as const;
+
+function DialogCheckbox({
+  label,
+  onChange,
+}: {
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  const busy = useContext(ConfirmBusy);
+  const [checked, setChecked] = useState(false);
+  return (
+    <label className="mt-2 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-[12px] text-amber-900">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => {
+          setChecked(event.target.checked);
+          onChange(event.target.checked);
+        }}
+        disabled={busy}
+        className="mt-0.5"
+      />
+      <span>{label}</span>
+    </label>
+  );
+}
 
 function median(nums: number[]): number {
   if (nums.length === 0) return 0;
@@ -340,11 +370,50 @@ export function UserTable(props: UserTableProps) {
       collapse();
     });
 
-  const resume = (user: AdminUser) =>
-    void apply(async () => {
-      await props.onResume(user.id);
-      collapse();
+  // The Resume confirmation carries the stale-claim recovery checkbox: the
+  // server reports a stale hard-delete claim with a typed 409, and only an
+  // operator who confirmed the workers are stopped may retry with recovery.
+  const requestResume = (user: AdminUser) => {
+    const label = labelOf(user);
+    const recoverRequested = { value: false };
+    const operatorConfirmed = { value: false };
+    confirmation.request({
+      title: `Resume ${label}?`,
+      body: (
+        <>
+          <p>
+            The account changes from deleted to active. Its API keys stay revoked; the user must
+            create a new one.
+          </p>
+          <DialogCheckbox
+            label="If the server reports a stale deletion claim, I confirm all previous deletion workers are stopped and want to recover this account."
+            onChange={(checked) => {
+              operatorConfirmed.value = checked;
+            }}
+          />
+        </>
+      ),
+      confirmLabel: 'Resume',
+      busyLabel: 'Resuming…',
+      run: async () => {
+        ensureListed(user.id, label);
+        try {
+          await props.onResume(user.id, recoverRequested.value);
+        } catch (error) {
+          if (error instanceof HardDeleteRecoveryAvailableError) {
+            recoverRequested.value = true;
+            if (!operatorConfirmed.value) {
+              throw new Error(
+                'The previous hard-delete claim is stale. Confirm the recovery checkbox, then Resume again.',
+              );
+            }
+          }
+          throw error;
+        }
+        collapse();
+      },
     });
+  };
 
   const requestDelete = (user: AdminUser) => {
     const label = labelOf(user);
@@ -383,6 +452,8 @@ export function UserTable(props: UserTableProps) {
     const identifier = userAccountLabel(user);
     if (!identifier) return;
     const reason = { value: '' };
+    const recoverRequested = { value: false };
+    const operatorConfirmed = { value: false };
     confirmation.request({
       title: `Permanently delete ${identifier}?`,
       body: (
@@ -395,6 +466,12 @@ export function UserTable(props: UserTableProps) {
           <p>
             Type the user&apos;s {IDENTIFIER_NAME[userAccountLabelKind(user)]} below to confirm.
           </p>
+          <DialogCheckbox
+            label="If the server reports a stale deletion claim, I confirm all previous deletion workers are stopped and want to take over this deletion."
+            onChange={(checked) => {
+              operatorConfirmed.value = checked;
+            }}
+          />
           <DialogTextField
             label="Reason (optional, audit trail)"
             placeholder="Reason (optional, audit trail)..."
@@ -411,7 +488,19 @@ export function UserTable(props: UserTableProps) {
       requireText: identifier,
       run: async () => {
         ensureListed(user.id, identifier);
-        await props.onHardDelete(user.id, reason.value.trim());
+        try {
+          await props.onHardDelete(user.id, reason.value.trim(), recoverRequested.value);
+        } catch (error) {
+          if (error instanceof HardDeleteRecoveryAvailableError) {
+            recoverRequested.value = true;
+            if (!operatorConfirmed.value) {
+              throw new Error(
+                'The previous hard-delete claim is stale. Confirm the recovery checkbox, then delete again.',
+              );
+            }
+          }
+          throw error;
+        }
         collapse();
       },
     });
@@ -586,7 +675,7 @@ export function UserTable(props: UserTableProps) {
                               onUpdate={updateDetail}
                               onSuspend={requestSuspend}
                               onReactivate={reactivate}
-                              onResume={resume}
+                              onResume={requestResume}
                               onRequestDelete={requestDelete}
                               onRequestHardDelete={requestHardDelete}
                             />
