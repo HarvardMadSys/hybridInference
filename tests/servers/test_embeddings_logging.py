@@ -120,6 +120,7 @@ def _build_app(
     *,
     log_synthetic_probes: bool = False,
     user_role: str = "internal",
+    diagnostic_entitlements: frozenset[str] = frozenset(),
 ) -> FastAPI:
     # ``internal`` by default so the probe-suppression tests exercise a caller
     # whose X-Probe marker is actually honoured; pass a lower role to model an
@@ -131,6 +132,7 @@ def _build_app(
         "user_id": "user-emb",
         "role": user_role,
         "authenticated": True,
+        "diagnostic_entitlements": diagnostic_entitlements,
     }
     app.dependency_overrides[enforce_user_concurrency] = lambda: None
     # Register the access gate the surface now requires (fail-closed): a
@@ -431,6 +433,81 @@ async def test_synthetic_probe_not_logged_but_still_billed():
 
 
 @pytest.mark.asyncio
+async def test_trusted_embedding_probe_receives_registered_identity_headers():
+    adapter = _FakeAdapter(response=_OK_RESPONSE)
+    adapter.config.provider = "zai"
+    adapter.config.endpoint_id = "emb-model:zai-api"
+    adapter.config.endpoint_identity_publishable = True
+    app = _build_app(adapter, _CapturingLogger())
+
+    response = await _post(
+        app,
+        {"model": "emb-model", "input": "hello"},
+        headers=_PROBE_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-fi-requested-model"] == "emb-model"
+    assert response.headers["x-fi-served-model"] == "emb-model"
+    assert response.headers["x-fi-served-endpoint"] == "emb-model:zai-api"
+    assert response.headers["x-fi-served-provider"] == "zai"
+
+
+@pytest.mark.asyncio
+async def test_authorized_embedding_opt_in_keeps_request_logging_and_billing():
+    adapter = _FakeAdapter(response=_OK_RESPONSE, pricing=_PAID_PRICING)
+    adapter.config.provider = "zai"
+    adapter.config.endpoint_id = "emb-model:zai-api"
+    adapter.config.endpoint_identity_publishable = True
+    logger = _CapturingLogger()
+    op_store = _CapturingOpStore()
+    app = _build_app(
+        adapter, logger, op_store, diagnostic_entitlements=frozenset({"served_identity"})
+    )
+
+    response = await _post(
+        app,
+        {"model": "emb-model", "input": "hello"},
+        headers={"x-fi-served-identity": "include"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-fi-served-model"] == "emb-model"
+    assert response.headers["x-fi-served-endpoint"] == "emb-model:zai-api"
+    assert len(logger.calls) == 1
+    assert op_store.increments
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"x-fi-served-identity": "include"},
+        {"x-probe": "synthetic"},
+        {"x-fi-served-identity": "include", "x-probe": "synthetic"},
+    ],
+    ids=["opt-in-only", "probe-only", "both-spoofed"],
+)
+async def test_untrusted_embedding_headers_cannot_enable_identity_disclosure(headers):
+    adapter = _FakeAdapter(response=_OK_RESPONSE, pricing=_PAID_PRICING)
+    adapter.config.provider = "zai"
+    adapter.config.endpoint_id = "emb-model:zai-api"
+    adapter.config.endpoint_identity_publishable = True
+    logger = _CapturingLogger()
+    app = _build_app(adapter, logger, user_role="free")
+
+    response = await _post(
+        app,
+        {"model": "emb-model", "input": "hello"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert not any(name.lower().startswith("x-fi-") for name in response.headers)
+    assert len(logger.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_synthetic_probe_logged_when_enabled_and_billed():
     """When log_synthetic_probes is on, the probe is logged and tagged, and is
     billed like any other request.
@@ -503,13 +580,22 @@ async def test_embeddings_falls_back_and_logs_serving_provider():
     primary.config.provider = "sglang"
     secondary = _FakeAdapter(response=_ok_response(), pricing=_FREE_PRICING)
     secondary.config.provider = "staging"
+    secondary.config.endpoint_id = "emb-model:staging-api"
+    secondary.config.endpoint_identity_publishable = False
     wrapper = FallbackEmbeddingAdapter([primary, secondary])
 
     logger = _CapturingLogger()
-    app = _build_app(wrapper, logger)
+    app = _build_app(wrapper, logger, log_synthetic_probes=True)
 
-    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    resp = await _post(
+        app,
+        {"model": "emb-model", "input": "hello"},
+        headers=_PROBE_HEADERS,
+    )
     assert resp.status_code == 200
+    assert resp.headers["x-fi-served-model"] == "emb-model"
+    assert resp.headers["x-fi-served-provider"] == "staging"
+    assert "x-fi-served-endpoint" not in resp.headers
 
     assert len(logger.calls) == 1
     _, log_data = logger.calls[0]

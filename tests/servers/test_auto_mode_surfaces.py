@@ -378,6 +378,26 @@ async def test_bare_auto_is_the_default_tier(gateway):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("path", "body"), _SURFACES[:2])
+@pytest.mark.parametrize(
+    "headers",
+    [
+        SESSION | {"x-fi-served-identity": "include"},
+        SESSION | {"x-probe": "synthetic"},
+        SESSION | {"x-fi-served-identity": "include", "x-probe": "synthetic"},
+    ],
+)
+async def test_auto_does_not_expose_identity_headers_to_ordinary_callers(
+    gateway, path, body, headers
+):
+    """Served-identity headers are limited to trusted diagnostic callers."""
+    response = await gateway.post(path, body("auto-balance"), headers)
+
+    assert response.status_code == 200
+    assert not any(name.lower().startswith("x-fi-") for name in response.headers)
+
+
+@pytest.mark.asyncio
 async def test_every_chunk_of_a_streamed_chat_names_the_auto_model(gateway):
     response = await gateway.post("/v1/chat/completions", _chat("auto-balance", stream=True))
 
@@ -464,6 +484,47 @@ async def test_a_model_the_caller_may_not_use_is_never_chosen(gateway):
     assert gateway.served() == [FRONTIER]
     auto = (await gateway.logged())["metadata"]["auto"]
     assert auto["dropped"] == {MID: "unavailable"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["chat", "messages"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "identity_headers",
+    [
+        {"x-probe": "synthetic"},
+        {"x-fi-served-identity": "include"},
+    ],
+    ids=["trusted-probe", "authorized-opt-in"],
+)
+async def test_auto_selection_conceals_served_identity_for_diagnostic_access(
+    mock_db_logger, mock_log_store, surface, stream, identity_headers
+):
+    diagnostic_user = {**USER, "role": "internal"}
+    if "x-fi-served-identity" in identity_headers:
+        diagnostic_user = {
+            **USER,
+            "diagnostic_entitlements": frozenset({"served_identity"}),
+        }
+    gateway = _Gateway(mock_db_logger, mock_log_store, user=diagnostic_user)
+    if surface == "chat":
+        path = "/v1/chat/completions"
+        body = _chat("auto-balance", stream=stream)
+    else:
+        path = "/v1/messages"
+        body = _anthropic("auto-balance", stream=stream)
+
+    response = await gateway.post(
+        path,
+        body,
+        headers=identity_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("x-fi-requested-model") == "auto-balance"
+    assert "x-fi-served-model" not in response.headers
+    assert "x-fi-served-endpoint" not in response.headers
+    assert "x-fi-served-provider" not in response.headers
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ import contextlib
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -58,6 +58,10 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
+from serving.servers.routers.served_identity import (
+    served_identity_headers,
+    should_include_served_identity_headers,
+)
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
@@ -75,7 +79,7 @@ from serving.utils.token_utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
 
     from serving.auto_mode import AutoSelection
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -465,6 +469,8 @@ class ChatResponse:
     body: Any
     #: ``X-Provider`` for a trusted probe, else None.
     provider_header: str | None
+    #: Served identity headers authorized for this request, if any.
+    identity_headers: dict[str, str] = field(default_factory=dict)
 
 
 class ChatStream:
@@ -487,6 +493,7 @@ class ChatStream:
     __slots__ = (
         "_frames_started",
         "_head",
+        "_identity_headers_for_response",
         "_sse",
         "_tail",
         "adapter_chunks",
@@ -508,6 +515,7 @@ class ChatStream:
         model: str,
         request_headers: Mapping[str, str],
         provider_header: str | None,
+        identity_headers_for_response: Callable[[], dict[str, str]] | None = None,
     ) -> None:
         """Hold the session and the router stream it reads."""
         self.session = session
@@ -517,12 +525,17 @@ class ChatStream:
         self.model = model
         self.request_headers = request_headers
         self.provider_header = provider_header
+        self._identity_headers_for_response = identity_headers_for_response or (lambda: {})
         self._sse: Any = None
         # What the response body yields: a first item already read, then the
         # rest of the started stream it came from.
         self._head: Any = None
         self._tail: Any = None
         self._frames_started = False
+
+    def identity_headers(self) -> dict[str, str]:
+        """Build response headers after routing has selected the serving route."""
+        return self._identity_headers_for_response()
 
     async def prime(self) -> str | None:
         """Read the first SSE item; refuse with its status if it is an uncommitted failure.
@@ -634,6 +647,7 @@ async def render_chat_http(outcome: ChatOutcome, request: Request, http_response
     if isinstance(outcome, ChatResponse):
         if outcome.provider_header is not None:
             http_response.headers["X-Provider"] = outcome.provider_header
+        http_response.headers.update(outcome.identity_headers)
         return outcome.body
     return await _render_chat_stream(outcome, request, http_response)
 
@@ -670,6 +684,7 @@ async def _render_chat_stream(
             raise
         if stream.provider_header:
             http_response.headers["X-Provider"] = stream.provider_header
+        identity_headers = stream.identity_headers()
 
         # This path emits keepalive whitespace to keep intermediaries alive;
         # without no-transform / no-buffering a CDN (e.g. Cloudflare) can
@@ -681,6 +696,7 @@ async def _render_chat_stream(
         }
         if stream.provider_header:
             streaming_headers["X-Provider"] = stream.provider_header
+        streaming_headers.update(identity_headers)
 
         stream.adopt(first_chunk, keepalive_gen)
         return StreamingResponse(
@@ -690,6 +706,7 @@ async def _render_chat_stream(
         )
 
     await stream.prime()
+    identity_headers = stream.identity_headers()
     # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering
     # the stream to compress it, which collapses TTFT to total latency.
     response_headers = {
@@ -698,6 +715,7 @@ async def _render_chat_stream(
     }
     if stream.provider_header:
         response_headers["X-Provider"] = stream.provider_header
+    response_headers.update(identity_headers)
     return StreamingResponse(
         stream.frames(),
         media_type="text/event-stream",
@@ -836,6 +854,7 @@ async def execute_chat(
     # records routing observations and gets no X-Provider header, like any
     # other traffic. See serving/utils/synthetic_probe.py.
     is_synthetic_probe = is_trusted_probe_headers(ctx.origin.headers, user_ctx)
+    include_identity_headers = should_include_served_identity_headers(ctx.origin.headers, user_ctx)
     # Published immediately, before any of the early 404/403 exits below:
     # RequestLogMiddleware demotes probe request lines from this ctx key, so a
     # later publish would leave a trusted probe's unknown-model 404 suppressed
@@ -860,6 +879,7 @@ async def execute_chat(
     suppress_synthetic_logging = is_synthetic_probe and not log_synthetic_probes
 
     model = payload.model
+    requested_model = model
     messages = [m.model_dump() for m in payload.messages]
 
     # Debug-only: log inbound message roles to verify client behavior.
@@ -1009,6 +1029,7 @@ async def execute_chat(
     # does not exist. A sandbox cannot enumerate what is outside its scope by
     # reading the difference between 403 and 404 (serving/model_access.py).
     route = router_exec.routes[model]
+    canonical_model = route_canonical_model_id(route, model)
     denial = await model_access_denial(
         route, model, user_ctx, visibility_resolver=model_visibility_resolver
     )
@@ -1158,6 +1179,30 @@ async def execute_chat(
         config = getattr(adapter, "config", None)
         return getattr(config, "provider", None)
 
+    def build_served_identity_headers(routing_info: Any = None) -> dict[str, str]:
+        """Build identity for the selected route without exposing auto targets."""
+        if not include_identity_headers:
+            return {}
+        if auto_selection is not None:
+            return served_identity_headers(requested_model=requested_model)
+
+        provider_name = getattr(routing_info, "provider", None)
+        endpoint_id = getattr(routing_info, "endpoint_id", None)
+        base_url = getattr(routing_info, "base_url", None)
+        if (not provider_name or not endpoint_id) and len(route.adapters) == 1:
+            adapter = route.adapters[0][0]
+            provider_name = getattr(adapter.config, "provider", None)
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            base_url = getattr(adapter.config, "base_url", None)
+        config = get_adapter_config_for_provider(provider_name, base_url) if provider_name else None
+        return served_identity_headers(
+            requested_model=requested_model,
+            served_model=canonical_model,
+            endpoint_id=endpoint_id,
+            provider=provider_name,
+            endpoint_publishable=bool(getattr(config, "endpoint_identity_publishable", False)),
+        )
+
     # Pre-flight: reject media content when the model does not support it.
     # This check is placed before routing so both streaming and non-streaming
     # paths get a clean 400 instead of silently stripping image/audio blocks.
@@ -1273,6 +1318,9 @@ async def execute_chat(
             response_model=response_model,
         )
 
+        def identity_headers_for_response() -> dict[str, str]:
+            return build_served_identity_headers(session.routing_info)
+
         logger.debug(f"Creating StreamingResponse for model: {model}")
 
         return ChatStream(
@@ -1283,6 +1331,7 @@ async def execute_chat(
             model=response_model or model,
             request_headers=ctx.origin.headers,
             provider_header=get_single_route_provider() if is_synthetic_probe else None,
+            identity_headers_for_response=identity_headers_for_response,
         )
 
     # Non-streaming path
@@ -1445,13 +1494,15 @@ async def execute_chat(
             )
 
         provider_header = provider if is_synthetic_probe and provider != "router" else None
+        identity_headers = build_served_identity_headers(routing)
         if isinstance(response, dict) and isinstance(response.get("usage"), dict):
             # The client's copy only: the response model requires all three totals.
             return ChatResponse(
                 {**response, "usage": sanitize_usage(response["usage"], complete=True)},
                 provider_header,
+                identity_headers,
             )
-        return ChatResponse(response, provider_header)
+        return ChatResponse(response, provider_header, identity_headers)
 
     except ProviderPinError as exc:
         raise HTTPException(

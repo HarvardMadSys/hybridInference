@@ -95,6 +95,9 @@ class ModelConfig:
     # Format: "{provider}:{host}:{port}" or "{provider}:{host}".
     # If not set, falls back to `provider`.
     endpoint_id: str | None = None
+    # Registration-time decision; generated endpoint IDs are not proof that a
+    # location label is safe to disclose in diagnostic response headers.
+    endpoint_identity_publishable: bool = False
     quantization: str = "bf16"
     input_modalities: list[str] = field(default_factory=lambda: ["text"])
     output_modalities: list[str] = field(default_factory=lambda: ["text"])

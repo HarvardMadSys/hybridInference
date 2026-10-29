@@ -113,6 +113,7 @@ class ResponsesResult:
     """A served non-streaming request: the Responses object."""
 
     body: dict[str, Any]
+    headers: dict[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +126,7 @@ class ResponsesStream:
     """
 
     events: AsyncIterator[bytes]
+    headers: dict[str, str]
     #: The primed chat stream the events re-frame (None if chat answered unary).
     chat_stream: ChatStream | None = None
 
@@ -200,9 +202,11 @@ async def create_response(
             # Closed at the end of the request if the response never started.
             _streams.append(result.chat_stream)
         return StreamingResponse(
-            result.events, media_type="text/event-stream", headers=_SSE_HEADERS
+            result.events,
+            media_type="text/event-stream",
+            headers={**_SSE_HEADERS, **result.headers},
         )
-    return JSONResponse(content=result.body)
+    return JSONResponse(content=result.body, headers=result.headers or None)
 
 
 async def execute_responses(
@@ -303,6 +307,9 @@ async def execute_responses(
             await outcome.prime()
             frames = outcome.frames()
             chat_stream = outcome
+            identity_headers = outcome.identity_headers()
+        else:
+            identity_headers = outcome.identity_headers
         return ResponsesStream(
             _response_events(
                 frames,
@@ -316,11 +323,13 @@ async def execute_responses(
                 convo_messages=convo_messages,
                 user_id=user_id,
             ),
+            headers=identity_headers,
             chat_stream=chat_stream,
         )
 
     # Non-streaming: translate the chat completion to a Response.
     chat_result = outcome.body if isinstance(outcome, ChatResponse) else outcome
+    identity_headers = outcome.identity_headers if isinstance(outcome, ChatResponse) else {}
     if isinstance(outcome, ChatStream):
         await outcome.aclose()
     if not isinstance(chat_result, dict):
@@ -348,7 +357,7 @@ async def execute_responses(
             model=model,
         )
 
-    return ResponsesResult(responses_obj)
+    return ResponsesResult(responses_obj, identity_headers)
 
 
 async def _response_events(

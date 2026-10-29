@@ -165,6 +165,8 @@ async def test_small_budget_reasoning_call_is_rerouted(reroute_client, monkeypat
     assert "example-qwen.test" in captured["url"]
     sent_max = captured["json"].get("max_tokens") or captured["json"].get("max_completion_tokens")
     assert sent_max >= 512
+    # Served identity is available only to trusted diagnostic callers.
+    assert not any(name.lower().startswith("x-fi-") for name in r.headers)
 
 
 @pytest.mark.asyncio
