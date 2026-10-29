@@ -440,6 +440,336 @@ def test_kill_switch_restores_single_weighted_draw(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Locality-aware selection
+# ---------------------------------------------------------------------------
+#
+# Two separate questions, deliberately tested apart:
+#
+# 1. *Evidence.* ``affinity_key`` is the API-key hash and spans every
+#    conversation one key sends, while the hint table keeps one prefix per
+#    (key, endpoint). A locality verdict moves the request *and* records
+#    affinity for the next turn, so unlike the load estimate it does not
+#    self-correct: it needs the conversation fingerprint, and the anchor when
+#    messages are available.
+# 2. *Authority.* Weights encode cost and operator preference as well as load.
+#    Locality may refine a choice between comparable candidates; it may not
+#    overturn a strong one.
+
+
+def _remember(tracker, endpoint, tokens, *, fingerprint, messages=None):
+    """Record a completed prefill on ``endpoint`` for one conversation."""
+    lease = tracker.acquire(
+        endpoint,
+        tokens,
+        affinity_key="caller",
+        fingerprint=fingerprint,
+        anchor=None if messages is None else prefill_load.prompt_anchor(messages),
+    )
+    tracker.release(lease, prefill_confirmed=True)
+    return lease
+
+
+@pytest.mark.unit
+def test_select_prefers_the_endpoint_holding_the_callers_prefix():
+    """A warm conversation must not be handed to a cold replica by the draw.
+
+    Both draws land on index 1, and nothing else in the tracker would redirect
+    them: the backlog is trivial. The only reason to choose index 1 is that this
+    conversation's prefix is already resident there, which is exactly the signal
+    route selection used to ignore. Weights are equal, so the locality term is
+    deciding between comparable candidates rather than overriding a preference.
+    """
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 1
+
+
+@pytest.mark.unit
+def test_select_does_not_override_a_strong_weight_preference():
+    """The reviewer's P1: a 10%-weighted replica must not outbid the 90%.
+
+    A cache hit saves one prefill. It does not make an endpoint the operator
+    weighted ten times lower the right destination for every turn -- on a remote
+    provider those weights are cost, and on a local fleet they are a capacity
+    decision. The saving here is material (5k of 10k), so the only thing keeping
+    the request on the drawn candidate is the weight contract.
+    """
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    chosen = t.select_index(
+        ["preferred", "warm"],
+        [0.9, 0.1],
+        10_000,
+        _fixed_rand(0.0),
+        "caller",
+        fingerprint="conv-a",
+    )
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_select_may_move_between_comparable_weights():
+    """40/60 is still comparable, so locality may break the tie either way."""
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    chosen = t.select_index(
+        ["drawn", "warm"], [0.6, 0.4], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("weights", [(0.5, 0.5), (0.65, 0.35), (0.7, 0.3), (0.9, 0.1)])
+def test_locality_preserves_configured_traffic_ratios(weights):
+    """A cache-warm endpoint must not become absorbing at an asymmetric ratio.
+
+    Each conversation keeps its own remembered prefix and reuses the tracker's
+    routing path across ten turns. The configured ratios are intentionally
+    coarse integration-like bounds: with only 4 000 samples, a binomial 70/30
+    split has a 95% interval of roughly +/-1.4 percentage points, while the
+    pre-fix behavior sends only about 5% to the light endpoint.
+    """
+    rng = random.Random(1_636)
+    counts = [0, 0]
+    endpoints = ("light", "heavy")
+    for conversation in range(400):
+        affinity_key = f"caller-{conversation}"
+        fingerprint = f"conversation-{conversation}"
+        warm_index: int | None = None
+        tracker = PrefillLoadTracker()
+        for _turn in range(10):
+            if warm_index is not None:
+                _remember(tracker, endpoints[warm_index], 5_000, fingerprint=fingerprint)
+            chosen = tracker.select_index(
+                endpoints,
+                weights,
+                10_000,
+                rng.random,
+                affinity_key,
+                fingerprint=fingerprint,
+            )
+            counts[chosen] += 1
+            warm_index = chosen
+    observed_light = counts[0] / sum(counts)
+    assert observed_light == pytest.approx(weights[0], abs=0.02)
+
+
+@pytest.mark.unit
+def test_select_does_not_move_from_light_to_strong_heavy_preference():
+    """The weight gate is symmetric: a heavy draw is protected like a light one."""
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    chosen = t.select_index(
+        ["light", "warm"],
+        [0.1, 0.9],
+        10_000,
+        _fixed_rand(0.0),
+        "caller",
+        fingerprint="conv-a",
+    )
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_select_ignores_another_conversations_prefix_on_the_same_key():
+    """The P1 defect, directly: one API key, two conversations, one hint.
+
+    The hint belongs to ``conv-a``. ``conv-b`` shares only the API key, so that
+    prefix is not resident for it at all -- following it would send the request
+    to a cold replica *and* re-pin the key's next turn there, which is worse
+    than the draw it replaced.
+    """
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-b"
+    )
+    assert chosen == 0
+    # And the loose caller-scoped number would still have said "warm".
+    assert t.uncached_estimate("warm", 10_000, "caller") == 5_000
+
+
+@pytest.mark.unit
+def test_select_falls_back_to_the_draw_without_a_fingerprint():
+    """No conversation identity means no locality, not the caller-scoped guess."""
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    chosen = t.select_index(["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller")
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_select_ignores_a_fork_of_the_same_conversation():
+    """Same conversation, diverged prompt: the shared head is not the prompt.
+
+    A fork or an edited turn keeps the fingerprint but not the resident KV, so
+    the anchor check must reject it. The continuation below it -- the same
+    conversation with the measured prompt as its prefix -- passes.
+    """
+    t = PrefillLoadTracker()
+    measured = [{"role": "user", "content": "a" * 40_000}]
+    _remember(t, "warm", 5_000, fingerprint="conv-a", messages=measured)
+
+    fork = [{"role": "user", "content": "b" * 40_000}]
+    assert (
+        t.select_index(
+            ["cold", "warm"],
+            [0.5, 0.5],
+            10_000,
+            _fixed_rand(0.0),
+            "caller",
+            fingerprint="conv-a",
+            messages=fork,
+        )
+        == 0
+    )
+
+    continuation = [{"role": "user", "content": "a" * 40_000 + "c" * 200}]
+    assert (
+        t.select_index(
+            ["cold", "warm"],
+            [0.5, 0.5],
+            10_000,
+            _fixed_rand(0.0),
+            "caller",
+            fingerprint="conv-a",
+            messages=continuation,
+        )
+        == 1
+    )
+
+
+@pytest.mark.unit
+def test_select_keeps_the_draw_when_the_locality_saving_is_immaterial():
+    """A few shared tokens is jitter, not the conversation; weights still decide."""
+    t = PrefillLoadTracker()
+    resident = prefill_load.LOCALITY_MIN_SAVING_TOKENS - 1
+    _remember(t, "warm", resident, fingerprint="conv-a")
+    prompt = resident + prefill_load.LOCALITY_MIN_SAVING_TOKENS
+    assert (
+        t.uncached_estimate("warm", prompt, "caller", fingerprint="conv-a")
+        == prefill_load.LOCALITY_MIN_SAVING_TOKENS
+    )
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], prompt, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_select_keeps_the_draw_when_the_cached_endpoint_is_backlogged():
+    """Past the affinity ceiling the queue costs more than the prefill it saves."""
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    # Someone else's cold mega-prefill is now queued on the warm endpoint.
+    t.acquire("warm", prefill_load.AFFINITY_BACKLOG_CEILING + 1, affinity_key="other")
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_select_moves_to_the_next_warm_candidate_when_the_cheapest_fails_the_weight_gate():
+    """Gates filter candidates; they do not veto the single cheapest one.
+
+    Three ordinary candidates: the drawn one is cold, the *cheapest* warm one is
+    weighted below the locality share, and a second warm one is comparable. The
+    cheapest-first ordering would inspect only the 0.4-weighted endpoint, fail it
+    on the weight contract, and hand the conversation back to the cold replica --
+    even though an eligible warm endpoint was sitting right there. Filter first,
+    then take the lowest strict cost among the survivors.
+    """
+    t = PrefillLoadTracker()
+    _remember(t, "teaser", 8_000, fingerprint="conv-a")
+    _remember(t, "warm", 4_096, fingerprint="conv-a")
+    chosen = t.select_index(
+        ["drawn", "teaser", "warm"],
+        [1.0, 0.4, 0.6],
+        10_000,
+        _fixed_rand(0.0),
+        "caller",
+        fingerprint="conv-a",
+    )
+    assert chosen == 2
+
+
+@pytest.mark.unit
+def test_select_moves_to_the_next_warm_candidate_when_the_cheapest_is_backlogged():
+    """Same filter-then-select shape, with the backlog ceiling as the failing gate."""
+    t = PrefillLoadTracker()
+    _remember(t, "packed", 5_000, fingerprint="conv-a")
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    # Someone else's cold mega-prefill is queued on the cheapest warm endpoint;
+    # ties on cost resolve to the first survivor, so "packed" is inspected first.
+    t.acquire("packed", prefill_load.AFFINITY_BACKLOG_CEILING + 1, affinity_key="other")
+    chosen = t.select_index(
+        ["drawn", "packed", "warm"],
+        [1.0, 1.0, 1.0],
+        10_000,
+        _fixed_rand(0.0),
+        "caller",
+        fingerprint="conv-a",
+    )
+    assert chosen == 2
+
+
+@pytest.mark.unit
+def test_select_stands_when_every_warm_candidate_is_disqualified():
+    """All alternates failing gates -- each a different one -- leaves the draw.
+
+    The cheapest warm endpoint is weighted below the locality share and the
+    second is past the backlog ceiling, so the survivor set is the drawn
+    candidate alone: filtering, not vetoing, means an exhausted warm pool
+    degrades to the plain weighted draw rather than to "no route".
+    """
+    t = PrefillLoadTracker()
+    _remember(t, "teaser", 8_000, fingerprint="conv-a")
+    _remember(t, "packed", 5_000, fingerprint="conv-a")
+    t.acquire("packed", prefill_load.AFFINITY_BACKLOG_CEILING + 1, affinity_key="other")
+    chosen = t.select_index(
+        ["drawn", "teaser", "packed"],
+        [1.0, 0.4, 1.0],
+        10_000,
+        _fixed_rand(0.0),
+        "caller",
+        fingerprint="conv-a",
+    )
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_select_has_no_locality_without_a_caller():
+    """No caller identity means no prefix history: the draw stands, as before."""
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    assert (
+        t.select_index(["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), fingerprint="conv-a")
+        == 0
+    )
+
+
+@pytest.mark.unit
+def test_select_does_not_revisit_an_avoided_warm_endpoint():
+    """Locality must not override ``avoid`` and hand back the endpoint just left."""
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    chosen = t.select_index(
+        ["cold", "warm"],
+        [0.5, 0.5],
+        10_000,
+        _fixed_rand(0.0),
+        "caller",
+        "warm",
+        fingerprint="conv-a",
+    )
+    assert chosen == 0
+
+
+# ---------------------------------------------------------------------------
 # Warm-continuation discounting
 # ---------------------------------------------------------------------------
 
