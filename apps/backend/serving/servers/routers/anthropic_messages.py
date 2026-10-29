@@ -2325,6 +2325,15 @@ async def execute_messages(
                                 chunk_queue.get(), timeout=_KEEPALIVE_INTERVAL
                             )
                         except TimeoutError:
+                            # A reader that exited without its terminal sentinel
+                            # must not be converted into an endless heartbeat.
+                            # Propagate its outcome (or cancellation) while the
+                            # queue is provably empty.
+                            if reader_task.done() and chunk_queue.empty():
+                                reader_task.result()
+                                raise RuntimeError(
+                                    "stream reader exited without a sentinel"
+                                ) from None
                             idle_seconds += _KEEPALIVE_INTERVAL
                             # Prefill before the first frame, decode after it.
                             idle_ceiling = (
