@@ -489,32 +489,65 @@ async def test_request_log_includes_provider_and_snapshot_lock_waits(monkeypatch
     import asyncio
     import logging
 
+    clock = _StepClock()
+
+    class ObservedLock(asyncio.Lock):
+        def __init__(self):
+            super().__init__()
+            self.waiting = asyncio.Event()
+
+        async def acquire(self):
+            if self.locked():
+                self.waiting.set()
+            return await super().acquire()
+
     class Serialized(_Discovery):
         def __init__(self, result):
             super().__init__(result)
-            self.lock = asyncio.Lock()
+            self.lock = ObservedLock()
+            self.first_entered = asyncio.Event()
+            self.second_entered = asyncio.Event()
+            self.release_first = asyncio.Event()
+            self.release_second = asyncio.Event()
+            self.calls = 0
 
         async def get_snapshot(self):
+            self.calls += 1
+            call = self.calls
             async with self.lock:  # one refresh at a time, like the real provider
-                await asyncio.sleep(0.05)
+                (self.first_entered if call == 1 else self.second_entered).set()
+                await (self.release_first if call == 1 else self.release_second).wait()
                 return await super().get_snapshot()
 
     discovery = Serialized(_snapshot("11.0.0.21/32"))
-    app = _logged_app(monkeypatch, _settings(), discovery)
+    app = _logged_app(monkeypatch, _settings(), discovery, clock)
     caplog.set_level(logging.DEBUG)
 
-    await asyncio.gather(_request(app), _request(app))
+    first_request = asyncio.create_task(_request(app))
+    await discovery.first_entered.wait()
+    second_request = asyncio.create_task(_request(app))
+    await discovery.lock.waiting.wait()
+    clock.value += 0.05
+    discovery.release_first.set()
+    await first_request
+    await discovery.second_entered.wait()
+    clock.value += 0.05
+    discovery.release_second.set()
+    await second_request
     first, second = sorted(r.proxy_discovery_ms for r in _request_records(caplog))
-    assert first >= 50.0
-    assert second >= 100.0  # waited for the other request's refresh
+    assert first == 50.0
+    assert second == 100.0  # waited for the other request's refresh
 
     caplog.clear()
-    async with app._lock:  # hold the provider lock, e.g. during reconfiguration
+    provider_lock = ObservedLock()
+    app._lock = provider_lock
+    async with provider_lock:  # hold the provider lock, e.g. during reconfiguration
         pending = asyncio.ensure_future(_request(app))
-        await asyncio.sleep(0.05)
+        await provider_lock.waiting.wait()
+        clock.value += 0.1
     await pending
     (record,) = _request_records(caplog)
-    assert record.proxy_discovery_ms >= 100.0
+    assert record.proxy_discovery_ms == 100.0
 
 
 @pytest.mark.asyncio
