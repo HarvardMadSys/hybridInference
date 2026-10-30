@@ -994,6 +994,9 @@ class AnalyticsModelUserEntry(BaseModel):
     user_id: str
     requests: int
     tokens: int  # prompt + completion tokens attributed to this user + model
+    prompt_tokens: int  # prefill tokens, cached ones included
+    cache_read_tokens: int  # prefill tokens served from the prompt cache
+    completion_tokens: int  # output tokens, reasoning included
 
 
 class AnalyticsModelUsers(BaseModel):
@@ -1007,6 +1010,9 @@ class AnalyticsModelUsers(BaseModel):
     model: str  # model_id
     requests: int  # total user-attributed requests for this model
     tokens: int  # total user-attributed tokens for this model
+    prompt_tokens: int
+    cache_read_tokens: int
+    completion_tokens: int
     users: list[AnalyticsModelUserEntry]
 
 

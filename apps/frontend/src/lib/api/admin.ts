@@ -1015,12 +1015,18 @@ export interface AnalyticsModelUserEntry {
   user_id: string;
   requests: number;
   tokens: number; // prompt + completion tokens for this user + model
+  prompt_tokens: number; // prefill tokens, cached ones included
+  cache_read_tokens: number; // prefill tokens served from the prompt cache
+  completion_tokens: number; // output tokens, reasoning included
 }
 
 export interface AnalyticsModelUsers {
   model: string; // model_id
   requests: number; // total signed-in-user requests for this model
   tokens: number; // total signed-in-user tokens for this model
+  prompt_tokens: number;
+  cache_read_tokens: number;
+  completion_tokens: number;
   users: AnalyticsModelUserEntry[];
 }
 
