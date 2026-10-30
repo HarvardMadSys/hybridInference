@@ -54,6 +54,7 @@ import {
   emptyCapabilityDraft,
   readCapabilityDraft,
   sameCapabilities,
+  sameCapabilityDraft,
   type CapabilityDraft,
   type DeclaredChoice,
 } from './RouteCapabilityFields';
@@ -1069,20 +1070,35 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       }));
   })();
 
-  // The capability fields, saved by the same Save. Values equal to the route's
-  // defaults clear the ones set in the console, so the route goes on following
-  // its defaults rather than holding a copy of them.
+  // The capability fields, saved by the same Save. Only what the admin changes
+  // counts: the values the route serves are kept and not sent, even ones this
+  // form would refuse (models.yaml does not check them). Values equal to the
+  // route's defaults clear the ones set in the console, so the route goes on
+  // following its defaults rather than holding a copy of them.
   const editCapabilityReading = readCapabilityDraft(editCapabilityDraft);
   const editCapabilities = editingRoute?.capabilities;
   const editCapabilityDefaults = editingRoute?.capabilities_baseline ?? editCapabilities;
+  const editCapabilitiesOverridden = Boolean(editingRoute?.capabilities_overridden);
+  const editCapabilitiesEdited =
+    editCapabilities !== undefined &&
+    (!sameCapabilityDraft(editCapabilityDraft, capabilityDraftFrom(editCapabilities)) ||
+      (capabilityRestoreChosen && editCapabilitiesOverridden));
+  // The defaults as Restore defaults puts them, whether or not the form accepts them.
+  const editCapabilityDraftIsDefaults =
+    editCapabilityDefaults !== undefined &&
+    sameCapabilityDraft(editCapabilityDraft, capabilityDraftFrom(editCapabilityDefaults));
   const editCapabilitySave: CapabilitySave | null = (() => {
+    if (!editCapabilities || !editCapabilityDefaults || !editCapabilitiesEdited) return null;
     const draft = editCapabilityReading.payload;
-    if (!editingRoute || !editCapabilities || !editCapabilityDefaults || !draft) return null;
-    if (editingRoute.capabilities_overridden && sameCapabilities(draft, editCapabilityDefaults)) {
-      return sameCapabilities(draft, editCapabilities) && !capabilityRestoreChosen
+    if (
+      editCapabilitiesOverridden &&
+      (editCapabilityDraftIsDefaults || (draft && sameCapabilities(draft, editCapabilityDefaults)))
+    ) {
+      return draft && sameCapabilities(draft, editCapabilities) && !capabilityRestoreChosen
         ? null
         : { reset_capabilities: true };
     }
+    if (!draft) return null;
     return sameCapabilities(draft, editCapabilities) ? null : { capabilities: draft };
   })();
   const capabilityEditChanges: Change[] = (() => {
@@ -1096,7 +1112,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         : editCapabilityDefaults,
     );
     // Values set in the console that equal the defaults: only their source changes.
-    return changes.length > 0
+    return changes.length > 0 || 'capabilities' in editCapabilitySave
       ? changes
       : [
           {
@@ -1106,7 +1122,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           },
         ];
   })();
-  const editCapabilitiesInvalid = Boolean(editCapabilities) && !editCapabilityReading.payload;
+  // Edited values the form refuses block Save; served ones it would refuse do not.
+  const editCapabilitiesInvalid =
+    editCapabilitiesEdited && !editCapabilityReading.payload && !editCapabilitySave;
+  const editCapabilityShownReading = editCapabilitiesInvalid
+    ? editCapabilityReading
+    : { ...editCapabilityReading, contextLengthError: null, maxOutputLengthError: null };
   const editChangeCount = routeEditChanges.length + capabilityEditChanges.length;
 
   const restoreCapabilityDefaults = () => {
@@ -3373,21 +3394,26 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   <RouteCapabilityFields
                     idPrefix="route-edit"
                     draft={editCapabilityDraft}
-                    reading={editCapabilityReading}
+                    reading={editCapabilityShownReading}
                     onChange={(change) =>
                       setEditCapabilityDraft((current) => ({ ...current, ...change }))
                     }
                     help="The gateway applies these to requests through this route. They do not change what the upstream model can do."
                     disabled={confirmation.busy}
                   />
+                  {!editCapabilitiesEdited && editCapabilityReading.payload === null && (
+                    <p className="mt-1 text-[11px] leading-5 text-amber-700">
+                      The values in use do not pass this form&apos;s checks. They stay as they are
+                      unless you change them.
+                    </p>
+                  )}
                   <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] leading-5 text-gray-500">
                     <span>
                       {capabilityDefaultsLabel(editingRoute)}:{' '}
                       {describeCapabilities(editCapabilityDefaults)}
                     </span>
-                    {(editCapabilityReading.payload === null ||
-                      !sameCapabilities(editCapabilityReading.payload, editCapabilityDefaults) ||
-                      (editingRoute.capabilities_overridden && !capabilityRestoreChosen)) && (
+                    {(!editCapabilityDraftIsDefaults ||
+                      (editCapabilitiesOverridden && !capabilityRestoreChosen)) && (
                       <button
                         type="button"
                         onClick={restoreCapabilityDefaults}

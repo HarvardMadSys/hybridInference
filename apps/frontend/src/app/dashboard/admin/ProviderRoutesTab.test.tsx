@@ -4221,6 +4221,168 @@ describe('ProviderRoutesTab', () => {
       return screen.findByRole('dialog', { name: 'Edit provider route' });
     };
 
+    // models.yaml does not check these four, so a route can serve values this
+    // form would refuse, or input without text. Left untouched, they are kept
+    // as served: they neither block other edits nor turn into an override.
+    const OVER_CONTEXT = { ...ROUTE_CAPABILITIES, context_length: 8192, max_output_length: 16384 };
+    const IMAGE_ONLY = { ...ROUTE_CAPABILITIES, input_modalities: ['image'] };
+    const UNTOUCHED_NOTE =
+      "The values in use do not pass this form's checks. They stay as they are unless you change them.";
+
+    it('keeps served values the form would refuse when only the connection changes', async () => {
+      vi.mocked(updateProviderRoute).mockResolvedValue({ ...route, concurrency_limit: 2 });
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: OVER_CONTEXT,
+        capabilities_baseline: OVER_CONTEXT,
+      });
+
+      expect(within(dialog).getByText(UNTOUCHED_NOTE)).toBeInTheDocument();
+      expect(within(dialog).queryByText('Max output cannot exceed the context length.')).toBeNull();
+      expect(
+        within(dialog).queryByText('Fix the context length and max output to save.'),
+      ).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Restore defaults' })).toBeNull();
+      expect(within(dialog).getByText('No changes yet')).toBeVisible();
+
+      fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+        target: { value: '2' },
+      });
+      expect(within(dialog).getByText('1 unsaved change')).toBeVisible();
+      saveRouteEdit();
+
+      await waitFor(() => expect(updateProviderRoute).toHaveBeenCalledTimes(1));
+      const body = vi.mocked(updateProviderRoute).mock.calls[0][2];
+      expect(body).toEqual(expect.objectContaining({ concurrency_limit: 2 }));
+      expect(body).not.toHaveProperty('capabilities');
+      expect(body).not.toHaveProperty('reset_capabilities');
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+      expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('keeps a runtime route served over the token limit when only its limit changes', async () => {
+      const huge = { ...ROUTE_CAPABILITIES, context_length: 20_000_000 };
+      const runtime = {
+        ...route,
+        source: 'runtime' as const,
+        capabilities: huge,
+        capabilities_baseline: huge,
+      };
+      vi.mocked(updateProviderRouteCandidate).mockResolvedValue({
+        ...runtime,
+        concurrency_limit: 3,
+      });
+      const dialog = await renderWithRoute(runtime);
+
+      fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+        target: { value: '3' },
+      });
+      saveRouteEdit();
+
+      await waitFor(() => expect(updateProviderRouteCandidate).toHaveBeenCalledTimes(1));
+      const body = vi.mocked(updateProviderRouteCandidate).mock.calls[0][2];
+      expect(body).toEqual(expect.objectContaining({ concurrency_limit: 3 }));
+      expect(body).not.toHaveProperty('capabilities');
+      expect(body).not.toHaveProperty('reset_capabilities');
+    });
+
+    it('checks served values the form would refuse once they are edited', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: OVER_CONTEXT,
+        capabilities_baseline: OVER_CONTEXT,
+      });
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '12000' },
+      });
+      expect(
+        within(dialog).getByText('Max output cannot exceed the context length.'),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByText('Fix the context length and max output to save.'),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: /Save changes to/ })).toBeDisabled();
+
+      // Changed back, nothing is edited again.
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '16384' },
+      });
+      expect(within(dialog).getByText('No changes yet')).toBeVisible();
+
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '4096' },
+      });
+      saveRouteEdit();
+      await waitFor(() => {
+        expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          { ...OVER_CONTEXT, max_output_length: 4096 },
+        );
+      });
+    });
+
+    it('restores defaults the form would refuse by clearing the console values', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: WIDE,
+        capabilities_baseline: OVER_CONTEXT,
+        capabilities_overridden: true,
+      });
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore defaults' }));
+      expect(within(dialog).getByRole('button', { name: /Save changes to/ })).toBeEnabled();
+      saveRouteEdit();
+
+      await waitFor(() => {
+        expect(resetProviderRouteCapabilities).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+        );
+      });
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('shows no change for served input without text, and saves the connection alone', async () => {
+      vi.mocked(updateProviderRoute).mockResolvedValue({ ...route, concurrency_limit: 2 });
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: IMAGE_ONLY,
+        capabilities_baseline: IMAGE_ONLY,
+      });
+
+      expect(within(dialog).getByText('No changes yet')).toBeVisible();
+      expect(within(dialog).queryByRole('button', { name: 'Restore defaults' })).toBeNull();
+      fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+        target: { value: '2' },
+      });
+      expect(within(dialog).getByText('1 unsaved change')).toBeVisible();
+      saveRouteEdit();
+
+      await waitFor(() => expect(updateProviderRoute).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(updateProviderRoute).mock.calls[0][2]).not.toHaveProperty('capabilities');
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('returns a route to defaults without text by clearing, not storing, them', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: WIDE,
+        capabilities_baseline: IMAGE_ONLY,
+        capabilities_overridden: true,
+      });
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore defaults' }));
+      saveRouteEdit();
+
+      await waitFor(() => expect(resetProviderRouteCapabilities).toHaveBeenCalledTimes(1));
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
     it('shows the four fields in the Edit form, with no separate button or dialog', async () => {
       const dialog = await renderWithRoute();
 

@@ -86,15 +86,38 @@ export function readCapabilityDraft(draft: CapabilityDraft): CapabilityDraftRead
   return { payload, contextLengthError, maxOutputLengthError };
 }
 
-/** Whether two declarations would serve requests the same way. */
+/**
+ * Whether two declarations are the same as this form shows them. Text input is
+ * implied: the form always sends it, so a declaration without it (which
+ * models.yaml does not refuse) is not a different one.
+ */
 export function sameCapabilities(a: RouteCapabilities, b: RouteCapabilities) {
   const modalities = (capabilities: RouteCapabilities) =>
-    [...new Set(capabilities.input_modalities)].sort().join(',');
+    [...new Set(capabilities.input_modalities.filter((modality) => modality !== 'text'))]
+      .sort()
+      .join(',');
   return (
     a.context_length === b.context_length &&
     a.max_output_length === b.max_output_length &&
     a.supports_tools === b.supports_tools &&
     modalities(a) === modalities(b)
+  );
+}
+
+/**
+ * Whether two drafts hold the same answers: "8192" and "08192" are one
+ * count, and a value the form would refuse is compared as typed.
+ */
+export function sameCapabilityDraft(a: CapabilityDraft, b: CapabilityDraft) {
+  const sameCount = (x: string, y: string) =>
+    x.trim() === y.trim() ||
+    (/^\d+$/.test(x.trim()) && /^\d+$/.test(y.trim()) && Number(x) === Number(y));
+  return (
+    sameCount(a.contextLength, b.contextLength) &&
+    sameCount(a.maxOutputLength, b.maxOutputLength) &&
+    a.imageInput === b.imageInput &&
+    a.toolCalling === b.toolCalling &&
+    [...a.otherInputModalities].sort().join(',') === [...b.otherInputModalities].sort().join(',')
   );
 }
 
