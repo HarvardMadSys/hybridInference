@@ -702,6 +702,41 @@ describe('provider route client', () => {
     });
   });
 
+  it('updateProviderRoute sends a capability change in the same body', async () => {
+    const ok = () =>
+      new Response(JSON.stringify({ route_id: 'minimax-fast:featherless-api' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    fetchMock.mockResolvedValueOnce(ok()).mockResolvedValueOnce(ok());
+    const target = {
+      upstream_provider: 'featherless',
+      base_url: 'https://api.featherless.ai/v1',
+    };
+    const capabilities: RuntimeModelCapabilities = {
+      context_length: 32768,
+      max_output_length: 8192,
+      input_modalities: ['text'],
+      supports_tools: false,
+    };
+
+    await updateProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
+      ...target,
+      capabilities,
+    });
+    await updateProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
+      ...target,
+      reset_capabilities: true,
+    });
+
+    const set = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(set.capabilities).toEqual(capabilities);
+    expect(set).not.toHaveProperty('reset_capabilities');
+    const reset = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    expect(reset.reset_capabilities).toBe(true);
+    expect(reset).not.toHaveProperty('capabilities');
+  });
+
   it('verifyProviderRoute POSTs provider target body to dry-run endpoint', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: true }), {

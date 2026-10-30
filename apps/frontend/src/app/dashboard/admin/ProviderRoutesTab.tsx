@@ -14,6 +14,7 @@ import {
   ProviderRouteOption,
   Role,
   RouteWeight,
+  RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
   createProviderRouteCandidate,
@@ -37,21 +38,22 @@ import {
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import { ChangeList, plural, type Change } from '@/components/features/admin/confirm/ChangeList';
+import type { Change } from '@/components/features/admin/confirm/ChangeList';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
-import { BUTTON_GHOST, BUTTON_PRIMARY } from '@/components/features/admin/adminStyles';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { OffloadRoutePanel } from './OffloadRoutePanel';
 import { RouteDeploymentField } from './RouteDeploymentField';
 import {
   RouteCapabilityFields,
   capabilityChanges,
+  capabilityDefaultsLabel,
   capabilityDraftFrom,
   describeCapabilities,
   emptyCapabilityDraft,
   readCapabilityDraft,
+  sameCapabilities,
   type CapabilityDraft,
   type DeclaredChoice,
 } from './RouteCapabilityFields';
@@ -440,6 +442,11 @@ function routePrimaryUpstreamProvider(route: ProviderRoute) {
   return route.upstream_provider;
 }
 
+// A route edit's capability change: set new values, or return to the defaults.
+type CapabilitySave = { capabilities: RuntimeModelCapabilities } | { reset_capabilities: true };
+
+const CAPABILITY_FIELDS_INVALID = 'Fix the context length and max output to save.';
+
 const ROUTE_EDIT_FIELD_LABELS: Record<string, string> = {
   upstream_provider: 'Provider',
   openrouter_provider: 'OpenRouter provider',
@@ -672,9 +679,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(false);
   const [editingRoute, setEditingRoute] = useState<ProviderRoute | null>(null);
-  // The route whose capabilities are being edited, and the fields as typed.
-  const [capabilityRoute, setCapabilityRoute] = useState<ProviderRoute | null>(null);
-  const [capabilityDraft, setCapabilityDraft] = useState<CapabilityDraft>(emptyCapabilityDraft);
+  // The edited route's capability fields as typed, saved with its other fields.
+  const [editCapabilityDraft, setEditCapabilityDraft] =
+    useState<CapabilityDraft>(emptyCapabilityDraft);
+  // Restore defaults was chosen: saving returns the route to its defaults even
+  // where the values set in the console already equal them.
+  const [capabilityRestoreChosen, setCapabilityRestoreChosen] = useState(false);
   const [addingRoute, setAddingRoute] = useState(false);
   const [creatingModel, setCreatingModel] = useState(false);
   const [newModelId, setNewModelId] = useState('');
@@ -707,9 +717,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   // Route key → why that row's concurrency limit could not be saved.
   const [concurrencyErrors, setConcurrencyErrors] = useState<Record<string, string>>({});
   const [routeEditError, setRouteEditError] = useState<string | null>(null);
-  // Why a create or a capability save failed, shown in its dialog with the values kept.
+  // Why a create failed, shown in its dialog with the values kept.
   const [createError, setCreateError] = useState<string | null>(null);
-  const [capabilityError, setCapabilityError] = useState<string | null>(null);
   const [verifyingKey, setVerifyingKey] = useState<string | null>(null);
   const [verifyingCreateRoute, setVerifyingCreateRoute] = useState(false);
   const [verifiedEditSignature, setVerifiedEditSignature] = useState<string | null>(null);
@@ -1060,6 +1069,52 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       }));
   })();
 
+  // The capability fields, saved by the same Save. Values equal to the route's
+  // defaults clear the ones set in the console, so the route goes on following
+  // its defaults rather than holding a copy of them.
+  const editCapabilityReading = readCapabilityDraft(editCapabilityDraft);
+  const editCapabilities = editingRoute?.capabilities;
+  const editCapabilityDefaults = editingRoute?.capabilities_baseline ?? editCapabilities;
+  const editCapabilitySave: CapabilitySave | null = (() => {
+    const draft = editCapabilityReading.payload;
+    if (!editingRoute || !editCapabilities || !editCapabilityDefaults || !draft) return null;
+    if (editingRoute.capabilities_overridden && sameCapabilities(draft, editCapabilityDefaults)) {
+      return sameCapabilities(draft, editCapabilities) && !capabilityRestoreChosen
+        ? null
+        : { reset_capabilities: true };
+    }
+    return sameCapabilities(draft, editCapabilities) ? null : { capabilities: draft };
+  })();
+  const capabilityEditChanges: Change[] = (() => {
+    if (!editingRoute || !editCapabilitySave || !editCapabilities || !editCapabilityDefaults) {
+      return [];
+    }
+    const changes = capabilityChanges(
+      editCapabilities,
+      'capabilities' in editCapabilitySave
+        ? editCapabilitySave.capabilities
+        : editCapabilityDefaults,
+    );
+    // Values set in the console that equal the defaults: only their source changes.
+    return changes.length > 0
+      ? changes
+      : [
+          {
+            label: 'Capabilities',
+            before: 'Set in the console',
+            after: capabilityDefaultsLabel(editingRoute),
+          },
+        ];
+  })();
+  const editCapabilitiesInvalid = Boolean(editCapabilities) && !editCapabilityReading.payload;
+  const editChangeCount = routeEditChanges.length + capabilityEditChanges.length;
+
+  const restoreCapabilityDefaults = () => {
+    if (!editCapabilityDefaults) return;
+    setEditCapabilityDraft(capabilityDraftFrom(editCapabilityDefaults));
+    setCapabilityRestoreChosen(true);
+  };
+
   useEffect(() => {
     if (!editingRoute) {
       setForm({
@@ -1074,9 +1129,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         quotaLimit: '',
         concurrencyLimit: '',
       });
+      setEditCapabilityDraft(emptyCapabilityDraft);
+      setCapabilityRestoreChosen(false);
       setKeyOptions([]);
       return;
     }
+    setEditCapabilityDraft(
+      editingRoute.capabilities
+        ? capabilityDraftFrom(editingRoute.capabilities)
+        : emptyCapabilityDraft,
+    );
+    setCapabilityRestoreChosen(false);
     setForm({
       upstreamProvider: routePrimaryUpstreamProvider(editingRoute),
       openRouterProvider: routeOpenRouterProvider(editingRoute),
@@ -1395,7 +1458,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setAddingRoute(true);
     setCreatingModel(false);
     setEditingRoute(null);
-    setCapabilityRoute(null);
   };
 
   const openCreateModelForm = () => {
@@ -1431,7 +1493,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setCreatingModel(true);
     setAddingRoute(false);
     setEditingRoute(null);
-    setCapabilityRoute(null);
   };
 
   const onCreateProviderChange = (upstreamProvider: string) => {
@@ -1489,8 +1550,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!editingRoute || !editRoutePayload || routeEditChanges.length === 0) return;
-    if (!editFormValid) {
+    if (!editingRoute || !editRoutePayload) return;
+    const connectionChanged = routeEditChanges.length > 0;
+    const capabilitySave = editCapabilitySave;
+    if (!connectionChanged && !capabilitySave) return;
+    if (connectionChanged && !editFormValid) {
       setRouteEditError(
         !quotaLimitValid
           ? 'Local daily quota must be a positive whole number.'
@@ -1502,18 +1566,35 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       );
       return;
     }
+    if (editCapabilitiesInvalid) {
+      setRouteEditError(CAPABILITY_FIELDS_INVALID);
+      return;
+    }
     setRouteEditError(null);
     const target = editingRoute;
     const payload = editRoutePayload;
-    // The editor closes once the route is saved; a failure keeps it, and its drafts, open.
+    // One request saves everything: a target edit carries the capability
+    // change, and the gateway restores both if either fails. The editor closes once
+    // the route is saved; a failure keeps it, and its drafts, open.
     const failure = await confirmation.perform({
       run: async () => {
         let updated: ProviderRoute;
         try {
-          updated =
-            target.source === 'runtime'
-              ? await updateProviderRouteCandidate(target.model_id, target.route_id, payload)
-              : await updateProviderRoute(target.model_id, target.route_id, payload);
+          if (connectionChanged) {
+            const body = { ...payload, ...capabilitySave };
+            updated =
+              target.source === 'runtime'
+                ? await updateProviderRouteCandidate(target.model_id, target.route_id, body)
+                : await updateProviderRoute(target.model_id, target.route_id, body);
+          } else if (capabilitySave && 'capabilities' in capabilitySave) {
+            updated = await updateProviderRouteCapabilities(
+              target.model_id,
+              target.route_id,
+              capabilitySave.capabilities,
+            );
+          } else {
+            updated = await resetProviderRouteCapabilities(target.model_id, target.route_id);
+          }
         } catch (err) {
           throw new Error(routeErrorMessage(err));
         }
@@ -1695,14 +1776,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   );
   const panelOpen = panelEditing.offload || panelEditing.routewise;
   // Switching model, directly or by creating one, would drop any unsaved draft.
-  // The route, capability and create dialogs are modal, but their drafts belong
+  // The route and create dialogs are modal, but their drafts belong
   // to this model too, as do an open confirmation and a write still running.
   // Unchanged fields hold nothing back.
   const modelLocked =
     inlineChanged ||
     panelOpen ||
     editingRoute !== null ||
-    capabilityRoute !== null ||
     createFormOpen ||
     confirmation.open ||
     confirmation.busy;
@@ -1857,88 +1937,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (failure) toast.error(`Weight reset failed: ${failure}`);
   };
 
-  // A route's capabilities: the dialog's fields are a draft, and Save writes it.
-  const openCapabilityEditor = (route: ProviderRoute) => {
-    if (!route.capabilities) return;
-    setCapabilityRoute(route);
-    setCapabilityDraft(capabilityDraftFrom(route.capabilities));
-    setCapabilityError(null);
-    setEditingRoute(null);
-    setAddingRoute(false);
-    setCreatingModel(false);
-  };
-
-  const closeCapabilityEditor = () => {
-    if (confirmation.busy) return;
-    setCapabilityRoute(null);
-  };
-
-  const capabilityReading = readCapabilityDraft(capabilityDraft);
-  const capabilityEditChanges: Change[] =
-    capabilityRoute?.capabilities && capabilityReading.payload
-      ? capabilityChanges(capabilityRoute.capabilities, capabilityReading.payload)
-      : [];
-
-  const onSaveCapabilities = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!capabilityRoute || !capabilityReading.payload || capabilityEditChanges.length === 0) {
-      return;
-    }
-    const target = capabilityRoute;
-    const payload = capabilityReading.payload;
-    setCapabilityError(null);
-    const failure = await confirmation.perform({
-      run: async () => {
-        const updated = await updateProviderRouteCapabilities(
-          target.model_id,
-          target.route_id,
-          payload,
-        ).catch((err: unknown) => {
-          throw new Error(routeErrorMessage(err));
-        });
-        updateRoute(updated);
-        setCapabilityRoute(null);
-        toast.success('Route capabilities updated');
-      },
-    });
-    if (failure) setCapabilityError(failure);
-  };
-
-  const confirmResetCapabilities = () => {
-    if (!capabilityRoute) return;
-    const target = capabilityRoute;
-    const changes =
-      target.capabilities && target.capabilities_baseline
-        ? capabilityChanges(target.capabilities, target.capabilities_baseline)
-        : [];
-    confirmation.request({
-      title: `Reset ${target.endpoint_id} capabilities to config?`,
-      confirmLabel: 'Reset',
-      busyLabel: 'Resetting…',
-      tone: 'danger',
-      body: (
-        <>
-          {changes.length > 0 ? <ChangeList changes={changes} /> : null}
-          <p>
-            The values set in the console are removed, and the route goes back to the capabilities
-            it has from its configuration.
-          </p>
-        </>
-      ),
-      run: async () => {
-        const updated = await resetProviderRouteCapabilities(
-          target.model_id,
-          target.route_id,
-        ).catch((err: unknown) => {
-          throw new Error(routeErrorMessage(err));
-        });
-        updateRoute(updated);
-        setCapabilityRoute(null);
-        toast.success('Route capabilities reset');
-      },
-    });
-  };
-
   // Routing policy: chosen in place, written on Save.
   const discardStrategy = () => {
     if (confirmation.busy) return;
@@ -2060,7 +2058,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               setSelectedModel(next);
               resetInlineDrafts();
               setEditingRoute(null);
-              setCapabilityRoute(null);
               setAddingRoute(false);
               setCreatingModel(false);
             }}
@@ -2482,7 +2479,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       {route.capabilities_overridden && route.capabilities_baseline && (
                         <span
                           className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
-                          title={`Set in the console. From config: ${describeCapabilities(route.capabilities_baseline)}`}
+                          title={`Set in the console. ${capabilityDefaultsLabel(route)}: ${describeCapabilities(route.capabilities_baseline)}`}
                         >
                           Capabilities edited
                         </span>
@@ -2518,7 +2515,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             setRouteEditError(null);
                             setAddingRoute(false);
                             setCreatingModel(false);
-                            setCapabilityRoute(null);
                           }}
                           disabled={confirmation.busy}
                           className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
@@ -2543,18 +2539,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
                           >
                             {isToggling ? 'Enabling...' : 'Enable'}
-                          </button>
-                        )}
-                        {route.capabilities && (
-                          <button
-                            type="button"
-                            aria-label={`Edit ${route.endpoint_id} capabilities`}
-                            title={describeCapabilities(route.capabilities)}
-                            onClick={() => openCapabilityEditor(route)}
-                            disabled={confirmation.busy}
-                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
-                          >
-                            Capabilities
                           </button>
                         )}
                         <button
@@ -3146,110 +3130,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       )}
 
-      {capabilityRoute && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/30 px-4 py-8">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="route-capabilities-title"
-            className="mx-auto w-full max-w-3xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
-          >
-            <form onSubmit={(event) => void onSaveCapabilities(event)}>
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div>
-                  <h3
-                    id="route-capabilities-title"
-                    className="text-[14px] font-semibold text-gray-900"
-                  >
-                    Route capabilities
-                  </h3>
-                  <p className="mt-1 font-mono text-[12px] text-gray-400">
-                    {capabilityRoute.model_id} / {capabilityRoute.endpoint_id}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeCapabilityEditor}
-                  disabled={confirmation.busy}
-                  className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100 disabled:opacity-40"
-                >
-                  Close
-                </button>
-              </div>
-              <RouteCapabilityFields
-                idPrefix="route-capabilities"
-                draft={capabilityDraft}
-                reading={capabilityReading}
-                onChange={(change) => setCapabilityDraft((current) => ({ ...current, ...change }))}
-                help="Requests through this route follow these values from the next request on, and they hold across restarts. Tool definitions are dropped without tool calling, max_tokens is capped at the max output, and images reach this route only if it accepts them."
-                disabled={confirmation.busy}
-              />
-              {capabilityRoute.capabilities_baseline && (
-                <p className="mt-3 text-[12px] text-gray-500">
-                  {capabilityRoute.capabilities_overridden ? 'Set in the console. ' : ''}
-                  From config: {describeCapabilities(capabilityRoute.capabilities_baseline)}
-                </p>
-              )}
-              {capabilityError ? (
-                <p
-                  className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-600 [overflow-wrap:anywhere]"
-                  role="alert"
-                >
-                  {capabilityError}
-                </p>
-              ) : null}
-              <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-gray-100 pt-3">
-                <span
-                  className={`mr-auto text-[12px] ${
-                    capabilityEditChanges.length > 0
-                      ? 'font-medium text-amber-700'
-                      : 'text-gray-500'
-                  }`}
-                  role="status"
-                >
-                  {capabilityEditChanges.length > 0
-                    ? `${plural(capabilityEditChanges.length, 'unsaved change')}`
-                    : capabilityReading.payload === null
-                      ? 'Answer every field to save'
-                      : 'No changes yet'}
-                </span>
-                {capabilityRoute.capabilities_overridden && (
-                  <button
-                    type="button"
-                    onClick={confirmResetCapabilities}
-                    disabled={confirmation.busy}
-                    className="h-9 rounded-lg px-3 text-[13px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
-                  >
-                    Reset to config
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={closeCapabilityEditor}
-                  disabled={confirmation.busy}
-                  aria-label={`Cancel editing ${capabilityRoute.endpoint_id} capabilities`}
-                  className={BUTTON_GHOST}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  // Disabled for a no-op and while a value is invalid.
-                  disabled={
-                    confirmation.busy ||
-                    capabilityReading.payload === null ||
-                    capabilityEditChanges.length === 0
-                  }
-                  className={BUTTON_PRIMARY}
-                >
-                  {confirmation.busy ? 'Saving…' : 'Save capabilities'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
       {editingRoute && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/30 px-4 py-8">
           <div
@@ -3488,6 +3368,39 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 </div>
               )}
 
+              {editCapabilities && editCapabilityDefaults && (
+                <div className="mt-3">
+                  <RouteCapabilityFields
+                    idPrefix="route-edit"
+                    draft={editCapabilityDraft}
+                    reading={editCapabilityReading}
+                    onChange={(change) =>
+                      setEditCapabilityDraft((current) => ({ ...current, ...change }))
+                    }
+                    help="The gateway applies these to requests through this route. They do not change what the upstream model can do."
+                    disabled={confirmation.busy}
+                  />
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] leading-5 text-gray-500">
+                    <span>
+                      {capabilityDefaultsLabel(editingRoute)}:{' '}
+                      {describeCapabilities(editCapabilityDefaults)}
+                    </span>
+                    {(editCapabilityReading.payload === null ||
+                      !sameCapabilities(editCapabilityReading.payload, editCapabilityDefaults) ||
+                      (editingRoute.capabilities_overridden && !capabilityRestoreChosen)) && (
+                      <button
+                        type="button"
+                        onClick={restoreCapabilityDefaults}
+                        disabled={confirmation.busy}
+                        className="rounded px-1 font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
+                      >
+                        Restore defaults
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="mt-4 flex justify-end gap-2">
                 <button
                   type="button"
@@ -3510,10 +3423,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               </div>
               <EditBar
                 target={`${editingRoute.model_id} / ${editingRoute.provider}`}
-                changeCount={routeEditChanges.length}
+                changeCount={editChangeCount}
                 onCancel={closeRouteEdit}
                 busy={confirmation.busy}
                 error={routeEditError}
+                blocked={editCapabilitiesInvalid ? CAPABILITY_FIELDS_INVALID : null}
                 submit
               />
             </form>
@@ -3521,7 +3435,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       )}
 
-      {/* Last, so it stacks over the capabilities dialog whose reset it confirms. */}
+      {/* Last, so it stacks over the dialog whose action it confirms. */}
       {confirmation.dialog}
     </div>
   );

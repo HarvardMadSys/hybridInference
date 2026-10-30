@@ -95,7 +95,11 @@ import {
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
-import type { ListProviderApiKeysResponse, RoutewiseSettingItem } from '@/lib/api/admin';
+import type {
+  ListProviderApiKeysResponse,
+  ProviderRoute,
+  RoutewiseSettingItem,
+} from '@/lib/api/admin';
 import { chooseValue, openOptions } from '@/test-utils/select';
 import toast from 'react-hot-toast';
 import { APIError } from '@/lib/utils/errors';
@@ -235,7 +239,7 @@ const quotaRoute = {
 
 /**
  * Press a button of the confirmation a delete or a reset opens. It is the
- * topmost dialog: a capabilities reset opens it over the capabilities editor.
+ * topmost dialog: a confirmation opens over the dialog that asked for it.
  */
 function confirmAction(label: string) {
   const dialogs = screen.getAllByRole('dialog');
@@ -4181,9 +4185,6 @@ describe('ProviderRoutesTab', () => {
       expect(screen.getByLabelText('Selected model')).toBeDisabled();
       // No editor opens meanwhile: its save would wait for this write, and read "Saving…".
       expect(screen.getByRole('button', { name: 'Edit' })).toBeDisabled();
-      expect(
-        screen.getByRole('button', { name: `Edit ${route.endpoint_id} capabilities` }),
-      ).toBeDisabled();
       expect(screen.getByRole('button', { name: 'Add provider' })).toBeDisabled();
       fireEvent.click(disabling);
       expect(updateProviderRouteState).toHaveBeenCalledTimes(1);
@@ -4197,48 +4198,55 @@ describe('ProviderRoutesTab', () => {
     });
   });
 
-  describe('route capabilities', () => {
+  describe('route capabilities in Edit', () => {
     const WIDE = {
       context_length: 1048576,
       max_output_length: 65536,
       input_modalities: ['text', 'image'],
       supports_tools: true,
     };
+    const overridden = { ...route, capabilities: WIDE, capabilities_overridden: true };
+    const HELP =
+      'The gateway applies these to requests through this route. They do not change what the upstream model can do.';
 
-    const renderWithRoute = async (shown = route) => {
+    const renderWithRoute = async (shown: ProviderRoute = route) => {
       vi.mocked(listProviderRoutes).mockResolvedValue({
         provider_options: providerOptions,
         openrouter_provider_options: openRouterProviderOptions,
         routes: [shown],
       });
+      vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
       render(<ProviderRoutesTab />);
-      fireEvent.click(
-        await screen.findByRole('button', {
-          name: 'Edit minimax-fast:featherless-api capabilities',
-        }),
-      );
-      return screen.findByRole('dialog', { name: 'Route capabilities' });
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+      return screen.findByRole('dialog', { name: 'Edit provider route' });
     };
 
-    const saveCapabilities = (dialog: HTMLElement) =>
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Save capabilities' }));
-
-    it('edits a route from what it serves now, writing only on Save', async () => {
-      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
-        ...route,
-        capabilities: WIDE,
-        capabilities_overridden: true,
-      });
+    it('shows the four fields in the Edit form, with no separate button or dialog', async () => {
       const dialog = await renderWithRoute();
 
+      expect(screen.queryByRole('button', { name: /capabilities$/i })).toBeNull();
+      expect(screen.getAllByRole('dialog')).toHaveLength(1);
+      expect(within(dialog).getByLabelText('Base URL')).toBeInTheDocument();
       expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(196608);
+      expect(within(dialog).getByLabelText('Max output (tokens)')).toHaveValue(8192);
+      expect(within(dialog).getByLabelText('Image input')).toHaveAttribute('data-value', 'no');
       expect(within(dialog).getByLabelText('Tool calling')).toHaveAttribute('data-value', 'yes');
+      // One flat form: the dialog's title is its only heading.
+      expect(within(dialog).getAllByRole('heading')).toHaveLength(1);
+      expect(within(dialog).getByText(HELP)).toBeInTheDocument();
       expect(
-        within(dialog).getByText('From config: 196,608 context · 8,192 output · text only · tools'),
+        within(dialog).getByText(
+          'Default from models.yaml: 196,608 context · 8,192 output · text only · tools',
+        ),
       ).toBeInTheDocument();
-      expect(within(dialog).queryByRole('button', { name: 'Reset to config' })).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: 'Restore defaults' })).toBeNull();
       expect(within(dialog).getByText('No changes yet')).toBeVisible();
-      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+      expect(within(dialog).getByRole('button', { name: /Save changes to/ })).toBeDisabled();
+    });
+
+    it('saves a capability-only change in one request, without the route edit or Verify', async () => {
+      vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(overridden);
+      const dialog = await renderWithRoute();
 
       fireEvent.change(within(dialog).getByLabelText('Context length (tokens)'), {
         target: { value: '1048576' },
@@ -4251,8 +4259,8 @@ describe('ProviderRoutesTab', () => {
       expect(within(dialog).getByText('3 unsaved changes')).toBeVisible();
       expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
 
-      saveCapabilities(dialog);
-      expect(screen.getAllByRole('dialog')).toHaveLength(1);
+      saveRouteEdit();
+
       await waitFor(() => {
         expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
           'minimax-fast',
@@ -4261,77 +4269,162 @@ describe('ProviderRoutesTab', () => {
         );
       });
       expect(updateProviderRouteCapabilities).toHaveBeenCalledTimes(1);
+      expect(updateProviderRoute).not.toHaveBeenCalled();
+      expect(verifyProviderRoute).not.toHaveBeenCalled();
       expect(await screen.findByText('Capabilities edited')).toBeInTheDocument();
-      expect(screen.queryByRole('dialog', { name: 'Route capabilities' })).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
     });
 
-    it('drafts nothing from browsing or reselecting a capability, and Cancel discards', async () => {
-      const dialog = await renderWithRoute();
-      const tools = within(dialog).getByLabelText('Tool calling');
-
-      fireEvent.keyDown(tools, { key: 'ArrowDown' });
-      fireEvent.keyDown(tools, { key: 'ArrowDown' });
-      fireEvent.keyDown(tools, { key: 'Escape' });
-      chooseValue(tools, 'yes');
-      expect(within(dialog).getByText('No changes yet')).toBeVisible();
-      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
-
-      // Changed and changed back is no change either.
-      chooseValue(tools, 'no');
-      expect(within(dialog).getByText('1 unsaved change')).toBeVisible();
-      chooseValue(tools, 'yes');
-      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
-
-      chooseValue(tools, 'no');
-      fireEvent.click(
-        within(dialog).getByRole('button', {
-          name: 'Cancel editing minimax-fast:featherless-api capabilities',
-        }),
-      );
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
-      expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
-
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Edit minimax-fast:featherless-api capabilities' }),
-      );
-      expect(screen.getByLabelText('Tool calling')).toHaveAttribute('data-value', 'yes');
-    });
-
-    it('resets an edited route to its config values only after the confirmation', async () => {
-      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
-      const dialog = await renderWithRoute({
+    it('saves a config route and its capabilities with one route edit request', async () => {
+      vi.mocked(updateProviderRoute).mockResolvedValue({
         ...route,
-        capabilities: WIDE,
+        concurrency_limit: 2,
+        capabilities: { ...ROUTE_CAPABILITIES, supports_tools: false },
         capabilities_overridden: true,
       });
-      expect(screen.getByText('Capabilities edited')).toBeInTheDocument();
+      const dialog = await renderWithRoute();
 
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Reset to config' }));
-      const confirm = screen.getByRole('dialog', {
-        name: 'Reset minimax-fast:featherless-api capabilities to config?',
+      fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+        target: { value: '2' },
       });
-      expect(confirm).toHaveTextContent('Context length1,048,576 tokens → 196,608 tokens');
-      expect(confirm).toHaveTextContent('Image inputAccepts images → Text only');
+      chooseValue(within(dialog).getByLabelText('Tool calling'), 'no');
+      expect(within(dialog).getByText('2 unsaved changes')).toBeVisible();
+      saveRouteEdit();
+
+      await waitFor(() => {
+        expect(updateProviderRoute).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          expect.objectContaining({
+            concurrency_limit: 2,
+            capabilities: { ...ROUTE_CAPABILITIES, supports_tools: false },
+          }),
+        );
+      });
+      expect(updateProviderRoute).toHaveBeenCalledTimes(1);
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+      expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    });
+
+    it('saves a runtime route and its capabilities through the candidate edit', async () => {
+      const runtime = { ...route, source: 'runtime' as const };
+      vi.mocked(updateProviderRouteCandidate).mockResolvedValue({
+        ...runtime,
+        concurrency_limit: 3,
+        capabilities: { ...ROUTE_CAPABILITIES, max_output_length: 4096 },
+        capabilities_overridden: true,
+      });
+      const dialog = await renderWithRoute(runtime);
+
+      expect(
+        within(dialog).getByText(
+          'Default from when this route was added: 196,608 context · 8,192 output · text only · tools',
+        ),
+      ).toBeInTheDocument();
+      fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+        target: { value: '3' },
+      });
+      fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+        target: { value: '4096' },
+      });
+      saveRouteEdit();
+
+      await waitFor(() => {
+        expect(updateProviderRouteCandidate).toHaveBeenCalledWith(
+          'minimax-fast',
+          'minimax-fast:featherless-api',
+          expect.objectContaining({
+            concurrency_limit: 3,
+            capabilities: { ...ROUTE_CAPABILITIES, max_output_length: 4096 },
+          }),
+        );
+      });
+      expect(updateProviderRoute).not.toHaveBeenCalled();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('restores the defaults in the form only; Cancel writes nothing and Save clears them', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute(overridden);
+      expect(screen.getByText('Capabilities edited')).toBeInTheDocument();
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(1048576);
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore defaults' }));
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(196608);
+      expect(within(dialog).getByLabelText('Max output (tokens)')).toHaveValue(8192);
+      expect(within(dialog).getByLabelText('Image input')).toHaveAttribute('data-value', 'no');
+      expect(within(dialog).getByText('3 unsaved changes')).toBeVisible();
       expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
 
-      // Cancel writes nothing and leaves the editor open.
-      fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
-      expect(screen.getAllByRole('dialog')).toHaveLength(1);
+      fireEvent.click(within(dialog).getByRole('button', { name: /^Cancel editing/ }));
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
 
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Reset to config' }));
-      confirmAction('Reset');
+      // Reopened, it shows what the route serves, not the discarded draft.
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+      const reopened = screen.getByRole('dialog', { name: 'Edit provider route' });
+      expect(within(reopened).getByLabelText('Context length (tokens)')).toHaveValue(1048576);
+
+      fireEvent.click(within(reopened).getByRole('button', { name: 'Restore defaults' }));
+      saveRouteEdit();
       await waitFor(() => {
         expect(resetProviderRouteCapabilities).toHaveBeenCalledWith(
           'minimax-fast',
           'minimax-fast:featherless-api',
         );
       });
-      expect(resetProviderRouteCapabilities).toHaveBeenCalledTimes(1);
-      await waitFor(() => expect(screen.queryByText('Capabilities edited')).toBeNull());
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      // Cleared, not stored again as values: the route follows its defaults.
       expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+      expect(updateProviderRoute).not.toHaveBeenCalled();
+      await waitFor(() => expect(screen.queryByText('Capabilities edited')).toBeNull());
+    });
+
+    it('clears the console values once typed back to the defaults', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({
+        ...route,
+        capabilities: { ...ROUTE_CAPABILITIES, supports_tools: false },
+        capabilities_overridden: true,
+      });
+
+      chooseValue(within(dialog).getByLabelText('Tool calling'), 'yes');
+      saveRouteEdit();
+
+      await waitFor(() => expect(resetProviderRouteCapabilities).toHaveBeenCalledTimes(1));
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+    });
+
+    it('restores console values that already equal the defaults only when asked', async () => {
+      vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(route);
+      const dialog = await renderWithRoute({ ...route, capabilities_overridden: true });
+      expect(within(dialog).getByText('No changes yet')).toBeVisible();
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore defaults' }));
+      expect(within(dialog).getByText('1 unsaved change')).toBeVisible();
+      saveRouteEdit();
+
+      await waitFor(() => expect(resetProviderRouteCapabilities).toHaveBeenCalledTimes(1));
+    });
+
+    it('sends a restore with a target edit in the same request', async () => {
+      vi.mocked(updateProviderRoute).mockResolvedValue({ ...route, concurrency_limit: 2 });
+      const dialog = await renderWithRoute(overridden);
+
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Restore defaults' }));
+      fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+        target: { value: '2' },
+      });
+      saveRouteEdit();
+
+      await waitFor(() => expect(updateProviderRoute).toHaveBeenCalledTimes(1));
+      const body = vi.mocked(updateProviderRoute).mock.calls[0][2];
+      expect(body).toEqual(
+        expect.objectContaining({ concurrency_limit: 2, reset_capabilities: true }),
+      );
+      expect(body).not.toHaveProperty('capabilities');
+      expect(resetProviderRouteCapabilities).not.toHaveBeenCalled();
     });
 
     it('says which value blocks saving', async () => {
@@ -4344,11 +4437,51 @@ describe('ProviderRoutesTab', () => {
       expect(
         within(dialog).getByText('Max output cannot exceed the context length.'),
       ).toBeInTheDocument();
-      expect(within(dialog).getByRole('button', { name: 'Save capabilities' })).toBeDisabled();
+      expect(
+        within(dialog).getByText('Fix the context length and max output to save.'),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: /Save changes to/ })).toBeDisabled();
       expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
     });
 
-    it('holds a second Save, closing and the fields while a capability save is in flight', async () => {
+    it("keeps the form and its values when a save fails, with the gateway's reason", async () => {
+      const reason = 'provider route candidate changed concurrently; reload and retry';
+      // The shared client reads a typed 409 as a signup conflict; the form must not.
+      vi.mocked(updateProviderRoute)
+        .mockRejectedValueOnce(new APIError('USER_ALREADY_EXISTS', reason, 409))
+        .mockResolvedValueOnce({ ...route, concurrency_limit: 2 });
+      const dialog = await renderWithRoute();
+      fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+        target: { value: '2' },
+      });
+      fireEvent.change(within(dialog).getByLabelText('Context length (tokens)'), {
+        target: { value: '262144' },
+      });
+
+      saveRouteEdit();
+
+      const alert = await within(dialog).findByRole('alert');
+      expect(alert).toHaveTextContent(reason);
+      expect(alert).not.toHaveTextContent('This email is already registered');
+      expect(screen.getByRole('dialog', { name: 'Edit provider route' })).toBeInTheDocument();
+      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(262144);
+      expect(within(dialog).getByLabelText('Local concurrency limit')).toHaveValue(2);
+      expect(within(dialog).getByText('2 unsaved changes')).toBeVisible();
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+
+      saveRouteEdit();
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(updateProviderRoute).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(updateProviderRoute).mock.calls[1][2]).toEqual(
+        expect.objectContaining({
+          concurrency_limit: 2,
+          capabilities: { ...ROUTE_CAPABILITIES, context_length: 262144 },
+        }),
+      );
+    });
+
+    it('holds the fields and a second Save while a save is in flight', async () => {
       let finish!: (value: typeof route) => void;
       vi.mocked(updateProviderRouteCapabilities).mockImplementationOnce(
         () =>
@@ -4358,21 +4491,13 @@ describe('ProviderRoutesTab', () => {
       );
       const dialog = await renderWithRoute();
       chooseValue(within(dialog).getByLabelText('Tool calling'), 'no');
-      saveCapabilities(dialog);
+      saveRouteEdit();
 
-      const saving = within(dialog).getByRole('button', { name: 'Saving…' });
+      const saving = within(dialog).getByRole('button', { name: /Save changes to/ });
       expect(saving).toBeDisabled();
-      expect(within(dialog).getByRole('button', { name: 'Close' })).toBeDisabled();
-      expect(
-        within(dialog).getByRole('button', {
-          name: 'Cancel editing minimax-fast:featherless-api capabilities',
-        }),
-      ).toBeDisabled();
       expect(within(dialog).getByLabelText('Context length (tokens)')).toBeDisabled();
       expect(within(dialog).getByLabelText('Tool calling')).toBeDisabled();
-      fireEvent.click(saving);
       fireEvent.submit(saving.closest('form') as HTMLFormElement);
-      expect(screen.getAllByRole('dialog')).toHaveLength(1);
       expect(updateProviderRouteCapabilities).toHaveBeenCalledTimes(1);
 
       finish({ ...route, capabilities: { ...ROUTE_CAPABILITIES, supports_tools: false } });
@@ -4399,7 +4524,7 @@ describe('ProviderRoutesTab', () => {
 
       expect(
         within(dialog).getByText(
-          'From config: 196,608 context · 8,192 output · text, audio and video · tools',
+          'Default from models.yaml: 196,608 context · 8,192 output · text, audio and video · tools',
         ),
       ).toBeInTheDocument();
       expect(within(dialog).getByText(MEDIA_NOTE)).toBeInTheDocument();
@@ -4410,7 +4535,7 @@ describe('ProviderRoutesTab', () => {
       chooseValue(within(dialog).getByLabelText('Image input'), 'yes');
       // The kept modalities are no change, so they are not counted.
       expect(within(dialog).getByText('2 unsaved changes')).toBeVisible();
-      saveCapabilities(dialog);
+      saveRouteEdit();
 
       await waitFor(() => {
         expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
@@ -4471,38 +4596,6 @@ describe('ProviderRoutesTab', () => {
         );
       });
       expect(createProviderRouteCandidate).toHaveBeenCalledTimes(1);
-    });
-
-    it("shows the gateway's reason when a capability change is refused, and keeps the draft", async () => {
-      const reason =
-        "duplicate provider route id 'minimax-fast:featherless-api'; set unique endpoint_id " +
-        'values before editing this route';
-      // The shared client reads a typed 409 as a signup conflict; the dialog must not.
-      vi.mocked(updateProviderRouteCapabilities).mockRejectedValue(
-        new APIError('USER_ALREADY_EXISTS', reason, 409),
-      );
-      const dialog = await renderWithRoute();
-      fireEvent.change(within(dialog).getByLabelText('Context length (tokens)'), {
-        target: { value: '262144' },
-      });
-
-      saveCapabilities(dialog);
-
-      const alert = await within(dialog).findByRole('alert');
-      expect(alert).toHaveTextContent(reason);
-      expect(alert).not.toHaveTextContent('This email is already registered');
-      expect(screen.getByRole('dialog', { name: 'Route capabilities' })).toBeInTheDocument();
-      expect(within(dialog).getByLabelText('Context length (tokens)')).toHaveValue(262144);
-      expect(updateProviderRouteCapabilities).toHaveBeenCalledTimes(1);
-      expect(toast.success).not.toHaveBeenCalled();
-    });
-
-    it('holds the model selection while a capability edit is open', async () => {
-      const dialog = await renderWithRoute();
-      expect(screen.getByLabelText('Selected model')).toBeDisabled();
-      expect(screen.getByRole('button', { name: 'Create model' })).toBeDisabled();
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
-      expect(screen.getByLabelText('Selected model')).toBeEnabled();
     });
   });
 });

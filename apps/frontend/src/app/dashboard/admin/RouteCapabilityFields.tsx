@@ -1,6 +1,6 @@
 import type { Change } from '@/components/features/admin/confirm/ChangeList';
 import { Select } from '@/components/ui/Select';
-import type { RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
+import type { ProviderRoute, RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
 
 export type DeclaredChoice = '' | 'yes' | 'no';
 
@@ -84,6 +84,25 @@ export function readCapabilityDraft(draft: CapabilityDraft): CapabilityDraftRead
         }
       : null;
   return { payload, contextLengthError, maxOutputLengthError };
+}
+
+/** Whether two declarations would serve requests the same way. */
+export function sameCapabilities(a: RouteCapabilities, b: RouteCapabilities) {
+  const modalities = (capabilities: RouteCapabilities) =>
+    [...new Set(capabilities.input_modalities)].sort().join(',');
+  return (
+    a.context_length === b.context_length &&
+    a.max_output_length === b.max_output_length &&
+    a.supports_tools === b.supports_tools &&
+    modalities(a) === modalities(b)
+  );
+}
+
+/** Where a route's default capabilities come from, as a label. */
+export function capabilityDefaultsLabel(route: Pick<ProviderRoute, 'source'>) {
+  return route.source === 'runtime'
+    ? 'Default from when this route was added'
+    : 'Default from models.yaml';
 }
 
 /** "text, images and audio" */
