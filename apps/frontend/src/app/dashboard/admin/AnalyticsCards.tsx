@@ -314,7 +314,9 @@ function TopUsersByModelCard({
         />
       </div>
       <p className="mb-3 text-[11px] text-gray-400">
-        {fmtCount(active.requests)} requests · {fmtCount(active.tokens)} tokens · signed-in users
+        {fmtCount(active.requests)} requests · {fmtCount(active.tokens)} tokens ·{' '}
+        {fmtCount(active.prompt_tokens)} prefill ({fmtCount(active.cache_read_tokens)} cached) ·{' '}
+        {fmtCount(active.completion_tokens)} output · signed-in users
       </p>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -324,7 +326,27 @@ function TopUsersByModelCard({
               <th className="py-2 pr-3 font-semibold">User</th>
               <th className="py-2 pr-3 text-right font-semibold">Requests</th>
               <th className="py-2 pr-3 text-right font-semibold">Share</th>
-              <th className="py-2 text-right font-semibold">Tokens</th>
+              <th
+                className="py-2 pr-3 text-right font-semibold"
+                title="Prompt tokens, cached ones included"
+              >
+                Prefill
+              </th>
+              <th
+                className="py-2 pr-3 text-right font-semibold"
+                title="Prefill tokens served from the prompt cache"
+              >
+                Cached
+              </th>
+              <th
+                className="py-2 pr-3 text-right font-semibold"
+                title="Completion tokens, reasoning included"
+              >
+                Output
+              </th>
+              <th className="py-2 text-right font-semibold" title="Prefill + output">
+                Tokens
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -341,6 +363,15 @@ function TopUsersByModelCard({
                 </td>
                 <td className="py-2 pr-3 text-right tabular-nums text-gray-500">
                   {active.requests > 0 ? pct(u.requests / active.requests) : '—'}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums text-gray-900">
+                  {fmtCount(u.prompt_tokens)}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums text-gray-500">
+                  {fmtCount(u.cache_read_tokens)}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums text-gray-900">
+                  {fmtCount(u.completion_tokens)}
                 </td>
                 <td className="py-2 text-right tabular-nums text-gray-900">{fmtCount(u.tokens)}</td>
               </tr>

@@ -36,9 +36,18 @@ def test_admin_analytics_response_full():
                 model="claude-sonnet-4-6",
                 requests=200,
                 tokens=15000,
+                prompt_tokens=12000,
+                cache_read_tokens=8000,
+                completion_tokens=3000,
                 users=[
                     AnalyticsModelUserEntry(
-                        email="alice@example.com", user_id="u1", requests=200, tokens=15000
+                        email="alice@example.com",
+                        user_id="u1",
+                        requests=200,
+                        tokens=15000,
+                        prompt_tokens=12000,
+                        cache_read_tokens=8000,
+                        completion_tokens=3000,
                     )
                 ],
             )
@@ -52,6 +61,7 @@ def test_admin_analytics_response_full():
     assert resp.by_model_top_users[0].model == "claude-sonnet-4-6"
     assert resp.by_model_top_users[0].tokens == 15000
     assert resp.by_model_top_users[0].users[0].email == "alice@example.com"
+    assert resp.by_model_top_users[0].users[0].cache_read_tokens == 8000
 
 
 def test_admin_analytics_response_turn_averages_default_to_none():
