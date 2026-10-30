@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -300,16 +300,48 @@ describe('AnalyticsTab top users by model', () => {
           model: 'claude-sonnet-4-6',
           requests: 200,
           tokens: 150000,
+          prompt_tokens: 115000,
+          cache_read_tokens: 35000,
+          completion_tokens: 35000,
           users: [
-            { email: 'alice@example.com', user_id: 'u1', requests: 120, tokens: 90000 },
-            { email: 'bob@example.com', user_id: 'u2', requests: 80, tokens: 60000 },
+            {
+              email: 'alice@example.com',
+              user_id: 'u1',
+              requests: 120,
+              tokens: 90000,
+              prompt_tokens: 70000,
+              cache_read_tokens: 30000,
+              completion_tokens: 20000,
+            },
+            {
+              email: 'bob@example.com',
+              user_id: 'u2',
+              requests: 80,
+              tokens: 60000,
+              prompt_tokens: 45000,
+              cache_read_tokens: 5000,
+              completion_tokens: 15000,
+            },
           ],
         },
         {
           model: 'gpt-4o',
           requests: 50,
           tokens: 30000,
-          users: [{ email: 'alice@example.com', user_id: 'u1', requests: 50, tokens: 30000 }],
+          prompt_tokens: 25000,
+          cache_read_tokens: 0,
+          completion_tokens: 5000,
+          users: [
+            {
+              email: 'alice@example.com',
+              user_id: 'u1',
+              requests: 50,
+              tokens: 30000,
+              prompt_tokens: 25000,
+              cache_read_tokens: 0,
+              completion_tokens: 5000,
+            },
+          ],
         },
       ],
       generated_at: '2026-01-01T00:00:00Z',
@@ -321,6 +353,20 @@ describe('AnalyticsTab top users by model', () => {
     expect(await screen.findByText('Top Users by Model')).toBeInTheDocument();
     expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
     expect(screen.getByText('bob@example.com')).toBeInTheDocument();
+
+    // Each user row breaks its tokens into prefill, cached prefill and output.
+    for (const header of ['Prefill', 'Cached', 'Output', 'Tokens']) {
+      expect(screen.getByRole('columnheader', { name: header })).toBeInTheDocument();
+    }
+    const alice = screen.getByText('alice@example.com').closest('tr')!;
+    expect(
+      within(alice)
+        .getAllByRole('cell')
+        .map((c) => c.textContent),
+    ).toEqual(['1', 'alice@example.com', '120', '60.0%', '70,000', '30,000', '20,000', '90,000']);
+    expect(
+      screen.getByText(/115,000 prefill \(35,000 cached\) · 35,000 output/),
+    ).toBeInTheDocument();
 
     // Selector lists every model and defaults to the highest-volume one.
     const select = screen.getByRole('combobox', { name: 'Select model' });
