@@ -1103,6 +1103,14 @@
     "source": "Checking every line…",
     "text": "正在检查每一行…"
   },
+  "batches.create.choose_another": {
+    "source": "Choose another file",
+    "text": "选择其他文件"
+  },
+  "batches.create.choose_file": {
+    "source": "Choose file",
+    "text": "选择文件"
+  },
   "batches.create.choose_type": {
     "source": "Which type are these requests?",
     "text": "这些请求属于哪种类型？"
@@ -1131,13 +1139,13 @@
     "source": "This file differs from the one the original batch used.",
     "text": "这个文件与原任务使用的文件内容不同。"
   },
-  "batches.create.drop": {
-    "source": "Drop a .jsonl file here, or choose one",
-    "text": "将 .jsonl 文件拖到这里，或点击选择"
-  },
   "batches.create.drop_hint": {
     "source": "The file is read by the gateway, not by your browser. Nothing runs until you confirm in step 3.",
     "text": "文件由网关读取，浏览器不解析内容。在第 3 步确认之前，不会执行任何请求。"
+  },
+  "batches.create.drop_title": {
+    "source": "Drop a .jsonl file here",
+    "text": "将 .jsonl 文件拖到这里"
   },
   "batches.create.errors.count": {
     "source": "{count} problem(s): nothing can be submitted until every one is fixed.",
@@ -1167,6 +1175,46 @@
     "source": "Showing {shown} of {total}; the downloads list {listed}.",
     "text": "显示 {shown} / {total} 条；下载的清单包含 {listed} 条。"
   },
+  "batches.create.example.chat": {
+    "source": "Text generation",
+    "text": "文本生成"
+  },
+  "batches.create.example.copied": {
+    "source": "Example copied",
+    "text": "示例已复制"
+  },
+  "batches.create.example.copy": {
+    "source": "Copy",
+    "text": "复制"
+  },
+  "batches.create.example.copy_failed": {
+    "source": "Could not copy: select the example and copy it yourself.",
+    "text": "无法复制：请选中示例后手动复制。"
+  },
+  "batches.create.example.copy_label": {
+    "source": "Copy example",
+    "text": "复制示例"
+  },
+  "batches.create.example.download": {
+    "source": "Download",
+    "text": "下载"
+  },
+  "batches.create.example.download_label": {
+    "source": "Download {file}",
+    "text": "下载 {file}"
+  },
+  "batches.create.example.embeddings": {
+    "source": "Embeddings",
+    "text": "文本向量化"
+  },
+  "batches.create.example.lines": {
+    "source": "Example file: {type}",
+    "text": "示例文件：{type}"
+  },
+  "batches.create.example.type": {
+    "source": "Example type",
+    "text": "示例类型"
+  },
   "batches.create.files_hide": {
     "source": "Hide uploaded files",
     "text": "隐藏已上传文件"
@@ -1175,21 +1223,17 @@
     "source": "Uploaded files…",
     "text": "已上传文件…"
   },
-  "batches.create.format.lines": {
-    "source": "One JSON object per line: custom_id (unique, 1–512 characters), url (optional: /v1/chat/completions or /v1/embeddings), method (optional: POST) and body (the request).",
-    "text": "每行一个 JSON 对象：custom_id（唯一，1–512 个字符）、url（可选：/v1/chat/completions 或 /v1/embeddings）、method（可选：POST）和 body（请求内容）。"
+  "batches.create.format.label": {
+    "source": "File format:",
+    "text": "文件格式："
   },
-  "batches.create.format.strict": {
-    "source": "Fields the gateway would not forward (for example max_completion_tokens or user) are reported as errors rather than dropped. Save the file as UTF-8 without a byte-order mark.",
-    "text": "网关不会转发的字段（例如 max_completion_tokens 或 user）会作为错误报告，而不是被悄悄丢弃。请将文件保存为不带 BOM 的 UTF-8。"
+  "batches.create.format.model": {
+    "source": "If any line has no model, you choose one model for every request in step 2.",
+    "text": "只要有一行没有写 model，就需要在第 2 步为所有请求选择同一个模型。"
   },
-  "batches.create.format.title": {
-    "source": "File format",
-    "text": "文件格式"
-  },
-  "batches.create.format.type": {
-    "source": "The type is recognised from each line’s url, or from the body when url is left out (messages: text generation; input: embeddings). One file holds one type and, in the end, one model.",
-    "text": "类型根据每行的 url 识别；省略 url 时根据请求体识别（messages 为文本生成，input 为文本向量化）。一个文件只能有一种类型，最终也只能使用一个模型。"
+  "batches.create.format.summary": {
+    "source": "one JSON request per line, each with a unique custom_id (1–512 characters) and the request in body.",
+    "text": "每行一个 JSON 请求，各带唯一的 custom_id（1–512 个字符），请求内容放在 body 中。"
   },
   "batches.create.identifying": {
     "source": "Reading the file…",
@@ -1342,14 +1386,6 @@
   "batches.create.same_as_original": {
     "source": "Same content as the original file.",
     "text": "与原文件内容一致。"
-  },
-  "batches.create.sample.chat": {
-    "source": "Download sample: text generation",
-    "text": "下载示例：文本生成"
-  },
-  "batches.create.sample.embeddings": {
-    "source": "Download sample: embeddings",
-    "text": "下载示例：文本向量化"
   },
   "batches.create.set_all": {
     "source": "Set for every request to",
