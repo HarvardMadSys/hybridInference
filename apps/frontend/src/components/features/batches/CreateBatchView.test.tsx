@@ -657,6 +657,62 @@ describe('CreateBatchView: an account switch while the intent lock is awaited', 
   });
 });
 
+describe('CreateBatchView: the upload step', () => {
+  it('leads with choosing a file, which opens the file picker', async () => {
+    const click = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {});
+    render(<CreateBatchView copyFrom={null} />);
+    await screen.findByText('Upload data', { selector: 'h2' });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose file' }));
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(click.mock.instances[0]).toBe(document.querySelector('input[type="file"]'));
+    // One short statement and the example; no separate format section, no static samples.
+    expect(document.querySelector('details')).toBeNull();
+    expect(document.querySelector('a[href^="/samples/"]')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Copy example' })).toBeInTheDocument();
+    click.mockRestore();
+  });
+
+  it('uploads a dropped file and then offers to choose another', async () => {
+    vi.mocked(preflightSource).mockResolvedValue(report());
+    render(<CreateBatchView copyFrom={null} />);
+    await screen.findByText('Upload data', { selector: 'h2' });
+    const file = new File(['{}\n'], 'requests.jsonl', { type: 'application/jsonl' });
+    fireEvent.drop(screen.getByTestId('drop-zone'), { dataTransfer: { files: [file] } });
+    await waitFor(() => expect(uploadSourceFile).toHaveBeenCalled());
+    expect(vi.mocked(uploadSourceFile).mock.calls[0][0]).toBe(file);
+    expect(await screen.findByTestId('recognized-type')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Choose another file' })).toBeInTheDocument();
+  });
+
+  it('still refuses a file that is not .jsonl before uploading it', async () => {
+    render(<CreateBatchView copyFrom={null} />);
+    await screen.findByText('Upload data', { selector: 'h2' });
+    fireEvent.drop(screen.getByTestId('drop-zone'), {
+      dataTransfer: { files: [new File(['a,b\n'], 'requests.csv', { type: 'text/csv' })] },
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Choose a .jsonl file.');
+    expect(uploadSourceFile).not.toHaveBeenCalled();
+  });
+
+  it('asks for one model in step 2 when the file names none, as the format says', async () => {
+    const noModel = report({
+      detected: { ...report().detected, source: 'structure', models: [], model_unset_rows: 2 },
+    });
+    vi.mocked(preflightSource).mockImplementation(async (request) =>
+      request.phase === 'identify' ? noModel : VALID,
+    );
+    render(<CreateBatchView copyFrom={null} />);
+    await screen.findByText('Upload data', { selector: 'h2' });
+    await uploadAFile();
+    expect(await screen.findByText('No model: 2 lines')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await screen.findByTestId('configure-type');
+    expect(screen.getByLabelText(/Use the file's model \(not possible/)).toBeDisabled();
+    expect(screen.getByLabelText('Use one model for every request:')).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Check and preview' })).toBeDisabled();
+  });
+});
+
 describe('CreateBatchView: a new file whose identification fails', () => {
   it("never keeps the previous file's identification", async () => {
     let rejectB!: (error: unknown) => void;
