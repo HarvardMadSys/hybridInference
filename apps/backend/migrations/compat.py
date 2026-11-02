@@ -133,7 +133,7 @@ class SchemaNotReady(RuntimeError):
 
 
 async def read_state(conn: Any) -> SchemaState:
-    """Read the version and the compatibility floor on an asyncpg connection.
+    """Read the version and the compatibility floor on an asyncpg connection or pool.
 
     Raises:
         SchemaNotReady: The version table holds more than one revision.
@@ -196,7 +196,7 @@ async def require_schema(conn: Any, *, chain: Sequence[str] | None = None) -> Sc
     """Refuse a schema this code cannot run on; warn about a newer compatible one.
 
     Args:
-        conn: An asyncpg connection to the gateway's database.
+        conn: An asyncpg connection or pool on the gateway's database.
         chain: This code's revisions, oldest first; read from ``versions/``
             when omitted.
 

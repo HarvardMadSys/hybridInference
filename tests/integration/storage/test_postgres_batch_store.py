@@ -15,7 +15,6 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -106,7 +105,6 @@ async def _reset_test_users(pool: Any, *, create: bool) -> None:
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=1, max_size=6)
-    await BatchStore(pool).initialize()
     # Claims, sweeps and model stats read every batch in the database, so each
     # test starts from none (no other test file writes these tables).
     await _wipe(pool)
@@ -1611,58 +1609,6 @@ async def test_batch_summary_counts_cancelled_requests_as_done(store):
 
 
 # -- schema ----------------------------------------------------------------------
-
-
-async def test_initialize_is_idempotent(pool, store):
-    created = await _create(store, _items(_model(), 1))
-
-    await BatchStore(pool).initialize()
-
-    assert await store.get_batch(created["id"]) is not None
-
-
-async def test_processes_booting_at_once_create_the_schema_once():
-    schema = f"batch_boot_{uuid.uuid4().hex[:12]}"
-    admin = await postgres.create_pool(min_size=1, max_size=1)
-    try:
-        await admin.execute(f'CREATE SCHEMA "{schema}"')
-        fresh = await postgres.create_pool(
-            min_size=4, max_size=4, server_settings={"search_path": schema}
-        )
-        try:
-            await asyncio.gather(*(BatchStore(fresh).initialize() for _ in range(4)))
-            names = await fresh.fetch(
-                "SELECT c.relname FROM pg_class AS c JOIN pg_namespace AS n "
-                "ON n.oid = c.relnamespace WHERE n.nspname = $1",
-                schema,
-            )
-            store = BatchStore(fresh)
-            created = await _create(store, _items("model-x", 2), key_hash=None)
-            assert len(await _claim(store, "model-x")) == 2
-            assert (await store.get_batch(created["id"]))["status"] == "in_progress"
-        finally:
-            await fresh.close()
-    finally:
-        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await admin.close()
-
-    expected = {name for name, _ in (*batch_store._TABLES, *batch_store._INDEXES)}
-    assert expected <= {row["relname"] for row in names}
-
-
-async def test_a_settled_schema_takes_no_ddl():
-    conn = MagicMock()
-    conn.fetch = AsyncMock(return_value=[])  # nothing missing
-    conn.execute = AsyncMock()
-    acquire = MagicMock()
-    acquire.__aenter__ = AsyncMock(return_value=conn)
-    acquire.__aexit__ = AsyncMock(return_value=None)
-    pool = MagicMock()
-    pool.acquire.return_value = acquire
-
-    await BatchStore(pool).initialize()
-
-    conn.execute.assert_not_awaited()
 
 
 async def test_a_corrupt_json_column_reads_as_none_not_an_exception():

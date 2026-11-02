@@ -1,8 +1,8 @@
 """``python -m serving.auth.reset_password`` against PostgreSQL, before and after the upgrade.
 
 The command is how an operator gets back in, including while another session
-holds the users table and the upgraded backend's users migration cannot run
-yet. It must work on that database as it is, and on the current schema.
+holds the users table and the schema migration cannot run yet. It must work on
+that database as it is, and on the current schema.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import operational_store
 from serving.auth import reset_password as cli
 from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.utils import password as password_utils
@@ -44,15 +45,15 @@ async def database(monkeypatch, tmp_path):
         monkeypatch.setenv(name, value)
     monkeypatch.chdir(tmp_path)  # the command must not find a .env
 
-    await PostgresOperationalStore(pool).initialize()
     async with pool.acquire() as conn:
         await _forget(conn)
     try:
         yield pool
     finally:
-        # Leave the current schema behind for the other database tests.
-        await PostgresOperationalStore(pool).initialize()
         async with pool.acquire() as conn:
+            # Leave the current schema behind for the other database tests:
+            # the baseline's step adds back what a test took away.
+            await operational_store.create_tables(conn)
             await _forget(conn)
         await pool.close()
 
@@ -102,9 +103,9 @@ async def test_before_the_users_migration_while_a_reader_holds_the_table(databas
     with pytest.raises(asyncpg.UndefinedColumnError):
         await PostgresOperationalStore(pool).get_user_by_email("old-reset@example.com")
 
-    # A long reader, as the nightly pg_dump: the upgrade's ALTER TABLE cannot
-    # get its lock, so the backend defers its users migration, and the reset
-    # must not need that lock either.
+    # A long reader, as the nightly pg_dump: the migration's ALTER TABLE cannot
+    # get its lock, so the previous release goes on serving, and the reset must
+    # not need that lock either.
     reader = await pool.acquire()
     transaction = reader.transaction()
     await transaction.start()

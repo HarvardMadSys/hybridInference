@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
+from migrations.compat import SchemaNotReady, require_schema
 from routing.dependencies import RouterBuildDependencies
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.manager import RoutingManager
@@ -52,12 +53,9 @@ from serving.storage.batch_store import BatchStore
 from serving.storage.batch_webhook_store import BatchWebhookStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
-from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
+from serving.storage.erasure_fence import ErasureFenceUnavailable
 from serving.storage.postgres_log import PostgresLogStore
-from serving.storage.postgres_operational import (
-    PostgresOperationalStore,
-    RequiredOperationalSchemaUnavailable,
-)
+from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.storage.responses_store import ResponseStore
 from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
@@ -85,15 +83,6 @@ logger = get_logger(__name__)
 # garbage collector can cancel mid-flight tasks.
 _BACKGROUND_TASKS: set = set()
 
-# Backoff for a schema migration that could not get its table lock at startup.
-# The ceiling is generous on purpose: the usual lock holder is the nightly
-# ``pg_dump``, which takes hours over ``api_logs``, and there is no value in
-# polling hard while it runs. The attempt cap bounds the task at roughly a
-# working day rather than leaving it alive for the process's lifetime.
-_SCHEMA_RETRY_INITIAL_DELAY = 30  # seconds
-_SCHEMA_RETRY_MAX_DELAY = 600  # seconds
-_SCHEMA_RETRY_MAX_ATTEMPTS = 60
-
 # The boot-time configuration load retries like the database logger does.
 _CONFIG_LOAD_ATTEMPTS = 3
 _CONFIG_LOAD_RETRY_DELAY = 2  # seconds
@@ -107,169 +96,6 @@ def _describe_exc(exc: BaseException) -> str:
     ``initialization failed: .`` and hid the cause of a production outage.
     """
     return repr(exc)
-
-
-def _schedule_deferred_schema_migration(
-    ensure_schema: Callable[[], Awaitable[None]], subject: str
-) -> asyncio.Task[None]:
-    """Finish a lock-blocked schema migration in the background.
-
-    Startup must not block on it. The lock holder is typically a long-running
-    reader rather than anything broken, and waiting is what turns a backup
-    window into a failed deploy: the container misses its healthcheck, so
-    compose never starts the services gated on it.
-
-    ``ensure_schema`` must be idempotent (both schema passes are catalog-gated,
-    so a retry re-issues only what is still missing); ``subject`` names the
-    schema in log lines so concurrent deferrals stay distinguishable. Returns
-    the retry task, which an owner may cancel.
-    """
-
-    async def _retry() -> None:
-        delay = _SCHEMA_RETRY_INITIAL_DELAY
-        for attempt in range(1, _SCHEMA_RETRY_MAX_ATTEMPTS + 1):
-            await asyncio.sleep(delay)
-            try:
-                await ensure_schema()
-            except SchemaLockUnavailable:
-                delay = min(delay * 2, _SCHEMA_RETRY_MAX_DELAY)
-                logger.info(
-                    f"Deferred {subject} migration still lock-blocked "
-                    f"(attempt {attempt}/{_SCHEMA_RETRY_MAX_ATTEMPTS}); "
-                    f"retrying in {delay}s"
-                )
-            except Exception as exc:
-                logger.error(f"Deferred {subject} migration failed: {_describe_exc(exc)}")
-                return
-            else:
-                logger.info(f"Deferred {subject} migration completed after {attempt} attempt(s)")
-                return
-        logger.error(
-            f"Deferred {subject} migration gave up after {_SCHEMA_RETRY_MAX_ATTEMPTS} attempts; "
-            f"the {subject} is still missing changes and writes depending on them may fail"
-        )
-
-    task = asyncio.create_task(_retry())
-    _BACKGROUND_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_TASKS.discard)
-    return task
-
-
-async def _initialize_operational_store(pg_operational: PostgresOperationalStore) -> None:
-    """Run the operational store's DDL, deferring a lock-blocked migration.
-
-    Same doctrine as the logging schema pass in ``lifespan``: on any deployment
-    where a lock conflict is possible at all, the operational tables already
-    exist (the conflicting holder — the nightly ``pg_dump`` — is a reader of
-    those tables), so only a pending migration can be blocked. The store keeps
-    serving on the existing schema while the DDL lands in the background;
-    ``initialize`` is catalog-gated and idempotent, so the retry re-issues only
-    what is still missing.
-
-    That includes the account columns an upgrade adds to ``users`` (login
-    names, phone numbers): the store reads which of them exist and queries
-    only those, so sign-in by email and API keys keep working while first-run
-    setup and phone sign-in answer 503 until the retry lands them. Only the
-    hard-delete claim columns and the audit-log attribution columns are
-    required up front.
-
-    Anything other than a lock timeout still propagates — startup must not
-    mask a genuinely broken schema.
-    """
-    try:
-        await pg_operational.initialize()
-    except RequiredOperationalSchemaUnavailable:
-        logger.error(
-            "Operational store cannot start until its required columns "
-            "(users hard-delete claim, admin_audit_log attribution) are "
-            "installed; refusing to serve against an unsafe schema."
-        )
-        raise
-    except SchemaLockUnavailable as lock_exc:
-        logger.warning(
-            f"Operational schema migration deferred: {_describe_exc(lock_exc)}. "
-            "Operational store stays enabled on the existing schema; retrying "
-            "the migration in the background."
-        )
-        _schedule_deferred_schema_migration(pg_operational.initialize, "operational schema")
-
-
-async def _initialize_batch_store(store: BatchStore) -> bool:
-    """Run the batch store's DDL; return whether the store is ready to serve.
-
-    A migration that cannot get its lock (another process holding the batch
-    schema lock, or a long reader on a table it indexes) does not fail startup:
-    the caller finishes it in the background (:func:`_defer_batch_store`).
-    Unlike the operational store, nothing is served from a batch schema that is
-    still missing changes, so batch inference stays unavailable until then.
-
-    Anything other than a lock timeout propagates.
-    """
-    try:
-        await store.initialize()
-    except SchemaLockUnavailable as lock_exc:
-        logger.warning(
-            f"Batch schema migration deferred: {_describe_exc(lock_exc)}. "
-            "Batch inference stays unavailable until it lands; retrying in the background."
-        )
-        return False
-    return True
-
-
-class _DeferredBatchWorker:
-    """Holds the batch worker's place while the batch schema migration is deferred.
-
-    It answers the two calls the gateway makes on a worker: ``notify`` (nothing
-    to wake) and ``stop``, which cancels the deferred migration so no worker
-    starts after shutdown. The app lifespan leaves its app here, for the worker
-    the migration starts once it lands.
-    """
-
-    def __init__(self) -> None:
-        self.app: Any | None = None
-        self.retry: asyncio.Task[None] | None = None
-
-    def notify(self) -> None:
-        """Do nothing: there is no worker to wake yet."""
-
-    async def stop(self) -> None:
-        """Cancel the deferred migration."""
-        if self.retry is not None:
-            self.retry.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.retry
-
-
-def _defer_batch_store(services: AppServices, store: BatchStore) -> None:
-    """Finish a lock-blocked batch schema migration, then make batch inference available.
-
-    Until the DDL lands the services carry no batch store and no caps, so every
-    batch route answers 404, and a placeholder stands where the worker goes; the
-    store is reachable only as ``batch_store_pending``, for the hard-delete purge,
-    since batches stored before this boot are still there. Once it lands, the
-    store and its caps are published together, and the worker starts if the app
-    has asked for one by then.
-    """
-    placeholder = _DeferredBatchWorker()
-    services.batch_scheduler = placeholder
-    services.batch_store_pending = store
-
-    async def finish() -> None:
-        await store.initialize()  # SchemaLockUnavailable: retried by the caller
-        services.batch_model_limits = BatchModelLimits(store)
-        pool = getattr(store, "pool", None)
-        if pool is not None:
-            services.batch_file_store = BatchFileStore(pool)
-            services.batch_webhook_store = BatchWebhookStore(pool)
-        services.batch_store = store
-        services.batch_store_pending = None
-        logger.info("Batch store initialized (Postgres) after a deferred migration")
-        if services.batch_scheduler is placeholder:
-            services.batch_scheduler = None
-            if placeholder.app is not None:
-                start_batch_scheduler(placeholder.app, services)
-
-    placeholder.retry = _schedule_deferred_schema_migration(finish, "batch schema")
 
 
 class _RouteWiseRouterTypeError(TypeError):
@@ -759,12 +585,15 @@ async def _load_app_config() -> None:
         try:
             conn = await connect_app_config(settings)
             try:
+                # Before anything reads a table: a database the migrations
+                # have not brought to this code's schema stops startup here.
+                await require_schema(conn)
                 await app_config.load(AppConfigStore(conn))
             finally:
                 await conn.close()
             logger.info("Configuration loaded from the database")
             return
-        except app_config.ConfigBootstrapError:
+        except (app_config.ConfigBootstrapError, SchemaNotReady):
             raise
         except Exception as exc:
             if attempt < max_retries - 1:
@@ -847,7 +676,7 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
         logger.info(f"Database privacy: store_full_content={settings.db_store_full_content}")
-        from serving.storage.log_schema import resolve_fence_secret
+        from serving.storage.erasure_fence import resolve_fence_secret
 
         return DatabaseLogger(
             db_config,
@@ -1048,7 +877,7 @@ def _alert_history_db_config() -> dict[str, Any] | None:
 
 def _alert_history_fence_secret() -> str | None:
     """The erasure-fence secret, or ``None``: history then keeps no subject digests."""
-    from serving.storage.log_schema import resolve_fence_secret
+    from serving.storage.erasure_fence import resolve_fence_secret
 
     try:
         return resolve_fence_secret(get_settings().erasure_fence_secret)
@@ -1119,23 +948,11 @@ async def initialize() -> AppServices:
         retry_delay = 2  # seconds
         for attempt in range(max_retries):
             try:
-                try:
-                    await db_logger.initialize()
-                    logger.info("Database logger initialized successfully")
-                except SchemaLockUnavailable as lock_exc:
-                    # The pool is up and usable — only a migration could not get
-                    # its table lock. Discarding a working database over that is
-                    # what previously left the gateway permanently unhealthy and
-                    # took the whole deploy down, so keep it and land the DDL in
-                    # the background. Writes touching a not-yet-added column
-                    # fail until then, and request logging already treats a
-                    # failed insert as non-fatal.
-                    logger.warning(
-                        f"Schema migration deferred: {_describe_exc(lock_exc)}. "
-                        "Database logging stays enabled; retrying the migration "
-                        "in the background."
-                    )
-                    _schedule_deferred_schema_migration(db_logger.ensure_schema, "logging schema")
+                await db_logger.initialize()
+                # Checked again on the pool everything else uses: the
+                # configuration load may have run without the database.
+                await require_schema(db_logger.pool)
+                logger.info("Database logger initialized successfully")
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
                 if db_logger.pool:
@@ -1289,10 +1106,12 @@ async def initialize() -> AppServices:
                                 f"{stop_exc}"
                             )
                 break
-            except ErasureFenceUnavailable:
-                # A pinned secret mismatch is a privacy-boundary violation,
-                # not a transient migration failure. Propagate it instead
-                # of retrying and eventually starting without a logger.
+            except (ErasureFenceUnavailable, SchemaNotReady):
+                # A pinned secret mismatch is a privacy-boundary violation, and
+                # a schema this code cannot run on needs the migrations: neither
+                # is transient. Propagate instead of retrying and eventually
+                # starting without a logger.
+                await db_logger.cleanup()
                 raise
             except Exception as exc:
                 if attempt < max_retries - 1:
@@ -1411,19 +1230,18 @@ async def initialize() -> AppServices:
     responses_store = None
     batch_store = None
     batch_model_limits = None
-    deferred_batch_store = None
 
     if db_logger and db_logger.pool:
         # Resolve the erasure-fence derivation secret. Fail closed: if no
         # secret is available, the hard-delete endpoint cannot guarantee
         # the #1421 invariant, so we raise at startup rather than silently
         # degrading to the pre-#1421 racy behavior.
-        from serving.storage.log_schema import resolve_fence_secret
+        from serving.storage.erasure_fence import resolve_fence_secret
 
         fence_secret = resolve_fence_secret(settings.erasure_fence_secret)
 
         pg_operational = PostgresOperationalStore(db_logger.pool)
-        await _initialize_operational_store(pg_operational)
+        await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(
             db_logger.pool,
@@ -1441,7 +1259,6 @@ async def initialize() -> AppServices:
         responses_store = ResponseStore(
             db_logger.pool, persist_enabled=settings.db_store_full_content
         )
-        await responses_store.initialize()
         logger.info(
             "Responses store initialized (Postgres; persist_enabled=%s)",
             settings.db_store_full_content,
@@ -1451,11 +1268,8 @@ async def initialize() -> AppServices:
         # hard-delete purge reaches stored batches. The per-model caps an
         # administrator sets are read through a short-lived cache in front of it.
         batch_store = BatchStore(db_logger.pool)
-        if await _initialize_batch_store(batch_store):
-            batch_model_limits = BatchModelLimits(batch_store)
-            logger.info("Batch store initialized (Postgres)")
-        else:
-            deferred_batch_store, batch_store = batch_store, None
+        batch_model_limits = BatchModelLimits(batch_store)
+        logger.info("Batch store initialized (Postgres)")
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
 
@@ -2002,8 +1816,6 @@ async def initialize() -> AppServices:
         route_state_refresh_task=route_state_refresh_task,
         offload_route_refresh_task=offload_route_refresh_task,
     )
-    if deferred_batch_store is not None:
-        _defer_batch_store(services, deferred_batch_store)
     return services
 
 
@@ -2024,11 +1836,6 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
         services: The services container returned by :func:`initialize`.
     """
     current = getattr(services, "batch_scheduler", None)
-    if isinstance(current, _DeferredBatchWorker):
-        # The batch schema migration is still waiting for its lock; it starts
-        # the worker once it lands.
-        current.app = app
-        return
     store = getattr(services, "batch_store", None)
     if store is None or current is not None:
         return

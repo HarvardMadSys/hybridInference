@@ -83,8 +83,17 @@ async def _age(conn: asyncpg.Connection) -> None:
             ("u-pro", "pro@example.com", "pro"),
         ],
     )
-    # Every account had an email before first-run setup created one without.
+    # Every account had an email and a password before first-run setup and
+    # phone sign-in, which also brought login names and phone numbers.
+    await conn.execute("DROP INDEX idx_users_login_name, idx_users_phone_unique")
+    await conn.execute(
+        "ALTER TABLE users DROP COLUMN login_name, DROP COLUMN phone, DROP COLUMN phone_verified"
+    )
     await conn.execute("ALTER TABLE users ALTER COLUMN email SET NOT NULL")
+    await conn.execute("UPDATE users SET password_hash = 'legacy-hash'")
+    await conn.execute("ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL")
+    await conn.execute("ALTER TABLE login_events DROP COLUMN phone")
+    await conn.execute("ALTER TABLE login_events ALTER COLUMN email SET NOT NULL")
     # Keys from before account_id, one of them for an account that is gone, and
     # the retired tier column.
     await conn.execute("ALTER TABLE api_keys ADD COLUMN tier TEXT")
@@ -268,6 +277,35 @@ async def _run_command(database: str, *args: str) -> tuple[int, str]:
     )
     output, _ = await process.communicate()
     return process.returncode, output.decode()
+
+
+async def test_a_settled_database_migrates_alongside_a_backup(scratch):
+    """What a deployment's first migration meets: every table held, as by ``pg_dump``.
+
+    A database that today's startup has already brought to the baseline needs no
+    strong lock: every step reads the catalog and finds nothing to change. So
+    the first run succeeds next to a nightly backup instead of waiting for it.
+    """
+    await mig.upgrade(scratch)
+    async with mig.connected(scratch) as conn:
+        await _forget_migrations(conn)
+        tables = [
+            r["tablename"]
+            for r in await conn.fetch("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        ]
+    dump = await postgres.connect(database=scratch)
+    transaction = dump.transaction(isolation="repeatable_read", readonly=True)
+    await transaction.start()
+    try:
+        for table in tables:
+            await dump.execute(f'LOCK TABLE "{table}" IN ACCESS SHARE MODE')
+        await mig.upgrade(scratch)
+    finally:
+        await transaction.rollback()
+        await dump.close()
+
+    assert await _revision(scratch) == "0001_baseline"
+    assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
 
 
 async def test_concurrent_runs_take_turns(scratch):

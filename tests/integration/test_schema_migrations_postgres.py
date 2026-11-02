@@ -12,7 +12,7 @@ from alembic.config import Config
 
 from migrations import MIGRATIONS_DIR, baseline
 from migrations.compat import SchemaState, Verdict, judge, read_state
-from tests.fixtures import migrations as mig, postgres, schema_snapshot
+from tests.fixtures import migrations as mig, schema_snapshot
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -37,33 +37,6 @@ async def test_an_empty_database_migrates_to_the_recorded_baseline(scratch):
     assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
     async with mig.connected(scratch) as conn:
         assert await read_state(conn) == SchemaState(revision="0001_baseline", floor=None)
-
-
-async def test_the_startup_builders_built_the_recorded_baseline(scratch):
-    """The snapshot is what startup built before the builders were frozen."""
-    from serving.config.app_config_store import AppConfigStore
-    from serving.storage import alert_history_store
-    from serving.storage.batch_store import BatchStore
-    from serving.storage.database import DatabaseLogger
-    from serving.storage.postgres_operational import PostgresOperationalStore
-    from serving.storage.responses_store import ResponseStore
-
-    async with mig.connected(scratch) as conn:
-        await AppConfigStore(conn).ensure_schema()
-    pool = await postgres.create_pool(database=scratch, min_size=1, max_size=2)
-    try:
-        logger = DatabaseLogger({}, store_full_prompts=False)
-        logger.pool = pool
-        await logger.ensure_schema()
-        await PostgresOperationalStore(pool).initialize()
-        await ResponseStore(pool).initialize()
-        await BatchStore(pool).initialize()
-        async with pool.acquire() as conn:
-            await alert_history_store.ensure_schema(conn)
-    finally:
-        await pool.close()
-
-    assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
 
 
 async def test_a_database_startup_built_is_recorded_without_change(scratch):

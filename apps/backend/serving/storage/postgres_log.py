@@ -14,9 +14,8 @@ from serving.storage import (
     user_usage_rollup,
 )
 from serving.storage.base import LogStore, Row
-from serving.storage.log_schema import (
+from serving.storage.erasure_fence import (
     check_erasure_fence,
-    ensure_api_logs_schema,
     establish_erasure_fence,
     fence_account_digest,
     protect_api_logs_insert,
@@ -101,7 +100,7 @@ class PostgresLogStore(LogStore):
             store_full_prompts: If False, prompt and response fields will be NULL.
             fence_secret: Server secret used to derive non-reversible
                 erasure-fence digests. Resolved at startup by
-                :func:`serving.storage.log_schema.resolve_fence_secret`,
+                :func:`serving.storage.erasure_fence.resolve_fence_secret`,
                 which fails closed if no stable secret is configured.
         """
         self.pool = pool
@@ -111,23 +110,16 @@ class PostgresLogStore(LogStore):
     # -- lifecycle -----------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Create api_logs and api_stats_hourly tables with indexes.
+        """Validate the erasure-fence secret fingerprint (issue #1421).
 
-        Delegates to :func:`serving.storage.log_schema.ensure_api_logs_schema`,
-        the single source of truth shared with ``DatabaseLogger._create_tables``
-        so the two initializers cannot drift.
-
-        Also validates the erasure-fence secret fingerprint (issue #1421),
-        refusing to start if the configured secret no longer matches the
-        pinned fingerprint (which would silently orphan existing tombstones).
+        Refuses to start if the configured secret no longer matches the pinned
+        fingerprint, which would silently orphan existing tombstones. The tables
+        come from the schema migrations.
         """
+        if not self.fence_secret:
+            return
         async with self.pool.acquire() as conn:
-            if self.fence_secret:
-                # Validate existing tombstones before any API-log migration
-                # that may defer on a bounded table lock. A mismatched secret
-                # must never reach a usable writer with a fresh digest space.
-                await validate_or_init_fingerprint(conn, secret=self.fence_secret)
-            await ensure_api_logs_schema(conn)
+            await validate_or_init_fingerprint(conn, secret=self.fence_secret)
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""

@@ -3,7 +3,7 @@
 Keys created before the ``account_id`` column existed have ``account_id IS
 NULL``. The dashboard list/create/regenerate paths key off ``account_id``, so
 these users saw "No API keys yet" and hit a 500 on **Create API Key**.
-``_create_tables()`` now backfills ``account_id = user_id`` so the keys become
+the baseline's logging-store step now backfills ``account_id = user_id`` so the keys become
 visible and the ``user_id`` uniqueness constraint reconciles with the
 ``account_id`` one. ``create_key`` also converts the unique violation into a
 clean ``DuplicateAPIKeyError`` (409) instead of a raw 500.
@@ -15,6 +15,7 @@ Run with: make test-db
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import logging_store
 from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_operational import PostgresOperationalStore
@@ -23,6 +24,12 @@ from tests.fixtures.auth_factories import create_test_user
 pytest_plugins = ["tests.servers.conftest_auth"]
 
 pytestmark = pytest.mark.dbtest
+
+
+async def _run_baseline_step(db) -> None:
+    """Run the step of ``0001_baseline`` that DatabaseLogger used to run at startup."""
+    async with db.pool.acquire() as conn:
+        await logging_store.create_tables(conn)
 
 
 async def _insert_user(conn, **overrides) -> str:
@@ -74,7 +81,7 @@ async def backfill_db(auth_db_logger: DatabaseLogger):
 
 
 class TestAccountIdBackfill:
-    """_create_tables() backfills legacy NULL account_id rows."""
+    """the baseline step backfills legacy NULL account_id rows."""
 
     @pytest.mark.asyncio
     async def test_backfills_null_account_id_to_user_id(self, backfill_db: DatabaseLogger):
@@ -92,7 +99,7 @@ class TestAccountIdBackfill:
             assert before is None
 
         # Re-run migration (same as a service restart).
-        await backfill_db._create_tables()
+        await _run_baseline_step(backfill_db)
 
         async with pool.acquire() as conn:
             after = await conn.fetchval(
@@ -111,7 +118,7 @@ class TestAccountIdBackfill:
                 conn, user_id="missing-user-id", account_id=None, key_prefix="orphan123"
             )
 
-        await backfill_db._create_tables()
+        await _run_baseline_step(backfill_db)
 
         async with pool.acquire() as conn:
             account_id = await conn.fetchval(
@@ -129,8 +136,8 @@ class TestAccountIdBackfill:
             user_id = await _insert_user(conn)
             await _insert_key(conn, user_id=user_id, account_id=None, key_prefix="idem1234")
 
-        await backfill_db._create_tables()
-        await backfill_db._create_tables()
+        await _run_baseline_step(backfill_db)
+        await _run_baseline_step(backfill_db)
 
         async with pool.acquire() as conn:
             account_id = await conn.fetchval(
