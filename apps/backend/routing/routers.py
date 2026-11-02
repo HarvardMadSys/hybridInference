@@ -1920,7 +1920,10 @@ class FixedRouter:
         refused: list[tuple[str, str]] = []
         for adapter, weight in snapshot:
             endpoint_id = endpoint_id_for_adapter(adapter)
-            if weight <= 0:
+            # Spelled ``not weight > 0`` rather than ``weight <= 0`` so a NaN
+            # weight stays out of the draw, as the positive-weight filter has
+            # always kept it.
+            if not weight > 0:
                 refused.append((endpoint_id, ROUTE_REFUSAL_WEIGHT_0))
             elif endpoint_id in (exclude or ()):
                 refused.append((endpoint_id, ROUTE_REFUSAL_EXCLUDED))

@@ -123,6 +123,26 @@ async def test_fixed_reports_a_weight_0_route_apart_from_an_open_circuit(muted_b
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_fixed_never_admits_a_nan_weight() -> None:
+    """``weight <= 0`` is false for NaN; selection must keep refusing it anyway."""
+    zai = _adapter(_ZAI, provider="zai")
+    staging = _adapter(_STAGING, provider="staging")
+    router = FixedRouter()
+    # A NaN anywhere makes the normalizing sum NaN, so every weight becomes NaN.
+    router.register_route(_MODEL_ID, [(zai, float("nan")), (staging, 0.0)])
+
+    with pytest.raises(AllCircuitsOpenError) as raised:
+        await router.chat_completion(_MODEL_ID, _MESSAGES)
+
+    assert str(raised.value) == (
+        f"No admissible route for model {_MODEL_ID}: {_ZAI}=weight_0, {_STAGING}=weight_0"
+    )
+    assert zai.calls == 0
+    assert staging.calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_fixed_image_request_names_the_text_only_routes_it_filtered_out() -> None:
     zai = _adapter(_ZAI, provider="zai", input_modalities=_TEXT_AND_IMAGE)
     local = _adapter(_LOCAL, provider="local")
