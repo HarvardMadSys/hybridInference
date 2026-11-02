@@ -2552,6 +2552,63 @@ def test_request_tool_result_error_with_image_keeps_marker_and_image():
     assert messages[1]["content"][1] == _PNG_PART
 
 
+def test_request_tool_images_wait_for_results_split_over_adjacent_user_messages():
+    """The Anthropic surface allows one turn's results in adjacent user messages.
+
+    The tool messages answering one assistant turn must stay contiguous, so a
+    result's images go after the whole run, not between its tool messages.
+    """
+    body = {
+        "model": "m",
+        "max_tokens": 10,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}},
+                    {"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [_PNG]}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_2", "content": "ok"}],
+            },
+            {"role": "assistant", "content": "seen"},
+        ],
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert [m["role"] for m in messages] == ["assistant", "tool", "tool", "user", "assistant"]
+    assert messages[3]["content"] == [
+        {"type": "text", "text": "Image output of tool call toolu_1:"},
+        _PNG_PART,
+    ]
+    assert all("_tool_images" not in m for m in messages)
+
+
+@pytest.mark.parametrize("source", ["abc", ["x"], 3, None])
+def test_request_malformed_image_source_is_not_a_server_error(source):
+    """``source`` arrives unvalidated; a bad one is an image that cannot be carried."""
+    image = {"type": "image", "source": source}
+    body = _tool_result_body(
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": [image]},
+        image,
+        {"type": "text", "text": "look"},
+    )
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages == [
+        {"role": "tool", "tool_call_id": "toolu_1", "content": "[image]"},
+        {"role": "user", "content": "look"},
+    ]
+
+
 def test_request_tool_result_image_is_a_placeholder_for_a_text_only_destination():
     body = _tool_result_body(
         {

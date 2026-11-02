@@ -56,6 +56,7 @@ def anthropic_request_to_openai(
     for msg in body.get("messages", []):
         if isinstance(msg, dict):
             messages.extend(_translate_message(msg, tool_images=tool_images))
+    messages = _place_tool_images(messages)
 
     params = _translate_params(body)
     return messages, params
@@ -257,7 +258,6 @@ def _translate_message(msg: dict[str, Any], *, tool_images: bool = True) -> list
     text_parts: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []
     tool_results: list[dict[str, Any]] = []
-    carried_images: list[dict[str, Any]] = []
     text_only_buffer: list[str] = []
 
     for block in content:
@@ -297,9 +297,7 @@ def _translate_message(msg: dict[str, Any], *, tool_images: bool = True) -> list
             )
 
         elif btype == "tool_result":
-            tool_message, images = _translate_tool_result(block, carry_images=tool_images)
-            tool_results.append(tool_message)
-            carried_images.extend(images)
+            tool_results.append(_translate_tool_result(block, carry_images=tool_images))
 
         # Unknown blocks ignored.
 
@@ -312,17 +310,6 @@ def _translate_message(msg: dict[str, Any], *, tool_images: bool = True) -> list
     # emitting the text first would produce assistant(tool_calls) -> user(text)
     # -> tool(...), which strict upstreams reject.
     out.extend(tool_results)
-
-    # A tool message holds text only, so the images the tool results returned
-    # ride in the user message right after them. That is this turn's own user
-    # message when it has one (images first: they answer the tool calls, and
-    # the turn's text, e.g. a <system-reminder>, came after), so the
-    # conversation keeps one user message per turn.
-    if carried_images:
-        if role == "user":
-            text_parts[:0] = carried_images
-        else:
-            out.append({"role": "user", "content": carried_images})
 
     # Build the primary translated message (text + image parts + tool_calls).
     has_image = any(p.get("type") == "image_url" for p in text_parts)
@@ -345,7 +332,14 @@ def _translate_message(msg: dict[str, Any], *, tool_images: bool = True) -> list
     return out
 
 
-def _image_block_to_url(source: dict[str, Any]) -> str | None:
+def _image_block_to_url(source: Any) -> str | None:
+    """The image's URL form, or ``None`` when ``source`` has none (or is malformed).
+
+    ``source`` arrives from the client unvalidated: anything but a mapping is
+    an image this surface cannot carry, not a reason to fail the request.
+    """
+    if not isinstance(source, dict):
+        return None
     src_type = source.get("type")
     if src_type == "url":
         return source.get("url")
@@ -356,16 +350,15 @@ def _image_block_to_url(source: dict[str, Any]) -> str | None:
     return None
 
 
-def _translate_tool_result(
-    block: dict[str, Any], *, carry_images: bool
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """One tool_result block as a ``role: "tool"`` message, plus the images it returned.
+def _translate_tool_result(block: dict[str, Any], *, carry_images: bool) -> dict[str, Any]:
+    """One tool_result block as a ``role: "tool"`` message.
 
-    The images are ``image_url`` parts for the user message that follows the
-    turn's tool messages, each run introduced by a text part naming the call.
-    The tool message says they follow, so an image-only result is never read as
-    "the tool returned nothing". Without ``carry_images`` no image is returned
-    and each stays an ``[image]`` placeholder in the tool message.
+    The images it returned are held under :data:`_TOOL_IMAGES`, as ``image_url``
+    parts introduced by a text part naming the call, until
+    :func:`_place_tool_images` moves them out. The tool message says they
+    follow, so an image-only result is never read as "the tool returned
+    nothing". Without ``carry_images`` each image stays an ``[image]``
+    placeholder in the tool message.
     """
     content = block.get("content")
     tool_use_id = block.get("tool_use_id", "")
@@ -379,11 +372,62 @@ def _translate_tool_result(
         # the model can distinguish a failed tool call from a successful
         # one instead of treating raw stderr as a valid result.
         result_text = f"[tool error]\n{result_text}" if result_text else "[tool error]"
-    message = {"role": "tool", "tool_call_id": tool_use_id, "content": result_text}
-    if not images:
-        return message, []
-    label = {"type": "text", "text": f"Image output of tool call {tool_use_id}:"}
-    return message, [label, *images]
+    message: dict[str, Any] = {"role": "tool", "tool_call_id": tool_use_id, "content": result_text}
+    if images:
+        label = {"type": "text", "text": f"Image output of tool call {tool_use_id}:"}
+        message[_TOOL_IMAGES] = [label, *images]
+    return message
+
+
+#: Where a translated tool message holds its images until they are placed.
+_TOOL_IMAGES = "_tool_images"
+
+
+def _place_tool_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Move each run of tool messages' images to the user message after the run.
+
+    A tool message holds text only, and the tool messages answering one
+    assistant turn must stay contiguous -- also when the client split the
+    results over adjacent user messages, which the Anthropic surface allows.
+    So the images go after the whole run: into the user message that follows
+    it, ahead of its own content (the turn's text, e.g. a
+    ``<system-reminder>``, came after the results), or else into a new user
+    message, so the conversation keeps one user message per turn.
+    """
+    if not any(_TOOL_IMAGES in message for message in messages):
+        return messages
+    out: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") == "tool":
+            images = message.get(_TOOL_IMAGES)
+            if images is not None:
+                message = {k: v for k, v in message.items() if k != _TOOL_IMAGES}
+                pending.extend(images)
+            out.append(message)
+            continue
+        if pending:
+            if message.get("role") == "user":
+                message = {
+                    **message,
+                    "content": [*pending, *_content_parts(message.get("content"))],
+                }
+            else:
+                out.append({"role": "user", "content": pending})
+            pending = []
+        out.append(message)
+    if pending:
+        out.append({"role": "user", "content": pending})
+    return out
+
+
+def _content_parts(content: Any) -> list[dict[str, Any]]:
+    """A translated message's content as a list of chat content parts."""
+    if isinstance(content, list):
+        return content
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}]
+    return []
 
 
 def _tool_image_note(count: int) -> str:
@@ -398,7 +442,7 @@ def _tool_result_images(content: Any) -> list[dict[str, Any]]:
     parts: list[dict[str, Any]] = []
     for block in content:
         if isinstance(block, dict) and block.get("type") == "image":
-            url = _image_block_to_url(block.get("source") or {})
+            url = _image_block_to_url(block.get("source"))
             if url is not None:
                 parts.append({"type": "image_url", "image_url": {"url": url}})
     return parts
@@ -427,7 +471,7 @@ def _flatten_tool_result_content(content: Any, *, carry_images: bool = True) -> 
                 if isinstance(text_val, str):
                     parts.append(text_val)
             elif btype == "image" and not (
-                carry_images and _image_block_to_url(block.get("source") or {}) is not None
+                carry_images and _image_block_to_url(block.get("source")) is not None
             ):
                 parts.append("[image]")
         return "\n".join(p for p in parts if p)
