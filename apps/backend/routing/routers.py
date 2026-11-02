@@ -67,6 +67,51 @@ class AllCircuitsOpenError(RuntimeError):
     """Raised when all provider circuits are open (full outage)."""
 
 
+# Why a selection passed over one endpoint on a model's route. A selection that
+# ends with nothing admitted names each endpoint with its reason, because "every
+# circuit is open" is only one way to get there: an operator who reads a muted
+# route as a tripped breaker, or never hears of a route the request's media
+# ruled out, goes looking for the wrong fault.
+#
+# - circuit_open: circuit admission refused it (open, or its half-open probe is
+#   already held by another request).
+# - weight_0: its runtime weight is 0 (admin-disabled, overridden to 0, or
+#   configured at 0), so automatic selection never draws it.
+# - excluded: this request was already refused a dispatch claim for it and
+#   passed it over.
+# - no_capacity: the concurrency pool or quota it draws from has nothing left.
+ROUTE_REFUSAL_CIRCUIT_OPEN = "circuit_open"
+ROUTE_REFUSAL_WEIGHT_0 = "weight_0"
+ROUTE_REFUSAL_EXCLUDED = "excluded"
+ROUTE_REFUSAL_NO_CAPACITY = "no_capacity"
+
+
+def describe_route_refusals(
+    refused: Sequence[tuple[str, str]],
+    *,
+    required_modalities: frozenset[str] | None = None,
+    modality_filtered: Sequence[str] = (),
+) -> str:
+    """Return the "why nothing was admitted" detail of a selection error.
+
+    ``refused`` pairs each endpoint that reached admission with its
+    ``ROUTE_REFUSAL_*`` reason, in route order. ``modality_filtered`` names the
+    endpoints the request's ``required_modalities`` removed before admission.
+    They never reached it, so they are listed apart -- left out, an image
+    request whose image-capable routes are all open reads as if the model had
+    no other route at all.
+    """
+    detail = ", ".join(f"{endpoint_id}={reason}" for endpoint_id, reason in refused)
+    if not detail:
+        detail = "no candidate reached admission"
+    if modality_filtered:
+        detail += (
+            f"; filtered out for input modalities {sorted(required_modalities or ())}: "
+            + ", ".join(modality_filtered)
+        )
+    return detail
+
+
 class TargetUnavailableError(RuntimeError):
     """Raised when a dispatch required an endpoint that cannot be used right now.
 
@@ -1832,16 +1877,21 @@ class FixedRouter:
                 for adapter, weight in effective
                 if adapter_in_endpoint_scope(adapter, endpoint_scope)
             ]
+        # Endpoints the request's media ruled out, kept so an empty selection
+        # below can say they exist instead of leaving them unmentioned.
+        modality_filtered: list[str] = []
         if required_modalities:
-            effective = [
-                (adapter, weight)
-                for adapter, weight in effective
-                if adapter_supports_modalities(adapter, required_modalities)
-            ]
+            supported: list[tuple[BaseAdapter, float]] = []
+            for adapter, weight in effective:
+                if adapter_supports_modalities(adapter, required_modalities):
+                    supported.append((adapter, weight))
+                else:
+                    modality_filtered.append(endpoint_id_for_adapter(adapter))
+            effective = supported
             if not effective:
                 raise AllCircuitsOpenError(
                     f"No route for model {model_id} accepts input modalities "
-                    f"{sorted(required_modalities)}"
+                    f"{sorted(required_modalities)}: filtered out " + ", ".join(modality_filtered)
                 )
         if endpoint_scope is not None and not effective:
             raise AllCircuitsOpenError(
@@ -1863,19 +1913,30 @@ class FixedRouter:
         # ``allow_request`` is asked of every candidate here and answers for at
         # most one dispatch, so it must stay a pure query -- the commit, and the
         # half-open probe claim that goes with it, happen in
-        # ``_select_and_claim_adapter`` once this returns.
-        allowed: list[tuple[BaseAdapter, float]] = [
-            (adapter, weight)
-            for adapter, weight in snapshot
-            if weight > 0
-            and endpoint_id_for_adapter(adapter) not in (exclude or ())
-            and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
-        ]
+        # ``_select_and_claim_adapter`` once this returns. Each endpoint passed
+        # over keeps the reason of the first gate that refused it, for the error
+        # below: a weight-0 route must not be reported as an open circuit.
+        allowed: list[tuple[BaseAdapter, float]] = []
+        refused: list[tuple[str, str]] = []
+        for adapter, weight in snapshot:
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            if weight <= 0:
+                refused.append((endpoint_id, ROUTE_REFUSAL_WEIGHT_0))
+            elif endpoint_id in (exclude or ()):
+                refused.append((endpoint_id, ROUTE_REFUSAL_EXCLUDED))
+            elif not self._health_registry.allow_request(endpoint_id):
+                refused.append((endpoint_id, ROUTE_REFUSAL_CIRCUIT_OPEN))
+            else:
+                allowed.append((adapter, weight))
 
         if not allowed:
-            provider_names = [endpoint_id_for_adapter(adapter) for adapter, _weight in snapshot]
             raise AllCircuitsOpenError(
-                f"All provider circuits are open for model {model_id}: {provider_names}"
+                f"No admissible route for model {model_id}: "
+                + describe_route_refusals(
+                    refused,
+                    required_modalities=required_modalities,
+                    modality_filtered=modality_filtered,
+                )
             )
 
         # The offload route is held back for requests another route could not
@@ -2176,7 +2237,10 @@ class FixedRouter:
         # Every endpoint on the route refused a claim. Same disposition as an
         # all-open route: the caller's request cannot be placed right now.
         raise AllCircuitsOpenError(
-            f"All provider circuits are open or probing for model {model_id}: {sorted(exclude)}"
+            f"No admissible route for model {model_id}: "
+            + describe_route_refusals(
+                [(endpoint_id, ROUTE_REFUSAL_EXCLUDED) for endpoint_id in sorted(exclude)]
+            )
         )
 
     def bind_execution(
