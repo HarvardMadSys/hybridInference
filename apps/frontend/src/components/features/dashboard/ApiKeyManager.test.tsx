@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiKeyListItem } from '@/lib/api/user';
@@ -11,6 +11,7 @@ vi.mock('@/lib/hooks', () => ({
   useCreateApiKey: vi.fn(),
   useDeleteApiKey: vi.fn(),
   useRegenerateApiKey: vi.fn(),
+  useRenameApiKey: vi.fn(),
 }));
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
@@ -21,25 +22,50 @@ vi.mock('react-hot-toast', () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
 
-import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/hooks';
+import {
+  useApiKeys,
+  useCreateApiKey,
+  useDeleteApiKey,
+  useRegenerateApiKey,
+  useRenameApiKey,
+} from '@/lib/hooks';
 
-const idleMutation = { mutateAsync: vi.fn(), isPending: false };
+type Mutation = { mutateAsync: ReturnType<typeof vi.fn>; isPending: boolean };
 
-function mockList(item: ApiKeyListItem): void {
+function idle(): Mutation {
+  return { mutateAsync: vi.fn().mockResolvedValue({ api_key: 'hyi-new' }), isPending: false };
+}
+
+let mutations: {
+  create: Mutation;
+  remove: Mutation;
+  regenerate: Mutation;
+  rename: Mutation;
+};
+
+function mockKeys(items: ApiKeyListItem[], maxActive: number | null = 10): void {
   vi.mocked(useApiKeys).mockReturnValue({
-    data: { keys: [item] },
+    data: { keys: items, max_active_keys: maxActive },
     isLoading: false,
     error: null,
   } as ReturnType<typeof useApiKeys>);
+  mutations = { create: idle(), remove: idle(), regenerate: idle(), rename: idle() };
   vi.mocked(useCreateApiKey).mockReturnValue(
-    idleMutation as unknown as ReturnType<typeof useCreateApiKey>,
+    mutations.create as unknown as ReturnType<typeof useCreateApiKey>,
   );
   vi.mocked(useDeleteApiKey).mockReturnValue(
-    idleMutation as unknown as ReturnType<typeof useDeleteApiKey>,
+    mutations.remove as unknown as ReturnType<typeof useDeleteApiKey>,
   );
   vi.mocked(useRegenerateApiKey).mockReturnValue(
-    idleMutation as unknown as ReturnType<typeof useRegenerateApiKey>,
+    mutations.regenerate as unknown as ReturnType<typeof useRegenerateApiKey>,
   );
+  vi.mocked(useRenameApiKey).mockReturnValue(
+    mutations.rename as unknown as ReturnType<typeof useRenameApiKey>,
+  );
+}
+
+function mockList(item: ApiKeyListItem): void {
+  mockKeys([item]);
 }
 
 const FULL_KEY = 'hyi-testkey01-FULL-SECRET-VALUE';
@@ -70,6 +96,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // window.prompt / window.confirm spies must not leak into the next test.
+  vi.restoreAllMocks();
 });
 
 describe('ApiKeyManager reveal + copy', () => {
@@ -108,5 +136,102 @@ describe('ApiKeyManager reveal + copy', () => {
     expect(
       screen.getByText(/Full key is only shown immediately after creation or regeneration/),
     ).toBeInTheDocument();
+  });
+});
+
+describe('ApiKeyManager with several keys', () => {
+  it('offers Create while an account holds keys, and names each one', () => {
+    mockKeys([
+      makeItem({ key_prefix: 'hyi-aaaaaaaa', key_masked: 'hyi-aaaa****', name: 'laptop' }),
+      makeItem({ key_prefix: 'hyi-bbbbbbbb', key_masked: 'hyi-bbbb****', name: null }),
+    ]);
+    render(<ApiKeyManager />);
+
+    expect(screen.getByRole('button', { name: 'Create API Key' })).toBeEnabled();
+    expect(screen.getByText('laptop')).toBeInTheDocument();
+    expect(screen.getByText('Unnamed key')).toBeInTheDocument();
+    expect(screen.getByText('2 of 10 active')).toBeInTheDocument();
+  });
+
+  it('disables Create at the cap', () => {
+    mockKeys(
+      [makeItem({ key_prefix: 'hyi-aaaaaaaa' }), makeItem({ key_prefix: 'hyi-bbbbbbbb' })],
+      2,
+    );
+    render(<ApiKeyManager />);
+
+    expect(screen.getByRole('button', { name: 'Create API Key' })).toBeDisabled();
+  });
+
+  it('creates a key with the name typed into the prompt', async () => {
+    mockKeys([]);
+    vi.spyOn(window, 'prompt').mockReturnValue('  ci  ');
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
+
+    await waitFor(() => expect(mutations.create.mutateAsync).toHaveBeenCalledWith('ci'));
+    expect(await screen.findByText('hyi-new')).toBeInTheDocument();
+  });
+
+  it('does not create a key when the prompt is cancelled', () => {
+    mockKeys([]);
+    vi.spyOn(window, 'prompt').mockReturnValue(null);
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
+
+    expect(mutations.create.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('regenerates the key on its own row', async () => {
+    mockKeys([
+      makeItem({ key_prefix: 'hyi-aaaaaaaa', key_masked: 'hyi-aaaa****' }),
+      makeItem({ key_prefix: 'hyi-bbbbbbbb', key_masked: 'hyi-bbbb****' }),
+    ]);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Regenerate' })[1]);
+
+    await waitFor(() =>
+      expect(mutations.regenerate.mutateAsync).toHaveBeenCalledWith('hyi-bbbbbbbb'),
+    );
+  });
+
+  it('renames a key, clearing the name on a blank answer', async () => {
+    mockKeys([makeItem({ key_prefix: 'hyi-aaaaaaaa', name: 'old' })]);
+    vi.spyOn(window, 'prompt').mockReturnValue('   ');
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+
+    await waitFor(() =>
+      expect(mutations.rename.mutateAsync).toHaveBeenCalledWith({
+        keyPrefix: 'hyi-aaaaaaaa',
+        name: null,
+      }),
+    );
+  });
+
+  it('folds revoked keys away until asked for', () => {
+    mockKeys([
+      makeItem({ key_prefix: 'hyi-aaaaaaaa', key_masked: 'hyi-live****' }),
+      makeItem({
+        key_prefix: 'hyi-dddddddd',
+        key_masked: 'hyi-dead****',
+        status: 'revoked',
+        api_key: null,
+      }),
+    ]);
+    render(<ApiKeyManager />);
+
+    expect(screen.getByText('hyi-live****')).toBeInTheDocument();
+    expect(screen.queryByText('hyi-dead****')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show revoked keys (1)' }));
+
+    expect(screen.getByText('hyi-dead****')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
   });
 });

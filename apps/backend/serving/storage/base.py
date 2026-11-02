@@ -591,6 +591,8 @@ class OperationalStore(ABC):
         metadata: str | None = None,
         account_id: str | None = None,
         inherit_account_quota: bool = False,
+        name: str | None = None,
+        max_active_keys: int | None = None,
     ) -> Row:
         """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
 
@@ -606,11 +608,50 @@ class OperationalStore(ABC):
         - ``inherit_account_quota=False`` (an admin setting one): the given
           values become the account's, written to every unrevoked key of the
           user in the same transaction.
+
+        ``name`` labels the key for its owner. ``max_active_keys`` caps the
+        account's active keys, checked atomically with the insert.
+
+        Raises:
+            APIKeyLimitReachedError: The account already holds ``max_active_keys``.
         """
 
     @abstractmethod
     async def check_active_key_exists(self, user_id: str) -> bool:
         """Return True if *user_id* already has an active key."""
+
+    @abstractmethod
+    async def count_active_keys(self, user_id: str) -> int:
+        """Return how many active keys *user_id* holds."""
+
+    @abstractmethod
+    async def list_account_keys(self, account_id: str) -> list[Row]:
+        """Every key the account owns, live first then newest.
+
+        Rows carry ``id, key_prefix, name, created_at, last_used_at, status,
+        api_key_encrypted``; never the hash.
+        """
+
+    @abstractmethod
+    async def rename_key(self, account_id: str, key_prefix: str, name: str | None) -> bool:
+        """Label the account's unrevoked key *key_prefix*. False when there is none."""
+
+    @abstractmethod
+    async def rotate_key(
+        self,
+        account_id: str,
+        key_prefix: str,
+        *,
+        new_key_hash: str,
+        new_key_prefix: str,
+        api_key_encrypted: str | None,
+    ) -> Row | None:
+        """Atomically revoke the account's active key *key_prefix* and issue its successor.
+
+        The successor keeps the key's name, expiry, notes, metadata and the
+        account's quota. Returns ``{"id", "created_at", "old_key_prefix"}``, or
+        None when the account has no active key with that prefix.
+        """
 
     @abstractmethod
     async def list_keys(

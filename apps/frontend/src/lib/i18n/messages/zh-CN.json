@@ -2403,6 +2403,14 @@
     "source": "API Playground",
     "text": "API 调试台"
   },
+  "dashboard.keys.active_count": {
+    "source": "{count} of {max} active",
+    "text": "使用中 {count} / {max}"
+  },
+  "dashboard.keys.at_cap": {
+    "source": "You have {max} active keys, the most an account may hold. Delete one to create another.",
+    "text": "你已有 {max} 个使用中的 key，达到了每个账号的上限。删除一个后才能再创建。"
+  },
   "dashboard.keys.col_actions": {
     "source": "Actions",
     "text": "操作"
@@ -2422,10 +2430,6 @@
   "dashboard.keys.col_status": {
     "source": "Status",
     "text": "状态"
-  },
-  "dashboard.keys.confirm_create": {
-    "source": "Create a new API Key?",
-    "text": "确定要创建新的 API key 吗？"
   },
   "dashboard.keys.confirm_delete": {
     "source": "Delete this API Key? It will stop working immediately.",
@@ -2479,6 +2483,10 @@
     "source": "Hide key",
     "text": "隐藏 key"
   },
+  "dashboard.keys.hide_revoked": {
+    "source": "Hide revoked keys",
+    "text": "隐藏已吊销的 key"
+  },
   "dashboard.keys.last_used_inline": {
     "source": "Last used: ",
     "text": "最近使用："
@@ -2486,6 +2494,10 @@
   "dashboard.keys.load_failed": {
     "source": "Failed to load API keys. Please try again later.",
     "text": "API key 加载失败，请稍后再试。"
+  },
+  "dashboard.keys.name_prompt": {
+    "source": "Name this key (optional), for example \"laptop\" or \"CI\". All of your keys share one quota.",
+    "text": "给这个 key 起个名字（可选），例如“laptop”或“CI”。你的所有 key 共用同一份额度。"
   },
   "dashboard.keys.never": {
     "source": "Never",
@@ -2511,6 +2523,18 @@
     "source": "API Key removed.",
     "text": "API key 已移除。"
   },
+  "dashboard.keys.rename": {
+    "source": "Rename",
+    "text": "重命名"
+  },
+  "dashboard.keys.rename_prompt": {
+    "source": "Rename this key. Leave it blank to remove the name.",
+    "text": "重命名这个 key。留空则去掉名字。"
+  },
+  "dashboard.keys.renamed_toast": {
+    "source": "API key renamed.",
+    "text": "API key 已重命名。"
+  },
   "dashboard.keys.save_now": {
     "source": "Save this key now. It will only be shown once.",
     "text": "请现在就保存这个 key，它只会显示这一次。"
@@ -2518,6 +2542,10 @@
   "dashboard.keys.show": {
     "source": "Show key",
     "text": "显示 key"
+  },
+  "dashboard.keys.show_revoked": {
+    "source": "Show revoked keys ({count})",
+    "text": "显示已吊销的 key（{count}）"
   },
   "dashboard.keys.status_active": {
     "source": "active",
@@ -2534,6 +2562,10 @@
   "dashboard.keys.title": {
     "source": "API Keys",
     "text": "API key"
+  },
+  "dashboard.keys.unnamed": {
+    "source": "Unnamed key",
+    "text": "未命名"
   },
   "dashboard.models.col_limits": {
     "source": "Ctx / out",

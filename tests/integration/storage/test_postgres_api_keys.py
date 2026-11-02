@@ -280,9 +280,10 @@ async def _quotas(pool: Any, user_id: str) -> dict[str, tuple[Any, Any]]:
     }
 
 
-async def _create(store: PostgresOperationalStore, user_id: str, name: str, **kwargs: Any) -> None:
+async def _create(store: PostgresOperationalStore, user_id: str, tag: str, **kwargs: Any) -> None:
+    """Create key ``{_PREFIX}-{tag}`` through the store; *kwargs* go to ``create_key``."""
     await store.create_key(
-        key_hash=f"hash-{name}", key_prefix=f"{_PREFIX}-{name}", user_id=user_id, **kwargs
+        key_hash=f"hash-{tag}", key_prefix=f"{_PREFIX}-{tag}", user_id=user_id, **kwargs
     )
 
 
@@ -399,3 +400,150 @@ async def test_the_grant_quota_lookup_answers_with_one_row_per_account(keys):
     rows = await store.get_quota_context_for_user("u-admkey-grant")
 
     assert [str(row["quota_daily_cost_usd"]) for row in rows] == ["12.0000"]
+
+
+# --- several keys per account ------------------------------------------------
+
+
+async def test_startup_drops_the_retired_one_key_indexes(keys):
+    """An upgraded database still carries the indexes that held an account to one key."""
+    store, pool = keys
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
+            "ON api_keys(user_id) WHERE status = 'active'"
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
+            "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
+        )
+
+    await store.initialize()
+
+    async with pool.acquire() as conn:
+        remaining = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_indexes WHERE tablename = 'api_keys' "
+            "AND indexname = ANY($1::text[])",
+            ["idx_api_keys_user_unique", "idx_api_keys_account_active_unique"],
+        )
+    assert remaining == 0
+
+
+async def test_the_cap_counts_only_active_keys(keys):
+    from serving.exceptions import APIKeyLimitReachedError
+
+    store, pool = keys
+    await _user(store, "u-admkey-cap")
+    await _key(pool, "u-admkey-cap", "cap-a", "active")
+    await _key(pool, "u-admkey-cap", "cap-dead", "revoked")
+
+    await _create(store, "u-admkey-cap", "cap-b", max_active_keys=2)
+    with pytest.raises(APIKeyLimitReachedError) as refused:
+        await _create(store, "u-admkey-cap", "cap-c", max_active_keys=2)
+
+    assert refused.value.limit == 2
+    assert await store.count_active_keys("u-admkey-cap") == 2
+
+
+async def test_listing_puts_live_keys_first_and_carries_names(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-lst")
+    await _key(pool, "u-admkey-lst", "lst-old", "active")
+    await _key(pool, "u-admkey-lst", "lst-dead", "revoked")
+    await _create(store, "u-admkey-lst", "lst-new", name="deploy")
+
+    rows = await store.list_account_keys("u-admkey-lst")
+
+    assert [(row["key_prefix"].removeprefix(f"{_PREFIX}-"), row["name"]) for row in rows] == [
+        ("lst-new", "deploy"),
+        ("lst-old", None),
+        ("lst-dead", None),
+    ]
+    assert all("key_hash" not in row for row in rows)
+
+
+async def test_rotation_replaces_one_key_and_keeps_its_settings(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-rot")
+    await _key(pool, "u-admkey-rot", "rot-other", "active")
+    await _key(pool, "u-admkey-rot", "rot-old", "active", '{"team": "ml"}')
+    await _set_quota(pool, "rot-old", "9.0000", "90.0000")
+    await store.rename_key("u-admkey-rot", f"{_PREFIX}-rot-old", "eval")
+
+    rotated = await store.rotate_key(
+        "u-admkey-rot",
+        f"{_PREFIX}-rot-old",
+        new_key_hash="hash-rot-new",
+        new_key_prefix=f"{_PREFIX}-rot-new",
+        api_key_encrypted="cipher",
+    )
+
+    assert rotated is not None and rotated["old_key_prefix"] == f"{_PREFIX}-rot-old"
+    rows = await _rows(pool, "u-admkey-rot")
+    assert rows[f"{_PREFIX}-rot-old"]["status"] == "revoked"
+    assert rows[f"{_PREFIX}-rot-other"]["status"] == "active"
+    assert rows[f"{_PREFIX}-rot-new"]["status"] == "active"
+    assert json.loads(rows[f"{_PREFIX}-rot-new"]["metadata"]) == {"team": "ml"}
+    assert (await _quotas(pool, "u-admkey-rot"))["rot-new"] == ("9.0000", "90.0000")
+    listed = {row["key_prefix"]: row for row in await store.list_account_keys("u-admkey-rot")}
+    assert listed[f"{_PREFIX}-rot-new"]["name"] == "eval"
+
+
+async def test_rotation_of_a_key_that_is_not_active_changes_nothing(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-rotno")
+    await _key(pool, "u-admkey-rotno", "rotno-dead", "revoked")
+    before = await _rows(pool, "u-admkey-rotno")
+
+    for prefix in (f"{_PREFIX}-rotno-dead", f"{_PREFIX}-missing"):
+        assert (
+            await store.rotate_key(
+                "u-admkey-rotno",
+                prefix,
+                new_key_hash="hash-rotno-new",
+                new_key_prefix=f"{_PREFIX}-rotno-new",
+                api_key_encrypted=None,
+            )
+            is None
+        )
+    assert await _rows(pool, "u-admkey-rotno") == before
+
+
+async def test_another_accounts_key_cannot_be_renamed_or_rotated(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-own")
+    await _user(store, "u-admkey-thief")
+    await _key(pool, "u-admkey-own", "own", "active")
+
+    assert not await store.rename_key("u-admkey-thief", f"{_PREFIX}-own", "mine")
+    assert (
+        await store.rotate_key(
+            "u-admkey-thief",
+            f"{_PREFIX}-own",
+            new_key_hash="hash-own-new",
+            new_key_prefix=f"{_PREFIX}-own-new",
+            api_key_encrypted=None,
+        )
+        is None
+    )
+    assert (await _rows(pool, "u-admkey-own"))[f"{_PREFIX}-own"]["status"] == "active"
+
+
+async def test_keys_read_unnamed_and_cannot_be_named_while_the_column_is_pending(keys):
+    """The ``name`` migration may wait behind a lock; the key routes keep working meanwhile."""
+    from serving.exceptions import AccountSchemaPending
+
+    store, pool = keys
+    await _user(store, "u-admkey-pend")
+    await _key(pool, "u-admkey-pend", "pend-a", "active")
+    # As the store reads a catalog without the column, rechecked no sooner than usual.
+    store._api_key_names = False
+    store._account_schema_read_at = float("inf")
+
+    assert [row["name"] for row in await store.list_account_keys("u-admkey-pend")] == [None]
+    with pytest.raises(AccountSchemaPending):
+        await store.rename_key("u-admkey-pend", f"{_PREFIX}-pend-a", "x")
+    with pytest.raises(AccountSchemaPending):
+        await _create(store, "u-admkey-pend", "pend-named", name="x")
+    await _create(store, "u-admkey-pend", "pend-b")
+    assert await store.count_active_keys("u-admkey-pend") == 2

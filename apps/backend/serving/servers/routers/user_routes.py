@@ -18,6 +18,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from serving.audit import AuditTarget
 from serving.exceptions import (
+    APIKeyLimitReachedError,
     UserNotFoundError,
     generic_message_for_status,
     user_safe_error_for_log,
@@ -25,11 +26,14 @@ from serving.exceptions import (
 from serving.model_access import get_disabled_models_from_preferences
 from serving.schemas import ModelList
 from serving.schemas_auth import (
+    APIKeyCreateRequest,
     APIKeyDeleteResponse,
     APIKeyInfo,
     APIKeyListItem,
     APIKeyListResponse,
     APIKeyRegenerateResponse,
+    APIKeyRenameRequest,
+    APIKeyRenameResponse,
     APIKeyResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
@@ -74,6 +78,18 @@ router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 LOCALE_PREFERENCE_KEY = "locale"
+
+#: How many active API keys one account may hold at once. Every key spends
+#: the same account quota; the cap bounds how many live credentials there are
+#: to leak or forget, not how much can be spent.
+MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 10
+
+
+def _clean_key_name(name: str | None) -> str | None:
+    """A key label as stored: surrounding whitespace dropped, blank meaning none."""
+    if name is None:
+        return None
+    return name.strip() or None
 
 
 def _quota_contact() -> str:
@@ -434,14 +450,18 @@ async def update_locale_preference(
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)
 async def create_api_key(
     request: Request,
+    payload: APIKeyCreateRequest | None = None,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyResponse:
     """Generate a new API key for the current user.
 
-    Only available after email verification.
-    Users can only have one active API key at a time.
+    Only available after email verification. An account may hold up to
+    :data:`MAX_ACTIVE_API_KEYS_PER_ACCOUNT` active keys, all spending the same
+    account quota: a key added to an account takes its quota, and only the
+    first key is seeded with the role default. The body is optional and may
+    give the key a ``name``.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -460,13 +480,7 @@ async def create_api_key(
     ) or phone_identity_unverified(current_user):
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
-    # Check if user already has an active API key. Use the account-or-user
-    # lookup so legacy keys with account_id IS NULL are also detected — the DB
-    # uniqueness is on user_id, so checking account_id alone would miss them and
-    # let the INSERT fail with a 500 instead of a clean 409.
-    existing = await op_store.get_key_by_account_or_user(current_user["user_id"])
-    if existing:
-        raise HTTPException(status_code=409, detail="You already have an active API key")
+    name = _clean_key_name(payload.name if payload else None)
 
     # Generate new API key
     api_key = generate_api_key()
@@ -478,14 +492,26 @@ async def create_api_key(
         rt = None
     default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
 
-    await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=current_user["user_id"],
-        account_id=current_user["user_id"],
-        quota_daily_cost_usd=default_quota,
-        api_key_encrypted=encrypt_api_key(api_key),
-    )
+    try:
+        row = await op_store.create_key(
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=current_user["user_id"],
+            account_id=current_user["user_id"],
+            quota_daily_cost_usd=default_quota,
+            api_key_encrypted=encrypt_api_key(api_key),
+            inherit_account_quota=True,
+            name=name,
+            max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT,
+        )
+    except APIKeyLimitReachedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"You already have {MAX_ACTIVE_API_KEYS_PER_ACCOUNT} active API keys, the "
+                "most an account may hold. Revoke one to create another."
+            ),
+        ) from exc
 
     logger.info(f"API key created for user: {current_user['user_id']}")
     await log_admin_action(
@@ -494,16 +520,19 @@ async def create_api_key(
         details={
             "actor": "user",
             "key_prefix": key_prefix,
+            "name": name,
         },
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
 
+    created_at = row.get("created_at") if isinstance(row, dict) else None
     return APIKeyResponse(
         api_key=api_key,
         key_prefix=key_prefix,
+        name=name,
         warning="Save this API key now. It will not be shown again.",
-        created_at=datetime.now(UTC),
+        created_at=created_at or datetime.now(UTC),
     )
 
 
@@ -512,9 +541,11 @@ async def get_api_key_info(
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> APIKeyInfo:
-    """Get current user's active API key information.
+    """Get current user's newest active API key information.
 
-    Full keys are only returned at creation/regeneration time.
+    Kept for clients written when an account held one key; the console lists
+    every key through ``GET /user/api-keys/all``. Full keys are only returned
+    at creation/regeneration time.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -538,25 +569,17 @@ async def get_api_key_info(
 @router.get("/api-keys/all", response_model=APIKeyListResponse)
 async def list_api_keys(
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> APIKeyListResponse:
-    """List all API keys owned by the current user.
+    """List all API keys owned by the current user, live ones first.
 
-    Only masked identifiers are returned after creation/regeneration.
+    Active keys carry their full value for the console to show again; revoked
+    ones only their masked prefix.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    async with db_logger.pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT key_prefix, created_at, last_used_at, status, api_key_encrypted
-            FROM api_keys
-            WHERE account_id = $1
-            ORDER BY (status = 'active') DESC, created_at DESC
-            """,
-            current_user["user_id"],
-        )
+    rows = await op_store.list_account_keys(current_user["user_id"])
 
     keys: list[APIKeyListItem] = []
     for row in rows:
@@ -573,12 +596,40 @@ async def list_api_keys(
                 api_key=full_key,
                 key_prefix=row["key_prefix"],
                 key_masked=mask_key_prefix(row["key_prefix"]),
+                name=row.get("name"),
                 created_at=row["created_at"],
                 last_used_at=row["last_used_at"],
                 status=row["status"],
             )
         )
-    return APIKeyListResponse(keys=keys)
+    return APIKeyListResponse(keys=keys, max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT)
+
+
+@router.patch("/api-keys/{key_prefix}", response_model=APIKeyRenameResponse)
+async def rename_api_key(
+    request: Request,
+    key_prefix: str,
+    payload: APIKeyRenameRequest,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyRenameResponse:
+    """Relabel one of the current user's unrevoked keys; a blank name clears it."""
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    name = _clean_key_name(payload.name)
+    if not await op_store.rename_key(current_user["user_id"], key_prefix, name):
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    await log_admin_action(
+        db_logger,
+        action="rename_key",
+        details={"actor": "user", "key_prefix": key_prefix, "name": name},
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(current_user["user_id"]),
+    )
+    return APIKeyRenameResponse(key_prefix=key_prefix, name=name)
 
 
 @router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
@@ -678,47 +729,30 @@ async def delete_api_key(
     raise HTTPException(status_code=409, detail="Only active or revoked API keys can be deleted")
 
 
-@router.post("/api-keys/regenerate", response_model=APIKeyRegenerateResponse)
-async def regenerate_api_key(
+async def _rotate_api_key(
     request: Request,
-    current_user=Depends(get_current_user),
-    op_store=Depends(get_operational_store),
-    db_logger=Depends(get_db_logger),
+    current_user: dict[str, Any],
+    old_key_prefix: str,
+    op_store: Any,
+    db_logger: Any,
 ) -> APIKeyRegenerateResponse:
-    """Regenerate API key for current user.
+    """Replace one of the current user's active keys; the old one stops at once.
 
-    Immediately invalidates the old key and creates a new one.
+    The successor keeps the key's name and the account's quota (a rotation is
+    not a reason to reset a limit an admin granted). 404 when the account has
+    no active key with that prefix.
     """
-    if not op_store:
-        raise HTTPException(status_code=500, detail="Database not available")
-
-    # Account-or-user lookup so legacy keys with account_id IS NULL are found
-    # (matches the user_id uniqueness constraint); otherwise regenerate would
-    # 404 for these users even though they have a working key.
-    old_key_row = await op_store.get_key_by_account_or_user(current_user["user_id"])
-    if not old_key_row:
-        raise HTTPException(status_code=404, detail="No active API key found")
-
-    # Generate new API key
     api_key = generate_api_key()
-    key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
-    try:
-        rt = get_runtime_settings_instance()
-    except RuntimeError:
-        rt = None
-    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
-
-    # Revoke old key via store, then create new one
-    await op_store.revoke_key(current_user["user_id"])
-    await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=current_user["user_id"],
-        account_id=current_user["user_id"],
-        quota_daily_cost_usd=default_quota,
+    rotated = await op_store.rotate_key(
+        current_user["user_id"],
+        old_key_prefix,
+        new_key_hash=hash_api_key(api_key),
+        new_key_prefix=key_prefix,
         api_key_encrypted=encrypt_api_key(api_key),
     )
+    if not rotated:
+        raise HTTPException(status_code=404, detail="No active API key found")
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
     await log_admin_action(
@@ -726,7 +760,7 @@ async def regenerate_api_key(
         action="regenerate_key",
         details={
             "actor": "user",
-            "old_key_prefix": old_key_row["key_prefix"],
+            "old_key_prefix": old_key_prefix,
             "new_key_prefix": key_prefix,
         },
         actor=user_audit_actor(request, current_user),
@@ -737,8 +771,51 @@ async def regenerate_api_key(
         api_key=api_key,
         key_prefix=key_prefix,
         warning="Save this API key now. It will not be shown again.",
-        old_key_prefix=old_key_row["key_prefix"],
+        old_key_prefix=old_key_prefix,
     )
+
+
+@router.post("/api-keys/regenerate", response_model=APIKeyRegenerateResponse)
+async def regenerate_api_key(
+    request: Request,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyRegenerateResponse:
+    """Regenerate the current user's only active API key.
+
+    Kept for clients written when an account held one key. With several
+    active keys it cannot tell which one is meant and answers 409; use
+    ``POST /user/api-keys/{key_prefix}/regenerate`` instead.
+    """
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    if await op_store.count_active_keys(current_user["user_id"]) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="You have several active API keys; regenerate one by its prefix.",
+        )
+    old_key_row = await op_store.get_key_by_account_or_user(current_user["user_id"])
+    if not old_key_row:
+        raise HTTPException(status_code=404, detail="No active API key found")
+    return await _rotate_api_key(
+        request, current_user, old_key_row["key_prefix"], op_store, db_logger
+    )
+
+
+@router.post("/api-keys/{key_prefix}/regenerate", response_model=APIKeyRegenerateResponse)
+async def regenerate_api_key_by_prefix(
+    request: Request,
+    key_prefix: str,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyRegenerateResponse:
+    """Replace one of the current user's active API keys with a new one."""
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+    return await _rotate_api_key(request, current_user, key_prefix, op_store, db_logger)
 
 
 @router.get("/usage", response_model=UsageResponse)

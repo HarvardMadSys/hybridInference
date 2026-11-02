@@ -402,6 +402,38 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_auth_caches()
         return old_prefix
 
+    async def rotate_key(
+        self,
+        account_id: str,
+        key_prefix: str,
+        *,
+        new_key_hash: str,
+        new_key_prefix: str,
+        api_key_encrypted: str | None,
+    ) -> Row | None:
+        """Delegate then invalidate auth caches: the old key must stop at once."""
+        rotated = await self._store.rotate_key(
+            account_id,
+            key_prefix,
+            new_key_hash=new_key_hash,
+            new_key_prefix=new_key_prefix,
+            api_key_encrypted=api_key_encrypted,
+        )
+        await self.invalidate_auth_caches()
+        return rotated
+
+    async def count_active_keys(self, user_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.count_active_keys(user_id)
+
+    async def list_account_keys(self, account_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_account_keys(account_id)
+
+    async def rename_key(self, account_id: str, key_prefix: str, name: str | None) -> bool:
+        """Delegate to wrapped store; a key's name is not part of any cached context."""
+        return await self._store.rename_key(account_id, key_prefix, name)
+
     # -- role quotas (invalidate auth caches on bulk write) ------------------
 
     async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
@@ -567,6 +599,8 @@ class CachedOperationalStore(OperationalStore):
         metadata: str | None = None,
         account_id: str | None = None,
         inherit_account_quota: bool = False,
+        name: str | None = None,
+        max_active_keys: int | None = None,
     ) -> Row:
         """Delegate, then invalidate auth caches when the account quota may have moved.
 
@@ -587,6 +621,8 @@ class CachedOperationalStore(OperationalStore):
             metadata=metadata,
             account_id=account_id,
             inherit_account_quota=inherit_account_quota,
+            name=name,
+            max_active_keys=max_active_keys,
         )
         if not inherit_account_quota:
             await self.invalidate_auth_caches()

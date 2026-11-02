@@ -26,6 +26,7 @@ export interface User {
 export interface ApiKeyResponse {
   api_key: string;
   key_prefix: string;
+  name?: string | null;
   warning: string;
   created_at: string;
 }
@@ -34,6 +35,8 @@ export interface ApiKeyListItem {
   api_key?: string | null;
   key_prefix: string;
   key_masked: string;
+  /** The owner's label for the key; absent for keys made before keys had names. */
+  name?: string | null;
   created_at: string;
   last_used_at?: string | null;
   status: string;
@@ -41,6 +44,20 @@ export interface ApiKeyListItem {
 
 export interface ApiKeyListResponse {
   keys: ApiKeyListItem[];
+  /** How many keys an account may hold active at once. */
+  max_active_keys?: number | null;
+}
+
+export interface ApiKeyRenameResponse {
+  key_prefix: string;
+  name?: string | null;
+}
+
+export interface ApiKeyRegenerateResponse {
+  api_key: string;
+  key_prefix: string;
+  old_key_prefix: string;
+  warning: string;
 }
 
 export interface ApiKeyDeleteResponse {
@@ -125,11 +142,27 @@ export async function getModels(): Promise<ModelCatalogResponse> {
   return jsonOrThrow<ModelCatalogResponse>(resp);
 }
 
-export async function createApiKey(): Promise<ApiKeyResponse> {
+/** Create another key for the account; `name` labels it and may be omitted. */
+export async function createApiKey(name?: string | null): Promise<ApiKeyResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name ?? null }),
   });
   return jsonOrThrow<ApiKeyResponse>(resp);
+}
+
+/** Relabel a key; a blank name clears it. */
+export async function renameApiKey(
+  keyPrefix: string,
+  name: string | null,
+): Promise<ApiKeyRenameResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/user/api-keys/${encodeURIComponent(keyPrefix)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  return jsonOrThrow<ApiKeyRenameResponse>(resp);
 }
 
 export async function listApiKeys(): Promise<ApiKeyListResponse> {
@@ -144,11 +177,14 @@ export async function deleteApiKey(keyPrefix: string): Promise<ApiKeyDeleteRespo
   return jsonOrThrow<ApiKeyDeleteResponse>(resp);
 }
 
-export async function regenerateApiKey(): Promise<ApiKeyResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/user/api-keys/regenerate', {
-    method: 'POST',
-  });
-  return jsonOrThrow<ApiKeyResponse>(resp);
+/** Replace one active key with a new one; the old key stops working at once. */
+export async function regenerateApiKey(keyPrefix: string): Promise<ApiKeyRegenerateResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/user/api-keys/${encodeURIComponent(keyPrefix)}/regenerate`,
+    { method: 'POST' },
+  );
+  return jsonOrThrow<ApiKeyRegenerateResponse>(resp);
 }
 
 export async function getUsage(period: 'today' | 'month' | 'all' = 'today'): Promise<UsageStats> {

@@ -1,8 +1,15 @@
 'use client';
 
 import { useState } from 'react';
+import type { ApiKeyListItem } from '@/lib/api/user';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
-import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/hooks';
+import {
+  useApiKeys,
+  useCreateApiKey,
+  useDeleteApiKey,
+  useRegenerateApiKey,
+  useRenameApiKey,
+} from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
@@ -75,6 +82,15 @@ function statusClassName(status: string): string {
   return 'bg-yellow-50 text-yellow-700 ring-yellow-200';
 }
 
+/** A typed key label as the server stores it: trimmed, blank meaning none. */
+function cleanName(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+const GRID_COLUMNS =
+  'md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center';
+
 export function ApiKeyManager(): JSX.Element {
   const toast = useAccountToast();
   const branding = useBranding();
@@ -90,24 +106,49 @@ export function ApiKeyManager(): JSX.Element {
         : status;
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
-  const [deletingKeyPrefix, setDeletingKeyPrefix] = useState<string | null>(null);
+  // The one row whose action is in flight, so only its button spins.
+  const [busyKeyPrefix, setBusyKeyPrefix] = useState<string | null>(null);
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+  const [showRevoked, setShowRevoked] = useState(false);
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
   const createMutation = useCreateApiKey();
   const deleteMutation = useDeleteApiKey();
   const regenerateMutation = useRegenerateApiKey();
+  const renameMutation = useRenameApiKey();
 
   const isLoading =
-    createMutation.isPending || deleteMutation.isPending || regenerateMutation.isPending;
+    createMutation.isPending ||
+    deleteMutation.isPending ||
+    regenerateMutation.isPending ||
+    renameMutation.isPending;
+
+  const apiKeys = apiKeysResponse?.keys ?? [];
+  const liveKeys = apiKeys.filter((key) => key.status !== 'revoked');
+  const revokedKeys = apiKeys.filter((key) => key.status === 'revoked');
+  const activeCount = apiKeys.filter((key) => key.status === 'active').length;
+  const maxActive = apiKeysResponse?.max_active_keys ?? null;
+  const atCap = maxActive !== null && activeCount >= maxActive;
+
+  function showNewKey(value: string): void {
+    setNewApiKey(value);
+    setShowKey(true);
+  }
 
   async function handleCreateKey(): Promise<void> {
-    if (!window.confirm(t('dashboard.keys.confirm_create', 'Create a new API Key?'))) return;
+    const typed = window.prompt(
+      t(
+        'dashboard.keys.name_prompt',
+        'Name this key (optional), for example "laptop" or "CI". All of your keys share one quota.',
+      ),
+      '',
+    );
+    // Cancel aborts; an empty answer creates an unnamed key.
+    if (typed === null) return;
 
     try {
-      const response = await createMutation.mutateAsync();
-      setNewApiKey(response.api_key);
-      setShowKey(true);
+      const response = await createMutation.mutateAsync(cleanName(typed));
+      showNewKey(response.api_key);
       toast.success(
         t('dashboard.keys.created_toast', 'API Key created successfully! Please save it now.'),
       );
@@ -116,7 +157,7 @@ export function ApiKeyManager(): JSX.Element {
     }
   }
 
-  async function handleRegenerateKey(): Promise<void> {
+  async function handleRegenerateKey(keyPrefix: string): Promise<void> {
     if (
       !window.confirm(
         t(
@@ -128,9 +169,9 @@ export function ApiKeyManager(): JSX.Element {
       return;
 
     try {
-      const response = await regenerateMutation.mutateAsync();
-      setNewApiKey(response.api_key);
-      setShowKey(true);
+      setBusyKeyPrefix(keyPrefix);
+      const response = await regenerateMutation.mutateAsync(keyPrefix);
+      showNewKey(response.api_key);
       toast.success(
         t(
           'dashboard.keys.regenerated_toast',
@@ -139,6 +180,28 @@ export function ApiKeyManager(): JSX.Element {
       );
     } catch (err) {
       toast.error(getErrorMessage(err));
+    } finally {
+      setBusyKeyPrefix(null);
+    }
+  }
+
+  async function handleRenameKey(apiKey: ApiKeyListItem): Promise<void> {
+    const typed = window.prompt(
+      t('dashboard.keys.rename_prompt', 'Rename this key. Leave it blank to remove the name.'),
+      apiKey.name ?? '',
+    );
+    if (typed === null) return;
+    const name = cleanName(typed);
+    if (name === (apiKey.name ?? null)) return;
+
+    try {
+      setBusyKeyPrefix(apiKey.key_prefix);
+      await renameMutation.mutateAsync({ keyPrefix: apiKey.key_prefix, name });
+      toast.success(t('dashboard.keys.renamed_toast', 'API key renamed.'));
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setBusyKeyPrefix(null);
     }
   }
 
@@ -153,7 +216,7 @@ export function ApiKeyManager(): JSX.Element {
     if (!window.confirm(message)) return;
 
     try {
-      setDeletingKeyPrefix(keyPrefix);
+      setBusyKeyPrefix(keyPrefix);
       await deleteMutation.mutateAsync(keyPrefix);
       setNewApiKey(null);
       setShowKey(false);
@@ -165,7 +228,7 @@ export function ApiKeyManager(): JSX.Element {
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
-      setDeletingKeyPrefix(null);
+      setBusyKeyPrefix(null);
     }
   }
 
@@ -183,9 +246,133 @@ export function ApiKeyManager(): JSX.Element {
     toast.success(t('dashboard.keys.copied_toast', 'API key copied to clipboard'));
   }
 
-  const apiKeys = apiKeysResponse?.keys ?? [];
-  const activeKeys = apiKeys.filter((key) => key.status === 'active');
-  const hasActiveKey = activeKeys.length > 0;
+  function renderRow(apiKey: ApiKeyListItem): JSX.Element {
+    const canReveal = Boolean(apiKey.api_key);
+    const revealed = revealedKeys.has(apiKey.key_prefix);
+    const shownValue = canReveal && revealed ? apiKey.api_key! : apiKey.key_masked;
+    const busy = busyKeyPrefix === apiKey.key_prefix;
+    return (
+      <div key={apiKey.key_prefix} className={`grid gap-3 px-4 py-4 ${GRID_COLUMNS}`}>
+        <div className="min-w-0">
+          <p
+            className={`mb-1.5 truncate text-sm ${
+              apiKey.name ? 'font-medium text-gray-900' : 'italic text-gray-400'
+            }`}
+          >
+            {apiKey.name ?? t('dashboard.keys.unnamed', 'Unnamed key')}
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
+              {shownValue}
+            </code>
+            {canReveal && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => toggleReveal(apiKey.key_prefix)}
+                  title={
+                    revealed
+                      ? t('dashboard.keys.hide', 'Hide key')
+                      : t('dashboard.keys.show', 'Show key')
+                  }
+                  aria-label={
+                    revealed
+                      ? t('dashboard.keys.hide', 'Hide key')
+                      : t('dashboard.keys.show', 'Show key')
+                  }
+                  className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                >
+                  {revealed ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleCopyKey(apiKey.api_key!)}
+                  title={t('dashboard.keys.copy', 'Copy key')}
+                  aria-label={t('dashboard.keys.copy', 'Copy key')}
+                  className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                >
+                  <CopyIcon />
+                </button>
+              </>
+            )}
+          </div>
+          {!apiKey.api_key && apiKey.status === 'active' && (
+            <p className="mt-1 text-xs text-gray-500">
+              {t(
+                'dashboard.keys.full_key_once',
+                'Full key is only shown immediately after creation or regeneration.',
+              )}
+            </p>
+          )}
+        </div>
+        <span
+          className={`w-fit rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ring-inset ${statusClassName(
+            apiKey.status,
+          )}`}
+        >
+          {statusLabel(apiKey.status)}
+        </span>
+        <div className="text-sm text-gray-600">
+          <span className="md:hidden font-medium text-gray-500">
+            {t('dashboard.keys.created_inline', 'Created: ')}
+          </span>
+          {formatDate(apiKey.created_at)}
+        </div>
+        <div className="text-sm text-gray-600">
+          <span className="md:hidden font-medium text-gray-500">
+            {t('dashboard.keys.last_used_inline', 'Last used: ')}
+          </span>
+          {formatDate(apiKey.last_used_at)}
+        </div>
+        <div className="flex flex-wrap gap-2 md:justify-end">
+          {apiKey.status === 'active' ? (
+            <>
+              <Button
+                onClick={() => void handleRenameKey(apiKey)}
+                disabled={isLoading}
+                size="sm"
+                variant="subtle"
+              >
+                {t('dashboard.keys.rename', 'Rename')}
+              </Button>
+              <Button
+                onClick={() => void handleRegenerateKey(apiKey.key_prefix)}
+                disabled={isLoading}
+                isLoading={busy && regenerateMutation.isPending}
+                size="sm"
+                variant="subtle"
+              >
+                {t('dashboard.keys.regenerate', 'Regenerate')}
+              </Button>
+              <Button
+                onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
+                disabled={isLoading}
+                isLoading={busy && deleteMutation.isPending}
+                size="sm"
+                variant="danger"
+              >
+                {t('dashboard.keys.delete', 'Delete')}
+              </Button>
+            </>
+          ) : apiKey.status === 'revoked' ? (
+            <Button
+              onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
+              disabled={isLoading}
+              isLoading={busy && deleteMutation.isPending}
+              size="sm"
+              variant="subtle"
+            >
+              {t('dashboard.keys.remove', 'Remove')}
+            </Button>
+          ) : (
+            <span className="text-sm text-gray-400">
+              {t('dashboard.keys.no_actions', 'No actions')}
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
@@ -204,14 +391,35 @@ export function ApiKeyManager(): JSX.Element {
             )}
           </p>
         </div>
-        {!isLoadingKeys && !hasActiveKey && (
-          <Button
-            onClick={handleCreateKey}
-            disabled={isLoading}
-            isLoading={createMutation.isPending}
-          >
-            {t('dashboard.keys.create', 'Create API Key')}
-          </Button>
+        {!isLoadingKeys && (
+          <div className="flex items-center gap-3">
+            {maxActive !== null && (
+              <span className="text-sm text-gray-500">
+                {fill(t('dashboard.keys.active_count', '{count} of {max} active'), {
+                  count: String(activeCount),
+                  max: String(maxActive),
+                })}
+              </span>
+            )}
+            <Button
+              onClick={handleCreateKey}
+              disabled={isLoading || atCap}
+              isLoading={createMutation.isPending}
+              title={
+                atCap
+                  ? fill(
+                      t(
+                        'dashboard.keys.at_cap',
+                        'You have {max} active keys, the most an account may hold. Delete one to create another.',
+                      ),
+                      { max: String(maxActive) },
+                    )
+                  : undefined
+              }
+            >
+              {t('dashboard.keys.create', 'Create API Key')}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -247,139 +455,46 @@ export function ApiKeyManager(): JSX.Element {
         <div className="mb-4 text-sm text-gray-500">{t('common.loading', 'Loading...')}</div>
       )}
 
-      {!isLoadingKeys && !apiKeysError && apiKeys.length === 0 && (
+      {!isLoadingKeys && !apiKeysError && liveKeys.length === 0 && (
         <div className="rounded-lg bg-gray-50 px-4 py-5 text-sm text-gray-600 ring-1 ring-inset ring-gray-200">
           {t('dashboard.keys.empty', 'No API keys yet. Create one to start using the API.')}
         </div>
       )}
 
-      {apiKeys.length > 0 && (
+      {liveKeys.length > 0 && (
         <div className="overflow-hidden rounded-lg ring-1 ring-gray-200">
-          <div className="hidden grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] gap-4 bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:grid">
+          <div
+            className={`hidden gap-4 bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:grid ${GRID_COLUMNS}`}
+          >
             <span>{t('dashboard.keys.col_key', 'API Key')}</span>
             <span>{t('dashboard.keys.col_status', 'Status')}</span>
             <span>{t('dashboard.keys.col_created', 'Created')}</span>
             <span>{t('dashboard.keys.col_last_used', 'Last Used')}</span>
             <span className="text-right">{t('dashboard.keys.col_actions', 'Actions')}</span>
           </div>
-          <div className="divide-y divide-gray-200 bg-white">
-            {apiKeys.map((apiKey) => {
-              const canReveal = Boolean(apiKey.api_key);
-              const revealed = revealedKeys.has(apiKey.key_prefix);
-              const shownValue = canReveal && revealed ? apiKey.api_key! : apiKey.key_masked;
-              return (
-                <div
-                  key={apiKey.key_prefix}
-                  className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center"
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <code className="min-w-0 flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
-                        {shownValue}
-                      </code>
-                      {canReveal && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => toggleReveal(apiKey.key_prefix)}
-                            title={
-                              revealed
-                                ? t('dashboard.keys.hide', 'Hide key')
-                                : t('dashboard.keys.show', 'Show key')
-                            }
-                            aria-label={
-                              revealed
-                                ? t('dashboard.keys.hide', 'Hide key')
-                                : t('dashboard.keys.show', 'Show key')
-                            }
-                            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-                          >
-                            {revealed ? <EyeOffIcon /> : <EyeIcon />}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleCopyKey(apiKey.api_key!)}
-                            title={t('dashboard.keys.copy', 'Copy key')}
-                            aria-label={t('dashboard.keys.copy', 'Copy key')}
-                            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-                          >
-                            <CopyIcon />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                    {!apiKey.api_key && apiKey.status === 'active' && (
-                      <p className="mt-1 text-xs text-gray-500">
-                        {t(
-                          'dashboard.keys.full_key_once',
-                          'Full key is only shown immediately after creation or regeneration.',
-                        )}
-                      </p>
-                    )}
-                  </div>
-                  <span
-                    className={`w-fit rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ring-inset ${statusClassName(
-                      apiKey.status,
-                    )}`}
-                  >
-                    {statusLabel(apiKey.status)}
-                  </span>
-                  <div className="text-sm text-gray-600">
-                    <span className="md:hidden font-medium text-gray-500">
-                      {t('dashboard.keys.created_inline', 'Created: ')}
-                    </span>
-                    {formatDate(apiKey.created_at)}
-                  </div>
-                  <div className="text-sm text-gray-600">
-                    <span className="md:hidden font-medium text-gray-500">
-                      {t('dashboard.keys.last_used_inline', 'Last used: ')}
-                    </span>
-                    {formatDate(apiKey.last_used_at)}
-                  </div>
-                  <div className="flex gap-2 md:justify-end">
-                    {apiKey.status === 'active' ? (
-                      <Button
-                        onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
-                        disabled={isLoading}
-                        isLoading={deletingKeyPrefix === apiKey.key_prefix}
-                        size="sm"
-                        variant="danger"
-                      >
-                        {t('dashboard.keys.delete', 'Delete')}
-                      </Button>
-                    ) : apiKey.status === 'revoked' ? (
-                      <Button
-                        onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
-                        disabled={isLoading}
-                        isLoading={deletingKeyPrefix === apiKey.key_prefix}
-                        size="sm"
-                        variant="subtle"
-                      >
-                        {t('dashboard.keys.remove', 'Remove')}
-                      </Button>
-                    ) : (
-                      <span className="text-sm text-gray-400">
-                        {t('dashboard.keys.no_actions', 'No actions')}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <div className="divide-y divide-gray-200 bg-white">{liveKeys.map(renderRow)}</div>
         </div>
       )}
 
-      {hasActiveKey && (
-        <div className="mt-4 flex gap-3">
-          <Button
-            onClick={handleRegenerateKey}
-            disabled={isLoading}
-            isLoading={regenerateMutation.isPending}
-            variant="danger"
+      {revokedKeys.length > 0 && (
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={() => setShowRevoked((shown) => !shown)}
+            aria-expanded={showRevoked}
+            className="text-sm font-medium text-gray-500 hover:text-gray-700"
           >
-            {t('dashboard.keys.regenerate', 'Regenerate')}
-          </Button>
+            {showRevoked
+              ? t('dashboard.keys.hide_revoked', 'Hide revoked keys')
+              : fill(t('dashboard.keys.show_revoked', 'Show revoked keys ({count})'), {
+                  count: String(revokedKeys.length),
+                })}
+          </button>
+          {showRevoked && (
+            <div className="mt-2 overflow-hidden rounded-lg ring-1 ring-gray-200">
+              <div className="divide-y divide-gray-200 bg-white">{revokedKeys.map(renderRow)}</div>
+            </div>
+          )}
         </div>
       )}
     </div>
