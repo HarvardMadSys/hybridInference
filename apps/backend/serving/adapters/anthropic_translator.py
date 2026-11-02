@@ -27,8 +27,18 @@ if TYPE_CHECKING:
 
 def anthropic_request_to_openai(
     body: dict[str, Any],
+    *,
+    tool_images: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Translate an Anthropic Messages API request to OpenAI Chat Completions.
+
+    Args:
+        body: The Anthropic Messages request.
+        tool_images: Whether the destination reads images. When it does, an
+            image a ``tool_result`` returned is carried in the user message
+            after the tool messages; when it does not, it is an ``[image]``
+            placeholder, so a text-only route keeps answering a conversation
+            in which a tool once returned a screenshot.
 
     Returns:
         (openai_messages, openai_params) where openai_params holds non-message
@@ -45,7 +55,7 @@ def anthropic_request_to_openai(
 
     for msg in body.get("messages", []):
         if isinstance(msg, dict):
-            messages.extend(_translate_message(msg))
+            messages.extend(_translate_message(msg, tool_images=tool_images))
 
     params = _translate_params(body)
     return messages, params
@@ -227,7 +237,7 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     return {}
 
 
-def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
+def _translate_message(msg: dict[str, Any], *, tool_images: bool = True) -> list[dict[str, Any]]:
     """Translate a single Anthropic message.
 
     May produce multiple OpenAI messages (tool_result blocks become separate
@@ -247,6 +257,7 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
     text_parts: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []
     tool_results: list[dict[str, Any]] = []
+    carried_images: list[dict[str, Any]] = []
     text_only_buffer: list[str] = []
 
     for block in content:
@@ -286,19 +297,9 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
             )
 
         elif btype == "tool_result":
-            result_text = _flatten_tool_result_content(block.get("content"))
-            if block.get("is_error"):
-                # OpenAI tool messages have no error flag; prepend a marker so
-                # the model can distinguish a failed tool call from a successful
-                # one instead of treating raw stderr as a valid result.
-                result_text = f"[tool error]\n{result_text}" if result_text else "[tool error]"
-            tool_results.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": block.get("tool_use_id", ""),
-                    "content": result_text,
-                }
-            )
+            tool_message, images = _translate_tool_result(block, carry_images=tool_images)
+            tool_results.append(tool_message)
+            carried_images.extend(images)
 
         # Unknown blocks ignored.
 
@@ -311,6 +312,17 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
     # emitting the text first would produce assistant(tool_calls) -> user(text)
     # -> tool(...), which strict upstreams reject.
     out.extend(tool_results)
+
+    # A tool message holds text only, so the images the tool results returned
+    # ride in the user message right after them. That is this turn's own user
+    # message when it has one (images first: they answer the tool calls, and
+    # the turn's text, e.g. a <system-reminder>, came after), so the
+    # conversation keeps one user message per turn.
+    if carried_images:
+        if role == "user":
+            text_parts[:0] = carried_images
+        else:
+            out.append({"role": "user", "content": carried_images})
 
     # Build the primary translated message (text + image parts + tool_calls).
     has_image = any(p.get("type") == "image_url" for p in text_parts)
@@ -344,15 +356,63 @@ def _image_block_to_url(source: dict[str, Any]) -> str | None:
     return None
 
 
-def _flatten_tool_result_content(content: Any) -> str:
-    """Flatten Anthropic tool_result content to a string.
+def _translate_tool_result(
+    block: dict[str, Any], *, carry_images: bool
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """One tool_result block as a ``role: "tool"`` message, plus the images it returned.
+
+    The images are ``image_url`` parts for the user message that follows the
+    turn's tool messages, each run introduced by a text part naming the call.
+    The tool message says they follow, so an image-only result is never read as
+    "the tool returned nothing". Without ``carry_images`` no image is returned
+    and each stays an ``[image]`` placeholder in the tool message.
+    """
+    content = block.get("content")
+    tool_use_id = block.get("tool_use_id", "")
+    result_text = _flatten_tool_result_content(content, carry_images=carry_images)
+    images = _tool_result_images(content) if carry_images else []
+    if images:
+        note = _tool_image_note(len(images))
+        result_text = f"{result_text}\n{note}" if result_text else note
+    if block.get("is_error"):
+        # OpenAI tool messages have no error flag; prepend a marker so
+        # the model can distinguish a failed tool call from a successful
+        # one instead of treating raw stderr as a valid result.
+        result_text = f"[tool error]\n{result_text}" if result_text else "[tool error]"
+    message = {"role": "tool", "tool_call_id": tool_use_id, "content": result_text}
+    if not images:
+        return message, []
+    label = {"type": "text", "text": f"Image output of tool call {tool_use_id}:"}
+    return message, [label, *images]
+
+
+def _tool_image_note(count: int) -> str:
+    noun = "an image" if count == 1 else f"{count} images"
+    return f"[The tool returned {noun}; attached in the next user message.]"
+
+
+def _tool_result_images(content: Any) -> list[dict[str, Any]]:
+    """The tool_result's image blocks that have a URL form, as ``image_url`` parts."""
+    if not isinstance(content, list):
+        return []
+    parts: list[dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "image":
+            url = _image_block_to_url(block.get("source") or {})
+            if url is not None:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+    return parts
+
+
+def _flatten_tool_result_content(content: Any, *, carry_images: bool = True) -> str:
+    """Flatten Anthropic tool_result content's text to a string.
 
     Anthropic tool_result content can be a string or list of blocks; OpenAI tool
-    messages take a string. Text blocks are joined with newlines. Image (and
-    other non-text) blocks can't ride along in a string tool message, so each is
-    replaced with a ``[image]`` placeholder: this keeps the result non-empty so
-    the model doesn't read an image-only tool result as "the tool returned
-    nothing" and answer wrongly or loop retrying.
+    messages take a string. Text blocks are joined with newlines. An image block
+    is not text: ``_tool_result_images`` carries it to the next user message.
+    An image that is not carried -- the destination reads no images, or the
+    image has no URL form (an unknown ``source`` type) -- leaves an ``[image]``
+    placeholder, so the result does not read as empty.
     """
     if isinstance(content, str):
         return content
@@ -366,7 +426,9 @@ def _flatten_tool_result_content(content: Any) -> str:
                 text_val = block.get("text")
                 if isinstance(text_val, str):
                     parts.append(text_val)
-            elif btype == "image":
+            elif btype == "image" and not (
+                carry_images and _image_block_to_url(block.get("source") or {}) is not None
+            ):
                 parts.append("[image]")
         return "\n".join(p for p in parts if p)
     return ""
