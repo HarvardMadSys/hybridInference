@@ -489,15 +489,34 @@ async def test_request_log_includes_provider_and_snapshot_lock_waits(monkeypatch
     import asyncio
     import logging
 
+    # Each 50 ms hold begins only once the waiting request's clock is running.
+    # A task starts its clock when it is first scheduled, after the holder has
+    # begun, so an ungated hold could measure a few ms short of 100.
     class Serialized(_Discovery):
         def __init__(self, result):
             super().__init__(result)
             self.lock = asyncio.Lock()
+            self.entered = 0
+            self.both_entered = asyncio.Event()
 
         async def get_snapshot(self):
+            self.entered += 1  # this request's clock is already running
+            if self.entered == 2:
+                self.both_entered.set()
             async with self.lock:  # one refresh at a time, like the real provider
+                await self.both_entered.wait()
                 await asyncio.sleep(0.05)
                 return await super().get_snapshot()
+
+    class Contended(asyncio.Lock):
+        def __init__(self):
+            super().__init__()
+            self.waiter = asyncio.Event()
+
+        async def acquire(self):
+            if self.locked():
+                self.waiter.set()  # the middleware started its clock before this
+            return await super().acquire()
 
     discovery = Serialized(_snapshot("11.0.0.21/32"))
     app = _logged_app(monkeypatch, _settings(), discovery)
@@ -509,8 +528,10 @@ async def test_request_log_includes_provider_and_snapshot_lock_waits(monkeypatch
     assert second >= 100.0  # waited for the other request's refresh
 
     caplog.clear()
+    app._lock = Contended()
     async with app._lock:  # hold the provider lock, e.g. during reconfiguration
         pending = asyncio.ensure_future(_request(app))
+        await app._lock.waiter.wait()
         await asyncio.sleep(0.05)
     await pending
     (record,) = _request_records(caplog)
