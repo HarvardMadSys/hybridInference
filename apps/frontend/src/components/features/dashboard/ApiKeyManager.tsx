@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { ApiKeyListItem } from '@/lib/api/user';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
@@ -12,6 +12,9 @@ import {
 } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
+import { InputField } from '@/components/ui/InputField';
+import { KeyActionsMenu } from './KeyActionsMenu';
+import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
@@ -90,7 +93,11 @@ function cleanName(value: string): string | null {
 }
 
 const GRID_COLUMNS =
-  'md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center';
+  'md:grid md:grid-cols-[minmax(0,2.6fr)_auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_auto]';
+
+type KeyAction =
+  | { type: 'create' }
+  | { type: 'rename' | 'regenerate' | 'delete'; key: ApiKeyListItem };
 
 export function ApiKeyManager(): JSX.Element {
   const toast = useAccountToast();
@@ -98,7 +105,9 @@ export function ApiKeyManager(): JSX.Element {
   const t = useT();
   const fmt = useFormatter();
   const formatDate = (value?: string | null): string =>
-    value ? fmt.dateTime(value) : t('dashboard.keys.never', 'Never');
+    value
+      ? fmt.date(value, { year: 'numeric', month: 'short', day: 'numeric' })
+      : t('dashboard.keys.never', 'Never');
   const statusLabel = (status: string): string =>
     status === 'active'
       ? t('dashboard.keys.status_active', 'active')
@@ -107,10 +116,12 @@ export function ApiKeyManager(): JSX.Element {
         : status;
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
-  // The one row whose action is in flight, so only its button spins.
-  const [busyKeyPrefix, setBusyKeyPrefix] = useState<string | null>(null);
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
-  const [showRevoked, setShowRevoked] = useState(false);
+  const [action, setAction] = useState<KeyAction | null>(null);
+  const [keyName, setKeyName] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const submittingRef = useRef(false);
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
   const createMutation = useCreateApiKey();
@@ -133,102 +144,92 @@ export function ApiKeyManager(): JSX.Element {
     setShowKey(true);
   }
 
-  async function handleCreateKey(): Promise<void> {
-    const typed = window.prompt(
-      t(
-        'dashboard.keys.name_prompt',
-        'Name this key (optional), for example "laptop" or "CI". All of your keys share one quota.',
-      ),
-      '',
-    );
-    // Cancel aborts; an empty answer creates an unnamed key.
-    if (typed === null) return;
-
-    try {
-      const response = await createMutation.mutateAsync(cleanName(typed));
-      showNewKey(response.api_key);
-      toast.success(
-        t('dashboard.keys.created_toast', 'API Key created successfully! Please save it now.'),
-      );
-    } catch (err) {
-      toast.error(getErrorMessage(err));
-    }
+  function openAction(next: KeyAction): void {
+    setKeyName(next.type === 'rename' ? (next.key.name ?? '') : '');
+    setActionError(null);
+    setAction(next);
   }
 
-  async function handleRegenerateKey(keyPrefix: string): Promise<void> {
-    if (
-      !window.confirm(
-        t(
-          'dashboard.keys.confirm_regenerate',
-          'Regenerate API Key? The old key will be immediately invalidated.',
-        ),
-      )
-    )
+  function closeAction(): void {
+    if (!submittingRef.current) setAction(null);
+  }
+
+  async function confirmAction(): Promise<void> {
+    if (!action || submittingRef.current) return;
+    const name = cleanName(keyName);
+    if (action.type === 'rename' && name === (action.key.name ?? null)) {
+      setAction(null);
       return;
-
+    }
+    submittingRef.current = true;
+    setActionError(null);
     try {
-      setBusyKeyPrefix(keyPrefix);
-      const response = await regenerateMutation.mutateAsync(keyPrefix);
-      showNewKey(response.api_key);
-      toast.success(
-        t(
-          'dashboard.keys.regenerated_toast',
-          'API Key regenerated successfully! Please save it now.',
-        ),
-      );
+      if (action.type === 'create') {
+        const response = await createMutation.mutateAsync(name);
+        showNewKey(response.api_key);
+        toast.success(
+          t('dashboard.keys.created_toast', 'API Key created successfully! Please save it now.'),
+        );
+      } else if (action.type === 'rename') {
+        await renameMutation.mutateAsync({ keyPrefix: action.key.key_prefix, name });
+        toast.success(t('dashboard.keys.renamed_toast', 'API key renamed.'));
+      } else if (action.type === 'regenerate') {
+        const response = await regenerateMutation.mutateAsync(action.key.key_prefix);
+        showNewKey(response.api_key);
+        toast.success(
+          t(
+            'dashboard.keys.regenerated_toast',
+            'API Key regenerated successfully! Please save it now.',
+          ),
+        );
+      } else {
+        await deleteMutation.mutateAsync(action.key.key_prefix);
+        setNewApiKey(null);
+        setShowKey(false);
+        toast.success(
+          action.key.status === 'active'
+            ? t('dashboard.keys.revoked_toast', 'API key revoked. It can no longer be used.')
+            : t('dashboard.keys.removed_toast', 'API Key removed.'),
+        );
+      }
+      setAction(null);
     } catch (err) {
-      toast.error(getErrorMessage(err));
+      setActionError(getErrorMessage(err));
     } finally {
-      setBusyKeyPrefix(null);
+      submittingRef.current = false;
     }
   }
 
-  async function handleRenameKey(apiKey: ApiKeyListItem): Promise<void> {
-    const typed = window.prompt(
-      t('dashboard.keys.rename_prompt', 'Rename this key. Leave it blank to remove the name.'),
-      apiKey.name ?? '',
-    );
-    if (typed === null) return;
-    const name = cleanName(typed);
-    if (name === (apiKey.name ?? null)) return;
-
-    try {
-      setBusyKeyPrefix(apiKey.key_prefix);
-      await renameMutation.mutateAsync({ keyPrefix: apiKey.key_prefix, name });
-      toast.success(t('dashboard.keys.renamed_toast', 'API key renamed.'));
-    } catch (err) {
-      toast.error(getErrorMessage(err));
-    } finally {
-      setBusyKeyPrefix(null);
-    }
-  }
-
-  async function handleDeleteKey(keyPrefix: string, status: string): Promise<void> {
-    const message =
-      status === 'active'
-        ? t(
-            'dashboard.keys.confirm_delete',
-            'Delete this API Key? It will stop working immediately.',
-          )
-        : t('dashboard.keys.confirm_remove', 'Remove this revoked API Key from the dashboard?');
-    if (!window.confirm(message)) return;
-
-    try {
-      setBusyKeyPrefix(keyPrefix);
-      await deleteMutation.mutateAsync(keyPrefix);
-      setNewApiKey(null);
-      setShowKey(false);
-      toast.success(
-        status === 'active'
-          ? t('dashboard.keys.deleted_toast', 'API Key deleted successfully.')
-          : t('dashboard.keys.removed_toast', 'API Key removed.'),
-      );
-    } catch (err) {
-      toast.error(getErrorMessage(err));
-    } finally {
-      setBusyKeyPrefix(null);
-    }
-  }
+  const editingName = action?.type === 'create' || action?.type === 'rename';
+  const actionLabel =
+    action?.type === 'create'
+      ? t('dashboard.keys.create', 'Create API Key')
+      : action?.type === 'rename'
+        ? t('dashboard.keys.rename', 'Rename')
+        : action?.type === 'regenerate'
+          ? t('dashboard.keys.regenerate', 'Regenerate')
+          : action?.type === 'delete' && action.key.status === 'active'
+            ? t('dashboard.keys.revoke', 'Revoke')
+            : t('dashboard.keys.remove', 'Remove');
+  const actionDescription =
+    action?.type === 'create'
+      ? t(
+          'dashboard.keys.name_prompt',
+          'Name this key (optional), for example "laptop" or "CI". All of your keys share one quota.',
+        )
+      : action?.type === 'rename'
+        ? t('dashboard.keys.rename_prompt', 'Rename this key. Leave it blank to remove the name.')
+        : action?.type === 'regenerate'
+          ? t(
+              'dashboard.keys.confirm_regenerate',
+              'Regenerate API Key? The old key will be immediately invalidated.',
+            )
+          : action?.type === 'delete' && action.key.status === 'active'
+            ? t(
+                'dashboard.keys.confirm_revoke',
+                'This key will stop working immediately. Its usage history will remain available.',
+              )
+            : t('dashboard.keys.confirm_remove', 'Remove this revoked API Key from the dashboard?');
 
   function toggleReveal(prefix: string): void {
     setRevealedKeys((prev) => {
@@ -248,19 +249,24 @@ export function ApiKeyManager(): JSX.Element {
     const canReveal = Boolean(apiKey.api_key);
     const revealed = revealedKeys.has(apiKey.key_prefix);
     const shownValue = canReveal && revealed ? apiKey.api_key! : apiKey.key_masked;
-    const busy = busyKeyPrefix === apiKey.key_prefix;
     return (
-      <div key={apiKey.key_prefix} className={`grid gap-3 px-4 py-4 ${GRID_COLUMNS}`}>
-        <div className="min-w-0">
+      <div
+        key={apiKey.key_prefix}
+        className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-3 px-4 py-4 md:col-span-full md:grid-cols-subgrid md:items-center"
+      >
+        <div className="col-span-full min-w-0 md:col-span-1">
           <p
+            title={apiKey.name ?? undefined}
             className={`mb-1.5 truncate text-sm ${
               apiKey.name ? 'font-medium text-gray-900' : 'italic text-gray-400'
             }`}
           >
             {apiKey.name ?? t('dashboard.keys.unnamed', 'Unnamed key')}
           </p>
-          <div className="flex items-center gap-2">
-            <code className="min-w-0 flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
+          <div className="grid grid-cols-[minmax(0,1fr)_1.75rem_1.75rem] items-center gap-2">
+            <code
+              className={`min-w-0 flex-1 rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200 ${revealed ? 'break-all' : 'truncate'}`}
+            >
               {shownValue}
             </code>
             {canReveal && (
@@ -304,25 +310,31 @@ export function ApiKeyManager(): JSX.Element {
           )}
         </div>
         <span
-          className={`w-fit rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ring-inset ${statusClassName(
+          className={`col-start-1 row-start-2 inline-flex h-6 w-fit items-center self-center whitespace-nowrap rounded-full md:col-start-auto md:row-start-auto px-2.5 text-xs font-medium capitalize ring-1 ring-inset ${statusClassName(
             apiKey.status,
           )}`}
         >
           {statusLabel(apiKey.status)}
         </span>
-        <div className="text-sm text-gray-600">
+        <div
+          className="col-span-full text-sm text-gray-600 md:col-span-1"
+          title={apiKey.created_at ? fmt.dateTime(apiKey.created_at) : undefined}
+        >
           <span className="md:hidden font-medium text-gray-500">
             {t('dashboard.keys.created_inline', 'Created: ')}
           </span>
           {formatDate(apiKey.created_at)}
         </div>
-        <div className="text-sm text-gray-600">
+        <div
+          className="col-span-full text-sm text-gray-600 md:col-span-1"
+          title={apiKey.last_used_at ? fmt.dateTime(apiKey.last_used_at) : undefined}
+        >
           <span className="md:hidden font-medium text-gray-500">
             {t('dashboard.keys.last_used_inline', 'Last used: ')}
           </span>
           {formatDate(apiKey.last_used_at)}
         </div>
-        <div className="text-sm text-gray-600">
+        <div className="col-span-full text-sm text-gray-600 md:col-span-1">
           <span className="md:hidden font-medium text-gray-500">
             {t('dashboard.keys.spend_inline', 'Spend: ')}
           </span>
@@ -337,46 +349,39 @@ export function ApiKeyManager(): JSX.Element {
             })}
           </span>
         </div>
-        <div className="flex flex-wrap gap-2 md:justify-end">
-          {apiKey.status === 'active' ? (
-            <>
-              <Button
-                onClick={() => void handleRenameKey(apiKey)}
-                disabled={isLoading}
-                size="sm"
-                variant="subtle"
-              >
-                {t('dashboard.keys.rename', 'Rename')}
-              </Button>
-              <Button
-                onClick={() => void handleRegenerateKey(apiKey.key_prefix)}
-                disabled={isLoading}
-                isLoading={busy && regenerateMutation.isPending}
-                size="sm"
-                variant="subtle"
-              >
-                {t('dashboard.keys.regenerate', 'Regenerate')}
-              </Button>
-              <Button
-                onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
-                disabled={isLoading}
-                isLoading={busy && deleteMutation.isPending}
-                size="sm"
-                variant="danger"
-              >
-                {t('dashboard.keys.delete', 'Delete')}
-              </Button>
-            </>
-          ) : apiKey.status === 'revoked' ? (
-            <Button
-              onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
+        <div className="col-start-2 row-start-2 flex justify-end md:col-start-auto md:row-start-auto">
+          {apiKey.status === 'active' || apiKey.status === 'revoked' ? (
+            <KeyActionsMenu
+              label={fill(t('dashboard.keys.more_actions', 'Actions for {name}'), {
+                name: apiKey.name ?? apiKey.key_prefix,
+              })}
               disabled={isLoading}
-              isLoading={busy && deleteMutation.isPending}
-              size="sm"
-              variant="subtle"
-            >
-              {t('dashboard.keys.remove', 'Remove')}
-            </Button>
+              items={
+                apiKey.status === 'active'
+                  ? [
+                      {
+                        label: t('dashboard.keys.rename', 'Rename'),
+                        onSelect: () => openAction({ type: 'rename', key: apiKey }),
+                      },
+                      {
+                        label: t('dashboard.keys.regenerate', 'Regenerate'),
+                        onSelect: () => openAction({ type: 'regenerate', key: apiKey }),
+                      },
+                      {
+                        label: t('dashboard.keys.revoke', 'Revoke'),
+                        danger: true,
+                        onSelect: () => openAction({ type: 'delete', key: apiKey }),
+                      },
+                    ]
+                  : [
+                      {
+                        label: t('dashboard.keys.remove', 'Remove'),
+                        danger: true,
+                        onSelect: () => openAction({ type: 'delete', key: apiKey }),
+                      },
+                    ]
+              }
+            />
           ) : (
             <span className="text-sm text-gray-400">
               {t('dashboard.keys.no_actions', 'No actions')}
@@ -406,7 +411,7 @@ export function ApiKeyManager(): JSX.Element {
         </div>
         {!isLoadingKeys && (
           <Button
-            onClick={handleCreateKey}
+            onClick={() => openAction({ type: 'create' })}
             disabled={isLoading}
             isLoading={createMutation.isPending}
           >
@@ -418,7 +423,7 @@ export function ApiKeyManager(): JSX.Element {
       {showKey && newApiKey && (
         <div className="mb-6 rounded-lg bg-yellow-50 p-4 ring-1 ring-inset ring-yellow-200">
           <p className="text-sm font-medium text-yellow-800 mb-2">
-            {t('dashboard.keys.save_now', 'Save this key now. It will only be shown once.')}
+            {t('dashboard.keys.save_now', 'Save this key securely.')}
           </p>
           <div className="flex items-center gap-2">
             <code className="min-w-0 flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
@@ -447,17 +452,15 @@ export function ApiKeyManager(): JSX.Element {
         <div className="mb-4 text-sm text-gray-500">{t('common.loading', 'Loading...')}</div>
       )}
 
-      {!isLoadingKeys && !apiKeysError && liveKeys.length === 0 && (
+      {!isLoadingKeys && !apiKeysError && apiKeys.length === 0 && (
         <div className="rounded-lg bg-gray-50 px-4 py-5 text-sm text-gray-600 ring-1 ring-inset ring-gray-200">
           {t('dashboard.keys.empty', 'No API keys yet. Create one to start using the API.')}
         </div>
       )}
 
-      {liveKeys.length > 0 && (
-        <div className="overflow-hidden rounded-lg ring-1 ring-gray-200">
-          <div
-            className={`hidden gap-4 bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:grid ${GRID_COLUMNS}`}
-          >
+      {apiKeys.length > 0 && (
+        <div className={`rounded-lg ring-1 ring-gray-200 ${GRID_COLUMNS}`}>
+          <div className="hidden gap-4 rounded-t-lg bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:col-span-full md:grid md:grid-cols-subgrid md:items-center">
             <span>{t('dashboard.keys.col_key', 'API Key')}</span>
             <span>{t('dashboard.keys.col_status', 'Status')}</span>
             <span>{t('dashboard.keys.col_created', 'Created')}</span>
@@ -465,30 +468,60 @@ export function ApiKeyManager(): JSX.Element {
             <span>{t('dashboard.keys.col_spend', 'Spend (UTC)')}</span>
             <span className="text-right">{t('dashboard.keys.col_actions', 'Actions')}</span>
           </div>
-          <div className="divide-y divide-gray-200 bg-white">{liveKeys.map(renderRow)}</div>
+          <div className="divide-y divide-gray-200 md:contents">
+            {[...liveKeys, ...revokedKeys].map(renderRow)}
+          </div>
         </div>
       )}
 
       {revokedKeys.length > 0 && (
-        <div className="mt-4">
-          <button
-            type="button"
-            onClick={() => setShowRevoked((shown) => !shown)}
-            aria-expanded={showRevoked}
-            className="text-sm font-medium text-gray-500 hover:text-gray-700"
-          >
-            {showRevoked
-              ? t('dashboard.keys.hide_revoked', 'Hide revoked keys')
-              : fill(t('dashboard.keys.show_revoked', 'Show revoked keys ({count})'), {
-                  count: String(revokedKeys.length),
-                })}
-          </button>
-          {showRevoked && (
-            <div className="mt-2 overflow-hidden rounded-lg ring-1 ring-gray-200">
-              <div className="divide-y divide-gray-200 bg-white">{revokedKeys.map(renderRow)}</div>
-            </div>
+        <p className="mt-3 text-sm text-gray-500">
+          {t(
+            'dashboard.keys.revoked_hint',
+            'Revoked keys can no longer call the API. They are kept here so you can review their usage history.',
           )}
-        </div>
+        </p>
+      )}
+      {action && (
+        <ConfirmDialog
+          title={actionLabel}
+          confirmLabel={actionLabel}
+          cancelLabel={t('common.cancel', 'Cancel')}
+          busyLabel={t('common.loading', 'Loading...')}
+          busy={isLoading}
+          tone={editingName ? 'default' : 'danger'}
+          error={actionError}
+          initialFocusRef={editingName ? nameInputRef : undefined}
+          onConfirm={() => void confirmAction()}
+          onCancel={closeAction}
+        >
+          <p>{actionDescription}</p>
+          {action.type !== 'create' && (
+            <p className="rounded-md bg-gray-50 p-2 font-medium text-gray-700">
+              {action.key.name ? `${action.key.name} · ` : ''}
+              {action.key.key_masked}
+            </p>
+          )}
+          {editingName && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void confirmAction();
+              }}
+            >
+              <InputField
+                ref={nameInputRef}
+                label={t('dashboard.keys.name_label', 'Name (optional)')}
+                value={keyName}
+                onChange={(event) => setKeyName(event.target.value)}
+                maxLength={64}
+                disabled={isLoading}
+                autoComplete="off"
+              />
+              <button type="submit" className="hidden" tabIndex={-1} disabled={isLoading} />
+            </form>
+          )}
+        </ConfirmDialog>
       )}
     </div>
   );

@@ -588,8 +588,8 @@ async def list_api_keys(
 ) -> APIKeyListResponse:
     """List all API keys owned by the current user, live ones first.
 
-    Active keys carry their full value for the console to show again; revoked
-    ones only their masked prefix.
+    Active and revoked keys carry their saved full value for the owner to
+    show and copy. Revealing a revoked key does not make it valid again.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -599,7 +599,7 @@ async def list_api_keys(
     keys: list[APIKeyListItem] = []
     for row in rows:
         full_key: str | None = None
-        if row["status"] == "active" and row["api_key_encrypted"]:
+        if row["status"] in ("active", "revoked") and row["api_key_encrypted"]:
             # Display-only decryption: never break the listing on a bad
             # ciphertext — log and fall back to a masked (api_key=None) row.
             try:

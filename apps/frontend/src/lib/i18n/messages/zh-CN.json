@@ -2403,6 +2403,10 @@
     "source": "API Playground",
     "text": "API 调试台"
   },
+  "dashboard.keys.more_actions": {
+    "source": "Actions for {name}",
+    "text": "{name} 的操作"
+  },
   "dashboard.keys.col_actions": {
     "source": "Actions",
     "text": "操作"
@@ -2427,10 +2431,6 @@
     "source": "Status",
     "text": "状态"
   },
-  "dashboard.keys.confirm_delete": {
-    "source": "Delete this API Key? It will stop working immediately.",
-    "text": "确定要删除这个 API key 吗？删除后它会立即停止工作。"
-  },
   "dashboard.keys.confirm_regenerate": {
     "source": "Regenerate API Key? The old key will be immediately invalidated.",
     "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。"
@@ -2438,6 +2438,10 @@
   "dashboard.keys.confirm_remove": {
     "source": "Remove this revoked API Key from the dashboard?",
     "text": "要把这个已吊销的 API key 从列表中移除吗？"
+  },
+  "dashboard.keys.confirm_revoke": {
+    "source": "This key will stop working immediately. Its usage history will remain available.",
+    "text": "这个 key 将立即失效，无法再调用 API。历史用量记录会保留。"
   },
   "dashboard.keys.copied_toast": {
     "source": "API key copied to clipboard",
@@ -2459,14 +2463,6 @@
     "source": "API Key created successfully! Please save it now.",
     "text": "API key 已创建，请立即保存。"
   },
-  "dashboard.keys.delete": {
-    "source": "Delete",
-    "text": "删除"
-  },
-  "dashboard.keys.deleted_toast": {
-    "source": "API Key deleted successfully.",
-    "text": "API key 已删除。"
-  },
   "dashboard.keys.empty": {
     "source": "No API keys yet. Create one to start using the API.",
     "text": "还没有 API key。创建一个就可以开始调用 API 了。"
@@ -2479,10 +2475,6 @@
     "source": "Hide key",
     "text": "隐藏 key"
   },
-  "dashboard.keys.hide_revoked": {
-    "source": "Hide revoked keys",
-    "text": "隐藏已吊销的 key"
-  },
   "dashboard.keys.last_used_inline": {
     "source": "Last used: ",
     "text": "最近使用："
@@ -2490,6 +2482,10 @@
   "dashboard.keys.load_failed": {
     "source": "Failed to load API keys. Please try again later.",
     "text": "API key 加载失败，请稍后再试。"
+  },
+  "dashboard.keys.name_label": {
+    "source": "Name (optional)",
+    "text": "名称（可选）"
   },
   "dashboard.keys.name_prompt": {
     "source": "Name this key (optional), for example \"laptop\" or \"CI\". All of your keys share one quota.",
@@ -2531,17 +2527,25 @@
     "source": "API key renamed.",
     "text": "API key 已重命名。"
   },
+  "dashboard.keys.revoke": {
+    "source": "Revoke",
+    "text": "吊销"
+  },
+  "dashboard.keys.revoked_hint": {
+    "source": "Revoked keys can no longer call the API. They are kept here so you can review their usage history.",
+    "text": "已吊销的 key 无法再调用 API。保留这些记录是为了方便查看历史用量。"
+  },
+  "dashboard.keys.revoked_toast": {
+    "source": "API key revoked. It can no longer be used.",
+    "text": "API key 已吊销，无法继续使用。"
+  },
   "dashboard.keys.save_now": {
-    "source": "Save this key now. It will only be shown once.",
-    "text": "请现在就保存这个 key，它只会显示这一次。"
+    "source": "Save this key securely.",
+    "text": "请妥善保存这个 key。"
   },
   "dashboard.keys.show": {
     "source": "Show key",
     "text": "显示 key"
-  },
-  "dashboard.keys.show_revoked": {
-    "source": "Show revoked keys ({count})",
-    "text": "显示已吊销的 key（{count}）"
   },
   "dashboard.keys.spend_inline": {
     "source": "Spend: ",

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RecentRequestItem } from '@/lib/api/user';
@@ -215,5 +215,32 @@ describe('RecentRequests with several keys', () => {
     fireEvent.click(screen.getByRole('option', { name: 'hyi-ci00****' }));
 
     expect(vi.mocked(useRecentRequests)).toHaveBeenLastCalledWith(20, 0, undefined, 'hyi-ci000000');
+  });
+  it('resets the filter and pagination when the selected key is removed', async () => {
+    const useRecentRequests = await mockPage([makeRequest()]);
+    const { useApiKeys } = await import('@/lib/hooks');
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: { requests: [makeRequest()], total: 40, limit: 20, offset: 0 },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+    const { rerender } = render(<RecentRequests />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by API key' }));
+    fireEvent.click(screen.getByRole('option', { name: 'hyi-ci00****' }));
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+    expect(useRecentRequests).toHaveBeenLastCalledWith(20, 20, undefined, 'hyi-ci000000');
+    vi.mocked(useApiKeys).mockReturnValue({ data: { keys: [keys[0]] } } as unknown as ReturnType<
+      typeof useApiKeys
+    >);
+    vi.mocked(useRecentRequests).mockClear();
+    rerender(<RecentRequests />);
+    await waitFor(() =>
+      expect(useRecentRequests).toHaveBeenLastCalledWith(20, 0, undefined, undefined),
+    );
+    // Even the first render after removal must not request the deleted prefix.
+    expect(vi.mocked(useRecentRequests).mock.calls.every((call) => call[3] === undefined)).toBe(
+      true,
+    );
+    expect(screen.queryByRole('combobox', { name: 'Filter by API key' })).not.toBeInTheDocument();
   });
 });

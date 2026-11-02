@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useApiKeys, useRecentRequests } from '@/lib/hooks';
 import { DragScrollArea } from '@/components/ui/DragScrollArea';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
@@ -268,14 +268,24 @@ export function RecentRequests(): JSX.Element {
   const jumpInputId = useId();
   // '' is every key; otherwise the prefix of the key whose requests to show.
   const [keyPrefix, setKeyPrefix] = useState('');
-  const offset = page * PAGE_SIZE;
+  const { data: keyList } = useApiKeys();
+  const missingKey = Boolean(
+    keyList && keyPrefix && !keyList.keys.some((key) => key.key_prefix === keyPrefix),
+  );
+  // Drop a removed key before issuing another request with its old prefix.
+  const offset = (missingKey ? 0 : page) * PAGE_SIZE;
+  useEffect(() => {
+    if (missingKey) {
+      setKeyPrefix('');
+      setPage(0);
+    }
+  }, [missingKey]);
   const { data, isLoading, error } = useRecentRequests(
     PAGE_SIZE,
     offset,
     undefined,
-    keyPrefix || undefined,
+    missingKey ? undefined : keyPrefix || undefined,
   );
-  const { data: keyList } = useApiKeys();
   const t = useT();
   const fmt = useFormatter();
   const keys = keyList?.keys ?? [];
@@ -297,14 +307,14 @@ export function RecentRequests(): JSX.Element {
 
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
           {t('dashboard.requests.title', 'Recent Requests')}
         </h2>
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           {keys.length > 1 && (
             <Select<string>
-              value={keyPrefix}
+              value={missingKey ? '' : keyPrefix}
               onValueChange={(value) => {
                 setKeyPrefix(value);
                 setPage(0);

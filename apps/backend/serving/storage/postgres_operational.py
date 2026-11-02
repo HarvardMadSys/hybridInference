@@ -2644,7 +2644,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def list_account_keys(self, account_id: str) -> list[Row]:
         """Every key the account owns, live first then newest, for its own console.
 
-        Includes the ciphertext the console decrypts to show an active key; the
+        Includes the ciphertext the console decrypts to show a saved key; the
         hash never leaves the store. Every key reads unnamed while the ``name``
         column's migration is still pending.
 
