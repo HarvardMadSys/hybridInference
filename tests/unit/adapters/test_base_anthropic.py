@@ -349,3 +349,62 @@ async def test_stream_messages_aclose_closes_owned_upstream_immediately():
     finally:
         assert adapter.upstream is not None
         await adapter.upstream.aclose()
+
+
+_SCREENSHOT_BODY = {
+    "model": "fake",
+    "max_tokens": 10,
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/png", "data": "x"},
+                        }
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_a_tool_screenshot_reaches_a_route_that_reads_images(streaming):
+    """Claude Code reads a screenshot with a tool; an image route must see it."""
+    a = _FakeOpenAIAdapter(
+        ModelConfig(
+            id="fake",
+            name="Fake",
+            provider="fake",
+            base_url="http://x",
+            input_modalities=["text", "image"],
+        )
+    )
+    if streaming:
+        async for _chunk in a.stream_messages({**_SCREENSHOT_BODY, "stream": True}, request_id="r"):
+            pass
+    else:
+        await a.messages(_SCREENSHOT_BODY, request_id="r")
+
+    assert [m["role"] for m in a.last_messages] == ["tool", "user"]
+    assert a.last_messages[1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,x"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_text_only_route_keeps_the_tool_image_placeholder():
+    """A route that declares no image input is not sent one it would refuse."""
+    a = _FakeOpenAIAdapter(_cfg())
+
+    await a.messages(_SCREENSHOT_BODY, request_id="r")
+
+    assert a.last_messages == [{"role": "tool", "tool_call_id": "toolu_1", "content": "[image]"}]
