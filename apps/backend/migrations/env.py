@@ -59,14 +59,16 @@ def database_url() -> URL:
 
 
 def _lock_run(connection: Connection) -> None:
-    connection.execute(text(f"SET lock_timeout = '{RUN_LOCK_WAIT}'"))
+    # A caller may shorten the wait (``alembic_config().attributes["run_lock_wait"]``).
+    wait = config.attributes.get("run_lock_wait", RUN_LOCK_WAIT)
+    connection.execute(text(f"SET lock_timeout = '{wait}'"))
     try:
         connection.execute(text("SELECT pg_advisory_lock(hashtext(:key))"), {"key": RUN_LOCK_KEY})
     except DBAPIError as exc:
         if sqlstate(exc) != LOCK_NOT_AVAILABLE:
             raise
         raise MigrationInProgress(
-            f"another migration run has held this database for over {RUN_LOCK_WAIT}; "
+            f"another migration run has held this database for over {wait}; "
             "let it finish, then run this one again"
         ) from exc
     connection.execute(text(f"SET lock_timeout = '{DDL_LOCK_WAIT}'"))
