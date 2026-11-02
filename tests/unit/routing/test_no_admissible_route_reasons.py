@@ -32,6 +32,7 @@ _ZAI = f"{_MODEL_ID}:zai-api"
 _LOCAL = f"{_MODEL_ID}:local-8200"
 _OLLAMA = f"{_MODEL_ID}:local-11434"
 _STAGING = f"{_MODEL_ID}:staging-api"
+_LOCAL_POOL = "local-pool"
 _MESSAGES = [{"role": "user", "content": "hello"}]
 _IMAGE = RoutingRequestOptions(required_modalities=frozenset({"image"}))
 _TEXT_AND_IMAGE = ["text", "image"]
@@ -198,7 +199,7 @@ def _busy_local() -> _RecordingAdapter:
         provider="local",
         provider_type="concurrency",
         concurrency={"limit": 1},
-        concurrency_pool="local-h200",
+        concurrency_pool=_LOCAL_POOL,
     )
 
 
@@ -208,7 +209,7 @@ async def test_routewise_open_circuit_does_not_hide_a_capacity_refused_local() -
     local = _busy_local()
     zai = _adapter(_ZAI, provider="zai")
     router = _routewise([local, zai])
-    pool = router.concurrency_pools["local-h200"]
+    pool = router.concurrency_pools[_LOCAL_POOL]
     assert pool.try_acquire()
     _open_circuit(router._health_registry, _ZAI)
 
@@ -236,11 +237,11 @@ async def test_routewise_capacity_only_keeps_its_disposition_and_names_the_filte
         input_modalities=_TEXT_AND_IMAGE,
         provider_type="concurrency",
         concurrency={"limit": 1},
-        concurrency_pool="local-h200",
+        concurrency_pool=_LOCAL_POOL,
     )
     ollama = _adapter(_OLLAMA, provider="ollama")
     router = _routewise([local, ollama])
-    pool = router.concurrency_pools["local-h200"]
+    pool = router.concurrency_pools[_LOCAL_POOL]
     assert pool.try_acquire()
 
     try:
