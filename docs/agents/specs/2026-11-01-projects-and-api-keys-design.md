@@ -541,6 +541,32 @@ creates cannot pass it.
 limit is shown. Each active key has Rename, Regenerate and Delete. Revoked keys
 are folded under "Show revoked keys (n)".
 
+**Rollback.** The `name` column is harmless to an older image, which never
+reads or writes it. The dropped indexes are not. An older image runs
+`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique` at startup, and
+once any account holds two active keys that statement fails with a unique
+violation. Startup treats that as fatal, so the gateway does not come up.
+Before rolling back, revoke every active key except each account's newest one,
+in one transaction:
+
+```sql
+BEGIN;
+WITH extra AS (
+  SELECT id, row_number() OVER (
+           PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rank
+  FROM api_keys WHERE status = 'active')
+UPDATE api_keys SET status = 'revoked' WHERE id IN (SELECT id FROM extra WHERE rank > 1);
+WITH extra AS (
+  SELECT id, row_number() OVER (
+           PARTITION BY account_id ORDER BY created_at DESC, id DESC) AS rank
+  FROM api_keys WHERE status = 'active' AND account_id IS NOT NULL)
+UPDATE api_keys SET status = 'revoked' WHERE id IN (SELECT id FROM extra WHERE rank > 1);
+COMMIT;
+```
+
+The keys it revokes stop working at once, so their owners need to be told.
+Suspended keys are left alone; neither index covers them.
+
 **Not in P1a:** per-key usage attribution, rotation with a grace period, and
 admin endpoints addressed by key (they remain account-level). Those are P1b and
 later.
