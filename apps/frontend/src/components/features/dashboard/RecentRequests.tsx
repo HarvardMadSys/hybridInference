@@ -1,7 +1,7 @@
 'use client';
 
 import { useId, useState } from 'react';
-import { useRecentRequests } from '@/lib/hooks';
+import { useApiKeys, useRecentRequests } from '@/lib/hooks';
 import { DragScrollArea } from '@/components/ui/DragScrollArea';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import type { RecentRequestItem } from '@/lib/api/user';
@@ -9,6 +9,7 @@ import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { useT, type Translate } from '@/components/providers/useT';
 import { useFormatter, type Formatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
+import { Select } from '@/components/ui/Select';
 
 const PAGE_SIZE = 20;
 
@@ -83,7 +84,14 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
   );
 }
 
-function RequestRow({ req }: { req: RecentRequestItem }) {
+function RequestRow({
+  req,
+  keyLabel,
+}: {
+  req: RecentRequestItem;
+  /** How the account names the key the request was made with, if any. */
+  keyLabel: string | null;
+}) {
   const t = useT();
   const fmt = useFormatter();
   const [expanded, setExpanded] = useState(false);
@@ -233,6 +241,9 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
                   />
                 )}
                 {routewiseDecision && <DetailStat label="RouteWise" value={routewiseDecision} />}
+                {keyLabel && (
+                  <DetailStat label={t('dashboard.requests.api_key', 'API Key')} value={keyLabel} />
+                )}
               </div>
 
               {req.error && (
@@ -255,10 +266,23 @@ export function RecentRequests(): JSX.Element {
   const [page, setPage] = useState(0);
   const [jumpTo, setJumpTo] = useState('');
   const jumpInputId = useId();
+  // '' is every key; otherwise the prefix of the key whose requests to show.
+  const [keyPrefix, setKeyPrefix] = useState('');
   const offset = page * PAGE_SIZE;
-  const { data, isLoading, error } = useRecentRequests(PAGE_SIZE, offset);
+  const { data, isLoading, error } = useRecentRequests(
+    PAGE_SIZE,
+    offset,
+    undefined,
+    keyPrefix || undefined,
+  );
+  const { data: keyList } = useApiKeys();
   const t = useT();
   const fmt = useFormatter();
+  const keys = keyList?.keys ?? [];
+  const labelOf = (prefix: string): string => {
+    const key = keys.find((k) => k.key_prefix === prefix);
+    return key?.name ? `${key.name} (${key.key_masked})` : (key?.key_masked ?? prefix);
+  };
 
   const totalPages = data ? Math.ceil(data.total / PAGE_SIZE) : 0;
 
@@ -277,16 +301,33 @@ export function RecentRequests(): JSX.Element {
         <h2 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
           {t('dashboard.requests.title', 'Recent Requests')}
         </h2>
-        {data && (
-          <span className="text-xs text-gray-500">
-            {fill(
-              data.total === 1
-                ? t('dashboard.requests.total_one', '{count} total request')
-                : t('dashboard.requests.total_other', '{count} total requests'),
-              { count: fmt.number(data.total) },
-            )}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {keys.length > 1 && (
+            <Select<string>
+              value={keyPrefix}
+              onValueChange={(value) => {
+                setKeyPrefix(value);
+                setPage(0);
+              }}
+              options={[
+                { value: '', label: t('dashboard.requests.all_keys', 'All keys') },
+                ...keys.map((k) => ({ value: k.key_prefix, label: labelOf(k.key_prefix) })),
+              ]}
+              aria-label={t('dashboard.requests.filter_by_key', 'Filter by API key')}
+              className="w-56"
+            />
+          )}
+          {data && (
+            <span className="text-xs text-gray-500">
+              {fill(
+                data.total === 1
+                  ? t('dashboard.requests.total_one', '{count} total request')
+                  : t('dashboard.requests.total_other', '{count} total requests'),
+                { count: fmt.number(data.total) },
+              )}
+            </span>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -357,7 +398,11 @@ export function RecentRequests(): JSX.Element {
               </thead>
               <tbody>
                 {data.requests.map((req) => (
-                  <RequestRow key={req.request_id} req={req} />
+                  <RequestRow
+                    key={req.request_id}
+                    req={req}
+                    keyLabel={req.key_prefix ? labelOf(req.key_prefix) : null}
+                  />
                 ))}
               </tbody>
             </table>

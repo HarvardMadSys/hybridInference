@@ -154,6 +154,21 @@ describe('ApiKeyManager with several keys', () => {
     expect(screen.queryByText(/ of \d+ active/)).not.toBeInTheDocument();
   });
 
+  it('shows what each key spent today and this month', () => {
+    mockKeys([
+      makeItem({
+        key_prefix: 'hyi-aaaaaaaa',
+        key_masked: 'hyi-aaaa****',
+        spent_today_usd: 0.5,
+        spent_month_usd: 12.25,
+      }),
+    ]);
+    render(<ApiKeyManager />);
+
+    expect(screen.getByText('$0.50 today')).toBeInTheDocument();
+    expect(screen.getByText('$12.25 this month')).toBeInTheDocument();
+  });
+
   it('creates a key with the name typed into the prompt', async () => {
     mockKeys([]);
     vi.spyOn(window, 'prompt').mockReturnValue('  ci  ');

@@ -2419,6 +2419,10 @@
     "source": "Last Used",
     "text": "最近使用"
   },
+  "dashboard.keys.col_spend": {
+    "source": "Spend (UTC)",
+    "text": "花费（UTC）"
+  },
   "dashboard.keys.col_status": {
     "source": "Status",
     "text": "状态"
@@ -2539,6 +2543,18 @@
     "source": "Show revoked keys ({count})",
     "text": "显示已吊销的 key（{count}）"
   },
+  "dashboard.keys.spend_inline": {
+    "source": "Spend: ",
+    "text": "花费："
+  },
+  "dashboard.keys.spent_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
+  },
+  "dashboard.keys.spent_today": {
+    "source": "{amount} today",
+    "text": "今天 {amount}"
+  },
   "dashboard.keys.status_active": {
     "source": "active",
     "text": "使用中"
@@ -2619,6 +2635,14 @@
     "source": "Models",
     "text": "模型"
   },
+  "dashboard.requests.all_keys": {
+    "source": "All keys",
+    "text": "全部 key"
+  },
+  "dashboard.requests.api_key": {
+    "source": "API Key",
+    "text": "API key"
+  },
   "dashboard.requests.badge_embedding": {
     "source": "embedding",
     "text": "embedding"
@@ -2670,6 +2694,10 @@
   "dashboard.requests.error": {
     "source": "Request Error",
     "text": "请求出错"
+  },
+  "dashboard.requests.filter_by_key": {
+    "source": "Filter by API key",
+    "text": "按 API key 筛选"
   },
   "dashboard.requests.go": {
     "source": "Go",

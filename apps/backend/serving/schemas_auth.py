@@ -403,6 +403,11 @@ class APIKeyListItem(BaseModel):
     created_at: datetime
     last_used_at: datetime | None = None
     status: str
+    #: What requests made with this key cost on the current UTC day and month.
+    #: Counted since the gateway began attributing usage to keys; requests
+    #: from before then are in the account's totals only.
+    spent_today_usd: float = 0.0
+    spent_month_usd: float = 0.0
 
 
 class APIKeyListResponse(BaseModel):
@@ -578,6 +583,9 @@ class RecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+    # The account's key the request was made with; None for requests from
+    # before usage was attributed to keys, or made without one of its keys.
+    key_prefix: str | None = None
 
 
 class RecentRequestsResponse(BaseModel):

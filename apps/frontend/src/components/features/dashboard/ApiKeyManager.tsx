@@ -16,6 +16,7 @@ import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
+import { formatUsd } from '@/lib/utils/currency';
 
 function EyeIcon(): JSX.Element {
   return (
@@ -89,7 +90,7 @@ function cleanName(value: string): string | null {
 }
 
 const GRID_COLUMNS =
-  'md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center';
+  'md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center';
 
 export function ApiKeyManager(): JSX.Element {
   const toast = useAccountToast();
@@ -321,6 +322,21 @@ export function ApiKeyManager(): JSX.Element {
           </span>
           {formatDate(apiKey.last_used_at)}
         </div>
+        <div className="text-sm text-gray-600">
+          <span className="md:hidden font-medium text-gray-500">
+            {t('dashboard.keys.spend_inline', 'Spend: ')}
+          </span>
+          <span className="whitespace-nowrap">
+            {fill(t('dashboard.keys.spent_today', '{amount} today'), {
+              amount: formatUsd(apiKey.spent_today_usd ?? 0),
+            })}
+          </span>{' '}
+          <span className="whitespace-nowrap text-gray-500 md:block">
+            {fill(t('dashboard.keys.spent_month', '{amount} this month'), {
+              amount: formatUsd(apiKey.spent_month_usd ?? 0),
+            })}
+          </span>
+        </div>
         <div className="flex flex-wrap gap-2 md:justify-end">
           {apiKey.status === 'active' ? (
             <>
@@ -446,6 +462,7 @@ export function ApiKeyManager(): JSX.Element {
             <span>{t('dashboard.keys.col_status', 'Status')}</span>
             <span>{t('dashboard.keys.col_created', 'Created')}</span>
             <span>{t('dashboard.keys.col_last_used', 'Last Used')}</span>
+            <span>{t('dashboard.keys.col_spend', 'Spend (UTC)')}</span>
             <span className="text-right">{t('dashboard.keys.col_actions', 'Actions')}</span>
           </div>
           <div className="divide-y divide-gray-200 bg-white">{liveKeys.map(renderRow)}</div>

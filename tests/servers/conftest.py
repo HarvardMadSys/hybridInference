@@ -678,6 +678,7 @@ async def anthropic_test_app(anthropic_app_services):
             "user_id": "test-user",
             "role": "internal",
             "auth_key_hash": "anthropic-test-key-hash",
+            "api_key_id": 5,
         }
 
     app.dependency_overrides[verify_api_key] = fake_verify

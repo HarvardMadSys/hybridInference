@@ -6,16 +6,8 @@ import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
+import { formatUsd } from '@/lib/utils/currency';
 import { Select } from '@/components/ui/Select';
-
-function formatUsd(amount: number): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(amount);
-}
 
 const RESET_AT_FORMAT: Intl.DateTimeFormatOptions = {
   year: 'numeric',

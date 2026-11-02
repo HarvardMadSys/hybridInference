@@ -8,6 +8,8 @@ import { RecentRequests } from './RecentRequests';
 
 vi.mock('@/lib/hooks', () => ({
   useRecentRequests: vi.fn(),
+  // One key: no filter is offered, and the default for every test below.
+  useApiKeys: vi.fn(() => ({ data: { keys: [] } })),
 }));
 
 afterEach(() => {
@@ -173,5 +175,45 @@ describe('RecentRequests', () => {
 
     expect(screen.getByText('457ms')).toBeInTheDocument();
     expect(screen.getByText('123ms')).toBeInTheDocument();
+  });
+});
+
+describe('RecentRequests with several keys', () => {
+  const keys = [
+    { key_prefix: 'hyi-laptop00', key_masked: 'hyi-lapt****', name: 'laptop' },
+    { key_prefix: 'hyi-ci000000', key_masked: 'hyi-ci00****', name: null },
+  ];
+
+  async function mockPage(requests: RecentRequestItem[]) {
+    const { useApiKeys, useRecentRequests } = await import('@/lib/hooks');
+    vi.mocked(useApiKeys).mockReturnValue({ data: { keys } } as unknown as ReturnType<
+      typeof useApiKeys
+    >);
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: { requests, total: requests.length, limit: 20, offset: 0 },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+    return useRecentRequests;
+  }
+
+  it('names the key a request was made with in its details', async () => {
+    await mockPage([makeRequest({ key_prefix: 'hyi-laptop00' })]);
+    render(<RecentRequests />);
+
+    fireEvent.click(screen.getAllByText('claude-sonnet')[0]);
+
+    expect(screen.getByText('API Key')).toBeInTheDocument();
+    expect(screen.getByText('laptop (hyi-lapt****)')).toBeInTheDocument();
+  });
+
+  it('filters the list to the key picked', async () => {
+    const useRecentRequests = await mockPage([makeRequest()]);
+    render(<RecentRequests />);
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by API key' }));
+    fireEvent.click(screen.getByRole('option', { name: 'hyi-ci00****' }));
+
+    expect(vi.mocked(useRecentRequests)).toHaveBeenLastCalledWith(20, 0, undefined, 'hyi-ci000000');
   });
 });

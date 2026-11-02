@@ -1,7 +1,8 @@
 # Projects, multiple API keys and hierarchical limits (2026-11-01)
 
-Status: P1a (several keys per account) implemented; see §16 for what was
-built and where it departs from the original P1 plan. P1b, P2 and P3 are a
+Status: P1a (several keys per account) and P1b usage attribution are
+implemented; see §16 and §17 for what was built and where it departs from the
+original plan. Rotation with a grace period (the rest of P1b), P2 and P3 are a
 draft for discussion. Baseline: `dev` at `09a0dbcff`.
 
 ## 1. Summary
@@ -414,7 +415,7 @@ per-key and per-project views start at cut-over, and the console says so.
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | **P1a Several keys per account** (built, §16) | Retire the one-key indexes; no product limit (a safety ceiling of 100); key names; per-key rotation; account-level quota kept on every live key; console list with revoked keys folded away | Full unit, `dbtest` and frontend suites green; concurrent creates never pass the ceiling |
-| **P1b Attribution** | `api_logs.key_id`; `key_usage_daily`; per-key usage in the console; rotation with a grace period | Per-key usage reconciles with `api_logs` within 0.1% |
+| **P1b Attribution** (attribution built, §17) | Key attribution on each log row; a per-key daily cost counter; per-key spend and a key filter in the console; rotation with a grace period (not yet built) | Per-key spend never exceeds the account's, and equals it when every request used a key |
 | **P2 Projects and limits** | Organizations and projects (M1–M4, which now also move the account quota off the key rows onto the personal org); projects API and UI; daily and monthly budgets at key/project/org; `spend_counters`; the estimate in §7.2; scoped error fields; allowlists; per-project/per-key concurrency caps; `GET /v1/key`; filtered `/v1/models`; admin org endpoints; retargeted per-role bulk apply | Concurrency test: N in-flight requests never overshoot a budget by more than N × the maximum estimate error. Monthly limit enforced and shown |
 | **P3 Teams and policies** | `team` orgs, invitations, roles, org switcher; project routing and logging policies; budget alerts through the existing webhook/notification sinks; RPM/TPM if the metrics in §11.1 show a need; grants scoped to projects | Separate spec |
 
@@ -595,6 +596,81 @@ Suspended keys are left alone; neither index covers them.
 **Not in P1a:** per-key usage attribution, rotation with a grace period, and
 admin endpoints addressed by key (they remain account-level). Those are P1b and
 later.
+
+## 17. P1b attribution as built
+
+Every request made with one of an account's keys is now attributed to that
+key, both in the request log and in a per-key spend counter. Two choices
+depart from §6.
+
+**The key goes into `api_logs.metadata`, not into a new column.**
+`log_request` writes every column on every insert. Columns added to
+`api_logs` arrive through a deferrable migration, and while one is deferred
+behind a lock (the nightly `pg_dump`, say) every log write that names the new
+column fails. A key in the `metadata` JSONB needs no migration at all. The
+console filter reads `metadata->>'api_key_id'` after `user_id` has already
+narrowed the scan through `idx_api_logs_user`, so no new index is needed
+either. Building one on `api_logs` would hold a SHARE lock that blocks log
+writes for a full table scan. A real column, with an index built
+`CONCURRENTLY`, can come with P2 if per-project queries need it.
+
+**A live counter instead of the hourly rollup.** `api_key_daily_cost (key_id,
+day, user_id, cost_usd, requests, last_request_at)` has the same shape as
+`user_daily_cost`. It is bumped by the same settlement call
+(`increment_user_cost(..., api_key_id=...)`), in a second statement after the
+account's counter, and a failure of that statement is logged and otherwise
+ignored, so quota accounting never depends on it. Being live, it is also the
+counter a per-key budget in P2 can be checked against, which an hourly rollup
+could not be. It has no foreign key to `api_keys`, so a write cannot fail
+because the key was removed meanwhile. `user_id` lets a hard delete purge an
+account's rows in one statement. It counts billed requests only, as
+`user_daily_cost` does. Token and per-model breakdowns per key stay in
+`api_logs` for now.
+
+**What is attributed to a key.**
+
+- **Requests made with the key:** attributed to it on all three surfaces
+  (chat completions, Anthropic messages, embeddings).
+- **Batches:** attributed to the key that created them, through
+  `authenticate_stored_key`.
+- **Requests sent with `X-On-Behalf-Of`:** attributed to no key. They are
+  charged to the end user named in the header, and the presented service key
+  is not that user's.
+- **Agent-grant requests, and anything else not authenticated with an `hyi-`
+  key:** attributed to no key.
+
+The context field is `user_ctx["api_key_id"]`, set in `_user_context`. The
+log metadata and the cost increment both read it, so the log row and the
+counter cannot disagree.
+
+**Console.**
+
+- **Key list:** each key shows what it spent today and this month (UTC days,
+  the days the quota resets on).
+- **Recent requests:** each request names the key it was made with. When the
+  account has more than one key, a filter limits the list to one of them;
+  `GET /user/recent-requests?key_prefix=` answers 404 for a key the account
+  does not hold.
+
+**No backfill.** As §10 says, history from before the change stays attributed
+to the account only. A key's figures start the day this ships.
+
+**Hard delete:**
+
+- `hard_delete_user` deletes the account's `api_key_daily_cost` rows in its
+  transaction and reports the count in `rows_wiped`.
+- `revoke_key(hard_delete=True)` deletes them with the keys.
+
+**Rotation with a grace period is not built yet.** Leaving the old key
+`active` with an `expires_at` breaks every check that treats `status =
+'active'` as "can authenticate". Those checks are the safety ceiling count,
+the legacy regenerate's "only key" check, the listing and
+`get_active_key_by_account`. The auth lookup already checks expiry; these
+checks do not. A key expired by an administrator already falls into this gap
+today. Grace rotation would make the gap common: after one such rotation, the
+legacy regenerate would answer 409 for good. So grace rotation follows once
+"live" consistently means `status = 'active' AND (expires_at IS NULL OR
+expires_at > NOW())` across the store.
 
 ## References
 
