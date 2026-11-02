@@ -33,6 +33,47 @@ for a backend started directly from source.
 One more service exists in the same file but starts only when its profile is
 named: `pgadmin` (profile `admin`).
 
+### pgAdmin over mutual TLS
+
+The optional `/pgadmin/` console proxy checks the caller's administrator session
+before connecting to pgAdmin. By default it uses `http://pgadmin:80`; setting
+`PGADMIN_INTERNAL_URL` overrides that address. For a separately hosted pgAdmin
+behind a gateway that requires client certificates, configure the **frontend
+server's runtime environment** with:
+
+```text
+PGADMIN_INTERNAL_URL=https://pgadmin-gateway.internal:8443
+PGADMIN_MTLS_ENABLED=true
+PGADMIN_MTLS_CA_FILE=/run/pgadmin-tls/ca.crt
+PGADMIN_MTLS_CERT_FILE=/run/pgadmin-tls/client.crt
+PGADMIN_MTLS_KEY_FILE=/run/pgadmin-tls/client.key
+```
+
+The URL hostname must match the gateway server certificate. The CA file verifies
+that server; the client certificate and key authenticate the frontend to the
+gateway. Supply the files through a read-only secret mount accessible to the
+frontend process, and restrict who may read or mount the client private key.
+These are file paths inside the frontend container, not certificate contents.
+The upstream gateway must enforce mTLS itself and restrict access to pgAdmin;
+the console's administrator check does not protect a separately exposed backend.
+
+The example Compose file does not forward these variables or mount these files;
+a deployment using Compose must explicitly add the frontend environment and
+secret volumes in an override. Setting only the root `.env` is not sufficient.
+With mTLS enabled, an HTTPS URL and all three files are required; invalid or
+unreadable settings make `/pgadmin/` return 502 without falling back to HTTP.
+Unset `PGADMIN_MTLS_ENABLED` or set it to the literal `false` to retain the
+existing proxy behavior. Values other than `true` or `false` fail closed.
+
+The proxy rereads credentials for each new request and supports Kubernetes
+Secret volume projections that place all three files in the same projection
+directory. Ordinary files must not be modified while a request reads them;
+independent file updates cannot provide an atomic three-file snapshot.
+Certificate rotation across the frontend and gateway requires a coordinated
+procedure: their Secret projections do not update at the same time, and the
+gateway may need a reload. Existing in-flight requests can continue using the
+credentials they already acquired.
+
 `frontend` depends on `backend` with `condition:
 service_started`, not `service_healthy` — deliberately, so that a backend
 reporting unhealthy because its database logging is down does not stop the
