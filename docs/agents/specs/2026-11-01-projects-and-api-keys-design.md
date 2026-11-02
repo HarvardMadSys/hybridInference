@@ -2,7 +2,7 @@
 
 Status: P1a (several keys per account) and P1b usage attribution are
 implemented; see §16 and §17 for what was built and where it departs from the
-original plan. Rotation with a grace period (the rest of P1b), P2 and P3 are a
+original plan. Rotation with a grace period was dropped (§17). P2 and P3 are a
 draft for discussion. Baseline: `dev` at `09a0dbcff`.
 
 ## 1. Summary
@@ -63,8 +63,7 @@ HybridInference-specific project policies.
 
 ### Goals
 
-1. A user can create, name, scope, rotate (with a grace period) and revoke
-   several keys.
+1. A user can create, name, scope, rotate and revoke several keys.
 2. Every new request is attributed to `(org, project, key)`, and usage can be
    read by any of the three and by model.
 3. Daily and calendar-monthly USD budgets, and in-flight concurrency caps, are
@@ -328,9 +327,9 @@ an exhausted budget should move to 402 is listed in §15.
 | `GET /user/api-keys/all` | P1 (extended) | Adds `id`, `name`, `project_id` and limits to each row |
 | `POST /user/api-keys` | P1 (changed) | Creates an *additional* key `{name, project_id?}` up to the cap; no more 409 |
 | `PATCH /user/api-keys/{key_prefix}` | P1 | Rename (P1); allowlist and limits (P2) |
-| `POST /user/api-keys/{key_prefix}/rotate` | P1 | New key with the same settings; the old key expires after `grace_seconds` (0 – 7 days, default 24 h) |
+| `POST /user/api-keys/{key_prefix}/regenerate` | P1 (built) | New key with the same settings; the old key is revoked at once (no grace period, §17) |
 | `DELETE /user/api-keys/{key_prefix}` | unchanged | Revoke if active, remove if already revoked |
-| `POST /user/api-keys/regenerate` | deprecated | Same as `rotate` on the oldest active key with `grace_seconds = 0` |
+| `POST /user/api-keys/regenerate` | deprecated | Regenerates the only active key; 409 when the account has several |
 | `GET /user/usage` | P1 (extended) | Adds `?key_prefix=`, `?project_id=`, `group_by=day,model,key,project` |
 | `GET/POST /user/projects` | P2 | List (with spend against limits) and create |
 | `GET/PATCH /user/projects/{id}` | P2 | Details and effective limits; update name, limits, allowlist |
@@ -364,12 +363,8 @@ and `project`.
   similar ceiling on active projects.
 - **Signup** creates the user, the personal org, an `owner` membership and the
   Default project in one transaction, then mints the first key as today.
-- **Rotation** copies the name (with a date suffix), allowlist and limits, sets
-  `rotated_from_id`, and sets the old key's `expires_at = now + grace`. Both
-  keys work during the grace period. Expiry fires no write, so a cached auth
-  row can outlive the deadline by up to the 30 s TTL. P1 bounds the cache
-  entry by the key's remaining lifetime, as `get_key_owner_for_audit` already
-  does with `expires_in_sec`.
+- **Rotation** copies the name, allowlist and limits and revokes the old key
+  in the same transaction (§16, §17).
 - **Revocation** is unchanged in behavior; it now also stamps `revoked_at`.
 - **Batches** record the `key_hash` that created them (`routers/batches.py`).
   They will also record `project_id` so their cost lands on the right project.
@@ -415,7 +410,7 @@ per-key and per-project views start at cut-over, and the console says so.
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | **P1a Several keys per account** (built, §16) | Retire the one-key indexes; no product limit (a safety ceiling of 100); key names; per-key rotation; account-level quota kept on every live key; console list with revoked keys folded away | Full unit, `dbtest` and frontend suites green; concurrent creates never pass the ceiling |
-| **P1b Attribution** (attribution built, §17) | Key attribution on each log row; a per-key daily cost counter; per-key spend and a key filter in the console; rotation with a grace period (not yet built) | Per-key spend never exceeds the account's, and equals it when every request used a key |
+| **P1b Attribution** (attribution built, §17) | Key attribution on each log row; a per-key daily cost counter; per-key spend and a key filter in the console. Rotation with a grace period was dropped (§17) | Per-key spend never exceeds the account's, and equals it when every request used a key |
 | **P2 Projects and limits** | Organizations and projects (M1–M4, which now also move the account quota off the key rows onto the personal org); projects API and UI; daily and monthly budgets at key/project/org; `spend_counters`; the estimate in §7.2; scoped error fields; allowlists; per-project/per-key concurrency caps; `GET /v1/key`; filtered `/v1/models`; admin org endpoints; retargeted per-role bulk apply | Concurrency test: N in-flight requests never overshoot a budget by more than N × the maximum estimate error. Monthly limit enforced and shown |
 | **P3 Teams and policies** | `team` orgs, invitations, roles, org switcher; project routing and logging policies; budget alerts through the existing webhook/notification sinks; RPM/TPM if the metrics in §11.1 show a need; grants scoped to projects | Separate spec |
 
@@ -445,8 +440,8 @@ departing member's keys are revoked and their projects stay with the org.
   custom-quota user; running everything twice is a no-op; each user's daily
   spend and effective quota are the same before and after; hard delete leaves
   no org, project, counter or rollup rows.
-- **API:** another account's `key_prefix`/`project_id` returns 404; rotation
-  grace; the legacy `regenerate` path; agent grants charge the Default project.
+- **API:** another account's `key_prefix`/`project_id` returns 404; the
+  legacy `regenerate` path; agent grants charge the Default project.
 - **Live:** verify against a local or example deployment
   (`make up DISTRIBUTION=example`) before claiming acceptance, per `AGENTS.md`.
 
@@ -593,9 +588,8 @@ COMMIT;
 The keys it revokes stop working at once, so their owners need to be told.
 Suspended keys are left alone; neither index covers them.
 
-**Not in P1a:** per-key usage attribution, rotation with a grace period, and
-admin endpoints addressed by key (they remain account-level). Those are P1b and
-later.
+**Not in P1a:** per-key usage attribution and admin endpoints addressed by key
+(they remain account-level). Attribution is P1b (§17).
 
 ## 17. P1b attribution as built
 
@@ -661,16 +655,21 @@ to the account only. A key's figures start the day this ships.
   transaction and reports the count in `rows_wiped`.
 - `revoke_key(hard_delete=True)` deletes them with the keys.
 
-**Rotation with a grace period is not built yet.** Leaving the old key
-`active` with an `expires_at` breaks every check that treats `status =
-'active'` as "can authenticate". Those checks are the safety ceiling count,
+**Rotation with a grace period was dropped.** A user regenerates a key mostly
+because they suspect it leaked, and then the old key must stop working at once;
+a grace period would keep a possibly leaked key alive. A user who wants to
+switch without downtime already can, now that an account holds several keys:
+create a new key, move clients to it, then delete the old one. So
+`regenerate` keeps revoking the old key immediately.
+
+This also leaves a known, minor gap unfixed. Several store checks treat
+`status = 'active'` as live and ignore `expires_at`: the safety ceiling count,
 the legacy regenerate's "only key" check, the listing and
-`get_active_key_by_account`. The auth lookup already checks expiry; these
-checks do not. A key expired by an administrator already falls into this gap
-today. Grace rotation would make the gap common: after one such rotation, the
-legacy regenerate would answer 409 for good. So grace rotation follows once
-"live" consistently means `status = 'active' AND (expires_at IS NULL OR
-expires_at > NOW())` across the store.
+`get_active_key_by_account`. The auth lookup does check expiry. Only an
+administrator can set `expires_at` (through `/admin/api-keys`, which the
+console does not call), and production had no key with an expiry on
+2026-11-02. If key expiry becomes a product feature, those checks should
+switch to `status = 'active' AND (expires_at IS NULL OR expires_at > NOW())`.
 
 ## References
 
