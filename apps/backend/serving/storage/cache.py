@@ -566,9 +566,15 @@ class CachedOperationalStore(OperationalStore):
         api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
+        inherit_account_quota: bool = False,
     ) -> Row:
-        """Delegate to wrapped store."""
-        return await self._store.create_key(
+        """Delegate, then invalidate auth caches when the account quota may have moved.
+
+        Without ``inherit_account_quota`` the given quota becomes the
+        account's and is written to the user's other live keys, whose cached
+        auth contexts would otherwise keep the old limit for their TTL.
+        """
+        row = await self._store.create_key(
             key_hash=key_hash,
             key_prefix=key_prefix,
             user_id=user_id,
@@ -580,7 +586,11 @@ class CachedOperationalStore(OperationalStore):
             api_key_encrypted=api_key_encrypted,
             metadata=metadata,
             account_id=account_id,
+            inherit_account_quota=inherit_account_quota,
         )
+        if not inherit_account_quota:
+            await self.invalidate_auth_caches()
+        return row
 
     async def check_active_key_exists(self, user_id: str) -> bool:
         """Delegate to wrapped store."""

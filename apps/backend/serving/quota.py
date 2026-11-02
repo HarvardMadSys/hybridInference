@@ -14,14 +14,15 @@ incident reports.
 **Where the two halves live** is the awkward part, and it is a property of the
 schema rather than a choice made here:
 
-| | Stored on | Keyed by |
+| | Stored on | Belongs to |
 |---|---|---|
-| the limit, ``quota_daily_cost_usd`` | ``api_keys`` | **API key** |
+| the limit, ``quota_daily_cost_usd`` | each row of ``api_keys`` | **the account** |
 | the spend | ``user_daily_cost`` | **user** |
 
-A grant has no API key, so the limit has to be found by user instead. The schema
-guarantees at most one active key per user, which makes that lookup a single row
-rather than a policy question about which key's limit wins.
+An account may hold several API keys. The limit is the account's, copied onto
+every one of its unrevoked keys by the store (``OperationalStore.create_key``),
+so the key the direct path authenticates with and the account a grant is found
+by read the same number: which key's limit wins is never a question.
 """
 
 from __future__ import annotations

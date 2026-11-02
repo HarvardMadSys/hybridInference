@@ -187,6 +187,33 @@ def _decode_grant(row: Any) -> Row:
     return decoded
 
 
+async def _sync_account_quota(
+    conn: asyncpg.Connection,
+    user_id: str,
+    *,
+    daily: Any,
+    monthly: Any,
+    except_id: int | None = None,
+) -> None:
+    """Give every unrevoked key of *user_id* the account quota ``(daily, monthly)``.
+
+    The daily and monthly quota belong to the account but are stored on each
+    of its keys: the auth lookup reads them from the presented key's row, so
+    every unrevoked key must carry the same values. A revoked key never
+    authenticates again and is left as it was.
+    """
+    await conn.execute(
+        "UPDATE api_keys SET quota_daily_cost_usd = $2, quota_monthly_cost_usd = $3 "
+        "WHERE user_id = $1 AND status <> 'revoked' AND ($4::bigint IS NULL OR id <> $4) "
+        "AND (quota_daily_cost_usd IS DISTINCT FROM $2::numeric "
+        "     OR quota_monthly_cost_usd IS DISTINCT FROM $3::numeric)",
+        user_id,
+        daily,
+        monthly,
+        except_id,
+    )
+
+
 def _coerce_user_row(row: Any) -> Row | None:
     """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
 
@@ -2054,7 +2081,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 f"  u.created_at, u.last_login_at, "
                 f"  k.key_prefix, k.status AS key_status "
                 f"  FROM users u "
-                f"  LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
+                # One row per user: an account can hold several active keys,
+                # and the list shows its newest.
+                f"  LEFT JOIN LATERAL ("
+                f"    SELECT key_prefix, status FROM api_keys "
+                f"    WHERE account_id = u.id AND status = 'active' "
+                f"    ORDER BY created_at DESC, id DESC LIMIT 1"
+                f"  ) k ON TRUE "
                 f"  {where_sql}"
                 f")"
             ]
@@ -2373,8 +2406,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         api_key_encrypted: str | None = None,
         metadata: str | dict[str, Any] | None = None,
         account_id: str | None = None,
+        inherit_account_quota: bool = False,
     ) -> Row:
-        """Insert a new API key. Returns the inserted row."""
+        """Insert a new API key. Returns the inserted row.
+
+        The quota is the account's (see :meth:`OperationalStore.create_key`).
+        With ``inherit_account_quota`` a key added to an account that already
+        has an unrevoked key takes that account's quota, and the given values
+        only seed a first key. Without it the given values become the
+        account's, and every other unrevoked key of the user is set to them in
+        the same transaction.
+        """
         import asyncpg as _asyncpg
 
         # Default account_id to user_id so self-service AND admin-created keys
@@ -2391,25 +2433,42 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         async with self._pool.acquire() as conn:
             try:
-                row = await conn.fetchrow(
-                    "INSERT INTO api_keys "
-                    "(key_hash, key_prefix, user_id, user_name, "
-                    "quota_daily_cost_usd, quota_monthly_cost_usd, "
-                    "expires_at, notes, metadata, account_id, api_key_encrypted) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11) "
-                    "RETURNING id, created_at",
-                    key_hash,
-                    key_prefix,
-                    user_id,
-                    user_name,
-                    quota_daily_cost_usd,
-                    quota_monthly_cost_usd,
-                    expires_at,
-                    notes,
-                    metadata,
-                    effective_account_id,
-                    api_key_encrypted,
-                )
+                async with conn.transaction():
+                    daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
+                    if inherit_account_quota:
+                        # Locked, so a concurrent quota write cannot land
+                        # between reading the account's quota and copying it.
+                        current = await conn.fetchrow(
+                            "SELECT quota_daily_cost_usd, quota_monthly_cost_usd "
+                            "FROM api_keys WHERE user_id = $1 AND status <> 'revoked' "
+                            "ORDER BY created_at, id LIMIT 1 FOR UPDATE",
+                            user_id,
+                        )
+                        if current is not None:
+                            daily = current["quota_daily_cost_usd"]
+                            monthly = current["quota_monthly_cost_usd"]
+                    row = await conn.fetchrow(
+                        "INSERT INTO api_keys "
+                        "(key_hash, key_prefix, user_id, user_name, "
+                        "quota_daily_cost_usd, quota_monthly_cost_usd, "
+                        "expires_at, notes, metadata, account_id, api_key_encrypted) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11) "
+                        "RETURNING id, created_at",
+                        key_hash,
+                        key_prefix,
+                        user_id,
+                        user_name,
+                        daily,
+                        monthly,
+                        expires_at,
+                        notes,
+                        metadata,
+                        effective_account_id,
+                        api_key_encrypted,
+                    )
+                    await _sync_account_quota(
+                        conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
+                    )
             except _asyncpg.UniqueViolationError as exc:
                 # Active-key uniqueness is enforced per user_id
                 # (idx_api_keys_user_unique) and per account_id
@@ -2505,12 +2564,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return d
 
     async def update_key(self, user_id: str, **fields: Any) -> None:
-        """Dynamically update key columns for *user_id*'s current key.
+        """Dynamically update the columns of every unrevoked key *user_id* holds.
+
+        An account-level write: an account may hold several keys, and the
+        fields here (quota, status, expiry, notes) describe the account, so
+        all of its live keys change together -- which is also what keeps the
+        account quota identical on each of them (see :func:`_sync_account_quota`).
 
         Revoked rows are never touched: a user keeps old revoked rows after
         regenerating a key, and updating them would silently resurrect dead
-        keys (``status='active'`` on every row also violates the
-        one-active-key-per-user partial unique index).
+        keys.
         """
         if not fields:
             return
@@ -2552,35 +2615,34 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         new_key_hash: str,
         new_key_prefix: str,
     ) -> str:
-        """Atomically replace the active key's hash/prefix. Returns old key_prefix.
+        """Atomically replace the newest active key's hash/prefix. Returns old key_prefix.
 
-        Scoped to the active row: users keep old revoked rows around, and
-        rewriting key_hash on all of them would violate the unique key_hash
-        constraint (and resurrect revoked credentials).
+        Scoped to one row: users keep old revoked rows around, and an account
+        may hold several active keys. Rewriting key_hash on more than one row
+        would violate the unique key_hash constraint (and resurrect revoked
+        credentials).
         """
         async with self._pool.acquire() as conn, conn.transaction():
             old_row = await conn.fetchrow(
-                "SELECT key_prefix FROM api_keys WHERE user_id = $1 AND status = 'active'",
+                "SELECT id, key_prefix FROM api_keys WHERE user_id = $1 AND status = 'active' "
+                "ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE",
                 user_id,
             )
             if not old_row:
                 raise ValueError(f"No active key found for user_id={user_id}")
             await conn.execute(
-                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 "
-                "WHERE user_id = $3 AND status = 'active'",
+                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3",
                 new_key_hash,
                 new_key_prefix,
-                user_id,
+                old_row["id"],
             )
         return old_row["key_prefix"]
 
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
-        """Fetch the active key by account_id OR user_id.
+        """Fetch the newest active key by account_id OR user_id.
 
-        Unlike :meth:`get_active_key_by_account`, this matches the real
-        ``idx_api_keys_user_unique`` (user_id) constraint, so it also finds
-        legacy keys whose ``account_id`` is NULL. Prefer it for the
-        create/regenerate pre-checks.
+        Unlike :meth:`get_active_key_by_account`, this matches by ``user_id``
+        too, so it also finds legacy keys whose ``account_id`` is NULL.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -2588,18 +2650,22 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "quota_daily_cost_usd "
                 "FROM api_keys "
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active' "
-                "LIMIT 1",
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
                 account_id,
             )
         return dict(row) if row else None
 
     async def get_active_key_by_account(self, account_id: str) -> Row | None:
-        """Fetch the active key for self-registered user by account_id."""
+        """Fetch the newest active key of a self-registered user by account_id.
+
+        The quota on it is the account's: every unrevoked key carries the same.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, key_prefix, created_at, last_used_at, status, "
                 "quota_daily_cost_usd "
-                "FROM api_keys WHERE account_id = $1 AND status = 'active'",
+                "FROM api_keys WHERE account_id = $1 AND status = 'active' "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
                 account_id,
             )
         return dict(row) if row else None
@@ -3067,10 +3133,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     # -- inference grants ----------------------------------------------------
 
     async def get_quota_context_for_user(self, user_id: str) -> list[Row]:
-        """Return the quota-bearing rows for a user's active API keys."""
+        """Return the account's quota row: one row when it holds a live key, else none.
+
+        An account may hold several active keys, all carrying the account's
+        quota (see :func:`_sync_account_quota`), so any one of them answers;
+        the oldest is taken so repeated lookups read the same row.
+        """
         async with self._pool.acquire() as conn:
-            # LIMIT 2, not 1: the caller must be able to *detect* a duplicate
-            # rather than silently take the first of an impossible set.
             rows = await conn.fetch(
                 "SELECT k.id, k.user_id, k.quota_daily_cost_usd, u.role "
                 "FROM api_keys k "
@@ -3079,7 +3148,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
                 "  AND u.id IS NOT NULL AND u.status = 'active' "
-                "LIMIT 2",
+                "ORDER BY k.created_at, k.id "
+                "LIMIT 1",
                 user_id,
             )
         return [dict(row) for row in rows]
@@ -4384,10 +4454,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             JOIN users u
               ON u.id = udc.user_id
              AND u.status = 'active'
-            JOIN api_keys k
-              ON k.user_id = u.id
-             AND k.status = 'active'
-             AND (k.expires_at IS NULL OR k.expires_at > NOW())
+            -- One row per account: its keys all carry the account's quota,
+            -- and an account may hold several.
+            JOIN LATERAL (
+                SELECT k.quota_daily_cost_usd
+                FROM api_keys k
+                WHERE k.user_id = u.id
+                  AND k.status = 'active'
+                  AND (k.expires_at IS NULL OR k.expires_at > NOW())
+                ORDER BY k.created_at, k.id
+                LIMIT 1
+            ) k ON TRUE
             WHERE udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
               AND udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)
             ORDER BY (udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)) DESC
@@ -4572,7 +4649,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 FROM users u
                 LEFT JOIN today_costs t ON t.user_id = u.id
                 LEFT JOIN prior_7d p ON p.user_id = u.id
-                LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+                -- One row per user, however many active keys it holds; each
+                -- carries the account's quota.
+                LEFT JOIN LATERAL (
+                    SELECT quota_daily_cost_usd FROM api_keys
+                    WHERE account_id = u.id AND status = 'active'
+                    ORDER BY created_at, id LIMIT 1
+                ) k ON TRUE
                 WHERE u.status = 'active'
                 """,
                 today_str,
@@ -4695,7 +4778,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     # -- role quota ----------------------------------------------------------
 
     async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
-        """Return ``(key_count, user_count)`` of active api_keys whose owner has this role."""
+        """Return ``(key_count, user_count)`` of unrevoked api_keys whose owner has this role.
+
+        Counts exactly the rows :meth:`apply_role_quota` would write.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -4703,7 +4789,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                        COUNT(DISTINCT k.user_id)::int AS users
                 FROM api_keys k
                 JOIN users u ON u.id = k.user_id
-                WHERE k.status = 'active' AND u.role = $1
+                WHERE k.status <> 'revoked' AND u.role = $1
                 """,
                 role,
             )
@@ -4712,7 +4798,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return int(row["keys"]), int(row["users"])
 
     async def apply_role_quota(self, role: str, quota: Decimal) -> int:
-        """Bulk-update ``quota_daily_cost_usd`` for all active keys whose owner has *role*.
+        """Bulk-update ``quota_daily_cost_usd`` on every unrevoked key whose owner has *role*.
+
+        Unrevoked rather than only active: the quota is the account's and is
+        carried by each of its live keys, so a suspended key left behind would
+        come back with an older quota than its siblings when it is resumed.
 
         Returns the number of rows updated.
         """
@@ -4721,7 +4811,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 """
                     UPDATE api_keys
                     SET quota_daily_cost_usd = $1
-                    WHERE status = 'active'
+                    WHERE status <> 'revoked'
                       AND user_id IN (SELECT id FROM users WHERE role = $2)
                     """,
                 quota,

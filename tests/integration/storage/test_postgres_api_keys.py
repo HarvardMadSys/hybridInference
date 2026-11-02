@@ -10,6 +10,7 @@ never bring a revoked credential back.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -247,3 +248,154 @@ async def test_regenerate_without_an_active_key_changes_nothing(keys, history):
         )
 
     assert await _rows(pool, "u-admkey-noact") == before
+
+
+# --- the account quota: one value on every unrevoked key of an account ------
+
+
+async def _set_quota(pool: Any, name: str, daily: str | None, monthly: str | None = None) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET quota_daily_cost_usd = $2::numeric, "
+            "quota_monthly_cost_usd = $3::numeric WHERE key_prefix = $1",
+            f"{_PREFIX}-{name}",
+            daily,
+            monthly,
+        )
+
+
+async def _quotas(pool: Any, user_id: str) -> dict[str, tuple[Any, Any]]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT key_prefix, quota_daily_cost_usd, quota_monthly_cost_usd "
+            "FROM api_keys WHERE user_id = $1",
+            user_id,
+        )
+    return {
+        row["key_prefix"].removeprefix(f"{_PREFIX}-"): (
+            None if row["quota_daily_cost_usd"] is None else str(row["quota_daily_cost_usd"]),
+            None if row["quota_monthly_cost_usd"] is None else str(row["quota_monthly_cost_usd"]),
+        )
+        for row in rows
+    }
+
+
+async def _create(store: PostgresOperationalStore, user_id: str, name: str, **kwargs: Any) -> None:
+    await store.create_key(
+        key_hash=f"hash-{name}", key_prefix=f"{_PREFIX}-{name}", user_id=user_id, **kwargs
+    )
+
+
+async def test_a_users_new_key_inherits_the_account_quota(keys):
+    """A key a user adds takes the account's quota, not the role default it was offered."""
+    store, pool = keys
+    await _user(store, "u-admkey-inh")
+    await _key(pool, "u-admkey-inh", "inh-old", "suspended")
+    await _set_quota(pool, "inh-old", "42.0000", "500.0000")
+
+    await _create(
+        store, "u-admkey-inh", "inh-new", quota_daily_cost_usd=100.0, inherit_account_quota=True
+    )
+
+    assert (await _quotas(pool, "u-admkey-inh"))["inh-new"] == ("42.0000", "500.0000")
+
+
+async def test_an_inherited_null_quota_stays_null(keys):
+    """NULL is the default limit, and a sibling must read the same default -- not the offer."""
+    store, pool = keys
+    await _user(store, "u-admkey-inhnull")
+    await _key(pool, "u-admkey-inhnull", "inhnull-old", "suspended")
+    await _set_quota(pool, "inhnull-old", None)
+
+    await _create(
+        store,
+        "u-admkey-inhnull",
+        "inhnull-new",
+        quota_daily_cost_usd=100.0,
+        inherit_account_quota=True,
+    )
+
+    assert (await _quotas(pool, "u-admkey-inhnull"))["inhnull-new"] == (None, None)
+
+
+async def test_a_first_key_takes_the_offered_quota(keys):
+    """Nothing to inherit from: revoked history does not count as the account."""
+    store, pool = keys
+    await _user(store, "u-admkey-first")
+    await _key(pool, "u-admkey-first", "first-old", "revoked")
+    await _set_quota(pool, "first-old", "7.0000")
+
+    await _create(
+        store, "u-admkey-first", "first-new", quota_daily_cost_usd=100.0, inherit_account_quota=True
+    )
+
+    assert (await _quotas(pool, "u-admkey-first"))["first-new"] == ("100.0000", None)
+
+
+async def test_an_admin_key_sets_the_account_quota_on_every_live_key(keys):
+    """Without inheriting, the given quota becomes the account's; revoked rows keep theirs."""
+    store, pool = keys
+    await _user(store, "u-admkey-set")
+    await _key(pool, "u-admkey-set", "set-susp", "suspended")
+    await _key(pool, "u-admkey-set", "set-dead", "revoked")
+    await _set_quota(pool, "set-susp", "5.0000")
+    await _set_quota(pool, "set-dead", "6.0000")
+
+    await _create(
+        store,
+        "u-admkey-set",
+        "set-new",
+        quota_daily_cost_usd=250.0,
+        quota_monthly_cost_usd=900.0,
+    )
+
+    assert await _quotas(pool, "u-admkey-set") == {
+        "set-new": ("250.0000", "900.0000"),
+        "set-susp": ("250.0000", "900.0000"),
+        "set-dead": ("6.0000", None),
+    }
+
+
+async def test_update_writes_the_quota_to_every_live_key(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-updq")
+    await _key(pool, "u-admkey-updq", "updq-live", "active")
+    await _key(pool, "u-admkey-updq", "updq-susp", "suspended")
+    await _key(pool, "u-admkey-updq", "updq-dead", "revoked")
+
+    await store.update_key("u-admkey-updq", quota_daily_cost_usd=33)
+
+    quotas = await _quotas(pool, "u-admkey-updq")
+    assert quotas["updq-live"][0] == quotas["updq-susp"][0] == "33.0000"
+    assert quotas["updq-dead"][0] == "1000.0000"
+
+
+async def test_role_quota_reaches_suspended_keys_and_counts_what_it_writes(keys):
+    """A suspended key that missed the bulk write would come back with a stale limit."""
+    store, pool = keys
+    async with pool.acquire() as conn:
+        before_keys, before_users = await store.count_active_keys_for_role("pro")
+        await _user(store, "u-admkey-role")
+        await conn.execute("UPDATE users SET role = 'pro' WHERE id = 'u-admkey-role'")
+    await _key(pool, "u-admkey-role", "role-live", "active")
+    await _key(pool, "u-admkey-role", "role-susp", "suspended")
+    await _key(pool, "u-admkey-role", "role-dead", "revoked")
+
+    assert await store.count_active_keys_for_role("pro") == (before_keys + 2, before_users + 1)
+    updated = await store.apply_role_quota("pro", quota=Decimal("77.00"))
+
+    quotas = await _quotas(pool, "u-admkey-role")
+    assert updated >= 2
+    assert quotas["role-live"][0] == quotas["role-susp"][0] == "77.0000"
+    assert quotas["role-dead"][0] == "1000.0000"
+
+
+async def test_the_grant_quota_lookup_answers_with_one_row_per_account(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-grant")
+    await _key(pool, "u-admkey-grant", "grant-live", "active")
+    await _set_quota(pool, "grant-live", "12.0000")
+
+    rows = await store.get_quota_context_for_user("u-admkey-grant")
+
+    assert [str(row["quota_daily_cost_usd"]) for row in rows] == ["12.0000"]
