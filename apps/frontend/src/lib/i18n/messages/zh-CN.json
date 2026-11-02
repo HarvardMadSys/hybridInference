@@ -1031,10 +1031,6 @@
     "source": "More actions for {name}",
     "text": "任务 {name} 的更多操作"
   },
-  "batches.back": {
-    "source": "Dashboard",
-    "text": "控制台"
-  },
   "batches.category.cancelled": {
     "source": "Cancelled",
     "text": "已取消"
@@ -2355,6 +2351,46 @@
     "source": " (opens in a new tab)",
     "text": "（在新标签页打开）"
   },
+  "console.nav.admin": {
+    "source": "Admin Console",
+    "text": "管理后台"
+  },
+  "console.nav.batches": {
+    "source": "Batches",
+    "text": "批次"
+  },
+  "console.nav.keys": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "console.nav.label": {
+    "source": "Console",
+    "text": "控制台"
+  },
+  "console.nav.models": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "console.nav.overview": {
+    "source": "Overview",
+    "text": "概览"
+  },
+  "console.nav.playground": {
+    "source": "API Playground",
+    "text": "API 调试台"
+  },
+  "console.nav.requests": {
+    "source": "Requests",
+    "text": "请求记录"
+  },
+  "console.nav.settings": {
+    "source": "Settings",
+    "text": "设置"
+  },
+  "console.nav.tools": {
+    "source": "Tools",
+    "text": "工具"
+  },
   "dashboard.account.email": {
     "source": "Email:",
     "text": "邮箱："
@@ -2394,18 +2430,6 @@
   "dashboard.internal.admin": {
     "source": "Admin Console",
     "text": "管理后台"
-  },
-  "dashboard.internal.batches": {
-    "source": "Batches",
-    "text": "批次"
-  },
-  "dashboard.internal.playground": {
-    "source": "API Playground",
-    "text": "API 调试台"
-  },
-  "dashboard.keys.more_actions": {
-    "source": "Actions for {name}",
-    "text": "{name} 的操作"
   },
   "dashboard.keys.col_actions": {
     "source": "Actions",
@@ -2482,6 +2506,10 @@
   "dashboard.keys.load_failed": {
     "source": "Failed to load API keys. Please try again later.",
     "text": "API key 加载失败，请稍后再试。"
+  },
+  "dashboard.keys.more_actions": {
+    "source": "Actions for {name}",
+    "text": "{name} 的操作"
   },
   "dashboard.keys.name_label": {
     "source": "Name (optional)",
@@ -2799,17 +2827,9 @@
     "source": "Total Tokens",
     "text": "总 token"
   },
-  "dashboard.settings_link": {
-    "source": "Settings",
-    "text": "设置"
-  },
   "dashboard.title": {
     "source": "Dashboard",
     "text": "控制台"
-  },
-  "dashboard.tools.title": {
-    "source": "Tools",
-    "text": "工具"
   },
   "dashboard.usage.cost": {
     "source": "Estimated cost",
@@ -3230,10 +3250,6 @@
   "meta.team.title": {
     "source": "Team",
     "text": "团队"
-  },
-  "settings.back": {
-    "source": "← Back",
-    "text": "← 返回"
   },
   "settings.danger.description": {
     "source": "Irreversible actions that permanently affect your account.",
