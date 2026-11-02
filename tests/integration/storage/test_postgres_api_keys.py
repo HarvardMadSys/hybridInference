@@ -9,15 +9,20 @@ never bring a revoked credential back.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from decimal import Decimal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
 
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -547,3 +552,195 @@ async def test_keys_read_unnamed_and_cannot_be_named_while_the_column_is_pending
         await _create(store, "u-admkey-pend", "pend-named", name="x")
     await _create(store, "u-admkey-pend", "pend-b")
     assert await store.count_active_keys("u-admkey-pend") == 2
+
+
+# --- account-wide writes serialize with the keys being added ----------------
+#
+# Each test parks a create or rotation at its INSERT -- past its account lock
+# and its read of the account, before its commit -- by holding an uncommitted
+# row with the key_hash it is about to write. It then starts the competing
+# write and lets the parked one go only once PostgreSQL reports the competing
+# write blocked behind it. The order is decided by pg_blocking_pids, not by
+# timing.
+
+
+@asynccontextmanager
+async def _parked_insert(pool: Any, key_hash: str) -> AsyncIterator[int]:
+    """Hold an insert of *key_hash* open; yield the holder's backend pid."""
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute(
+                "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id) "
+                "VALUES ($1, $2, 'u-admkey-parker', 'u-admkey-parker')",
+                key_hash,
+                f"{_PREFIX}-parker",
+            )
+            yield await conn.fetchval("SELECT pg_backend_pid()")
+        finally:
+            await tx.rollback()
+
+
+async def _blocked_behind(pool: Any, pid: int) -> int:
+    """Wait until a backend is blocked behind *pid*; return that backend's pid."""
+    async with pool.acquire() as probe:
+        for _ in range(1000):
+            waiter = await probe.fetchval(
+                "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) LIMIT 1",
+                pid,
+            )
+            if waiter is not None:
+                return waiter
+            await asyncio.sleep(0.01)
+    raise AssertionError(f"no backend became blocked behind backend {pid}")
+
+
+async def _while_parked(pool: Any, key_hash: str, parked: Any, competing: Any) -> None:
+    """Park *parked* at its insert of *key_hash*, start *competing* behind it, finish both.
+
+    Raises the first error either of them raised.
+    """
+    tasks: list[asyncio.Task[Any]] = []
+    try:
+        async with _parked_insert(pool, key_hash) as parker:
+            tasks.append(asyncio.create_task(parked()))
+            writer = await _blocked_behind(pool, parker)
+            tasks.append(asyncio.create_task(competing()))
+            await _blocked_behind(pool, writer)
+    finally:
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=10
+        )
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+
+async def _account_with_one_key(store: Any, pool: Any, user_id: str, tag: str) -> None:
+    await _user(store, user_id)
+    await _key(pool, user_id, f"{tag}-old", "active")
+    await _set_quota(pool, f"{tag}-old", "100.0000")
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(lambda s, uid: s.update_key(uid, quota_daily_cost_usd=10), id="admin"),
+        pytest.param(lambda s, uid: s.apply_role_quota("pro", Decimal("10")), id="role"),
+    ],
+)
+async def test_a_quota_write_reaches_a_key_created_while_it_waited(keys, write):
+    """Lowering the quota must not miss the key a concurrent create is inserting."""
+    store, pool = keys
+    uid = "u-admkey-qcreate"
+    await _account_with_one_key(store, pool, uid, "qcreate")
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET role = 'pro' WHERE id = $1", uid)
+
+    await _while_parked(
+        pool,
+        "hash-qcreate-new",
+        lambda: _create(store, uid, "qcreate-new", inherit_account_quota=True),
+        lambda: write(store, uid),
+    )
+
+    assert await _quotas(pool, uid) == {
+        "qcreate-old": ("10.0000", None),
+        "qcreate-new": ("10.0000", None),
+    }
+
+
+async def test_a_quota_write_reaches_the_key_a_rotation_issued_while_it_waited(keys):
+    store, pool = keys
+    uid = "u-admkey-qrot"
+    await _account_with_one_key(store, pool, uid, "qrot")
+
+    await _while_parked(
+        pool,
+        "hash-qrot-new",
+        lambda: store.rotate_key(
+            uid,
+            f"{_PREFIX}-qrot-old",
+            new_key_hash="hash-qrot-new",
+            new_key_prefix=f"{_PREFIX}-qrot-new",
+            api_key_encrypted=None,
+        ),
+        lambda: store.update_key(uid, quota_daily_cost_usd=10),
+    )
+
+    assert (await _quotas(pool, uid))["qrot-new"] == ("10.0000", None)
+
+
+@pytest.mark.parametrize(
+    "revoke",
+    [
+        pytest.param(lambda s, uid: s.revoke_key(uid), id="revoke"),
+        pytest.param(lambda s, uid: s.suspend_user(uid), id="suspend"),
+    ],
+)
+async def test_revoking_an_account_reaches_a_key_created_while_it_waited(keys, revoke):
+    """A key a create was inserting must not outlive the revocation of its account."""
+    store, pool = keys
+    uid = "u-admkey-rcreate"
+    await _account_with_one_key(store, pool, uid, "rcreate")
+
+    await _while_parked(
+        pool,
+        "hash-rcreate-new",
+        lambda: _create(store, uid, "rcreate-new", inherit_account_quota=True),
+        lambda: revoke(store, uid),
+    )
+
+    assert {row["status"] for row in (await _rows(pool, uid)).values()} == {"revoked"}
+
+
+async def test_rotating_the_only_key_is_decided_under_the_account_lock(keys):
+    """Legacy regenerate must not rotate a key created after it looked."""
+    from serving.exceptions import AmbiguousAPIKeyError
+
+    store, pool = keys
+    uid = "u-admkey-only"
+    await _account_with_one_key(store, pool, uid, "only")
+
+    with pytest.raises(AmbiguousAPIKeyError):
+        await _while_parked(
+            pool,
+            "hash-only-new",
+            lambda: _create(store, uid, "only-new", inherit_account_quota=True),
+            lambda: store.rotate_key(
+                uid,
+                None,
+                new_key_hash="hash-only-rotated",
+                new_key_prefix=f"{_PREFIX}-only-rotated",
+                api_key_encrypted=None,
+            ),
+        )
+
+    rows = await _rows(pool, uid)
+    assert {prefix: row["status"] for prefix, row in rows.items()} == {
+        f"{_PREFIX}-only-old": "active",
+        f"{_PREFIX}-only-new": "active",
+    }
+
+
+async def test_rotating_the_only_key_replaces_it(keys):
+    store, pool = keys
+    uid = "u-admkey-sole"
+    await _account_with_one_key(store, pool, uid, "sole")
+
+    async def rotate() -> Any:
+        return await store.rotate_key(
+            uid,
+            None,
+            new_key_hash="hash-sole-new",
+            new_key_prefix=f"{_PREFIX}-sole-new",
+            api_key_encrypted=None,
+        )
+
+    rotated = await rotate()
+
+    assert rotated is not None and rotated["old_key_prefix"] == f"{_PREFIX}-sole-old"
+    assert (await _rows(pool, uid))[f"{_PREFIX}-sole-new"]["status"] == "active"
+    await store.revoke_key(uid)
+    assert await rotate() is None

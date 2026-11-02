@@ -18,6 +18,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from serving.audit import AuditTarget
 from serving.exceptions import (
+    AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
     UserNotFoundError,
     generic_message_for_status,
@@ -736,27 +737,36 @@ async def delete_api_key(
 async def _rotate_api_key(
     request: Request,
     current_user: dict[str, Any],
-    old_key_prefix: str,
+    old_key_prefix: str | None,
     op_store: Any,
     db_logger: Any,
 ) -> APIKeyRegenerateResponse:
     """Replace one of the current user's active keys; the old one stops at once.
 
     The successor keeps the key's name and the account's quota (a rotation is
-    not a reason to reset a limit an admin granted). 404 when the account has
-    no active key with that prefix.
+    not a reason to reset a limit an admin granted). An *old_key_prefix* of
+    None means the account's only active key, which the store picks under
+    the account lock; 409 when there are several. 404 when the account has
+    no such active key.
     """
     api_key = generate_api_key()
     key_prefix = api_key[:12]
-    rotated = await op_store.rotate_key(
-        current_user["user_id"],
-        old_key_prefix,
-        new_key_hash=hash_api_key(api_key),
-        new_key_prefix=key_prefix,
-        api_key_encrypted=encrypt_api_key(api_key),
-    )
+    try:
+        rotated = await op_store.rotate_key(
+            current_user["user_id"],
+            old_key_prefix,
+            new_key_hash=hash_api_key(api_key),
+            new_key_prefix=key_prefix,
+            api_key_encrypted=encrypt_api_key(api_key),
+        )
+    except AmbiguousAPIKeyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="You have several active API keys; regenerate one by its prefix.",
+        ) from exc
     if not rotated:
         raise HTTPException(status_code=404, detail="No active API key found")
+    old_key_prefix = rotated["old_key_prefix"]
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
     await log_admin_action(
@@ -795,17 +805,7 @@ async def regenerate_api_key(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    if await op_store.count_active_keys(current_user["user_id"]) > 1:
-        raise HTTPException(
-            status_code=409,
-            detail="You have several active API keys; regenerate one by its prefix.",
-        )
-    old_key_row = await op_store.get_key_by_account_or_user(current_user["user_id"])
-    if not old_key_row:
-        raise HTTPException(status_code=404, detail="No active API key found")
-    return await _rotate_api_key(
-        request, current_user, old_key_row["key_prefix"], op_store, db_logger
-    )
+    return await _rotate_api_key(request, current_user, None, op_store, db_logger)
 
 
 @router.post("/api-keys/{key_prefix}/regenerate", response_model=APIKeyRegenerateResponse)

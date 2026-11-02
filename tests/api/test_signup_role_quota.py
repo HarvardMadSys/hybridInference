@@ -219,8 +219,11 @@ async def test_regenerate_api_key_rotates_without_reseeding_the_role_quota():
     """A rotation keeps the account's quota: no role default is read or written."""
     rt = _make_rt(250.0)
     op_store = _make_op_store(has_active_key=True)
-    op_store.count_active_keys.return_value = 1
-    op_store.rotate_key.return_value = {"id": 2, "created_at": None, "old_key_prefix": "x"}
+    op_store.rotate_key.return_value = {
+        "id": 2,
+        "created_at": None,
+        "old_key_prefix": "abc123456789",
+    }
 
     with _patch_auth(), patch.object(user_routes, "get_runtime_settings_instance", return_value=rt):
         response = await regenerate_api_key(
@@ -230,8 +233,9 @@ async def test_regenerate_api_key_rotates_without_reseeding_the_role_quota():
             db_logger=_make_db_logger(),
         )
 
+    # The route names no key: the store picks the only one under the account lock.
     op_store.rotate_key.assert_awaited_once()
-    assert op_store.rotate_key.call_args.args == ("user-123", "abc123456789")
+    assert op_store.rotate_key.call_args.args == ("user-123", None)
     op_store.create_key.assert_not_awaited()
     op_store.revoke_key.assert_not_awaited()
     rt.get_float.assert_not_awaited()
@@ -240,8 +244,10 @@ async def test_regenerate_api_key_rotates_without_reseeding_the_role_quota():
 
 @pytest.mark.asyncio
 async def test_regenerate_api_key_with_several_keys_returns_409():
+    from serving.exceptions import AmbiguousAPIKeyError
+
     op_store = _make_op_store(has_active_key=True)
-    op_store.count_active_keys.return_value = 2
+    op_store.rotate_key.side_effect = AmbiguousAPIKeyError()
 
     with _patch_auth(), pytest.raises(HTTPException) as exc_info:
         await regenerate_api_key(
@@ -252,4 +258,4 @@ async def test_regenerate_api_key_with_several_keys_returns_409():
         )
 
     assert exc_info.value.status_code == 409
-    op_store.rotate_key.assert_not_awaited()
+    op_store.create_key.assert_not_awaited()

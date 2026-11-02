@@ -140,6 +140,13 @@ class APIKeyLimitReachedError(UserFacingError):
         super().__init__(f"An account may hold at most {limit} active API keys")
 
 
+class AmbiguousAPIKeyError(UserFacingError):
+    """The account holds several active API keys and the request named none."""
+
+    def __init__(self) -> None:
+        super().__init__("The account holds several active API keys; name one by its prefix")
+
+
 class APIKeyNotFoundError(UserFacingError):
     """API key not found."""
 

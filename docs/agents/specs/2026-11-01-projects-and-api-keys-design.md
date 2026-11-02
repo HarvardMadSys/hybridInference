@@ -517,8 +517,33 @@ the console shows no limit. `MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 100`
 (`serving/servers/routers/user_routes.py`) only bounds what a runaway or
 hostile script can write through the unthrottled create route, and how much
 the listing (which decrypts every active key) can grow. The count and the
-insert run under a per-user transaction-scoped advisory lock, so concurrent
-creates cannot pass it.
+insert run under the account lock (below), so concurrent creates cannot pass
+it.
+
+**Concurrency.** Row locks alone cannot keep the account quota identical on
+every key. Under READ COMMITTED, an `UPDATE api_keys ... WHERE user_id = $1`
+that waited on a row lock re-checks only the rows in its statement snapshot.
+A key that a concurrent create or rotation inserted is not among them, so it
+keeps the quota, or the status, it was written with. Each of these was
+reproduced against PostgreSQL before the fix:
+
+- A lowered quota missed the new key.
+- A role-wide quota missed it.
+- A suspension or "revoke all" left it active.
+
+So every write that adds a key or changes all of an account's keys takes a
+transaction-scoped advisory lock on the account before anything else. These
+writes are create, rotate, the admin's update and revoke, suspension, and
+soft and hard deletion. A write that spans accounts (`apply_role_quota`) takes
+one all-accounts lock exclusively. Every per-account writer holds that lock in
+shared mode, acquired before the account lock, so the two cannot deadlock. A
+single global lock is used instead of one lock per account because a lock per
+account could exhaust the shared lock table for a large role. The legacy
+regenerate decides which key is "the only one" inside the same locked
+transaction as the rotation, so a key created meanwhile is never rotated in
+its place. `tests/integration/storage/test_postgres_api_keys.py` checks each
+interleaving by parking one writer at its insert and confirming through
+`pg_blocking_pids` that the other is waiting behind it.
 
 **API.**
 
@@ -528,7 +553,7 @@ creates cannot pass it.
 | `GET /user/api-keys/all` | Adds `name` per key |
 | `PATCH /user/api-keys/{key_prefix}` | Rename; a blank name clears it; 404 for a revoked or foreign key |
 | `POST /user/api-keys/{key_prefix}/regenerate` | Rotates that key: revoke and reissue in one transaction, keeping its name, expiry, notes, metadata and the account quota |
-| `POST /user/api-keys/regenerate` | Legacy; rotates the only active key, 409 when there are several |
+| `POST /user/api-keys/regenerate` | Legacy; rotates the only active key, chosen under the account lock; 409 when there are several |
 | `GET /user/api-keys` | Legacy; the newest active key |
 
 **Behavior changes worth knowing.**

@@ -640,7 +640,7 @@ class OperationalStore(ABC):
     async def rotate_key(
         self,
         account_id: str,
-        key_prefix: str,
+        key_prefix: str | None,
         *,
         new_key_hash: str,
         new_key_prefix: str,
@@ -649,8 +649,14 @@ class OperationalStore(ABC):
         """Atomically revoke the account's active key *key_prefix* and issue its successor.
 
         The successor keeps the key's name, expiry, notes, metadata and the
-        account's quota. Returns ``{"id", "created_at", "old_key_prefix"}``, or
-        None when the account has no active key with that prefix.
+        account's quota. A *key_prefix* of None means the account's only
+        active key, chosen in the same transaction as the rotation. Returns
+        ``{"id", "created_at", "old_key_prefix"}``, or None when the account
+        has no such active key.
+
+        Raises:
+            AmbiguousAPIKeyError: *key_prefix* is None and the account holds
+                several active keys.
         """
 
     @abstractmethod

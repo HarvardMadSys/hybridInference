@@ -18,6 +18,7 @@ from serving.audit import AuditTarget, audit_columns
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
     AccountSchemaPending,
+    AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
     DuplicateAPIKeyError,
     HardDeleteStateChanged,
@@ -194,15 +195,50 @@ def _decode_grant(row: Any) -> Row:
 RETIRED_API_KEY_UNIQUE_INDEXES = ("idx_api_keys_user_unique", "idx_api_keys_account_active_unique")
 
 
-async def _lock_account_keys(conn: asyncpg.Connection, user_id: str) -> None:
-    """Serialize key creation for *user_id* until the current transaction ends.
+#: Advisory lock key held by every API-key write: shared by a write to one
+#: account's keys, exclusive by a write that spans accounts. The per-account
+#: keys are ``'hybridinference:api-keys:' || account_id``.
+_ALL_ACCOUNT_KEYS_LOCK = "hashtextextended('hybridinference:api-keys', 0)"
 
-    A transaction-scoped advisory lock rather than a row lock: the first key
-    of an account has no row to lock yet.
+
+async def _lock_account_keys(conn: asyncpg.Connection, account_id: str) -> None:
+    """Hold off other writes to *account_id*'s keys until this transaction ends.
+
+    Taken first, before any row is read or written, by every write that adds
+    a key or changes all of an account's keys at once: create, rotate, the
+    admin's update and revoke, suspension and deletion.
+
+    Row locks cannot do this. Under READ COMMITTED an ``UPDATE ... WHERE
+    user_id = $1`` that waited on a row lock re-checks only the rows its
+    snapshot found, so it never sees a key inserted while it waited
+    (PostgreSQL documentation, "Read Committed Isolation Level"). That key
+    would keep the quota or status it was created with: a lowered quota or a
+    suspension would miss it.
+
+    The all-accounts lock is taken in shared mode first, always in that
+    order, so this cannot deadlock with :func:`_lock_all_account_keys`.
+
+    ``account_id`` equals ``user_id`` on every key: ``create_key`` defaults
+    one to the other, no caller passes a different value, and startup
+    backfills older rows.
     """
+    await conn.execute(f"SELECT pg_advisory_xact_lock_shared({_ALL_ACCOUNT_KEYS_LOCK})")
     await conn.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended('api_keys:' || $1, 0))", user_id
+        "SELECT pg_advisory_xact_lock(hashtextextended('hybridinference:api-keys:' || $1, 0))",
+        account_id,
     )
+
+
+async def _lock_all_account_keys(conn: asyncpg.Connection) -> None:
+    """Hold off every account's key writes until this transaction ends.
+
+    For a write that spans accounts, such as a role's quota. It waits for the
+    per-account writes in flight to commit, so the snapshot of its next
+    statement holds every key they added. One lock however many accounts the
+    write reaches, where a lock per account could exhaust the shared lock
+    table.
+    """
+    await conn.execute(f"SELECT pg_advisory_xact_lock({_ALL_ACCOUNT_KEYS_LOCK})")
 
 
 async def _sync_account_quota(
@@ -1547,6 +1583,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             set_parts.append(f"{USERS_MUTABLE_COLUMNS[key]} = ${idx}")
             params.append(val)
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             await conn.execute(f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1", *params)
             await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE user_id = $1", user_id)
             await conn.execute(
@@ -1587,6 +1624,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if self_service:
             details["self_service"] = True
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             if self_service:
                 # The route checked these before proving ownership; a promotion
                 # or suspension committed since must win over the deletion.
@@ -1764,6 +1802,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 return 0
 
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             user_row = await conn.fetchrow(
                 "SELECT status, hard_delete_pending, hard_delete_claim_token "
                 "FROM users WHERE id = $1 FOR UPDATE",
@@ -2475,9 +2514,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         account's, and every other unrevoked key of the user is set to them in
         the same transaction.
 
-        ``max_active_keys`` caps the account's active keys. The count and the
-        insert run under a per-user advisory lock, so two concurrent creates
-        cannot both pass a cap of one remaining slot.
+        ``max_active_keys`` caps the account's active keys. Everything runs
+        under the account lock (:func:`_lock_account_keys`), so two concurrent
+        creates cannot both pass a cap of one remaining slot, and a quota or
+        status written to the account meanwhile reaches the new key.
 
         Raises:
             APIKeyLimitReachedError: The account already holds ``max_active_keys``.
@@ -2516,8 +2556,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             try:
                 async with conn.transaction():
+                    await _lock_account_keys(conn, user_id)
                     if max_active_keys is not None:
-                        await _lock_account_keys(conn, user_id)
                         active = await conn.fetchval(
                             "SELECT COUNT(*) FROM api_keys "
                             "WHERE user_id = $1 AND status = 'active'",
@@ -2527,12 +2567,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                             raise APIKeyLimitReachedError(max_active_keys)
                     daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
                     if inherit_account_quota:
-                        # Locked, so a concurrent quota write cannot land
-                        # between reading the account's quota and copying it.
                         current = await conn.fetchrow(
                             "SELECT quota_daily_cost_usd, quota_monthly_cost_usd "
                             "FROM api_keys WHERE user_id = $1 AND status <> 'revoked' "
-                            "ORDER BY created_at, id LIMIT 1 FOR UPDATE",
+                            "ORDER BY created_at, id LIMIT 1",
                             user_id,
                         )
                         if current is not None:
@@ -2617,7 +2655,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def rotate_key(
         self,
         account_id: str,
-        key_prefix: str,
+        key_prefix: str | None,
         *,
         new_key_hash: str,
         new_key_prefix: str,
@@ -2625,13 +2663,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     ) -> Row | None:
         """Replace the account's active key *key_prefix* with a new credential.
 
-        One transaction: the old key is revoked and a new active key inserted
-        with its name, owner fields, expiry, notes, metadata and the account's
-        quota, so the account's key count and limits are unchanged. Revoking
-        first keeps the insert valid while a retired one-key index remains.
+        One transaction under the account lock: the old key is revoked and a
+        new active key inserted with its name, owner fields, expiry, notes,
+        metadata and the account's quota, so the account's key count and
+        limits are unchanged. Revoking first keeps the insert valid while a
+        retired one-key index remains.
+
+        A *key_prefix* of None means the account's only active key, for
+        clients written when an account held one. Which key that is gets
+        decided under the lock, so a key created meanwhile is never rotated
+        in its place.
 
         Returns ``{"id", "created_at", "old_key_prefix"}``, or None when the
-        account has no active key with that prefix.
+        account has no such active key.
+
+        Raises:
+            AmbiguousAPIKeyError: *key_prefix* is None and the account holds
+                several active keys.
         """
         names = await self._has_api_key_names()
         columns = (
@@ -2644,6 +2692,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             columns += ", name"
             values += ", $12"
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, account_id)
+            if key_prefix is None:
+                live = await conn.fetch(
+                    "SELECT key_prefix FROM api_keys "
+                    "WHERE account_id = $1 AND status = 'active' LIMIT 2",
+                    account_id,
+                )
+                if len(live) > 1:
+                    raise AmbiguousAPIKeyError()
+                if not live:
+                    return None
+                key_prefix = live[0]["key_prefix"]
             old = await conn.fetchrow(
                 "UPDATE api_keys SET status = 'revoked' "
                 "WHERE account_id = $1 AND key_prefix = $2 AND status = 'active' "
@@ -2782,12 +2842,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         sql = (
             f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = $1 AND status <> 'revoked'"
         )
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             await conn.execute(sql, *params)
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
-        """Soft-revoke (status='revoked') or hard-delete the key."""
-        async with self._pool.acquire() as conn:
+        """Soft-revoke (status='revoked') or hard-delete every key of *user_id*."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             if hard_delete:
                 await conn.execute("DELETE FROM api_keys WHERE user_id = $1", user_id)
             else:
@@ -4990,10 +5052,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Unrevoked rather than only active: the quota is the account's and is
         carried by each of its live keys, so a suspended key left behind would
         come back with an older quota than its siblings when it is resumed.
+        Under the all-accounts lock, so a key being created or rotated for
+        one of these accounts is written before this reads, never after.
 
         Returns the number of rows updated.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_all_account_keys(conn)
             tag = await conn.execute(
                 """
                     UPDATE api_keys

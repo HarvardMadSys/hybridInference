@@ -405,7 +405,7 @@ class CachedOperationalStore(OperationalStore):
     async def rotate_key(
         self,
         account_id: str,
-        key_prefix: str,
+        key_prefix: str | None,
         *,
         new_key_hash: str,
         new_key_prefix: str,
