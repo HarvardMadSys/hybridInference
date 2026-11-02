@@ -2545,10 +2545,17 @@ class RouteWiseRouter:
                     # ownership lexical even if metadata or hedge setup fails.
                     reservation.release()
                     raise
-            # Losing the commit race on a recovering endpoint is the same
-            # condition the build filter reports, just observed a moment later.
+            # A failed commit is one of the two refusals the build filter
+            # reports, just observed a moment later. ``_commit_candidate`` hands
+            # a granted claim straight back, so a circuit that refuses now is
+            # what refused the commit. One that still admits granted the claim,
+            # and the reservation lost its race instead: a slot or the last
+            # quota unit went to another request after the build saw it free.
+            # Nothing was sent upstream, so neither case is a provider failure.
             if not self._health_registry.allow_request(selected.endpoint_id):
                 admission_refused.add(selected.endpoint_id)
+            else:
+                capacity_refused.add(selected.endpoint_id)
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
             if not candidates:
                 return None
