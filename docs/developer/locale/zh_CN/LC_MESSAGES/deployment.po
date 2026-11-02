@@ -132,6 +132,56 @@ msgid ""
 msgstr "同一个文件里还有一个服务 `pgadmin`（profile 为 `admin`），只有指定这个 profile 时才会启动。"
 
 #: ../developer/deployment.md:36
+msgid "pgAdmin over mutual TLS"
+msgstr "通过双向 TLS 访问 pgAdmin"
+
+#: ../developer/deployment.md:38
+msgid ""
+"The optional `/pgadmin/` console proxy checks the caller's administrator "
+"session before connecting to pgAdmin. By default it uses "
+"`http://pgadmin:80`; setting `PGADMIN_INTERNAL_URL` overrides that "
+"address. For a separately hosted pgAdmin behind a gateway that requires "
+"client certificates, configure the **frontend server's runtime "
+"environment** with:"
+msgstr "可选的 `/pgadmin/` 控制台代理在连接 pgAdmin 前会检查调用者的管理员会话。默认地址为 `http://pgadmin:80`，可通过 `PGADMIN_INTERNAL_URL` 覆盖。若 pgAdmin 单独部署在要求客户端证书的网关后面，请在**前端服务的运行时环境**中配置："
+
+#: ../developer/deployment.md:52
+msgid ""
+"The URL hostname must match the gateway server certificate. The CA file "
+"verifies that server; the client certificate and key authenticate the "
+"frontend to the gateway. Supply the files through a read-only secret "
+"mount accessible to the frontend process, and restrict who may read or "
+"mount the client private key. These are file paths inside the frontend "
+"container, not certificate contents. The upstream gateway must enforce "
+"mTLS itself and restrict access to pgAdmin; the console's administrator "
+"check does not protect a separately exposed backend."
+msgstr "URL 中的主机名必须与网关服务端证书匹配。CA 文件用于验证服务端；客户端证书和私钥用于向网关认证前端。请通过前端进程可读取的只读 Secret 挂载提供文件，并限制谁能读取或挂载客户端私钥。这些是前端容器内的文件路径，不是证书内容。上游网关必须自行强制 mTLS 并限制对 pgAdmin 的访问；控制台的管理员检查无法保护单独暴露的后端。"
+
+#: ../developer/deployment.md:60
+msgid ""
+"The example Compose file does not forward these variables or mount these "
+"files; a deployment using Compose must explicitly add the frontend "
+"environment and secret volumes in an override. Setting only the root "
+"`.env` is not sufficient. With mTLS enabled, an HTTPS URL and all three "
+"files are required; invalid or unreadable settings make `/pgadmin/` "
+"return 502 without falling back to HTTP. Unset `PGADMIN_MTLS_ENABLED` or "
+"set it to the literal `false` to retain the existing proxy behavior. "
+"Values other than `true` or `false` fail closed."
+msgstr "示例 Compose 文件不会传入这些变量，也不会挂载这些文件；使用 Compose 时，必须在 override 中显式添加前端环境变量和 Secret 卷。只设置根目录 `.env` 不够。启用 mTLS 后必须提供 HTTPS URL 和全部三个文件；配置无效或不可读取时，`/pgadmin/` 返回 502，不会回退到 HTTP。未设置 `PGADMIN_MTLS_ENABLED` 或将其设为字面值 `false` 时保留现有代理行为。除 `true` 和 `false` 以外的值会按关闭访问处理。"
+
+#: ../developer/deployment.md:68
+msgid ""
+"The proxy rereads credentials for each new request and supports "
+"Kubernetes Secret volume projections that place all three files in the "
+"same projection directory. Ordinary files must not be modified while a "
+"request reads them; independent file updates cannot provide an atomic "
+"three-file snapshot. Certificate rotation across the frontend and gateway"
+" requires a coordinated procedure: their Secret projections do not update"
+" at the same time, and the gateway may need a reload. Existing in-flight "
+"requests can continue using the credentials they already acquired."
+msgstr "代理在每个新请求中重新读取凭据，支持将三个文件放在同一个投影目录内的 Kubernetes Secret 卷。普通文件在请求读取期间不得修改；分别更新文件无法提供三个文件的原子快照。前端与网关之间的证书轮换需要协调：两端的 Secret 投影不会同时更新，网关可能需要重新加载。已经进行中的请求可能继续使用此前获取的凭据。"
+
+#: ../developer/deployment.md:36
 msgid ""
 "`frontend` depends on `backend` with `condition: service_started`, not "
 "`service_healthy` — deliberately, so that a backend reporting unhealthy "
