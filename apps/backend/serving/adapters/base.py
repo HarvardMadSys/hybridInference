@@ -270,6 +270,10 @@ class BaseAdapter(ABC):
         """Execute streaming chat completion request."""
         pass
 
+    def _reads_images(self) -> bool:
+        """Whether this route declares image input (``input_modalities``)."""
+        return "image" in (getattr(self.config, "input_modalities", None) or ["text"])
+
     async def messages(
         self,
         body: dict[str, Any],
@@ -288,7 +292,9 @@ class BaseAdapter(ABC):
             openai_response_to_anthropic,
         )
 
-        oai_messages, oai_params = anthropic_request_to_openai(body)
+        oai_messages, oai_params = anthropic_request_to_openai(
+            body, tool_images=self._reads_images()
+        )
         oai_resp = await self.chat_completion(oai_messages, **oai_params)
         return openai_response_to_anthropic(oai_resp, model=body.get("model", ""))
 
@@ -307,7 +313,9 @@ class BaseAdapter(ABC):
         )
         from serving.utils.tokens import estimate_prompt_tokens
 
-        oai_messages, oai_params = anthropic_request_to_openai(body)
+        oai_messages, oai_params = anthropic_request_to_openai(
+            body, tool_images=self._reads_images()
+        )
         oai_params["stream"] = True
         # Seed message_start.usage.input_tokens with an estimate: OpenAI streams
         # report prompt tokens only in the final chunk, but Anthropic clients
