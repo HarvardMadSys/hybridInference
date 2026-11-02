@@ -983,6 +983,10 @@ jobs:
     # PR events run GitHub-hosted (arm); see the fork-safety note on Classify Changes.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm' || fromJSON('["self-hosted", "Linux", "ARM64", "image-verify-arm64"]') }}
     timeout-minutes: 45
+    # packages: read pulls the previous backend candidate for the restore drill.
+    permissions:
+      contents: read
+      packages: read
     env:
       COMPOSE_PROJECT_NAME: hi-tutorial-${{ github.run_id }}-${{ github.run_attempt }}
       EXAMPLE_BACKEND_CONTAINER_NAME: hi-tutorial-${{ github.run_id }}-${{ github.run_attempt }}-backend
@@ -1210,6 +1214,39 @@ jobs:
           test "${port}" = "${FRONTEND_PORT}"
           test ! -e "${EXAMPLE_RESET_STATE_FILE}"
           DEMO_SMOKE_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \
+            DEMO_BASE_URL="http://localhost:${port}" \
+            make demo-smoke DISTRIBUTION=example
+
+      - name: Restore the previous backend on the migrated database
+        id: demo-previous-smoke
+        # A failed deploy restores the image that ran before it, on the schema
+        # this image has just migrated, and without running that image's
+        # migrations. The previous dev candidate must start there and keep
+        # serving the accounts, keys and requests the smoke above created.
+        env:
+          PREVIOUS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "${PREVIOUS_SHA}" ] || [ -z "${PREVIOUS_SHA//0/}" ]; then
+            echo "::notice title=Restore drill skipped::no previous commit to restore"
+            exit 0
+          fi
+          image="ghcr.io/harvardmadsys/hybridinference-backend:dev-${PREVIOUS_SHA}"
+          docker_cfg="$(mktemp -d)"
+          printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if ! DOCKER_CONFIG="${docker_cfg}" docker pull --quiet "${image}"; then
+            echo "::warning title=Restore drill skipped::${image} is not published (yet)"
+            exit 0
+          fi
+          port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
+          PREVIOUS_BACKEND_IMAGE="${image}" \
+            DEMO_SMOKE_EXPECT_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \
+            DEMO_BASE_URL="http://localhost:${port}" \
+            make demo-previous DISTRIBUTION=example
+          test "$(docker container inspect --format '{{.Config.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")" = "${image}"
+          # Back to this image: its migration finds the database at its head.
+          make demo DISTRIBUTION=example
+          DEMO_SMOKE_EXPECT_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \
             DEMO_BASE_URL="http://localhost:${port}" \
             make demo-smoke DISTRIBUTION=example
 

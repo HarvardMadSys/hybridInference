@@ -167,12 +167,16 @@ make restart s=backend   # restart one service
 make ps                  # services and health status
 make logs                # tail all logs
 make logs s=backend      # tail one service
-make build               # rebuild images and restart
+make build               # rebuild images, migrate, and restart
 make build s=frontend    # rebuild one service
+make migrate             # apply the schema migrations only
 ```
 
 `make up` and `make build` first run the `docker-volumes` target, which creates
-the external volume `hybridinference_postgres_data` when it is missing.
+the external volume `hybridinference_postgres_data` when it is missing, and then
+apply the schema migrations with the backend image before they start the
+services. `make restart` starts the existing containers again and migrates
+nothing.
 
 To start an optional profile, pass it on the `make` command line — a variable
 set there is exported into the environment of the recipe, and a shell variable
@@ -571,10 +575,10 @@ It reads only the `DB_*` settings, asks twice for the new password — or, with
 every browser must sign in again. It takes an email address as well, for any
 other account. From a source checkout, run
 `uv run python -m serving.auth.reset_password <username>` in the repository
-root. It also works on a database the backend's upgrade has not migrated yet —
-while an upgrade's users migration is still waiting for the table's lock, say —
-and changes no schema. Such a database has no login names yet, so name the
-account by its email address there.
+root. It also works on a database the schema migrations have not brought up to
+date — while a migration waits for the users table's lock and the previous
+release goes on serving, say — and changes no schema. Such a database may have
+no login names yet, so name the account by its email address there.
 
 **A setting that breaks the console.** Settings live in the database, so a
 value that stops sign-in from working cannot be fixed by editing `.env`, nor
@@ -642,6 +646,38 @@ docker exec -it hybridinference-postgres psql -U "${DB_USER}" -d "${DB_NAME}"
 
 Schema details are in [Database](database.md).
 
+### Applying schema migrations
+
+Every deployment method has the same step: run the migrations with the image
+you are about to start, while the old one still serves, and start it only when
+they succeed.
+
+| Deployment | The step |
+|---|---|
+| The bundled Compose stack | `make migrate`; `make up` and `make build` run it for you |
+| Compose with a pinned image (`docker-compose.digest-backend.yml`) | `docker compose ... run --rm backend python -m migrations upgrade`, with the same files and `BACKEND_IMAGE` as the `up` that follows |
+| A systemd unit (`deploy/systemd/`) | `.venv/bin/python -m migrations upgrade` in the unit's working directory, with its environment, before `systemctl restart` |
+
+Rules for a deploy script that does this itself:
+
+- Run the migrations with the same image, by digest, that you then start. The
+  image carries the label `org.hybridinference.schema.migrations=alembic`; an
+  image without it predates versioned migrations, builds its schema at
+  startup, and has no step to run.
+- Do not make the migrations a dependency of the backend service (such as
+  Compose's `depends_on: condition: service_completed_successfully`).
+  Restoring the previous image after a failed deploy would then run the
+  previous image's migrations against the newer schema, which fails and takes
+  the restore down with it.
+- If the step fails, stop: do not restart the service. Exit status 75 means a
+  lock was not available in time (a backup holding a table, or another
+  migration run); the same command can be run again later.
+- Have the deploy in place, and seen working once on an image without the
+  label, before the first image with it arrives. The backend refuses to start
+  on a database that has not been migrated, so a missed step shows up as a
+  failed start and, where the deploy restores the previous image, an outage
+  while it does.
+
 ```{warning}
 The database holds every setting in plaintext: provider keys, the SMTP
 password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that
@@ -686,6 +722,11 @@ make ps
   greppable part of the line.
 - Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`.
 - Database connection failed — check `make ps` for the `postgres` health status.
+- `The database records no schema version` or `The database is at revision …,
+  behind this code's …` — the migrations have not been applied for this image.
+  Run `make migrate` (or your deployment's step, see
+  [Applying schema migrations](#applying-schema-migrations)), then start the
+  backend again.
 - `Configuration load failed after 3 attempts`, then
   `Authentication configuration incomplete` — the backend could not read its
   settings from the database and fell back to the environment, which holds no

@@ -235,11 +235,15 @@ apps/backend/migrations/
 
 ### 6.4 上游自带的部署示例
 
-- `deploy/docker/docker-compose.yml`：加一个一次性的 `migrate` 服务（同一个后端镜像，命令是迁移），放在
-  单独的 profile 里，`docker compose up -d` 不会启动它。部署说明写成先 `docker compose run --rm migrate`，
-  再 `docker compose up -d`。
-- `deploy/systemd/`：部署说明里，重启服务前先执行 `make migrate`。
-- `distributions/example/`：`make up` 先执行迁移，再启动服务。
+- compose：迁移用 `backend` 服务自己的定义起一个一次性容器，
+  `docker compose run --rm backend python -m migrations upgrade`，不另设服务。这样迁移用的一定是服务
+  马上要用的那个镜像和 `DB_*` 设置，按 digest 部署的覆盖层（`docker-compose.digest-backend.yml`）也一样；
+  它不是 `backend` 的依赖，普通的 `up -d` 和恢复都不会运行它。`make migrate` 就是这条命令，`make up`
+  和 `make build` 在启动服务之前先执行它。
+- `deploy/systemd/`：部署说明里，重启服务前先在工作目录执行 `.venv/bin/python -m migrations upgrade`；
+  服务单元不加 `ExecStartPre`，否则每次重启都会迁移。
+- `distributions/example/`：第一阶段没有数据库，不迁移；`make demo` 先启动 PostgreSQL、执行迁移，再启动
+  带数据库的后端。没有数据库（`DB_ENABLED=false`）时这条命令什么都不做，部署脚本可以无条件执行它。
 
 ## 7. 启动检查与兼容判断
 

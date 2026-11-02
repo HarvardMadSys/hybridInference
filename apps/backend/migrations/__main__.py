@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from typing import Any
 
@@ -69,10 +70,20 @@ async def _lock_holders() -> list[str]:
     ]
 
 
+def _database_enabled() -> bool:
+    """``DB_ENABLED``, read as ``serving.servers.deps.database_enabled`` reads it."""
+    return os.getenv("DB_ENABLED", "true").lower() not in ("false", "0", "no")
+
+
 def upgrade(target: str) -> int:
     """Apply every revision up to *target*; a lock timeout exits :data:`EXIT_RETRY`."""
     from alembic import command
 
+    if not _database_enabled():
+        # A deployment without a database (DB_ENABLED=false) has nothing to
+        # migrate, so a deploy script can run this step unconditionally.
+        print("DB_ENABLED is off: no database to migrate.")
+        return 0
     try:
         command.upgrade(alembic_config(), target)
     except MigrationInProgress as exc:
@@ -126,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("status", help="show the database's revision against this code's")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
     if args.command == "upgrade":
         return upgrade(args.to)
     return asyncio.run(_status())
