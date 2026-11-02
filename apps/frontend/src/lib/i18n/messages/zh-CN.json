@@ -2403,14 +2403,6 @@
     "source": "API Playground",
     "text": "API 调试台"
   },
-  "dashboard.keys.active_count": {
-    "source": "{count} of {max} active",
-    "text": "使用中 {count} / {max}"
-  },
-  "dashboard.keys.at_cap": {
-    "source": "You have {max} active keys, the most an account may hold. Delete one to create another.",
-    "text": "你已有 {max} 个使用中的 key，达到了每个账号的上限。删除一个后才能再创建。"
-  },
   "dashboard.keys.col_actions": {
     "source": "Actions",
     "text": "操作"

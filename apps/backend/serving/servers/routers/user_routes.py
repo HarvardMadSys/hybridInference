@@ -79,10 +79,12 @@ logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 LOCALE_PREFERENCE_KEY = "locale"
 
-#: How many active API keys one account may hold at once. Every key spends
-#: the same account quota; the cap bounds how many live credentials there are
-#: to leak or forget, not how much can be spent.
-MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 10
+#: A safety ceiling on an account's active API keys, not a product limit: the
+#: console does not show it and ordinary use never reaches it. Every key spends
+#: the same account quota, so it is not about spend; it bounds what a runaway
+#: or hostile script can write through the unthrottled create route, and the
+#: listing, which decrypts every active key.
+MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 100
 
 
 def _clean_key_name(name: str | None) -> str | None:
@@ -457,10 +459,11 @@ async def create_api_key(
 ) -> APIKeyResponse:
     """Generate a new API key for the current user.
 
-    Only available after email verification. An account may hold up to
-    :data:`MAX_ACTIVE_API_KEYS_PER_ACCOUNT` active keys, all spending the same
-    account quota: a key added to an account takes its quota, and only the
-    first key is seeded with the role default. The body is optional and may
+    Only available after email verification. An account may hold several
+    active keys (up to the :data:`MAX_ACTIVE_API_KEYS_PER_ACCOUNT` safety
+    ceiling), all spending the same account quota: a key added to an account
+    takes its quota, and only the first key is seeded with the role default.
+    The body is optional and may
     give the key a ``name``.
     """
     if not op_store:
@@ -509,7 +512,8 @@ async def create_api_key(
             status_code=409,
             detail=(
                 f"You already have {MAX_ACTIVE_API_KEYS_PER_ACCOUNT} active API keys, the "
-                "most an account may hold. Revoke one to create another."
+                "most an account may hold. Revoke one, or contact the operator of this "
+                "deployment if you need more."
             ),
         ) from exc
 
@@ -602,7 +606,7 @@ async def list_api_keys(
                 status=row["status"],
             )
         )
-    return APIKeyListResponse(keys=keys, max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT)
+    return APIKeyListResponse(keys=keys)
 
 
 @router.patch("/api-keys/{key_prefix}", response_model=APIKeyRenameResponse)

@@ -43,9 +43,9 @@ let mutations: {
   rename: Mutation;
 };
 
-function mockKeys(items: ApiKeyListItem[], maxActive: number | null = 10): void {
+function mockKeys(items: ApiKeyListItem[]): void {
   vi.mocked(useApiKeys).mockReturnValue({
-    data: { keys: items, max_active_keys: maxActive },
+    data: { keys: items },
     isLoading: false,
     error: null,
   } as ReturnType<typeof useApiKeys>);
@@ -150,17 +150,8 @@ describe('ApiKeyManager with several keys', () => {
     expect(screen.getByRole('button', { name: 'Create API Key' })).toBeEnabled();
     expect(screen.getByText('laptop')).toBeInTheDocument();
     expect(screen.getByText('Unnamed key')).toBeInTheDocument();
-    expect(screen.getByText('2 of 10 active')).toBeInTheDocument();
-  });
-
-  it('disables Create at the cap', () => {
-    mockKeys(
-      [makeItem({ key_prefix: 'hyi-aaaaaaaa' }), makeItem({ key_prefix: 'hyi-bbbbbbbb' })],
-      2,
-    );
-    render(<ApiKeyManager />);
-
-    expect(screen.getByRole('button', { name: 'Create API Key' })).toBeDisabled();
+    // No limit is presented: the server's ceiling is a safety net, not a quota.
+    expect(screen.queryByText(/ of \d+ active/)).not.toBeInTheDocument();
   });
 
   it('creates a key with the name typed into the prompt', async () => {

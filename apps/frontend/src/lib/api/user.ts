@@ -44,8 +44,6 @@ export interface ApiKeyListItem {
 
 export interface ApiKeyListResponse {
   keys: ApiKeyListItem[];
-  /** How many keys an account may hold active at once. */
-  max_active_keys?: number | null;
 }
 
 export interface ApiKeyRenameResponse {

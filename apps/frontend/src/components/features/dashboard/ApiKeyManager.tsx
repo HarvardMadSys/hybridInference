@@ -126,9 +126,6 @@ export function ApiKeyManager(): JSX.Element {
   const apiKeys = apiKeysResponse?.keys ?? [];
   const liveKeys = apiKeys.filter((key) => key.status !== 'revoked');
   const revokedKeys = apiKeys.filter((key) => key.status === 'revoked');
-  const activeCount = apiKeys.filter((key) => key.status === 'active').length;
-  const maxActive = apiKeysResponse?.max_active_keys ?? null;
-  const atCap = maxActive !== null && activeCount >= maxActive;
 
   function showNewKey(value: string): void {
     setNewApiKey(value);
@@ -392,34 +389,13 @@ export function ApiKeyManager(): JSX.Element {
           </p>
         </div>
         {!isLoadingKeys && (
-          <div className="flex items-center gap-3">
-            {maxActive !== null && (
-              <span className="text-sm text-gray-500">
-                {fill(t('dashboard.keys.active_count', '{count} of {max} active'), {
-                  count: String(activeCount),
-                  max: String(maxActive),
-                })}
-              </span>
-            )}
-            <Button
-              onClick={handleCreateKey}
-              disabled={isLoading || atCap}
-              isLoading={createMutation.isPending}
-              title={
-                atCap
-                  ? fill(
-                      t(
-                        'dashboard.keys.at_cap',
-                        'You have {max} active keys, the most an account may hold. Delete one to create another.',
-                      ),
-                      { max: String(maxActive) },
-                    )
-                  : undefined
-              }
-            >
-              {t('dashboard.keys.create', 'Create API Key')}
-            </Button>
-          </div>
+          <Button
+            onClick={handleCreateKey}
+            disabled={isLoading}
+            isLoading={createMutation.isPending}
+          >
+            {t('dashboard.keys.create', 'Create API Key')}
+          </Button>
         )}
       </div>
 

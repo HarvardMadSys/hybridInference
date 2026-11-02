@@ -406,10 +406,9 @@ class APIKeyListItem(BaseModel):
 
 
 class APIKeyListResponse(BaseModel):
-    """All API keys owned by the current user, and how many may be active at once."""
+    """All API keys owned by the current user."""
 
     keys: list[APIKeyListItem]
-    max_active_keys: int | None = None
 
 
 class APIKeyRenameResponse(BaseModel):

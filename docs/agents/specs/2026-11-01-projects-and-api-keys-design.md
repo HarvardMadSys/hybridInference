@@ -358,8 +358,9 @@ and `project`.
 
 ## 9. Key lifecycle and project policies
 
-- **Caps** (runtime settings): 25 active keys per project, 20 active projects
-  per org.
+- **Limits on counts:** none presented to users. As in P1a (§16), only safety
+  ceilings against runaway scripts: 100 active keys per account, and a
+  similar ceiling on active projects.
 - **Signup** creates the user, the personal org, an `owner` membership and the
   Default project in one transaction, then mints the first key as today.
 - **Rotation** copies the name (with a date suffix), allowlist and limits, sets
@@ -412,7 +413,7 @@ per-key and per-project views start at cut-over, and the console says so.
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| **P1a Several keys per account** (built, §16) | Retire the one-key indexes; per-account cap; key names; per-key rotation; account-level quota kept on every live key; console list with revoked keys folded away | Full unit, `dbtest` and frontend suites green; concurrent creates never pass the cap |
+| **P1a Several keys per account** (built, §16) | Retire the one-key indexes; no product limit (a safety ceiling of 100); key names; per-key rotation; account-level quota kept on every live key; console list with revoked keys folded away | Full unit, `dbtest` and frontend suites green; concurrent creates never pass the ceiling |
 | **P1b Attribution** | `api_logs.key_id`; `key_usage_daily`; per-key usage in the console; rotation with a grace period | Per-key usage reconciles with `api_logs` within 0.1% |
 | **P2 Projects and limits** | Organizations and projects (M1–M4, which now also move the account quota off the key rows onto the personal org); projects API and UI; daily and monthly budgets at key/project/org; `spend_counters`; the estimate in §7.2; scoped error fields; allowlists; per-project/per-key concurrency caps; `GET /v1/key`; filtered `/v1/models`; admin org endpoints; retargeted per-role bulk apply | Concurrency test: N in-flight requests never overshoot a budget by more than N × the maximum estimate error. Monthly limit enforced and shown |
 | **P3 Teams and policies** | `team` orgs, invitations, roles, org switcher; project routing and logging policies; budget alerts through the existing webhook/notification sinks; RPM/TPM if the metrics in §11.1 show a need; grants scoped to projects | Separate spec |
@@ -470,11 +471,13 @@ departing member's keys are revoked and their projects stay with the org.
    would break clients that match on 429 today.
 3. **Default project limits.** Should a new project inherit from the org
    (`NULL`, as proposed) or start with explicit values?
-4. **Caps.** Are 25 keys per project and 20 projects per org right for current
-   users?
+4. **Project ceiling.** P1a chose no product limit on keys, only a safety
+   ceiling of 100. Projects would likely follow suit; at what value?
 5. **Batch on key revocation.** Should revoking a key cancel that key's
    running batches, or let them finish?
-6. **Making the key cap a runtime setting.** P1a ships it as a constant (10).
+6. **Throttling key creation.** The create route has no rate limit; the
+   safety ceiling in §16 stands in for one. A per-user rate limit would let
+   the ceiling go.
 
 ## 16. P1a as built
 
@@ -508,17 +511,21 @@ refused with the old 409. The new `api_keys.name` column has its own deferrable
 migration. Until it lands, keys list as unnamed and naming one answers 503
 (`AccountSchemaPending`). Neither copy of the DDL creates the indexes any more.
 
-**Cap.** `MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 10`
-(`serving/servers/routers/user_routes.py`). The count and the insert run under
-a per-user transaction-scoped advisory lock, so concurrent creates cannot pass
-it.
+**No product limit; a safety ceiling.** Every key spends the same account
+quota and concurrency, so the number of keys is not a spending question, and
+the console shows no limit. `MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 100`
+(`serving/servers/routers/user_routes.py`) only bounds what a runaway or
+hostile script can write through the unthrottled create route, and how much
+the listing (which decrypts every active key) can grow. The count and the
+insert run under a per-user transaction-scoped advisory lock, so concurrent
+creates cannot pass it.
 
 **API.**
 
 | Method & path | Behavior |
 |---|---|
-| `POST /user/api-keys` | Optional body `{name}`; 409 at the cap |
-| `GET /user/api-keys/all` | Adds `name` per key and `max_active_keys` |
+| `POST /user/api-keys` | Optional body `{name}`; 409 only at the safety ceiling |
+| `GET /user/api-keys/all` | Adds `name` per key |
 | `PATCH /user/api-keys/{key_prefix}` | Rename; a blank name clears it; 404 for a revoked or foreign key |
 | `POST /user/api-keys/{key_prefix}/regenerate` | Rotates that key: revoke and reissue in one transaction, keeping its name, expiry, notes, metadata and the account quota |
 | `POST /user/api-keys/regenerate` | Legacy; rotates the only active key, 409 when there are several |
@@ -530,9 +537,9 @@ it.
 - Everything that used to read "the" key reads the newest active one: the
   console batch credential, the admin user detail, `GET /user/api-keys`.
 
-**Console.** Create stays available until the cap, asks for an optional name
-and shows the active count. Each active key has Rename, Regenerate and Delete.
-Revoked keys are folded under "Show revoked keys (n)".
+**Console.** Create is always available and asks for an optional name; no
+limit is shown. Each active key has Rename, Regenerate and Delete. Revoked keys
+are folded under "Show revoked keys (n)".
 
 **Not in P1a:** per-key usage attribution, rotation with a grace period, and
 admin endpoints addressed by key (they remain account-level). Those are P1b and

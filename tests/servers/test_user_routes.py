@@ -13,6 +13,10 @@ pytest_plugins = ["tests.servers.conftest_auth"]
 
 pytestmark = pytest.mark.dbtest
 
+#: Stands in for the per-account key ceiling, so the tests that reach it stay
+#: quick and do not depend on its production value.
+_SMALL_CEILING = 3
+
 
 class TestUserInfo:
     """Test user info endpoint."""
@@ -107,13 +111,20 @@ class TestAPIKeyManagement:
         assert set(active) == {test_user_with_key["key_prefix"], created["key_prefix"]}
         assert active[created["key_prefix"]]["name"] == "ci runner"
 
-    @pytest.mark.asyncio
-    async def test_the_key_after_the_cap_is_refused(
-        self, auth_app_client: AsyncClient, test_user, auth_headers
-    ):
-        from serving.servers.routers.user_routes import MAX_ACTIVE_API_KEYS_PER_ACCOUNT
+    def test_the_safety_ceiling_is_high_enough_not_to_be_a_product_limit(self):
+        """The ceiling only stops runaway scripts; the console does not present it as a limit."""
+        from serving.servers.routers import user_routes
 
-        for _ in range(MAX_ACTIVE_API_KEYS_PER_ACCOUNT):
+        assert user_routes.MAX_ACTIVE_API_KEYS_PER_ACCOUNT >= 100
+
+    @pytest.mark.asyncio
+    async def test_the_key_past_the_safety_ceiling_is_refused(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, monkeypatch
+    ):
+        from serving.servers.routers import user_routes
+
+        monkeypatch.setattr(user_routes, "MAX_ACTIVE_API_KEYS_PER_ACCOUNT", _SMALL_CEILING)
+        for _ in range(_SMALL_CEILING):
             assert (
                 await auth_app_client.post("/user/api-keys", headers=auth_headers)
             ).status_code == 201
@@ -121,19 +132,20 @@ class TestAPIKeyManagement:
         response = await auth_app_client.post("/user/api-keys", headers=auth_headers)
 
         assert response.status_code == 409
-        assert str(MAX_ACTIVE_API_KEYS_PER_ACCOUNT) in response.json()["detail"]
+        assert str(_SMALL_CEILING) in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_a_revoked_key_frees_its_slot(
-        self, auth_app_client: AsyncClient, test_user, auth_headers
+        self, auth_app_client: AsyncClient, test_user, auth_headers, monkeypatch
     ):
-        from serving.servers.routers.user_routes import MAX_ACTIVE_API_KEYS_PER_ACCOUNT
+        from serving.servers.routers import user_routes
 
+        monkeypatch.setattr(user_routes, "MAX_ACTIVE_API_KEYS_PER_ACCOUNT", _SMALL_CEILING)
         prefixes = [
             (await auth_app_client.post("/user/api-keys", headers=auth_headers)).json()[
                 "key_prefix"
             ]
-            for _ in range(MAX_ACTIVE_API_KEYS_PER_ACCOUNT)
+            for _ in range(_SMALL_CEILING)
         ]
         revoked = await auth_app_client.delete(
             f"/user/api-keys/{prefixes[0]}", headers=auth_headers
@@ -195,12 +207,10 @@ class TestAPIKeyManagement:
         self, auth_app_client: AsyncClient, test_user, auth_headers
     ):
         """Test listing API keys when user has no key."""
-        from serving.servers.routers.user_routes import MAX_ACTIVE_API_KEYS_PER_ACCOUNT
-
         response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
 
         assert response.status_code == 200
-        assert response.json() == {"keys": [], "max_active_keys": MAX_ACTIVE_API_KEYS_PER_ACCOUNT}
+        assert response.json() == {"keys": []}
 
     @pytest.mark.asyncio
     async def test_list_api_keys_success(
@@ -912,26 +922,24 @@ class TestConcurrentAPIKeyCreation:
 
     @pytest.mark.asyncio
     async def test_concurrent_creates_never_pass_the_cap(
-        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend, monkeypatch
     ):
         """The count and the insert are serialized per account, so a race cannot overfill it."""
         import asyncio
 
-        from serving.servers.routers.user_routes import MAX_ACTIVE_API_KEYS_PER_ACCOUNT
+        from serving.servers.routers import user_routes
 
+        monkeypatch.setattr(user_routes, "MAX_ACTIVE_API_KEYS_PER_ACCOUNT", _SMALL_CEILING)
         operational_store, _, _, _ = auth_backend
-        attempts = MAX_ACTIVE_API_KEYS_PER_ACCOUNT + 3
+        attempts = _SMALL_CEILING + 5
 
         responses = await asyncio.gather(
             *(auth_app_client.post("/user/api-keys", headers=auth_headers) for _ in range(attempts))
         )
 
         status_codes = sorted(r.status_code for r in responses)
-        assert status_codes == [201] * MAX_ACTIVE_API_KEYS_PER_ACCOUNT + [409] * 3
-        assert (
-            await operational_store.count_active_keys(test_user["id"])
-            == MAX_ACTIVE_API_KEYS_PER_ACCOUNT
-        )
+        assert status_codes == [201] * _SMALL_CEILING + [409] * 5
+        assert await operational_store.count_active_keys(test_user["id"]) == _SMALL_CEILING
 
 
 class TestAuthenticationEdgeCases:
