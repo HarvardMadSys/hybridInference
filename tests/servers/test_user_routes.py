@@ -466,7 +466,13 @@ class TestUsageStatistics:
                 provider="test-provider",
                 prompt="test",
                 response="test",
-                usage={"prompt_tokens": 100 + i * 100, "completion_tokens": 50 + i * 30},
+                usage={
+                    "prompt_tokens": 100 + i * 100,
+                    "completion_tokens": 50 + i * 30,
+                    "cache_read_tokens": 40 + i * 10,
+                    "cache_write_tokens": 20,
+                    "reasoning_tokens": 7 + i,
+                },
                 latency_ms=100,
                 status_code=200,
                 metadata={"user_id": test_user_with_key["id"]},
@@ -486,6 +492,22 @@ class TestUsageStatistics:
         # i=0: 100/50, i=1: 200/80 → totals 300 / 130
         assert data["usage"]["prompt_tokens"] >= 300
         assert data["usage"]["completion_tokens"] >= 130
+        # i=0: 40/20/7, i=1: 50/20/8 → totals 90 / 40 / 15
+        assert data["usage"]["cache_read_tokens"] >= 90
+        assert data["usage"]["cache_write_tokens"] >= 40
+        assert data["usage"]["reasoning_tokens"] >= 15
+
+    @pytest.mark.asyncio
+    async def test_get_usage_defaults_new_token_fields_to_zero(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
+    ):
+        """A user with no logged cache or reasoning usage reads zeros, not nulls."""
+        response = await auth_app_client.get("/user/usage?period=today", headers=auth_headers)
+
+        assert response.status_code == 200
+        usage = response.json()["usage"]
+        for field in ("cache_read_tokens", "cache_write_tokens", "reasoning_tokens"):
+            assert usage[field] == 0
 
 
 class TestRecentRequests:

@@ -68,6 +68,12 @@ export interface UsageStats {
     requests: number;
     prompt_tokens: number;
     completion_tokens: number;
+    /** Input tokens served from the prompt cache; part of `prompt_tokens`. */
+    cache_read_tokens?: number;
+    /** Input tokens written to the prompt cache; part of `prompt_tokens`. */
+    cache_write_tokens?: number;
+    /** Reasoning tokens; some providers already count them in `completion_tokens`. */
+    reasoning_tokens?: number;
     cost_usd: number;
   };
 }

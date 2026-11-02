@@ -72,3 +72,49 @@ describe('UsageStats period boundaries', () => {
     expect(screen.queryByText(/follows your timezone/)).not.toBeInTheDocument();
   });
 });
+
+describe('UsageStats cache and reasoning tokens', () => {
+  it('shows cache reads with their share of input, and reasoning tokens', () => {
+    mockedUseUsageStats.mockReturnValue({
+      data: {
+        ...baseStats,
+        usage: {
+          ...baseStats.usage,
+          prompt_tokens: 2000,
+          completion_tokens: 300,
+          cache_read_tokens: 500,
+          cache_write_tokens: 120,
+          reasoning_tokens: 80,
+        },
+      },
+      isLoading: false,
+      error: null,
+    });
+    render(<UsageStats />);
+    expect(screen.getByText('Cache reads: 500 (25%)')).toBeInTheDocument();
+    expect(screen.getByText('Cache writes: 120')).toBeInTheDocument();
+    expect(screen.getByText('Reasoning: 80')).toBeInTheDocument();
+  });
+
+  it('hides cache writes when none were reported and treats missing fields as zero', () => {
+    // An older backend omits the new fields entirely.
+    mockedUseUsageStats.mockReturnValue({ data: baseStats, isLoading: false, error: null });
+    render(<UsageStats />);
+    expect(screen.getByText('Cache reads: 0 (0%)')).toBeInTheDocument();
+    expect(screen.queryByText(/Cache writes:/)).not.toBeInTheDocument();
+    expect(screen.getByText('Reasoning: 0')).toBeInTheDocument();
+  });
+
+  it('caps the cache share at 100% when a provider over-reports cache reads', () => {
+    mockedUseUsageStats.mockReturnValue({
+      data: {
+        ...baseStats,
+        usage: { ...baseStats.usage, prompt_tokens: 100, cache_read_tokens: 150 },
+      },
+      isLoading: false,
+      error: null,
+    });
+    render(<UsageStats />);
+    expect(screen.getByText('Cache reads: 150 (100%)')).toBeInTheDocument();
+  });
+});
