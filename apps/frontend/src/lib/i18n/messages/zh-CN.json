@@ -2355,9 +2355,21 @@
     "source": "Admin Console",
     "text": "管理后台"
   },
+  "console.nav.admin_group": {
+    "source": "Admin",
+    "text": "管理"
+  },
   "console.nav.batches": {
     "source": "Batches",
     "text": "批次"
+  },
+  "console.nav.chat": {
+    "source": "Chat",
+    "text": "对话"
+  },
+  "console.nav.home": {
+    "source": "Home",
+    "text": "首页"
   },
   "console.nav.keys": {
     "source": "API Keys",
@@ -2371,14 +2383,6 @@
     "source": "Models",
     "text": "模型"
   },
-  "console.nav.overview": {
-    "source": "Overview",
-    "text": "概览"
-  },
-  "console.nav.playground": {
-    "source": "API Playground",
-    "text": "API 调试台"
-  },
   "console.nav.requests": {
     "source": "Requests",
     "text": "请求记录"
@@ -2386,10 +2390,6 @@
   "console.nav.settings": {
     "source": "Settings",
     "text": "设置"
-  },
-  "console.nav.tools": {
-    "source": "Tools",
-    "text": "工具"
   },
   "dashboard.account.email": {
     "source": "Email:",
