@@ -57,7 +57,17 @@ export interface ConsoleBatch {
   request_counts: { total: number; completed: number; failed: number };
   cancelled: number;
   expired: number;
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    /**
+     * The part of `input_tokens` the upstream served from its prompt cache.
+     * Null for a batch stored before cache hits were recorded; absent from an
+     * older gateway.
+     */
+    cached_input_tokens?: number | null;
+  };
   /** What the batch's finished attempts were billed; attempts of unknown cost are not in it. */
   cost_usd: number;
   /** Attempts whose cost is unknown (an upstream may have run without reporting back). */
@@ -76,6 +86,9 @@ export interface ConsoleBatch {
   protocol_profile: string | null;
   /** The name and description given in the console (null for a batch the API created). */
   name?: string | null;
+  /** The owner's display (or login) name and email: in the administrators' list only. */
+  user_name?: string | null;
+  user_email?: string | null;
   description?: string | null;
   /** `console` or `api`: where the batch was created. */
   created_via?: 'console' | 'api';
@@ -602,12 +615,19 @@ export interface AdminBatchUserSummary {
   prompt_tokens: number;
   completion_tokens: number;
   unknown_cost_attempts: number;
+  /** Of `prompt_tokens`, those served from a prompt cache, over the batches that recorded it. */
+  cached_tokens?: number;
+  /** Batches stored before cached input was recorded: left out of `cached_tokens`. */
+  cache_unrecorded_batches?: number;
   last_created_at: number | null;
+  /** The owner's display (or login) name and email, when the account has them. */
+  user_name?: string | null;
+  email?: string | null;
 }
 
 export interface AdminBatchSummary {
   users: AdminBatchUserSummary[];
-  totals: Omit<AdminBatchUserSummary, 'user_id' | 'last_created_at'>;
+  totals: Omit<AdminBatchUserSummary, 'user_id' | 'last_created_at' | 'user_name' | 'email'>;
 }
 
 export async function getBatchSummary(): Promise<AdminBatchSummary> {

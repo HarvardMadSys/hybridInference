@@ -239,3 +239,102 @@ describe('Batch list', () => {
     expect(row.textContent).not.toContain('unpriced attempts');
   });
 });
+
+describe('Owner names and cached input', () => {
+  const usage = {
+    batches: 2,
+    active: 0,
+    requests: 10,
+    completed: 10,
+    failed: 0,
+    cancelled: 0,
+    expired: 0,
+    cost_usd: 0,
+    prompt_tokens: 1000,
+    completion_tokens: 200,
+    unknown_cost_attempts: 0,
+    cached_tokens: 250,
+    cache_unrecorded_batches: 0,
+  };
+  const empty = { object: 'list', data: [], has_more: false, last_id: null } as ConsoleBatchPage;
+
+  it('names each owner and shows how much input came from the cache', async () => {
+    vi.mocked(getBatchSummary).mockResolvedValue({
+      users: [
+        {
+          ...usage,
+          user_id: 'u-1',
+          user_name: 'Ada',
+          email: 'ada@example.test',
+          last_created_at: 1,
+        },
+        // An account with no display name is named by its email.
+        { ...usage, user_id: 'u-2', user_name: null, email: 'bo@example.test', last_created_at: 1 },
+      ],
+      totals: { ...usage, cached_tokens: 500, prompt_tokens: 2000 },
+    });
+    vi.mocked(listAllBatches).mockResolvedValue(empty);
+    render(<BatchesTab />);
+
+    const ada = await screen.findByTestId('usage-u-1');
+    expect(within(ada).getByRole('button', { name: 'Ada' })).not.toBeNull();
+    expect(ada.textContent).toContain('ada@example.test');
+    expect(ada.textContent).toContain('u-1');
+    expect(ada.textContent).toContain('250 cached (25%)');
+    expect(
+      within(screen.getByTestId('usage-u-2')).getByRole('button', { name: 'bo@example.test' }),
+    ).not.toBeNull();
+
+    const tile = screen.getByText('Tokens', { selector: 'dt' }).parentElement;
+    expect(tile?.textContent).toContain('500 cached (25%)');
+
+    fireEvent.click(within(ada).getByRole('button', { name: 'Ada' }));
+    expect(await screen.findByText('Batches of Ada')).not.toBeNull();
+  });
+
+  it('says which batches ran before cached input was recorded', async () => {
+    vi.mocked(getBatchSummary).mockResolvedValue({
+      users: [{ ...usage, user_id: 'u-1', cache_unrecorded_batches: 1, last_created_at: 1 }],
+      totals: { ...usage, cache_unrecorded_batches: 1 },
+    });
+    const batch = page('old-batch').data[0];
+    vi.mocked(listAllBatches).mockResolvedValue({
+      object: 'list',
+      data: [
+        {
+          ...batch,
+          user_name: 'Ada',
+          usage: { ...batch.usage, cached_input_tokens: null },
+        } as ConsoleBatch,
+      ],
+      has_more: false,
+      last_id: 'old-batch',
+    });
+    render(<BatchesTab />);
+
+    const user = await screen.findByTestId('usage-u-1');
+    // A share of a total that leaves batches out would understate it: none is shown.
+    expect(user.textContent).toContain('250 cached · 1 batch not recorded');
+    expect(user.textContent).not.toContain('%)');
+    const row = await screen.findByTestId('batch-old-batch');
+    expect(row.textContent).toContain('Ada');
+    expect(row.textContent).toContain('old-batch-owner');
+    expect(row.textContent).toContain('Cached: not recorded');
+  });
+
+  it('shows nothing about caching for a gateway that does not report it', async () => {
+    const { cached_tokens: _c, cache_unrecorded_batches: _u, ...older } = usage;
+    vi.mocked(getBatchSummary).mockResolvedValue({
+      users: [{ ...older, user_id: 'u-1', last_created_at: 1 }],
+      totals: older,
+    });
+    vi.mocked(listAllBatches).mockResolvedValue(page('any-batch'));
+    render(<BatchesTab />);
+
+    const user = await screen.findByTestId('usage-u-1');
+    expect(user.textContent).not.toContain('cached');
+    expect(within(user).getByRole('button', { name: 'u-1' })).not.toBeNull();
+    const row = await screen.findByTestId('batch-any-batch');
+    expect(row.textContent).not.toMatch(/cached/i);
+  });
+});
