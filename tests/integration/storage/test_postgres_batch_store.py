@@ -73,6 +73,7 @@ BATCH_KEYS = {
     "expired_count",
     "prompt_tokens",
     "completion_tokens",
+    "cache_read_tokens",
     "unknown_cost_count",
     "idempotency_key",
     # Added with batches created in the console, and pause reasons.
@@ -187,6 +188,7 @@ async def _complete(
     attempt: int | None = None,
     error: dict[str, Any] | None = None,
     cost: float | None = None,
+    cached: int | None = None,
 ) -> bool:
     return await store.complete_item(
         item_id=item["id"],
@@ -200,6 +202,7 @@ async def _complete(
         completion_tokens=None if error else 5,
         cost_usd=cost,
         request_id=f"req-{item['id']}",
+        cached_tokens=cached,
     )
 
 
@@ -1608,6 +1611,69 @@ async def test_batch_summary_counts_cancelled_requests_as_done(store):
     assert alice["cost_usd"] == pytest.approx(0.25)
     assert (bob["batches"], bob["active"], bob["requests"]) == (1, 1, 2)
     assert (bob["completed"], bob["failed"], bob["cancelled"]) == (0, 0, 0)
+    assert (alice["expired"], bob["expired"]) == (0, 0)
+
+
+async def test_batch_summary_counts_expired_requests_apart_within_failed(pool, store):
+    model = _model()
+    overdue = await _create(store, _items(model, 3))
+    (running,) = await _claim(store, model, limit=1)
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET expires_at = now() - interval '1 second' WHERE id = $1",
+        overdue["id"],
+    )
+    assert (await store.sweep(retention_days=7))["expired"] == 1
+    assert await _complete(store, running)
+
+    (alice,) = await store.batch_summary()
+
+    # Failed includes the expired requests, as the batch's own counts do.
+    assert (alice["requests"], alice["completed"], alice["failed"]) == (3, 1, 2)
+    assert (alice["expired"], alice["cancelled"]) == (2, 0)
+
+
+async def test_cached_input_is_counted_per_batch_and_left_unknown_for_older_ones(pool, store):
+    model = _model()
+    recorded = await _create(store, _items(model, 2))
+    first, second = await _claim(store, model)
+    assert await _complete(store, first, cached=4)
+    assert await _complete(store, second)  # its usage said nothing about caching
+    assert (await store.get_batch(recorded["id"]))["cache_read_tokens"] == 4
+
+    # A batch stored before cache hits were recorded stays unknown, never a
+    # partial count that would read as complete.
+    older = await _create(store, _items(model, 1), user="bob")
+    await _execute(
+        pool, "UPDATE batch_jobs SET cache_read_tokens = NULL WHERE id = $1", older["id"]
+    )
+    (item,) = await _claim(store, model)
+    assert await _complete(store, item, cached=3)
+    assert (await store.get_batch(older["id"]))["cache_read_tokens"] is None
+
+    summary = {row["user_id"]: row for row in await store.batch_summary()}
+
+    alice, bob = summary["alice"], summary["bob"]
+    assert (alice["prompt_tokens"], alice["cached_tokens"]) == (20, 4)
+    assert alice["cache_unrecorded_batches"] == 0
+    assert (bob["cached_tokens"], bob["cache_unrecorded_batches"]) == (0, 1)
+
+
+async def test_batch_summary_and_labels_name_each_owner(pool, store):
+    await _create(store, _items(_model(), 1))
+    await _create(store, _items(_model(), 1), user="bob")
+    await _execute(pool, "UPDATE users SET user_name = 'Alice A.' WHERE id = 'alice'")
+    await _execute(pool, "UPDATE users SET login_name = 'bob-admin' WHERE id = 'bob'")
+
+    summary = {row["user_id"]: row for row in await store.batch_summary()}
+    labels = await store.user_labels(["alice", "bob", "alice", "no-such-user"])
+
+    alice = {"user_name": "Alice A.", "email": "batch-store-alice@example.invalid"}
+    bob = {"user_name": "bob-admin", "email": "batch-store-bob@example.invalid"}
+    assert {k: summary["alice"][k] for k in ("user_name", "email")} == alice
+    assert {k: summary["bob"][k] for k in ("user_name", "email")} == bob
+    assert labels == {"alice": alice, "bob": bob}
+    assert await store.user_labels([]) == {}
 
 
 # -- schema ----------------------------------------------------------------------
