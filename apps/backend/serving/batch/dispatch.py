@@ -77,6 +77,7 @@ from serving.surfaces.context import (
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import ClientIpInfo
+from serving.utils.token_utils import extract_cache_tokens
 
 logger = get_logger(__name__)
 
@@ -137,6 +138,8 @@ class DispatchResult:
     ``api_logs`` id of the request, once the execution got far enough to log it.
     ``cost_status`` is ``billed`` (``cost_usd`` was charged), ``not_billed`` or
     ``unknown``; ``dispatched`` whether the execution was entered at all.
+    ``cached_tokens`` is the part of ``prompt_tokens`` the upstream served from
+    its prompt cache, or None when the usage reports nothing about caching.
     ``requeue_after`` is set when the model's upstream answered that the model
     is queued for capacity: the item is to wait that many seconds and run
     again, without the attempt counting.
@@ -153,6 +156,7 @@ class DispatchResult:
     usage: dict[str, Any] | None = None
     cost_status: str = "not_billed"
     dispatched: bool = True
+    cached_tokens: int | None = None
     requeue_after: float | None = None
 
 
@@ -305,6 +309,7 @@ async def _dispatch(
         # The target's own usage object (native shape) when the response has one.
         usage = outcome.usage or observer.usage
     prompt_tokens, completion_tokens = _usage_tokens(usage, outcome)
+    cached_tokens = extract_cache_tokens(usage)[0] if isinstance(usage, dict) else None
     return replace(
         outcome,
         cost_usd=cost_usd,
@@ -313,6 +318,7 @@ async def _dispatch(
         usage=usage,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
+        cached_tokens=cached_tokens if cached_tokens is not None else outcome.cached_tokens,
     )
 
 

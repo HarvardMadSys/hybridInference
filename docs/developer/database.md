@@ -55,48 +55,66 @@ an SSH tunnel, not by widening that binding.
 
 ## How the schema is created
 
-The application creates and migrates its own schema **at startup**, and a
-restart leaves in place whatever already exists; there is no separate
-migration tool to run. Every statement is `CREATE TABLE IF NOT EXISTS`, so the builders
-below overlap harmlessly where two of them define the same table:
+The schema is versioned. The migrations in `apps/backend/migrations/` create and
+change every table, and a deploy applies them as a step of its own, with the
+image it is about to start, before it restarts the gateway:
 
-| Code | Creates |
-|---|---|
-| `AppConfigStore.ensure_schema` in `apps/backend/serving/config/app_config_store.py` | `app_config`, first of all, because the rest of startup reads its settings |
-| `ensure_api_logs_schema` in `apps/backend/serving/storage/log_schema.py` | `api_logs` and `api_stats_hourly`, with their columns and indexes |
-| `DatabaseLogger._create_tables` in `apps/backend/serving/storage/database.py` | Calls the above, then the auth/admin tables |
-| `PostgresOperationalStore.initialize` in `apps/backend/serving/storage/postgres_operational.py` | The operational tables (settings, overrides, provider registry) |
-| `ResponseStore.initialize` in `apps/backend/serving/storage/responses_store.py` | `openai_responses` |
-| `apps/backend/serving/grants.py` and `apps/backend/serving/admin/geo_demand_rollup.py` | `agent_grants`; the `geo_hourly_*` rollup tables |
-| `ensure_schema` in `apps/backend/serving/storage/alert_history_store.py` | `alert_history_sources` and `alert_history_events`, unless `ALERT_HISTORY_ENABLED` turns capture off (see [Alert history](alert-history.md)) |
+```bash
+make migrate                                                  # the bundled Compose stack
+docker compose run --rm backend python -m migrations upgrade  # the same, by hand
+cd apps/backend && uv run python -m migrations upgrade        # a checkout
+```
 
-Pointing a gateway at an empty database is therefore all the "migration" there
-is: start it and the tables appear.
+The command reads the gateway's own `DB_*` settings, and does nothing when
+`DB_ENABLED` is off. `make up` and `make build` run it before they start the
+services. `python -m migrations status` shows the database's revision next to
+the code's.
+
+The gateway itself creates no tables. When it starts, it compares the revision
+the database records with its own:
+
+- No revision recorded, or an earlier one of its own: it refuses to start and
+  names the command above.
+- Its own revision: it starts.
+- A revision it does not know, so a newer one, as after a deploy that restored
+  the previous image: it starts, with a warning, as long as the database still
+  supports its code. A revision that removes something older code uses records
+  the oldest code it still supports, and older code refuses to start there.
+
+The first migration of a database that was running before versioning,
+`0001_baseline`, needs no preparation. It runs the code that used to build the
+schema at startup, now frozen in `apps/backend/migrations/baseline/`: it
+creates what the database lacks and records the revision. On a database the
+previous release already started on, it changes nothing and takes no strong
+table lock.
 
 Two properties are worth knowing before you operate this:
 
-**A restart only changes what is missing.** Each startup first checks which
-columns and indexes already exist and issues only the `ALTER`/`CREATE INDEX`
-statements that are actually missing, so a steady-state restart takes no
-strong table locks. This matters
-because `ALTER TABLE` acquires `ACCESS EXCLUSIVE` *before* Postgres evaluates
-`IF NOT EXISTS`, and a queued exclusive lock parks every reader behind it.
+**A migration that cannot get its lock stops instead of waiting.** Each
+statement waits at most 3 seconds for a table lock. A long reader such as a
+nightly `pg_dump` makes the migration fail and roll back; the command exits with
+status 75 and lists the sessions holding locks. Nothing switches over: the
+running gateway keeps serving, and the same command can simply be run again
+later. Avoid the backup window for a release that changes the schema; on a
+database already at the latest revision, the command only reads the version.
 
-**A migration that cannot get its lock is deferred, not fatal.** The DDL phase
-runs under a 3-second `lock_timeout` and raises `SchemaLockUnavailable` rather
-than waiting; the caller retries it in the background and startup proceeds. The
-usual lock holder is a long-running `pg_dump`, which can hold `ACCESS SHARE` over
-`api_logs` for hours. If you take backups on a schedule, expect an occasional
-deferred-migration line in the log after a deploy that adds a column.
+**One migration runs at a time.** A second run against the same database waits
+for the first to finish, and fails if that takes too long, rather than
+migrating alongside it.
 
-This includes the account columns (login names, phone numbers). Until they
-land, email sign-in, token refresh, API keys and admin pages work on the old
-table, while first-run setup and phone sign-in answer `503` with "The database
-upgrade is still in progress; try again shortly." Only the hard-delete claim
-columns still block startup.
+To change the schema, add a revision in `apps/backend/migrations/versions/`.
+A revision must leave the previous release working, because that release keeps
+serving while it runs and is what a failed deploy restores. Large indexes on
+`api_logs` are not migrations: they are built in the background
+(`apps/backend/serving/storage/perf_metrics_index.py`), since building them
+would block request logging for hours. The rules are in the design record,
+`docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md`.
 
-If you are contributing a column to `api_logs`, add it in `log_schema.py` only;
-that is the one place the request log's schema is defined.
+Each revision says which kind it is. `compatibility = "expand"` means code of
+earlier revisions keeps working on its result; `"contract"` means it does not,
+and a contract raises the compatibility floor with `raise_compat_floor`. A test
+fails until the line is set. A revision that has run on a shared database is
+never edited or reverted: fix it with a new one.
 
 ### Secrets for deleting accounts
 
@@ -134,7 +152,7 @@ settings govern this:
 | Accounts and auth | `users`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, hashed API keys and their quotas, refresh sessions and the accounts signed in on each browser, sign-in history |
 | Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings and the first-run setup marker, announcements, broadcast delivery state |
 | Runtime routing overrides | `provider_definitions`, `provider_api_keys`, `provider_route_configs`, `provider_route_candidates`, `provider_weight_overrides`, `disabled_providers`, `disabled_provider_env_keys`, `provider_env_key_min_roles`, `model_visibility_overrides`, `model_concurrency_exemptions` | Everything the admin console can change about routing without editing YAML — see [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console) |
-| Cost and quota | `user_daily_cost` | Per-user daily spend used for quota enforcement |
+| Cost and quota | `user_daily_cost`, `api_key_daily_cost` | Per-user daily spend used for quota enforcement, and the same per API key for the console's per-key spend |
 | RouteWise | `routewise_probe_samples`, `routewise_probe_leases` | Latency probe samples and the lease that stops two workers probing at once |
 | Responses API | `openai_responses` | Stored `/v1/responses` state, when content storage is enabled |
 | Batch inference | `batch_jobs`, `batch_items`, `batch_attempts`, `batch_idempotency`, `batch_files`, `batch_file_chunks`, `batch_webhooks`, `batch_webhook_events`, `batch_model_limits`, `batch_user_state`, `batch_interactive_load`, `batch_read_leases` | Batches of all three batch APIs with their requests, attempts and results until `BATCH_RETENTION_DAYS` after they finish; uploaded input files and result files; idempotency keys; webhooks and their deliveries; the per-model batch concurrency caps; and the worker's scheduling state and download leases. See [Running batch inference](batches.md#running-batch-inference) |

@@ -123,14 +123,6 @@ class OperationalStore(ABC):
 
     # -- phone authentication (optional for legacy store implementations) ----
 
-    async def require_phone_accounts(self) -> None:  # noqa: B027
-        """Raise ``AccountSchemaPending`` while the database cannot hold phone accounts yet.
-
-        An upgrade adds the phone columns from the background when it cannot
-        get the users table's lock at startup; until then phone routes answer
-        503. The base implementation has nothing pending.
-        """
-
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
         raise RuntimeError("Phone authentication is unavailable in this store")
@@ -590,12 +582,75 @@ class OperationalStore(ABC):
         api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
+        inherit_account_quota: bool = False,
+        name: str | None = None,
+        max_active_keys: int | None = None,
     ) -> Row:
-        """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``)."""
+        """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
+
+        The daily and monthly quota belong to the **account**, though each key
+        row stores them: an account may hold several keys, the auth lookup
+        reads the quota from the presented key, and every unrevoked key of the
+        account must therefore carry the same values. Implementations keep it
+        that way:
+
+        - ``inherit_account_quota=True`` (a user adding a key): when the
+          account already holds an unrevoked key, the new key takes its quota
+          and the given values are ignored; they only seed a first key.
+        - ``inherit_account_quota=False`` (an admin setting one): the given
+          values become the account's, written to every unrevoked key of the
+          user in the same transaction.
+
+        ``name`` labels the key for its owner. ``max_active_keys`` caps the
+        account's active keys, checked atomically with the insert.
+
+        Raises:
+            APIKeyLimitReachedError: The account already holds ``max_active_keys``.
+        """
 
     @abstractmethod
     async def check_active_key_exists(self, user_id: str) -> bool:
         """Return True if *user_id* already has an active key."""
+
+    @abstractmethod
+    async def count_active_keys(self, user_id: str) -> int:
+        """Return how many active keys *user_id* holds."""
+
+    @abstractmethod
+    async def list_account_keys(self, account_id: str) -> list[Row]:
+        """Every key the account owns, live first then newest.
+
+        Rows carry ``id, key_prefix, name, created_at, last_used_at, status,
+        api_key_encrypted, spent_today_usd, spent_month_usd``; never the hash.
+        The spend is the key's over the current UTC day and month.
+        """
+
+    @abstractmethod
+    async def rename_key(self, account_id: str, key_prefix: str, name: str | None) -> bool:
+        """Label the account's unrevoked key *key_prefix*. False when there is none."""
+
+    @abstractmethod
+    async def rotate_key(
+        self,
+        account_id: str,
+        key_prefix: str | None,
+        *,
+        new_key_hash: str,
+        new_key_prefix: str,
+        api_key_encrypted: str | None,
+    ) -> Row | None:
+        """Atomically revoke the account's active key *key_prefix* and issue its successor.
+
+        The successor keeps the key's name, expiry, notes, metadata and the
+        account's quota. A *key_prefix* of None means the account's only
+        active key, chosen in the same transaction as the rotation. Returns
+        ``{"id", "created_at", "old_key_prefix"}``, or None when the account
+        has no such active key.
+
+        Raises:
+            AmbiguousAPIKeyError: *key_prefix* is None and the account holds
+                several active keys.
+        """
 
     @abstractmethod
     async def list_keys(
@@ -613,7 +668,11 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def update_key(self, user_id: str, **fields: Any) -> None:
-        """Dynamically update key columns for *user_id*."""
+        """Dynamically update key columns on every unrevoked key *user_id* holds.
+
+        Account-level: the quota in particular must stay identical on each of
+        the account's live keys (see :meth:`create_key`).
+        """
 
     @abstractmethod
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
@@ -627,20 +686,18 @@ class OperationalStore(ABC):
         new_key_hash: str,
         new_key_prefix: str,
     ) -> str:
-        """Atomically replace the key hash/prefix. Returns old key_prefix."""
+        """Atomically replace the newest active key's hash/prefix. Returns old key_prefix."""
 
     @abstractmethod
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
-        """Fetch the active key by account_id OR user_id.
+        """Fetch the newest active key by account_id OR user_id.
 
-        Matches the real user_id uniqueness constraint, so it also finds legacy
-        keys whose account_id is NULL. Preferred for create/regenerate
-        pre-checks.
+        Matching by user_id too also finds legacy keys whose account_id is NULL.
         """
 
     @abstractmethod
     async def get_active_key_by_account(self, account_id: str) -> Row | None:
-        """Fetch the active key for self-registered user by account_id."""
+        """Fetch the newest active key of a self-registered user by account_id."""
 
     # -- auth sessions -------------------------------------------------------
 
@@ -892,21 +949,20 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def get_quota_context_for_user(self, user_id: str) -> list[Row]:
-        """Return the quota-bearing rows for a user's active API keys.
+        """Return the account's quota-bearing row: at most one, none without a live key.
 
         A grant carries no API key, so the limit it must be metered against
         cannot be looked up the usual way (by key hash). This finds it by user
         instead, applying the same filters ``get_auth_context_by_key_hash``
         does: active key, unexpired, active user.
 
-        Returns a **list**, not a row, deliberately. The schema guarantees at
-        most one — ``idx_api_keys_user_unique`` is ``UNIQUE (user_id) WHERE
-        status = 'active'`` — so a second row means that index is gone. The
-        caller refuses and alarms rather than picking a winner, because
-        choosing one would paper over a schema failure with a spending
-        decision. An empty list means "no key", which is also a refusal: a
-        user with no key has no configured limit, and absence of a limit must
-        never be read as absence of a ceiling.
+        An account may hold several active keys, and each carries the
+        account's quota (see :meth:`create_key`), so one row answers for all
+        of them. Returns a **list**: more than one row breaks this contract,
+        and the caller refuses rather than pick between limits. An empty list
+        means "no key", which is also a refusal: a user with no key has no
+        configured limit, and absence of a limit must never be read as
+        absence of a ceiling.
         """
 
     @abstractmethod
@@ -1006,12 +1062,16 @@ class OperationalStore(ABC):
         cost_usd: float,
         *,
         day: str | None = None,
+        api_key_id: int | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
 
         Uses upsert: inserts a new row if none exists for (user_id, day),
         otherwise adds *cost_usd* to the existing total and increments
         the request count.
+
+        The key's own daily counter is a report, not a quota input: a
+        failure to write it never fails the account's increment.
 
         Only call this for billed requests (successful responses where
         cost > 0), not for auth failures or 4xx errors.
@@ -1020,6 +1080,9 @@ class OperationalStore(ABC):
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
             day: Date string (YYYY-MM-DD). Defaults to UTC today.
+            api_key_id: The key the request was made with, whose own daily
+                counter (``api_key_daily_cost``) is bumped as well; None for a
+                request made without one of the account's keys.
         """
 
     @abstractmethod
@@ -1052,15 +1115,16 @@ class OperationalStore(ABC):
 
         Returns ``(user_id, role, spend_usd, quota_usd)`` tuples, largest
         overage (``spend - quota``) first. Reads today's row from the
-        ``user_daily_cost`` counter table and the limit from the user's single
-        active API key.
+        ``user_daily_cost`` counter table and the limit from the account's
+        active API keys, which all carry the same account quota (one row per
+        user, however many keys it holds).
 
         This replaced a per-*role* threshold query, which could not work: the
-        enforced cap is ``api_keys.quota_daily_cost_usd``, a per-key number,
-        and the gate stops spending at that cap. A role threshold above the
-        cap is unreachable (the gate caps spend first), and one below it fires
-        on users who were never refused anything. Only the key's own limit
-        answers "did this user run out?".
+        enforced cap is ``api_keys.quota_daily_cost_usd``, the account's own
+        number, and the gate stops spending at that cap. A role threshold
+        above the cap is unreachable (the gate caps spend first), and one below
+        it fires on users who were never refused anything. Only the account's
+        own limit answers "did this user run out?".
 
         Implementations must use the enforcer's predicate verbatim — ``spend +
         ESTIMATED_REQUEST_COST_USD > quota`` — so a user appears here on the
@@ -1533,17 +1597,19 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
-        """Return ``(key_count, user_count)`` of active api_keys whose owner has this role.
+        """Return ``(key_count, user_count)`` of unrevoked api_keys whose owner has this role.
 
-        Used by the admin "apply role quota" preview.
+        Used by the admin "apply role quota" preview; counts exactly the rows
+        :meth:`apply_role_quota` writes.
         """
 
     @abstractmethod
     async def apply_role_quota(self, role: str, quota: Decimal) -> int:
-        """Set ``quota_daily_cost_usd`` on every active api_key for this role.
+        """Set ``quota_daily_cost_usd`` on every unrevoked api_key for this role.
 
-        Returns the number of rows updated. Atomic: a failure rolls back.
-        Overwrites any per-key custom override.
+        Every live key, suspended ones included, so an account's keys keep one
+        quota (see :meth:`create_key`). Returns the number of rows updated.
+        Atomic: a failure rolls back. Overwrites any per-account custom value.
         """
 
     # -- provider definitions -----------------------------------------------
@@ -1838,7 +1904,9 @@ class LogStore(ABC):
 
         Used by the user dashboard ``/user/usage`` endpoint.
         Returns dict with keys ``today``, ``week``, ``month``, ``alltime``
-        each containing ``cost_usd`` and ``requests``.
+        each containing ``requests``, ``cost_usd``, ``prompt_tokens``,
+        ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``
+        and ``reasoning_tokens``.
         """
 
     @abstractmethod

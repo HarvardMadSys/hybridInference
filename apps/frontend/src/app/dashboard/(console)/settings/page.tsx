@@ -224,7 +224,7 @@ function SettingsContent() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-4xl space-y-6">
+    <div className="w-full max-w-4xl space-y-6">
       <div className="flex items-start justify-between border-b border-gray-200 pb-5">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">
@@ -235,12 +235,6 @@ function SettingsContent() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <a
-            href="/dashboard"
-            className="inline-flex items-center rounded-md bg-white px-3.5 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
-          >
-            {t('settings.back', '← Back')}
-          </a>
           {branding.docsUrl && (
             <a
               href={branding.docsUrl}

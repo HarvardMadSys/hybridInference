@@ -106,7 +106,6 @@ class _Upstream(BaseAdapter):
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=1, max_size=10)
-    await BatchStore(pool).initialize()
     try:
         yield pool
     finally:

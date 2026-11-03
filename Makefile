@@ -1,9 +1,9 @@
-.PHONY: help format lint test test-verbose test-cov test-db test-all test-external rag-ingest \
+.PHONY: help format lint test migrate test-verbose test-cov test-db test-all test-external rag-ingest \
 	frontend-install frontend-lint frontend-type-check frontend-test frontend-check \
 	check-all all-with-frontend \
 	test-db-local test-db-local-reset test-db-local-clean test-db-local-down docs docs-gettext docs-translate \
 	docs-lang docs-verify setup-dev clean check all \
-       docker-volumes up down restart ps logs build smoke \
+       docker-volumes up down restart ps logs build smoke demo-previous \
        demo demo-smoke demo-down demo-reset _require-demo
 
 # Default target
@@ -306,6 +306,12 @@ DEMO_COMPOSE_FILE_ARG := $(if $(DEMO_COMPOSE_FILE),-f $(DEMO_COMPOSE_FILE),)
 # recreate command, where a bare `NAME=value` token would not be executable.
 DEMO_COMPOSE := env COMPOSE_PROFILES= docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
 DOCKER_VOLUMES := hybridinference_postgres_data
+# The schema migrations, run with the backend's own service definition so they
+# use the very image (and DB_* settings) the backend is about to start with.
+# A one-off container, never a dependency of `backend`: restoring the previous
+# image must not run that image's migrations against a newer schema.
+MIGRATE := $(COMPOSE) run --rm backend python -m migrations upgrade
+DEMO_MIGRATE := $(DEMO_COMPOSE) run --rm --no-deps backend python -m migrations upgrade
 
 docker-volumes:  ## Create external Docker volumes required by production compose
 	@for volume in $(DOCKER_VOLUMES); do \
@@ -324,9 +330,13 @@ up:  ## Start all services
 	$(COMPOSE) up -d --wait example-provider
 	$(COMPOSE) up -d --no-deps backend
 else
-up: docker-volumes
+up: docker-volumes  ## Start all services, after applying the schema migrations
+	$(MIGRATE)
 	$(COMPOSE) up -d
 endif
+
+migrate: docker-volumes  ## Apply the schema migrations with the backend image (a deploy runs this first)
+	$(MIGRATE)
 
 # The port has one source of truth: the distribution's own env file, which is
 # also the file Compose reads to publish it. Deriving the smoke URL from the
@@ -364,6 +374,7 @@ _require-demo:
 
 demo: _require-demo  ## Upgrade the runnable example in place to the full local stack
 	$(DEMO_COMPOSE) up -d --no-recreate --wait $(DEMO_PROVIDER_SERVICE) postgres
+	$(DEMO_MIGRATE)
 	$(DEMO_COMPOSE) up -d --no-deps --force-recreate --wait backend
 	$(DEMO_COMPOSE) up -d --no-deps --no-recreate --wait frontend
 
@@ -373,6 +384,16 @@ demo: _require-demo  ## Upgrade the runnable example in place to the full local 
 demo-smoke: _require-demo  ## Verify the full demo through its frontend origin
 	@test -f "$(DEMO_SMOKE_SCRIPT)" || (echo "No full smoke script for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
 	$(SMOKE_PYTHON) "$(DEMO_SMOKE_SCRIPT)" --base-url "$(DEMO_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)" $(DEMO_SMOKE_STATE_ARG) $(DEMO_SMOKE_EXPECT_STATE_ARG) --recreate-command $(DEMO_COMPOSE) up -d --no-deps --force-recreate --wait backend
+
+# The restore drill: a failed deploy brings back the image that ran before it,
+# on the schema the new image has just migrated. Start PREVIOUS_BACKEND_IMAGE
+# that way, without its migrations, and run the full smoke against it, its
+# recreate included. `make demo` returns to the current image.
+DEMO_PREVIOUS_COMPOSE = env COMPOSE_PROFILES= BACKEND_IMAGE="$(PREVIOUS_BACKEND_IMAGE)" docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) -f deploy/docker/docker-compose.digest-backend.yml $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+demo-previous: _require-demo  ## Restore drill: PREVIOUS_BACKEND_IMAGE on the migrated demo database, smoked
+	@test -n "$(PREVIOUS_BACKEND_IMAGE)" || (echo "Set PREVIOUS_BACKEND_IMAGE to the image to restore"; exit 1)
+	$(DEMO_PREVIOUS_COMPOSE) up -d --no-deps --no-build --force-recreate --wait backend
+	$(SMOKE_PYTHON) "$(DEMO_SMOKE_SCRIPT)" --base-url "$(DEMO_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)" $(DEMO_SMOKE_EXPECT_STATE_ARG) --recreate-command $(DEMO_PREVIOUS_COMPOSE) up -d --no-deps --no-build --force-recreate --wait backend
 
 demo-down: _require-demo  ## Stop the full demo while preserving its database
 	$(DEMO_COMPOSE) down
@@ -416,8 +437,12 @@ endif
 else
 build: docker-volumes
 ifdef s
-	$(COMPOSE) up -d --build $(s)
+	$(COMPOSE) build $(s)
+	$(MIGRATE)
+	$(COMPOSE) up -d $(s)
 else
-	$(COMPOSE) up -d --build
+	$(COMPOSE) build
+	$(MIGRATE)
+	$(COMPOSE) up -d
 endif
 endif

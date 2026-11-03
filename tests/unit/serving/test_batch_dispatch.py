@@ -102,6 +102,7 @@ def _owner(**overrides: Any) -> dict[str, Any]:
         "disabled_models": [],
         "max_concurrent_requests": None,
         "auth_key_hash": "owner-key-hash",
+        "api_key_id": 41,
     }
     ctx.update(overrides)
     return ctx
@@ -172,6 +173,8 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
     assert result.request_id == row["request_id"]
     assert row["metadata"]["batch_job_id"] == BATCH_ID
     assert row["metadata"]["user_id"] == "owner-1"
+    # Charged to the key that created the batch, as a live request with it is.
+    assert row["metadata"]["api_key_id"] == 41
     assert row["metadata"]["user_agent"] == BATCH_USER_AGENT
     assert row["status_code"] == 200
     for _ in range(100):
@@ -179,7 +182,7 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
             break
         await asyncio.sleep(0.001)
     services.operational_store.increment_user_cost.assert_awaited_once_with(
-        "owner-1", pytest.approx(0.0002)
+        "owner-1", pytest.approx(0.0002), api_key_id=41
     )
 
 

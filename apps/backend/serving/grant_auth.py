@@ -128,14 +128,14 @@ async def _resolve_grant(
 async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
     """Return ``(limit, spent)`` for the account behind a grant.
 
-    The limit lives on the user's API key and the spend on the user, so this
-    is two reads that the direct path gets in one — a grant carries no key to
-    join through.
+    The limit is the account's, stored on each of its API keys, and the spend
+    is the user's, so this is two reads that the direct path gets in one — a
+    grant carries no key to join through.
 
     Raises:
-        AgentModelAuthError: If the account has no active key, if it somehow
-            has more than one, or if either read fails. Every branch refuses;
-            none defaults to "no ceiling".
+        AgentModelAuthError: If the account has no active key, if the store
+            returns more than its one quota row, or if either read fails.
+            Every branch refuses; none defaults to "no ceiling".
     """
     try:
         keys = await op_store.get_quota_context_for_user(user_id)
@@ -157,9 +157,10 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             status_code=403,
         )
     if len(keys) > 1:
-        # UNIQUE (user_id) WHERE status='active' forbids this. Reaching it
-        # means the index is gone; picking a winner would settle a spending
-        # question by papering over a schema failure.
+        # The store answers with one row per account however many keys it
+        # holds (they share the account's quota). More means that contract is
+        # broken; picking a winner would settle a spending question by papering
+        # over the failure.
         logger.error(
             "agent_grant_duplicate_active_keys",
             extra={

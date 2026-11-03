@@ -948,6 +948,7 @@ class StreamSession:
             _usage = response_for_db.get("usage") or {}
             self._routing = await self._cost_tracker.schedule_increment(
                 user_id=self._user_id,
+                api_key_id=self._metadata.get("api_key_id"),
                 routing=self._routing,
                 prompt_tokens=int(_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(_usage.get("completion_tokens", 0) or 0),
