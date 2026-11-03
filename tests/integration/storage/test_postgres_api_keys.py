@@ -40,6 +40,8 @@ async def keys():
     async def _wipe() -> None:
         async with pool.acquire() as conn:
             await conn.execute(f"DELETE FROM api_keys WHERE key_prefix LIKE '{_PREFIX}%'")
+            await conn.execute("DELETE FROM api_key_daily_cost WHERE user_id LIKE 'u-admkey-%'")
+            await conn.execute("DELETE FROM user_daily_cost WHERE user_id LIKE 'u-admkey-%'")
             await conn.execute("DELETE FROM users WHERE id LIKE 'u-admkey-%'")
 
     await _wipe()
@@ -724,3 +726,106 @@ async def test_rotating_the_only_key_replaces_it(keys):
     assert (await _rows(pool, uid))[f"{_PREFIX}-sole-new"]["status"] == "active"
     await store.revoke_key(uid)
     assert await rotate() is None
+
+
+# --- per-key usage: api_key_daily_cost beside the account's counter ----------
+
+
+async def _key_id(pool: Any, tag: str) -> int:
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT id FROM api_keys WHERE key_prefix = $1", f"{_PREFIX}-{tag}"
+        )
+
+
+async def _counters(pool: Any, user_id: str) -> tuple[Any, list[tuple[int, str, str, int]]]:
+    """``(account counter, [(key_id, day, cost, requests)])`` of *user_id*."""
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "SELECT cost_usd, requests FROM user_daily_cost WHERE user_id = $1", user_id
+        )
+        keys = await conn.fetch(
+            "SELECT key_id, day, cost_usd, requests FROM api_key_daily_cost "
+            "WHERE user_id = $1 ORDER BY key_id, day",
+            user_id,
+        )
+    return account, [
+        (row["key_id"], row["day"], str(row["cost_usd"]), row["requests"]) for row in keys
+    ]
+
+
+async def test_a_requests_cost_lands_on_the_account_and_on_its_key(keys):
+    store, pool = keys
+    uid = "u-admkey-spend"
+    await _user(store, uid)
+    await _key(pool, uid, "spend-a", "active")
+    await _key(pool, uid, "spend-b", "active")
+    a, b = await _key_id(pool, "spend-a"), await _key_id(pool, "spend-b")
+
+    await store.increment_user_cost(uid, 0.25, day="2026-11-02", api_key_id=a)
+    await store.increment_user_cost(uid, 0.5, day="2026-11-02", api_key_id=a)
+    await store.increment_user_cost(uid, 1.0, day="2026-11-02", api_key_id=b)
+    # Charged to the account but made with none of its keys (a grant, say).
+    await store.increment_user_cost(uid, 2.0, day="2026-11-02")
+
+    account, per_key = await _counters(pool, uid)
+    assert (str(account["cost_usd"]), account["requests"]) == ("3.750000", 4)
+    assert per_key == [(a, "2026-11-02", "0.750000", 2), (b, "2026-11-02", "1.000000", 1)]
+
+
+async def test_the_listing_shows_what_each_key_spent_today_and_this_month(keys):
+    store, pool = keys
+    uid = "u-admkey-list-spend"
+    await _user(store, uid)
+    await _key(pool, uid, "lspend-a", "active")
+    await _key(pool, uid, "lspend-b", "active")
+    a = await _key_id(pool, "lspend-a")
+    async with pool.acquire() as conn:
+        today, month_start, last_month = await conn.fetchrow(
+            "SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), "
+            "to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD'), "
+            "to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC') - interval '1 day', "
+            "'YYYY-MM-DD')"
+        )
+    await store.increment_user_cost(uid, 1.5, day=today, api_key_id=a)
+    if month_start != today:
+        await store.increment_user_cost(uid, 2.0, day=month_start, api_key_id=a)
+    await store.increment_user_cost(uid, 40.0, day=last_month, api_key_id=a)
+
+    listed = {row["key_prefix"]: row for row in await store.list_account_keys(uid)}
+
+    spent_a = listed[f"{_PREFIX}-lspend-a"]
+    assert float(spent_a["spent_today_usd"]) == 1.5
+    assert float(spent_a["spent_month_usd"]) == (1.5 if month_start == today else 3.5)
+    spent_b = listed[f"{_PREFIX}-lspend-b"]
+    assert (float(spent_b["spent_today_usd"]), float(spent_b["spent_month_usd"])) == (0.0, 0.0)
+
+
+async def test_removing_keys_removes_their_counters(keys):
+    store, pool = keys
+    uid = "u-admkey-purge"
+    await _user(store, uid)
+    await _key(pool, uid, "purge-a", "active")
+    await store.increment_user_cost(
+        uid, 1.0, day="2026-11-02", api_key_id=await _key_id(pool, "purge-a")
+    )
+
+    await store.revoke_key(uid, hard_delete=True)
+
+    assert (await _counters(pool, uid))[1] == []
+
+
+async def test_a_hard_delete_erases_the_accounts_key_counters(keys):
+    store, pool = keys
+    uid = "u-admkey-erase"
+    await _user(store, uid)
+    await _key(pool, uid, "erase-a", "active")
+    await store.increment_user_cost(
+        uid, 1.0, day="2026-11-02", api_key_id=await _key_id(pool, "erase-a")
+    )
+    await store.delete_user(uid)
+
+    wiped = await store.hard_delete_user(uid, claim_token=await store.begin_hard_delete_user(uid))
+
+    assert wiped["api_key_daily_cost"] == 1
+    assert (await _counters(pool, uid))[1] == []

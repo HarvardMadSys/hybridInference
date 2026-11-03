@@ -362,7 +362,7 @@ describe('CreateBatchView', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Check and preview' }));
     expect(await screen.findByRole('link', { name: 'Create an API key' })).toHaveAttribute(
       'href',
-      '/dashboard',
+      '/dashboard/keys',
     );
     expect(screen.getByRole('button', { name: 'Confirm and submit' })).toBeDisabled();
   });

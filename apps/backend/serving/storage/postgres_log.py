@@ -82,6 +82,42 @@ _GRANT_METRIC_COLUMNS = {
     "spent_usd": "cost_usd",
 }
 
+# Dashboard usage windows. ``today`` and ``month`` start at 00:00 UTC, when the
+# daily quota resets, regardless of the session time zone; ``week`` is rolling.
+_USER_USAGE_WINDOWS = {
+    "today": "timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
+    "week": "timestamp >= NOW() - INTERVAL '7 days'",
+    "month": "timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
+    "alltime": "TRUE",
+}
+
+# Summed per window. Cache tokens are a subset of ``prompt_tokens``; whether
+# ``reasoning_tokens`` is inside ``completion_tokens`` depends on the provider.
+_USER_USAGE_SUMS = (
+    "cost_usd",
+    "prompt_tokens",
+    "completion_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+)
+
+# One pass over the user's rows instead of one query per window; the
+# all-time window scans every row anyway.
+_USER_USAGE_SQL = "SELECT {} FROM api_logs WHERE user_id = $1".format(
+    ",\n       ".join(
+        [
+            f"COUNT(*) FILTER (WHERE {cond}) AS {window}__requests"
+            for window, cond in _USER_USAGE_WINDOWS.items()
+        ]
+        + [
+            f"COALESCE(SUM({col}) FILTER (WHERE {cond}), 0) AS {window}__{col}"
+            for window, cond in _USER_USAGE_WINDOWS.items()
+            for col in _USER_USAGE_SUMS
+        ]
+    )
+)
+
 
 class PostgresLogStore(LogStore):
     """LogStore backed by an asyncpg connection pool."""
@@ -566,75 +602,18 @@ class PostgresLogStore(LogStore):
     async def get_user_usage_detail(self, user_id: str) -> dict[str, Any]:
         """Return detailed usage stats for the user dashboard."""
         async with self.pool.acquire() as conn:
-            today = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-                """,
-                user_id,
-            )
-            week = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= NOW() - INTERVAL '7 days'
-                """,
-                user_id,
-            )
-            month = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-                """,
-                user_id,
-            )
-            alltime = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                """,
-                user_id,
-            )
+            row = await conn.fetchrow(_USER_USAGE_SQL, user_id)
 
-        def _extract(row: Any) -> dict[str, Any]:
-            if not row:
-                return {
-                    "cost_usd": 0.0,
-                    "requests": 0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                }
-            return {
-                "cost_usd": float(row["cost"]),
-                "requests": int(row["reqs"]),
-                "prompt_tokens": int(row["prompt_tokens"]),
-                "completion_tokens": int(row["completion_tokens"]),
+        def _window(window: str) -> dict[str, Any]:
+            stats: dict[str, Any] = {
+                "requests": int(row[f"{window}__requests"]) if row else 0,
             }
+            for col in _USER_USAGE_SUMS:
+                value = row[f"{window}__{col}"] if row else 0
+                stats[col] = float(value) if col == "cost_usd" else int(value)
+            return stats
 
-        return {
-            "today": _extract(today),
-            "week": _extract(week),
-            "month": _extract(month),
-            "alltime": _extract(alltime),
-        }
+        return {window: _window(window) for window in _USER_USAGE_WINDOWS}
 
     async def get_batch_usage(
         self,

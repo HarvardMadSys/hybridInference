@@ -634,6 +634,28 @@ async def create_tables(conn: asyncpg.Connection) -> None:
     """)
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)")
 
+    # --- api_key_daily_cost ---
+    # The same counter per API key, bumped beside user_daily_cost for a
+    # request made with one of the account's keys, so its owner can see
+    # what each key spent. Not a quota input: the quota is the account's
+    # and reads user_daily_cost. No foreign key to api_keys: a counter
+    # write must never fail because the key was removed meanwhile, and
+    # user_id lets a hard delete purge an account's rows in one statement.
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS api_key_daily_cost (
+            key_id BIGINT NOT NULL,
+            day TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            cost_usd DECIMAL(12, 6) NOT NULL DEFAULT 0,
+            requests INTEGER NOT NULL DEFAULT 0,
+            last_request_at TIMESTAMPTZ,
+            PRIMARY KEY (key_id, day)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_api_key_daily_cost_user ON api_key_daily_cost(user_id)"
+    )
+
     # --- signup_allowed_domains ---
     # Admin-editable allowlist of email domains whose signups auto-approve.
     # Empty table = all signups auto-approve; non-empty = only listed

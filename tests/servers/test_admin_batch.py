@@ -58,6 +58,22 @@ class _FakeBatchStore:
             {"id": "batch_b", "user_id": "u-gone"},
         ]
 
+    async def get_batch(self, batch_id: str) -> dict | None:
+        return {"id": batch_id, "user_id": "u-owner"} if batch_id == "batch_1" else None
+
+    async def item_contents(self, batch_id: str, *, after: int, limit: int) -> list[dict]:
+        self.writes.append(("contents", batch_id, after, limit))
+        items = [
+            {
+                "id": n,
+                "custom_id": f"req-{n}",
+                "request": {"messages": [{"role": "user", "content": f"q{n}"}]},
+                "completed_at": None,
+            }
+            for n in (1, 2, 3)
+        ]
+        return [item for item in items if item["id"] > after][:limit]
+
     async def user_labels(self, user_ids: list[str]) -> dict[str, dict]:
         self.writes.append(("labels", tuple(user_ids)))
         return {"u-named": {"user_name": "Ada", "email": "ada@example.test"}}
@@ -440,6 +456,64 @@ async def test_the_summary_totals_cached_input_and_names_each_owner(admin_client
     assert body["totals"]["cached_tokens"] == 60
     assert body["totals"]["cache_unrecorded_batches"] == 1
     assert body["totals"]["prompt_tokens"] == 200
+
+
+def _store_prompts(client, enabled: bool) -> None:
+    client.app.state.services.log_store = MagicMock(store_full_prompts=enabled)
+
+
+async def test_an_admin_reads_a_batchs_prompts_page_by_page(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+
+    first = await client.get("/admin/batch/jobs/batch_1/requests?limit=2", headers=ADMIN)
+    assert first.status_code == 200
+    body = first.json()
+    assert [item["custom_id"] for item in body["data"]] == ["req-1", "req-2"]
+    assert body["data"][0]["request"]["messages"][0]["content"] == "q1"
+    assert (body["has_more"], body["last_id"]) == (True, 2)
+
+    second = await client.get("/admin/batch/jobs/batch_1/requests?limit=2&after=2", headers=ADMIN)
+    assert [item["custom_id"] for item in second.json()["data"]] == ["req-3"]
+    assert second.json()["has_more"] is False
+
+    # Opening the batch's requests is audited once, against its owner.
+    client.audit.assert_awaited_once()
+    kwargs = client.audit.await_args.kwargs
+    assert kwargs["action"] == "batch.requests.read"
+    assert (kwargs["target"].type, kwargs["target"].id) == ("user", "u-owner")
+    assert kwargs["details"] == {"batch_id": "batch_1"}
+
+
+async def test_prompts_stay_unreadable_where_the_gateway_does_not_keep_them(admin_client):
+    client, store = admin_client
+    _store_prompts(client, False)
+
+    response = await client.get("/admin/batch/jobs/batch_1/requests", headers=ADMIN)
+
+    assert response.status_code == 403
+    assert "db_store_full_content" in response.json()["detail"]
+    assert not any(write[0] == "contents" for write in store.writes)
+    client.audit.assert_not_awaited()
+
+
+async def test_reading_an_unknown_batchs_prompts_is_a_404(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+
+    response = await client.get("/admin/batch/jobs/batch_missing/requests", headers=ADMIN)
+
+    assert response.status_code == 404
+    client.audit.assert_not_awaited()
+
+
+async def test_reading_prompts_needs_an_administrator(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+
+    response = await client.get("/admin/batch/jobs/batch_1/requests")
+
+    assert response.status_code == 401
 
 
 async def test_cancelling_an_unknown_batch_is_a_404_and_not_audited(admin_client):

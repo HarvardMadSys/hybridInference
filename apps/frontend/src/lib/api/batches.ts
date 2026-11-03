@@ -73,6 +73,8 @@ export interface ConsoleBatch {
   /** Attempts whose cost is unknown (an upstream may have run without reporting back). */
   cost_unknown_attempts: number;
   created_at: number | null;
+  /** When its requests began to run; null while it is validating. Absent from an older gateway. */
+  started_at?: number | null;
   expires_at: number | null;
   ended_at: number | null;
   results_expires_at: number | null;
@@ -633,6 +635,48 @@ export interface AdminBatchSummary {
 export async function getBatchSummary(): Promise<AdminBatchSummary> {
   const resp = await fetchWithAuth(API_BASE, '/admin/batch/summary');
   return jsonOrThrow<AdminBatchSummary>(resp);
+}
+
+/** One request of a batch, with what was sent and answered: administrators only. */
+export interface AdminBatchItem {
+  id: number;
+  custom_id: string;
+  model_id: string;
+  status: string;
+  status_code: number | null;
+  attempts: number;
+  /** The request body as it was stored. */
+  request: unknown;
+  /** The answer, once the request succeeded. */
+  response: unknown;
+  error: { code?: string; message?: string } | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  completed_at: number | null;
+}
+
+export interface AdminBatchItemPage {
+  object: 'list';
+  data: AdminBatchItem[];
+  has_more: boolean;
+  last_id: number | null;
+}
+
+/**
+ * A page of one batch's requests with their prompts and answers. Refused (403)
+ * where the gateway does not keep prompts; opening the first page is audited.
+ */
+export async function getAdminBatchRequests(
+  batchId: string,
+  after = 0,
+  limit = 25,
+): Promise<AdminBatchItemPage> {
+  const params = new URLSearchParams({ after: String(after), limit: String(limit) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/batch/jobs/${encodeURIComponent(batchId)}/requests?${params.toString()}`,
+  );
+  return jsonOrThrow<AdminBatchItemPage>(resp);
 }
 
 export async function adminCancelBatch(batchId: string): Promise<ConsoleBatch> {

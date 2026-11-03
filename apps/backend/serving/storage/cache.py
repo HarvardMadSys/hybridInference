@@ -1450,10 +1450,17 @@ class CachedOperationalStore(OperationalStore):
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(
-        self, user_id: str, cost_usd: float, *, day: str | None = None
+        self,
+        user_id: str,
+        cost_usd: float,
+        *,
+        day: str | None = None,
+        api_key_id: int | None = None,
     ) -> None:
         """Delegate to wrapped store."""
-        return await self._store.increment_user_cost(user_id, cost_usd, day=day)
+        return await self._store.increment_user_cost(
+            user_id, cost_usd, day=day, api_key_id=api_key_id
+        )
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Delegate to wrapped store."""

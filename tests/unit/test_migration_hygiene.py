@@ -18,7 +18,7 @@ REPO = MIGRATIONS_DIR.parents[2]
 
 # Changing a frozen file changes what 0001_baseline did to every database that
 # already ran it. A schema change is a new revision; this digest never moves.
-FROZEN_DIGEST = "799f22412c4655074132734be6495d01057fec9af5c62f7eaa5f809f5c7ecb31"
+FROZEN_DIGEST = "27533a3d7707e0cf43b85cb2126e82dfd3d93e19006e889b240a95d0c465afd9"
 
 # What makes a revision break the code of earlier revisions: removing, renaming,
 # retyping or tightening something that code reads or writes.

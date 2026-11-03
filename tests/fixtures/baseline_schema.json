@@ -8,6 +8,7 @@
   "agent_grants.agent_grants_pkey": "PRIMARY KEY (grant_id)",
   "alert_history_events.alert_history_events_pkey": "PRIMARY KEY (record_id)",
   "alert_history_sources.alert_history_sources_pkey": "PRIMARY KEY (source, source_namespace, source_instance_id)",
+  "api_key_daily_cost.api_key_daily_cost_pkey": "PRIMARY KEY (key_id, day)",
   "api_keys.api_keys_key_hash_key": "UNIQUE (key_hash)",
   "api_keys.api_keys_pkey": "PRIMARY KEY (id)",
   "api_log_retained_client.api_log_retained_client_pkey": "PRIMARY KEY (week, account_key, agent, user_agent)",
@@ -113,6 +114,7 @@
   "agent_grants_pkey": "CREATE UNIQUE INDEX agent_grants_pkey ON public.agent_grants USING btree (grant_id)",
   "alert_history_events_pkey": "CREATE UNIQUE INDEX alert_history_events_pkey ON public.alert_history_events USING btree (record_id)",
   "alert_history_sources_pkey": "CREATE UNIQUE INDEX alert_history_sources_pkey ON public.alert_history_sources USING btree (source, source_namespace, source_instance_id)",
+  "api_key_daily_cost_pkey": "CREATE UNIQUE INDEX api_key_daily_cost_pkey ON public.api_key_daily_cost USING btree (key_id, day)",
   "api_keys_key_hash_key": "CREATE UNIQUE INDEX api_keys_key_hash_key ON public.api_keys USING btree (key_hash)",
   "api_keys_pkey": "CREATE UNIQUE INDEX api_keys_pkey ON public.api_keys USING btree (id)",
   "api_log_retained_client_pkey": "CREATE UNIQUE INDEX api_log_retained_client_pkey ON public.api_log_retained_client USING btree (week, account_key, agent, user_agent)",
@@ -171,6 +173,7 @@
   "idx_alert_history_events_target_recorded": "CREATE INDEX idx_alert_history_events_target_recorded ON public.alert_history_events USING btree (source, source_namespace, target_environment, recorded_at)",
   "idx_alert_history_sources_target_report": "CREATE INDEX idx_alert_history_sources_target_report ON public.alert_history_sources USING btree (source, source_namespace, target_environment, last_report_at DESC NULLS LAST, source_instance_id)",
   "idx_alert_history_sources_target_write": "CREATE INDEX idx_alert_history_sources_target_write ON public.alert_history_sources USING btree (source, source_namespace, target_environment, last_write_at DESC NULLS LAST)",
+  "idx_api_key_daily_cost_user": "CREATE INDEX idx_api_key_daily_cost_user ON public.api_key_daily_cost USING btree (user_id)",
   "idx_api_keys_account": "CREATE INDEX idx_api_keys_account ON public.api_keys USING btree (account_id)",
   "idx_api_keys_prefix_unique": "CREATE UNIQUE INDEX idx_api_keys_prefix_unique ON public.api_keys USING btree (key_prefix)",
   "idx_api_keys_status": "CREATE INDEX idx_api_keys_status ON public.api_keys USING btree (status, expires_at)",
@@ -1024,6 +1027,50 @@
     "type": "timestamp with time zone"
    },
    "target_environment": {
+    "default": null,
+    "generated": null,
+    "identity": null,
+    "not_null": true,
+    "type": "text"
+   }
+  },
+  "api_key_daily_cost": {
+   "cost_usd": {
+    "default": "0",
+    "generated": null,
+    "identity": null,
+    "not_null": true,
+    "type": "numeric(12,6)"
+   },
+   "day": {
+    "default": null,
+    "generated": null,
+    "identity": null,
+    "not_null": true,
+    "type": "text"
+   },
+   "key_id": {
+    "default": null,
+    "generated": null,
+    "identity": null,
+    "not_null": true,
+    "type": "bigint"
+   },
+   "last_request_at": {
+    "default": null,
+    "generated": null,
+    "identity": null,
+    "not_null": false,
+    "type": "timestamp with time zone"
+   },
+   "requests": {
+    "default": "0",
+    "generated": null,
+    "identity": null,
+    "not_null": true,
+    "type": "integer"
+   },
+   "user_id": {
     "default": null,
     "generated": null,
     "identity": null,

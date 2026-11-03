@@ -127,35 +127,45 @@ _SHOWN_MODEL_SQL = "COALESCE(metadata->'auto'->>'requested', model_id)"
 
 
 def _build_user_recent_requests_filters(
-    user_id: str, model_id: str | None
+    user_id: str, model_id: str | None, api_key_id: int | None = None
 ) -> tuple[str, list[Any]]:
     """Build the shared WHERE clause + bind params for /user/recent-requests.
 
     Used by both the COUNT cache helper and the paginated SELECT so the two
     queries cannot drift if a future filter is added.
+
+    The key filter reads ``metadata->>'api_key_id'`` after ``user_id`` has
+    narrowed the scan to the account's rows (``idx_api_logs_user``): the key
+    is not a column of its own, so that a log write never depends on a
+    migration of ``api_logs``.
     """
     where_clauses = ["user_id = $1"]
     params: list[Any] = [user_id]
     if model_id:
         params.append(_escape_ilike_substring_term(model_id))
         where_clauses.append(f"{_SHOWN_MODEL_SQL} ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
+    if api_key_id is not None:
+        params.append(str(api_key_id))
+        where_clauses.append(f"metadata->>'api_key_id' = ${len(params)}")
     return " AND ".join(where_clauses), params
 
 
-async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str | None) -> int:
+async def _get_cached_user_request_count(
+    conn: Any, user_id: str, model_id: str | None, api_key_id: int | None = None
+) -> int:
     """Return the cached or freshly-queried ``api_logs`` row count for *user_id*.
 
     Cached for ``_RECENT_REQUESTS_COUNT_TTL_SECONDS`` to keep heavy-history
     users from paying a full COUNT(*) on every 60s dashboard poll.
     """
-    key = (user_id, model_id)
+    key = (user_id, model_id, api_key_id)
     now = time.monotonic()
     cached = _RECENT_REQUESTS_COUNT_CACHE.get(key)
     if cached is not None and (now - cached[0]) < _RECENT_REQUESTS_COUNT_TTL_SECONDS:
         _RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
         return cached[1]
 
-    where_sql, params = _build_user_recent_requests_filters(user_id, model_id)
+    where_sql, params = _build_user_recent_requests_filters(user_id, model_id, api_key_id)
     count_row = await conn.fetchrow(
         f"""
         SELECT COUNT(*) as total
@@ -578,8 +588,8 @@ async def list_api_keys(
 ) -> APIKeyListResponse:
     """List all API keys owned by the current user, live ones first.
 
-    Active keys carry their full value for the console to show again; revoked
-    ones only their masked prefix.
+    Active and revoked keys carry their saved full value for the owner to
+    show and copy. Revealing a revoked key does not make it valid again.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -589,7 +599,7 @@ async def list_api_keys(
     keys: list[APIKeyListItem] = []
     for row in rows:
         full_key: str | None = None
-        if row["status"] == "active" and row["api_key_encrypted"]:
+        if row["status"] in ("active", "revoked") and row["api_key_encrypted"]:
             # Display-only decryption: never break the listing on a bad
             # ciphertext — log and fall back to a masked (api_key=None) row.
             try:
@@ -605,6 +615,8 @@ async def list_api_keys(
                 created_at=row["created_at"],
                 last_used_at=row["last_used_at"],
                 status=row["status"],
+                spent_today_usd=float(row.get("spent_today_usd") or 0),
+                spent_month_usd=float(row.get("spent_month_usd") or 0),
             )
         )
     return APIKeyListResponse(keys=keys)
@@ -935,6 +947,9 @@ async def get_usage(
             requests=int(period_data.get("requests") or 0),
             prompt_tokens=int(period_data.get("prompt_tokens") or 0),
             completion_tokens=int(period_data.get("completion_tokens") or 0),
+            cache_read_tokens=int(period_data.get("cache_read_tokens") or 0),
+            cache_write_tokens=int(period_data.get("cache_write_tokens") or 0),
+            reasoning_tokens=int(period_data.get("reasoning_tokens") or 0),
             cost_usd=float(period_data.get("cost_usd") or 0),
         ),
     )
@@ -1062,13 +1077,17 @@ async def get_recent_requests(
     limit: int = 50,
     offset: int = 0,
     model_id: str | None = None,
+    key_prefix: str | None = None,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> RecentRequestsResponse:
     """Get the current user's recent API requests.
 
     Returns a paginated list of recent requests with metadata, token usage,
-    and cost information. Supports optional filtering by model_id.
+    and cost information. Supports optional filtering by model_id, and by
+    ``key_prefix``: one of the account's keys, any status, 404 otherwise. Each
+    request names the key it was made with, when it was attributed to one.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -1077,17 +1096,33 @@ async def get_recent_requests(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
+    # The account's keys, to resolve the filter and to name each row's key.
+    prefixes: dict[str, str] = {}
+    if op_store:
+        prefixes = {
+            str(row["id"]): row["key_prefix"]
+            for row in await op_store.list_account_keys(current_user["user_id"])
+        }
+    api_key_id: int | None = None
+    if key_prefix is not None:
+        matches = [int(i) for i, prefix in prefixes.items() if prefix == key_prefix]
+        if not matches:
+            raise HTTPException(status_code=404, detail="API key not found")
+        api_key_id = matches[0]
+
     async with db_logger.pool.acquire() as conn:
         try:
             where_sql, params = _build_user_recent_requests_filters(
-                current_user["user_id"], model_id
+                current_user["user_id"], model_id, api_key_id
             )
             limit_idx = len(params) + 1
             offset_idx = len(params) + 2
             page_params = [*params, limit, offset]
 
             # Cached COUNT(*) — see ``_get_cached_user_request_count``.
-            total = await _get_cached_user_request_count(conn, current_user["user_id"], model_id)
+            total = await _get_cached_user_request_count(
+                conn, current_user["user_id"], model_id, api_key_id
+            )
 
             # Get paginated recent requests
             rows = await conn.fetch(
@@ -1100,7 +1135,8 @@ async def get_recent_requests(
                     total_tokens, cost_usd, error,
                     metadata->'routewise' AS routewise,
                     metadata->>'request_type' AS request_type,
-                    metadata->'auto'->>'requested' IS NOT NULL AS is_auto
+                    metadata->'auto'->>'requested' IS NOT NULL AS is_auto,
+                    metadata->>'api_key_id' AS api_key_id
                 FROM api_logs
                 WHERE {where_sql}
                 ORDER BY timestamp DESC
@@ -1140,6 +1176,7 @@ async def get_recent_requests(
             ),
             routewise=None if row["is_auto"] else coerce_json_object(row["routewise"]),
             request_type=row["request_type"],
+            key_prefix=prefixes.get(row["api_key_id"]) if row["api_key_id"] else None,
         )
         for row in rows
     ]

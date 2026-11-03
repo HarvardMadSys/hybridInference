@@ -58,6 +58,8 @@ def _schedule_cost_increment(
     user_id: str | None,
     usage: dict[str, Any] | None,
     pricing: dict[str, str] | None,
+    *,
+    api_key_id: int | None = None,
 ) -> None:
     """Fire-and-forget the daily quota cost increment for a billed embedding.
 
@@ -77,7 +79,7 @@ def _schedule_cost_increment(
 
     async def _increment() -> None:
         try:
-            await op_store.increment_user_cost(user_id, cost)
+            await op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
         except Exception as exc:
             logger.warning(f"Failed to increment embedding cost counter for {user_id}: {exc}")
             raise  # let tracked_task record the failure
@@ -287,6 +289,9 @@ async def execute_embeddings(
         # Agent-sandbox attribution (issue #1041); None for ordinary traffic.
         "agent_job_id": user_ctx.get("agent_job_id"),
     }
+    # The key the usage is attributed to, for its owner's per-key views.
+    if user_ctx.get("api_key_id") is not None:
+        metadata["api_key_id"] = user_ctx["api_key_id"]
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
     metadata.update(ctx.batch_log_metadata())
@@ -483,7 +488,9 @@ async def execute_embeddings(
         # header is caller-controlled, so exempting it from billing would let
         # any authenticated client bypass quota by setting it. The probe flag
         # affects log suppression only — never cost/quota.
-        _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
+        _schedule_cost_increment(
+            op_store, user_ctx.get("user_id"), usage, pricing, api_key_id=user_ctx.get("api_key_id")
+        )
         # What this request is charged, for a batch attempt watching it; the
         # same inputs as the increment above. Unpriced reads as unknown.
         observe_billing(

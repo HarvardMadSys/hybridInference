@@ -40,6 +40,9 @@ export interface ApiKeyListItem {
   created_at: string;
   last_used_at?: string | null;
   status: string;
+  /** What requests with this key cost on the current UTC day and month. */
+  spent_today_usd?: number;
+  spent_month_usd?: number;
 }
 
 export interface ApiKeyListResponse {
@@ -83,6 +86,12 @@ export interface UsageStats {
     requests: number;
     prompt_tokens: number;
     completion_tokens: number;
+    /** Input tokens served from the prompt cache; part of `prompt_tokens`. */
+    cache_read_tokens?: number;
+    /** Input tokens written to the prompt cache; part of `prompt_tokens`. */
+    cache_write_tokens?: number;
+    /** Reasoning tokens; some providers already count them in `completion_tokens`. */
+    reasoning_tokens?: number;
     cost_usd: number;
   };
 }
@@ -247,6 +256,8 @@ export interface RecentRequestItem {
   // "embedding" for /v1/embeddings traffic; null/undefined implies a
   // chat/completion request.
   request_type?: string | null;
+  /** The account's key the request was made with, when it was attributed to one. */
+  key_prefix?: string | null;
 }
 
 export interface RouteWiseDecision {
@@ -271,9 +282,11 @@ export async function getRecentRequests(
   limit: number = 50,
   offset: number = 0,
   modelId?: string,
+  keyPrefix?: string,
 ): Promise<RecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (modelId) params.set('model_id', modelId);
+  if (keyPrefix) params.set('key_prefix', keyPrefix);
   const resp = await fetchWithAuth(API_BASE, `/user/recent-requests?${params.toString()}`);
   return jsonOrThrow<RecentRequestsResponse>(resp);
 }
