@@ -1,8 +1,9 @@
-"""Tests confirming new API keys are seeded with the role-specific daily quota.
+"""Tests confirming an account's first API key is seeded with the role-specific quota.
 
-Both call sites in user_routes.py are exercised:
-- create_api_key  (POST /user/api-keys)
-- regenerate_api_key (POST /user/api-keys/regenerate)
+The quota is the account's: ``create_api_key`` (POST /user/api-keys) offers the
+role default, which the store applies only to a first key, while a further key
+inherits the account's. ``regenerate_api_key`` rotates a key in place and keeps
+the account's quota rather than re-seeding the role default.
 """
 
 from contextlib import contextmanager
@@ -13,7 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 import serving.servers.routers.user_routes as user_routes
-from serving.exceptions import DuplicateAPIKeyError
+from serving.exceptions import APIKeyLimitReachedError, DuplicateAPIKeyError
 from serving.servers.routers.user_routes import create_api_key, regenerate_api_key
 
 _FAKE_API_KEY = "hyi-" + "a" * 44
@@ -141,17 +142,30 @@ async def test_create_api_key_free_role_uses_role_specific_quota():
 
 
 @pytest.mark.asyncio
-async def test_create_api_key_existing_active_key_returns_409():
-    """Pre-check must 409 when an active key already exists.
-
-    get_key_by_account_or_user also catches legacy keys whose account_id is
-    NULL, so those users now get a clean 409 instead of an INSERT-time 500.
-    """
+async def test_create_api_key_inherits_the_account_quota_under_the_cap():
+    """An account with a key gets another: the store inherits its quota and enforces the cap."""
     rt = _make_rt(250.0)
     op_store = _make_op_store(has_active_key=True)
     current_user = _make_current_user(role="pro")
-    request = _make_request()
-    db_logger = _make_db_logger()
+
+    with _patch_auth(), patch.object(user_routes, "get_runtime_settings_instance", return_value=rt):
+        await create_api_key(
+            request=_make_request(),
+            current_user=current_user,
+            op_store=op_store,
+            db_logger=_make_db_logger(),
+        )
+
+    call_kwargs = op_store.create_key.call_args.kwargs
+    assert call_kwargs["inherit_account_quota"] is True
+    assert call_kwargs["max_active_keys"] == user_routes.MAX_ACTIVE_API_KEYS_PER_ACCOUNT
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_at_the_cap_returns_409():
+    rt = _make_rt(250.0)
+    op_store = _make_op_store(has_active_key=True)
+    op_store.create_key = AsyncMock(side_effect=APIKeyLimitReachedError(3))
 
     with (
         _patch_auth(),
@@ -159,15 +173,13 @@ async def test_create_api_key_existing_active_key_returns_409():
         pytest.raises(HTTPException) as exc_info,
     ):
         await create_api_key(
-            request=request,
-            current_user=current_user,
+            request=_make_request(),
+            current_user=_make_current_user(role="pro"),
             op_store=op_store,
-            db_logger=db_logger,
+            db_logger=_make_db_logger(),
         )
 
     assert exc_info.value.status_code == 409
-    op_store.get_key_by_account_or_user.assert_awaited_once_with("user-123")
-    op_store.create_key.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -203,45 +215,47 @@ async def test_create_api_key_propagates_duplicate_on_insert_race():
 
 
 @pytest.mark.asyncio
-async def test_regenerate_api_key_uses_role_specific_quota():
-    """regenerate_api_key must seed the new key with the role-specific quota."""
+async def test_regenerate_api_key_rotates_without_reseeding_the_role_quota():
+    """A rotation keeps the account's quota: no role default is read or written."""
     rt = _make_rt(250.0)
     op_store = _make_op_store(has_active_key=True)
-    current_user = _make_current_user(role="pro")
-    request = _make_request()
-    db_logger = _make_db_logger()
+    op_store.rotate_key.return_value = {
+        "id": 2,
+        "created_at": None,
+        "old_key_prefix": "abc123456789",
+    }
 
     with _patch_auth(), patch.object(user_routes, "get_runtime_settings_instance", return_value=rt):
-        await regenerate_api_key(
-            request=request,
-            current_user=current_user,
+        response = await regenerate_api_key(
+            request=_make_request(),
+            current_user=_make_current_user(role="internal"),
             op_store=op_store,
-            db_logger=db_logger,
+            db_logger=_make_db_logger(),
         )
 
-    rt.get_float.assert_awaited_with("user_daily_quota_pro")
-    op_store.create_key.assert_awaited_once()
-    call_kwargs = op_store.create_key.call_args.kwargs
-    assert call_kwargs["quota_daily_cost_usd"] == Decimal("250.0")
+    # The route names no key: the store picks the only one under the account lock.
+    op_store.rotate_key.assert_awaited_once()
+    assert op_store.rotate_key.call_args.args == ("user-123", None)
+    op_store.create_key.assert_not_awaited()
+    op_store.revoke_key.assert_not_awaited()
+    rt.get_float.assert_not_awaited()
+    assert response.old_key_prefix == "abc123456789"
 
 
 @pytest.mark.asyncio
-async def test_regenerate_api_key_internal_role_uses_role_specific_quota():
-    """regenerate_api_key respects the 'internal' role key."""
-    rt = _make_rt(1000.0)
-    op_store = _make_op_store(has_active_key=True)
-    current_user = _make_current_user(role="internal")
-    request = _make_request()
-    db_logger = _make_db_logger()
+async def test_regenerate_api_key_with_several_keys_returns_409():
+    from serving.exceptions import AmbiguousAPIKeyError
 
-    with _patch_auth(), patch.object(user_routes, "get_runtime_settings_instance", return_value=rt):
+    op_store = _make_op_store(has_active_key=True)
+    op_store.rotate_key.side_effect = AmbiguousAPIKeyError()
+
+    with _patch_auth(), pytest.raises(HTTPException) as exc_info:
         await regenerate_api_key(
-            request=request,
-            current_user=current_user,
+            request=_make_request(),
+            current_user=_make_current_user(role="pro"),
             op_store=op_store,
-            db_logger=db_logger,
+            db_logger=_make_db_logger(),
         )
 
-    rt.get_float.assert_awaited_with("user_daily_quota_internal")
-    call_kwargs = op_store.create_key.call_args.kwargs
-    assert call_kwargs["quota_daily_cost_usd"] == Decimal("1000.0")
+    assert exc_info.value.status_code == 409
+    op_store.create_key.assert_not_awaited()

@@ -13,6 +13,10 @@ pytest_plugins = ["tests.servers.conftest_auth"]
 
 pytestmark = pytest.mark.dbtest
 
+#: Stands in for the per-account key ceiling, so the tests that reach it stay
+#: quick and do not depend on its production value.
+_SMALL_CEILING = 3
+
 
 class TestUserInfo:
     """Test user info endpoint."""
@@ -91,15 +95,86 @@ class TestAPIKeyManagement:
         assert (audit_row["target_type"], audit_row["target_id"]) == ("user", test_user["id"])
 
     @pytest.mark.asyncio
-    async def test_create_duplicate_api_key(
+    async def test_a_second_key_is_active_alongside_the_first(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
     ):
-        """Test creating duplicate API key fails."""
+        """An account may hold several keys; adding one leaves the existing key live."""
+        response = await auth_app_client.post(
+            "/user/api-keys", headers=auth_headers, json={"name": "  ci runner  "}
+        )
+
+        assert response.status_code == 201
+        created = response.json()
+        assert created["name"] == "ci runner"
+        listed = (await auth_app_client.get("/user/api-keys/all", headers=auth_headers)).json()
+        active = {key["key_prefix"]: key for key in listed["keys"] if key["status"] == "active"}
+        assert set(active) == {test_user_with_key["key_prefix"], created["key_prefix"]}
+        assert active[created["key_prefix"]]["name"] == "ci runner"
+
+    def test_the_safety_ceiling_is_high_enough_not_to_be_a_product_limit(self):
+        """The ceiling only stops runaway scripts; the console does not present it as a limit."""
+        from serving.servers.routers import user_routes
+
+        assert user_routes.MAX_ACTIVE_API_KEYS_PER_ACCOUNT >= 100
+
+    @pytest.mark.asyncio
+    async def test_the_key_past_the_safety_ceiling_is_refused(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, monkeypatch
+    ):
+        from serving.servers.routers import user_routes
+
+        monkeypatch.setattr(user_routes, "MAX_ACTIVE_API_KEYS_PER_ACCOUNT", _SMALL_CEILING)
+        for _ in range(_SMALL_CEILING):
+            assert (
+                await auth_app_client.post("/user/api-keys", headers=auth_headers)
+            ).status_code == 201
+
         response = await auth_app_client.post("/user/api-keys", headers=auth_headers)
 
         assert response.status_code == 409
-        data = response.json()
-        assert "already" in data["detail"].lower()  # More flexible matching
+        assert str(_SMALL_CEILING) in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_key_frees_its_slot(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, monkeypatch
+    ):
+        from serving.servers.routers import user_routes
+
+        monkeypatch.setattr(user_routes, "MAX_ACTIVE_API_KEYS_PER_ACCOUNT", _SMALL_CEILING)
+        prefixes = [
+            (await auth_app_client.post("/user/api-keys", headers=auth_headers)).json()[
+                "key_prefix"
+            ]
+            for _ in range(_SMALL_CEILING)
+        ]
+        revoked = await auth_app_client.delete(
+            f"/user/api-keys/{prefixes[0]}", headers=auth_headers
+        )
+        assert revoked.status_code == 200
+
+        response = await auth_app_client.post("/user/api-keys", headers=auth_headers)
+
+        assert response.status_code == 201
+
+    @pytest.mark.asyncio
+    async def test_a_new_key_takes_the_account_quota_not_the_role_default(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Every key spends one account quota, so a custom one is not reset by adding a key."""
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET quota_daily_cost_usd = 3.5 WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+
+        created = (await auth_app_client.post("/user/api-keys", headers=auth_headers)).json()
+
+        async with auth_db_logger.pool.acquire() as conn:
+            quota = await conn.fetchval(
+                "SELECT quota_daily_cost_usd FROM api_keys WHERE key_prefix = $1",
+                created["key_prefix"],
+            )
+        assert float(quota) == 3.5
 
     @pytest.mark.asyncio
     async def test_get_api_key_info_success(
@@ -404,6 +479,132 @@ class TestAPIKeyManagement:
         response = await auth_app_client.post("/user/api-keys/regenerate", headers=auth_headers)
 
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_regenerating_one_key_leaves_the_others_live(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
+    ):
+        second = (
+            await auth_app_client.post(
+                "/user/api-keys", headers=auth_headers, json={"name": "nightly"}
+            )
+        ).json()
+
+        response = await auth_app_client.post(
+            f"/user/api-keys/{second['key_prefix']}/regenerate", headers=auth_headers
+        )
+
+        assert response.status_code == 200
+        rotated = response.json()
+        assert rotated["old_key_prefix"] == second["key_prefix"]
+        keys = {
+            key["key_prefix"]: key
+            for key in (
+                await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
+            ).json()["keys"]
+        }
+        assert keys[test_user_with_key["key_prefix"]]["status"] == "active"
+        assert keys[second["key_prefix"]]["status"] == "revoked"
+        # The successor keeps the key's name.
+        assert keys[rotated["key_prefix"]]["status"] == "active"
+        assert keys[rotated["key_prefix"]]["name"] == "nightly"
+
+    @pytest.mark.asyncio
+    async def test_regenerating_a_key_keeps_the_account_quota(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """A custom quota is the account's; rotating a key must not reset it to the role default."""
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET quota_daily_cost_usd = 7.25 WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+
+        rotated = (
+            await auth_app_client.post("/user/api-keys/regenerate", headers=auth_headers)
+        ).json()
+
+        async with auth_db_logger.pool.acquire() as conn:
+            quota = await conn.fetchval(
+                "SELECT quota_daily_cost_usd FROM api_keys WHERE key_prefix = $1",
+                rotated["key_prefix"],
+            )
+        assert float(quota) == 7.25
+
+    @pytest.mark.asyncio
+    async def test_the_unaddressed_regenerate_refuses_to_guess_between_keys(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
+    ):
+        await auth_app_client.post("/user/api-keys", headers=auth_headers)
+
+        response = await auth_app_client.post("/user/api-keys/regenerate", headers=auth_headers)
+
+        assert response.status_code == 409
+        listed = (await auth_app_client.get("/user/api-keys/all", headers=auth_headers)).json()
+        assert sum(key["status"] == "active" for key in listed["keys"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_regenerating_a_revoked_or_unknown_key_is_not_found(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked' WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+
+        for prefix in (test_user_with_key["key_prefix"], "hyi-missing"):
+            response = await auth_app_client.post(
+                f"/user/api-keys/{prefix}/regenerate", headers=auth_headers
+            )
+            assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_rename_sets_and_clears_a_keys_name(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
+    ):
+        prefix = test_user_with_key["key_prefix"]
+
+        renamed = await auth_app_client.patch(
+            f"/user/api-keys/{prefix}", headers=auth_headers, json={"name": " laptop "}
+        )
+        assert renamed.status_code == 200
+        assert renamed.json() == {"key_prefix": prefix, "name": "laptop"}
+
+        cleared = await auth_app_client.patch(
+            f"/user/api-keys/{prefix}", headers=auth_headers, json={"name": "   "}
+        )
+        assert cleared.json()["name"] is None
+        listed = (await auth_app_client.get("/user/api-keys/all", headers=auth_headers)).json()
+        assert listed["keys"][0]["name"] is None
+
+    @pytest.mark.asyncio
+    async def test_rename_rejects_an_overlong_name(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
+    ):
+        response = await auth_app_client.patch(
+            f"/user/api-keys/{test_user_with_key['key_prefix']}",
+            headers=auth_headers,
+            json={"name": "x" * 65},
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_rename_of_a_revoked_or_unknown_key_is_not_found(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked' WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+
+        for prefix in (test_user_with_key["key_prefix"], "hyi-missing"):
+            response = await auth_app_client.patch(
+                f"/user/api-keys/{prefix}", headers=auth_headers, json={"name": "x"}
+            )
+            assert response.status_code == 404
 
     @pytest.mark.asyncio
     async def test_regenerate_api_key_transaction(
@@ -717,41 +918,28 @@ class TestLocalePreference:
 
 
 class TestConcurrentAPIKeyCreation:
-    """Test concurrent API key creation (database constraint)."""
+    """Concurrent key creation against the per-account cap."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_key_creation_prevented(
-        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend
+    async def test_concurrent_creates_never_pass_the_cap(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend, monkeypatch
     ):
-        """Test that concurrent key creation is prevented by database constraint.
-
-        Note: This test assumes the unique constraint is in place.
-        """
+        """The count and the insert are serialized per account, so a race cannot overfill it."""
         import asyncio
 
+        from serving.servers.routers import user_routes
+
+        monkeypatch.setattr(user_routes, "MAX_ACTIVE_API_KEYS_PER_ACCOUNT", _SMALL_CEILING)
         operational_store, _, _, _ = auth_backend
+        attempts = _SMALL_CEILING + 5
 
-        # Try to create two keys concurrently
-        tasks = [
-            auth_app_client.post("/user/api-keys", headers=auth_headers),
-            auth_app_client.post("/user/api-keys", headers=auth_headers),
-        ]
+        responses = await asyncio.gather(
+            *(auth_app_client.post("/user/api-keys", headers=auth_headers) for _ in range(attempts))
+        )
 
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # One should succeed, one should fail
-        status_codes = [r.status_code for r in responses if hasattr(r, "status_code")]
-
-        # At least one should succeed
-        assert 201 in status_codes
-
-        # At least one should fail with 409 (or both if timing is perfect)
-        success_count = status_codes.count(201)
-        assert success_count == 1, "Only one concurrent key creation should succeed"
-
-        # Verify one active key exists
-        has_active = await operational_store.check_active_key_exists(test_user["id"])
-        assert has_active, "Only one active key should exist"
+        status_codes = sorted(r.status_code for r in responses)
+        assert status_codes == [201] * _SMALL_CEILING + [409] * 5
+        assert await operational_store.count_active_keys(test_user["id"]) == _SMALL_CEILING
 
 
 class TestAuthenticationEdgeCases:

@@ -355,11 +355,28 @@ class LLMProberLayoutResponse(BaseModel):
 
 
 # API key schemas
+#: Longest label an owner may give a key.
+API_KEY_NAME_MAX_LENGTH = 64
+
+
+class APIKeyCreateRequest(BaseModel):
+    """Optional settings for a new API key."""
+
+    name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
+
+
+class APIKeyRenameRequest(BaseModel):
+    """New label for an API key; null or blank clears it."""
+
+    name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
+
+
 class APIKeyResponse(BaseModel):
     """API key creation response."""
 
     api_key: str
     key_prefix: str
+    name: str | None = None
     warning: str = "Save this API key now. It will not be shown again."
     created_at: datetime
 
@@ -382,6 +399,7 @@ class APIKeyListItem(BaseModel):
     api_key: str | None = None
     key_prefix: str
     key_masked: str
+    name: str | None = None
     created_at: datetime
     last_used_at: datetime | None = None
     status: str
@@ -391,6 +409,13 @@ class APIKeyListResponse(BaseModel):
     """All API keys owned by the current user."""
 
     keys: list[APIKeyListItem]
+
+
+class APIKeyRenameResponse(BaseModel):
+    """Response returned after relabelling an API key."""
+
+    key_prefix: str
+    name: str | None = None
 
 
 class APIKeyDeleteResponse(BaseModel):
