@@ -1938,8 +1938,16 @@ msgstr ""
 #: ../developer/batches.md:798
 msgid ""
 "The admin console's **Batches** tab lists every user's batches, totals "
-"them per user and lets an administrator cancel one."
-msgstr "管理控制台的 **Batches** 标签页列出所有用户的批次，按用户汇总，并允许管理员取消批次。"
+"them per user and lets an administrator cancel one. Its totals (`GET "
+"/admin/batch/summary`) split requests by outcome as a batch's own page "
+"does: succeeded, failed, expired unrun, cancelled and not finished. "
+"`failed` in the response includes the `expired` requests, as a batch's "
+"`request_counts` does. Known cost leaves out attempts whose cost is "
+"unknown, and shows how many there are."
+msgstr ""
+"管理控制台的 **Batches** 标签页列出所有用户的批次，按用户汇总，并允许管理员取消批次。其汇总（`GET "
+"/admin/batch/summary`）与批次自身页面一样按结果拆分请求：成功、失败、过期未运行、已取消和未完成。响应中的 "
+"`failed` 包含 `expired` 的请求，与批次的 `request_counts` 一致。已知费用不计入费用未知的尝试，并显示其数量。"
 
 #: ../developer/batches.md:801
 msgid "Upgrading a deployment"

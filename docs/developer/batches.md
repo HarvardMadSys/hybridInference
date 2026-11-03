@@ -814,7 +814,11 @@ and its item and attempt in the row's metadata. Permanently deleting a user
 deletes their batches, files, idempotency records and webhook too.
 
 The admin console's **Batches** tab lists every user's batches, totals them per
-user and lets an administrator cancel one.
+user and lets an administrator cancel one. Its totals (`GET /admin/batch/summary`)
+split requests by outcome as a batch's own page does: succeeded, failed, expired
+unrun, cancelled and not finished. `failed` in the response includes the
+`expired` requests, as a batch's `request_counts` does. Known cost leaves out
+attempts whose cost is unknown, and shows how many there are.
 
 ### Upgrading a deployment
 

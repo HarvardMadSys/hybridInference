@@ -13,11 +13,27 @@ import {
   CONTROL,
   PANEL,
   PILL,
+  ROW_ACTION,
   ROW_ACTION_DANGER,
   TABLE_CELL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
+import {
+  compactNumber,
+  OutcomeBar,
+  sharePercent,
+  StatTile,
+  summaryOutcomeCounts,
+  usd,
+} from '@/components/features/admin/batchUsage';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import {
+  batchCategory,
+  CATEGORY_TONE,
+  categoryNote,
+  outcomeCounts,
+  statusLabel,
+} from '@/components/features/batches/batchText';
 import { usePagedBatches } from '@/components/features/batches/usePagedBatches';
 import { Select } from '@/components/ui/Select';
 import {
@@ -29,6 +45,7 @@ import {
   type BatchStatus,
   type ConsoleBatch,
 } from '@/lib/api/batches';
+import { translate } from '@/lib/i18n/translate';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 /** The statuses the list shows; the filter matches the same ones, finalizing included. */
@@ -44,33 +61,115 @@ const STATUSES: (BatchStatus | '')[] = [
   'cancelled',
 ];
 
-function usd(value: number): string {
-  return `$${value.toFixed(4)}`;
+function when(epoch: number | null | undefined): string {
+  return epoch
+    ? new Date(epoch * 1000).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+    : '—';
 }
 
-function when(epoch: number | null): string {
-  return epoch ? new Date(epoch * 1000).toLocaleString('en-US') : '—';
+function plural(count: number, one: string, many: string): string {
+  return `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`;
 }
 
-function doneOfTotal(done: number, total: number): string {
-  return `${done.toLocaleString()}/${total.toLocaleString()}`;
+/** Input and output tokens, shortened, with the exact counts on hover. */
+function Tokens({ input, output }: { input: number; output: number }) {
+  return (
+    <span
+      title={`${input.toLocaleString('en-US')} input · ${output.toLocaleString('en-US')} output tokens`}
+    >
+      {compactNumber(input)} in · {compactNumber(output)} out
+    </span>
+  );
 }
 
-/** Done / total of a batch: completed, failed and cancelled requests are done. */
-function progressText(batch: ConsoleBatch): string {
-  const counts = batch.request_counts;
-  return doneOfTotal(counts.completed + counts.failed + batch.cancelled, counts.total);
+/** How many attempts a known cost leaves out, because their cost is unknown. */
+function Unpriced({ count }: { count: number }) {
+  return (
+    <span
+      className="block text-[11px] text-amber-700"
+      title="Attempts whose request was sent but whose result was lost: their cost is unknown and not included."
+    >
+      + {plural(count, 'unpriced attempt', 'unpriced attempts')}
+    </span>
+  );
 }
 
-/** Done / total across a user's (or every user's) batches, counted as {@link progressText}. */
-function summaryProgressText(usage: AdminBatchSummary['totals']): string {
-  return doneOfTotal(usage.completed + usage.failed + usage.cancelled, usage.requests);
+/** A known cost, exact on hover, and the attempts it leaves out. */
+function Cost({ value, unknown }: { value: number; unknown: number }) {
+  return (
+    <>
+      <span title={`$${value.toFixed(6)}`}>{usd(value)}</span>
+      {unknown > 0 && <Unpriced count={unknown} />}
+    </>
+  );
+}
+
+/** A batch's status in words, coloured by its category, with what the category leaves out. */
+function StatusBadge({ batch }: { batch: ConsoleBatch }) {
+  const note = categoryNote(batch, translate);
+  return (
+    <>
+      <span
+        className={`${PILL} whitespace-nowrap ring-1 ring-inset ${CATEGORY_TONE[batchCategory(batch)]}`}
+      >
+        {statusLabel(batch.status, translate)}
+      </span>
+      {note && <span className="mt-1 block text-[11px] text-gray-500">{note}</span>}
+    </>
+  );
+}
+
+/** The totals across every user, as headline figures. */
+function UsageTiles({ totals }: { totals: AdminBatchSummary['totals'] }) {
+  const counts = summaryOutcomeCounts(totals);
+  const tokens = totals.prompt_tokens + totals.completion_tokens;
+  return (
+    <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <StatTile
+        label="Batches"
+        value={totals.batches.toLocaleString('en-US')}
+        detail={
+          totals.active > 0 ? `${totals.active.toLocaleString('en-US')} running` : 'None running'
+        }
+      />
+      <StatTile
+        label="Requests"
+        value={compactNumber(counts.total)}
+        valueTitle={counts.total.toLocaleString('en-US')}
+        detail={
+          counts.total > 0 ? `${sharePercent(counts.succeeded, counts.total)} succeeded` : undefined
+        }
+        className="sm:col-span-2"
+      >
+        {counts.total > 0 && <OutcomeBar counts={counts} className="mt-2" />}
+      </StatTile>
+      <StatTile
+        label="Tokens"
+        value={compactNumber(tokens)}
+        valueTitle={tokens.toLocaleString('en-US')}
+        detail={<Tokens input={totals.prompt_tokens} output={totals.completion_tokens} />}
+      />
+      <StatTile
+        label="Known cost"
+        value={usd(totals.cost_usd)}
+        valueTitle={`$${totals.cost_usd.toFixed(6)}`}
+        detail={
+          totals.unknown_cost_attempts > 0 ? (
+            <Unpriced count={totals.unknown_cost_attempts} />
+          ) : (
+            'Every attempt priced'
+          )
+        }
+      />
+    </dl>
+  );
 }
 
 /**
- * Every user's batches, for administrators: who holds how much batch work and
- * what it has cost, and each batch with its progress. An administrator can
- * cancel any batch here (audited); deleting stays with the owner and the API.
+ * Every user's batches, for administrators: who holds how much batch work, how
+ * its requests turned out and what it has cost, and each batch with its
+ * progress. An administrator can cancel any batch here (audited); deleting
+ * stays with the owner and the API.
  */
 export function BatchesTab() {
   const confirmation = useConfirmAction();
@@ -135,13 +234,17 @@ export function BatchesTab() {
     });
   }
 
-  const totals = summary?.totals;
   return (
     <div className="space-y-8">
       {confirmation.dialog}
       <AdminSection
-        title="Batch usage by user"
-        description="Every stored batch, by owner: how many are unfinished, the requests they hold, tokens and the cost known so far. Attempts whose cost is unknown are counted, not priced."
+        title="Batch usage"
+        description="Totals across every stored batch, then per owner. Known cost leaves out attempts whose cost is unknown. Select a user to list only their batches below."
+        actions={
+          <button type="button" className={BUTTON_SECONDARY} onClick={refresh}>
+            Refresh
+          </button>
+        }
       >
         {error && <AdminNotice tone="error">{error}</AdminNotice>}
         {!summary && !summaryError ? (
@@ -149,72 +252,91 @@ export function BatchesTab() {
         ) : !summary || summary.users.length === 0 ? (
           <AdminEmptyState title="No batches">No user has a stored batch.</AdminEmptyState>
         ) : (
-          <div className={`${PANEL} overflow-x-auto`}>
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead>
-                <tr>
-                  <th className={TABLE_HEAD_CELL}>User</th>
-                  <th className={TABLE_HEAD_CELL}>Batches</th>
-                  <th className={TABLE_HEAD_CELL}>Active</th>
-                  <th className={TABLE_HEAD_CELL}>Requests done / total</th>
-                  <th className={TABLE_HEAD_CELL}>Tokens in / out</th>
-                  <th className={TABLE_HEAD_CELL}>Known cost</th>
-                  <th className={TABLE_HEAD_CELL}>Unknown-cost attempts</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {summary.users.map((user) => (
-                  <tr key={user.user_id}>
-                    <td className={TABLE_CELL}>
-                      <button
-                        type="button"
-                        className="font-mono text-[12px] underline-offset-2 hover:underline"
-                        onClick={() => setUserId(user.user_id)}
+          <div className="space-y-4">
+            <UsageTiles totals={summary.totals} />
+            <div className={`${PANEL} relative overflow-x-auto`}>
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead>
+                  <tr>
+                    <th className={TABLE_HEAD_CELL}>User</th>
+                    <th className={TABLE_HEAD_CELL}>Batches</th>
+                    <th className={TABLE_HEAD_CELL}>Requests</th>
+                    <th className={`${TABLE_HEAD_CELL} min-w-[260px]`}>Outcome</th>
+                    <th className={TABLE_HEAD_CELL}>Tokens</th>
+                    <th className={TABLE_HEAD_CELL}>Known cost</th>
+                    <th className={TABLE_HEAD_CELL}>Last batch</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {summary.users.map((user) => {
+                    const counts = summaryOutcomeCounts(user);
+                    const selected = owner === user.user_id;
+                    return (
+                      <tr
+                        key={user.user_id}
+                        className={selected ? 'bg-blue-50/60' : undefined}
+                        data-testid={`usage-${user.user_id}`}
                       >
-                        {user.user_id}
-                      </button>
-                    </td>
-                    <td className={TABLE_CELL}>{user.batches}</td>
-                    <td className={TABLE_CELL}>{user.active}</td>
-                    <td className={TABLE_CELL}>{summaryProgressText(user)}</td>
-                    <td className={TABLE_CELL}>
-                      {user.prompt_tokens.toLocaleString()} /{' '}
-                      {user.completion_tokens.toLocaleString()}
-                    </td>
-                    <td className={TABLE_CELL}>{usd(user.cost_usd)}</td>
-                    <td className={TABLE_CELL}>{user.unknown_cost_attempts.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-              {totals && (
-                <tfoot>
-                  <tr className="font-medium">
-                    <td className={TABLE_CELL}>All users</td>
-                    <td className={TABLE_CELL}>{totals.batches}</td>
-                    <td className={TABLE_CELL}>{totals.active}</td>
-                    <td className={TABLE_CELL}>{summaryProgressText(totals)}</td>
-                    <td className={TABLE_CELL}>
-                      {totals.prompt_tokens.toLocaleString()} /{' '}
-                      {totals.completion_tokens.toLocaleString()}
-                    </td>
-                    <td className={TABLE_CELL}>{usd(totals.cost_usd)}</td>
-                    <td className={TABLE_CELL}>{totals.unknown_cost_attempts.toLocaleString()}</td>
-                  </tr>
-                </tfoot>
-              )}
-            </table>
+                        <td className={TABLE_CELL}>
+                          <button
+                            type="button"
+                            className="font-mono text-[12px] text-blue-700 underline-offset-2 hover:underline"
+                            title={
+                              selected
+                                ? 'List every user’s batches'
+                                : 'List only this user’s batches'
+                            }
+                            aria-pressed={selected}
+                            onClick={() => setUserId(selected ? '' : user.user_id)}
+                          >
+                            {user.user_id}
+                          </button>
+                        </td>
+                        <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                          {user.batches.toLocaleString('en-US')}
+                          {user.active > 0 && (
+                            <span className="block text-[11px] text-blue-700">
+                              {user.active.toLocaleString('en-US')} running
+                            </span>
+                          )}
+                        </td>
+                        <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                          <span title={counts.total.toLocaleString('en-US')}>
+                            {compactNumber(counts.total)}
+                          </span>
+                          {counts.total > 0 && (
+                            <span className="block text-[11px] text-gray-500">
+                              {sharePercent(counts.succeeded, counts.total)} succeeded
+                            </span>
+                          )}
+                        </td>
+                        <td className={TABLE_CELL}>
+                          <OutcomeBar counts={counts} />
+                        </td>
+                        <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                          <Tokens input={user.prompt_tokens} output={user.completion_tokens} />
+                        </td>
+                        <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                          <Cost value={user.cost_usd} unknown={user.unknown_cost_attempts} />
+                        </td>
+                        <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                          {when(user.last_created_at)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </AdminSection>
 
       <AdminSection
-        title="All batches"
-        description="Newest first. Filter by owner or by the status shown."
+        title={owner ? `Batches of ${owner}` : 'All batches'}
+        description="Newest first. Filter by owner or by status."
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <button type="button" className={BUTTON_SECONDARY} onClick={refresh}>
-              Refresh
-            </button>
             <input
               aria-label="Owner user id"
               placeholder="Owner user id"
@@ -222,11 +344,19 @@ export function BatchesTab() {
               value={userId}
               onChange={(event) => setUserId(event.target.value)}
             />
+            {userId && (
+              <button type="button" className={ROW_ACTION} onClick={() => setUserId('')}>
+                Clear
+              </button>
+            )}
             <Select<BatchStatus | ''>
               aria-label="Status"
               value={status}
               onValueChange={setStatus}
-              options={STATUSES.map((value) => ({ value, label: value || 'Any status' }))}
+              options={STATUSES.map((value) => ({
+                value,
+                label: value ? statusLabel(value, translate) : 'Any status',
+              }))}
               className="w-36"
             />
           </div>
@@ -237,7 +367,7 @@ export function BatchesTab() {
         ) : batches.length === 0 ? (
           <AdminEmptyState title="No batches">No batch matches these filters.</AdminEmptyState>
         ) : (
-          <div className={`${PANEL} overflow-x-auto`}>
+          <div className={`${PANEL} relative overflow-x-auto`}>
             <table className="min-w-full divide-y divide-gray-200">
               <thead>
                 <tr>
@@ -245,7 +375,7 @@ export function BatchesTab() {
                   <th className={TABLE_HEAD_CELL}>Owner</th>
                   <th className={TABLE_HEAD_CELL}>Target</th>
                   <th className={TABLE_HEAD_CELL}>Status</th>
-                  <th className={TABLE_HEAD_CELL}>Done</th>
+                  <th className={`${TABLE_HEAD_CELL} min-w-[220px]`}>Requests</th>
                   <th className={TABLE_HEAD_CELL}>Tokens</th>
                   <th className={TABLE_HEAD_CELL}>Known cost</th>
                   <th className={TABLE_HEAD_CELL}>Created</th>
@@ -256,8 +386,15 @@ export function BatchesTab() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {batches.map((batch) => (
-                  <tr key={batch.id}>
-                    <td className={`${TABLE_CELL} font-mono text-[12px]`}>{batch.id}</td>
+                  <tr key={batch.id} data-testid={`batch-${batch.id}`}>
+                    <td className={TABLE_CELL}>
+                      {batch.name && (
+                        <span className="block max-w-[16rem] truncate" title={batch.name}>
+                          {batch.name}
+                        </span>
+                      )}
+                      <span className="font-mono text-[12px] text-gray-500">{batch.id}</span>
+                    </td>
                     <td className={`${TABLE_CELL} font-mono text-[12px]`}>{batch.user_id}</td>
                     <td className={TABLE_CELL}>
                       {batch.endpoint ?? batch.target}
@@ -267,17 +404,18 @@ export function BatchesTab() {
                       </span>
                     </td>
                     <td className={TABLE_CELL}>
-                      <span className={`${PILL} bg-gray-100 text-gray-700`}>{batch.status}</span>
+                      <StatusBadge batch={batch} />
                     </td>
-                    <td className={TABLE_CELL}>{progressText(batch)}</td>
-                    <td className={TABLE_CELL}>{batch.usage.total_tokens.toLocaleString()}</td>
                     <td className={TABLE_CELL}>
-                      {usd(batch.cost_usd)}
-                      {batch.cost_unknown_attempts > 0
-                        ? ` (+${batch.cost_unknown_attempts} unknown)`
-                        : ''}
+                      <OutcomeBar counts={outcomeCounts(batch)} />
                     </td>
-                    <td className={TABLE_CELL}>{when(batch.created_at)}</td>
+                    <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                      <Tokens input={batch.usage.input_tokens} output={batch.usage.output_tokens} />
+                    </td>
+                    <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                      <Cost value={batch.cost_usd} unknown={batch.cost_unknown_attempts} />
+                    </td>
+                    <td className={`${TABLE_CELL} whitespace-nowrap`}>{when(batch.created_at)}</td>
                     <td className={TABLE_CELL}>
                       {isCancellable(batch) && (
                         <button
