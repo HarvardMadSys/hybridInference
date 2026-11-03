@@ -190,3 +190,36 @@ class TestZaiModelsDoNotSupportImage:
         assert "image_url" not in str(result["content"])
         # The image URL itself should NOT appear in the final content
         assert "photo.jpg" not in result["content"]
+
+
+# --- tool media leave the tool message before the payload is built ---
+
+
+def test_prepare_messages_moves_a_responses_tool_image_to_a_user_message():
+    """Codex's ``view_image`` reaches the chat payload outside the tool message.
+
+    A tool message holds text only; an image route used to forward the image
+    part inside it, which OpenAI refuses and other upstreams refuse or drop.
+    """
+    from serving.responses_translator import responses_input_to_messages
+
+    messages = responses_input_to_messages(
+        [
+            {"type": "function_call", "call_id": "c1", "name": "view_image", "arguments": "{}"},
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [{"type": "input_image", "image_url": "data:image/png;base64,x"}],
+            },
+        ]
+    )
+    adapter = _make_adapter(input_modalities=["text", "image"])
+
+    prepared = adapter._prepare_messages(messages)
+
+    assert [m["role"] for m in prepared] == ["assistant", "tool", "user"]
+    assert isinstance(prepared[1]["content"], str)
+    assert prepared[2]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,x"},
+    }

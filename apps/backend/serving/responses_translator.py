@@ -120,7 +120,9 @@ def _function_call_output_to_content(output: Any) -> Any:
 
     The spec's array form (``input_text`` / ``input_image`` parts) is translated
     as message content is: text alone collapses to a string, and an image stays
-    an image block, so the modality check sees it. Anything else is serialized.
+    an image block, so the modality check sees it. The OpenAI-compatible
+    adapter then moves it out of the tool message, which holds text only
+    (``serving.utils.messages.move_tool_media``). Anything else is serialized.
     """
     if isinstance(output, str):
         return output

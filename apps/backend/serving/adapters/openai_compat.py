@@ -16,7 +16,11 @@ from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
 from serving.stream import done_sentinel
 from serving.utils.logging import get_logger
-from serving.utils.messages import flatten_text_content, merge_leading_system_messages
+from serving.utils.messages import (
+    flatten_text_content,
+    merge_leading_system_messages,
+    move_tool_media,
+)
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
@@ -680,6 +684,12 @@ class OpenAICompatAdapter(BaseAdapter):
         argument itself, no copy — while the profile normalization and
         per-message cleaning below apply as they always have.
 
+        Media a tool returned are moved out of its ``role: "tool"`` message,
+        which holds text only, into the user message after the run of tool
+        messages (:func:`~serving.utils.messages.move_tool_media`). Otherwise
+        an image-capable route forwarded the image part inside the tool
+        message, where OpenAI refuses it and other upstreams refuse or drop it.
+
         Historical tool-call ``arguments`` are repaired for the same reason and
         on the same terms — see :func:`_sanitize_tool_call_arguments`. This
         method is the single chokepoint both :meth:`chat_completion` and
@@ -688,6 +698,7 @@ class OpenAICompatAdapter(BaseAdapter):
         route is covered by the one call.
         """
         messages = merge_leading_system_messages(messages)
+        messages = move_tool_media(messages)
         messages = normalize_messages_for_profile(self._usage_profile, messages)
         messages = _sanitize_tool_call_arguments(
             messages,
