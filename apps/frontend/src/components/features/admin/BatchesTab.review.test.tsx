@@ -3,13 +3,14 @@ import { act, fireEvent, render, screen, waitFor, within, cleanup } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BatchesTab } from './BatchesTab';
-import { getBatchSummary, listAllBatches } from '@/lib/api/batches';
+import { getAdminBatchRequests, getBatchSummary, listAllBatches } from '@/lib/api/batches';
 import type { ConsoleBatch, ConsoleBatchPage } from '@/lib/api/batches';
 
 vi.mock('@/lib/api/batches', () => ({
   getBatchSummary: vi.fn(),
   listAllBatches: vi.fn(),
   adminCancelBatch: vi.fn(),
+  getAdminBatchRequests: vi.fn(),
   isCancellable: () => false,
 }));
 vi.mock('@/components/features/admin/confirm/useConfirmAction', () => ({
@@ -336,5 +337,97 @@ describe('Owner names and cached input', () => {
     expect(within(user).getByRole('button', { name: 'u-1' })).not.toBeNull();
     const row = await screen.findByTestId('batch-any-batch');
     expect(row.textContent).not.toMatch(/cached/i);
+  });
+});
+
+describe('Finish estimate and prompts', () => {
+  function running(id: string): ConsoleBatch {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      ...page(id).data[0],
+      status: 'in_progress',
+      request_counts: { total: 10_000, completed: 6_000, failed: 400 },
+      cancelled: 0,
+      started_at: now - 3600,
+      expires_at: now + 86_400,
+    } as ConsoleBatch;
+  }
+
+  it('shows when a running batch should finish', async () => {
+    vi.mocked(listAllBatches).mockResolvedValue({
+      object: 'list',
+      data: [running('busy-batch'), page('done-batch').data[0]],
+      has_more: false,
+      last_id: 'done-batch',
+    });
+    render(<BatchesTab />);
+
+    // 6,400 done in an hour, 3,600 left: about 34 minutes more.
+    const busy = await screen.findByTestId('batch-busy-batch');
+    expect(busy.textContent).toContain('Est. finish');
+    expect(busy.textContent).toContain('in ~34 min');
+    expect(screen.getByTestId('batch-done-batch').textContent).not.toContain('Est. finish');
+  });
+
+  it('warns when the window closes before the batch can finish', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    vi.mocked(listAllBatches).mockResolvedValue({
+      object: 'list',
+      data: [{ ...running('slow-batch'), expires_at: now + 600 }],
+      has_more: false,
+      last_id: 'slow-batch',
+    });
+    render(<BatchesTab />);
+
+    const slow = await screen.findByTestId('batch-slow-batch');
+    expect(slow.textContent).toContain("Won't finish before its window closes");
+  });
+
+  it("opens a batch's prompts under its row, page by page", async () => {
+    vi.mocked(listAllBatches).mockResolvedValue(page('read-batch'));
+    const item = (n: number) => ({
+      id: n,
+      custom_id: `req-${n}`,
+      model_id: 'm',
+      status: 'completed',
+      status_code: 200,
+      attempts: 1,
+      request: { model: 'm', messages: [{ role: 'user', content: `What is ${n}?` }] },
+      response: { choices: [{ message: { role: 'assistant', content: `It is ${n}.` } }] },
+      error: null,
+      prompt_tokens: 3,
+      completion_tokens: 2,
+      completed_at: 1,
+    });
+    vi.mocked(getAdminBatchRequests).mockImplementation(async (_id, after = 0) =>
+      after === 0
+        ? { object: 'list', data: [item(1)], has_more: true, last_id: 1 }
+        : { object: 'list', data: [item(2)], has_more: false, last_id: 2 },
+    );
+    render(<BatchesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Prompts' }));
+    expect(await screen.findByTestId('request-req-1')).not.toBeNull();
+    expect(screen.getByTestId('request-req-1').textContent).toContain('What is 1?');
+    expect(getAdminBatchRequests).toHaveBeenCalledWith('read-batch', 0);
+    expect(screen.getByText(/recorded in the audit log/)).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show more requests' }));
+    expect(await screen.findByTestId('request-req-2')).not.toBeNull();
+    expect(getAdminBatchRequests).toHaveBeenLastCalledWith('read-batch', 1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide prompts' }));
+    await waitFor(() => expect(screen.queryByTestId('request-req-1')).toBeNull());
+  });
+
+  it('says so where the gateway keeps no prompts', async () => {
+    vi.mocked(listAllBatches).mockResolvedValue(page('private-batch'));
+    vi.mocked(getAdminBatchRequests).mockRejectedValue(
+      new Error('This gateway does not keep prompts for administrators to read'),
+    );
+    render(<BatchesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Prompts' }));
+    expect(await screen.findByText(/does not keep prompts/)).not.toBeNull();
   });
 });

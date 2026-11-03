@@ -32,6 +32,7 @@ from serving.servers.deps import (
     get_admin_audit_actor,
     get_batch_model_limits,
     get_batch_store,
+    get_log_store,
     get_operational_store,
     get_services,
     model_router_transition_lock,
@@ -235,6 +236,60 @@ async def batch_summary(
     }
     totals["cost_usd"] = sum(user["cost_usd"] for user in users)
     return {"users": users, "totals": totals}
+
+
+@router.get("/batch/jobs/{batch_id}/requests")
+async def admin_batch_requests(
+    batch_id: str,
+    after: int = Query(0, ge=0, description="The last item id of the previous page"),
+    limit: int = Query(25, ge=1, le=100),
+    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+    batch_store=Depends(get_batch_store),
+    log_store=Depends(get_log_store),
+) -> dict[str, Any]:
+    """A page of one batch's requests with their prompts and answers, for administrators.
+
+    Offered only where the gateway stores prompts and responses in its request
+    log (``db_store_full_content``), the setting that already decides whether
+    administrators can read request content: where a deployment keeps that
+    off, a batch's stored requests stay unreadable here too, although the
+    batch needs them to run. Opening a batch's requests (the first page) is
+    audited as ``batch.requests.read`` against the batch's owner.
+    """
+    if batch_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    if not getattr(log_store, "store_full_prompts", False):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This gateway does not keep prompts for administrators to read "
+                "(db_store_full_content is off)."
+            ),
+        )
+    batch = await batch_store.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
+    if after == 0:
+        await log_admin_action(
+            op_store,
+            action="batch.requests.read",
+            actor=actor,
+            target=AuditTarget.user(batch["user_id"]),
+            details={"batch_id": batch_id},
+        )
+    items = await batch_store.item_contents(batch_id, after=after, limit=limit + 1)
+    page = items[:limit]
+    for item in page:
+        completed = item.get("completed_at")
+        item["completed_at"] = int(completed.timestamp()) if completed is not None else None
+    return {
+        "object": "list",
+        "data": page,
+        "has_more": len(items) > limit,
+        "last_id": page[-1]["id"] if page else None,
+    }
 
 
 @router.post("/batch/jobs/{batch_id}/cancel")
