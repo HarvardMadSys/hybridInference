@@ -31,6 +31,14 @@ incident never closes, and silence is not evidence of recovery — sweeping one
 would report the outage as over while it is still happening. Construct those
 with ``clear_after_sec=0`` and ``stale_after_sec=None``.
 
+A state alert can still flap: a circuit breaker that closes on one success and
+reopens on the next failure turns one degraded endpoint into a page and a
+recovery per cycle. Such a producer settles its healthy edge explicitly: it
+passes ``clear_after`` to :meth:`ThresholdTransitionTracker.observe`, which
+starts the clear without closing, and a timer calls
+:meth:`ThresholdTransitionTracker.confirm_clear` when the period has passed. A
+breach in between cancels the clear, exactly as it does for a metric.
+
 The tracker is deliberately in-process, matching where the existing cooldown
 state lives. Cross-process convergence is the control plane's job: it dedupes by
 fingerprint, so two workers observing the same edge produce one incident.
@@ -127,6 +135,7 @@ class ThresholdTransitionTracker:
         breached: bool,
         now: float,
         stale_after: float | None = None,
+        clear_after: float | None = None,
     ) -> Transition | None:
         """Record one evaluation and return the edge it crossed, if any.
 
@@ -134,7 +143,13 @@ class ThresholdTransitionTracker:
         ``"resolved"`` once a firing key has been clear for ``clear_after_sec``,
         and ``None`` for every evaluation that does not change the state — which
         is the overwhelming majority, so callers can send only on a transition.
+
+        ``clear_after`` replaces ``clear_after_sec`` for this evaluation. It is
+        for a state alert that settles its single healthy edge: that edge starts
+        the clear here, and :meth:`confirm_clear` finishes it once the period
+        has passed, since no further observation will come to do so.
         """
+        settle = self.clear_after_sec if clear_after is None else clear_after
         state = self._firing.get(key)
 
         if breached:
@@ -161,10 +176,29 @@ class ThresholdTransitionTracker:
         state.last_observed_at = now
         if state.clear_started_at is None:
             state.clear_started_at = now
-        if now - state.clear_started_at >= self.clear_after_sec:
+        if now - state.clear_started_at >= settle:
             del self._firing[key]
             return "resolved"
         return None
+
+    def settling_since(self, key: str) -> float | None:
+        """When ``key``'s pending close began, or ``None`` if it is not settling."""
+        state = self._firing.get(key)
+        return state.clear_started_at if state is not None else None
+
+    def confirm_clear(self, key: str, *, started_at: float) -> bool:
+        """Close ``key`` if it is still settling from the clear that began at ``started_at``.
+
+        For a caller that confirms a settling period on a timer rather than with
+        a fresh observation. It never starts a clear: a key that breached again
+        since (its clear was cancelled) or began a newer clear is left exactly as
+        it is, and False is returned.
+        """
+        state = self._firing.get(key)
+        if state is None or state.clear_started_at is None or state.clear_started_at != started_at:
+            return False
+        del self._firing[key]
+        return True
 
     def sweep(self, now: float, *, held: Callable[[str], bool] | None = None) -> list[str]:
         """Resolve firing keys whose rule has stopped producing evaluations.

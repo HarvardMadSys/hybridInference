@@ -165,6 +165,68 @@ class TestStateAlerts:
         assert t.is_firing("circuit_open:zhipu")
 
 
+class TestASettledStateEdge:
+    """A flapping state alert settles its one healthy edge, confirmed by a timer."""
+
+    key = "circuit_open:zhipu"
+
+    def state(self) -> ThresholdTransitionTracker:
+        return ThresholdTransitionTracker(clear_after_sec=0.0, stale_after_sec=None)
+
+    def test_the_healthy_edge_starts_the_clear_without_closing(self) -> None:
+        t = self.state()
+        t.observe(self.key, breached=True, now=0.0)
+        assert t.observe(self.key, breached=False, now=1.0, clear_after=60.0) is None
+        assert t.is_firing(self.key)
+        assert t.settling_since(self.key) == 1.0
+
+    def test_confirming_the_same_clear_closes_it(self) -> None:
+        t = self.state()
+        t.observe(self.key, breached=True, now=0.0)
+        t.observe(self.key, breached=False, now=1.0, clear_after=60.0)
+        assert t.confirm_clear(self.key, started_at=1.0) is True
+        assert not t.is_firing(self.key)
+        # Once closed, a late duplicate confirmation is a no-op.
+        assert t.confirm_clear(self.key, started_at=1.0) is False
+
+    def test_a_breach_in_between_cancels_the_clear(self) -> None:
+        t = self.state()
+        t.observe(self.key, breached=True, now=0.0)
+        t.observe(self.key, breached=False, now=1.0, clear_after=60.0)
+        assert t.observe(self.key, breached=True, now=2.0) is None
+        assert t.confirm_clear(self.key, started_at=1.0) is False
+        assert t.is_firing(self.key)
+
+    def test_an_older_clear_cannot_confirm_a_newer_one(self) -> None:
+        t = self.state()
+        t.observe(self.key, breached=True, now=0.0)
+        t.observe(self.key, breached=False, now=1.0, clear_after=60.0)
+        t.observe(self.key, breached=True, now=2.0)
+        t.observe(self.key, breached=False, now=3.0, clear_after=60.0)
+        assert t.confirm_clear(self.key, started_at=1.0) is False
+        assert t.confirm_clear(self.key, started_at=3.0) is True
+
+    def test_confirming_never_starts_a_clear(self) -> None:
+        t = self.state()
+        t.observe(self.key, breached=True, now=0.0)
+        assert t.confirm_clear(self.key, started_at=0.0) is False
+        assert t.settling_since(self.key) is None
+        assert t.is_firing(self.key)
+
+    def test_restart_settling_cancels_a_pending_clear(self) -> None:
+        t = self.state()
+        t.observe(self.key, breached=True, now=0.0)
+        t.observe(self.key, breached=False, now=1.0, clear_after=60.0)
+        t.restart_settling(self.key)
+        assert t.confirm_clear(self.key, started_at=1.0) is False
+
+    def test_a_healthy_observation_past_the_period_closes_on_the_spot(self) -> None:
+        t = self.state()
+        t.observe(self.key, breached=True, now=0.0)
+        t.observe(self.key, breached=False, now=1.0, clear_after=60.0)
+        assert t.observe(self.key, breached=False, now=61.0, clear_after=60.0) == "resolved"
+
+
 class TestUndeliveredResolutions:
     """observe/sweep clear the key before the caller knows if it was sent."""
 

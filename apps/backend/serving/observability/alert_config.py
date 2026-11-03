@@ -346,9 +346,18 @@ class CircuitOpenStateChange(StateChange):
     nothing an operator can act on, and the breaker re-arms itself once the
     provider's window resets. Trips for every other reason still page — which is
     the difference from ``enabled: false``, which silences all of them.
+
+    ``settle_sec`` is how long a circuit must stay closed before its incident
+    closes and the recovery is posted. A partially failing endpoint closes on
+    one success and reopens on the next failure, many times a minute under
+    concurrent traffic; closing the incident on every such close made each cycle
+    a new incident, with its own page and its own "Recovered" card. A reopen
+    within the period is the same incident instead, so it repeats its page only
+    at ``cooldown_sec``. ``0`` restores closing on the first success.
     """
 
     page_on_usage_limit: bool = True
+    settle_sec: float = Field(default=120.0, ge=0)
 
 
 class StateChanges(BaseModel):
