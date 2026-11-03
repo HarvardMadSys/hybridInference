@@ -343,7 +343,7 @@ Scorer 的实现按阶段替换，接口不变：
 | prefix cache 证据 | [`routewise/prefix_cache.py`](../../../apps/backend/routing/routewise/prefix_cache.py) 的 `estimate()` | 切换成本 |
 | 访问控制 | [`model_access.py`](../../../apps/backend/serving/model_access.py) 的 `model_access_denial()`：已发布、角色（含运行时可见性覆盖）、用户禁用、grant 范围，按正式 ID 检查 | 资格过滤 |
 | 运行时开关 | [`runtime_settings.py`](../../../apps/backend/serving/config/runtime_settings.py) | 总开关、影子模式 |
-| 日志列 | [`log_schema.py`](../../../apps/backend/serving/storage/log_schema.py)：`served_model_id`、`num_turns`、`last_user_msg_*` | 决策记录、训练特征、重发检测 |
+| 日志列 | [`migrations/baseline/api_logs.py`](../../../apps/backend/migrations/baseline/api_logs.py)：`served_model_id`、`num_turns`、`last_user_msg_*` | 决策记录、训练特征、重发检测 |
 | 先例 | [`/v1/messages`](../../../apps/backend/serving/servers/routers/anthropic_messages.py) 的 `_maybe_reroute_small_reasoning_call` | 以后并入辅助调用规则 |
 
 ### 6.3 需要先补的缺口

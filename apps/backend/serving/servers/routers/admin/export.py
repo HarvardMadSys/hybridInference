@@ -15,7 +15,6 @@ from serving.servers.routers.admin._common import (
     _escape_ilike_substring_term,
     resolve_request_outcome_filter,
 )
-from serving.storage import account_schema
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -93,8 +92,7 @@ async def admin_export_requests(
     if user_id:
         params.append(_escape_ilike_substring_term(user_id))
         idx = len(params)
-        # A login name column the upgrade has not added yet matches nothing.
-        login_name = account_schema.current().column("login_name", "u")
+        login_name = "u.login_name"
         where_clauses.append(
             f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
             f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "

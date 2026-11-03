@@ -915,14 +915,12 @@ msgid ""
 " the database."
 msgstr "这个模块的输出并不止步于日志文件，它还会写进数据库。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:382
+#: ../developer/trusted-proxies-and-client-ips.md
 msgid ""
-"**`api_logs.metadata`** (a JSONB column; see "
-"`apps/backend/serving/storage/log_schema.py` and the insert in "
+"**`api_logs.metadata`** (a JSONB column; see the insert in "
 "`apps/backend/serving/storage/postgres_log.py`) receives, per request:"
 msgstr ""
 "**`api_logs.metadata`**（JSONB 列；见 "
-"`apps/backend/serving/storage/log_schema.py` 以及 "
 "`apps/backend/serving/storage/postgres_log.py` 里的插入语句）为每个请求存下这些字段："
 
 #: ../developer/trusted-proxies-and-client-ips.md

@@ -1,7 +1,7 @@
 """Audit attribution against real PostgreSQL: migration, round trip, erasure.
 
-The migration runs on a legacy-shaped ``admin_audit_log`` in a throwaway
-schema, so altering it never touches the table other tests share. The round
+The baseline's migration (``migrations.baseline.audit_log``) runs on a
+legacy-shaped ``admin_audit_log`` in a throwaway schema, so altering it never touches the table other tests share. The round
 trip and lifecycle tests use the store on the shared table, tagging their
 rows (``itest.attr.*`` actions, ``u-attr-*`` users) and removing them after.
 """
@@ -15,15 +15,12 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
+from migrations.baseline.audit_log import ensure_admin_audit_log_schema
+from migrations.baseline.ddl import existing_columns
 from serving.audit import AuditActor, AuditTarget, audit_columns
 from serving.servers.auth import log_admin_action
-from serving.storage.audit_schema import (
-    ATTRIBUTION_COLUMNS,
-    ensure_admin_audit_log_schema,
-    insert_audit_row,
-)
+from serving.storage.audit_schema import ATTRIBUTION_COLUMNS, insert_audit_row
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
-from serving.storage.log_schema import existing_columns
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 

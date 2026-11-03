@@ -227,7 +227,6 @@ async def test_boot_imports_environment_values_without_overwriting_rows(
     assert store.rows["SMTP_PASSWORD"].secret
     assert "SITE_DOCS_URL" not in store.rows
     assert store.rows["FRONTEND_URL"].value == "https://db.example"
-    assert store.schema_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1602,7 +1601,7 @@ def test_the_fence_secret_is_not_locked_while_nothing_stands_in(config_env, monk
 def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, caplog) -> None:
     """The fence pins API_KEY_SECRET on the first start; setting one later fails startup."""
     from serving.config.settings import Settings
-    from serving.storage import log_schema
+    from serving.storage import erasure_fence
 
     # Settings reads the process environment too, and CI's database job sets one.
     monkeypatch.delenv("ERASURE_FENCE_SECRET", raising=False)
@@ -1611,7 +1610,7 @@ def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, ca
         lambda: Settings(api_key_secret="fallback-secret"),
     )
     with caplog.at_level("WARNING"):
-        assert log_schema.resolve_fence_secret(None) == "fallback-secret"
+        assert erasure_fence.resolve_fence_secret(None) == "fallback-secret"
 
     assert "set erasure_fence_secret" not in caplog.text.lower()
     assert "keep API_KEY_SECRET unchanged and ERASURE_FENCE_SECRET empty" in caplog.text

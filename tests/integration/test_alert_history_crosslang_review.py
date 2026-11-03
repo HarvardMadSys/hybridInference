@@ -101,7 +101,6 @@ async def test_monitor_wire_commit_retry_scope_and_rollback(monkeypatch):
 
     async def cleanup():
         async with pool.acquire() as conn:
-            await storage.ensure_schema(conn)
             await conn.execute(
                 "DELETE FROM alert_history_events WHERE source_namespace = $1", NAMESPACE
             )

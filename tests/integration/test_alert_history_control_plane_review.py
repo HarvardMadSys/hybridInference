@@ -21,7 +21,6 @@ from serving.observability.alert_history.runtime import AlertHistoryRuntime
 from serving.servers.deps import get_operational_store
 from serving.servers.routers import alert_history_auth as auth, alert_history_ingest as ingest
 from serving.servers.routers.admin import alert_history as reads
-from serving.storage import alert_history_store as storage
 from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
@@ -112,7 +111,6 @@ async def test_control_plane_real_wire_roundtrip_preserves_each_fact(monkeypatch
 
     async def cleanup():
         async with pool.acquire() as conn:
-            await storage.ensure_schema(conn)
             for table in ("alert_history_events", "alert_history_sources"):
                 await conn.execute(
                     f"DELETE FROM {table} WHERE source_namespace=ANY($1::text[])",

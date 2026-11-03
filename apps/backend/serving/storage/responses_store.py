@@ -44,27 +44,6 @@ class ResponseStore:
         self._pool = pool
         self.persist_enabled = persist_enabled
 
-    async def initialize(self) -> None:
-        """Create the ``openai_responses`` table and indexes (idempotent)."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS openai_responses (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    response JSONB NOT NULL,
-                    messages JSONB NOT NULL,
-                    previous_response_id TEXT,
-                    model TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                )
-                """
-            )
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_openai_responses_user "
-                "ON openai_responses(user_id, created_at DESC)"
-            )
-
     async def save(
         self,
         *,

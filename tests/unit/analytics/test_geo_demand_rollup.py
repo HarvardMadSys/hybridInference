@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from migrations.baseline.geo_demand import ensure_geo_rollup_schema
 from serving.admin import geo_demand_rollup
 from serving.admin.geo_demand_rollup import (
     _chunk_missing_hours,
     _repair_missing,
-    ensure_geo_rollup_schema,
     register_rollup_job,
     rollup_window,
 )

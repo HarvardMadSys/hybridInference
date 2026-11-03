@@ -14,6 +14,7 @@ import json
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import app_config as baseline_app_config
 from serving.config import app_config, instances, live_control, revisions
 from serving.config.app_config_registry import ALERTS_RUNTIME_GROUP, MANAGED_GROUPS
 from serving.config.app_config_store import AppConfigStore, ConfigRow
@@ -38,6 +39,18 @@ async def _drop(connection) -> None:
     await connection.execute("DROP FUNCTION IF EXISTS config_source_bump_app_config() CASCADE")
 
 
+async def _build(connection) -> None:
+    """The configuration tables, revision row and trigger, as the baseline builds them."""
+    await baseline_app_config.ensure_schema(
+        connection, create_source_table=baseline_app_config.CREATE_TABLE_SQL
+    )
+
+
+async def _rebuild(connection) -> None:
+    await _drop(connection)
+    await _build(connection)
+
+
 @pytest.fixture
 def pg_dsn() -> str:
     return postgres.worker_dsn()
@@ -47,20 +60,18 @@ def pg_dsn() -> str:
 async def pool(pg_dsn: str):
     pool = await postgres.create_pool(min_size=1, max_size=4)
     async with pool.acquire() as connection:
-        await _drop(connection)
+        await _rebuild(connection)
     try:
         yield pool
     finally:
         async with pool.acquire() as connection:
-            await _drop(connection)
+            await _rebuild(connection)
         await pool.close()
 
 
 @pytest_asyncio.fixture
 async def store(pool) -> AppConfigStore:
-    store = AppConfigStore(pool)
-    await store.ensure_schema()
-    return store
+    return AppConfigStore(pool)
 
 
 async def _version(pool) -> revisions.SourceVersion:
@@ -80,9 +91,11 @@ async def test_schema_starts_at_revision_zero_with_nothing_active(pool, store) -
     assert snapshot.rows == {}
     assert snapshot.version == version
     assert snapshot.contracts.groups == {}
-    # Idempotent: a second boot neither resets the history nor activates anything.
+    # Idempotent: running the baseline again neither resets the history nor
+    # activates anything.
     await store.write([ConfigRow("SITE_NAME", "x")])
-    await store.ensure_schema()
+    async with pool.acquire() as connection:
+        await _build(connection)
     again = await _version(pool)
     assert again.epoch == version.epoch
     # An upsert fires both the INSERT and the UPDATE statement triggers: the
@@ -503,21 +516,3 @@ async def test_a_restored_older_revision_and_a_new_epoch_still_apply(pool, store
     await settle()
     assert app_config.source_version() == fresh
     assert not alert_runtime.GROUP.status.regressed
-
-
-@pytest.mark.asyncio
-async def test_schema_creation_races_safely(pg_dsn, pool) -> None:
-    async with pool.acquire() as connection:
-        await connection.execute(
-            "CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-            "secret BOOLEAN NOT NULL DEFAULT FALSE, source TEXT NOT NULL DEFAULT 'admin', "
-            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_by TEXT)"
-        )
-    stores = [AppConfigStore(pool) for _ in range(4)]
-    await asyncio.gather(*(each.ensure_schema() for each in stores))
-    async with pool.acquire() as connection:
-        triggers = await connection.fetchval(
-            "SELECT COUNT(*) FROM pg_trigger WHERE tgname = $1", revisions.TRIGGER_NAME
-        )
-    assert triggers == 1
-    assert (await _version(pool)).revision == 0

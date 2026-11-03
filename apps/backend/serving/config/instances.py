@@ -54,19 +54,6 @@ _FINAL_REPORT_TIMEOUT_SECONDS = 3.0
 #: Version of this registration protocol, reported in ``capabilities``.
 PROTOCOL_VERSION = 1
 
-CREATE_INSTANCES_SQL = """
-CREATE TABLE IF NOT EXISTS config_instances (
-    instance_id   TEXT PRIMARY KEY,
-    build         TEXT NOT NULL,
-    capabilities  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    started_at    TIMESTAMPTZ NOT NULL,
-    heartbeat_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    lifecycle     TEXT NOT NULL,
-    report_seq    BIGINT NOT NULL DEFAULT 0,
-    groups        JSONB NOT NULL DEFAULT '{}'::jsonb
-)
-"""
-
 DELETE_ALL_INSTANCES_SQL = "DELETE FROM config_instances"
 
 # Monotonic: a report only lands when its sequence is newer than the stored

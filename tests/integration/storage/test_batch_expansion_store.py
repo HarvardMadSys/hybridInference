@@ -37,8 +37,6 @@ CHAT = "/v1/chat/completions"
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=1, max_size=8)
-    store = BatchStore(pool)
-    await store.initialize()
     try:
         yield pool
     finally:

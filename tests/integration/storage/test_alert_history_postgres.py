@@ -18,7 +18,7 @@ from serving.observability.alert_history.queue import HistoryQueue, HistoryWrite
 from serving.observability.alert_history.records import HistoryRecord, finalize
 from serving.observability.alert_history.runtime import AlertHistoryRuntime
 from serving.storage import alert_history_store as store
-from serving.storage.log_schema import (
+from serving.storage.erasure_fence import (
     establish_erasure_fence,
     fence_account_advisory_key,
     fence_account_digest,
@@ -52,8 +52,6 @@ def rec(origin: str, *, ns: str = NS, subjects=(), refs=(), **over) -> HistoryRe
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=1, max_size=8)
-    async with pool.acquire() as conn:
-        await store.ensure_schema(conn)
 
     async def wipe():
         async with pool.acquire() as conn:
@@ -88,14 +86,6 @@ async def count(pool, where="TRUE", *args):
             f"SELECT count(*) FROM alert_history_events WHERE source_namespace LIKE 'ahtest-%' AND {where}",
             *args,
         )
-
-
-async def test_schema_is_idempotent(pool):
-    async with pool.acquire() as conn:
-        await store.ensure_schema(conn)
-        await store.ensure_schema(conn)
-        assert await store.tables_present(conn)
-        assert not await store.missing_schema_objects(conn)
 
 
 async def test_insert_duplicate_and_conflict(pool):

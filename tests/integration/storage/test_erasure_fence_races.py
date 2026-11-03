@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 import pytest
 import pytest_asyncio
 
-from serving.storage.log_schema import (
+from serving.storage.erasure_fence import (
     ErasureFenceUnavailable,
     check_erasure_fence,
     establish_erasure_fence,
@@ -625,7 +625,7 @@ def test_resolve_fence_secret_falls_back(monkeypatch):
 
 def test_resolve_fence_secret_fails_closed(monkeypatch):
     from serving.config.settings import Settings
-    from serving.storage.log_schema import ErasureFenceUnavailable
+    from serving.storage.erasure_fence import ErasureFenceUnavailable
 
     monkeypatch.setattr(
         "serving.config.settings.get_settings",
@@ -986,7 +986,7 @@ async def test_concurrent_fingerprint_init_different_secrets(fence_store):
         )
 
     # Two concurrent initializers with DIFFERENT secrets.
-    from serving.storage.log_schema import ErasureFenceUnavailable
+    from serving.storage.erasure_fence import ErasureFenceUnavailable
 
     barrier = asyncio.Barrier(2)
     results = {"ok": 0, "mismatch": 0, "other_error": 0}

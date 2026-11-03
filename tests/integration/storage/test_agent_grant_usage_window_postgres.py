@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import pytest_asyncio
 
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.grant_auth import ledger_attribution
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.utils import calculate_cost
 from serving.utils.token_utils import normalize_usage

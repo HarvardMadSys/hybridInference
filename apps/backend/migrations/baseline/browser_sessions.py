@@ -1,15 +1,6 @@
-"""Tables for browser sessions: one browser, the accounts signed in on it.
+"""Tables for browser sessions: one browser, the accounts signed in on it. Frozen.
 
-Both boot-time schema builders (``DatabaseLogger`` and
-``PostgresOperationalStore``) create the auth tables, so they call this one
-function rather than each carrying a copy that can drift.
-
-One ``browser_sessions`` row per browser, keyed by the hash of the cookie it
-holds. Its accounts are ``browser_session_accounts`` rows, each pointing at that
-account's own ``auth_sessions`` row. These are new tables rather than a column
-on ``auth_sessions``, so no boot alters a table the refresh path reads, and they
-have no foreign keys, which would lock ``users`` or ``auth_sessions`` while
-being created.
+Copied from ``serving.storage.browser_session_schema``.
 """
 
 from __future__ import annotations

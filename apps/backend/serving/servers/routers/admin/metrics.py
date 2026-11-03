@@ -54,7 +54,7 @@ from serving.servers.routers.admin._common import (
     resolve_request_outcome_filter,
 )
 from serving.servers.routers.admin._refreshing_cache import RefreshingResult
-from serving.storage import account_schema, admin_view_results, perf_metrics_index
+from serving.storage import admin_view_results, perf_metrics_index
 from serving.storage.utils import coerce_json_object
 from serving.utils.logging import get_logger
 
@@ -855,8 +855,7 @@ def _build_recent_requests_filters(
         # window, so it isn't limited to the current page of results.
         params.append(_escape_ilike_substring_term(user_id))
         idx = len(params)
-        # A login name column the upgrade has not added yet matches nothing.
-        login_name = account_schema.current().column("login_name", "u")
+        login_name = "u.login_name"
         clauses.append(
             f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
             f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "

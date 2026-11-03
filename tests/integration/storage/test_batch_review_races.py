@@ -17,7 +17,6 @@ pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 async def store():
     pool = await postgres.create_pool(min_size=1, max_size=6)
     store = BatchStore(pool)
-    await store.initialize()
     async with pool.acquire() as conn:
         await conn.execute("TRUNCATE batch_jobs, batch_idempotency, batch_user_state CASCADE")
     try:

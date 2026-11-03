@@ -25,7 +25,7 @@ from serving.servers.deps import (
     get_db_logger,
     verify_admin_access,
 )
-from serving.storage import account_schema, daily_activity_rollup
+from serving.storage import daily_activity_rollup
 
 router = APIRouter(prefix="/admin")
 
@@ -134,10 +134,8 @@ async def admin_get_analytics(
     lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
     # ``email`` is the user's display label: the email, else the login name
     # of an account created without one, else the id of a deleted account.
-    # A login name column the upgrade has not added yet holds nothing.
-    users = account_schema.current()
-    login_name = users.column("login_name", "u")
-    group_login_name = ", u.login_name" if users.has("login_name") else ""
+    login_name = "u.login_name"
+    group_login_name = ", u.login_name"
 
     # Acquire ONE connection and run all queries sequentially. Acquiring 5
     # connections via asyncio.gather can starve the pool when two admin

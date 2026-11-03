@@ -19,8 +19,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.storage import daily_activity_rollup, user_usage_rollup
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
 

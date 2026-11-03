@@ -428,8 +428,7 @@ and `x-api-key` replaced by `***`.
 The output of this module does not stay in the log file. It is written to the
 database.
 
-**`api_logs.metadata`** (a JSONB column; see
-`apps/backend/serving/storage/log_schema.py` and the insert in
+**`api_logs.metadata`** (a JSONB column; see the insert in
 `apps/backend/serving/storage/postgres_log.py`) receives, per request:
 
 | Surface | Handler | IP-related keys stored |

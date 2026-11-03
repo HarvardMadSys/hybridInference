@@ -16,6 +16,12 @@ from serving.servers import bootstrap
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
 
+@pytest.fixture(autouse=True)
+def _schema_is_current(monkeypatch):
+    """These boots run on fake connections; the schema check has tests of its own."""
+    monkeypatch.setattr(bootstrap, "require_schema", AsyncMock())
+
+
 @pytest.fixture
 def boot_env(monkeypatch, tmp_path):
     monkeypatch.setenv("DB_ENABLED", "true")

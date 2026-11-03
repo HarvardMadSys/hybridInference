@@ -7,10 +7,17 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import operational_store
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
+
+
+async def _run_baseline_step(pool) -> None:
+    """Run the step of ``0001_baseline`` that the operational store used to run at startup."""
+    async with pool.acquire() as conn:
+        await operational_store.create_tables(conn)
 
 
 @pytest_asyncio.fixture
@@ -161,7 +168,7 @@ async def test_create_key_persists_encrypted_column(
     assert stored == ciphertext
 
 
-async def test_initialize_migrates_legacy_encrypted_column(
+async def test_the_baseline_migrates_legacy_encrypted_column(
     postgres_op_store: PostgresOperationalStore,
 ):
     """Missing encrypted-key storage is added without reconstructing old keys."""
@@ -180,8 +187,8 @@ async def test_initialize_migrates_legacy_encrypted_column(
         )
         await conn.execute("ALTER TABLE api_keys DROP COLUMN api_key_encrypted")
 
-    await store.initialize()
-    await store.initialize()
+    await _run_baseline_step(store._pool)
+    await _run_baseline_step(store._pool)
 
     async with store._pool.acquire() as conn:
         assert (

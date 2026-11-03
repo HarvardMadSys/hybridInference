@@ -33,8 +33,7 @@ from serving.servers.routers import (
     alert_history_ingest,
 )
 from serving.servers.routers.admin import alerts as admin_alerts
-from serving.storage import alert_history_store as store
-from serving.storage.log_schema import fence_account_digest
+from serving.storage.erasure_fence import fence_account_digest
 from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
@@ -125,8 +124,6 @@ async def api(monkeypatch, tmp_path):
     auth._CACHE.clear()
     credentials(monkeypatch)
     pool = await postgres.create_pool(min_size=1, max_size=6)
-    async with pool.acquire() as conn:
-        await store.ensure_schema(conn)
 
     async def wipe():
         async with pool.acquire() as conn:

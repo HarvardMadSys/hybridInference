@@ -17,7 +17,8 @@ than a silent ``localhost:5432``. Without it, a machine with no database skips
 these tests as before.
 
 The schema is prepared here too (:func:`prepare_schema`), by the same code in CI
-and locally: ``python -m tests.fixtures.postgres prepare --workers N``.
+and locally: ``python -m tests.fixtures.postgres prepare --workers N``. That is
+the schema migrations, exactly as a deploy applies them.
 
 See ``docs/agents/specs/2026-10-18-test-database-contract-design.zh.md``.
 """
@@ -262,18 +263,10 @@ async def _ensure_ready(db: DatabaseTarget, database: str | None) -> None:
     database just as on one CI prepared, where this only reads the catalog.
     A *database* the caller names is the caller's to manage.
     """
-    import asyncpg
-
     if database is not None or db.name in _ready_databases:
         return
     await ensure_database(db.name)
-    with connecting(db.describe()):
-        pool = await asyncpg.create_pool(**db.connect_kwargs(), min_size=1, max_size=2)
-    try:
-        await assert_test_db_from_pool(pool, "prepare")
-        await prepare_schema(pool)
-    finally:
-        await pool.close()
+    await prepare_schema(db.name)
     _ready_databases.add(db.name)
 
 
@@ -384,28 +377,17 @@ async def ensure_database(name: str, *, template: str | None = None) -> bool:
         await admin.close()
 
 
-async def prepare_schema(pool: Any) -> None:
-    """Bring a test database to the full current schema.
+async def prepare_schema(database: str) -> None:
+    """Bring test database *database* to the full current schema.
 
-    The same steps the gateway runs at startup. Running only the first
-    leaves the operational columns (``users.signup_reason`` and friends)
-    missing, which is what made the server tests fail on a fresh database.
-    Idempotent: on a prepared database every step only reads the catalog.
+    Applies the schema migrations, the step a deploy runs before the gateway
+    starts (``python -m migrations upgrade``), so tests run on the schema
+    production has. On a database already at the head it only reads the version.
     """
-    from serving.storage import alert_history_store
-    from serving.storage.batch_store import BatchStore
-    from serving.storage.database import DatabaseLogger
-    from serving.storage.postgres_operational import PostgresOperationalStore
-    from serving.storage.responses_store import ResponseStore
+    from tests.fixtures.migrations import upgrade
 
-    logger = DatabaseLogger({}, store_full_prompts=False)
-    logger.pool = pool
-    await logger.ensure_schema()
-    await PostgresOperationalStore(pool).initialize()
-    await ResponseStore(pool).initialize()
-    await BatchStore(pool).initialize()
-    async with pool.acquire() as conn:
-        await alert_history_store.ensure_schema(conn)
+    assert_test_db_name(database, "prepare")
+    await upgrade(database)
 
 
 #: Prefix of the comment :func:`prepare_databases` puts on a database it
@@ -423,7 +405,6 @@ async def prepare_databases(workers: int = 0, *, owner: str | None = None) -> li
     Databases another checkout that still exists has recorded are refused, not
     taken over: a takeover would let ``clean`` drop them when *owner* goes.
     """
-    import asyncpg
 
     db = target(worker="master")
     names = [db.base_name] + [
@@ -432,20 +413,12 @@ async def prepare_databases(workers: int = 0, *, owner: str | None = None) -> li
     if owner is not None:
         await _refuse_another_owner(names, owner)
     await ensure_database(db.base_name)
-    pool = await asyncpg.create_pool(**db.connect_kwargs(db.base_name), min_size=1, max_size=2)
-    try:
-        await prepare_schema(pool)
-    finally:
-        # CREATE DATABASE … TEMPLATE needs the template to have no connections.
-        await pool.close()
+    # Leaves no connection open: CREATE DATABASE … TEMPLATE needs none on the template.
+    await prepare_schema(db.base_name)
     for name in names[1:]:
         if await ensure_database(name, template=db.base_name):
             continue
-        pool = await asyncpg.create_pool(**db.connect_kwargs(name), min_size=1, max_size=2)
-        try:
-            await prepare_schema(pool)
-        finally:
-            await pool.close()
+        await prepare_schema(name)
     if owner is not None:
         await _record_owner(names, owner)
     return names

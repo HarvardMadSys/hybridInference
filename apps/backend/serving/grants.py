@@ -198,32 +198,3 @@ def is_live(row: dict[str, Any], *, now: datetime | None = None) -> bool:
     if expires_at is None:
         return False
     return expires_at > (now or datetime.now(UTC))
-
-
-#: DDL for the gateway-owned grants table.
-#:
-#: It stayed behind when ``agent_job_store`` left with the cloud agent, because
-#: minting and verifying a capability for *this* gateway's models is this
-#: gateway's job.
-#:
-#: The unique constraint is what makes minting idempotent — a control plane that
-#: retries after a timeout gets its grant back rather than a second capability
-#: nobody is tracking.
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS agent_grants (
-    grant_id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    external_job_id TEXT NOT NULL,
-    external_attempt_id TEXT NOT NULL,
-    allowed_models JSONB NOT NULL DEFAULT '[]'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at TIMESTAMPTZ NOT NULL,
-    revoked_at TIMESTAMPTZ,
-    UNIQUE (external_job_id, external_attempt_id)
-)
-"""
-
-CREATE_INDEX_SQL = (
-    "CREATE INDEX IF NOT EXISTS idx_agent_grants_expires ON agent_grants(expires_at)",
-    "CREATE INDEX IF NOT EXISTS idx_agent_grants_user ON agent_grants(user_id)",
-)

@@ -7,7 +7,7 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from serving.storage.log_schema import ensure_api_logs_schema
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 

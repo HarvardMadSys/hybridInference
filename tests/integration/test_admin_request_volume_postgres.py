@@ -29,12 +29,12 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
 from serving.servers.routers.admin.metrics import REQUEST_METRIC_WINDOWS
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
 from tests.fixtures.audit import ADMIN_ACTOR

@@ -1,5 +1,8 @@
 # Postgres Schema Migrations with Alembic — Design
 
+> **Superseded** by [Versioned schema migrations (2026-11-02)](2026-11-02-versioned-schema-migrations-design.zh.md).
+> This draft was never implemented; it is kept as the record of the May proposal.
+
 > Historical design/review record. Instructions, findings and line numbers
 > describe the version reviewed at the time. For current setup, use the
 > [developer guide](../../developer/index.rst). Surviving code links point to current paths

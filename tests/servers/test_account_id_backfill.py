@@ -3,10 +3,8 @@
 Keys created before the ``account_id`` column existed have ``account_id IS
 NULL``. The dashboard list/create/regenerate paths key off ``account_id``, so
 these users saw "No API keys yet" and hit a 500 on **Create API Key**.
-``_create_tables()`` now backfills ``account_id = user_id`` so the keys become
-visible and the ``user_id`` uniqueness constraint reconciles with the
-``account_id`` one. ``create_key`` also converts the unique violation into a
-clean ``DuplicateAPIKeyError`` (409) instead of a raw 500.
+The baseline's logging-store step now backfills ``account_id = user_id`` so the
+keys become visible.
 
 Requires a running PostgreSQL test database (see TEST_DB_* env vars).
 Run with: make test-db
@@ -15,7 +13,7 @@ Run with: make test-db
 import pytest
 import pytest_asyncio
 
-from serving.exceptions import DuplicateAPIKeyError
+from migrations.baseline import logging_store
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures.auth_factories import create_test_user
@@ -23,6 +21,12 @@ from tests.fixtures.auth_factories import create_test_user
 pytest_plugins = ["tests.servers.conftest_auth"]
 
 pytestmark = pytest.mark.dbtest
+
+
+async def _run_baseline_step(db) -> None:
+    """Run the step of ``0001_baseline`` that DatabaseLogger used to run at startup."""
+    async with db.pool.acquire() as conn:
+        await logging_store.create_tables(conn)
 
 
 async def _insert_user(conn, **overrides) -> str:
@@ -74,7 +78,7 @@ async def backfill_db(auth_db_logger: DatabaseLogger):
 
 
 class TestAccountIdBackfill:
-    """_create_tables() backfills legacy NULL account_id rows."""
+    """the baseline step backfills legacy NULL account_id rows."""
 
     @pytest.mark.asyncio
     async def test_backfills_null_account_id_to_user_id(self, backfill_db: DatabaseLogger):
@@ -92,7 +96,7 @@ class TestAccountIdBackfill:
             assert before is None
 
         # Re-run migration (same as a service restart).
-        await backfill_db._create_tables()
+        await _run_baseline_step(backfill_db)
 
         async with pool.acquire() as conn:
             after = await conn.fetchval(
@@ -111,7 +115,7 @@ class TestAccountIdBackfill:
                 conn, user_id="missing-user-id", account_id=None, key_prefix="orphan123"
             )
 
-        await backfill_db._create_tables()
+        await _run_baseline_step(backfill_db)
 
         async with pool.acquire() as conn:
             account_id = await conn.fetchval(
@@ -129,8 +133,8 @@ class TestAccountIdBackfill:
             user_id = await _insert_user(conn)
             await _insert_key(conn, user_id=user_id, account_id=None, key_prefix="idem1234")
 
-        await backfill_db._create_tables()
-        await backfill_db._create_tables()
+        await _run_baseline_step(backfill_db)
+        await _run_baseline_step(backfill_db)
 
         async with pool.acquire() as conn:
             account_id = await conn.fetchval(
@@ -161,39 +165,6 @@ class TestKeyLookupAndCreate:
 
         # The account-only lookup misses it — this was the original bug.
         assert await store.get_active_key_by_account(user_id) is None
-
-    @pytest.mark.asyncio
-    async def test_create_key_against_a_retired_index_still_in_place_is_a_clean_409(
-        self, backfill_db: DatabaseLogger
-    ):
-        """While the one-key index's drop is deferred, a second key is DuplicateAPIKeyError.
-
-        The index is retired, but a held table can postpone dropping it. Until
-        then a second active key violates it, and that must surface as the
-        clean 409 the one-key schema always gave, not a raw 500.
-        """
-        pool = backfill_db.pool
-        assert pool is not None
-        store = PostgresOperationalStore(pool)
-
-        async with pool.acquire() as conn:
-            user_id = await _insert_user(conn)
-            await _insert_key(conn, user_id=user_id, account_id=None, key_prefix="dupe1234")
-            await conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
-                "ON api_keys(user_id) WHERE status = 'active'"
-            )
-        try:
-            with pytest.raises(DuplicateAPIKeyError):
-                await store.create_key(
-                    key_hash="newhash",
-                    key_prefix="newprefix",
-                    user_id=user_id,
-                    account_id=user_id,
-                )
-        finally:
-            async with pool.acquire() as conn:
-                await conn.execute("DROP INDEX IF EXISTS idx_api_keys_user_unique")
 
     @pytest.mark.asyncio
     async def test_create_key_adds_a_second_active_key(self, backfill_db: DatabaseLogger):

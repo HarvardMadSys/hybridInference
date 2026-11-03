@@ -28,7 +28,6 @@ class FakeAppConfigStore:
     def __init__(self, rows: Iterable[ConfigRow] = (), *, api_keys_exist: bool = False) -> None:
         self.rows: dict[str, ConfigRow] = {row.key: row for row in rows}
         self.api_keys = api_keys_exist
-        self.schema_calls = 0
         self.writes: list[list[ConfigRow]] = []
         self.deleted: list[str] = []
         self.resets: list[str] = []
@@ -95,9 +94,6 @@ class FakeAppConfigStore:
     @staticmethod
     def _stamped(row: ConfigRow) -> ConfigRow:
         return replace(row, updated_at=datetime.now(UTC))
-
-    async def ensure_schema(self) -> None:
-        self.schema_calls += 1
 
     async def fetch_all(self, *, include_reset: bool = False) -> dict[str, ConfigRow]:
         return {

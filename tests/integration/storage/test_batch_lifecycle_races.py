@@ -41,7 +41,6 @@ pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=2, max_size=10)
-    await BatchStore(pool).initialize()
     try:
         yield pool
     finally:

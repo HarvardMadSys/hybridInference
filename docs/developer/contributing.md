@@ -110,6 +110,7 @@ apps/
                   adapters, auth, storage, observability, admin API
     routing/      routing engine: routers, strategies, endpoint health,
                   circuit breaker
+    migrations/   versioned schema migrations (`python -m migrations`)
   frontend/       Next.js web and admin console
 config/
   examples/       reference model registry and routing config; also the

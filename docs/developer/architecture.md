@@ -422,16 +422,17 @@ Postgres implements both (`postgres_operational.py`, `postgres_log.py`).
 `CachedOperationalStore` wraps the operational store with an in-process cache,
 because auth resolves against it on every single request.
 
-The request log table `api_logs` and its hourly rollup are defined in exactly
-one place, `apps/backend/serving/storage/log_schema.py`, applied by both code paths that create
-tables. Columns worth knowing: `request_id`, `model_id`, `provider`,
+The schema, the request log table `api_logs` and its rollups included, comes
+from the versioned migrations in `apps/backend/migrations/`; the backend creates
+no tables of its own. Columns of `api_logs` worth knowing: `request_id`, `model_id`, `provider`,
 `served_model_id` / `served_endpoint_id` (which endpoint actually answered, as
 opposed to what the client asked for), `ttft_ms` and `latency_ms`, the token
 counts, `cost_usd` (what the caller is billed, from the model's own pricing) and
 `upstream_cost_usd` (what the upstream reported, when it reports one).
 
-Schema migrations read the catalog first and issue only the DDL that is actually
-missing, under a bounded lock wait — an `ALTER TABLE` that queues behind a long
+A deploy applies the migrations before it restarts the backend, and the backend
+refuses to start on a database they have not reached. Each migration statement
+waits for a table lock only briefly: an `ALTER TABLE` that queued behind a long
 query would block every reader behind it. See [Database](database.md).
 
 The gateway starts without a database. `/health` then reports

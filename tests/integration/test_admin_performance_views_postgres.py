@@ -22,9 +22,9 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.servers.routers.admin import metrics
 from serving.storage import admin_view_results, perf_metrics_index
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
 

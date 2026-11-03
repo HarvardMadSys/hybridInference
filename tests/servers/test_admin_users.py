@@ -1666,34 +1666,6 @@ async def test_hard_delete_works_without_a_batch_store(admin_client):
 
 
 @pytest.mark.asyncio
-async def test_hard_delete_purges_batches_while_their_migration_is_pending(admin_client):
-    """A batch store still waiting for its schema migration at boot is purged all the same.
-
-    Batches stored before this boot are in the database whether or not this
-    process has finished migrating their tables.
-    """
-    client, op_store, _log_store, _log = admin_client
-    op_store.get_user_by_id.return_value = {
-        "id": "u1",
-        "email": "alice@example.com",
-        "status": "deleted",
-    }
-    services = client._transport.app.state.services
-    pending = services.batch_store
-    services.batch_store = None
-    services.batch_store_pending = pending
-
-    response = await client.post(
-        "/admin/users/u1/hard-delete",
-        headers=AUTH,
-        json={"confirm": True},
-    )
-
-    assert response.status_code == 200
-    pending.delete_user_batches.assert_awaited_once_with("u1")
-
-
-@pytest.mark.asyncio
 async def test_hard_delete_releases_claim_when_log_purge_fails(admin_client):
     """A failed pre-fence purge must not strand the operational claim."""
     client, op_store, log_store, _log = admin_client

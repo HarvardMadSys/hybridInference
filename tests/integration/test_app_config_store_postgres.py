@@ -7,6 +7,7 @@ import asyncio
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import app_config as baseline_app_config
 from serving.config.app_config_store import AppConfigStore, ConfigRow
 from serving.config.runtime_settings import import_environment_values
 from tests.fixtures import postgres
@@ -33,7 +34,6 @@ async def test_concurrent_config_changes_validate_the_previous_commit(
         monkeypatch.setenv(name, str(tmp_path / name))
     get_settings.cache_clear()
     store = AppConfigStore(pool)
-    await store.ensure_schema()
     await store.write(
         [
             ConfigRow("TRUST_PROXY_HEADERS", "true"),
@@ -110,7 +110,6 @@ async def test_concurrent_config_changes_validate_the_previous_commit(
 @pytest.mark.asyncio
 async def test_failed_config_transaction_rolls_back_and_releases_the_lock(pool) -> None:
     store = AppConfigStore(pool)
-    await store.ensure_schema()
     with pytest.raises(ValueError, match="abort"):
         async with store.transaction() as transaction:
             await transaction.write([ConfigRow("SITE_NAME", "rolled back")])
@@ -127,11 +126,19 @@ def pg_dsn() -> str:
     return postgres.worker_dsn()
 
 
+async def _fresh_app_config(connection) -> None:
+    """An empty ``app_config``, with its revision and trigger, as the baseline builds it."""
+    await connection.execute("DROP TABLE IF EXISTS app_config")
+    await baseline_app_config.ensure_schema(
+        connection, create_source_table=baseline_app_config.CREATE_TABLE_SQL
+    )
+
+
 @pytest_asyncio.fixture
 async def pool(pg_dsn: str):
     pool = await postgres.create_pool(min_size=1, max_size=2)
     async with pool.acquire() as connection:
-        await connection.execute("DROP TABLE IF EXISTS app_config")
+        await _fresh_app_config(connection)
         await connection.execute(
             """
             CREATE TABLE IF NOT EXISTS site_settings (
@@ -150,7 +157,7 @@ async def pool(pg_dsn: str):
         yield pool
     finally:
         async with pool.acquire() as connection:
-            await connection.execute("DROP TABLE IF EXISTS app_config")
+            await _fresh_app_config(connection)
             await connection.execute(
                 "DELETE FROM site_settings WHERE key IN ('user_auth_enabled', 'signup_enabled')"
             )
@@ -160,8 +167,6 @@ async def pool(pg_dsn: str):
 @pytest.mark.asyncio
 async def test_store_round_trip_on_a_pool_and_on_a_connection(pool, pg_dsn) -> None:
     store = AppConfigStore(pool)
-    await store.ensure_schema()
-    await store.ensure_schema()  # idempotent
 
     added = await store.insert_missing(
         [
@@ -201,7 +206,6 @@ async def test_store_round_trip_on_a_pool_and_on_a_connection(pool, pg_dsn) -> N
 @pytest.mark.asyncio
 async def test_a_reset_row_stores_no_value_and_keeps_the_import_out(pool) -> None:
     store = AppConfigStore(pool)
-    await store.ensure_schema()
     await store.insert_missing(
         [
             ConfigRow("SITE_NAME", "Imported", source="env_import"),
@@ -234,7 +238,6 @@ async def test_a_reset_row_stores_no_value_and_keeps_the_import_out(pool) -> Non
 @pytest.mark.asyncio
 async def test_reset_rows_are_returned_on_request_with_their_secret_flag(pool) -> None:
     store = AppConfigStore(pool)
-    await store.ensure_schema()
     await store.write([ConfigRow("SITE_NAME", "Stored"), ConfigRow("BOX_URL", "u", secret=True)])
     await store.reset("BOX_URL", secret=True, updated_by="admin@example.com")
 
@@ -249,7 +252,6 @@ async def test_reset_rows_are_returned_on_request_with_their_secret_flag(pool) -
 @pytest.mark.asyncio
 async def test_the_secret_flag_is_one_way(pool) -> None:
     store = AppConfigStore(pool)
-    await store.ensure_schema()
     await store.write(
         [
             ConfigRow("BOX_REGION", "east", updated_by="admin@example.com"),
@@ -287,7 +289,6 @@ async def test_the_secret_flag_is_one_way(pool) -> None:
 @pytest.mark.asyncio
 async def test_concurrent_workers_replace_a_reset_secret_once(pool) -> None:
     store = AppConfigStore(pool)
-    await store.ensure_schema()
     await store.reset("JWT_SECRET_KEY", secret=True, updated_by="admin@example.com")
 
     results = await asyncio.gather(
@@ -360,6 +361,7 @@ async def isolated_connection(pg_dsn: str):
     admin = await postgres.connect()
     await admin.execute(f'CREATE SCHEMA "{schema}"')
     connection = await postgres.connect(server_settings={"search_path": schema})
+    await _fresh_app_config(connection)
     try:
         yield connection
     finally:

@@ -26,7 +26,14 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy application source (only the packages needed at runtime)
 COPY apps/backend/serving/ serving/
 COPY apps/backend/routing/ routing/
+COPY apps/backend/migrations/ migrations/
 COPY config/ config/
+
+# The schema migrations ship with the code that needs them. A deploy runs
+# `python -m migrations upgrade` with this image before it starts it; the label
+# tells a deploy script the image has that step, where an older image still
+# built its schema at startup.
+LABEL org.hybridinference.schema.migrations="alembic"
 
 # config/ will be overridden by a read-only volume mount at runtime,
 # but we copy a default so the image can run standalone for testing.

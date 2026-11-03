@@ -24,7 +24,6 @@ pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=1, max_size=3)
-    await ResponseStore(pool).initialize()
     try:
         yield pool
     finally:
@@ -156,8 +155,6 @@ async def test_privacy_mode_stops_writes_but_not_reads_or_erasure(pool, store, u
 async def test_initialize_is_idempotent(pool, store, users):
     alice, _ = users
     rid = await _save(store, alice)
-
-    await ResponseStore(pool).initialize()
 
     assert await store.get(rid) is not None
 

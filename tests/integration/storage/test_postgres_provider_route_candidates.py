@@ -12,11 +12,19 @@ import asyncio
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import operational_store
 from serving.servers.routers.admin.provider_routes import _normalize_runtime_model_capabilities
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
+
+
+async def _run_baseline_step(pool) -> None:
+    """Run the step of ``0001_baseline`` that the operational store used to run at startup."""
+    async with pool.acquire() as conn:
+        await operational_store.create_tables(conn)
+
 
 CAPABILITIES = {
     "context_length": 131072,
@@ -110,7 +118,7 @@ async def test_rewriting_a_row_replaces_its_capabilities(
     assert _normalize_runtime_model_capabilities(row["capabilities"]) == narrowed
 
 
-async def test_initialize_adds_the_column_to_an_existing_table(
+async def test_the_baseline_adds_the_column_to_an_existing_table(
     postgres_op_store: PostgresOperationalStore,
 ):
     """A database created before the column existed gains it, keeping old rows NULL."""
@@ -126,7 +134,7 @@ async def test_initialize_adds_the_column_to_an_existing_table(
                 '{"prompt": "0.14", "completion": "0.28"}',
             )
 
-        await postgres_op_store.initialize()
+        await _run_baseline_step(postgres_op_store._pool)
 
         row = await _row(postgres_op_store, "itest-old")
         assert row["capabilities"] is None
@@ -357,7 +365,7 @@ async def test_upsert_round_trips_a_moved_endpoint_id(postgres_op_store: Postgre
     assert listed["endpoint_id"] == "itest-restore:openrouter[parasail]-api"
 
 
-async def test_initialize_adds_the_endpoint_id_column(
+async def test_the_baseline_adds_the_endpoint_id_column(
     postgres_op_store: PostgresOperationalStore,
 ):
     """A database from before edits gains the column, and its rows read as unmoved."""
@@ -372,7 +380,7 @@ async def test_initialize_adds_the_endpoint_id_column(
                 "'openrouter', 'https://openrouter.ai/api/v1', 'deepseek/deepseek-v4-flash')"
             )
 
-        await postgres_op_store.initialize()
+        await _run_baseline_step(postgres_op_store._pool)
 
         assert (await _row(postgres_op_store, "itest-oldep"))["endpoint_id"] is None
     finally:

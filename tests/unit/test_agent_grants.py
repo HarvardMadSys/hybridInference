@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from migrations.baseline.operational_store import AGENT_GRANTS_TABLE_SQL
 from serving import grants
 from serving.config.settings import get_settings
 from serving.servers.deps import (
@@ -487,8 +488,8 @@ def test_revoking_an_unknown_grant_is_a_404(client) -> None:
 
 
 def test_a_fresh_database_gets_no_mcp_column() -> None:
-    """The canonical DDL is what a new deployment gets."""
-    assert "allowed_mcp" not in grants.CREATE_TABLE_SQL
+    """The baseline's DDL is what a new deployment gets."""
+    assert "allowed_mcp" not in AGENT_GRANTS_TABLE_SQL
 
 
 def test_every_grant_statement_names_its_columns() -> None:

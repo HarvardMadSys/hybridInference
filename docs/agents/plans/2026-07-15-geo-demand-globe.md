@@ -38,7 +38,7 @@ Facts verified against the real system (2026-07-15):
   The admin requests page already reads it the same way ([admin/metrics.py](../../../apps/backend/serving/servers/routers/admin/metrics.py), `l.metadata->>'ip'`).
 - Useful `api_logs` columns: `timestamp TIMESTAMPTZ`, `provider`, `served_endpoint_id`, `model_id`,
   `prompt_tokens`, `completion_tokens`, `latency_ms`, `ttft_ms`, `status_code`, `error`, `user_id`,
-  `metadata JSONB` ([log_schema.py](../../../apps/backend/serving/storage/log_schema.py)).
+  `metadata JSONB` ([migrations/baseline/api_logs.py](../../../apps/backend/migrations/baseline/api_logs.py)).
 - Exporter SQL runs clean against the real schema (validated on a schema-true dev DB).
 - DB access conventions for scripts: `.env` / `DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME`
   (same as `ops/db/export_logs.py`).
@@ -314,7 +314,7 @@ the single logging choke point (not per-router). Prefer `cf-ipcountry` / `cf-ipc
 the request came through the trusted Cloudflare proxy path—never trust client-supplied copies—and
 fall back to `GeoResolver`. DB-IP remains necessary for historical backfill. **Five-place sync
 checklist** (the historical split-brain incident):
-[log_schema.py](../../../apps/backend/serving/storage/log_schema.py) (CREATE TABLE + migration
+[migrations/baseline/api_logs.py](../../../apps/backend/migrations/baseline/api_logs.py) (CREATE TABLE + migration
 list) + both hand-duplicated INSERTs (`postgres_log.py`, `database.py`) + the LogStore ABC +
 `ops/db/export_logs.py` alignment.
 

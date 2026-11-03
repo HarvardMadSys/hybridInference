@@ -14,9 +14,9 @@ planner can always prove the index applies; the query's results are unchanged.
 An index-only scan still visits the heap for pages the visibility map does not
 mark all-visible -- rows written since ``api_logs`` was last vacuumed -- so the
 schema also has autovacuum visit the table after far fewer inserts than its
-default (``log_schema``).
+default (a storage parameter the schema migrations set).
 
-The index is not built by the schema initializer, whose ``CREATE INDEX`` holds a
+The index is not built by the schema migrations, whose ``CREATE INDEX`` would hold a
 ``SHARE`` lock -- blocking every log write -- for the whole build. It is built
 here with ``CREATE INDEX CONCURRENTLY``, which lets writes through, in a
 background task after startup (:func:`ensure_index`). Until it is valid the

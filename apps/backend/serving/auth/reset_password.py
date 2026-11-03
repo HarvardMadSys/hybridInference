@@ -16,10 +16,9 @@ It reads only the database connection settings (``DB_HOST``, ``DB_PORT``,
 or, with ``--generate``, creates and prints a strong one, stores its Argon2
 hash, and revokes the account's sessions so every browser must sign in again.
 
-It also works on a database the backend's upgrade has not migrated yet, as
-while another session holds the users table and the upgraded backend serves
-on the old one until its migration can land: it reads only the columns that
-exist and changes no schema.
+It also works on a database the schema migrations have not brought up to date,
+as while a migration waits for another session's lock and the previous release
+goes on serving: it reads only the columns that exist and changes no schema.
 """
 
 from __future__ import annotations
@@ -53,19 +52,15 @@ class ResetPasswordError(Exception):
 class AccountStore:
     """What the reset needs from the database, on any release's users table.
 
-    An operational store selects the users columns its own catalog read found
-    when it initialized; this command never initializes one, and an
-    uninitialized store selects every column the current release defines, so
-    on a database the upgrade has not migrated yet its lookups fail with
-    ``column "login_name" does not exist``. These read the catalog first and
-    select only the columns the reset uses that are there.
+    A reset is how an operator gets back in, so it must work on a database the
+    schema migrations have not brought up to date yet, for instance while a
+    migration waits for a lock: the operational store selects every column the
+    current release defines and would fail there with ``column "login_name"
+    does not exist``. These read the catalog first and select only the columns
+    the reset uses that are there.
 
-    Nothing here changes the schema. Adding the missing column needs the users
-    table's ACCESS EXCLUSIVE lock, which is the lock the stalled upgrade cannot
-    get, and a request queued for it holds up every query on users, sign-in
-    included; the backend's startup migrates under a lock timeout for that
-    reason. The two writes are the operational store's own, and touch only a
-    column and a table every release has.
+    Nothing here changes the schema; the two writes are the operational store's
+    own, and touch only a column and a table every release has.
     """
 
     def __init__(self, pool: Any) -> None:
@@ -79,14 +74,16 @@ class AccountStore:
     async def _account_columns(self) -> tuple[str, ...]:
         """Return the columns of ``_ACCOUNT_COLUMNS`` the users table has."""
         if self._columns is None:
-            from serving.storage.log_schema import existing_columns
-
             async with self._pool.acquire() as conn:
-                present = await existing_columns(conn, "users")
+                rows = await conn.fetch(
+                    "SELECT attname FROM pg_attribute WHERE attrelid = to_regclass('users') "
+                    "AND NOT attisdropped AND attnum > 0"
+                )
+            present = {row["attname"] for row in rows}
             if not present:
                 raise ResetPasswordError(
-                    "The database has no users table yet; start the backend once to "
-                    "create it. Nothing was changed."
+                    "The database has no users table yet; create it with "
+                    "`python -m migrations upgrade`. Nothing was changed."
                 )
             self._columns = tuple(column for column in _ACCOUNT_COLUMNS if column in present)
         return self._columns

@@ -28,7 +28,6 @@ async def test_unpaired_surrogate_custom_id_fails_batch_validation(monkeypatch):
     pool = await postgres.create_pool(min_size=1, max_size=6)
     store, files = BatchStore(pool), BatchFileStore(pool)
     owner = f"review-unicode-{uuid.uuid4().hex}"
-    await store.initialize()
     try:
         raw = (
             json.dumps(
@@ -223,7 +222,6 @@ async def test_an_embeddings_file_is_admitted_through_the_apps_gate_and_override
     # owner, so admission proves validation passes the app's resolver along.
     visibility = _Visibility(model, "free")
     services = _embedding_services(model, alias, gate_role="pro", visibility=visibility)
-    await store.initialize()
     try:
         result, batch_id = await _validate_embeddings_file(
             monkeypatch,
@@ -271,7 +269,6 @@ async def test_an_embeddings_file_the_owner_may_not_use_fails_with_nothing_stage
     alias = f"{model}-alias"
     visibility = _Visibility(model, override) if override is not None else None
     services = _embedding_services(model, alias, gate_role=gate_role, visibility=visibility)
-    await store.initialize()
     try:
         result, batch_id = await _validate_embeddings_file(
             monkeypatch,
