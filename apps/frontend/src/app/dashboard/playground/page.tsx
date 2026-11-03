@@ -807,7 +807,7 @@ export default function PlaygroundPage() {
               {branding.appName}
             </Link>
             <span className="text-gray-700">/</span>
-            <span className="text-sm font-medium text-white">Playground</span>
+            <span className="text-sm font-medium text-white">Chat</span>
           </div>
           <div className="flex items-center gap-3">
             <span className="rounded-md bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-300">

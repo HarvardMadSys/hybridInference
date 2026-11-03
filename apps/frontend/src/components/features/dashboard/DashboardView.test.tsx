@@ -3,8 +3,6 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-let agentsEnabled = false;
-let agentsUrl = '';
 let role = 'internal';
 let identity: { email: string | null; login_name?: string | null; user_name: string | null } = {
   email: 'internal@example.test',
@@ -23,92 +21,15 @@ vi.mock('@/components/providers', () => ({
   }),
 }));
 
-vi.mock('@/components/providers/SiteConfigProvider', () => ({
-  useSiteConfig: () => ({
-    branding: { docsUrl: '' },
-    features: { agents: agentsEnabled },
-    agentsUrl,
-  }),
-}));
-
-vi.mock('@/components/features/dashboard/ApiKeyManager', () => ({ ApiKeyManager: () => null }));
-vi.mock('@/components/features/dashboard/ModelsSection', () => ({ ModelsSection: () => null }));
-vi.mock('@/components/features/dashboard/RecentRequests', () => ({ RecentRequests: () => null }));
 vi.mock('@/components/features/dashboard/UsageStats', () => ({ UsageStats: () => null }));
 vi.mock('@/components/ui/UpdatesBanner', () => ({ UpdatesBanner: () => null }));
 
-let batchEntry: boolean | null = false;
-let batchError: string | null = null;
-vi.mock('@/lib/hooks/queries/useBatchCapabilities', () => ({
-  useBatchCapabilities: () => ({
-    capabilities: batchEntry === null ? null : { show_entry: batchEntry },
-    loading: false,
-    error: batchError,
-  }),
-}));
-
 import { DashboardView } from './DashboardView';
-
-describe('DashboardView runtime agents gate', () => {
-  afterEach(() => cleanup());
-
-  beforeEach(() => {
-    agentsEnabled = false;
-    agentsUrl = '';
-    role = 'internal';
-    batchEntry = false;
-    batchError = null;
-    identity = { email: 'internal@example.test', user_name: 'Internal User' };
-  });
-
-  it('hides the Agents link when the server-only proxy pair is unavailable', () => {
-    render(<DashboardView />);
-
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /api playground/i })).toBeInTheDocument();
-  });
-
-  it('shows the Agents link, naming this console account, when the feature is enabled', () => {
-    agentsEnabled = true;
-    agentsUrl = '/agents';
-
-    render(<DashboardView />);
-
-    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute(
-      'href',
-      '/agents?gateway_account=internal-user',
-    );
-  });
-
-  it('links the tile directly to a standalone agent site', () => {
-    agentsEnabled = true;
-    agentsUrl = 'https://agents.example.test/';
-
-    render(<DashboardView />);
-
-    expect(screen.getByRole('link', { name: 'Agents' })).toHaveAttribute(
-      'href',
-      'https://agents.example.test/?gateway_account=internal-user',
-    );
-  });
-
-  it('keeps the standalone agent tile restricted to internal users', () => {
-    agentsEnabled = true;
-    agentsUrl = 'https://agents.example.test/';
-    role = 'free';
-
-    render(<DashboardView />);
-
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument();
-  });
-});
 
 describe('DashboardView account identity', () => {
   afterEach(() => cleanup());
 
   beforeEach(() => {
-    agentsEnabled = false;
-    agentsUrl = '';
     role = 'admin';
   });
 
@@ -134,96 +55,16 @@ describe('DashboardView account identity', () => {
   });
 });
 
-describe('DashboardView tools', () => {
+describe('DashboardView overview', () => {
   afterEach(() => cleanup());
 
-  beforeEach(() => {
-    agentsEnabled = true;
-    agentsUrl = '/agents';
-    batchEntry = false;
-    batchError = null;
-    identity = { email: 'user@example.test', user_name: 'User' };
-  });
-
-  function tools(): string[] {
-    const heading = screen.queryByRole('heading', { name: 'Tools' });
-    if (!heading) return [];
-    const box = heading.parentElement as HTMLElement;
-    return Array.from(box.querySelectorAll('a')).map((link) => link.textContent?.trim() ?? '');
-  }
-
-  it.each([
-    ['free', false, []],
-    ['free', true, ['Batches']],
-    ['pro', true, ['Batches']],
-    ['internal', false, ['Agents', 'API Playground']],
-    ['internal', true, ['Agents', 'API Playground', 'Batches']],
-    ['admin', true, ['Agents', 'API Playground', 'Batches', 'Admin Console', 'pgAdmin']],
-    ['admin', false, ['Agents', 'API Playground', 'Admin Console', 'pgAdmin']],
-  ])(
-    'a %s user with the Batches entry %s sees only the tools each permits',
-    (userRole, entry, visibleTools) => {
-      role = userRole;
-      batchEntry = entry;
-
-      render(<DashboardView />);
-
-      expect(tools()).toEqual(visibleTools);
-      expect(screen.queryAllByRole('heading', { name: /tools/i })).toHaveLength(
-        visibleTools.length ? 1 : 0,
-      );
-    },
-  );
-
-  it('shows no Batches entry while the capabilities are unknown', () => {
-    role = 'internal';
-    batchEntry = null;
+  it('leaves keys, requests, models and tools to their own pages', () => {
+    role = 'admin';
+    identity = { email: 'ops@example.test', user_name: 'Ops' };
 
     render(<DashboardView />);
 
-    expect(screen.queryByRole('link', { name: /batches/i })).not.toBeInTheDocument();
-  });
-
-  it.each(['internal', 'admin'])(
-    'keeps the legacy entry for %s when the first lookup fails',
-    (userRole) => {
-      role = userRole;
-      batchEntry = null;
-      batchError = 'offline';
-
-      render(<DashboardView />);
-
-      expect(screen.getByRole('link', { name: 'Batches' })).toBeInTheDocument();
-    },
-  );
-
-  it('does not infer a free account has history when its first lookup fails', () => {
-    role = 'free';
-    batchEntry = null;
-    batchError = 'offline';
-
-    render(<DashboardView />);
-
-    expect(screen.queryByRole('link', { name: 'Batches' })).not.toBeInTheDocument();
-  });
-
-  it('keeps a known disabled entry hidden through a failed refresh', () => {
-    role = 'internal';
-    batchEntry = false;
-    batchError = 'offline';
-
-    render(<DashboardView />);
-
-    expect(screen.queryByRole('link', { name: 'Batches' })).not.toBeInTheDocument();
-  });
-
-  it('keeps Agents behind its feature flag for internal users', () => {
-    role = 'internal';
-    agentsEnabled = false;
-    batchEntry = true;
-
-    render(<DashboardView />);
-
-    expect(tools()).toEqual(['API Playground', 'Batches']);
+    expect(screen.queryByRole('heading', { name: 'Tools' })).not.toBeInTheDocument();
+    expect(screen.queryAllByRole('link')).toHaveLength(0);
   });
 });

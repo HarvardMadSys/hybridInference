@@ -1031,10 +1031,6 @@
     "source": "More actions for {name}",
     "text": "任务 {name} 的更多操作"
   },
-  "batches.back": {
-    "source": "Dashboard",
-    "text": "控制台"
-  },
   "batches.category.cancelled": {
     "source": "Cancelled",
     "text": "已取消"
@@ -2355,6 +2351,46 @@
     "source": " (opens in a new tab)",
     "text": "（在新标签页打开）"
   },
+  "console.nav.admin": {
+    "source": "Admin Console",
+    "text": "管理后台"
+  },
+  "console.nav.admin_group": {
+    "source": "Admin",
+    "text": "管理"
+  },
+  "console.nav.batches": {
+    "source": "Batches",
+    "text": "批次"
+  },
+  "console.nav.chat": {
+    "source": "Chat",
+    "text": "对话"
+  },
+  "console.nav.home": {
+    "source": "Home",
+    "text": "首页"
+  },
+  "console.nav.keys": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "console.nav.label": {
+    "source": "Console",
+    "text": "控制台"
+  },
+  "console.nav.models": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "console.nav.requests": {
+    "source": "Requests",
+    "text": "请求记录"
+  },
+  "console.nav.settings": {
+    "source": "Settings",
+    "text": "设置"
+  },
   "dashboard.account.email": {
     "source": "Email:",
     "text": "邮箱："
@@ -2394,14 +2430,6 @@
   "dashboard.internal.admin": {
     "source": "Admin Console",
     "text": "管理后台"
-  },
-  "dashboard.internal.batches": {
-    "source": "Batches",
-    "text": "批次"
-  },
-  "dashboard.internal.playground": {
-    "source": "API Playground",
-    "text": "API 调试台"
   },
   "dashboard.keys.more_actions": {
     "source": "Actions for {name}",
@@ -2799,17 +2827,9 @@
     "source": "Total Tokens",
     "text": "总 token"
   },
-  "dashboard.settings_link": {
-    "source": "Settings",
-    "text": "设置"
-  },
   "dashboard.title": {
     "source": "Dashboard",
     "text": "控制台"
-  },
-  "dashboard.tools.title": {
-    "source": "Tools",
-    "text": "工具"
   },
   "dashboard.usage.cache_help": {
     "source": "Cache reads are input tokens served from the prompt cache, usually billed at a lower rate; cache writes are input tokens stored into it. Both are part of Input Tokens.",
@@ -3254,10 +3274,6 @@
   "meta.team.title": {
     "source": "Team",
     "text": "团队"
-  },
-  "settings.back": {
-    "source": "← Back",
-    "text": "← 返回"
   },
   "settings.danger.description": {
     "source": "Irreversible actions that permanently affect your account.",

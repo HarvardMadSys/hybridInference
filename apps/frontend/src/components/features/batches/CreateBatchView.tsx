@@ -518,7 +518,7 @@ export function CreateBatchView({ copyFrom }: { copyFrom: string | null }) {
           'batches.create.blocked.no_key',
           'A batch runs under your active API key, and you have none. Uploading and checking work without one.',
         )}{' '}
-        <Link href="/dashboard" className="font-medium underline">
+        <Link href="/dashboard/keys" className="font-medium underline">
           {t('batches.create.blocked.create_key', 'Create an API key')}
         </Link>
       </>

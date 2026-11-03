@@ -588,7 +588,7 @@ on every redirect, and again on every connection.
 
 ## Batches in the console
 
-The **Batches** page of the console (from the dashboard) lists all your
+The **Batches** page of the console (in its side navigation) lists all your
 batches — each with its name, target, model and input method, status, requests
 by outcome, tokens and known cost — and lets you search them by name or ID,
 filter them by status, open one for its details, cancel, delete and download
@@ -612,7 +612,7 @@ answers still shows each batch in its group, by the same rule; filtering by a
 group then says it is not available for the moment rather than show every
 batch as filtered. Showing all batches keeps working.
 
-The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and
+The console's side navigation links to it while `BATCH_ENABLED` is on and
 either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
 your own. With `BATCH_ENABLED` off there is no link, and the page says that
 Batch is not available. Quotas and API keys play no part in either.
@@ -663,7 +663,7 @@ included, are held to the same file size limit as an upload.
 A batch created in the console runs under your active API key, as a batch you
 submit with that key would. The page shows the key's prefix only and never
 creates a key: without one you can upload and check files, and the page links to
-the dashboard to create a key before you submit. Signing out or closing the
+the console's **API Keys** page to create a key before you submit. Signing out or closing the
 browser does not stop a submitted batch; revoking or regenerating the key fails
 its unfinished requests. If the key, or the model the choice resolves to, changes
 between the check and the submission, the submission is refused and you check

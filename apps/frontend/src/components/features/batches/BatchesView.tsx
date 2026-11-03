@@ -270,10 +270,7 @@ function PageHeader({ subtitle, children }: { subtitle?: string; children?: Reac
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <Link href="/dashboard" className="text-sm text-gray-500 hover:text-gray-900">
-          ← {t('batches.back', 'Dashboard')}
-        </Link>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">
+        <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
           {t('batches.title', 'Batches')}
         </h1>
         {subtitle && <p className="mt-1 text-sm text-gray-500">{subtitle}</p>}

@@ -313,7 +313,7 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 
 **Files**:
 
-- User dashboard: [frontend/src/app/dashboard/page.tsx](../../apps/frontend/src/app/dashboard/page.tsx) (183 lines, clean)
+- User dashboard: [frontend/src/app/dashboard/(console)/page.tsx](../../apps/frontend/src/app/dashboard/(console)/page.tsx) (183 lines, clean)
 - Admin panel: [frontend/src/app/dashboard/admin/page.tsx](../../apps/frontend/src/app/dashboard/admin/page.tsx) (3343 lines, monolithic)
 - Admin sub-components: `AnalyticsTab`, `ProviderPerformanceTab`, `SettingsTab` (271, 402, 283 lines, extracted but tightly coupled)
 
