@@ -308,6 +308,78 @@ async def test_a_settled_database_migrates_alongside_a_backup(scratch):
     assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
 
 
+@pytest.mark.parametrize("table", ["users", "api_keys", "auth_sessions"])
+async def test_an_open_write_bounds_the_wait_and_never_queues_other_writes(scratch, table):
+    """What the first migration meets on a live database: a write not yet committed.
+
+    ``CREATE INDEX IF NOT EXISTS`` takes the table's SHARE lock before it looks
+    for the index, so even a settled database waits for every open write, and
+    while it waits every later write queues behind it. The baseline's own
+    connection must give up after the same 3 s as the revision statements, and
+    a write issued meanwhile must not wait for longer than that.
+    """
+    await mig.upgrade(scratch)
+    async with mig.connected(scratch) as conn:
+        await _forget_migrations(conn)
+    writer = await postgres.connect(database=scratch)
+    transaction = writer.transaction()
+    await transaction.start()
+    other = await postgres.connect(database=scratch)
+    writer_pid = writer.get_server_pid()
+    try:
+        await writer.execute(f"UPDATE {table} SET id = id WHERE false")
+        started = asyncio.get_running_loop().time()
+        run = asyncio.ensure_future(_run_command(scratch, "upgrade"))
+        await asyncio.sleep(1)
+        write_started = asyncio.get_running_loop().time()
+        await asyncio.wait_for(other.execute(f"UPDATE {table} SET id = id WHERE false"), 10)
+        write_waited = asyncio.get_running_loop().time() - write_started
+        exit_code, output = await asyncio.wait_for(run, timeout=30)
+        run_took = asyncio.get_running_loop().time() - started
+    finally:
+        await transaction.rollback()
+        await writer.close()
+        await other.close()
+
+    assert exit_code == cli.EXIT_RETRY, output
+    assert run_took < 8, output
+    assert write_waited < 4
+    assert f"pid {writer_pid}" in output
+    assert await _revision(scratch) is None
+
+
+@pytest.mark.parametrize(
+    ("floor", "exit_code", "said"),
+    [(None, 0, "nothing to migrate"), ("0099_later_marker", 1, "migration not run")],
+)
+async def test_an_earlier_release_finds_nothing_to_apply_on_a_later_schema(
+    scratch, monkeypatch, capsys, floor, exit_code, said
+):
+    """A restored image whose migrations still run, as a Compose dependency or init container would.
+
+    Alembic alone fails on a revision it cannot locate. The command instead
+    starts nothing, says why, and exits 0 when the later schema still
+    supports this code, 1 when its floor is one this code does not know.
+    """
+    await mig.upgrade(scratch)
+    async with mig.connected(scratch) as conn:
+        await conn.execute("UPDATE hybridinference_alembic_version SET version_num = '0100_later'")
+        if floor is not None:
+            await conn.execute(
+                "INSERT INTO hybridinference_schema_compat "
+                "(id, oldest_compatible_revision, set_by_revision) VALUES (TRUE, $1, '0100_later')",
+                floor,
+            )
+    for name, value in postgres.target().app_env().items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("DB_NAME", scratch)
+
+    assert await asyncio.to_thread(cli.upgrade, "head") == exit_code
+    out = capsys.readouterr()
+    assert said in (out.out + out.err)
+    assert await _revision(scratch) == "0100_later"
+
+
 async def test_concurrent_runs_take_turns(scratch):
     """Two deploys migrating at once: one waits for the other, neither fails."""
     results = await asyncio.gather(

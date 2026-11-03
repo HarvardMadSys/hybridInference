@@ -330,6 +330,20 @@ msgstr ""
 "上的大索引不放进迁移，而是在后台构建（`apps/backend/serving/storage/perf_metrics_index.py`），因为构建它们会让请求日志阻塞好几个小时。具体规则见设计记录"
 " `docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md`。"
 
+#: ../developer/database.md
+msgid ""
+"Each revision says which kind it is. `compatibility = \"expand\"` means code "
+"of earlier revisions keeps working on its result; `\"contract\"` means it "
+"does not, and a contract raises the compatibility floor with "
+"`raise_compat_floor`. A test fails until the line is set. A revision that "
+"has run on a shared database is never edited or reverted: fix it with a new "
+"one."
+msgstr ""
+"每个 revision 都要写明自己属于哪一类。`compatibility = \"expand\"` 表示早先 revision "
+"的代码在它执行后仍能正常工作；`\"contract\"` 表示不能，这类 revision 要用 "
+"`raise_compat_floor` 提高兼容下限。这一行没填，测试就不通过。已经在共享数据库上执行过的 "
+"revision 不能再修改或撤销，有问题只能再写一个新的 revision 来修。"
+
 #: ../developer/database.md:100
 msgid "Secrets for deleting accounts"
 msgstr "删除账号相关的密钥"

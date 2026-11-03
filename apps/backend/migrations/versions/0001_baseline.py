@@ -8,6 +8,12 @@ instead of all of them being held in this revision's transaction until the end.
 If one step cannot get its lock in time, the revision fails without recording
 itself, and running it again carries on from the step that failed.
 
+That connection waits at most 3 s for any lock, as the revision statements do
+(``env.DDL_LOCK_WAIT``). The builders bound only their ALTERs themselves, but
+even a settled ``CREATE INDEX IF NOT EXISTS`` takes its table's SHARE lock
+before it looks for the index: without the limit it would wait for every open
+write on the live database, and every later write would queue behind it.
+
 The baseline sets no compatibility floor. The legacy columns it drops and the
 constraints it narrows are the ones every startup already dropped and narrowed.
 
@@ -47,6 +53,7 @@ async def _converge(url: URL) -> None:
         user=url.username,
         password=url.password,
         database=url.database,
+        server_settings={"lock_timeout": "3s", "application_name": "hybridinference-migrations"},
     )
     try:
         await run(conn)

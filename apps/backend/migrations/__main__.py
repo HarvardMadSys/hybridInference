@@ -24,7 +24,8 @@ from migrations import LOCK_NOT_AVAILABLE, MigrationInProgress, alembic_config, 
 #: ``EX_TEMPFAIL``: try again later.
 EXIT_RETRY = 75
 
-# The sessions holding locks on the gateway's tables, longest-running first.
+# The sessions holding locks on the gateway's tables (not their indexes, which
+# every statement on a table also locks), longest-running first.
 _LOCK_HOLDERS_SQL = """
 SELECT a.pid, a.application_name, a.state, a.xact_start,
        string_agg(DISTINCT c.relname || ' (' || l.mode || ')', ', ') AS locks
@@ -36,6 +37,7 @@ WHERE l.granted
   AND a.datname = current_database()
   AND a.pid <> pg_backend_pid()
   AND c.relnamespace = 'public'::regnamespace
+  AND c.relkind IN ('r', 'p')
 GROUP BY a.pid, a.application_name, a.state, a.xact_start
 ORDER BY a.xact_start NULLS LAST
 LIMIT 10
@@ -76,14 +78,28 @@ def _database_enabled() -> bool:
 
 
 def upgrade(target: str) -> int:
-    """Apply every revision up to *target*; a lock timeout exits :data:`EXIT_RETRY`."""
+    """Apply every revision up to *target*; a lock timeout exits :data:`EXIT_RETRY`.
+
+    On a database a later release migrated there is nothing to apply: it exits 0
+    when that schema still supports this code, and 1 when it does not.
+    """
     from alembic import command
+
+    from migrations.compat import Verdict
 
     if not _database_enabled():
         # A deployment without a database (DB_ENABLED=false) has nothing to
         # migrate, so a deploy script can run this step unconditionally.
         print("DB_ENABLED is off: no database to migrate.")
         return 0
+    newer = asyncio.run(_newer_than_this_code())
+    if newer is not None:
+        verdict, message = newer
+        if verdict is Verdict.NEWER_COMPATIBLE:
+            print(f"nothing to migrate: {message}")
+            return 0
+        print(f"migration not run: {message}", file=sys.stderr)
+        return 1
     try:
         command.upgrade(alembic_config(), target)
     except MigrationInProgress as exc:
@@ -107,6 +123,28 @@ def upgrade(target: str) -> int:
                 print(f"  {line}", file=sys.stderr)
         return EXIT_RETRY
     return 0
+
+
+async def _newer_than_this_code() -> tuple[Any, str] | None:
+    """The verdict on a database a later release migrated, or None when this code knows its revision.
+
+    An earlier image has nothing to apply there, and Alembic would fail on the
+    revision it cannot locate. Answering "nothing to do" instead keeps a
+    restore working even where the migrations were wired up as a step every
+    start runs (a Compose dependency, a Kubernetes init container).
+    """
+    from migrations.compat import Verdict, code_chain, describe, judge, read_state
+
+    chain = code_chain()
+    conn = await _connect()
+    try:
+        state = await read_state(conn)
+    finally:
+        await conn.close()
+    verdict = judge(state, chain)
+    if verdict not in (Verdict.NEWER_COMPATIBLE, Verdict.TOO_NEW):
+        return None
+    return verdict, describe(verdict, state, chain)
 
 
 async def _status() -> int:

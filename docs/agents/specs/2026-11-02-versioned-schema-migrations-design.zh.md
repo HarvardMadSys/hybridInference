@@ -183,7 +183,10 @@ apps/backend/migrations/
   2. 下一版再写收缩 revision，并在其中声明兼容下限就是那个标记 revision（§7）。
 - 标记 revision 的作用，是让"已经不再使用"的那一版代码有一个能被指认的版本号。没有结构变化的几次发布
   共用同一个 head，不加标记就分不清哪一版还在用旧对象。
-- 迁移规范测试会拒绝含有收缩操作、却没有声明兼容下限的 revision。
+- 每个 revision 都要声明 `compatibility = "expand"` 或 `"contract"`，由写的人判断；正则列不全会让旧代码出错的
+  写法（比如删掉一个 `ON CONFLICT` 依赖的唯一索引）。迁移规范测试要求：`contract` 必须声明兼容下限，`expand`
+  不能声明；标成 `expand` 却含有明显收缩操作的，测试也拒绝。模板里这一行默认是 `None`，不填测试就不过。
+- 已经在共享库上执行过的 revision 不能修改或撤销，只能再写一个新的 revision 往前修。
 - 生产环境不执行 downgrade。revision 可以写 downgrade，供开发和测试使用。
 
 ### 5.2 锁等待有上限，失败时说清原因
@@ -265,7 +268,7 @@ apps/backend/migrations/
 - 每个收缩 revision 在同一个事务里，把兼容下限提高到它声明的那个 revision（§5.1）。扩展 revision 不改它。
   下限只升不降。
 - 旧代码不需要知道以后的 revision，只要查兼容下限是不是自己迁移链里已有的版本。
-- 兼容下限为空，表示到目前为止所有 revision 都是扩展。这由迁移规范测试保证（含收缩操作的 revision
+- 兼容下限为空，表示到目前为止所有 revision 都是扩展。这由迁移规范测试保证（`contract` revision
   必须声明下限），每次发布时再由 §9 用旧镜像实际检查。
 
 这次发布之前的镜像没有这项检查，启动时照旧建表。在第一个收缩 revision 合并之前，发行版的部署脚本要
@@ -327,7 +330,7 @@ apps/backend/migrations/
      配置的加载和写入、公开统计快照）：其间出现任何 DDL 都会报错。不装在共享测试库上，是因为有 33 个
      测试文件要自己执行 DDL 来构造旧结构。
 7. **迁移规范**（参照 Cloud Agent 的 `tests/unit/test_migration_hygiene.py`）：只有一个 head；revision
-   编号连续且不重复；revision 不引用 `serving.*`；基线内容被锁定；含收缩操作的 revision 必须声明兼容下限。
+   编号连续且不重复；revision 不引用 `serving.*`；基线内容被锁定；每个 revision 声明 expand 或 contract，contract 必须声明兼容下限。
 8. **测试库改用迁移建库**，fixture 不再调用各 store 的 `initialize()`。
 
 ## 10. 实施与发布

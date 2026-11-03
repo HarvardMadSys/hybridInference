@@ -659,7 +659,7 @@ they succeed.
 | Deployment | The step |
 |---|---|
 | The bundled Compose stack | `make migrate`; `make up` and `make build` run it for you |
-| Compose with a pinned image (`docker-compose.digest-backend.yml`) | `docker compose ... run --rm backend python -m migrations upgrade`, with the same files and `BACKEND_IMAGE` as the `up` that follows |
+| Compose with a pinned image (`docker-compose.digest-backend.yml`) | `docker compose ... run --rm --no-deps backend python -m migrations upgrade` once PostgreSQL is up, with the same files and `BACKEND_IMAGE` as the `up` that follows |
 | A systemd unit (`deploy/systemd/`) | `.venv/bin/python -m migrations upgrade` in the unit's working directory, with its environment, before `systemctl restart` |
 
 Rules for a deploy script that does this itself:
@@ -681,11 +681,12 @@ Rules for a deploy script that does this itself:
   one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so it
   reads the rest of the script, and the deploy ends with status 0 having done
   nothing more.
-- Do not make the migrations a dependency of the backend service (such as
-  Compose's `depends_on: condition: service_completed_successfully`).
-  Restoring the previous image after a failed deploy would then run the
-  previous image's migrations against the newer schema, which fails and takes
-  the restore down with it.
+- Do not make the migrations a step that every start runs (Compose's
+  `depends_on: condition: service_completed_successfully`, a Kubernetes init
+  container). Every restart would migrate first and wait on table locks before
+  it serves. Where they are wired that way anyway, a restored earlier image
+  finds nothing to apply on the newer schema: the command exits 0, or 1 when
+  that schema no longer supports the earlier code.
 - If the step fails, stop: do not restart the service. Exit status 75 means a
   lock was not available in time (a backup holding a table, or another
   migration run); the same command can be run again later.

@@ -1231,13 +1231,30 @@ jobs:
             echo "::notice title=Restore drill skipped::no previous commit to restore"
             exit 0
           fi
-          image="ghcr.io/harvardmadsys/hybridinference-backend:dev-${PREVIOUS_SHA}"
+          # The token lives only in this directory, removed however the step
+          # ends: the job also runs on self-hosted runners.
           docker_cfg="$(mktemp -d)"
+          trap 'rm -rf "${docker_cfg}"' EXIT
           printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          if ! DOCKER_CONFIG="${docker_cfg}" docker pull --quiet "${image}"; then
-            echo "::warning title=Restore drill skipped::${image} is not published (yet)"
+          # The newest published candidate at or before the previous commit. A
+          # dev push cancels the build of the one before it, so that commit
+          # may have none; its first-parent ancestors are what dev ran before
+          # (the checkout has the full history).
+          image=""
+          for sha in $(git rev-list --first-parent --max-count=20 "${PREVIOUS_SHA}"); do
+            candidate="ghcr.io/harvardmadsys/hybridinference-backend:dev-${sha}"
+            if DOCKER_CONFIG="${docker_cfg}" docker manifest inspect "${candidate}" >/dev/null 2>&1; then
+              image="${candidate}"
+              break
+            fi
+          done
+          if [ -z "${image}" ]; then
+            echo "::warning title=Restore drill skipped::no candidate published for ${PREVIOUS_SHA} or its 19 first-parent ancestors"
             exit 0
           fi
+          [ "${image}" = "ghcr.io/harvardmadsys/hybridinference-backend:dev-${PREVIOUS_SHA}" ] \
+            || echo "::notice title=Restore drill::${PREVIOUS_SHA} has no candidate; restoring ${image}"
+          DOCKER_CONFIG="${docker_cfg}" docker pull --quiet "${image}"
           port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           PREVIOUS_BACKEND_IMAGE="${image}" \
             DEMO_SMOKE_EXPECT_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \

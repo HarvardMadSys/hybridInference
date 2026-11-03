@@ -110,6 +110,12 @@ serving while it runs and is what a failed deploy restores. Large indexes on
 would block request logging for hours. The rules are in the design record,
 `docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md`.
 
+Each revision says which kind it is. `compatibility = "expand"` means code of
+earlier revisions keeps working on its result; `"contract"` means it does not,
+and a contract raises the compatibility floor with `raise_compat_floor`. A test
+fails until the line is set. A revision that has run on a shared database is
+never edited or reverted: fix it with a new one.
+
 ### Secrets for deleting accounts
 
 When an admin permanently deletes a user, the gateway also records a keyed
