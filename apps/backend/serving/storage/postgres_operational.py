@@ -964,6 +964,28 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)"
         )
 
+        # --- api_key_daily_cost ---
+        # The same counter per API key, bumped beside user_daily_cost for a
+        # request made with one of the account's keys, so its owner can see
+        # what each key spent. Not a quota input: the quota is the account's
+        # and reads user_daily_cost. No foreign key to api_keys: a counter
+        # write must never fail because the key was removed meanwhile, and
+        # user_id lets a hard delete purge an account's rows in one statement.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS api_key_daily_cost (
+                key_id BIGINT NOT NULL,
+                day TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                cost_usd DECIMAL(12, 6) NOT NULL DEFAULT 0,
+                requests INTEGER NOT NULL DEFAULT 0,
+                last_request_at TIMESTAMPTZ,
+                PRIMARY KEY (key_id, day)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_key_daily_cost_user ON api_key_daily_cost(user_id)"
+        )
+
         # --- signup_allowed_domains ---
         # Admin-editable allowlist of email domains whose signups auto-approve.
         # Empty table = all signups auto-approve; non-empty = only listed
@@ -1837,6 +1859,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             cost_status = await conn.execute(
                 "DELETE FROM user_daily_cost WHERE user_id = $1", user_id
             )
+            key_cost_status = await conn.execute(
+                "DELETE FROM api_key_daily_cost WHERE user_id = $1", user_id
+            )
             audit_status = await conn.execute(
                 "DELETE FROM admin_audit_log WHERE target_user_id = $1", user_id
             )
@@ -1849,6 +1874,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "email_verification_tokens": _row_count(verif_status),
                 "password_reset_tokens": _row_count(reset_status),
                 "user_daily_cost": _row_count(cost_status),
+                "api_key_daily_cost": _row_count(key_cost_status),
                 "admin_audit_log": _row_count(audit_status),
                 "users": _row_count(user_status),
             }
@@ -2618,17 +2644,34 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def list_account_keys(self, account_id: str) -> list[Row]:
         """Every key the account owns, live first then newest, for its own console.
 
-        Includes the ciphertext the console decrypts to show an active key; the
+        Includes the ciphertext the console decrypts to show a saved key; the
         hash never leaves the store. Every key reads unnamed while the ``name``
         column's migration is still pending.
+
+        ``spent_today_usd`` and ``spent_month_usd`` are what the key spent on
+        the current UTC day and month, from ``api_key_daily_cost``, the days
+        that bucket the account's quota. At most a month of counter rows per
+        key is read, through its primary key.
         """
-        name = "name" if await self._has_api_key_names() else "NULL::text AS name"
+        name = "k.name" if await self._has_api_key_names() else "NULL::text AS name"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT id, key_prefix, {name}, created_at, last_used_at, status, "
-                "api_key_encrypted "
-                "FROM api_keys WHERE account_id = $1 "
-                "ORDER BY (status = 'active') DESC, created_at DESC, id DESC",
+                f"SELECT k.id, k.key_prefix, {name}, k.created_at, k.last_used_at, k.status, "
+                "k.api_key_encrypted, "
+                "COALESCE(s.today, 0) AS spent_today_usd, "
+                "COALESCE(s.month, 0) AS spent_month_usd "
+                "FROM api_keys k "
+                "LEFT JOIN LATERAL ("
+                "  SELECT SUM(c.cost_usd) FILTER (WHERE c.day = d.today) AS today, "
+                "         SUM(c.cost_usd) AS month "
+                "  FROM api_key_daily_cost c, "
+                "       (SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS today, "
+                "               to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), "
+                "                       'YYYY-MM-DD') AS month_start) d "
+                "  WHERE c.key_id = k.id AND c.day >= d.month_start"
+                ") s ON TRUE "
+                "WHERE k.account_id = $1 "
+                "ORDER BY (k.status = 'active') DESC, k.created_at DESC, k.id DESC",
                 account_id,
             )
         return [dict(row) for row in rows]
@@ -2852,6 +2895,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             await _lock_account_keys(conn, user_id)
             if hard_delete:
                 await conn.execute("DELETE FROM api_keys WHERE user_id = $1", user_id)
+                await conn.execute("DELETE FROM api_key_daily_cost WHERE user_id = $1", user_id)
             else:
                 await conn.execute(
                     "UPDATE api_keys SET status = 'revoked' WHERE user_id = $1",
@@ -4587,8 +4631,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         cost_usd: float,
         *,
         day: str | None = None,
+        api_key_id: int | None = None,
     ) -> None:
-        """Atomically increment the daily cost counter via upsert."""
+        """Atomically increment the daily cost counter via upsert.
+
+        With ``api_key_id`` the key's own counter (``api_key_daily_cost``) is
+        bumped too, after the account's and apart from it: what the quota reads
+        never depends on the per-key write, whose failure is logged and
+        otherwise ignored.
+        """
         from datetime import datetime
 
         if day is None:
@@ -4605,6 +4656,27 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 day,
                 cost_usd,
             )
+            if api_key_id is None:
+                return
+            try:
+                await conn.execute(
+                    "INSERT INTO api_key_daily_cost "
+                    "(key_id, day, user_id, cost_usd, requests, last_request_at) "
+                    "VALUES ($1, $2, $3, $4, 1, NOW()) "
+                    "ON CONFLICT (key_id, day) DO UPDATE SET "
+                    "cost_usd = api_key_daily_cost.cost_usd + $4, "
+                    "requests = api_key_daily_cost.requests + 1, "
+                    "last_request_at = NOW()",
+                    api_key_id,
+                    day,
+                    user_id,
+                    cost_usd,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Per-key cost counter write failed",
+                    extra={"api_key_id": api_key_id, "error": type(exc).__name__},
+                )
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return today's cost from the counter table."""
