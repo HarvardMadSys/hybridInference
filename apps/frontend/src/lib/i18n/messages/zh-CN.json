@@ -2431,6 +2431,10 @@
     "source": "Admin Console",
     "text": "管理后台"
   },
+  "dashboard.keys.more_actions": {
+    "source": "Actions for {name}",
+    "text": "{name} 的操作"
+  },
   "dashboard.keys.col_actions": {
     "source": "Actions",
     "text": "操作"
@@ -2506,10 +2510,6 @@
   "dashboard.keys.load_failed": {
     "source": "Failed to load API keys. Please try again later.",
     "text": "API key 加载失败，请稍后再试。"
-  },
-  "dashboard.keys.more_actions": {
-    "source": "Actions for {name}",
-    "text": "{name} 的操作"
   },
   "dashboard.keys.name_label": {
     "source": "Name (optional)",
@@ -2831,6 +2831,18 @@
     "source": "Dashboard",
     "text": "控制台"
   },
+  "dashboard.usage.cache_help": {
+    "source": "Cache reads are input tokens served from the prompt cache, usually billed at a lower rate; cache writes are input tokens stored into it. Both are part of Input Tokens.",
+    "text": "缓存命中指直接从提示词缓存读取的输入 token，通常按更低的价格计费；缓存写入指被存进缓存的输入 token。两者都已包含在输入 token 里。"
+  },
+  "dashboard.usage.cache_reads_label": {
+    "source": "Cache reads",
+    "text": "缓存命中"
+  },
+  "dashboard.usage.cache_writes_label": {
+    "source": "Cache writes",
+    "text": "缓存写入"
+  },
   "dashboard.usage.cost": {
     "source": "Estimated cost",
     "text": "估算费用"
@@ -2842,6 +2854,10 @@
   "dashboard.usage.footnote": {
     "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.",
     "text": "所有提示词和回复都会被记录，匿名化处理后可能会开源。套餐额度内免费；这里的金额只是根据日志做的成本归属，不是账单。"
+  },
+  "dashboard.usage.help_label": {
+    "source": "About {label}",
+    "text": "{label}说明"
   },
   "dashboard.usage.input_tokens": {
     "source": "Input Tokens",
@@ -2898,6 +2914,14 @@
   "dashboard.usage.quota_remaining": {
     "source": "Daily quota remaining",
     "text": "今日剩余额度"
+  },
+  "dashboard.usage.reasoning_help": {
+    "source": "Reasoning tokens are spent by the model thinking before it answers. Depending on the provider, they may already be counted in Output Tokens.",
+    "text": "推理 token 是模型在回答之前用来思考的 token。不同提供商的统计口径不同，这部分可能已经算进输出 token 里了。"
+  },
+  "dashboard.usage.reasoning_label": {
+    "source": "Reasoning tokens",
+    "text": "推理 token"
   },
   "dashboard.usage.requests": {
     "source": "Requests",

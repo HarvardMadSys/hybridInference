@@ -947,6 +947,9 @@ async def get_usage(
             requests=int(period_data.get("requests") or 0),
             prompt_tokens=int(period_data.get("prompt_tokens") or 0),
             completion_tokens=int(period_data.get("completion_tokens") or 0),
+            cache_read_tokens=int(period_data.get("cache_read_tokens") or 0),
+            cache_write_tokens=int(period_data.get("cache_write_tokens") or 0),
+            reasoning_tokens=int(period_data.get("reasoning_tokens") or 0),
             cost_usd=float(period_data.get("cost_usd") or 0),
         ),
     )
