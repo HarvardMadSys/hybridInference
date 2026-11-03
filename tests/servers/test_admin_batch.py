@@ -52,6 +52,39 @@ class _FakeBatchStore:
         self.writes.append(("cancel", batch_id))
         return {"id": batch_id, "user_id": "u-owner"} if batch_id == "batch_1" else None
 
+    async def list_batches(self, **_filters) -> list[dict]:
+        return [
+            {"id": "batch_a", "user_id": "u-named"},
+            {"id": "batch_b", "user_id": "u-gone"},
+        ]
+
+    async def user_labels(self, user_ids: list[str]) -> dict[str, dict]:
+        self.writes.append(("labels", tuple(user_ids)))
+        return {"u-named": {"user_name": "Ada", "email": "ada@example.test"}}
+
+    async def batch_summary(self) -> list[dict]:
+        usage = {
+            "batches": 1,
+            "active": 0,
+            "requests": 2,
+            "completed": 2,
+            "failed": 0,
+            "cancelled": 0,
+            "expired": 0,
+            "cost_usd": 0.5,
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "unknown_cost_attempts": 0,
+            "cached_tokens": 30,
+            "cache_unrecorded_batches": 0,
+            "last_created_at": None,
+            "email": None,
+        }
+        return [
+            {**usage, "user_id": "u-1", "user_name": "Ada"},
+            {**usage, "user_id": "u-2", "user_name": None, "cache_unrecorded_batches": 1},
+        ]
+
 
 def _make_adapter(model_id: str):
     adapter = MagicMock()
@@ -369,6 +402,44 @@ async def test_cancelling_a_users_batch_audits_it_against_its_owner(admin_client
     assert kwargs["actor"].type == "admin_token"
     assert (kwargs["target"].type, kwargs["target"].id) == ("user", "u-owner")
     assert kwargs["details"] == {"batch_id": "batch_1"}
+
+
+async def test_the_batch_list_names_each_owner(admin_client, monkeypatch):
+    client, store = admin_client
+    monkeypatch.setattr(
+        "serving.servers.routers.batch_console.batch_view",
+        lambda row: {"id": row["id"], "user_id": row["user_id"]},
+    )
+
+    response = await client.get("/admin/batch/jobs", headers=ADMIN)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data == [
+        {
+            "id": "batch_a",
+            "user_id": "u-named",
+            "user_name": "Ada",
+            "user_email": "ada@example.test",
+        },
+        # An owner with no account (or no name) still lists, by id.
+        {"id": "batch_b", "user_id": "u-gone", "user_name": None, "user_email": None},
+    ]
+    # One lookup for the page, not one per batch.
+    assert store.writes == [("labels", ("u-named", "u-gone"))]
+
+
+async def test_the_summary_totals_cached_input_and_names_each_owner(admin_client):
+    client, _ = admin_client
+
+    response = await client.get("/admin/batch/summary", headers=ADMIN)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [user["user_name"] for user in body["users"]] == ["Ada", None]
+    assert body["totals"]["cached_tokens"] == 60
+    assert body["totals"]["cache_unrecorded_batches"] == 1
+    assert body["totals"]["prompt_tokens"] == 200
 
 
 async def test_cancelling_an_unknown_batch_is_a_404_and_not_audited(admin_client):

@@ -849,6 +849,7 @@ class BatchScheduler:
                 usage=result.usage,
                 cost_status=result.cost_status,
                 max_result_bytes=cfg.max_result_bytes,
+                cached_tokens=result.cached_tokens,
             )
             return
         if result.retryable:
@@ -888,6 +889,7 @@ class BatchScheduler:
             request_id=result.request_id,
             usage=result.usage,
             cost_status=result.cost_status,
+            cached_tokens=result.cached_tokens,
         )
 
     # -- store transitions ------------------------------------------------------
@@ -906,6 +908,7 @@ class BatchScheduler:
         usage: dict[str, Any] | None = None,
         cost_status: str | None = None,
         max_result_bytes: int | None = None,
+        cached_tokens: int | None = None,
     ) -> None:
         """Record the item's final outcome.
 
@@ -930,6 +933,7 @@ class BatchScheduler:
                     usage=usage,
                     cost_status=cost_status,
                     max_result_bytes=max_result_bytes,
+                    cached_tokens=cached_tokens,
                 )
             except Exception:
                 if delay is None:

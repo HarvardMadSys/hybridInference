@@ -79,6 +79,10 @@ def _epoch(value: Any) -> int | None:
     return int(value.timestamp()) if isinstance(value, datetime) else None
 
 
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
+
+
 def batch_view(row: dict[str, Any]) -> dict[str, Any]:
     """One batch as the console shows it: the same shape and status words for every batch.
 
@@ -114,6 +118,9 @@ def batch_view(row: dict[str, Any]) -> dict[str, Any]:
             "input_tokens": prompt,
             "output_tokens": completion,
             "total_tokens": prompt + completion,
+            # The part of input_tokens served from a prompt cache; None for a
+            # batch stored before cache hits were recorded.
+            "cached_input_tokens": _optional_int(row.get("cache_read_tokens")),
         },
         "cost_usd": float(row.get("cost_usd") or 0.0),
         "cost_unknown_attempts": int(row.get("unknown_cost_count") or 0),
