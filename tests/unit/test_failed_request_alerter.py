@@ -634,3 +634,21 @@ async def test_absolute_threshold_still_fires_and_is_labelled():
     kwargs = sink.await_args.kwargs
     assert kwargs["breached"] is True
     assert kwargs["context"]()["trigger"] == "count"
+
+
+def test_both_queries_exclude_model_queued_answers():
+    """An on-demand model's "model queued" 503s must never page Slack.
+
+    While the model's cluster job waits for a node every request is answered
+    that way, possibly for hours. The rows are matched by the class name
+    ``format_exception_for_db`` prefixes, so any other 503 still counts, and a
+    NULL ``error`` keeps counting (``NOT LIKE`` alone would drop it).
+    """
+    from serving.admin.failed_request_alerter import (
+        FAILED_REQUEST_BREAKDOWN_SQL,
+        FAILED_REQUEST_COUNT_SQL,
+        FAILED_REQUEST_RATE_SQL,
+    )
+
+    for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL, FAILED_REQUEST_RATE_SQL):
+        assert "(error IS NULL OR error NOT LIKE 'UpstreamModelQueued:%')" in sql

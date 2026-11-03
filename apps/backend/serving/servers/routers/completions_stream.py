@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
 from serving.adapters.key_pool import KeyPoolExhausted
-from serving.exceptions import scrub_error_for_user
+from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import (
     RoutingInfo,
@@ -379,6 +379,9 @@ class StreamSession:
         # Upstream label resolved on the failure path, exposed for the caller
         # (see ``error_provider``). ``None`` until this stream fails.
         self._error_provider: str | None = None
+        # Whether that failure was an upstream "model queued" answer (see
+        # ``model_queued``); crosses to the caller the same way.
+        self._model_queued = False
 
     # -- public surface ------------------------------------------------------
 
@@ -404,6 +407,16 @@ class StreamSession:
         to ``req_ctx.publish_upstream_provider``, which drops them.
         """
         return self._error_provider
+
+    @property
+    def model_queued(self) -> bool:
+        """Whether this stream failed on an upstream "model queued" answer.
+
+        Read by the same callers as ``error_provider``, for the same reason: they
+        tag the request in its own context (``req_ctx.mark_model_queued``) so the
+        failed-request alert leaves the 503 out.
+        """
+        return self._model_queued
 
     @property
     def yielded_first_chunk(self) -> bool:
@@ -1045,6 +1058,7 @@ class StreamSession:
         # Starlette's streaming task, or the SSE handler for the first item), so
         # a publish here would read as a fix while, on most paths, doing nothing.
         self._error_provider = provider_for_error
+        self._model_queued = isinstance(exc, UpstreamModelQueued)
         exc_status_code = _extract_exception_status_code(exc)
 
         if self._log_store and not self._suppress_synthetic_logging:

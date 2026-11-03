@@ -21,6 +21,7 @@ import aiohttp
 # timeout=None is NOT equivalent: aiohttp treats it as "no timeout at all".
 from aiohttp.helpers import sentinel as _aiohttp_sentinel
 
+from serving.exceptions import UpstreamModelQueued, is_model_queued_body
 from serving.servers.sse import SSEMessage, SSEParser
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -64,16 +65,30 @@ def _upstream_status_error(resp: Any, error_body: str) -> aiohttp.ClientResponse
             "upstream_media_rejection",
             extra={"event": "upstream_media_rejection", "upstream_status": resp.status},
         )
-    error = aiohttp.ClientResponseError(
+    queued = status == 503 and is_model_queued_body(error_body)
+    error_type = UpstreamModelQueued if queued else aiohttp.ClientResponseError
+    error = error_type(
         request_info=resp.request_info,
         history=resp.history,
         status=status,
         message=message,
         headers=resp.headers,
     )
+    if queued:
+        error.retry_after = _retry_after_seconds(resp.headers)  # type: ignore[attr-defined]
     if error_body:
         error.error_body = error_body  # type: ignore[attr-defined]
     return error
+
+
+def _retry_after_seconds(headers: Any) -> float | None:
+    """Return a ``Retry-After`` header given in seconds, ``None`` otherwise."""
+    value = headers.get("Retry-After") if headers is not None else None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds >= 0 else None
 
 
 class AsyncHTTPClient:

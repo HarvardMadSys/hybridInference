@@ -55,7 +55,7 @@ from pydantic import ValidationError
 
 from serving.batch.attempts import observing
 from serving.batch.targets import TARGET_PATHS
-from serving.exceptions import safe_detail_text, scrub_error_for_user
+from serving.exceptions import model_queued_cause, safe_detail_text, scrub_error_for_user
 from serving.pricing import get_pricing_snapshot
 from serving.schemas import ChatCompletionResponse, EmbeddingRequest
 from serving.servers.auth import publish_caller_role
@@ -92,6 +92,10 @@ _UNCERTAIN_STATUSES = frozenset({500, 502, 504})
 # Statuses besides 5xx on which the same request may well succeed later (529:
 # Anthropic's "overloaded").
 _RETRYABLE_STATUSES = frozenset({408, 425, 429})
+
+#: Seconds before an item answered "model queued" is tried again when the
+#: upstream named no ``Retry-After`` of its own.
+MODEL_QUEUED_RETRY_SECONDS = 120.0
 
 _ERROR_CODES: dict[int, str] = {
     400: "invalid_request",
@@ -136,6 +140,9 @@ class DispatchResult:
     ``unknown``; ``dispatched`` whether the execution was entered at all.
     ``cached_tokens`` is the part of ``prompt_tokens`` the upstream served from
     its prompt cache, or None when the usage reports nothing about caching.
+    ``requeue_after`` is set when the model's upstream answered that the model
+    is queued for capacity: the item is to wait that many seconds and run
+    again, without the attempt counting.
     """
 
     status_code: int
@@ -150,6 +157,7 @@ class DispatchResult:
     cost_status: str = "not_billed"
     dispatched: bool = True
     cached_tokens: int | None = None
+    requeue_after: float | None = None
 
 
 async def dispatch_item(
@@ -264,6 +272,8 @@ async def _dispatch(
         except HTTPException as exc:
             if deadline.cancel_called:
                 outcome, uncertain = _TIMED_OUT, True
+            elif (queued := model_queued_cause(exc)) is not None:
+                outcome = _model_queued(queued, _detail_message(exc.detail, exc.status_code))
             else:
                 outcome = _failure(exc.status_code, _detail_message(exc.detail, exc.status_code))
         except Exception as exc:
@@ -510,6 +520,23 @@ def _failure(
         status_code=status_code,
         error=error,
         retryable=status_code >= 500 or status_code in _RETRYABLE_STATUSES,
+    )
+
+
+def _model_queued(exc: BaseException, message: str) -> DispatchResult:
+    """Return an attempt the model's upstream answered "model queued".
+
+    The model's on-demand deployment is waiting for capacity. Nothing ran, so
+    the attempt is not billed and does not count: the item waits for the
+    upstream's ``Retry-After`` (``MODEL_QUEUED_RETRY_SECONDS`` without one) and
+    runs again, for as long as its batch's completion window lasts.
+    """
+    retry_after = getattr(exc, "retry_after", None)
+    return DispatchResult(
+        status_code=503,
+        error={"code": "model_queued", "message": message, "status": 503},
+        retryable=True,
+        requeue_after=retry_after if retry_after is not None else MODEL_QUEUED_RETRY_SECONDS,
     )
 
 

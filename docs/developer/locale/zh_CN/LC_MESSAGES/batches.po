@@ -242,6 +242,23 @@ msgstr ""
 "（从 5 秒开始逐次翻倍，最长 15 分钟，并带随机抖动）。一旦下一次重试会在窗口关闭之后才开始，该请求即以最后一次得到的错误失败，而不会像从未运行过那样过期。"
 "被模型拒绝的请求（其他任何 `4xx`）会立即失败。"
 
+#: ../developer/batches.md:82
+msgid ""
+"A model served on demand (a cluster job, say) may answer that it is "
+"queued: its deployment is waiting for a GPU. That answer (a `503` with "
+"the error code `model_queued`) is not a failure and uses up no attempt. "
+"The request goes back to the queue, the model takes no new batch requests"
+" for the deployment's `Retry-After` (two minutes without one), and the "
+"requests keep waiting like this until the model is up or the batch's "
+"completion window ends. The same answer reaches an interactive caller as "
+"a `503` with the deployment's message, and neither the circuit breaker "
+"nor the failed-request alerts count it."
+msgstr ""
+"按需部署的模型（例如集群作业）可能会回复它正在排队：其部署正在等待 GPU。这个回复（错误代码为 `model_queued` 的 "
+"`503`）不算失败，也不消耗尝试次数。该请求会回到队列，模型在部署给出的 `Retry-After` 时间内（未给出时为两分钟）"
+"不再接收新的批次请求，请求就这样一直等待，直到模型就绪或批次的完成窗口结束。交互式调用方收到的同样是 `503` "
+"和部署给出的说明，熔断器和失败请求告警都不会把它计入。"
+
 #: ../developer/batches.md:79
 msgid ""
 "Before each request runs, the gateway checks the API key that created the"

@@ -102,13 +102,21 @@ ALERT_KEY = "failed_request_rate_db"
 # status is exact and survives any rewording of the error text. Gateway timeouts
 # use 504 (a real service concern) and still count via ``status_code >= 500``.
 # ``IS DISTINCT FROM`` (not ``<>``) keeps NULL-status error rows counting.
+#
+# An on-demand upstream's "model queued" 503 is excluded as well: the model's
+# deployment is waiting for capacity (a cluster job queued for a node), and
+# until it gets some every request is answered that way, so counting it pages
+# for as long as the queue lasts. ``format_exception_for_db`` prefixes the class
+# name, so the anchored match drops exactly those rows
+# (``serving.exceptions.UpstreamModelQueued``); any other 503 still counts.
 FAILURE_PREDICATE_SQL = (
-    "(status_code >= 500 OR (error IS NOT NULL "
+    "((status_code >= 500 OR (error IS NOT NULL "
     "AND status_code IS DISTINCT FROM 429 "
     "AND status_code IS DISTINCT FROM 499 "
     "AND error NOT ILIKE 'Model ''%'' not found' "
     "AND error NOT ILIKE 'Embedding model ''%'' not found' "
-    "AND error <> 'model_not_found'))"
+    "AND error <> 'model_not_found')) "
+    "AND (error IS NULL OR error NOT LIKE 'UpstreamModelQueued:%'))"
 )
 
 # Module-level SQL so tests can introspect the predicate text.

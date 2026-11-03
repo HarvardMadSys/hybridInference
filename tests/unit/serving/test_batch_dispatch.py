@@ -342,3 +342,46 @@ async def test_cancellation_propagates():
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def _model_queued(retry_after: float | None = 30.0) -> BaseException:
+    """The upstream's "model queued" 503, as ``serving.http`` raises it."""
+    from serving.exceptions import UpstreamModelQueued
+
+    error = UpstreamModelQueued(
+        request_info=MagicMock(), history=(), status=503, message="Service Unavailable"
+    )
+    error.retry_after = retry_after
+    error.error_body = (
+        '{"error": {"message": "batch-model is queued on the cluster, waiting for a GPU.",'
+        ' "type": "model_queued", "code": "model_queued"}}'
+    )
+    return error
+
+
+@pytest.mark.parametrize(("retry_after", "requeue_after"), [(30.0, 30.0), (None, 120.0)])
+async def test_a_model_queued_answer_is_requeued_not_failed(retry_after, requeue_after):
+    app, services = _setup(_Upstream(error=_model_queued(retry_after)))
+
+    result = await _dispatch(app, services)
+
+    assert result.status_code == 503
+    assert result.error["code"] == "model_queued"
+    assert "waiting for a GPU" in result.error["message"]
+    assert result.requeue_after == requeue_after
+    assert result.cost_status == "not_billed"
+    # The log row names the type, which is what the failed-request alert skips.
+    row = await _logged_row(services)
+    assert row["error"].startswith("UpstreamModelQueued:")
+
+
+async def test_model_queued_answers_never_open_the_circuit():
+    upstream = _Upstream(error=_model_queued())
+    app, services = _setup(upstream)
+
+    for _ in range(10):
+        result = await _dispatch(app, services)
+        assert result.error["code"] == "model_queued"
+
+    # Every attempt reached the upstream: no breaker took the route out.
+    assert len(upstream.calls) == 10

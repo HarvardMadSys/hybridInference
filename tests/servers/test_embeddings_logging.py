@@ -730,3 +730,40 @@ async def test_embeddings_session_header_recorded():
     _request_id, log_data = logger.calls[0]
     assert log_data["metadata"]["session_id"] == "canonical-emb"
     assert log_data["metadata"]["session_id_source"] == "x-session-id"
+
+
+@pytest.mark.asyncio
+async def test_embeddings_model_queued_is_relayed_and_left_out_of_the_failure_rate(caplog):
+    """An on-demand embedding model waiting for a node: a 503, not a failure.
+
+    The caller gets the deployment's message; the request log carries the tag and
+    the DB row the type name, so neither failed-request alert counts it.
+    """
+    from serving.exceptions import UpstreamModelQueued
+
+    error = UpstreamModelQueued(
+        SimpleNamespace(real_url="http://127.0.0.1:8010/v1/embeddings"),  # type: ignore[arg-type]
+        (),
+        status=503,
+        message="Service Unavailable",
+    )
+    error.error_body = (
+        '{"error": {"message": "emb-model is queued on the cluster, waiting for a GPU.",'
+        ' "type": "model_queued", "code": "model_queued"}}'
+    )
+    adapter = _FakeAdapter(raises=error)
+    adapter.config.provider = "cluster-ondemand"
+    log_stub = _CapturingLogger()
+    app = _build_logging_app(adapter, log_stub)
+
+    with caplog.at_level(logging.DEBUG, logger=_REQUEST_LOG_LOGGER):
+        resp = await _post(app, {"model": "emb-model", "input": "hello"})
+
+    assert resp.status_code == 503
+    assert "waiting for a GPU" in resp.text
+    record = [r for r in caplog.records if r.getMessage() == "http_request"][-1]
+    assert record.client_error_kind == "model_queued"
+    assert _is_failed_request(_window_item(record)) is False
+    _, log_data = log_stub.calls[0]
+    assert log_data["status_code"] == 503
+    assert log_data["error"].startswith("UpstreamModelQueued:")

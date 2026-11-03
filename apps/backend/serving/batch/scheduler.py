@@ -679,6 +679,19 @@ class BatchScheduler:
             },
         )
 
+    def _hold_model(self, model_id: str, seconds: float) -> None:
+        """Give the model no new claims for ``seconds``: its upstream queued it."""
+        until = self._clock() + seconds
+        if until <= self._cooldown_until.get(model_id, 0.0):
+            return
+        self._cooldown_until[model_id] = until
+        logger.info(
+            "batch: model %s is queued for capacity upstream; no new claims for %.0fs",
+            model_id,
+            seconds,
+            extra={"event": "batch_model_queued", "model": model_id, "hold_sec": seconds},
+        )
+
     def _model_succeeded(self, model_id: str) -> None:
         self._failure_streak.pop(model_id, None)
 
@@ -861,7 +874,20 @@ class BatchScheduler:
                 cached_tokens=result.cached_tokens,
             )
             return
-        if result.retryable:
+        requeue = result.requeue_after
+        if requeue is not None:
+            # The model is queued for capacity on its upstream: not a failure of
+            # the model or of the item. The item goes back without spending its
+            # attempt, and the model gets no new claims until it may be ready,
+            # rather than every slot of its cap asking again at once. As with a
+            # retry, once the next try would start after the window closes the
+            # item fails now with this answer instead.
+            self._hold_model(entry.model_id, requeue)
+            retry_at = datetime.now(UTC) + timedelta(seconds=requeue)
+            if entry.expires_at is None or retry_at < entry.expires_at:
+                await self._release(entry, delay=requeue)
+                return
+        elif result.retryable:
             # Only a failure that may pass says anything about the model; a
             # caller's own error (4xx) is no reason to slow it down for others.
             self._model_failed(entry.model_id)
