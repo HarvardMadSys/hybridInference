@@ -15,7 +15,7 @@ from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value
-from serving.exceptions import operator_safe_error
+from serving.exceptions import UpstreamModelQueued, operator_safe_error
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import (
@@ -1108,6 +1108,21 @@ class EndpointHealthRegistry:
                     "event": "engine_wait_skip_breaker",
                     "endpoint_id": endpoint_id,
                     "detail": _detail_str(detail or operator_safe_error(exc)),
+                },
+            )
+            return
+        if exc is not None and isinstance(exc, UpstreamModelQueued):
+            # An on-demand deployment answered that the model is queued for
+            # capacity (a cluster job waiting for a node). The endpoint is
+            # working as designed, and while the job waits every request gets
+            # this answer, so counting it would hold the circuit open, and page,
+            # for as long as the queue does.
+            logger.info(
+                "model_queued_skip_breaker",
+                extra={
+                    "event": "model_queued_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "retry_after": exc.retry_after,
                 },
             )
             return

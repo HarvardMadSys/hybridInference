@@ -897,3 +897,61 @@ async def test_heartbeats_extend_the_leases_of_running_items(worker, dispatch):
     scheduler.start()
     await until(lambda: any(sorted(ids) == [1, 2] for ids in store.heartbeats))
     gate.set()
+
+
+def _queued(retry_after: float) -> DispatchResult:
+    return DispatchResult(
+        status_code=503,
+        error={"code": "model_queued", "message": "queued", "status": 503},
+        retryable=True,
+        requeue_after=retry_after,
+    )
+
+
+async def test_a_model_queued_answer_requeues_without_spending_attempts(worker, dispatch):
+    # An on-demand model waiting for a node answers "model queued" for as long
+    # as it waits: more answers than the item has attempts must not fail it.
+    dispatch.results["m1"] = _queued(0.01)
+    store = FakeStore()
+    store.add(1)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        max_attempts=2,
+        cooldown_failures=1,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) >= 4)
+    dispatch.results["m1"] = OK
+    await until(lambda: store.status(1) == "completed")
+
+    assert store.calls["retry_item"] == 0
+    assert store.calls["release_item"] >= 4
+    assert store.items[1]["error"] is None
+
+
+async def test_a_model_queued_answer_holds_the_model(worker, dispatch):
+    dispatch.results["m1"] = _queued(60)
+    store = FakeStore()
+    store.add(2)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, caps={"m1": 1}, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 1)
+    await asyncio.sleep(0.05)
+
+    # The model gets no new claims while it waits: the second item stays put.
+    assert len(dispatch.calls) == 1
+    assert store.count("queued") == 2
