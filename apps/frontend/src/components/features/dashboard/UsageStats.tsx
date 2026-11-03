@@ -123,24 +123,24 @@ function ShareBar({ value }: { value: number }): JSX.Element {
   );
 }
 
-/** A secondary figure under a statistic: label on the left, value on the right. */
+/** A secondary figure in the shared token breakdown. */
 function Detail({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
   return (
-    <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-xs">
-      <span className="text-gray-500">{label}</span>
-      <span className="font-medium tabular-nums text-gray-700">{children}</span>
+    <div className="min-w-0">
+      <span className="block text-xs text-gray-500">{label}</span>
+      <span className="mt-1 block break-words text-sm font-medium tabular-nums text-gray-700">
+        {children}
+      </span>
     </div>
   );
 }
 
-function StatTile({
+function StatMetric({
   label,
   helpLabel,
   help,
   value,
   compact,
-  className,
-  children,
 }: {
   label: string;
   helpLabel: string;
@@ -148,28 +148,21 @@ function StatTile({
   value: string;
   /** One size smaller, for a row holding a figure too long for the usual size. */
   compact: boolean;
-  className?: string;
-  children?: React.ReactNode;
 }): JSX.Element {
   return (
-    <div
-      className={clsx('min-w-0 rounded-lg p-3 ring-1 ring-inset ring-gray-200 sm:p-4', className)}
-    >
+    <div className="min-w-0">
       <div className="flex items-center gap-1.5 text-xs font-medium text-gray-500">
         <span>{label}</span>
         <HelpTip label={helpLabel}>{help}</HelpTip>
       </div>
       <div
         className={clsx(
-          'mt-1 break-words font-semibold tracking-tight text-gray-900',
-          compact ? 'text-lg sm:text-xl' : 'text-xl sm:text-2xl',
+          'mt-1.5 break-words font-semibold tabular-nums tracking-tight text-gray-900',
+          compact ? 'text-lg sm:text-xl' : 'text-2xl sm:text-3xl',
         )}
       >
         {value}
       </div>
-      {children ? (
-        <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">{children}</div>
-      ) : null}
     </div>
   );
 }
@@ -201,8 +194,7 @@ export function UsageStats(): JSX.Element {
     input: fmt.number(promptTokens),
     output: fmt.number(stats?.usage.completion_tokens ?? 0),
   };
-  // Beyond "999,999,999" a figure no longer fits a quarter-width tile at the
-  // usual size; the whole row steps down together so the tiles still match.
+  // Beyond "999,999,999" the whole summary row steps down in size together.
   const compact = Object.values(values).some((value) => value.length > 11);
 
   const costLabel = t('dashboard.usage.cost', 'Estimated cost');
@@ -314,9 +306,14 @@ export function UsageStats(): JSX.Element {
             </div>
           )}
 
-          {/* On a phone cost and requests share a row unless a figure is long; token tiles take one each. */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatTile
+          {/* Four equal summary metrics, with token details in their own row below. */}
+          <div
+            className={clsx(
+              'grid gap-x-6 gap-y-5 py-2 sm:py-3 lg:grid-cols-4',
+              compact ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2',
+            )}
+          >
+            <StatMetric
               label={costLabel}
               helpLabel={helpLabel(costLabel)}
               help={t(
@@ -324,11 +321,10 @@ export function UsageStats(): JSX.Element {
                 'Internal cost attributed from logged usage. Today and This Month start at 00:00 UTC, when the daily quota resets. Not a bill — for transparency only.',
               )}
               value={values.cost}
-              className={compact ? 'col-span-2 sm:col-span-1' : undefined}
               compact={compact}
             />
 
-            <StatTile
+            <StatMetric
               label={requestsLabel}
               helpLabel={helpLabel(requestsLabel)}
               help={t(
@@ -336,12 +332,10 @@ export function UsageStats(): JSX.Element {
                 'Number of API requests (including errors). Retries count as separate requests.',
               )}
               value={values.requests}
-              className={compact ? 'col-span-2 sm:col-span-1' : undefined}
               compact={compact}
             />
 
-            <StatTile
-              className="col-span-2 sm:col-span-1"
+            <StatMetric
               label={inputLabel}
               helpLabel={helpLabel(inputLabel)}
               help={
@@ -358,26 +352,9 @@ export function UsageStats(): JSX.Element {
               }
               value={values.input}
               compact={compact}
-            >
-              <div className="space-y-1.5">
-                <Detail label={t('dashboard.usage.cache_reads_label', 'Cache reads')}>
-                  {fmt.number(cacheReadTokens)}
-                  <span className="font-normal text-gray-500">
-                    {' · '}
-                    {fmt.number(cacheReadShare, { style: 'percent', maximumFractionDigits: 0 })}
-                  </span>
-                </Detail>
-                <ShareBar value={cacheReadShare} />
-              </div>
-              {cacheWriteTokens > 0 && (
-                <Detail label={t('dashboard.usage.cache_writes_label', 'Cache writes')}>
-                  {fmt.number(cacheWriteTokens)}
-                </Detail>
-              )}
-            </StatTile>
+            />
 
-            <StatTile
-              className="col-span-2 sm:col-span-1"
+            <StatMetric
               label={outputLabel}
               helpLabel={helpLabel(outputLabel)}
               help={
@@ -394,12 +371,36 @@ export function UsageStats(): JSX.Element {
               }
               value={values.output}
               compact={compact}
-            >
-              {/* No share or bar: providers differ on whether reasoning is part of output. */}
-              <Detail label={t('dashboard.usage.reasoning_label', 'Reasoning tokens')}>
-                {fmt.number(reasoningTokens)}
+            />
+          </div>
+
+          <div
+            className={clsx(
+              'grid grid-cols-2 gap-x-6 gap-y-4 border-t border-gray-200 pt-4',
+              cacheWriteTokens > 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3',
+            )}
+          >
+            <div className="col-span-2 min-w-0">
+              <Detail label={t('dashboard.usage.cache_reads_label', 'Cache reads')}>
+                {fmt.number(cacheReadTokens)}
+                <span className="font-normal text-gray-500">
+                  {' · '}
+                  {fmt.number(cacheReadShare, { style: 'percent', maximumFractionDigits: 0 })}
+                </span>
               </Detail>
-            </StatTile>
+              <div className="mt-2 max-w-sm">
+                <ShareBar value={cacheReadShare} />
+              </div>
+            </div>
+            {cacheWriteTokens > 0 && (
+              <Detail label={t('dashboard.usage.cache_writes_label', 'Cache writes')}>
+                {fmt.number(cacheWriteTokens)}
+              </Detail>
+            )}
+            {/* No share or bar: providers differ on whether reasoning is part of output. */}
+            <Detail label={t('dashboard.usage.reasoning_label', 'Reasoning tokens')}>
+              {fmt.number(reasoningTokens)}
+            </Detail>
           </div>
 
           <p className="text-xs leading-relaxed text-gray-500">
