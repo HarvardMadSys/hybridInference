@@ -16,6 +16,7 @@ from routing.endpoints import endpoint_id_for_config
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.batch.attempts import note_request_id, observe_billing
 from serving.config.runtime_settings import get_runtime_settings
+from serving.exceptions import UpstreamModelQueued, user_safe_upstream_error
 from serving.grant_auth import ledger_attribution
 from serving.model_access import ModelAccessDenial, model_access_denial
 from serving.observability.tracked_tasks import tracked_task
@@ -36,6 +37,7 @@ from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import calculate_cost
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
+from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key
 from serving.utils.session_identity import session_identity
@@ -501,6 +503,24 @@ async def execute_embeddings(
         return response
     except HTTPException:
         raise
+    except UpstreamModelQueued as exc:
+        # The model's on-demand deployment is waiting for capacity. The caller
+        # gets the 503 and the deployment's own message; the log row keeps the
+        # type name, which the failed-request alerts leave out, as does the tag.
+        logger.info(f"Embedding model {model} is queued for capacity upstream")
+        req_ctx.publish_upstream_provider(provider)
+        req_ctx.mark_model_queued()
+        _schedule_log(
+            provider=provider,
+            endpoint_id=endpoint_id,
+            status_code=exc.status,
+            response=None,
+            usage=None,
+            pricing=None,
+            error=format_exception_for_db(exc),
+        )
+        message = user_safe_upstream_error(getattr(exc, "error_body", None))
+        raise HTTPException(exc.status, message or "Embedding service error") from exc
     except aiohttp.ClientResponseError as exc:
         logger.error(f"Embedding request failed for model={model}: {exc.status} {exc.message}")
         # Publish the upstream attribution, not just log it as a value: the DB row

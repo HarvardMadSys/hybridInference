@@ -79,6 +79,15 @@ the window closes, the request fails with the last error it got rather than
 expiring as though it never ran. A request the model rejects (any other `4xx`)
 fails at once.
 
+A model served on demand (a cluster job, say) may answer that it is queued:
+its deployment is waiting for a GPU. That answer (a `503` with the error code
+`model_queued`) is not a failure and uses up no attempt. The request goes back
+to the queue, the model takes no new batch requests for the deployment's
+`Retry-After` (two minutes without one), and the requests keep waiting like
+this until the model is up or the batch's completion window ends. The same
+answer reaches an interactive caller as a `503` with the deployment's message,
+and neither the circuit breaker nor the failed-request alerts count it.
+
 Before each request runs, the gateway checks the API key that created the batch
 again:
 

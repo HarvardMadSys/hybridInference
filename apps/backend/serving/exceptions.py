@@ -175,6 +175,55 @@ class QuotaExceededError(UserFacingError):
         super().__init__(f"Quota exceeded: ${spent:.2f} / ${quota:.2f}")
 
 
+#: The error ``code`` an on-demand deployment answers 503 with while the model
+#: it serves is waiting for capacity it does not have yet (a cluster job queued
+#: for a node). See :class:`UpstreamModelQueued`.
+MODEL_QUEUED_CODE = "model_queued"
+
+
+class UpstreamModelQueued(aiohttp.ClientResponseError):
+    """The upstream answered 503 ``model_queued``: the model is waiting for capacity.
+
+    An on-demand deployment (a cluster job, for instance) says this while the
+    model it serves is queued and nothing is wrong with it. It is not a failure
+    of the endpoint: the breaker does not count it, the failed-request alerts
+    leave it out, and a batch request answered with it goes back to the queue
+    without spending an attempt. The caller still gets the 503 and its message.
+
+    ``retry_after`` is the upstream's ``Retry-After`` in seconds, ``None`` when
+    it sent none or one this does not read (an HTTP date).
+    """
+
+    retry_after: float | None = None
+
+
+def is_model_queued_body(body: str | None) -> bool:
+    """Return whether an upstream error body is the ``model_queued`` answer."""
+    if not body:
+        return False
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    error = data.get("error") if isinstance(data, dict) else None
+    return isinstance(error, dict) and error.get("code") == MODEL_QUEUED_CODE
+
+
+def model_queued_cause(exc: BaseException | None) -> UpstreamModelQueued | None:
+    """Return the :class:`UpstreamModelQueued` behind ``exc``, if there is one.
+
+    Follows the ``__cause__`` / ``__context__`` chain: a route answers the
+    upstream's failure as an ``HTTPException`` raised from it.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, UpstreamModelQueued):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 # Upstream streaming faults
 class UpstreamStreamIdleError(aiohttp.ClientError):
     """An upstream committed to a stream, then stopped sending data mid-generation.
