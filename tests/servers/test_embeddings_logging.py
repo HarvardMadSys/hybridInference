@@ -98,9 +98,13 @@ class _CapturingOpStore:
 
     def __init__(self) -> None:
         self.increments: list[tuple[str, float]] = []
+        self.key_ids: list[int | None] = []
 
-    async def increment_user_cost(self, user_id: str, cost_usd: float, *, day=None) -> None:
+    async def increment_user_cost(
+        self, user_id: str, cost_usd: float, *, day=None, api_key_id=None
+    ) -> None:
         self.increments.append((user_id, cost_usd))
+        self.key_ids.append(api_key_id)
 
 
 class _FakeRuntimeSettings:
@@ -131,6 +135,7 @@ def _build_app(
         "user_id": "user-emb",
         "role": user_role,
         "authenticated": True,
+        "api_key_id": 9,
     }
     app.dependency_overrides[enforce_user_concurrency] = lambda: None
     # Register the access gate the surface now requires (fail-closed): a
@@ -182,6 +187,7 @@ async def test_embeddings_success_is_logged():
     assert log_data["usage"] == {"prompt_tokens": 5, "total_tokens": 5}
     assert log_data["metadata"]["request_type"] == "embedding"
     assert log_data["metadata"]["user_id"] == "user-emb"
+    assert log_data["metadata"]["api_key_id"] == 9
     # Full vectors must not be persisted — only a compact summary.
     assert log_data["response"]["data_count"] == 1
     assert log_data["response"]["dimensions"] == 3
@@ -266,6 +272,7 @@ async def test_paid_embedding_increments_quota_counter():
     assert len(op_store.increments) == 1
     user_id, cost = op_store.increments[0]
     assert user_id == "user-emb"
+    assert op_store.key_ids == [9]
     # 1000 prompt tokens * $1.0 / 1M = $0.001
     assert cost == pytest.approx(0.001)
 

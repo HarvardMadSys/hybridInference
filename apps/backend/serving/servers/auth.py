@@ -341,6 +341,7 @@ def _user_context(
     identity: dict[str, Any],
     *,
     key_hash: str,
+    api_key_id: int | None,
     quota_daily_cost_usd: float,
     spent_today_usd: float,
 ) -> dict[str, Any]:
@@ -351,6 +352,10 @@ def _user_context(
     request is attributed to (or the impersonated user's equivalent, see
     :func:`_resolve_effective_identity`); ``key_hash`` is the key that
     authenticated, which stays the presented one under impersonation.
+
+    ``api_key_id`` is the ``api_keys.id`` the request's usage is attributed to:
+    the presented key, or None when the request is attributed to someone other
+    than the key's owner (``X-On-Behalf-Of``), whose spend no key of theirs made.
     """
     user_role = identity.get("role") or "free"
     return {
@@ -368,6 +373,7 @@ def _user_context(
         # have multiple). Used as the affinity key for multi-key API rotation;
         # stays the presented key even when acting on behalf of another user.
         "auth_key_hash": key_hash,
+        "api_key_id": api_key_id,
     }
 
 
@@ -871,6 +877,7 @@ async def verify_api_key(
         _user_context(
             identity,
             key_hash=key_hash,
+            api_key_id=caller_key_id if identity is caller else None,
             quota_daily_cost_usd=quota_daily_cost_usd,
             spent_today_usd=cost_spent,
         )
@@ -943,6 +950,7 @@ async def authenticate_stored_key(
     return _user_context(
         user,
         key_hash=key_hash,
+        api_key_id=user.get("id"),
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )
@@ -999,6 +1007,7 @@ async def verify_batch_management_identity(
     context = _user_context(
         user,
         key_hash=key_hash,
+        api_key_id=user["id"],
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )

@@ -229,7 +229,7 @@ class CostTracker:
 
         Args:
             op_store: Any object exposing
-                ``async increment_user_cost(user_id, cost_usd)``.
+                ``async increment_user_cost(user_id, cost_usd, *, api_key_id)``.
                 ``None``-tolerant: if there's no operational store
                 configured the increment is skipped silently.
             pricing: The shared :class:`PricingLookup` instance. Used
@@ -250,8 +250,12 @@ class CostTracker:
         cache_read_tokens: int | None = 0,
         cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
+        api_key_id: int | None = None,
     ) -> RoutingInfo:
         """Compute cost, schedule the DB increment, return enriched routing.
+
+        ``api_key_id`` is the key the request was made with (the log row's
+        ``metadata["api_key_id"]``), whose own counter is bumped as well.
 
         Returns a *new* :class:`RoutingInfo` (frozen dataclass) with
         ``upstream_cost_usd`` populated when pricing is available; the
@@ -307,7 +311,7 @@ class CostTracker:
 
         async def _increment() -> None:
             try:
-                await self._op_store.increment_user_cost(user_id, cost)
+                await self._op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
             except Exception as exc:
                 logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
                 raise  # let tracked_task record the failure

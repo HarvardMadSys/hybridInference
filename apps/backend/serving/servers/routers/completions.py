@@ -900,6 +900,9 @@ async def execute_chat(
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
     }
+    # The key the usage is attributed to, for its owner's per-key views.
+    if user_ctx.get("api_key_id") is not None:
+        metadata["api_key_id"] = user_ctx["api_key_id"]
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
     if declared_session is not None:
@@ -1340,6 +1343,7 @@ async def execute_chat(
         if _ns_usage:
             routing = await cost_tracker.schedule_increment(
                 user_id=user_id,
+                api_key_id=metadata.get("api_key_id"),
                 routing=routing,
                 prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),

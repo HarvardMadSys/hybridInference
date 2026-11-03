@@ -663,6 +663,8 @@ async def test_on_behalf_of_trusted_service_key_attributes_to_target(
     # last_used is still bumped on the *presented* (service) key.
     await _settle_last_used_write()
     mock_op_store.update_key_last_used.assert_awaited_once_with(7)
+    # Its usage is the end user's, not the service key's: no key is charged.
+    assert result["api_key_id"] is None
 
 
 @pytest.mark.asyncio
@@ -696,6 +698,8 @@ async def test_on_behalf_of_from_untrusted_key_is_ignored(
 
     # Fail safe: the request attributes to the caller, never the named target.
     assert result["user_id"] == "normal-user"
+    # ...and so does its usage, to the key it presented.
+    assert result["api_key_id"] == 3
     mock_op_store.get_user_by_id.assert_not_awaited()
     mock_op_store.get_user_cost_today.assert_awaited_once_with("normal-user")
 

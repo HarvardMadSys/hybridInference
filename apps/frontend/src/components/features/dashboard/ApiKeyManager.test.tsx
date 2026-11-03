@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiKeyListItem } from '@/lib/api/user';
@@ -86,6 +86,12 @@ function makeItem(overrides: Partial<ApiKeyListItem> = {}): ApiKeyListItem {
 let writeText: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  vi.spyOn(window, 'prompt').mockImplementation(() => {
+    throw new Error('prompt() is not supported.');
+  });
+  vi.spyOn(window, 'confirm').mockImplementation(() => {
+    throw new Error('confirm() is not supported.');
+  });
   writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText },
@@ -101,8 +107,8 @@ afterEach(() => {
 });
 
 describe('ApiKeyManager reveal + copy', () => {
-  it('masks a revealable key by default and shows the full key after toggling', () => {
-    mockList(makeItem());
+  it.each(['active', 'revoked'])('masks a %s key and reveals its saved value', (status) => {
+    mockList(makeItem({ status }));
     render(<ApiKeyManager />);
 
     // Masked value is shown; the full key is hidden until the user reveals it.
@@ -117,8 +123,8 @@ describe('ApiKeyManager reveal + copy', () => {
     expect(screen.getByRole('button', { name: 'Hide key' })).toBeInTheDocument();
   });
 
-  it('copies the full key to the clipboard', () => {
-    mockList(makeItem());
+  it.each(['active', 'revoked'])('copies the full %s key to the clipboard', (status) => {
+    mockList(makeItem({ status }));
     render(<ApiKeyManager />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy key' }));
@@ -154,25 +160,71 @@ describe('ApiKeyManager with several keys', () => {
     expect(screen.queryByText(/ of \d+ active/)).not.toBeInTheDocument();
   });
 
-  it('creates a key with the name typed into the prompt', async () => {
+  it('shows what each key spent today and this month', () => {
+    mockKeys([
+      makeItem({
+        key_prefix: 'hyi-aaaaaaaa',
+        key_masked: 'hyi-aaaa****',
+        spent_today_usd: 0.5,
+        spent_month_usd: 12.25,
+      }),
+    ]);
+    render(<ApiKeyManager />);
+
+    expect(screen.getByText('$0.50 today')).toBeInTheDocument();
+    expect(screen.getByText('$12.25 this month')).toBeInTheDocument();
+  });
+
+  it('creates a key with an in-page form when native prompts are unavailable', async () => {
     mockKeys([]);
-    vi.spyOn(window, 'prompt').mockReturnValue('  ci  ');
     render(<ApiKeyManager />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
 
+    const dialog = screen.getByRole('dialog', { name: 'Create API Key' });
+    const input = within(dialog).getByRole('textbox', { name: 'Name (optional)' });
+    expect(input).toHaveFocus();
+    fireEvent.change(input, { target: { value: '  ci  ' } });
+    fireEvent.submit(input.closest('form')!);
     await waitFor(() => expect(mutations.create.mutateAsync).toHaveBeenCalledWith('ci'));
+    expect(window.prompt).not.toHaveBeenCalled();
     expect(await screen.findByText('hyi-new')).toBeInTheDocument();
   });
 
-  it('does not create a key when the prompt is cancelled', () => {
+  it('cancels without creating a key and restores focus to the trigger', () => {
     mockKeys([]);
-    vi.spyOn(window, 'prompt').mockReturnValue(null);
     render(<ApiKeyManager />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
+    const trigger = screen.getByRole('button', { name: 'Create API Key' });
+    trigger.focus();
+    fireEvent.click(trigger);
 
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create API Key' })).toHaveFocus();
     expect(mutations.create.mutateAsync).not.toHaveBeenCalled();
+  });
+
+  it('supports keyboard row actions and returns focus after cancelling a dialog', () => {
+    mockKeys([makeItem({ name: 'laptop' })]);
+    render(<ApiKeyManager />);
+    const trigger = screen.getByRole('button', { name: 'Actions for laptop' });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'End' });
+    expect(screen.getByRole('menuitem', { name: 'Revoke' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(mutations.rename.mutateAsync).not.toHaveBeenCalled();
   });
 
   it('regenerates the key on its own row', async () => {
@@ -180,10 +232,14 @@ describe('ApiKeyManager with several keys', () => {
       makeItem({ key_prefix: 'hyi-aaaaaaaa', key_masked: 'hyi-aaaa****' }),
       makeItem({ key_prefix: 'hyi-bbbbbbbb', key_masked: 'hyi-bbbb****' }),
     ]);
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<ApiKeyManager />);
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Regenerate' })[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for hyi-bbbbbbbb' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Regenerate' }));
+    const dialog = screen.getByRole('dialog', { name: 'Regenerate' });
+    expect(within(dialog).getByText('hyi-bbbb****')).toBeInTheDocument();
+    expect(mutations.regenerate.mutateAsync).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Regenerate' }));
 
     await waitFor(() =>
       expect(mutations.regenerate.mutateAsync).toHaveBeenCalledWith('hyi-bbbbbbbb'),
@@ -192,10 +248,15 @@ describe('ApiKeyManager with several keys', () => {
 
   it('renames a key, clearing the name on a blank answer', async () => {
     mockKeys([makeItem({ key_prefix: 'hyi-aaaaaaaa', name: 'old' })]);
-    vi.spyOn(window, 'prompt').mockReturnValue('   ');
     render(<ApiKeyManager />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for old' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    const dialog = screen.getByRole('dialog', { name: 'Rename' });
+    const input = within(dialog).getByRole('textbox');
+    expect(input).toHaveValue('old');
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Rename' }));
 
     await waitFor(() =>
       expect(mutations.rename.mutateAsync).toHaveBeenCalledWith({
@@ -205,7 +266,36 @@ describe('ApiKeyManager with several keys', () => {
     );
   });
 
-  it('folds revoked keys away until asked for', () => {
+  it('keeps a failed create open with its name so it can be retried', async () => {
+    mockKeys([]);
+    mutations.create.mutateAsync.mockRejectedValueOnce(new Error('Could not create this key'));
+    render(<ApiKeyManager />);
+    fireEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
+    const dialog = screen.getByRole('dialog');
+    const input = within(dialog).getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'my laptop' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create API Key' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not create this key');
+    expect(input).toHaveValue('my laptop');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create API Key' }));
+    expect(await screen.findByText('hyi-new')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('explains revocation and waits for confirmation before invalidating a key', async () => {
+    mockKeys([makeItem({ name: 'laptop' })]);
+    render(<ApiKeyManager />);
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for laptop' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Revoke' }));
+    const dialog = screen.getByRole('dialog', { name: 'Revoke' });
+    expect(within(dialog).getByText(/stop working immediately/)).toBeInTheDocument();
+    expect(mutations.remove.mutateAsync).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(mutations.remove.mutateAsync).toHaveBeenCalledWith('hyi-testkey01'));
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it('shows revoked keys with their usage history directly after active keys', () => {
     mockKeys([
       makeItem({ key_prefix: 'hyi-aaaaaaaa', key_masked: 'hyi-live****' }),
       makeItem({
@@ -218,11 +308,10 @@ describe('ApiKeyManager with several keys', () => {
     render(<ApiKeyManager />);
 
     expect(screen.getByText('hyi-live****')).toBeInTheDocument();
-    expect(screen.queryByText('hyi-dead****')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show revoked keys (1)' }));
-
     expect(screen.getByText('hyi-dead****')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for hyi-dddddddd' }));
+    expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeInTheDocument();
+    expect(screen.getByText('revoked')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /revoked keys/i })).not.toBeInTheDocument();
   });
 });

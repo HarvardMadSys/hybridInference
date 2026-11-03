@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
  * Max width of the console chrome (header, banner, main, footer) for the
  * current route.
  *
+ * The dashboard uses a wider frame for key and request tables.
  * Most console pages read best at the default reading width. The admin area
  * is mostly wide data tables, so it gets a wider frame; its form-style tabs
  * lay out their cards and fields for that width rather than stretching them.
@@ -21,5 +22,6 @@ export function isWideConsoleRoute(pathname: string): boolean {
 
 export function useConsoleWidth(): string {
   const pathname = usePathname() ?? '/';
+  if (pathname === '/dashboard') return 'max-w-7xl';
   return isWideConsoleRoute(pathname) ? CONSOLE_WIDTH_WIDE : CONSOLE_WIDTH_DEFAULT;
 }

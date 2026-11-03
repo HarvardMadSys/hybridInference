@@ -48,7 +48,7 @@ export function DashboardView() {
   const showBatches = batch ? batch.show_entry : Boolean(batchError && isInternal);
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-8">
+    <div className="mx-auto w-full max-w-7xl space-y-8">
       {/* Same announcement banner as the landing page; dismissal is shared per-id. */}
       <UpdatesBanner />
 

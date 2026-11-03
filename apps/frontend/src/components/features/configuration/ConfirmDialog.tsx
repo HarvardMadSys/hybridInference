@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode, type RefObject } from 'react';
 
 /**
  * A modal confirmation: focus moves to Cancel when it opens and back to the
@@ -17,6 +17,7 @@ export function ConfirmDialog({
   busy = false,
   confirmDisabled = false,
   error,
+  initialFocusRef,
   onConfirm,
   onCancel,
 }: {
@@ -32,6 +33,8 @@ export function ConfirmDialog({
   confirmDisabled?: boolean;
   /** Shown inside the dialog, so a failed confirm can be retried in place. */
   error?: string | null;
+  /** An input to focus when this confirmation also collects a value. */
+  initialFocusRef?: RefObject<HTMLElement>;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -49,9 +52,9 @@ export function ConfirmDialog({
 
   useEffect(() => {
     const restore = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    cancelRef.current?.focus();
+    (initialFocusRef?.current ?? cancelRef.current)?.focus();
     return () => restore?.focus();
-  }, []);
+  }, [initialFocusRef]);
 
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {

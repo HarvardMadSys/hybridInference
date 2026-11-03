@@ -629,7 +629,8 @@ class OperationalStore(ABC):
         """Every key the account owns, live first then newest.
 
         Rows carry ``id, key_prefix, name, created_at, last_used_at, status,
-        api_key_encrypted``; never the hash.
+        api_key_encrypted, spent_today_usd, spent_month_usd``; never the hash.
+        The spend is the key's over the current UTC day and month.
         """
 
     @abstractmethod
@@ -1069,12 +1070,16 @@ class OperationalStore(ABC):
         cost_usd: float,
         *,
         day: str | None = None,
+        api_key_id: int | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
 
         Uses upsert: inserts a new row if none exists for (user_id, day),
         otherwise adds *cost_usd* to the existing total and increments
         the request count.
+
+        The key's own daily counter is a report, not a quota input: a
+        failure to write it never fails the account's increment.
 
         Only call this for billed requests (successful responses where
         cost > 0), not for auth failures or 4xx errors.
@@ -1083,6 +1088,9 @@ class OperationalStore(ABC):
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
             day: Date string (YYYY-MM-DD). Defaults to UTC today.
+            api_key_id: The key the request was made with, whose own daily
+                counter (``api_key_daily_cost``) is bumped as well; None for a
+                request made without one of the account's keys.
         """
 
     @abstractmethod
