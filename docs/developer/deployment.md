@@ -674,6 +674,13 @@ Rules for a deploy script that does this itself:
   one-off with `Address already in use`. Give the migrations a service of
   their own instead: the same image and `DB_*` settings, only the database's
   network, and a Compose profile so that no `up` starts it.
+- Do not let the one-off start or recreate the database. Pass `--no-deps` and
+  check yourself that the database is up: Compose recreates a dependency whose
+  configuration changed, before a migration that may then fail.
+- If the deploy script itself arrives on stdin (`ssh host bash -s`), run the
+  one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so it
+  reads the rest of the script, and the deploy ends with status 0 having done
+  nothing more.
 - Do not make the migrations a dependency of the backend service (such as
   Compose's `depends_on: condition: service_completed_successfully`).
   Restoring the previous image after a failed deploy would then run the

@@ -1431,6 +1431,26 @@ msgstr ""
 
 #: ../developer/deployment.md
 msgid ""
+"Do not let the one-off start or recreate the database. Pass `--no-deps` and "
+"check yourself that the database is up: Compose recreates a dependency "
+"whose configuration changed, before a migration that may then fail."
+msgstr ""
+"不要让这个一次性容器启动或重建数据库。加上 `--no-deps`，数据库是否已经运行由你自己检查："
+"依赖服务的配置一旦变了，Compose 会先重建它，而之后的迁移仍可能失败。"
+
+#: ../developer/deployment.md
+msgid ""
+"If the deploy script itself arrives on stdin (`ssh host bash -s`), run the "
+"one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so "
+"it reads the rest of the script, and the deploy ends with status 0 having "
+"done nothing more."
+msgstr ""
+"如果部署脚本本身是从标准输入传进来的（`ssh host bash -s`），运行一次性容器时要加 "
+"`</dev/null`。即使加了 `-T`，`compose run` 仍会接上标准输入，把脚本剩下的部分读走；"
+"部署以状态 0 结束，后面的步骤一步都没执行。"
+
+#: ../developer/deployment.md
+msgid ""
 "Do not make the migrations a dependency of the backend service (such as "
 "Compose's `depends_on: condition: service_completed_successfully`). "
 "Restoring the previous image after a failed deploy would then run the "
