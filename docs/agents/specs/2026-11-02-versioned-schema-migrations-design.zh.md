@@ -240,6 +240,9 @@ apps/backend/migrations/
   马上要用的那个镜像和 `DB_*` 设置，按 digest 部署的覆盖层（`docker-compose.digest-backend.yml`）也一样；
   它不是 `backend` 的依赖，普通的 `up -d` 和恢复都不会运行它。`make migrate` 就是这条命令，`make up`
   和 `make build` 在启动服务之前先执行它。
+  例外是 `backend` 固定了网络地址的 compose 文件，比如 FreeInference 的：一次性容器会沿用这个地址，而它
+  正被运行中的 backend 占着，Docker 拒绝创建（`Address already in use`）。这种部署要单独定义一个迁移服务，
+  镜像和 `DB_*` 与 backend 相同，不设固定地址，用 profile 挡在 `up` 之外。部署文档写明了这一条。
 - `deploy/systemd/`：部署说明里，重启服务前先在工作目录执行 `.venv/bin/python -m migrations upgrade`；
   服务单元不加 `ExecStartPre`，否则每次重启都会迁移。
 - `distributions/example/`：第一阶段没有数据库，不迁移；`make demo` 先启动 PostgreSQL、执行迁移，再启动
@@ -364,7 +367,13 @@ apps/backend/migrations/
 ## 12. 风险与待定问题
 
 - PR 很大。按 §10.1 分提交评审；等价测试在第一个提交里就位，保护后面的搬迁。
-- 冻结点之后、合并之前，dev 上如果又有结构变更，要并入基线并重新生成快照。
+- 冻结点之后、合并之前，dev 上如果又有结构变更，要并入基线并重新生成快照，不能另写成 0002。基线要等于
+  合并前最后一版启动建表代码；它若落后，会在已经跑过新代码的库上把新代码删掉的东西加回来。11 月 3 日并入
+  dev 时遇到了这种情况：#1704 删掉了两个“每个账号只能有一把 key”的唯一索引，并新增了 `api_keys.name`；
+  #1715 新增了 `batch_jobs.cache_read_tokens`。旧基线还会建那两个索引：在 #1704 已经部署过的库上，索引会被
+  重新加回来；如果某个账号已经有两把 key，建索引直接失败。三处变更都已并入基线，#1704 为半迁移结构写的
+  运行时退路也一并删除。并入之后，空库迁移的结果与 dev（70093659）启动建出的结构一致；用旧建表代码
+  （73c5675b）建的库迁移后也一致。
 - 这次发布之前的镜像不检查兼容下限（§7）。第一个收缩 revision 之前，要补上部署脚本的那项检查。
 - 需要评审拍板的默认决定：
   1. 版本表名 `hybridinference_alembic_version`，兼容表名 `hybridinference_schema_compat`；

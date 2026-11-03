@@ -668,6 +668,12 @@ Rules for a deploy script that does this itself:
   image carries the label `org.hybridinference.schema.migrations=alembic`; an
   image without it predates versioned migrations, builds its schema at
   startup, and has no step to run.
+- `run --rm backend` gives the one-off container the backend service's
+  networks, fixed addresses included. If the service pins an address
+  (`ipv4_address`), the running backend holds it and Docker refuses the
+  one-off with `Address already in use`. Give the migrations a service of
+  their own instead: the same image and `DB_*` settings, only the database's
+  network, and a Compose profile so that no `up` starts it.
 - Do not make the migrations a dependency of the backend service (such as
   Compose's `depends_on: condition: service_completed_successfully`).
   Restoring the previous image after a failed deploy would then run the
