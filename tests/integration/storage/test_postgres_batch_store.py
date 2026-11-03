@@ -644,6 +644,7 @@ async def test_a_claim_hands_the_worker_what_it_needs(pool, store):
         "target",
         "protocol_profile",
         "endpoint",
+        "expires_at",
     }
     assert item["attempt_seq"] == 1
     assert (item["api_surface"], item["target"]) == ("openai_inline", "chat")
@@ -1657,6 +1658,16 @@ async def test_cached_input_is_counted_per_batch_and_left_unknown_for_older_ones
     assert (alice["prompt_tokens"], alice["cached_tokens"]) == (20, 4)
     assert alice["cache_unrecorded_batches"] == 0
     assert (bob["cached_tokens"], bob["cache_unrecorded_batches"]) == (0, 1)
+
+
+async def test_a_claimed_item_carries_its_batchs_window(store):
+    model = _model()
+    batch = await _create(store, _items(model, 1), window=7200)
+
+    (item,) = await _claim(store, model)
+
+    assert item["expires_at"] == (await store.get_batch(batch["id"]))["expires_at"]
+    assert item["expires_at"] is not None
 
 
 async def test_item_contents_pages_requests_with_their_answers(store):

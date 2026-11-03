@@ -31,10 +31,11 @@ slot of the owner's batch quota -- ``BATCH_ROLE_CONCURRENCY_<ROLE>``, counted in
 this process by a limiter of the worker's own, apart from the interactive
 per-user limiter, so batch work and the owner's own requests never compete for
 one budget -- its attempt is marked as dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
-on its target. A failure that may pass (a timeout, a 429, a 5xx) is retried
-with exponential backoff, a bounded number of times, and only such failures
-count toward cooling a model down; a caller error (any other 4xx) fails the
-item at once.
+on its target. A failure that may pass (a timeout, a 408/425/429, a 5xx) is
+retried with exponential backoff for as long as its batch's window is open:
+it fails with its last error once the next try would start after the window
+closes. Only such failures count toward cooling a model down; a caller error
+(any other 4xx) fails the item at once.
 
 The same loop also does the background work batches need besides inference,
 each in at most one task per process at a time: validating uploaded input
@@ -99,8 +100,11 @@ class SchedulerTimings:
     lease_seconds: int = 300
     #: How often the leases of this process's running items are extended.
     heartbeat_seconds: float = 60.0
-    #: Attempts an item gets; a retryable failure on the last one is final.
-    max_attempts: int = 8
+    #: A runaway guard on the attempts an item gets. A retryable failure is
+    #: retried until its batch's window closes (see ``_settle``), which this
+    #: does not reach in a window of a week at the backoff cap; it also bounds
+    #: an item whose attempts never report back (a worker that keeps dying).
+    max_attempts: int = 2000
     #: Delay before a retry: doubles with every attempt, up to the cap, and
     #: is jittered down by up to half.
     backoff_base_seconds: float = 5.0
@@ -143,6 +147,10 @@ class _InFlight:
     item_id: int
     model_id: str
     attempt: int
+    # When the item's batch stops starting requests: no retry is scheduled
+    # after it. None when the claim did not say (retries are then bounded by
+    # ``max_attempts`` alone).
+    expires_at: datetime | None = None
     task: asyncio.Task[None] | None = None
     # The item has been handed back to the store (finished, scheduled for
     # retry or released), so it is no longer this process's to release.
@@ -636,6 +644,7 @@ class BatchScheduler:
             item_id=int(item["id"]),
             model_id=item["model_id"],
             attempt=int(item.get("attempt_seq") or item["attempts"]),
+            expires_at=item.get("expires_at"),
         )
         self._in_flight[entry.item_id] = entry
         self._running[entry.model_id] += 1
@@ -856,8 +865,13 @@ class BatchScheduler:
             # Only a failure that may pass says anything about the model; a
             # caller's own error (4xx) is no reason to slow it down for others.
             self._model_failed(entry.model_id)
-            if attempts < self._timings.max_attempts:
-                delay = self._backoff(attempts)
+            delay = self._backoff(attempts)
+            next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay)
+            # Retried while the window is open; once the next try would start
+            # after it closes, the item fails now with this error rather than
+            # waiting to expire as though it had never run.
+            in_window = entry.expires_at is None or next_attempt_at < entry.expires_at
+            if attempts < self._timings.max_attempts and in_window:
                 logger.debug(
                     "batch item %s: attempt %d failed (%s); retrying in %.1fs",
                     entry.item_id,
@@ -869,7 +883,7 @@ class BatchScheduler:
                     item_id=entry.item_id,
                     worker_id=self._worker_id,
                     attempt=entry.attempt,
-                    next_attempt_at=datetime.now(UTC) + timedelta(seconds=delay),
+                    next_attempt_at=next_attempt_at,
                     error=result.error,
                     cost_usd=result.cost_usd,
                     cost_status=result.cost_status,

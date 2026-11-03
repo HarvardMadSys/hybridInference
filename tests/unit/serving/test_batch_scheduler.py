@@ -717,6 +717,64 @@ async def test_a_retryable_failure_backs_off_then_becomes_final(worker, dispatch
     assert len(dispatch.calls) == 3
 
 
+def _fast_retries(**overrides) -> SchedulerTimings:
+    return SchedulerTimings(
+        **{
+            "poll_seconds": 0.005,
+            "idle_poll_seconds": 60,
+            "sweep_seconds": 3600,
+            "heartbeat_seconds": 3600,
+            "backoff_base_seconds": 0.001,
+            "backoff_cap_seconds": 0.002,
+            "cooldown_failures": 10_000,
+            "stop_grace_seconds": 0.05,
+            **overrides,
+        }
+    )
+
+
+async def test_a_retryable_failure_keeps_retrying_while_the_window_is_open(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(hours=24))
+    scheduler = worker(store, timings=_fast_retries())
+
+    scheduler.start()
+    # Well past the eight attempts a failure used to get, it is still retried.
+    await until(lambda: len(dispatch.calls) >= 12)
+    assert store.status(1) != "failed"
+    dispatch.results["m1"] = OK
+    await until(lambda: store.status(1) == "completed")
+
+    assert store.items[1]["attempts"] >= 13
+    assert store.calls["retry_item"] >= 12
+
+
+async def test_a_retry_that_would_start_after_the_window_fails_now_with_its_error(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(seconds=30))
+    # The first retry would wait 60-120 s: after the window closes.
+    timings = _fast_retries(backoff_base_seconds=120.0, backoff_cap_seconds=120.0)
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.status(1) == "failed")
+
+    # Failed with the error it got, not left to expire as though it never ran.
+    assert store.items[1]["error"] == UNAVAILABLE.error
+    assert store.items[1]["status_code"] == 503
+    assert store.calls["retry_item"] == 0
+    assert len(dispatch.calls) == 1
+
+
+def test_the_attempt_guard_outlasts_a_week_long_window_at_the_backoff_cap():
+    timings = SchedulerTimings()
+    week = 168 * 3600
+    # The shortest jittered delay at the cap is half of it.
+    assert timings.max_attempts > week / (timings.backoff_cap_seconds / 2)
+
+
 def test_backoff_doubles_with_jitter_up_to_the_cap():
     scheduler = BatchScheduler(
         app=None,

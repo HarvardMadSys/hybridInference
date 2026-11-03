@@ -761,7 +761,8 @@ _CLAIM_CANDIDATES_SQL = f"""
 
 # Locks the candidates' batches in id order, keeping those still claimable.
 _CLAIM_LOCK_BATCHES_SQL = f"""
-    SELECT j.id, j.user_id, j.key_hash, j.api_surface, j.target, j.protocol_profile, j.endpoint
+    SELECT j.id, j.user_id, j.key_hash, j.api_surface, j.target, j.protocol_profile, j.endpoint,
+           j.expires_at
     FROM batch_jobs AS j
     WHERE j.id = ANY($1::text[])
       AND {_claimable_job_sql("j")}
@@ -2217,7 +2218,8 @@ class BatchStore:
             model_id, request, attempts`` (counting this one), ``attempt_seq``
             (the fencing token for this attempt), ``error`` (the previous
             attempt's, or None), and the batch's ``user_id``, ``key_hash``,
-            ``api_surface``, ``target``, ``protocol_profile`` and ``endpoint``.
+            ``api_surface``, ``target``, ``protocol_profile``, ``endpoint`` and
+            ``expires_at`` (when it stops starting requests).
         """
         if limit <= 0 or max_running <= 0:
             return []
@@ -2311,6 +2313,7 @@ class BatchStore:
                 "target": owners[row["batch_id"]]["target"],
                 "protocol_profile": owners[row["batch_id"]]["protocol_profile"],
                 "endpoint": owners[row["batch_id"]]["endpoint"],
+                "expires_at": owners[row["batch_id"]]["expires_at"],
             }
             for row in served
         ]

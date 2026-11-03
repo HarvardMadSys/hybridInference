@@ -72,9 +72,12 @@ the same model and may slow down while that traffic is heavy (see
 [Running batch inference](#running-batch-inference)).
 
 Requests run in no particular order, and a request that fails for a reason
-that may pass — a timeout, a `429`, a `5xx` — is retried with backoff, up to
-eight attempts in all. A request the model rejects (any other `4xx`) fails at
-once.
+that may pass — a timeout, a `408`, `425` or `429`, a `5xx` — is retried with
+exponential backoff (5 seconds, doubling to at most 15 minutes, with jitter)
+for as long as the batch's window is open. Once the next try would start after
+the window closes, the request fails with the last error it got rather than
+expiring as though it never ran. A request the model rejects (any other `4xx`)
+fails at once.
 
 Before each request runs, the gateway checks the API key that created the batch
 again:
