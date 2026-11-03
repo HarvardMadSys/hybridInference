@@ -593,6 +593,11 @@ export interface AdminBatchUserSummary {
   failed: number;
   /** Requests a cancel settled before they ran: done, never answered. */
   cancelled: number;
+  /**
+   * Requests that never started before their batch's window closed: a part of
+   * `failed`, as in each batch's counts. Absent from a gateway older than it.
+   */
+  expired?: number;
   cost_usd: number;
   prompt_tokens: number;
   completion_tokens: number;

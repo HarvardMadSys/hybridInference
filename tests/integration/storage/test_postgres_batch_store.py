@@ -1608,6 +1608,26 @@ async def test_batch_summary_counts_cancelled_requests_as_done(store):
     assert alice["cost_usd"] == pytest.approx(0.25)
     assert (bob["batches"], bob["active"], bob["requests"]) == (1, 1, 2)
     assert (bob["completed"], bob["failed"], bob["cancelled"]) == (0, 0, 0)
+    assert (alice["expired"], bob["expired"]) == (0, 0)
+
+
+async def test_batch_summary_counts_expired_requests_apart_within_failed(pool, store):
+    model = _model()
+    overdue = await _create(store, _items(model, 3))
+    (running,) = await _claim(store, model, limit=1)
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET expires_at = now() - interval '1 second' WHERE id = $1",
+        overdue["id"],
+    )
+    assert (await store.sweep(retention_days=7))["expired"] == 1
+    assert await _complete(store, running)
+
+    (alice,) = await store.batch_summary()
+
+    # Failed includes the expired requests, as the batch's own counts do.
+    assert (alice["requests"], alice["completed"], alice["failed"]) == (3, 1, 2)
+    assert (alice["expired"], alice["cancelled"]) == (2, 0)
 
 
 # -- schema ----------------------------------------------------------------------
