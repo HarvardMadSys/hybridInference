@@ -31,7 +31,7 @@ interface NavItem {
   newTab?: boolean;
 }
 
-/** Whether `href` is the page being shown; the overview matches only itself. */
+/** Whether `href` is the page being shown; Home matches only itself. */
 export function isCurrent(pathname: string, href: string): boolean {
   if (href === '/dashboard') return pathname === href;
   return pathname === href || pathname.startsWith(`${href}/`);
@@ -43,8 +43,7 @@ const ITEM_CURRENT = 'bg-gray-900 text-white';
 const ITEM_OTHER = 'text-gray-600 hover:bg-gray-100 hover:text-gray-900';
 
 /**
- * Navigation for the user console: its own pages first, then the tools that
- * open elsewhere (Playground, Agents, administration).
+ * Navigation for everyday use, followed by a separate administrator group.
  *
  * A column beside the page from `md` up. Below that it is one row that
  * scrolls sideways, as the admin tabs do, so the page starts near the top of
@@ -58,15 +57,21 @@ export function ConsoleNav() {
   const { capabilities: batch, error: batchError } = useBatchCapabilities();
   const scrollerRef = useRef<HTMLElement>(null);
 
-  // Each entry is offered on its own condition; Batch history never brings
-  // the other tools along.
+  // Each entry is offered on its own condition; Batch history never grants
+  // access to Chat, Agents or administration.
   const isInternal = hasRole(state.user?.role, 'internal');
   const isAdmin = state.user?.role === 'admin';
   const showAgents = isInternal && features.agents;
   const showBatches = batch ? batch.show_entry : Boolean(batchError && isInternal);
 
   const pages: NavItem[] = [
-    { href: '/dashboard', label: t('console.nav.overview', 'Overview') },
+    { href: '/dashboard', label: t('console.nav.home', 'Home') },
+    ...(isInternal
+      ? [{ href: '/dashboard/playground', label: t('console.nav.chat', 'Chat') }]
+      : []),
+    ...(showAgents
+      ? [{ href: agentsEntryUrl(agentsUrl, state.user?.id), label: 'Agents', external: true }]
+      : []),
     { href: '/dashboard/keys', label: t('console.nav.keys', 'API Keys') },
     { href: '/dashboard/requests', label: t('console.nav.requests', 'Requests') },
     { href: '/dashboard/models', label: t('console.nav.models', 'Models') },
@@ -75,20 +80,12 @@ export function ConsoleNav() {
       : []),
     { href: '/dashboard/settings', label: t('console.nav.settings', 'Settings') },
   ];
-  const tools: NavItem[] = [
-    ...(showAgents
-      ? [{ href: agentsEntryUrl(agentsUrl, state.user?.id), label: 'Agents', external: true }]
-      : []),
-    ...(isInternal
-      ? [{ href: '/dashboard/playground', label: t('console.nav.playground', 'API Playground') }]
-      : []),
-    ...(isAdmin
-      ? [
-          { href: '/dashboard/admin/users', label: t('console.nav.admin', 'Admin Console') },
-          { href: '/pgadmin/', label: 'pgAdmin', external: true, newTab: true },
-        ]
-      : []),
-  ];
+  const adminPages: NavItem[] = isAdmin
+    ? [
+        { href: '/dashboard/admin/users', label: t('console.nav.admin', 'Admin Console') },
+        { href: '/pgadmin/', label: 'pgAdmin', external: true, newTab: true },
+      ]
+    : [];
 
   // On a phone the row is wider than the screen: bring the current page into
   // view on first load and after every navigation.
@@ -139,17 +136,17 @@ export function ConsoleNav() {
         <ul className="flex items-center gap-1 md:flex-col md:items-stretch">
           {pages.map(renderItem)}
         </ul>
-        {tools.length > 0 && (
+        {adminPages.length > 0 && (
           <div className="flex items-center gap-1 md:flex-col md:items-stretch">
             <span aria-hidden="true" className="mx-1 h-5 w-px bg-gray-200 md:hidden" />
             <h2 className="hidden px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-gray-400 md:block">
-              {t('console.nav.tools', 'Tools')}
+              {t('console.nav.admin_group', 'Admin')}
             </h2>
             <ul
-              aria-label={t('console.nav.tools', 'Tools')}
+              aria-label={t('console.nav.admin_group', 'Admin')}
               className="flex items-center gap-1 md:flex-col md:items-stretch"
             >
-              {tools.map(renderItem)}
+              {adminPages.map(renderItem)}
             </ul>
           </div>
         )}

@@ -41,8 +41,8 @@ function reset() {
   batchError = null;
 }
 
-function tools(): string[] {
-  const list = screen.queryByRole('list', { name: 'Tools' });
+function adminLinks(): string[] {
+  const list = screen.queryByRole('list', { name: 'Admin' });
   if (!list) return [];
   return within(list)
     .getAllByRole('link')
@@ -59,7 +59,8 @@ describe('ConsoleNav pages', () => {
     render(<ConsoleNav />);
 
     for (const [name, href] of [
-      ['Overview', '/dashboard'],
+      ['Home', '/dashboard'],
+      ['Chat', '/dashboard/playground'],
       ['API Keys', '/dashboard/keys'],
       ['Requests', '/dashboard/requests'],
       ['Models', '/dashboard/models'],
@@ -68,10 +69,10 @@ describe('ConsoleNav pages', () => {
       expect(screen.getByRole('link', { name })).toHaveAttribute('href', href);
     }
     expect(screen.getByRole('link', { name: 'API Keys' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByRole('link', { name: 'Overview' })).not.toHaveAttribute('aria-current');
+    expect(screen.getByRole('link', { name: 'Home' })).not.toHaveAttribute('aria-current');
   });
 
-  it('matches the overview exactly and other pages by prefix', () => {
+  it('matches Home exactly and other pages by prefix', () => {
     expect(isCurrent('/dashboard', '/dashboard')).toBe(true);
     expect(isCurrent('/dashboard/keys', '/dashboard')).toBe(false);
     expect(isCurrent('/dashboard/batches/batch_1', '/dashboard/batches')).toBe(true);
@@ -87,7 +88,7 @@ describe('ConsoleNav runtime agents gate', () => {
     render(<ConsoleNav />);
 
     expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /api playground/i })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Chat' })).toBeInTheDocument();
   });
 
   it('shows the Agents link, naming this console account, when the feature is enabled', () => {
@@ -125,7 +126,7 @@ describe('ConsoleNav runtime agents gate', () => {
   });
 });
 
-describe('ConsoleNav tools and Batches', () => {
+describe('ConsoleNav administration and feature access', () => {
   afterEach(() => cleanup());
   beforeEach(() => {
     reset();
@@ -134,22 +135,27 @@ describe('ConsoleNav tools and Batches', () => {
   });
 
   it.each([
-    ['free', false, [], false],
-    ['free', true, [], true],
-    ['pro', true, [], true],
-    ['internal', false, ['Agents', 'API Playground'], false],
-    ['internal', true, ['Agents', 'API Playground'], true],
-    ['admin', true, ['Agents', 'API Playground', 'Admin Console', 'pgAdmin'], true],
-    ['admin', false, ['Agents', 'API Playground', 'Admin Console', 'pgAdmin'], false],
+    ['free', false, [], [], false],
+    ['free', true, [], [], true],
+    ['pro', true, [], [], true],
+    ['internal', false, ['Chat', 'Agents'], [], false],
+    ['internal', true, ['Chat', 'Agents'], [], true],
+    ['admin', true, ['Chat', 'Agents'], ['Admin Console', 'pgAdmin'], true],
+    ['admin', false, ['Chat', 'Agents'], ['Admin Console', 'pgAdmin'], false],
   ])(
-    'a %s user with the Batches entry %s sees only the tools each permits',
-    (userRole, entry, visibleTools, batches) => {
+    'a %s user with the Batches entry %s sees only the entries each permits',
+    (userRole, entry, visibleFeatures, visibleAdmin, batches) => {
       role = userRole;
       batchEntry = entry;
 
       render(<ConsoleNav />);
 
-      expect(tools()).toEqual(visibleTools);
+      expect(adminLinks()).toEqual(visibleAdmin);
+      for (const name of ['Chat', 'Agents']) {
+        expect(screen.queryAllByRole('link', { name })).toHaveLength(
+          visibleFeatures.includes(name) ? 1 : 0,
+        );
+      }
       expect(screen.queryAllByRole('link', { name: 'Batches' })).toHaveLength(batches ? 1 : 0);
     },
   );
@@ -210,14 +216,16 @@ describe('ConsoleNav tools and Batches', () => {
 
     render(<ConsoleNav />);
 
-    expect(tools()).toEqual(['API Playground']);
+    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Chat' })).toBeInTheDocument();
+    expect(adminLinks()).toEqual([]);
   });
 
-  it('shows no tools group for an account with no tools', () => {
-    role = 'free';
+  it.each(['free', 'pro', 'internal'])('shows no Admin group for a %s account', (userRole) => {
+    role = userRole;
 
     render(<ConsoleNav />);
 
-    expect(screen.queryByRole('list', { name: 'Tools' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Admin' })).not.toBeInTheDocument();
   });
 });

@@ -64,9 +64,10 @@ docker logs hybridinference-example-backend 2>&1 | grep 'setup code'
 
 Enter the code and create the administrator with a username and a demo-only
 password (at least eight characters, including uppercase, lowercase, and a
-number). In the console, create an API key under **API Keys**, or open
-the API Playground or the Admin Console from **Tools** in the side
-navigation; the Admin Console's Settings tab holds the gateway's settings.
+number). In the side navigation, create an API key under **API Keys** or
+open **Chat** to try a model. Administrators can open **Admin Console**
+or **pgAdmin** from the separate **Admin** group; the Admin Console's
+Settings tab holds the gateway's settings.
 The example model returns the fixed reply `RUNNABLE_EXAMPLE_OK`.
 
 When you are done, stop the stack. Its database volume is kept for the next
