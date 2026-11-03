@@ -167,6 +167,31 @@ async def drop_columns_if_present(
             await _execute_ddl(conn, ddl)
 
 
+async def drop_indexes_if_present(
+    conn: asyncpg.Connection,
+    table: str,
+    drops: Sequence[tuple[str, str]],
+) -> None:
+    """Issue only the ``DROP INDEX`` DDL whose index on *table* still exists.
+
+    ``DROP INDEX`` takes ``ACCESS EXCLUSIVE`` on the table, so a settled
+    database must not issue it at all, and an unsettled one issues it under
+    the bounded lock wait (raising :class:`SchemaLockUnavailable` on contention).
+    """
+    rows = await conn.fetch(
+        "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+        "WHERE i.indrelid = to_regclass($1)",
+        table,
+    )
+    present = {row["relname"] for row in rows}
+    pending = [ddl for name, ddl in drops if name in present]
+    if not pending:
+        return
+    async with _bounded_lock_wait(conn):
+        for ddl in pending:
+            await _execute_ddl(conn, ddl)
+
+
 async def constraint_definition(conn: asyncpg.Connection, table: str, name: str) -> str | None:
     """``pg_get_constraintdef`` of *name* on *table*, or None when absent.
 
