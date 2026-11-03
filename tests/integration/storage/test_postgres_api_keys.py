@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import operational_store
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 
@@ -412,9 +413,9 @@ async def test_the_grant_quota_lookup_answers_with_one_row_per_account(keys):
 # --- several keys per account ------------------------------------------------
 
 
-async def test_startup_drops_the_retired_one_key_indexes(keys):
+async def test_the_baseline_drops_the_retired_one_key_indexes(keys):
     """An upgraded database still carries the indexes that held an account to one key."""
-    store, pool = keys
+    _store, pool = keys
     async with pool.acquire() as conn:
         await conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
@@ -425,9 +426,8 @@ async def test_startup_drops_the_retired_one_key_indexes(keys):
             "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
         )
 
-    await store.initialize()
-
     async with pool.acquire() as conn:
+        await operational_store.create_tables(conn)
         remaining = await conn.fetchval(
             "SELECT COUNT(*) FROM pg_indexes WHERE tablename = 'api_keys' "
             "AND indexname = ANY($1::text[])",
@@ -534,26 +534,6 @@ async def test_another_accounts_key_cannot_be_renamed_or_rotated(keys):
         is None
     )
     assert (await _rows(pool, "u-admkey-own"))[f"{_PREFIX}-own"]["status"] == "active"
-
-
-async def test_keys_read_unnamed_and_cannot_be_named_while_the_column_is_pending(keys):
-    """The ``name`` migration may wait behind a lock; the key routes keep working meanwhile."""
-    from serving.exceptions import AccountSchemaPending
-
-    store, pool = keys
-    await _user(store, "u-admkey-pend")
-    await _key(pool, "u-admkey-pend", "pend-a", "active")
-    # As the store reads a catalog without the column, rechecked no sooner than usual.
-    store._api_key_names = False
-    store._account_schema_read_at = float("inf")
-
-    assert [row["name"] for row in await store.list_account_keys("u-admkey-pend")] == [None]
-    with pytest.raises(AccountSchemaPending):
-        await store.rename_key("u-admkey-pend", f"{_PREFIX}-pend-a", "x")
-    with pytest.raises(AccountSchemaPending):
-        await _create(store, "u-admkey-pend", "pend-named", name="x")
-    await _create(store, "u-admkey-pend", "pend-b")
-    assert await store.count_active_keys("u-admkey-pend") == 2
 
 
 # --- account-wide writes serialize with the keys being added ----------------

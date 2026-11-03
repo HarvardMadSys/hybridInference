@@ -5,7 +5,6 @@ from collections import Counter
 import pytest
 
 from serving.batch import webhooks
-from serving.storage.batch_store import BatchStore
 from serving.storage.batch_webhook_store import BatchWebhookStore
 from tests.fixtures import postgres
 
@@ -15,7 +14,6 @@ async def test_worker_does_not_send_event_reclaimed_while_waiting_in_local_wave(
     """Advance only the queued event's lease, simulating a slow preceding send."""
     pool = await postgres.create_pool(min_size=1, max_size=4)
     try:
-        await BatchStore(pool).initialize()
         store = BatchWebhookStore(pool)
         async with pool.acquire() as conn:
             await conn.execute("TRUNCATE batch_webhook_events, batch_webhooks")

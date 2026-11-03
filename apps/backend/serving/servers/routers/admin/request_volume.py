@@ -8,7 +8,7 @@ gives up well before that. Yet only the newest hours of a card can still change:
 once an hour is over, its rows are written.
 
 So completed hours are counted once into ``request_volume_hourly`` (created with
-``api_logs`` in ``serving.storage.log_schema``) and read back from there. What is
+``api_logs`` by the schema migrations) and read back from there. What is
 still counted from ``api_logs`` on each load is small:
 
 - the last two hours (:func:`settled_before`);

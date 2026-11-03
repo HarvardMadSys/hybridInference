@@ -370,14 +370,17 @@ msgstr "日常运维"
 msgid "All from the repository root:"
 msgstr "以下命令都在仓库根目录执行："
 
-#: ../developer/deployment.md:133
+#: ../developer/deployment.md
 msgid ""
 "`make up` and `make build` first run the `docker-volumes` target, which "
 "creates the external volume `hybridinference_postgres_data` when it is "
-"missing."
+"missing, and then apply the schema migrations with the backend image "
+"before they start the services. `make restart` starts the existing "
+"containers again and migrates nothing."
 msgstr ""
 "`make up` 和 `make build` 会先执行 `docker-volumes` 这个 target，外部卷 "
-"`hybridinference_postgres_data` 不存在时由它创建。"
+"`hybridinference_postgres_data` 不存在时由它创建；然后在启动服务之前，用后端镜像执行表结构迁移。`make "
+"restart` 只是把现有容器重新启动，不做任何迁移。"
 
 #: ../developer/deployment.md:136
 msgid ""
@@ -1200,23 +1203,24 @@ msgid ""
 "runs:"
 msgstr "**忘记密码**。首次运行设置创建的管理员没有邮箱地址，所以没有重置链接可发。在后端运行的地方重置它的密码："
 
-#: ../developer/deployment.md:523
+#: ../developer/deployment.md
 msgid ""
 "It reads only the `DB_*` settings, asks twice for the new password — or, "
 "with `--generate`, prints a strong one — and revokes the account's "
 "sessions, so every browser must sign in again. It takes an email address "
 "as well, for any other account. From a source checkout, run `uv run "
 "python -m serving.auth.reset_password <username>` in the repository root."
-" It also works on a database the backend's upgrade has not migrated yet —"
-" while an upgrade's users migration is still waiting for the table's "
-"lock, say — and changes no schema. Such a database has no login names "
-"yet, so name the account by its email address there."
+" It also works on a database the schema migrations have not brought up to"
+" date — while a migration waits for the users table's lock and the "
+"previous release goes on serving, say — and changes no schema. Such a "
+"database may have no login names yet, so name the account by its email "
+"address there."
 msgstr ""
 "它只读取 `DB_*` 这几个设置，会让你输入两次新密码（加上 `--generate` "
 "则直接生成并打印一个强密码），并吊销这个账号的所有会话，所以每个浏览器都得重新登录。对其他账号，它也接受邮箱地址。从源码运行时，在仓库根目录执行 "
 "`uv run python -m serving.auth.reset_password "
-"<username>`。它也能在后端的升级还没迁移过的数据库上运行（比如升级对 users "
-"表的迁移还在等待表锁时），而且不改动任何表结构。这样的数据库里还没有登录名，所以在那里要用邮箱地址指定账号。"
+"<username>`。数据库还没迁移到最新时它也能用（比如迁移正在等 users "
+"表的锁、上一版还在服务的时候），而且不改动任何表结构。这样的数据库里可能还没有登录名，所以在那里要用邮箱地址指定账号。"
 
 #: ../developer/deployment.md:533
 msgid ""
@@ -1343,6 +1347,141 @@ msgstr ""
 msgid "Schema details are in [Database](database.md)."
 msgstr "表结构细节见[数据库](database.md)。"
 
+#: ../developer/deployment.md
+msgid "Applying schema migrations"
+msgstr "执行表结构迁移"
+
+#: ../developer/deployment.md
+msgid ""
+"Every deployment method has the same step: run the migrations with the "
+"image you are about to start, while the old one still serves, and start "
+"it only when they succeed."
+msgstr "不管用哪种方式部署，都有同样的一步：趁旧版本还在服务，用即将启动的镜像执行迁移，迁移成功了再启动它。"
+
+#: ../developer/deployment.md
+msgid "Deployment"
+msgstr "部署方式"
+
+#: ../developer/deployment.md
+msgid "The step"
+msgstr "这一步怎么做"
+
+#: ../developer/deployment.md
+msgid "The bundled Compose stack"
+msgstr "自带的 Compose 栈"
+
+#: ../developer/deployment.md
+msgid "`make migrate`; `make up` and `make build` run it for you"
+msgstr "`make migrate`；`make up` 和 `make build` 会替你执行"
+
+#: ../developer/deployment.md
+msgid "Compose with a pinned image (`docker-compose.digest-backend.yml`)"
+msgstr "固定镜像的 Compose（`docker-compose.digest-backend.yml`）"
+
+#: ../developer/deployment.md
+msgid ""
+"`docker compose ... run --rm --no-deps backend python -m migrations "
+"upgrade` once PostgreSQL is up, with the same files and `BACKEND_IMAGE` as "
+"the `up` that follows"
+msgstr ""
+"PostgreSQL 起来之后执行 `docker compose ... run --rm --no-deps backend python -m "
+"migrations upgrade`，用的文件和 `BACKEND_IMAGE` 要和随后的 `up` 完全一样"
+
+#: ../developer/deployment.md
+msgid "A systemd unit (`deploy/systemd/`)"
+msgstr "systemd 服务单元（`deploy/systemd/`）"
+
+#: ../developer/deployment.md
+msgid ""
+"`.venv/bin/python -m migrations upgrade` in the unit's working directory,"
+" with its environment, before `systemctl restart`"
+msgstr ""
+"在 `systemctl restart` 之前，在单元的工作目录里、用它的环境执行 `.venv/bin/python -m "
+"migrations upgrade`"
+
+#: ../developer/deployment.md
+msgid "Rules for a deploy script that does this itself:"
+msgstr "部署脚本自己执行这一步时，要遵守这几条："
+
+#: ../developer/deployment.md
+msgid ""
+"Run the migrations with the same image, by digest, that you then start. "
+"The image carries the label "
+"`org.hybridinference.schema.migrations=alembic`; an image without it "
+"predates versioned migrations, builds its schema at startup, and has no "
+"step to run."
+msgstr ""
+"执行迁移用的镜像必须就是随后要启动的那个镜像，按摘要指定。这样的镜像带有 label "
+"`org.hybridinference.schema.migrations=alembic`；没有这个 label "
+"的镜像早于版本化迁移，启动时自己建表，也就没有这一步要执行。"
+
+#: ../developer/deployment.md
+msgid ""
+"`run --rm backend` gives the one-off container the backend service's "
+"networks, fixed addresses included. If the service pins an address "
+"(`ipv4_address`), the running backend holds it and Docker refuses the one-"
+"off with `Address already in use`. Give the migrations a service of their "
+"own instead: the same image and `DB_*` settings, only the database's "
+"network, and a Compose profile so that no `up` starts it."
+msgstr ""
+"`run --rm backend` 起的一次性容器会沿用 backend 服务的网络设置，包括固定地址。"
+"如果服务固定了地址（`ipv4_address`），这个地址正被运行中的 backend 占着，Docker "
+"会以 `Address already in use` 拒绝创建这个容器。这种情况下要给迁移单独定义一个服务："
+"镜像和 `DB_*` 设置与 backend 相同，只接入数据库所在的网络，再放进一个 Compose "
+"profile，这样任何 `up` 都不会启动它。"
+
+#: ../developer/deployment.md
+msgid ""
+"Do not let the one-off start or recreate the database. Pass `--no-deps` and "
+"check yourself that the database is up: Compose recreates a dependency "
+"whose configuration changed, before a migration that may then fail."
+msgstr ""
+"不要让这个一次性容器启动或重建数据库。加上 `--no-deps`，数据库是否已经运行由你自己检查："
+"依赖服务的配置一旦变了，Compose 会先重建它，而之后的迁移仍可能失败。"
+
+#: ../developer/deployment.md
+msgid ""
+"If the deploy script itself arrives on stdin (`ssh host bash -s`), run the "
+"one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so "
+"it reads the rest of the script, and the deploy ends with status 0 having "
+"done nothing more."
+msgstr ""
+"如果部署脚本本身是从标准输入传进来的（`ssh host bash -s`），运行一次性容器时要加 "
+"`</dev/null`。即使加了 `-T`，`compose run` 仍会接上标准输入，把脚本剩下的部分读走；"
+"部署以状态 0 结束，后面的步骤一步都没执行。"
+
+#: ../developer/deployment.md
+msgid ""
+"Do not make the migrations a step that every start runs (Compose's "
+"`depends_on: condition: service_completed_successfully`, a Kubernetes init "
+"container). Every restart would migrate first and wait on table locks "
+"before it serves. Where they are wired that way anyway, a restored earlier "
+"image finds nothing to apply on the newer schema: the command exits 0, or 1"
+" when that schema no longer supports the earlier code."
+msgstr ""
+"不要把迁移做成每次启动都要跑的步骤（比如 Compose 的 `depends_on: condition: "
+"service_completed_successfully`，或者 Kubernetes 的 init container）。那样每次重启都会先迁移，"
+"还要等表锁，之后才开始服务。如果已经这样接了，恢复上一版镜像时，它在更新的表结构上没有要执行的迁移："
+"命令以 0 退出；如果那个结构已经不再支持上一版代码，就以 1 退出。"
+
+#: ../developer/deployment.md
+msgid ""
+"If the step fails, stop: do not restart the service. Exit status 75 means"
+" a lock was not available in time (a backup holding a table, or another "
+"migration run); the same command can be run again later."
+msgstr "这一步失败就停下，不要重启服务。退出状态 75 表示没能及时拿到锁（备份占着某张表，或者另一个迁移正在执行），稍后可以原样重跑。"
+
+#: ../developer/deployment.md
+msgid ""
+"Have the deploy in place, and seen working once on an image without the "
+"label, before the first image with it arrives. The backend refuses to "
+"start on a database that has not been migrated, so a missed step shows up"
+" as a failed start and, where the deploy restores the previous image, an "
+"outage while it does."
+msgstr ""
+"在第一个带这个 label 的镜像到来之前，就把部署脚本改好，并且在一个不带 label "
+"的镜像上确认它确实生效过一次。数据库没迁移时后端会拒绝启动，所以漏掉这一步的结果是启动失败；部署会自动恢复上一版镜像的话，恢复期间服务是中断的。"
+
 #: ../developer/deployment.md:600
 msgid ""
 "The database holds every setting in plaintext: provider keys, the SMTP "
@@ -1420,6 +1559,18 @@ msgid ""
 "Database connection failed — check `make ps` for the `postgres` health "
 "status."
 msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
+
+#: ../developer/deployment.md
+msgid ""
+"`The database records no schema version` or `The database is at revision "
+"…, behind this code's …` — the migrations have not been applied for this "
+"image. Run `make migrate` (or your deployment's step, see [Applying "
+"schema migrations](#applying-schema-migrations)), then start the backend "
+"again."
+msgstr ""
+"`The database records no schema version` 或 `The database is at revision "
+"…, behind this code's …`：还没有为这个镜像执行迁移。执行 `make "
+"migrate`（或者你的部署方式对应的那一步，见[执行表结构迁移](#applying-schema-migrations)），再重新启动后端。"
 
 #: ../developer/deployment.md:643
 msgid ""
