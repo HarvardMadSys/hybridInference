@@ -3,10 +3,8 @@
 Keys created before the ``account_id`` column existed have ``account_id IS
 NULL``. The dashboard list/create/regenerate paths key off ``account_id``, so
 these users saw "No API keys yet" and hit a 500 on **Create API Key**.
-the baseline's logging-store step now backfills ``account_id = user_id`` so the keys become
-visible and the ``user_id`` uniqueness constraint reconciles with the
-``account_id`` one. ``create_key`` also converts the unique violation into a
-clean ``DuplicateAPIKeyError`` (409) instead of a raw 500.
+The baseline's logging-store step now backfills ``account_id = user_id`` so the
+keys become visible.
 
 Requires a running PostgreSQL test database (see TEST_DB_* env vars).
 Run with: make test-db
@@ -16,7 +14,6 @@ import pytest
 import pytest_asyncio
 
 from migrations.baseline import logging_store
-from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures.auth_factories import create_test_user
@@ -170,30 +167,21 @@ class TestKeyLookupAndCreate:
         assert await store.get_active_key_by_account(user_id) is None
 
     @pytest.mark.asyncio
-    async def test_create_key_duplicate_active_raises_duplicate_error(
-        self, backfill_db: DatabaseLogger
-    ):
-        """create_key colliding on idx_api_keys_user_unique → DuplicateAPIKeyError.
-
-        Reproduces the issue #630 path: a pre-existing NULL-account_id active key
-        plus an INSERT that sets account_id = user_id. The unique violation on
-        user_id must surface as DuplicateAPIKeyError (clean 409), not a raw 500.
-        """
+    async def test_create_key_adds_a_second_active_key(self, backfill_db: DatabaseLogger):
+        """Without the retired index an account holds several active keys."""
         pool = backfill_db.pool
         assert pool is not None
         store = PostgresOperationalStore(pool)
 
         async with pool.acquire() as conn:
             user_id = await _insert_user(conn)
-            await _insert_key(conn, user_id=user_id, account_id=None, key_prefix="dupe1234")
+            await _insert_key(conn, user_id=user_id, account_id=user_id, key_prefix="first123")
 
-        with pytest.raises(DuplicateAPIKeyError):
-            await store.create_key(
-                key_hash="newhash",
-                key_prefix="newprefix",
-                user_id=user_id,
-                account_id=user_id,
-            )
+        await store.create_key(
+            key_hash="secondhash", key_prefix="second12", user_id=user_id, account_id=user_id
+        )
+
+        assert await store.count_active_keys(user_id) == 2
 
     @pytest.mark.asyncio
     async def test_create_key_defaults_account_id_to_user_id(self, backfill_db: DatabaseLogger):

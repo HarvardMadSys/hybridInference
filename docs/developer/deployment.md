@@ -496,6 +496,10 @@ and a breach still live when the mute lifts pages at its next evaluation. A mute
 is for an alert you want back later; to retire a rule for good, turn it off in
 your alerts file instead.
 
+A snooze treats recoveries the same way: an incident that opens while alerts are
+snoozed closes without a recovery message, and one that was posted before the
+snooze still gets its recovery.
+
 ## The first admin account
 
 A new deployment creates its first administrator on the console's setup page.

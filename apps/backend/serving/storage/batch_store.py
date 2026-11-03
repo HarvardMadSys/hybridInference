@@ -286,7 +286,8 @@ _BATCH_COLUMNS = (
     "api_surface, target, schema_version, protocol_profile, phase, pending_terminal_status, "
     "validation_error, input_file_id, output_file_id, error_file_id, results_expires_at, "
     "finalizing_at, sealed_at, cancelled_count, expired_count, prompt_tokens, "
-    "completion_tokens, unknown_cost_count, idempotency_key, display_name, description, "
+    "completion_tokens, cache_read_tokens, unknown_cost_count, idempotency_key, "
+    "display_name, description, "
     "created_via, console_spec, paused_reason"
 )
 _RESULT_COLUMNS = (
@@ -871,11 +872,11 @@ class BatchStore:
                  metadata, expires_at, api_surface, target, schema_version,
                  protocol_profile, phase, status, input_file_id, retention_seconds,
                  idempotency_key, in_progress_at, display_name, description,
-                 created_via, console_spec)
+                 created_via, console_spec, cache_read_tokens)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
                     now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14,
                     $15, $16, $17, CASE WHEN $14 = 'in_progress' THEN now() END,
-                    $18, $19, $20, $21::jsonb)
+                    $18, $19, $20, $21::jsonb, 0)
             RETURNING {_BATCH_COLUMNS}
             """,
             batch_id,
@@ -1414,29 +1415,45 @@ class BatchStore:
         return result
 
     async def batch_summary(self) -> list[dict[str, Any]]:
-        """Per-user totals across every batch still stored (administrators)."""
+        """Per-user totals across every batch still stored (administrators).
+
+        ``failed`` counts expired requests too, as each batch's
+        ``request_counts`` does; ``expired`` is that part of it, so the console
+        can show the two apart. ``cached_tokens`` is the part of
+        ``prompt_tokens`` served from a prompt cache, summed over the batches
+        that recorded it; ``cache_unrecorded_batches`` counts the ones stored
+        before it was recorded. ``user_name`` and ``email`` are the owner's
+        (the login name when the account has no display name), or None.
+        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT user_id,
+                SELECT j.user_id,
                        count(*) AS batches,
                        count(*) FILTER (
-                           WHERE status IN ('validating', 'in_progress', 'cancelling')
-                              OR phase IN ('validating', 'sealing')
+                           WHERE j.status IN ('validating', 'in_progress', 'cancelling')
+                              OR j.phase IN ('validating', 'sealing')
                        ) AS active,
-                       COALESCE(sum(request_count), 0) AS requests,
-                       COALESCE(sum(completed_count), 0) AS completed,
-                       COALESCE(sum(failed_count), 0) AS failed,
-                       COALESCE(sum(cancelled_count), 0) AS cancelled,
-                       COALESCE(sum(cost_usd), 0) AS cost_usd,
-                       COALESCE(sum(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(sum(completion_tokens), 0) AS completion_tokens,
-                       COALESCE(sum(unknown_cost_count), 0) AS unknown_cost_attempts,
-                       max(created_at) AS last_created_at
-                FROM batch_jobs
-                WHERE delete_requested_at IS NULL
-                GROUP BY user_id
-                ORDER BY max(created_at) DESC
+                       COALESCE(sum(j.request_count), 0) AS requests,
+                       COALESCE(sum(j.completed_count), 0) AS completed,
+                       COALESCE(sum(j.failed_count), 0) AS failed,
+                       COALESCE(sum(j.cancelled_count), 0) AS cancelled,
+                       COALESCE(sum(j.expired_count), 0) AS expired,
+                       COALESCE(sum(j.cost_usd), 0) AS cost_usd,
+                       COALESCE(sum(j.prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(sum(j.completion_tokens), 0) AS completion_tokens,
+                       COALESCE(sum(j.unknown_cost_count), 0) AS unknown_cost_attempts,
+                       COALESCE(sum(j.cache_read_tokens), 0) AS cached_tokens,
+                       count(*) FILTER (WHERE j.cache_read_tokens IS NULL)
+                           AS cache_unrecorded_batches,
+                       max(j.created_at) AS last_created_at,
+                       max(COALESCE(NULLIF(u.user_name, ''), u.login_name)) AS user_name,
+                       max(u.email) AS email
+                FROM batch_jobs AS j
+                LEFT JOIN users AS u ON u.id = j.user_id
+                WHERE j.delete_requested_at IS NULL
+                GROUP BY j.user_id
+                ORDER BY max(j.created_at) DESC
                 """
             )
         return [
@@ -1448,14 +1465,35 @@ class BatchStore:
                 "completed": int(row["completed"]),
                 "failed": int(row["failed"]),
                 "cancelled": int(row["cancelled"]),
+                "expired": int(row["expired"]),
                 "cost_usd": float(row["cost_usd"] or 0),
                 "prompt_tokens": int(row["prompt_tokens"]),
                 "completion_tokens": int(row["completion_tokens"]),
                 "unknown_cost_attempts": int(row["unknown_cost_attempts"]),
+                "cached_tokens": int(row["cached_tokens"]),
+                "cache_unrecorded_batches": int(row["cache_unrecorded_batches"]),
                 "last_created_at": row["last_created_at"],
+                "user_name": row["user_name"],
+                "email": row["email"],
             }
             for row in rows
         ]
+
+    async def user_labels(self, user_ids: list[str]) -> dict[str, dict[str, str | None]]:
+        """The display name and email of each of *user_ids* that has an account.
+
+        The name is the account's display name, else its login name; either
+        value may be None. Ids with no account are left out.
+        """
+        if not user_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, COALESCE(NULLIF(user_name, ''), login_name) AS user_name, email "
+                "FROM users WHERE id = ANY($1::text[])",
+                list(dict.fromkeys(user_ids)),
+            )
+        return {row["id"]: {"user_name": row["user_name"], "email": row["email"]} for row in rows}
 
     async def list_results(
         self, batch_id: str, *, after: int | None = None, limit: int = 100
@@ -1914,6 +1952,7 @@ class BatchStore:
         usage: dict[str, Any] | None = None,
         cost_status: str | None = None,
         max_result_bytes: int | None = None,
+        cached_tokens: int | None = None,
     ) -> bool:
         """Record an item's final outcome: ``completed`` without *error*, else ``failed``.
 
@@ -1930,6 +1969,10 @@ class BatchStore:
             max_result_bytes: A response larger than this, serialized, is not
                 stored: the item fails with ``result_too_large`` instead (its
                 cost still counts).
+            cached_tokens: Of *prompt_tokens*, those the upstream served from
+                its prompt cache; None when it reported none. Added to the
+                batch's ``cache_read_tokens``, which stays NULL for a batch
+                stored before that column.
 
         Returns:
             False, changing nothing, when the item is no longer running under
@@ -2002,7 +2045,8 @@ class BatchStore:
                     cost_usd = cost_usd + $4,
                     prompt_tokens = prompt_tokens + $5,
                     completion_tokens = completion_tokens + $6,
-                    unknown_cost_count = unknown_cost_count + $7
+                    unknown_cost_count = unknown_cost_count + $7,
+                    cache_read_tokens = cache_read_tokens + $8
                 WHERE id = $1
                 """,
                 batch_id,
@@ -2012,6 +2056,7 @@ class BatchStore:
                 int(prompt_tokens or 0),
                 int(completion_tokens or 0),
                 int(cost_status == "unknown"),
+                int(cached_tokens or 0),
             )
             await self._settle(conn, batch_id, batch_status)
         return True
@@ -3062,6 +3107,10 @@ def _batch_row(row: Any) -> dict[str, Any]:
         "expired_count": row["expired_count"],
         "prompt_tokens": int(row["prompt_tokens"] or 0),
         "completion_tokens": int(row["completion_tokens"] or 0),
+        # None for a batch stored before cache hits were recorded.
+        "cache_read_tokens": (
+            int(row["cache_read_tokens"]) if row.get("cache_read_tokens") is not None else None
+        ),
         "unknown_cost_count": row["unknown_cost_count"],
         "idempotency_key": row["idempotency_key"],
         "display_name": row["display_name"],

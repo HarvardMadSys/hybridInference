@@ -25,6 +25,7 @@ from migrations.baseline.ddl import (
     constraint_admitted_values,
     constraint_definition,
     drop_columns_if_present,
+    drop_indexes_if_present,
     execute_ddl,
     parse_command_tag_count as _parse_command_tag_count,
 )
@@ -34,6 +35,10 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger(__name__)
+
+#: The partial unique indexes that held an account to one active key. Retired
+#: when accounts could hold several; startup drops them where they remain.
+RETIRED_API_KEY_UNIQUE_INDEXES = ("idx_api_keys_user_unique", "idx_api_keys_account_active_unique")
 
 
 class RequiredOperationalSchemaUnavailable(SchemaLockUnavailable):
@@ -379,6 +384,7 @@ async def create_tables(conn: asyncpg.Connection) -> None:
             key_prefix TEXT NOT NULL,
             user_id TEXT NOT NULL,
             user_name TEXT,
+            name TEXT,
             status TEXT NOT NULL DEFAULT 'active',
             quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00,
             quota_monthly_cost_usd DECIMAL(10, 4),
@@ -395,10 +401,6 @@ async def create_tables(conn: asyncpg.Connection) -> None:
     )
     await conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique ON api_keys(key_prefix)"
-    )
-    await conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
-        "ON api_keys(user_id) WHERE status = 'active'"
     )
     # Migrations — catalog-gated; this exact cluster (bare, on the auth
     # read path) is what the 2026-08-21 production outage queued behind
@@ -424,17 +426,41 @@ async def create_tables(conn: asyncpg.Connection) -> None:
             ("account_id", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT"),
         ],
     )
+    # A label the owner gives each key; NULL for keys made before an
+    # account could hold more than one. Deferrable on its own: nothing on
+    # the auth path reads it, the key routes read it only once the catalog
+    # shows it (:meth:`_has_api_key_names`), and a lock timeout here must
+    # not hold back the tables built below.
+    try:
+        await apply_column_migrations(
+            conn,
+            "api_keys",
+            [("name", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS name TEXT")],
+        )
+    except SchemaLockUnavailable as exc:
+        deferred = deferred or exc
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id)")
-    await conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
-        "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
-    )
+    # An account may hold several active keys (capped per account by the
+    # create path, under a per-user advisory lock), so the partial unique
+    # indexes that allowed one are retired. Catalog-gated: a settled
+    # database issues no DDL; a held table defers the drop, and until it
+    # lands a second key is refused with 409 as before -- the rest of the
+    # schema is still built meanwhile.
+    try:
+        await drop_indexes_if_present(
+            conn,
+            "api_keys",
+            [
+                (index, f"DROP INDEX IF EXISTS {index}")
+                for index in RETIRED_API_KEY_UNIQUE_INDEXES
+            ],
+        )
+    except SchemaLockUnavailable as exc:
+        deferred = deferred or exc
     # Backfill account_id = user_id for legacy self-registered keys created
     # before the account_id column existed (account_id IS NULL). Makes those
-    # keys visible/manageable in the dashboard and reconciles
-    # idx_api_keys_user_unique (user_id) with
-    # idx_api_keys_account_active_unique (account_id). Idempotent: only NULL
-    # rows whose user still exists are touched.
+    # keys visible/manageable in the dashboard, which lists by account_id.
+    # Idempotent: only NULL rows whose user still exists are touched.
     tag = await conn.execute(
         "UPDATE api_keys k SET account_id = k.user_id "
         "WHERE k.account_id IS NULL "

@@ -49,6 +49,7 @@ async def create_tables(conn: asyncpg.Connection) -> None:
             key_prefix TEXT NOT NULL,
             user_id TEXT NOT NULL,
             user_name TEXT,
+            name TEXT,
             status TEXT NOT NULL DEFAULT 'active',
 
             quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00,
@@ -79,11 +80,9 @@ async def create_tables(conn: asyncpg.Connection) -> None:
         ON api_keys(key_prefix)
     """)
 
-    # Enforce 1:1 user-to-key relationship (one active key per user)
-    await conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique
-        ON api_keys(user_id) WHERE status = 'active'
-    """)
+    # An account may hold several active keys: the one-key-per-user
+    # unique indexes are retired, and the operational store drops them
+    # where they remain. Neither copy of this DDL may recreate them.
 
     # Migrations for api_keys table (from token-based to cost-based
     # quotas). Catalog-gated (serving.storage.log_schema): ALTER TABLE
@@ -113,19 +112,15 @@ async def create_tables(conn: asyncpg.Connection) -> None:
                 "account_id",
                 "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT",
             ),
+            # ``name`` is added by the operational store alone, where
+            # its migration may be deferred and reads tolerate its
+            # absence; the CREATE TABLE above gives a new table it.
         ],
     )
 
     await conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_api_keys_account
         ON api_keys(account_id)
-    """)
-
-    # Prevent concurrent duplicate active keys per account (self-registered users)
-    await conn.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique
-        ON api_keys(account_id)
-        WHERE status = 'active' AND account_id IS NOT NULL
     """)
 
     await drop_columns_if_present(
@@ -369,9 +364,8 @@ async def create_tables(conn: asyncpg.Connection) -> None:
 
     # Backfill account_id = user_id for legacy self-registered keys
     # created before the account_id column existed (account_id IS NULL).
-    # Makes those keys visible/manageable in the dashboard and reconciles
-    # idx_api_keys_user_unique (user_id) with
-    # idx_api_keys_account_active_unique (account_id). Idempotent: only
+    # Makes those keys visible/manageable in the dashboard, which lists
+    # by account_id. Idempotent: only
     # NULL rows whose user still exists are touched. Runs here (not next
     # to the account_id column above) because api_keys is created before
     # the users table in this method.

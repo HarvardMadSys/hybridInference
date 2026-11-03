@@ -41,6 +41,7 @@ from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
 from serving.observability import alert_runtime
 from serving.observability.alert_history import runtime as alert_history_runtime
+from serving.observability.alerts import flush_settling
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
     RouteWiseRouter,
@@ -86,6 +87,10 @@ _BACKGROUND_TASKS: set = set()
 # The boot-time configuration load retries like the database logger does.
 _CONFIG_LOAD_ATTEMPTS = 3
 _CONFIG_LOAD_RETRY_DELAY = 2  # seconds
+
+# How long shutdown waits to announce circuits still settling their recovery:
+# one webhook post each, sent concurrently, under the sink's own 5 s timeout.
+_SETTLE_FLUSH_BUDGET_SEC = 10.0
 
 
 def _describe_exc(exc: BaseException) -> str:
@@ -1998,6 +2003,16 @@ async def shutdown(services: AppServices) -> None:
         services.offload_route_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.offload_route_refresh_task
+
+    # A circuit that closed within its settle period is waiting on a timer that
+    # dies with this process, and the next process knows nothing of the
+    # incident. Announce those closes now, while the channel and alert history
+    # are still up; each one still checks that its circuit is closed. Bounded,
+    # so a sink that hangs cannot hold up the rest of the shutdown.
+    try:
+        await asyncio.wait_for(flush_settling(), timeout=_SETTLE_FLUSH_BUDGET_SEC)
+    except Exception as exc:
+        logger.warning(f"Settling circuit recoveries were not all announced: {exc!r}")
 
     # Alert history last among the alert producers' dependents: every producer
     # above has stopped, so it waits for sends still in flight, writes its open

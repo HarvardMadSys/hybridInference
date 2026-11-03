@@ -172,11 +172,9 @@
   "idx_alert_history_sources_target_report": "CREATE INDEX idx_alert_history_sources_target_report ON public.alert_history_sources USING btree (source, source_namespace, target_environment, last_report_at DESC NULLS LAST, source_instance_id)",
   "idx_alert_history_sources_target_write": "CREATE INDEX idx_alert_history_sources_target_write ON public.alert_history_sources USING btree (source, source_namespace, target_environment, last_write_at DESC NULLS LAST)",
   "idx_api_keys_account": "CREATE INDEX idx_api_keys_account ON public.api_keys USING btree (account_id)",
-  "idx_api_keys_account_active_unique": "CREATE UNIQUE INDEX idx_api_keys_account_active_unique ON public.api_keys USING btree (account_id) WHERE ((status = 'active'::text) AND (account_id IS NOT NULL))",
   "idx_api_keys_prefix_unique": "CREATE UNIQUE INDEX idx_api_keys_prefix_unique ON public.api_keys USING btree (key_prefix)",
   "idx_api_keys_status": "CREATE INDEX idx_api_keys_status ON public.api_keys USING btree (status, expires_at)",
   "idx_api_keys_user": "CREATE INDEX idx_api_keys_user ON public.api_keys USING btree (user_id)",
-  "idx_api_keys_user_unique": "CREATE UNIQUE INDEX idx_api_keys_user_unique ON public.api_keys USING btree (user_id) WHERE (status = 'active'::text)",
   "idx_api_logs_agent_job": "CREATE INDEX idx_api_logs_agent_job ON public.api_logs USING btree (agent_job_id) WHERE (agent_job_id IS NOT NULL)",
   "idx_api_logs_credential_owner": "CREATE INDEX idx_api_logs_credential_owner ON public.api_logs USING btree (((metadata ->> 'credential_owner_id'::text))) WHERE ((metadata ->> 'credential_owner_id'::text) IS NOT NULL)",
   "idx_api_logs_error": "CREATE INDEX idx_api_logs_error ON public.api_logs USING btree (\"timestamp\" DESC) WHERE (error IS NOT NULL)",
@@ -1096,6 +1094,13 @@
     "identity": null,
     "not_null": false,
     "type": "jsonb"
+   },
+   "name": {
+    "default": null,
+    "generated": null,
+    "identity": null,
+    "not_null": false,
+    "type": "text"
    },
    "notes": {
     "default": null,
@@ -2281,6 +2286,13 @@
     "identity": null,
     "not_null": true,
     "type": "text"
+   },
+   "cache_read_tokens": {
+    "default": null,
+    "generated": null,
+    "identity": null,
+    "not_null": false,
+    "type": "bigint"
    },
    "cancelled_at": {
     "default": null,

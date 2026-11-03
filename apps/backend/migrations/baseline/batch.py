@@ -269,6 +269,11 @@ _COLUMN_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("expired_count", "INTEGER NOT NULL DEFAULT 0"),
             ("prompt_tokens", "BIGINT NOT NULL DEFAULT 0"),
             ("completion_tokens", "BIGINT NOT NULL DEFAULT 0"),
+            # Input tokens the upstream served from its prompt cache, a part of
+            # ``prompt_tokens``. NULL for a batch stored before this column:
+            # its cache hits were never recorded, which is not the same as 0.
+            # A new batch starts at 0 (set on insert).
+            ("cache_read_tokens", "BIGINT"),
             ("unknown_cost_count", "INTEGER NOT NULL DEFAULT 0"),
             ("delete_requested_at", "TIMESTAMPTZ"),
             ("idempotency_key", "TEXT"),

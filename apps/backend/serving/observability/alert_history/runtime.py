@@ -352,6 +352,9 @@ def _producer_tasks() -> set[asyncio.Task[Any]]:
     from serving.observability import alerts
 
     tasks: set[asyncio.Task[Any]] = set(alerts.active_alert_tasks())
+    # A settle confirmation its timer has just started is not inside an alert
+    # call until its first step runs, so ``active_alert_tasks`` cannot see it.
+    tasks |= set(alerts._SETTLE_TASKS)
     # Background alert deliveries the producers detach so a request or a
     # health probe never waits on a webhook. Imported lazily: either module
     # may be absent from a partial process (a CLI, a unit test).

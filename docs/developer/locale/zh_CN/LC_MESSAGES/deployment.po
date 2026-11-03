@@ -1071,6 +1071,13 @@ msgid ""
 " to retire a rule for good, turn it off in your alerts file instead."
 msgstr "静音保存在数据库里，所以重启后依然有效，几秒内就会同步到所有网关进程。某类告警被静音期间，它的任何消息都不会发出；静音期间开始的事件在关闭时也不会发送恢复消息。静音之前已经发出的事件仍会收到恢复消息；静音解除时如果越限仍在持续，会在下一次评估时立即告警。静音适合那些你以后还想恢复的告警；要彻底停用某条规则，应该在告警文件里把它关掉。"
 
+#: ../developer/deployment.md:495
+msgid ""
+"A snooze treats recoveries the same way: an incident that opens while "
+"alerts are snoozed closes without a recovery message, and one that was "
+"posted before the snooze still gets its recovery."
+msgstr "暂停对恢复消息的处理方式相同：告警暂停期间开始的事件，在关闭时不会发送恢复消息；暂停之前已经发出的事件仍会收到恢复消息。"
+
 #: ../developer/deployment.md:454
 msgid "The first admin account"
 msgstr "第一个管理员账号"
