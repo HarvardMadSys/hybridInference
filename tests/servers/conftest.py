@@ -251,13 +251,17 @@ def mock_log_store():
     store.get_user_cost_today = AsyncMock(return_value=0.0)
     store.get_user_cost_period = AsyncMock(return_value=0.0)
     store.get_batch_usage = AsyncMock(return_value={})
+    _zero_usage = {
+        "requests": 0,
+        "cost_usd": 0.0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
     store.get_user_usage_detail = AsyncMock(
-        return_value={
-            "today": {"cost_usd": 0.0, "requests": 0},
-            "week": {"cost_usd": 0.0, "requests": 0},
-            "month": {"cost_usd": 0.0, "requests": 0},
-            "alltime": {"cost_usd": 0.0, "requests": 0},
-        }
+        return_value={window: dict(_zero_usage) for window in ("today", "week", "month", "alltime")}
     )
     store.log_request = AsyncMock()
     return store

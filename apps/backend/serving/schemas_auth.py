@@ -473,6 +473,19 @@ class UsageStats(BaseModel):
     requests: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_read_tokens: int = Field(
+        default=0, description="Input tokens served from the prompt cache; part of prompt_tokens"
+    )
+    cache_write_tokens: int = Field(
+        default=0, description="Input tokens written to the prompt cache; part of prompt_tokens"
+    )
+    reasoning_tokens: int = Field(
+        default=0,
+        description=(
+            "Tokens the model spent reasoning; depending on the provider, "
+            "these may already be counted in completion_tokens"
+        ),
+    )
     cost_usd: float = 0.0
 
 

@@ -94,8 +94,9 @@ async def seeded():
             )
             await conn.execute(
                 "INSERT INTO api_logs (request_id, model_id, provider, timestamp, user_id, "
-                "cost_usd, prompt_tokens, completion_tokens) "
-                "VALUES ($1, 'm', 'utcwin-p', $2, $3, $4, 10, 5)",
+                "cost_usd, prompt_tokens, completion_tokens, cache_read_tokens, "
+                "cache_write_tokens, reasoning_tokens) "
+                "VALUES ($1, 'm', 'utcwin-p', $2, $3, $4, 10, 5, 4, 3, 2)",
                 f"req-utcwin-{suffix}",
                 at,
                 USER,
@@ -174,6 +175,15 @@ async def test_usage_detail_today_and_month_are_utc(seeded):
 
     assert float(detail["today"]["cost_usd"]) == _expected(_midnight())
     assert float(detail["month"]["cost_usd"]) == _expected(_month_start())
+
+    # Token sums share the cost's window: one row per seeded timestamp.
+    for window, since in (("today", _midnight()), ("month", _month_start())):
+        rows = sum(1 for _, at, _ in _rows() if at >= since)
+        assert detail[window]["requests"] == rows
+        assert detail[window]["cache_read_tokens"] == 4 * rows
+        assert detail[window]["cache_write_tokens"] == 3 * rows
+        assert detail[window]["reasoning_tokens"] == 2 * rows
+    assert detail["alltime"]["requests"] == len(_rows())
 
 
 @pytest.mark.parametrize(
