@@ -71,14 +71,82 @@ function plural(count: number, one: string, many: string): string {
   return `${count.toLocaleString('en-US')} ${count === 1 ? one : many}`;
 }
 
-/** Input and output tokens, shortened, with the exact counts on hover. */
-function Tokens({ input, output }: { input: number; output: number }) {
+/**
+ * Input and output tokens, shortened, with the exact counts on hover, and the
+ * part of the input served from a prompt cache. `cached` is null for a batch
+ * stored before cache hits were recorded and undefined from an older gateway;
+ * `unrecorded` counts such batches within a total, which leave it out.
+ */
+function Tokens({
+  input,
+  output,
+  cached,
+  unrecorded = 0,
+}: {
+  input: number;
+  output: number;
+  cached?: number | null;
+  unrecorded?: number;
+}) {
   return (
-    <span
-      title={`${input.toLocaleString('en-US')} input · ${output.toLocaleString('en-US')} output tokens`}
-    >
-      {compactNumber(input)} in · {compactNumber(output)} out
-    </span>
+    <>
+      <span
+        title={`${input.toLocaleString('en-US')} input · ${output.toLocaleString('en-US')} output tokens`}
+      >
+        {compactNumber(input)} in · {compactNumber(output)} out
+      </span>
+      {cached === null ? (
+        <span
+          className="block text-[11px] text-gray-400"
+          title="This batch ran before cached input was recorded."
+        >
+          Cached: not recorded
+        </span>
+      ) : cached !== undefined ? (
+        <span
+          className="block text-[11px] text-gray-500"
+          title={`${cached.toLocaleString('en-US')} input tokens served from a prompt cache, as the upstream reported them; part of the input above.${
+            unrecorded > 0
+              ? ` ${plural(unrecorded, 'batch', 'batches')} ran before cached input was recorded and ${unrecorded === 1 ? 'is' : 'are'} not included.`
+              : ''
+          }`}
+        >
+          {compactNumber(cached)} cached
+          {unrecorded === 0 && input > 0 && cached > 0 ? ` (${sharePercent(cached, input)})` : ''}
+          {unrecorded > 0 ? ` · ${plural(unrecorded, 'batch', 'batches')} not recorded` : ''}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/** A batch owner by name, with the email and id that identify the account. */
+function Owner({
+  id,
+  name,
+  email,
+  children,
+}: {
+  id: string;
+  name?: string | null;
+  email?: string | null;
+  /** Renders the primary label (e.g. as a button); defaults to plain text. */
+  children?: (label: string) => React.ReactNode;
+}) {
+  const label = name || email || id;
+  const secondary = [name && email ? email : null, label !== id ? id : null].filter(Boolean);
+  return (
+    <>
+      {children ? children(label) : <span className="text-gray-900">{label}</span>}
+      {secondary.map((line) => (
+        <span
+          key={line}
+          className={`block text-[11px] text-gray-500 ${line === id ? 'font-mono' : ''}`}
+        >
+          {line}
+        </span>
+      ))}
+    </>
   );
 }
 
@@ -147,7 +215,14 @@ function UsageTiles({ totals }: { totals: AdminBatchSummary['totals'] }) {
         label="Tokens"
         value={compactNumber(tokens)}
         valueTitle={tokens.toLocaleString('en-US')}
-        detail={<Tokens input={totals.prompt_tokens} output={totals.completion_tokens} />}
+        detail={
+          <Tokens
+            input={totals.prompt_tokens}
+            output={totals.completion_tokens}
+            cached={totals.cached_tokens}
+            unrecorded={totals.cache_unrecorded_batches}
+          />
+        }
       />
       <StatTile
         label="Known cost"
@@ -209,6 +284,8 @@ export function BatchesTab() {
   }, [loadSummary]);
 
   const error = summaryError ?? listError;
+  const ownerUsage = summary?.users.find((user) => user.user_id === owner);
+  const ownerLabel = ownerUsage?.user_name || ownerUsage?.email || owner;
 
   function refresh() {
     void loadSummary();
@@ -278,19 +355,25 @@ export function BatchesTab() {
                         data-testid={`usage-${user.user_id}`}
                       >
                         <td className={TABLE_CELL}>
-                          <button
-                            type="button"
-                            className="font-mono text-[12px] text-blue-700 underline-offset-2 hover:underline"
-                            title={
-                              selected
-                                ? 'List every user’s batches'
-                                : 'List only this user’s batches'
-                            }
-                            aria-pressed={selected}
-                            onClick={() => setUserId(selected ? '' : user.user_id)}
-                          >
-                            {user.user_id}
-                          </button>
+                          <Owner id={user.user_id} name={user.user_name} email={user.email}>
+                            {(label) => (
+                              <button
+                                type="button"
+                                className={`text-left text-blue-700 underline-offset-2 hover:underline ${
+                                  label === user.user_id ? 'font-mono text-[12px]' : 'font-medium'
+                                }`}
+                                title={
+                                  selected
+                                    ? 'List every user’s batches'
+                                    : 'List only this user’s batches'
+                                }
+                                aria-pressed={selected}
+                                onClick={() => setUserId(selected ? '' : user.user_id)}
+                              >
+                                {label}
+                              </button>
+                            )}
+                          </Owner>
                         </td>
                         <td className={`${TABLE_CELL} whitespace-nowrap`}>
                           {user.batches.toLocaleString('en-US')}
@@ -314,7 +397,12 @@ export function BatchesTab() {
                           <OutcomeBar counts={counts} />
                         </td>
                         <td className={`${TABLE_CELL} whitespace-nowrap`}>
-                          <Tokens input={user.prompt_tokens} output={user.completion_tokens} />
+                          <Tokens
+                            input={user.prompt_tokens}
+                            output={user.completion_tokens}
+                            cached={user.cached_tokens}
+                            unrecorded={user.cache_unrecorded_batches}
+                          />
                         </td>
                         <td className={`${TABLE_CELL} whitespace-nowrap`}>
                           <Cost value={user.cost_usd} unknown={user.unknown_cost_attempts} />
@@ -333,7 +421,7 @@ export function BatchesTab() {
       </AdminSection>
 
       <AdminSection
-        title={owner ? `Batches of ${owner}` : 'All batches'}
+        title={owner ? `Batches of ${ownerLabel}` : 'All batches'}
         description="Newest first. Filter by owner or by status."
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -395,7 +483,13 @@ export function BatchesTab() {
                       )}
                       <span className="font-mono text-[12px] text-gray-500">{batch.id}</span>
                     </td>
-                    <td className={`${TABLE_CELL} font-mono text-[12px]`}>{batch.user_id}</td>
+                    <td className={TABLE_CELL}>
+                      <Owner
+                        id={batch.user_id ?? ''}
+                        name={batch.user_name}
+                        email={batch.user_email}
+                      />
+                    </td>
                     <td className={TABLE_CELL}>
                       {batch.endpoint ?? batch.target}
                       <span className="block text-[11px] text-gray-500">
@@ -410,7 +504,11 @@ export function BatchesTab() {
                       <OutcomeBar counts={outcomeCounts(batch)} />
                     </td>
                     <td className={`${TABLE_CELL} whitespace-nowrap`}>
-                      <Tokens input={batch.usage.input_tokens} output={batch.usage.output_tokens} />
+                      <Tokens
+                        input={batch.usage.input_tokens}
+                        output={batch.usage.output_tokens}
+                        cached={batch.usage.cached_input_tokens}
+                      />
                     </td>
                     <td className={`${TABLE_CELL} whitespace-nowrap`}>
                       <Cost value={batch.cost_usd} unknown={batch.cost_unknown_attempts} />
