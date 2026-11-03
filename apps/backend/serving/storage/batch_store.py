@@ -1846,7 +1846,12 @@ class BatchStore:
         return result
 
     async def batch_summary(self) -> list[dict[str, Any]]:
-        """Per-user totals across every batch still stored (administrators)."""
+        """Per-user totals across every batch still stored (administrators).
+
+        ``failed`` counts expired requests too, as each batch's
+        ``request_counts`` does; ``expired`` is that part of it, so the console
+        can show the two apart.
+        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -1860,6 +1865,7 @@ class BatchStore:
                        COALESCE(sum(completed_count), 0) AS completed,
                        COALESCE(sum(failed_count), 0) AS failed,
                        COALESCE(sum(cancelled_count), 0) AS cancelled,
+                       COALESCE(sum(expired_count), 0) AS expired,
                        COALESCE(sum(cost_usd), 0) AS cost_usd,
                        COALESCE(sum(prompt_tokens), 0) AS prompt_tokens,
                        COALESCE(sum(completion_tokens), 0) AS completion_tokens,
@@ -1880,6 +1886,7 @@ class BatchStore:
                 "completed": int(row["completed"]),
                 "failed": int(row["failed"]),
                 "cancelled": int(row["cancelled"]),
+                "expired": int(row["expired"]),
                 "cost_usd": float(row["cost_usd"] or 0),
                 "prompt_tokens": int(row["prompt_tokens"]),
                 "completion_tokens": int(row["completion_tokens"]),

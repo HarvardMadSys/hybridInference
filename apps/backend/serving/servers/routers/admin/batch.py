@@ -197,7 +197,7 @@ async def batch_summary(
     _admin_id: str = Depends(verify_admin_access),
     batch_store=Depends(get_batch_store),
 ) -> dict[str, Any]:
-    """Per-user batch totals: batches, active ones, requests, tokens and known cost."""
+    """Per-user batch totals: batches, active ones, requests by outcome, tokens and known cost."""
     if batch_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     users = await batch_store.batch_summary()
@@ -213,6 +213,7 @@ async def batch_summary(
             "completed",
             "failed",
             "cancelled",
+            "expired",
             "prompt_tokens",
             "completion_tokens",
             "unknown_cost_attempts",
