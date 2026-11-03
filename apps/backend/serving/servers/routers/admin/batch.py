@@ -175,7 +175,11 @@ async def list_all_batches(
     _admin_id: str = Depends(verify_admin_access),
     batch_store=Depends(get_batch_store),
 ) -> dict[str, Any]:
-    """Every user's batches, newest first, with counts, tokens and known cost."""
+    """Every user's batches, newest first, with counts, tokens and known cost.
+
+    Each batch also carries its owner's ``user_name`` and ``user_email``
+    (None for an account without one, or one that no longer exists).
+    """
     if batch_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     from serving.servers.routers.batch_console import batch_view
@@ -184,6 +188,11 @@ async def list_all_batches(
         user_id=user_id, limit=limit + 1, after=after, status=status
     )
     data = [batch_view(row) for row in rows[:limit]]
+    labels = await batch_store.user_labels([batch["user_id"] for batch in data])
+    for batch in data:
+        label = labels.get(batch["user_id"]) or {}
+        batch["user_name"] = label.get("user_name")
+        batch["user_email"] = label.get("email")
     return {
         "object": "list",
         "data": data,
@@ -197,7 +206,10 @@ async def batch_summary(
     _admin_id: str = Depends(verify_admin_access),
     batch_store=Depends(get_batch_store),
 ) -> dict[str, Any]:
-    """Per-user batch totals: batches, active ones, requests, tokens and known cost."""
+    """Per-user batch totals: requests by outcome, tokens (cached ones too) and known cost.
+
+    Each user row carries the owner's ``user_name`` and ``email`` as well.
+    """
     if batch_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     users = await batch_store.batch_summary()
@@ -213,9 +225,12 @@ async def batch_summary(
             "completed",
             "failed",
             "cancelled",
+            "expired",
             "prompt_tokens",
             "completion_tokens",
             "unknown_cost_attempts",
+            "cached_tokens",
+            "cache_unrecorded_batches",
         )
     }
     totals["cost_usd"] = sum(user["cost_usd"] for user in users)
