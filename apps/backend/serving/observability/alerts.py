@@ -1314,6 +1314,16 @@ async def _confirm_settled_close(
     try:
         if fence is not None and not fence():
             return False
+        # Let a send still running on the key finish before the close is taken.
+        # The incident's page can outlast a short settle period, and until the
+        # tracker gives the key up a recurrence meanwhile — even one reported
+        # only through ``interrupt_settle`` — still cancels this clear, so the
+        # confirmation below sees it. Taken first, the close would leave that
+        # recurrence nothing to cancel, and a success after it would let this
+        # stale confirmation post without the new healthy edge settling.
+        await _wait_for_in_flight(key)
+        if fence is not None and not fence():
+            return False
         if not _STATE_TRANSITIONS.confirm_clear(key, started_at=started_at):
             return False
         return await _announce_close(
@@ -1574,6 +1584,15 @@ async def _announce_close(
     # Ended before the recovery card awaits: whatever the card's fate, the
     # condition is over, and a breach during the send opens a new episode.
     episode_id = _history.condition_ended(key, basis="observed_healthy", now=ended_at)
+    if key not in _ANNOUNCED and not _closes_silently(key):
+        # Whether this close is owed depends on how the incident's firing
+        # fared, and that firing may still be in flight — awaiting the mute or
+        # snooze lookup, say — when a quick close arrives. Decided before it
+        # lands, a firing that is then muted or snoozed would leave its close
+        # to post a recovery for an incident the channel never saw. An
+        # announced incident is owed its close whatever happens next, so it
+        # has nothing to wait for here; ``alert_slack`` still orders the send.
+        await _wait_for_in_flight(key)
     if _closes_silently(key):
         _history.decision(key, episode_id=episode_id, reason="resolution_silenced", resolution=True)
         # Close it, say nothing. There is no send to confirm and so nothing to

@@ -193,6 +193,60 @@ async def test_a_held_back_reopen_before_the_close_is_reported_cannot_start_a_se
     assert _STATE_TRANSITIONS.is_firing(KEY)
 
 
+async def test_a_reopen_while_the_page_is_still_sending_settles_the_next_close_afresh(
+    monkeypatch,
+):
+    """A settle shorter than the page's delivery must not confirm a stale close.
+
+    The confirmation waits for the page before taking the close, so a held-back
+    reopen during that wait still cancels it, and the close that follows settles
+    on its own healthy edge instead of being announced at once.
+    """
+    page_posting = asyncio.Event()
+    release_page = asyncio.Event()
+
+    async def post(url, message, **_):
+        if "Recovered" not in message:
+            page_posting.set()
+            await release_page.wait()
+        return True
+
+    registry = EndpointHealthRegistry()
+    with patch(
+        "serving.observability.alerts._post_to_slack", new=AsyncMock(side_effect=post)
+    ) as mock_post:
+        for _ in range(3):
+            registry.record_failure(ENDPOINT, reason="upstream_500")
+        await page_posting.wait()
+        registry.record_success(ENDPOINT)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        first_edge = _STATE_TRANSITIONS.settling_since(KEY)
+        assert first_edge is not None
+
+        # The settle period runs out while the page is still being delivered.
+        confirmation = asyncio.create_task(flush_settling())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        _set_policy(monkeypatch, enabled=False)
+        registry.record_failure(ENDPOINT, reason="upstream_500")
+        _set_policy(monkeypatch, enabled=True)
+        registry.record_success(ENDPOINT)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        release_page.set()
+        await confirmation
+        await _drain()
+        assert _headings(mock_post) == [OPENED]
+        new_edge = _STATE_TRANSITIONS.settling_since(KEY)
+        assert new_edge is not None and new_edge != first_edge
+
+        await _settle_elapsed()
+
+    assert _headings(mock_post) == [OPENED, RECOVERED]
+
+
 async def test_a_shutdown_flush_does_not_announce_a_circuit_open_again(monkeypatch):
     registry = EndpointHealthRegistry()
     with _slack() as mock_post:

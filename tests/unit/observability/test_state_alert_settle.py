@@ -327,6 +327,40 @@ class TestASnoozedIncidentClosesSilently:
             "✅ *Recovered:* Provider circuit opened",
         ]
 
+    @pytest.mark.parametrize("silence", ["snooze", "mute"])
+    async def test_a_close_racing_its_silenced_firing_stays_silent(self, silence):
+        """The close arrives while the firing still awaits its snooze or mute lookup.
+
+        Deciding before that lookup answered posted a recovery for an incident the
+        channel never saw.
+        """
+        lookup_started = asyncio.Event()
+        answer = asyncio.Event()
+
+        async def slow_lookup(*_args):
+            lookup_started.set()
+            await answer.wait()
+            return True
+
+        target = (
+            "serving.observability.alert_snooze.is_snoozed"
+            if silence == "snooze"
+            else "serving.observability.alerts._type_muted"
+        )
+        with _slack() as mock_post, patch(target, new=AsyncMock(side_effect=slow_lookup)):
+            firing = asyncio.create_task(_transition(True, settle_sec=0))
+            await lookup_started.wait()
+            assert KEY in alerts._IN_FLIGHT
+            close = asyncio.create_task(_transition(False, settle_sec=0))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            answer.set()
+            await asyncio.gather(firing, close)
+
+        mock_post.assert_not_awaited()
+        assert not _STATE_TRANSITIONS.is_firing(KEY)
+        assert KEY not in _PENDING_RESOLUTIONS
+
 
 @pytest.mark.parametrize(
     ("variable", "poster", "heading"),
