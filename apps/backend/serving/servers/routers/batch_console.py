@@ -125,6 +125,9 @@ def batch_view(row: dict[str, Any]) -> dict[str, Any]:
         "cost_usd": float(row.get("cost_usd") or 0.0),
         "cost_unknown_attempts": int(row.get("unknown_cost_count") or 0),
         "created_at": _epoch(row.get("created_at")),
+        # When its requests began to run (None while validating): what the
+        # console measures a batch's pace from.
+        "started_at": _epoch(row.get("in_progress_at")),
         "expires_at": _epoch(row.get("expires_at")),
         "ended_at": _epoch(row.get("sealed_at")),
         "results_expires_at": _epoch(row.get("results_expires_at")),

@@ -1659,6 +1659,25 @@ async def test_cached_input_is_counted_per_batch_and_left_unknown_for_older_ones
     assert (bob["cached_tokens"], bob["cache_unrecorded_batches"]) == (0, 1)
 
 
+async def test_item_contents_pages_requests_with_their_answers(store):
+    model = _model()
+    batch = await _create(store, _items(model, 3))
+    (first,) = await _claim(store, model, limit=1)
+    assert await _complete(store, first)
+
+    page = await store.item_contents(batch["id"], limit=2)
+
+    assert [item["custom_id"] for item in page] == ["req-0", "req-1"]
+    answered, waiting = page
+    assert answered["request"]["messages"][0]["content"] == "q0 ✓"
+    assert answered["response"] == {"id": f"chatcmpl-{first['id']}", "choices": []}
+    assert (answered["status"], answered["status_code"]) == ("completed", 200)
+    assert answered["completed_at"] is not None
+    assert (waiting["status"], waiting["response"], waiting["error"]) == ("queued", None, None)
+    rest = await store.item_contents(batch["id"], after=page[-1]["id"])
+    assert [item["custom_id"] for item in rest] == ["req-2"]
+
+
 async def test_batch_summary_and_labels_name_each_owner(pool, store):
     await _create(store, _items(_model(), 1))
     await _create(store, _items(_model(), 1), user="bob")

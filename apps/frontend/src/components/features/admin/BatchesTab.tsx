@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   AdminEmptyState,
@@ -18,8 +18,11 @@ import {
   TABLE_CELL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
+import { BatchRequestsPanel } from '@/components/features/admin/BatchRequestsPanel';
 import {
   compactNumber,
+  durationText,
+  estimatedFinish,
   OutcomeBar,
   sharePercent,
   StatTile,
@@ -187,6 +190,31 @@ function StatusBadge({ batch }: { batch: ConsoleBatch }) {
   );
 }
 
+/** When a running batch should finish at its pace so far, or nothing when there is no pace yet. */
+function FinishEstimateText({ batch }: { batch: ConsoleBatch }) {
+  const now = Date.now() / 1000;
+  const estimate = estimatedFinish(batch, now);
+  if (!estimate) return null;
+  const { completed, failed, total } = batch.request_counts;
+  const done = completed + failed + (batch.cancelled ?? 0);
+  const pace = `At the pace so far: ${done.toLocaleString('en-US')} of ${total.toLocaleString(
+    'en-US',
+  )} requests in ${durationText(now - (batch.started_at ?? now))}.`;
+  if (estimate.afterWindow) {
+    return (
+      <span className="mt-1 block text-[11px] text-amber-700" title={pace}>
+        Won&apos;t finish before its window closes ({when(batch.expires_at)}); est.{' '}
+        {when(estimate.at)}
+      </span>
+    );
+  }
+  return (
+    <span className="mt-1 block text-[11px] text-gray-600" title={pace}>
+      Est. finish {when(estimate.at)} · in ~{durationText(estimate.in)}
+    </span>
+  );
+}
+
 /** The totals across every user, as headline figures. */
 function UsageTiles({ totals }: { totals: AdminBatchSummary['totals'] }) {
   const counts = summaryOutcomeCounts(totals);
@@ -252,6 +280,8 @@ export function BatchesTab() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [userId, setUserId] = useState('');
   const [status, setStatus] = useState<BatchStatus | ''>('');
+  /** The batch whose requests are shown under its row. */
+  const [openRequests, setOpenRequests] = useState<string | null>(null);
   const owner = userId.trim();
   const {
     batches,
@@ -474,59 +504,82 @@ export function BatchesTab() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {batches.map((batch) => (
-                  <tr key={batch.id} data-testid={`batch-${batch.id}`}>
-                    <td className={TABLE_CELL}>
-                      {batch.name && (
-                        <span className="block max-w-[16rem] truncate" title={batch.name}>
-                          {batch.name}
+                  <Fragment key={batch.id}>
+                    <tr data-testid={`batch-${batch.id}`}>
+                      <td className={TABLE_CELL}>
+                        {batch.name && (
+                          <span className="block max-w-[16rem] truncate" title={batch.name}>
+                            {batch.name}
+                          </span>
+                        )}
+                        <span className="font-mono text-[12px] text-gray-500">{batch.id}</span>
+                      </td>
+                      <td className={TABLE_CELL}>
+                        <Owner
+                          id={batch.user_id ?? ''}
+                          name={batch.user_name}
+                          email={batch.user_email}
+                        />
+                      </td>
+                      <td className={TABLE_CELL}>
+                        {batch.endpoint ?? batch.target}
+                        <span className="block text-[11px] text-gray-500">
+                          {batch.input === 'file' ? 'JSONL file' : 'Direct requests'}
+                          {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
                         </span>
-                      )}
-                      <span className="font-mono text-[12px] text-gray-500">{batch.id}</span>
-                    </td>
-                    <td className={TABLE_CELL}>
-                      <Owner
-                        id={batch.user_id ?? ''}
-                        name={batch.user_name}
-                        email={batch.user_email}
-                      />
-                    </td>
-                    <td className={TABLE_CELL}>
-                      {batch.endpoint ?? batch.target}
-                      <span className="block text-[11px] text-gray-500">
-                        {batch.input === 'file' ? 'JSONL file' : 'Direct requests'}
-                        {batch.models.length ? ` · ${batch.models.join(', ')}` : ''}
-                      </span>
-                    </td>
-                    <td className={TABLE_CELL}>
-                      <StatusBadge batch={batch} />
-                    </td>
-                    <td className={TABLE_CELL}>
-                      <OutcomeBar counts={outcomeCounts(batch)} />
-                    </td>
-                    <td className={`${TABLE_CELL} whitespace-nowrap`}>
-                      <Tokens
-                        input={batch.usage.input_tokens}
-                        output={batch.usage.output_tokens}
-                        cached={batch.usage.cached_input_tokens}
-                      />
-                    </td>
-                    <td className={`${TABLE_CELL} whitespace-nowrap`}>
-                      <Cost value={batch.cost_usd} unknown={batch.cost_unknown_attempts} />
-                    </td>
-                    <td className={`${TABLE_CELL} whitespace-nowrap`}>{when(batch.created_at)}</td>
-                    <td className={TABLE_CELL}>
-                      {isCancellable(batch) && (
+                      </td>
+                      <td className={TABLE_CELL}>
+                        <StatusBadge batch={batch} />
+                        <FinishEstimateText batch={batch} />
+                      </td>
+                      <td className={TABLE_CELL}>
+                        <OutcomeBar counts={outcomeCounts(batch)} />
+                      </td>
+                      <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                        <Tokens
+                          input={batch.usage.input_tokens}
+                          output={batch.usage.output_tokens}
+                          cached={batch.usage.cached_input_tokens}
+                        />
+                      </td>
+                      <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                        <Cost value={batch.cost_usd} unknown={batch.cost_unknown_attempts} />
+                      </td>
+                      <td className={`${TABLE_CELL} whitespace-nowrap`}>
+                        {when(batch.created_at)}
+                      </td>
+                      <td className={`${TABLE_CELL} whitespace-nowrap`}>
                         <button
                           type="button"
-                          className={ROW_ACTION_DANGER}
-                          disabled={confirmation.busy}
-                          onClick={() => cancel(batch)}
+                          className={ROW_ACTION}
+                          aria-expanded={openRequests === batch.id}
+                          aria-controls={`requests-row-${batch.id}`}
+                          onClick={() =>
+                            setOpenRequests((open) => (open === batch.id ? null : batch.id))
+                          }
                         >
-                          Cancel
+                          {openRequests === batch.id ? 'Hide prompts' : 'Prompts'}
                         </button>
-                      )}
-                    </td>
-                  </tr>
+                        {isCancellable(batch) && (
+                          <button
+                            type="button"
+                            className={ROW_ACTION_DANGER}
+                            disabled={confirmation.busy}
+                            onClick={() => cancel(batch)}
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {openRequests === batch.id && (
+                      <tr id={`requests-row-${batch.id}`}>
+                        <td colSpan={9} className="bg-gray-50 px-4 py-3">
+                          <BatchRequestsPanel batchId={batch.id} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
