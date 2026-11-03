@@ -1618,6 +1618,43 @@ class BatchStore:
             for row in rows
         ]
 
+    async def item_contents(
+        self, batch_id: str, *, after: int = 0, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """A page of a batch's items with what was sent and answered (administrators).
+
+        In submission order: ``id, custom_id, model_id, status, status_code,
+        attempts, request, response, error, prompt_tokens, completion_tokens,
+        completed_at``. ``response`` and ``error`` are None until the item
+        has an outcome.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, custom_id, model_id, status, status_code, attempts, request, "
+                "response, error, prompt_tokens, completion_tokens, completed_at "
+                "FROM batch_items WHERE batch_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+                batch_id,
+                after,
+                limit,
+            )
+        return [
+            {
+                "id": row["id"],
+                "custom_id": row["custom_id"],
+                "model_id": row["model_id"],
+                "status": row["status"],
+                "status_code": row["status_code"],
+                "attempts": row["attempts"],
+                "request": _load_json(row["request"]),
+                "response": _load_json(row["response"]),
+                "error": _load_json(row["error"]),
+                "prompt_tokens": row["prompt_tokens"],
+                "completion_tokens": row["completion_tokens"],
+                "completed_at": row["completed_at"],
+            }
+            for row in rows
+        ]
+
     async def _pin_input(self, conn: Any, file_id: str, user_id: str) -> None:
         """Hold a file batch's input for the batch being created, or refuse it.
 

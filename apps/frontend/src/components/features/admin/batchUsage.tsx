@@ -1,4 +1,4 @@
-import type { AdminBatchSummary } from '@/lib/api/batches';
+import type { AdminBatchSummary, ConsoleBatch } from '@/lib/api/batches';
 
 /** Requests by outcome; the parts add up to the total. */
 export interface OutcomeCounts {
@@ -173,4 +173,56 @@ export function StatTile({
       </dd>
     </div>
   );
+}
+
+/** When a running batch should finish at its pace so far, and whether its window closes first. */
+export interface FinishEstimate {
+  /** Epoch seconds. */
+  at: number;
+  /** Seconds from `now`. */
+  in: number;
+  /** The window closes before `at`: requests not started by then expire. */
+  afterWindow: boolean;
+}
+
+/**
+ * Extrapolate a running batch's finish from the requests done since it
+ * started. None while it is not running, is paused, has done nothing yet
+ * (there is no pace to go by) or has nothing left.
+ */
+export function estimatedFinish(
+  batch: Pick<
+    ConsoleBatch,
+    'status' | 'request_counts' | 'cancelled' | 'started_at' | 'expires_at' | 'paused_until'
+  >,
+  now: number,
+): FinishEstimate | null {
+  if (batch.status !== 'in_progress' || !batch.started_at) return null;
+  if (batch.paused_until && batch.paused_until > now) return null;
+  const { total, completed, failed } = batch.request_counts;
+  const done = completed + failed + (batch.cancelled ?? 0);
+  const remaining = total - done;
+  const elapsed = now - batch.started_at;
+  if (done <= 0 || remaining <= 0 || elapsed <= 0) return null;
+  const left = (elapsed * remaining) / done;
+  const at = Math.round(now + left);
+  return {
+    at,
+    in: Math.round(left),
+    afterWindow: Boolean(batch.expires_at && at > batch.expires_at),
+  };
+}
+
+/** A duration in words, to the minute: "45 min", "2 h 5 min", "3 d 4 h". */
+export function durationText(seconds: number): string {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const rest = minutes % 60;
+    return rest ? `${hours} h ${rest} min` : `${hours} h`;
+  }
+  const days = Math.floor(hours / 24);
+  const restHours = hours % 24;
+  return restHours ? `${days} d ${restHours} h` : `${days} d`;
 }

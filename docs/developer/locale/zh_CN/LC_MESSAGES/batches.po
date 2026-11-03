@@ -1959,6 +1959,21 @@ msgstr ""
 "每个批次为 `usage.cached_input_tokens`）。在开始记录缓存输入之前存储的批次没有该值（`null`），汇总将这类批次计入 "
 "`cache_unrecorded_batches`，而不是按零计算。"
 
+#: ../developer/batches.md:828
+msgid ""
+"A running batch shows when it should finish at its pace so far (from its "
+"`started_at` and the requests done since), and a warning when its window "
+"closes first. **Prompts** opens a batch's stored requests with their "
+"answers (`GET /admin/batch/jobs/{batch_id}/requests`), a page at a time. It "
+"is offered only where the gateway keeps prompts in its request log "
+"(`db_store_full_content`); elsewhere it answers `403`. Opening a batch's "
+"requests is audited as `batch.requests.read` against the batch's owner."
+msgstr ""
+"运行中的批次会按目前的进度显示预计完成时间（根据其 `started_at` 及之后已完成的请求），并在执行窗口会先关闭时给出提醒。"
+"**Prompts** 按页打开批次存储的请求及其回答（`GET /admin/batch/jobs/{batch_id}/requests`）。"
+"仅当网关在请求日志中保存提示词时（`db_store_full_content`）才提供，否则返回 `403`。"
+"打开批次的请求会以 `batch.requests.read` 记入审计日志，目标为批次的所有者。"
+
 #: ../developer/batches.md:801
 msgid "Upgrading a deployment"
 msgstr "升级部署"

@@ -825,6 +825,14 @@ tokens with the part its upstream served from a prompt cache (`cached_tokens`,
 recorded has none (`null`), and the totals count such batches in
 `cache_unrecorded_batches` rather than as zero.
 
+A running batch shows when it should finish at its pace so far (from its
+`started_at` and the requests done since), and a warning when its window closes
+first. **Prompts** opens a batch's stored requests with their answers (`GET
+/admin/batch/jobs/{batch_id}/requests`), a page at a time. It is offered only
+where the gateway keeps prompts in its request log (`db_store_full_content`);
+elsewhere it answers `403`. Opening a batch's requests is audited as
+`batch.requests.read` against the batch's owner.
+
 ### Upgrading a deployment
 
 A worker only runs the kinds of batch it knows: claims, expiry, finalizing,
