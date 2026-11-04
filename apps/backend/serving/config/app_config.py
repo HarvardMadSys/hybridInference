@@ -1135,7 +1135,6 @@ async def load(
     """
     _STATE.database_enabled = database_enabled
     _STATE.discovered = _discover()
-    await store.ensure_schema()
     read_started = time.monotonic()
     if bootstrap:
         async with store.transaction() as transaction:
@@ -1441,8 +1440,6 @@ async def refresh() -> None:
     store = _STATE.store
     if store is None:
         return
-    if not _STATE.loaded:
-        await store.ensure_schema()
     async with _STATE.read_lock:
         read_started = time.monotonic()
         try:
@@ -1812,8 +1809,6 @@ async def _writable_store() -> AppConfigStore:
         raise ConfigUpdateError(
             503, "Configuration storage is unavailable: the database is not connected."
         )
-    if not _STATE.loaded:
-        await store.ensure_schema()
     return store
 
 

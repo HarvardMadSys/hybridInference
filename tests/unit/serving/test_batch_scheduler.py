@@ -717,6 +717,64 @@ async def test_a_retryable_failure_backs_off_then_becomes_final(worker, dispatch
     assert len(dispatch.calls) == 3
 
 
+def _fast_retries(**overrides) -> SchedulerTimings:
+    return SchedulerTimings(
+        **{
+            "poll_seconds": 0.005,
+            "idle_poll_seconds": 60,
+            "sweep_seconds": 3600,
+            "heartbeat_seconds": 3600,
+            "backoff_base_seconds": 0.001,
+            "backoff_cap_seconds": 0.002,
+            "cooldown_failures": 10_000,
+            "stop_grace_seconds": 0.05,
+            **overrides,
+        }
+    )
+
+
+async def test_a_retryable_failure_keeps_retrying_while_the_window_is_open(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(hours=24))
+    scheduler = worker(store, timings=_fast_retries())
+
+    scheduler.start()
+    # Well past the eight attempts a failure used to get, it is still retried.
+    await until(lambda: len(dispatch.calls) >= 12)
+    assert store.status(1) != "failed"
+    dispatch.results["m1"] = OK
+    await until(lambda: store.status(1) == "completed")
+
+    assert store.items[1]["attempts"] >= 13
+    assert store.calls["retry_item"] >= 12
+
+
+async def test_a_retry_that_would_start_after_the_window_fails_now_with_its_error(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(seconds=30))
+    # The first retry would wait 60-120 s: after the window closes.
+    timings = _fast_retries(backoff_base_seconds=120.0, backoff_cap_seconds=120.0)
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.status(1) == "failed")
+
+    # Failed with the error it got, not left to expire as though it never ran.
+    assert store.items[1]["error"] == UNAVAILABLE.error
+    assert store.items[1]["status_code"] == 503
+    assert store.calls["retry_item"] == 0
+    assert len(dispatch.calls) == 1
+
+
+def test_the_attempt_guard_outlasts_a_week_long_window_at_the_backoff_cap():
+    timings = SchedulerTimings()
+    week = 168 * 3600
+    # The shortest jittered delay at the cap is half of it.
+    assert timings.max_attempts > week / (timings.backoff_cap_seconds / 2)
+
+
 def test_backoff_doubles_with_jitter_up_to_the_cap():
     scheduler = BatchScheduler(
         app=None,
@@ -897,3 +955,77 @@ async def test_heartbeats_extend_the_leases_of_running_items(worker, dispatch):
     scheduler.start()
     await until(lambda: any(sorted(ids) == [1, 2] for ids in store.heartbeats))
     gate.set()
+
+
+def _queued(retry_after: float) -> DispatchResult:
+    return DispatchResult(
+        status_code=503,
+        error={"code": "model_queued", "message": "queued", "status": 503},
+        retryable=True,
+        requeue_after=retry_after,
+    )
+
+
+async def test_a_model_queued_answer_requeues_without_spending_attempts(worker, dispatch):
+    # An on-demand model waiting for a node answers "model queued" for as long
+    # as it waits: more answers than the item has attempts must not fail it.
+    dispatch.results["m1"] = _queued(0.01)
+    store = FakeStore()
+    store.add(1)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        max_attempts=2,
+        cooldown_failures=1,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) >= 4)
+    dispatch.results["m1"] = OK
+    await until(lambda: store.status(1) == "completed")
+
+    assert store.calls["retry_item"] == 0
+    assert store.calls["release_item"] >= 4
+    assert store.items[1]["error"] is None
+
+
+async def test_a_model_queued_answer_holds_the_model(worker, dispatch):
+    dispatch.results["m1"] = _queued(60)
+    store = FakeStore()
+    store.add(2)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, caps={"m1": 1}, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 1)
+    await asyncio.sleep(0.05)
+
+    # The model gets no new claims while it waits: the second item stays put.
+    assert len(dispatch.calls) == 1
+    assert store.count("queued") == 2
+
+
+async def test_a_model_queued_answer_fails_once_the_window_would_close(worker, dispatch):
+    # The next try would start after the batch stops starting requests: the
+    # item fails with the queued answer rather than expiring unexplained.
+    dispatch.results["m1"] = _queued(3600)
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(seconds=60))
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.status(1) == "failed")
+
+    assert store.items[1]["error"]["code"] == "model_queued"
+    assert store.calls["release_item"] == 0
+    assert store.calls["retry_item"] == 0
