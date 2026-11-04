@@ -668,16 +668,25 @@ async def create_console_batch(
     try:
         user_ctx = await authenticate_stored_key(credential["key_hash"], op_store)
     except StoredKeyQuotaExceeded as exc:
+        # One code per limit, so the page can say which one ran out and what
+        # lifts it; ``quota_exceeded`` keeps meaning the account's daily quota.
+        period = "daily" if exc.window == "day" else "monthly"
         if exc.scope == "key":
-            period = "daily" if exc.window == "day" else "monthly"
+            code = "key_budget_exceeded"
             message = (
                 f"The API key this batch runs under has spent its {period} budget; raise it on "
                 "the key's page, or submit after it renews"
             )
         else:
-            message = "Your daily quota is spent; submit after it renews"
+            code = "quota_exceeded" if exc.window == "day" else "monthly_quota_exceeded"
+            message = f"Your {period} quota is spent; submit after it renews"
         raise _error(
-            429, "quota_exceeded", message, reset_at=_epoch(exc.reset_at), scope=exc.scope
+            429,
+            code,
+            message,
+            reset_at=_epoch(exc.reset_at),
+            scope=exc.scope,
+            window=exc.window,
         ) from None
     except StoredKeyRejected:
         raise _error(

@@ -25,8 +25,8 @@ bookkeeping:
   revoke that is forgotten or lost is a token that stops working at its next
   expiry — not a standing credential.
 - **Spend is metered as the owner.** A grant carries no budget of its own.
-  The account's daily quota — the same ceiling the direct path enforces — is
-  checked on every call, and spend is measured from the billing ledger, not
+  The account's daily and monthly quotas — the ceilings the direct path
+  enforces — are checked on every call, and spend is measured from the billing ledger, not
   from anything the agent reports about itself.
 
 Requests bill the grant's *owner*, so a job's usage shows up in that user's
@@ -66,7 +66,7 @@ class AgentModelAuthError(Exception):
 
 
 class AgentQuotaExceeded(AgentModelAuthError):
-    """The account behind a grant has spent its daily quota.
+    """The account behind a grant has spent its daily or monthly quota.
 
     Distinct from the base error because the HTTP layer must answer with the
     *same* body and ``X-RateLimit-*`` headers the direct path returns — a
@@ -74,10 +74,14 @@ class AgentQuotaExceeded(AgentModelAuthError):
     needs the numbers, not a rendered message.
     """
 
-    def __init__(self, *, quota_usd: float, spent_usd: float) -> None:
-        super().__init__("Daily cost quota exceeded", status_code=429)
+    def __init__(self, *, quota_usd: float, spent_usd: float, window: quota.Window = "day") -> None:
+        super().__init__(
+            "Daily cost quota exceeded" if window == "day" else "Monthly cost quota exceeded",
+            status_code=429,
+        )
         self.quota_usd = quota_usd
         self.spent_usd = spent_usd
+        self.window = window
 
 
 async def _resolve_grant(
@@ -125,12 +129,13 @@ async def _resolve_grant(
     return row
 
 
-async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
-    """Return ``(limit, spent)`` for the account behind a grant.
+async def _quota_refusal(op_store: Any, user_id: str) -> quota.BudgetRefusal | None:
+    """Return the account quota a grant's next call would exceed, or None.
 
-    The limit is the account's, stored on each of its API keys, and the spend
-    is the user's, so this is two reads that the direct path gets in one — a
-    grant carries no key to join through.
+    The limits are the account's, stored on each of its API keys, and the
+    spend is the user's, so this is two reads (three with a monthly limit)
+    that the direct path gets in one — a grant carries no key to join through.
+    A grant has no key, so only the account's daily and monthly quotas apply.
 
     Raises:
         AgentModelAuthError: If the account has no active key, if the store
@@ -174,8 +179,12 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             status_code=403,
         )
 
+    monthly = keys[0].get("quota_monthly_cost_usd")
     try:
         spent = await op_store.get_user_cost_today(user_id)
+        spent_month = (
+            await op_store.get_user_cost_period(user_id, "month") if monthly is not None else 0.0
+        )
     except Exception as exc:
         logger.warning(
             "agent_grant_spend_lookup_failed",
@@ -186,7 +195,12 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             "Spending cannot be measured right now.", status_code=503
         ) from exc
 
-    return quota.resolve_quota(keys[0].get("quota_daily_cost_usd")), float(spent or 0.0)
+    return quota.first_refusal(
+        account_quota_usd=quota.resolve_quota(keys[0].get("quota_daily_cost_usd")),
+        account_spent_usd=float(spent or 0.0),
+        account_quota_monthly_usd=None if monthly is None else float(monthly),
+        account_spent_month_usd=float(spent_month or 0.0),
+    )
 
 
 async def authenticate_grant_model_call(
@@ -197,8 +211,8 @@ async def authenticate_grant_model_call(
     """Resolve an inference grant into a user context for a model request.
 
     This is where the per-task budget went. A grant says *what* may be called;
-    the account's daily quota — the same one the direct path enforces — says
-    how much. Before grants existed, an agent token returned from
+    the account's daily and monthly quotas — the ones the direct path
+    enforces — say how much. Before grants existed, an agent token returned from
     ``verify_api_key`` above the quota gate and reached inference having been
     authenticated and never metered; that bypass closes here.
 
@@ -208,11 +222,11 @@ async def authenticate_grant_model_call(
     row = await _resolve_grant(api_key, op_store=op_store)
 
     user = await _active_subject(op_store, row["user_id"])
-    quota_usd, spent_usd = await _quota_context(op_store, row["user_id"])
-    try:
-        quota.check(quota_usd=quota_usd, spent_usd=spent_usd)
-    except quota.QuotaExceeded as exc:
-        raise AgentQuotaExceeded(quota_usd=exc.quota_usd, spent_usd=exc.spent_usd) from exc
+    refusal = await _quota_refusal(op_store, row["user_id"])
+    if refusal is not None:
+        raise AgentQuotaExceeded(
+            quota_usd=refusal.limit_usd, spent_usd=refusal.spent_usd, window=refusal.window
+        )
 
     return {
         "user_id": row["user_id"],

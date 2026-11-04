@@ -1,4 +1,4 @@
-"""The daily cost quota, in one place, for every door into inference.
+"""The account's cost quotas, in one place, for every door into inference.
 
 There are two now. A user's API key comes through ``verify_api_key``; a cloud
 agent's inference grant comes through ``model_auth``. Both spend the same
@@ -16,13 +16,18 @@ schema rather than a choice made here:
 
 | | Stored on | Belongs to |
 |---|---|---|
-| the limit, ``quota_daily_cost_usd`` | each row of ``api_keys`` | **the account** |
+| the limits, ``quota_daily_cost_usd`` and ``quota_monthly_cost_usd`` | each row of ``api_keys`` | **the account** |
 | the spend | ``user_daily_cost`` | **user** |
 
 An account may hold several API keys. The limit is the account's, copied onto
 every one of its unrevoked keys by the store (``OperationalStore.create_key``),
 so the key the direct path authenticates with and the account a grant is found
 by read the same number: which key's limit wins is never a question.
+
+The daily limit has a default (:data:`DEFAULT_DAILY_QUOTA_USD`); the monthly
+one does not: NULL is no monthly limit, which is what every account had in
+effect before it was enforced. Month spend is the sum of the month's
+``user_daily_cost`` rows, the same days the admin console reports.
 """
 
 from __future__ import annotations
@@ -165,6 +170,8 @@ def first_refusal(
     *,
     account_quota_usd: float,
     account_spent_usd: float,
+    account_quota_monthly_usd: float | None = None,
+    account_spent_month_usd: float = 0.0,
     key_budget_daily_usd: float | None = None,
     key_budget_monthly_usd: float | None = None,
     key_spent_today_usd: float = 0.0,
@@ -174,10 +181,10 @@ def first_refusal(
 ) -> BudgetRefusal | None:
     """Return the narrowest limit this request does not fit under, or None.
 
-    Checked in order key/day, key/month, account/day, so a refusal names the
-    narrowest scope that ran out. Each uses the same optimistic estimate, so a
-    key and its account behave alike near their limits. A key budget of None
-    is no limit at the key.
+    Checked in order key/day, key/month, account/day, account/month, so a
+    refusal names the narrowest limit that ran out. Each uses the same
+    optimistic estimate, so a key and its account behave alike near their
+    limits. A key budget or a monthly quota of None is no limit there.
     """
     if _over(key_budget_daily_usd, key_spent_today_usd):
         return BudgetRefusal(
@@ -194,6 +201,10 @@ def first_refusal(
         )
     if _over(account_quota_usd, account_spent_usd):
         return BudgetRefusal("account", "day", account_quota_usd, account_spent_usd)
+    if _over(account_quota_monthly_usd, account_spent_month_usd):
+        return BudgetRefusal(
+            "account", "month", float(account_quota_monthly_usd), account_spent_month_usd
+        )
     return None
 
 
@@ -202,12 +213,12 @@ def refusal_payload(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Build the 429 body and headers for *refusal*.
 
-    The account's refusal is :func:`exceeded_payload` unchanged plus ``code``,
-    ``scope`` and ``window``, so clients reading today's fields keep working.
-    A key's refusal has the same fields, names the key, and resets with its
-    window.
+    The account's daily refusal is :func:`exceeded_payload` unchanged plus
+    ``code``, ``scope`` and ``window``, so clients reading today's fields keep
+    working. The account's monthly refusal and a key's have the same fields
+    and reset with their window; a key's also names the key.
     """
-    if refusal.scope == "account":
+    if refusal.scope == "account" and refusal.window == "day":
         body, headers = exceeded_payload(
             quota_usd=refusal.limit_usd, spent_usd=refusal.spent_usd, contact_email=contact_email
         )
@@ -217,22 +228,34 @@ def refusal_payload(
     retry_after = max(1, int((reset_at - now).total_seconds()))
     remaining = max(0, refusal.limit_usd - refusal.spent_usd)
     period = "daily" if refusal.window == "day" else "monthly"
+    if refusal.scope == "account":
+        error = "Monthly cost quota exceeded"
+        message = (
+            f"Monthly quota exhausted. Need more? Email {contact_email} and explain your use case."
+            if contact_email
+            else "Monthly quota exhausted. Contact the operator of this deployment."
+        )
+        named: dict[str, Any] = {}
+    else:
+        error = f"API key {period} budget exceeded"
+        message = (
+            f"API key {refusal.key_label or refusal.key_prefix} reached its {period} budget "
+            f"of ${refusal.limit_usd:.2f}. Raise the key's budget in the console, or use "
+            "another key."
+        )
+        named = {"key_prefix": refusal.key_prefix}
     body = {
-        "error": f"API key {period} budget exceeded",
+        "error": error,
         "code": "budget_exceeded",
-        "scope": "key",
+        "scope": refusal.scope,
         "window": refusal.window,
-        "key_prefix": refusal.key_prefix,
+        **named,
         "quota_usd": refusal.limit_usd,
         "spent_usd": refusal.spent_usd,
         "remaining_usd": remaining,
         "reset_at": reset_at.isoformat(),
         "contact_email": contact_email,
-        "message": (
-            f"API key {refusal.key_label or refusal.key_prefix} reached its {period} budget "
-            f"of ${refusal.limit_usd:.2f}. Raise the key's budget in the console, or use "
-            "another key."
-        ),
+        "message": message,
         "retry_after": retry_after,
     }
     headers = {

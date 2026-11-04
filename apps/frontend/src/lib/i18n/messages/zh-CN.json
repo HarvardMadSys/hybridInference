@@ -1359,9 +1359,17 @@
     "source": "Your API key changed after you confirmed (it was regenerated, revoked or replaced). Check the submission again.",
     "text": "确认之后你的 API 密钥发生了变化（被重新生成、撤销或替换）。请重新校验并确认。"
   },
+  "batches.create.refused.key_budget": {
+    "source": "The API key this batch runs under has spent its budget. Raise it on the key's page, or submit after it renews; uploading and checking stay free.",
+    "text": "这个批次所用的 API key 已用完预算。请在该 key 的页面调高预算，或等预算重置后再提交；上传和校验仍然免费。"
+  },
   "batches.create.refused.model_changed": {
     "source": "The chosen model now resolves to a different model than the one you confirmed. Check the submission again.",
     "text": "所选模型现在解析到的模型与你确认时不同。请重新校验并确认。"
+  },
+  "batches.create.refused.monthly_quota": {
+    "source": "Your monthly quota is spent. Submit after it renews on the 1st (UTC) or once it is raised; uploading and checking stay free.",
+    "text": "你本月的额度已用完。请在每月 1 日（UTC）额度重置或调整后再提交；上传和校验仍然免费。"
   },
   "batches.create.refused.no_key": {
     "source": "A batch runs under your active API key, and you have none. Create one on the dashboard, then submit again.",
@@ -1830,6 +1838,10 @@
   "batches.paused.key_budget": {
     "source": "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
     "text": "已暂停：这个批次所用的 API key 已用完预算。将在 {until} 之后再次检查；在该 key 的页面调高预算可以更早恢复。"
+  },
+  "batches.paused.monthly_quota": {
+    "source": "Paused: your monthly quota is spent. It is checked again after {until}; it resumes once your quota is raised, or when it renews on the 1st (UTC).",
+    "text": "已暂停：本月额度已用完。将在 {until} 之后再次检查；额度调高后，或每月 1 日（UTC）额度重置后恢复。"
   },
   "batches.paused.other": {
     "source": "Paused until {until}.",

@@ -580,6 +580,35 @@ async def test_a_spent_quota_pauses_the_owners_batches_until_it_renews(worker, d
     assert dispatch.calls == []
 
 
+async def test_a_spent_monthly_quota_pauses_the_owners_batches_and_checks_again_hourly(
+    worker, dispatch, auth
+):
+    """Not until next month: an admin who raises the quota sees the batches resume."""
+    auth.outcome = StoredKeyQuotaExceeded(
+        quota_usd=30.0,
+        spent_usd=30.0,
+        reset_at=datetime.now(UTC) + timedelta(days=20),
+        scope="account",
+        window="month",
+    )
+    store = FakeStore()
+    store.add(2)
+    scheduler = worker(store)
+    before = datetime.now(UTC)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+    await settle()
+
+    assert store.pause_reasons[OWNER] == "monthly_quota"
+    # The whole account's batches, not one key's.
+    assert store.pause_key_hashes[OWNER] is None
+    assert before + timedelta(seconds=SLOW.budget_recheck_seconds) <= store.paused[OWNER]
+    assert store.paused[OWNER] <= datetime.now(UTC) + timedelta(seconds=SLOW.budget_recheck_seconds)
+    assert store.count("queued") == 2
+    assert dispatch.calls == []
+
+
 async def test_a_spent_key_budget_pauses_only_that_keys_batches(worker, dispatch, auth):
     """The account's other keys still have budget; only this key's batches wait."""
     auth.outcome = StoredKeyQuotaExceeded(
@@ -602,10 +631,8 @@ async def test_a_spent_key_budget_pauses_only_that_keys_batches(worker, dispatch
     assert store.pause_key_hashes[OWNER] == "owner-key-hash"
     # Checked again within the hour rather than at the start of next month,
     # so a budget the owner raises takes effect.
-    assert store.paused[OWNER] <= datetime.now(UTC) + timedelta(
-        seconds=SLOW.key_budget_pause_seconds
-    )
-    assert store.paused[OWNER] >= before + timedelta(seconds=SLOW.key_budget_pause_seconds)
+    assert store.paused[OWNER] <= datetime.now(UTC) + timedelta(seconds=SLOW.budget_recheck_seconds)
+    assert store.paused[OWNER] >= before + timedelta(seconds=SLOW.budget_recheck_seconds)
     assert store.status(1) == "queued"
     assert dispatch.calls == []
 

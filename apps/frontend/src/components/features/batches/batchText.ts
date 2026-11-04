@@ -114,6 +114,15 @@ export function pauseText(batch: ConsoleBatch, t: Translate): string | null {
       { until },
     );
   }
+  if (batch.paused_reason === 'monthly_quota') {
+    return fill(
+      t(
+        'batches.paused.monthly_quota',
+        'Paused: your monthly quota is spent. It is checked again after {until}; it resumes once your quota is raised, or when it renews on the 1st (UTC).',
+      ),
+      { until },
+    );
+  }
   if (batch.paused_reason === 'key_budget') {
     return fill(
       t(
