@@ -649,9 +649,11 @@ async def _canonical_allowlist(
     """The allowlist as stored: canonical ids the account may use, sorted and unique.
 
     An alias is stored as its model's id, since every access check reads the
-    canonical id. A model is accepted only if the console's own model list
-    shows it to this account (``GET /user/models``), the list the console
-    picks from.
+    canonical id. Chat and embedding models live in different route tables
+    (embedding models never enter ``routes``), so an alias is looked up in
+    both. A model is accepted only if the console's own model list shows it
+    to this account (``GET /user/models``): that list already applies the
+    account's role, model visibility and the models it disabled.
 
     Raises:
         HTTPException: 422 naming the ids the account cannot use.
@@ -664,10 +666,15 @@ async def _canonical_allowlist(
         op_store=op_store,
     )
     usable = {model.id for model in available.data}
+    tables = (
+        (router_exec.routes, getattr(router_exec, "embedding_routes", None) or {})
+        if router_exec is not None
+        else ()
+    )
     canonical: set[str] = set()
     unknown: list[str] = []
     for model_id in requested:
-        route = router_exec.routes.get(model_id) if router_exec is not None else None
+        route = next((t[model_id] for t in tables if model_id in t), None)
         resolved = route_canonical_model_id(route, model_id) if route is not None else model_id
         if resolved in usable:
             canonical.add(resolved)

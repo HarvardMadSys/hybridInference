@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from routing.routers import FixedRouter
-from serving.servers.deps import get_router
+from serving.model_access import DISABLED_MODELS_PREFERENCE_KEY
+from serving.servers.deps import get_embedding_adapters, get_router
 
 from .test_completions import DummyAdapter, _mk_cfg
 
@@ -21,6 +22,10 @@ pytestmark = pytest.mark.dbtest
 MODEL_A = "key-limits-model-a"
 MODEL_B = "key-limits-model-b"
 ALIAS_A = "key-limits-alias-a"
+EMBED = "key-limits-embed"
+EMBED_ALIAS = "key-limits-embed-alias"
+EMBED_ADMIN = "key-limits-embed-admin"
+EMBED_ADMIN_ALIAS = "key-limits-embed-admin-alias"
 
 
 @pytest.fixture
@@ -31,9 +36,24 @@ def models(auth_test_app):
     router_exec.register_route(MODEL_A, [(adapter, 1.0)])
     router_exec.register_route(ALIAS_A, [(adapter, 1.0)])
     router_exec.register_route(MODEL_B, [(DummyAdapter(_mk_cfg(MODEL_B)), 1.0)])
+    # Embedding models keep their own route table, aliases included.
+    embed = DummyAdapter(_mk_cfg(EMBED))
+    embed_admin = DummyAdapter(_mk_cfg(EMBED_ADMIN))
+    router_exec.register_embedding_route(EMBED, [(embed, 1.0)], aliases=[EMBED_ALIAS])
+    router_exec.register_embedding_route(
+        EMBED_ADMIN, [(embed_admin, 1.0)], aliases=[EMBED_ADMIN_ALIAS], required_role="admin"
+    )
+    embedding_adapters = {
+        EMBED: embed,
+        EMBED_ALIAS: embed,
+        EMBED_ADMIN: embed_admin,
+        EMBED_ADMIN_ALIAS: embed_admin,
+    }
     auth_test_app.dependency_overrides[get_router] = lambda: router_exec
+    auth_test_app.dependency_overrides[get_embedding_adapters] = lambda: embedding_adapters
     yield router_exec
     auth_test_app.dependency_overrides.pop(get_router, None)
+    auth_test_app.dependency_overrides.pop(get_embedding_adapters, None)
 
 
 async def _patch(client: AsyncClient, prefix: str, headers: dict, body: dict):
@@ -100,6 +120,51 @@ async def test_an_alias_is_stored_as_its_model(
     )
 
     assert response.json()["allowed_models"] == [MODEL_A]
+
+
+@pytest.mark.asyncio
+async def test_an_embedding_alias_is_stored_as_its_model_once(
+    auth_app_client: AsyncClient, test_user_with_key, auth_headers, models
+):
+    """Embedding aliases resolve through the embedding route table, not the chat one."""
+    response = await _patch(
+        auth_app_client,
+        test_user_with_key["key_prefix"],
+        auth_headers,
+        {"allowed_models": [EMBED_ALIAS, EMBED, MODEL_A]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["allowed_models"] == sorted([EMBED, MODEL_A])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [EMBED_ADMIN, EMBED_ADMIN_ALIAS])
+async def test_an_embedding_model_above_the_accounts_role_is_refused(
+    auth_app_client: AsyncClient, test_user_with_key, auth_headers, models, model
+):
+    response = await _patch(
+        auth_app_client, test_user_with_key["key_prefix"], auth_headers, {"allowed_models": [model]}
+    )
+
+    assert response.status_code == 422
+    assert model in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [EMBED, EMBED_ALIAS])
+async def test_an_embedding_model_the_account_disabled_is_refused(
+    auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_backend, models, model
+):
+    await auth_backend[0].set_user_preference(
+        test_user_with_key["id"], DISABLED_MODELS_PREFERENCE_KEY, [EMBED]
+    )
+
+    response = await _patch(
+        auth_app_client, test_user_with_key["key_prefix"], auth_headers, {"allowed_models": [model]}
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
