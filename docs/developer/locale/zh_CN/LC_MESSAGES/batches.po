@@ -277,6 +277,13 @@ msgid ""
 "midnight UTC;"
 msgstr "如果你的每日额度已用完，你的批次会暂停，直到额度在 UTC 午夜刷新；"
 
+#: ../developer/batches.md
+msgid ""
+"if the key has spent its own daily or monthly budget, the batches created "
+"with that key pause, and are checked again within the hour, so raising the "
+"key's budget lets them resume; batches of your other keys keep running;"
+msgstr "如果这个 key 用完了它自己的每日或每月预算，用这个 key 创建的批次会暂停，并在一小时内再次检查，所以调高该 key 的预算后它们就能恢复；你其他 key 的批次照常运行；"
+
 #: ../developer/batches.md:86
 msgid "if your role no longer allows batches, they pause until it does."
 msgstr "如果你的角色不再允许使用批量推理，批次会暂停，直到重新允许为止。"
@@ -1527,8 +1534,9 @@ msgstr ""
 #: ../developer/batches.md:41
 msgid ""
 "You have the most unfinished batches allowed, the batch would take your "
-"unfinished requests over their limit, or your daily quota is used up"
-msgstr "你的未完成批次已达上限、该批次会让你的未完成请求超过上限，或你的每日额度已用完"
+"unfinished requests over their limit, your daily quota is used up, or the "
+"key has spent its own budget"
+msgstr "你的未完成批次已达上限、该批次会让你的未完成请求超过上限、你的每日额度已用完，或这个 key 已用完它自己的预算"
 
 #: ../developer/batches.md:708
 msgid ""

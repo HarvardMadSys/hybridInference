@@ -14,6 +14,11 @@ vi.mock('@/lib/hooks', () => ({
   useRenameApiKey: vi.fn(),
 }));
 
+const push = vi.fn();
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push }),
+}));
+
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useBranding: () => ({ appName: 'Test App' }),
 }));
@@ -211,7 +216,7 @@ describe('ApiKeyManager with several keys', () => {
     const trigger = screen.getByRole('button', { name: 'Actions for laptop' });
     trigger.focus();
     fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-    expect(screen.getByRole('menuitem', { name: 'Rename' })).toHaveFocus();
+    expect(screen.getByRole('menuitem', { name: 'Limits' })).toHaveFocus();
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'End' });
     expect(screen.getByRole('menuitem', { name: 'Revoke' })).toHaveFocus();
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
@@ -313,5 +318,47 @@ describe('ApiKeyManager with several keys', () => {
     expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeInTheDocument();
     expect(screen.getByText('revoked')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /revoked keys/i })).not.toBeInTheDocument();
+  });
+
+  it('links each key to its own page and sums up its limits', () => {
+    mockKeys([
+      makeItem({
+        key_prefix: 'hyi-aaaaaaaa',
+        name: 'ci',
+        budget_daily_usd: 5,
+        allowed_models: ['m-a', 'm-b'],
+      }),
+      makeItem({ key_prefix: 'hyi-bbbbbbbb', name: 'laptop' }),
+    ]);
+    render(<ApiKeyManager />);
+
+    expect(screen.getByRole('link', { name: 'ci' })).toHaveAttribute(
+      'href',
+      '/dashboard/keys/hyi-aaaaaaaa',
+    );
+    expect(screen.getByText('$5.00/day · 2 models')).toBeInTheDocument();
+    expect(screen.getByText('No limits')).toBeInTheDocument();
+  });
+
+  it("opens a key's limits from its actions", () => {
+    mockKeys([makeItem({ key_prefix: 'hyi-aaaaaaaa', name: 'ci' })]);
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for ci' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Limits' }));
+
+    expect(push).toHaveBeenCalledWith('/dashboard/keys/hyi-aaaaaaaa');
+  });
+
+  it("says that regenerating keeps the key's name, limits and spend", () => {
+    mockKeys([makeItem({ key_prefix: 'hyi-aaaaaaaa', name: 'ci' })]);
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for ci' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Regenerate' }));
+
+    expect(
+      within(screen.getByRole('dialog')).getByText(/keeps its name, limits and spend/),
+    ).toBeInTheDocument();
   });
 });
