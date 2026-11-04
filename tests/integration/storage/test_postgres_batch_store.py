@@ -1305,6 +1305,21 @@ async def test_pausing_holds_back_only_that_users_claimable_batches(store):
     assert len(await _claim(store, other)) == 1
 
 
+async def test_pausing_by_key_holds_back_only_that_keys_batches(store):
+    """A key that spent its own budget: the account's other keys keep running."""
+    model = _model()
+    # Not alice: claims feed the per-user fairness state that later tests of hers read.
+    spent = await _create(store, _items(model, 1), user="erin", key_hash="spent-key")
+    other = await _create(store, _items(model, 1), user="erin", key_hash="other-key")
+    until = datetime.now(UTC) + timedelta(hours=1)
+
+    assert await store.pause_user_batches("erin", until, "key_budget", key_hash="spent-key") == 1
+
+    assert (await store.get_batch(spent["id"]))["paused_until"] == until
+    assert (await store.get_batch(other["id"]))["paused_until"] is None
+    assert [item["batch_id"] for item in await _claim(store, model)] == [other["id"]]
+
+
 # -- sweep ---------------------------------------------------------------------
 
 

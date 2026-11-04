@@ -568,6 +568,14 @@ class OperationalStore(ABC):
         """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget."""
 
     @abstractmethod
+    async def get_key_spend(self, key_id: int) -> tuple[float, float]:
+        """What key *key_id* spent on the current UTC day and month, ``(today, month)``.
+
+        For the paths that authenticate without the merged spend lookup; on the
+        common path :meth:`get_auth_context_with_spend` already carries it.
+        """
+
+    @abstractmethod
     async def create_key(
         self,
         *,
@@ -621,13 +629,25 @@ class OperationalStore(ABC):
         """Every key the account owns, live first then newest.
 
         Rows carry ``id, key_prefix, name, created_at, last_used_at, status,
-        api_key_encrypted, spent_today_usd, spent_month_usd``; never the hash.
+        api_key_encrypted, budget_daily_usd, budget_monthly_usd,
+        allowed_models, spent_today_usd, spent_month_usd``; never the hash.
         The spend is the key's over the current UTC day and month.
         """
 
     @abstractmethod
-    async def rename_key(self, account_id: str, key_prefix: str, name: str | None) -> bool:
-        """Label the account's unrevoked key *key_prefix*. False when there is none."""
+    async def update_key_settings(
+        self, account_id: str, key_prefix: str, changes: dict[str, Any]
+    ) -> tuple[Row, Row] | None:
+        """Change the owner's settings on the account's unrevoked key *key_prefix*.
+
+        *changes* maps any of ``name``, ``budget_daily_usd``,
+        ``budget_monthly_usd`` and ``allowed_models`` to a new value (None
+        clears it); the rest are unchanged. Returns those four settings
+        ``(before, after)``, or None when the account has no such key.
+
+        Raises:
+            ValueError: *changes* is empty or names another column.
+        """
 
     @abstractmethod
     async def rotate_key(
@@ -639,10 +659,11 @@ class OperationalStore(ABC):
         new_key_prefix: str,
         api_key_encrypted: str | None,
     ) -> Row | None:
-        """Atomically revoke the account's active key *key_prefix* and issue its successor.
+        """Atomically give the account's active key *key_prefix* a new secret.
 
-        The successor keeps the key's name, expiry, notes, metadata and the
-        account's quota. A *key_prefix* of None means the account's only
+        It stays the same key (same row and id), so its name, limits, quota,
+        expiry, spend and request history carry on; the old secret stops
+        authenticating. A *key_prefix* of None means the account's only
         active key, chosen in the same transaction as the rotation. Returns
         ``{"id", "created_at", "old_key_prefix"}``, or None when the account
         has no such active key.

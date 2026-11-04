@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
@@ -365,10 +366,32 @@ class APIKeyCreateRequest(BaseModel):
     name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
 
 
-class APIKeyRenameRequest(BaseModel):
-    """New label for an API key; null or blank clears it."""
+#: Highest budget an owner may give a key, per day or per month: far above any
+#: real quota, it only keeps a typo from becoming a twelve-digit number.
+API_KEY_BUDGET_MAX_USD = Decimal("1000000")
+#: Most models a key's allowlist may name.
+API_KEY_ALLOWED_MODELS_MAX = 200
+
+
+class APIKeyUpdateRequest(BaseModel):
+    """Settings to change on one of the owner's API keys.
+
+    A field that is not sent stays as it is; ``null`` clears it. A cleared
+    budget is no limit at the key (the account's quota still applies); a
+    cleared allowlist is every model the account may use. A budget of 0 pauses
+    the key without revoking it.
+    """
 
     name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
+    budget_daily_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    budget_monthly_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
+        default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
+    )
 
 
 class APIKeyResponse(BaseModel):
@@ -408,6 +431,10 @@ class APIKeyListItem(BaseModel):
     #: from before then are in the account's totals only.
     spent_today_usd: float = 0.0
     spent_month_usd: float = 0.0
+    #: The key's own limits; null is no limit at the key.
+    budget_daily_usd: float | None = None
+    budget_monthly_usd: float | None = None
+    allowed_models: list[str] | None = None
 
 
 class APIKeyListResponse(BaseModel):
@@ -416,11 +443,14 @@ class APIKeyListResponse(BaseModel):
     keys: list[APIKeyListItem]
 
 
-class APIKeyRenameResponse(BaseModel):
-    """Response returned after relabelling an API key."""
+class APIKeyUpdateResponse(BaseModel):
+    """The owner's settings on an API key after a change."""
 
     key_prefix: str
     name: str | None = None
+    budget_daily_usd: float | None = None
+    budget_monthly_usd: float | None = None
+    allowed_models: list[str] | None = None
 
 
 class APIKeyDeleteResponse(BaseModel):

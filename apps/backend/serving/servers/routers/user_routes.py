@@ -24,7 +24,7 @@ from serving.exceptions import (
     generic_message_for_status,
     user_safe_error_for_log,
 )
-from serving.model_access import get_disabled_models_from_preferences
+from serving.model_access import get_disabled_models_from_preferences, route_canonical_model_id
 from serving.schemas import ModelList
 from serving.schemas_auth import (
     APIKeyCreateRequest,
@@ -33,9 +33,9 @@ from serving.schemas_auth import (
     APIKeyListItem,
     APIKeyListResponse,
     APIKeyRegenerateResponse,
-    APIKeyRenameRequest,
-    APIKeyRenameResponse,
     APIKeyResponse,
+    APIKeyUpdateRequest,
+    APIKeyUpdateResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
     LLMProberLayoutResponse,
@@ -617,36 +617,136 @@ async def list_api_keys(
                 status=row["status"],
                 spent_today_usd=float(row.get("spent_today_usd") or 0),
                 spent_month_usd=float(row.get("spent_month_usd") or 0),
+                **_key_limits(row),
             )
         )
     return APIKeyListResponse(keys=keys)
 
 
-@router.patch("/api-keys/{key_prefix}", response_model=APIKeyRenameResponse)
-async def rename_api_key(
+def _key_limits(row: dict[str, Any]) -> dict[str, Any]:
+    """A key row's own limits as the API shows them."""
+
+    def usd(value: Any) -> float | None:
+        return None if value is None else float(value)
+
+    allowed = row.get("allowed_models")
+    return {
+        "budget_daily_usd": usd(row.get("budget_daily_usd")),
+        "budget_monthly_usd": usd(row.get("budget_monthly_usd")),
+        "allowed_models": None if allowed is None else list(allowed),
+    }
+
+
+async def _canonical_allowlist(
+    requested: list[str],
+    *,
+    current_user: dict[str, Any],
+    router_exec: Any,
+    embedding_adapters: dict[str, Any],
+    model_visibility_resolver: Any,
+    op_store: Any,
+) -> list[str]:
+    """The allowlist as stored: canonical ids the account may use, sorted and unique.
+
+    An alias is stored as its model's id, since every access check reads the
+    canonical id. A model is accepted only if the console's own model list
+    shows it to this account (``GET /user/models``), the list the console
+    picks from.
+
+    Raises:
+        HTTPException: 422 naming the ids the account cannot use.
+    """
+    available = await get_user_models(
+        current_user=current_user,
+        router_exec=router_exec,
+        embedding_adapters=embedding_adapters,
+        model_visibility_resolver=model_visibility_resolver,
+        op_store=op_store,
+    )
+    usable = {model.id for model in available.data}
+    canonical: set[str] = set()
+    unknown: list[str] = []
+    for model_id in requested:
+        route = router_exec.routes.get(model_id) if router_exec is not None else None
+        resolved = route_canonical_model_id(route, model_id) if route is not None else model_id
+        if resolved in usable:
+            canonical.add(resolved)
+        else:
+            unknown.append(model_id)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Not models this account can use: {', '.join(sorted(set(unknown)))}",
+        )
+    return sorted(canonical)
+
+
+@router.patch("/api-keys/{key_prefix}", response_model=APIKeyUpdateResponse)
+async def update_api_key(
     request: Request,
     key_prefix: str,
-    payload: APIKeyRenameRequest,
+    payload: APIKeyUpdateRequest,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
-) -> APIKeyRenameResponse:
-    """Relabel one of the current user's unrevoked keys; a blank name clears it."""
+    router_exec=Depends(get_router),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+) -> APIKeyUpdateResponse:
+    """Change the name or the limits of one of the current user's unrevoked keys.
+
+    Only the fields sent change; ``null`` clears one. A blank name clears it
+    too. The limits apply from the key's next request.
+    """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
+    sent = payload.model_fields_set
+    if not sent:
+        raise HTTPException(status_code=422, detail="Nothing to change")
 
-    name = _clean_key_name(payload.name)
-    if not await op_store.rename_key(current_user["user_id"], key_prefix, name):
+    changes: dict[str, Any] = {}
+    if "name" in sent:
+        changes["name"] = _clean_key_name(payload.name)
+    for field in ("budget_daily_usd", "budget_monthly_usd"):
+        if field in sent:
+            changes[field] = getattr(payload, field)
+    if "allowed_models" in sent:
+        changes["allowed_models"] = (
+            None
+            if payload.allowed_models is None
+            else await _canonical_allowlist(
+                payload.allowed_models,
+                current_user=current_user,
+                router_exec=router_exec,
+                embedding_adapters=embedding_adapters,
+                model_visibility_resolver=model_visibility_resolver,
+                op_store=op_store,
+            )
+        )
+
+    changed = await op_store.update_key_settings(current_user["user_id"], key_prefix, changes)
+    if changed is None:
         raise HTTPException(status_code=404, detail="API key not found")
+    before, after = changed
 
+    def shown(row: dict[str, Any]) -> dict[str, Any]:
+        return {"name": row.get("name"), **_key_limits(row)}
+
+    old, new = shown(before), shown(after)
     await log_admin_action(
         db_logger,
-        action="rename_key",
-        details={"actor": "user", "key_prefix": key_prefix, "name": name},
+        # A rename alone keeps the action it has always been audited as.
+        action="rename_key" if set(changes) == {"name"} else "update_key_settings",
+        details={
+            "actor": "user",
+            "key_prefix": key_prefix,
+            **({"name": new["name"]} if "name" in changes else {}),
+            "changed": {field: {"from": old[field], "to": new[field]} for field in changes},
+        },
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
-    return APIKeyRenameResponse(key_prefix=key_prefix, name=name)
+    return APIKeyUpdateResponse(key_prefix=key_prefix, **new)
 
 
 @router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
@@ -753,10 +853,11 @@ async def _rotate_api_key(
     op_store: Any,
     db_logger: Any,
 ) -> APIKeyRegenerateResponse:
-    """Replace one of the current user's active keys; the old one stops at once.
+    """Give one of the current user's active keys a new secret; the old one stops at once.
 
-    The successor keeps the key's name and the account's quota (a rotation is
-    not a reason to reset a limit an admin granted). An *old_key_prefix* of
+    It stays the same key: its name, limits, the account's quota (a rotation
+    is not a reason to reset a limit an admin granted), what it has spent
+    against its budgets and its request history all carry on. An *old_key_prefix* of
     None means the account's only active key, which the store picks under
     the account lock; 409 when there are several. 404 when the account has
     no such active key.
