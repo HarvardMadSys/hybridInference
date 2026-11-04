@@ -1004,6 +1004,20 @@ async def test_zero_quota_still_uploads_and_checks_but_does_not_submit(gateway):
     assert await jobs_of(gw, alice) == []
 
 
+async def test_a_spent_monthly_quota_is_named_in_the_refusal(gateway):
+    gw, alice = gateway, gateway.users["alice"]
+    async with gw.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET quota_monthly_cost_usd = 0 WHERE user_id = $1", alice["user_id"]
+        )
+    source = await upload(gw, alice, jsonl([chat_row("mq-1", gw.chat.config.id)]))
+    report = (await preflight(gw, alice, source["id"])).json()
+    refused = await submit(gw, alice, await submission(gw, alice, source, report))
+    assert refused.status_code == 429 and code_of(refused) == "monthly_quota_exceeded"
+    assert refused.json()["error"]["window"] == "month"
+    assert await jobs_of(gw, alice) == []
+
+
 async def test_a_downgraded_role_keeps_managing_but_cannot_create(gateway):
     gw, alice = gateway, gateway.users["alice"]
     source = await upload(gw, alice, jsonl([chat_row("g-1", gw.chat.config.id)]))

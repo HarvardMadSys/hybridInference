@@ -68,6 +68,16 @@ function refusalText(error: BatchConsoleError, t: Translate): string {
         'batches.create.refused.quota',
         'Your daily quota is spent. Submit after it renews (00:00 UTC) or once it is raised; uploading and checking stay free.',
       );
+    case 'monthly_quota_exceeded':
+      return t(
+        'batches.create.refused.monthly_quota',
+        'Your monthly quota is spent. Submit after it renews on the 1st (UTC) or once it is raised; uploading and checking stay free.',
+      );
+    case 'key_budget_exceeded':
+      return t(
+        'batches.create.refused.key_budget',
+        "The API key this batch runs under has spent its budget. Raise it on the key's page, or submit after it renews; uploading and checking stay free.",
+      );
     default:
       return error.message;
   }

@@ -49,6 +49,9 @@ describe('pauseText', () => {
       /^Paused: the API key this batch runs under has spent its budget\./,
     );
     expect(pauseText(paused('quota'), english)).toMatch(/^Paused: your daily quota is spent\./);
+    expect(pauseText(paused('monthly_quota'), english)).toMatch(
+      /^Paused: your monthly quota is spent\./,
+    );
   });
 
   it('is nothing for a batch that is not paused', () => {

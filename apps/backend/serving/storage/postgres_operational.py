@@ -179,6 +179,20 @@ _KEY_SPEND_JOIN = (
     ") ks ON TRUE "
 )
 
+#: What the owner of key ``k`` spent this UTC month, from ``user_daily_cost``,
+#: read only when the account has a monthly quota: at most a month of counter
+#: rows through the counter's primary key. Same days ``get_user_cost_period``
+#: sums, so the gate and the console agree.
+_ACCOUNT_MONTH_SPEND_JOIN = (
+    "LEFT JOIN LATERAL ("
+    "  SELECT COALESCE(SUM(m.cost_usd), 0) AS account_spent_month_usd "
+    "  FROM user_daily_cost m "
+    "  WHERE m.user_id = k.user_id "
+    "    AND k.quota_monthly_cost_usd IS NOT NULL "
+    "    AND m.day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+    ") am ON TRUE "
+)
+
 
 #: Advisory lock key held by every API-key write: shared by a write to one
 #: account's keys, exclusive by a write that spans accounts. The per-account
@@ -1318,7 +1332,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                f"{_AUTH_KEY_COLUMNS}, "
+                f"k.quota_monthly_cost_usd, {_AUTH_KEY_COLUMNS}, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -1342,13 +1356,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         The key's own limits come with it, and, for a key with a budget, what
         the key spent today and this month (``key_spent_today_usd``,
-        ``key_spent_month_usd``; see ``_KEY_SPEND_JOIN``). Still one
-        round-trip.
+        ``key_spent_month_usd``; see ``_KEY_SPEND_JOIN``), and, for an
+        account with a monthly quota, what it spent this month
+        (``account_spent_month_usd``; see ``_ACCOUNT_MONTH_SPEND_JOIN``). Still
+        one round-trip.
         """
         identity = _JOINED_USER_IDENTITY
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                "k.quota_monthly_cost_usd, am.account_spent_month_usd, "
                 f"{_AUTH_KEY_COLUMNS}, ks.key_spent_today_usd, ks.key_spent_month_usd, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd "
@@ -1358,6 +1375,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "  ON s.user_id = k.user_id "
                 " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
                 f"{_KEY_SPEND_JOIN}"
+                f"{_ACCOUNT_MONTH_SPEND_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -2326,7 +2344,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, u.role "
+                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, k.quota_monthly_cost_usd, u.role "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.user_id = $1 "
@@ -3586,7 +3604,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         shares them:
 
         * The **grant door** (:mod:`serving.grant_auth`, cloud-agent tokens)
-          calls :func:`serving.quota.check` and :func:`serving.quota.resolve_quota`,
+          calls :func:`serving.quota.first_refusal` and :func:`serving.quota.resolve_quota`,
           so it and this query move together by construction: retune
           ``serving.quota`` and both follow.
         * The **API-key door** (``verify_api_key`` in

@@ -279,6 +279,13 @@ msgstr "如果你的每日额度已用完，你的批次会暂停，直到额度
 
 #: ../developer/batches.md
 msgid ""
+"if your monthly quota is used up, your batches pause and are checked again "
+"within the hour, so they resume when the quota is raised or renews on the "
+"1st (UTC);"
+msgstr "如果你的每月额度已用完，你的批次会暂停，并在一小时内再次检查，所以额度调高或在每月 1 日（UTC）刷新后就会恢复；"
+
+#: ../developer/batches.md
+msgid ""
 "if the key has spent its own daily or monthly budget, the batches created "
 "with that key pause, and are checked again within the hour, so raising the "
 "key's budget lets them resume; batches of your other keys keep running;"
@@ -1534,9 +1541,9 @@ msgstr ""
 #: ../developer/batches.md:41
 msgid ""
 "You have the most unfinished batches allowed, the batch would take your "
-"unfinished requests over their limit, your daily quota is used up, or the "
-"key has spent its own budget"
-msgstr "你的未完成批次已达上限、该批次会让你的未完成请求超过上限、你的每日额度已用完，或这个 key 已用完它自己的预算"
+"unfinished requests over their limit, your daily or monthly quota is used "
+"up, or the key has spent its own budget"
+msgstr "你的未完成批次已达上限、该批次会让你的未完成请求超过上限、你的每日或每月额度已用完，或这个 key 已用完它自己的预算"
 
 #: ../developer/batches.md:708
 msgid ""
