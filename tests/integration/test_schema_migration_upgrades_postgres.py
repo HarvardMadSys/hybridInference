@@ -24,6 +24,9 @@ from tests.fixtures import migrations as mig, postgres, schema_snapshot
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
+#: These tests are about the baseline; later revisions have tests of their own.
+BASELINE = "0001_baseline"
+
 # The baseline's steps, as ``module.function`` under ``migrations.baseline``.
 BASELINE_STEPS = (
     "app_config.ensure_schema",
@@ -125,11 +128,11 @@ async def _age(conn: asyncpg.Connection) -> None:
 
 
 async def test_an_old_database_converges_and_its_old_rows_are_converted(scratch):
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     async with mig.connected(scratch) as conn:
         await _age(conn)
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
 
     assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
     async with mig.connected(scratch) as conn:
@@ -152,7 +155,7 @@ async def test_an_old_database_converges_and_its_old_rows_are_converted(scratch)
 
 
 async def test_rows_the_migration_cannot_fix_stop_it_until_they_are_fixed(scratch):
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     async with mig.connected(scratch) as conn:
         await _forget_migrations(conn)
         await conn.execute(
@@ -171,7 +174,7 @@ async def test_rows_the_migration_cannot_fix_stop_it_until_they_are_fixed(scratc
             )
 
     with pytest.raises(asyncpg.UniqueViolationError):
-        await mig.upgrade(scratch)
+        await mig.upgrade(scratch, BASELINE)
     assert await _revision(scratch) is None
 
     async with mig.connected(scratch) as conn:
@@ -179,7 +182,7 @@ async def test_rows_the_migration_cannot_fix_stop_it_until_they_are_fixed(scratc
             "DELETE FROM email_broadcast_recipients WHERE ctid NOT IN "
             "(SELECT min(ctid) FROM email_broadcast_recipients GROUP BY broadcast_id, user_id)"
         )
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     assert await _revision(scratch) == "0001_baseline"
 
 
@@ -194,10 +197,10 @@ async def test_a_run_that_fails_partway_is_finished_by_the_next(scratch, step, m
     with monkeypatch.context() as patch:
         patch.setattr(module, function, fail)
         with pytest.raises(RuntimeError, match="injected failure"):
-            await mig.upgrade(scratch)
+            await mig.upgrade(scratch, BASELINE)
     assert await _revision(scratch) is None
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
 
     assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
     assert await _revision(scratch) == "0001_baseline"
@@ -213,7 +216,7 @@ async def _hold_api_keys(database: str) -> tuple[asyncpg.Connection, object]:
 
 
 async def test_a_held_table_lock_stops_the_run_and_the_rerun_finishes(scratch):
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     async with mig.connected(scratch) as conn:
         await _forget_migrations(conn)
         # Dropping it needs ACCESS EXCLUSIVE, which the reader's lock blocks.
@@ -221,14 +224,14 @@ async def test_a_held_table_lock_stops_the_run_and_the_rerun_finishes(scratch):
     holder, transaction = await _hold_api_keys(scratch)
     try:
         with pytest.raises(Exception) as caught:
-            await mig.upgrade(scratch)
+            await mig.upgrade(scratch, BASELINE)
         assert sqlstate(caught.value) == LOCK_NOT_AVAILABLE
         assert await _revision(scratch) is None
     finally:
         await transaction.rollback()
         await holder.close()
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
 
     assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
 
@@ -236,7 +239,7 @@ async def test_a_held_table_lock_stops_the_run_and_the_rerun_finishes(scratch):
 async def test_the_command_exits_75_and_names_the_session_holding_the_lock(
     scratch, monkeypatch, capsys
 ):
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     async with mig.connected(scratch) as conn:
         await _forget_migrations(conn)
         await conn.execute("ALTER TABLE api_keys ADD COLUMN tier TEXT")
@@ -286,7 +289,7 @@ async def test_a_settled_database_migrates_alongside_a_backup(scratch):
     strong lock: every step reads the catalog and finds nothing to change. So
     the first run succeeds next to a nightly backup instead of waiting for it.
     """
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     async with mig.connected(scratch) as conn:
         await _forget_migrations(conn)
         tables = [
@@ -299,7 +302,7 @@ async def test_a_settled_database_migrates_alongside_a_backup(scratch):
     try:
         for table in tables:
             await dump.execute(f'LOCK TABLE "{table}" IN ACCESS SHARE MODE')
-        await mig.upgrade(scratch)
+        await mig.upgrade(scratch, BASELINE)
     finally:
         await transaction.rollback()
         await dump.close()
@@ -318,7 +321,7 @@ async def test_an_open_write_bounds_the_wait_and_never_queues_other_writes(scrat
     connection must give up after the same 3 s as the revision statements, and
     a write issued meanwhile must not wait for longer than that.
     """
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     async with mig.connected(scratch) as conn:
         await _forget_migrations(conn)
     writer = await postgres.connect(database=scratch)
@@ -361,7 +364,7 @@ async def test_an_earlier_release_finds_nothing_to_apply_on_a_later_schema(
     starts nothing, says why, and exits 0 when the later schema still
     supports this code, 1 when its floor is one this code does not know.
     """
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     async with mig.connected(scratch) as conn:
         await conn.execute("UPDATE hybridinference_alembic_version SET version_num = '0100_later'")
         if floor is not None:
@@ -388,7 +391,10 @@ async def test_concurrent_runs_take_turns(scratch):
 
     assert [code for code, _ in results] == [0, 0], results
 
-    assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
+    # The command migrates to head, so compare with one run to head.
+    async with mig.scratch_database() as once:
+        await mig.upgrade(once)
+        assert schema_snapshot.differences(await _describe(once), await _describe(scratch)) == []
     async with mig.connected(scratch) as conn:
         assert await conn.fetchval("SELECT count(*) FROM hybridinference_alembic_version") == 1
 

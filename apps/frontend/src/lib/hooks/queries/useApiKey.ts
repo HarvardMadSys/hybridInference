@@ -5,6 +5,8 @@ import {
   listApiKeys,
   regenerateApiKey,
   renameApiKey,
+  updateApiKey,
+  type ApiKeyUpdate,
 } from '@/lib/api/user';
 
 export function useApiKeys() {
@@ -33,6 +35,18 @@ export function useRenameApiKey() {
   return useMutation({
     mutationFn: ({ keyPrefix, name }: { keyPrefix: string; name: string | null }) =>
       renameApiKey(keyPrefix, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+    },
+  });
+}
+
+export function useUpdateApiKey() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ keyPrefix, changes }: { keyPrefix: string; changes: ApiKeyUpdate }) =>
+      updateApiKey(keyPrefix, changes),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
     },

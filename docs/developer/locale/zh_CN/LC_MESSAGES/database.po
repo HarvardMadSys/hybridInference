@@ -462,9 +462,10 @@ msgstr ""
 
 #: ../developer/database.md
 msgid ""
-"User records, hashed API keys and their quotas, refresh sessions and the "
-"accounts signed in on each browser, sign-in history"
-msgstr "用户记录、哈希后的 API key 及其配额、refresh token 会话及每个浏览器上已登录的账号、登录历史"
+"User records, hashed API keys with their quotas and their own budgets and "
+"model allowlists, refresh sessions and the accounts signed in on each "
+"browser, sign-in history"
+msgstr "用户记录、哈希后的 API key 及其配额和它们各自的预算与模型白名单、refresh token 会话及每个浏览器上已登录的账号、登录历史"
 
 #: ../developer/database.md
 msgid "Admin actions"

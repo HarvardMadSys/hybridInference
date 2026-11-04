@@ -43,15 +43,31 @@ export interface ApiKeyListItem {
   /** What requests with this key cost on the current UTC day and month. */
   spent_today_usd?: number;
   spent_month_usd?: number;
+  /** The key's own limits; null or absent is no limit at the key. */
+  budget_daily_usd?: number | null;
+  budget_monthly_usd?: number | null;
+  /** Model ids the key may call; null or absent is every model the account may use. */
+  allowed_models?: string[] | null;
 }
 
 export interface ApiKeyListResponse {
   keys: ApiKeyListItem[];
 }
 
-export interface ApiKeyRenameResponse {
+/** Settings to change on a key: a field left out is unchanged, `null` clears it. */
+export interface ApiKeyUpdate {
+  name?: string | null;
+  budget_daily_usd?: number | null;
+  budget_monthly_usd?: number | null;
+  allowed_models?: string[] | null;
+}
+
+export interface ApiKeyUpdateResponse {
   key_prefix: string;
   name?: string | null;
+  budget_daily_usd?: number | null;
+  budget_monthly_usd?: number | null;
+  allowed_models?: string[] | null;
 }
 
 export interface ApiKeyRegenerateResponse {
@@ -159,17 +175,25 @@ export async function createApiKey(name?: string | null): Promise<ApiKeyResponse
   return jsonOrThrow<ApiKeyResponse>(resp);
 }
 
+/** Change a key's name or limits; only the fields given change. */
+export async function updateApiKey(
+  keyPrefix: string,
+  changes: ApiKeyUpdate,
+): Promise<ApiKeyUpdateResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/user/api-keys/${encodeURIComponent(keyPrefix)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes),
+  });
+  return jsonOrThrow<ApiKeyUpdateResponse>(resp);
+}
+
 /** Relabel a key; a blank name clears it. */
 export async function renameApiKey(
   keyPrefix: string,
   name: string | null,
-): Promise<ApiKeyRenameResponse> {
-  const resp = await fetchWithAuth(API_BASE, `/user/api-keys/${encodeURIComponent(keyPrefix)}`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  return jsonOrThrow<ApiKeyRenameResponse>(resp);
+): Promise<ApiKeyUpdateResponse> {
+  return updateApiKey(keyPrefix, { name });
 }
 
 export async function listApiKeys(): Promise<ApiKeyListResponse> {
@@ -184,7 +208,7 @@ export async function deleteApiKey(keyPrefix: string): Promise<ApiKeyDeleteRespo
   return jsonOrThrow<ApiKeyDeleteResponse>(resp);
 }
 
-/** Replace one active key with a new one; the old key stops working at once. */
+/** Give an active key a new secret; the old one stops working at once. The key keeps its name, limits and spend. */
 export async function regenerateApiKey(keyPrefix: string): Promise<ApiKeyRegenerateResponse> {
   const resp = await fetchWithAuth(
     API_BASE,

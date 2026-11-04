@@ -143,13 +143,41 @@ def _decode_grant(row: Any) -> Row:
     return decoded
 
 
-#: The columns a new key is inserted with, by create and rotate alike.
+#: The columns a new key is inserted with.
 _KEY_INSERT_COLUMNS = (
     "key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd, "
     "quota_monthly_cost_usd, expires_at, notes, metadata, account_id, "
     "api_key_encrypted, name"
 )
 _KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12"
+
+#: A key's own limits (P2a), on top of its account's quota. NULL means no limit
+#: at the key.
+_KEY_LIMIT_COLUMNS = "k.budget_daily_usd, k.budget_monthly_usd, k.allowed_models"
+
+#: What the auth lookups add about the presented key itself: its limits, and
+#: how a refusal names it.
+_AUTH_KEY_COLUMNS = f"k.key_prefix, k.name AS key_name, {_KEY_LIMIT_COLUMNS}"
+
+#: The settings an account's owner may change on one of its keys.
+KEY_SETTINGS_COLUMNS = ("name", "budget_daily_usd", "budget_monthly_usd", "allowed_models")
+
+#: What key ``k`` spent on the current UTC day and month, from
+#: ``api_key_daily_cost``, read only for a key with a budget: at most a month of
+#: counter rows, through the counter's primary key. The day strings are the
+#: counter write path's, so a budget and its counter bucket midnight alike.
+_KEY_SPEND_JOIN = (
+    "LEFT JOIN LATERAL ("
+    "  SELECT COALESCE(SUM(c.cost_usd) FILTER ("
+    "           WHERE c.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
+    "           AS key_spent_today_usd, "
+    "         COALESCE(SUM(c.cost_usd), 0) AS key_spent_month_usd "
+    "  FROM api_key_daily_cost c "
+    "  WHERE c.key_id = k.id "
+    "    AND (k.budget_daily_usd IS NOT NULL OR k.budget_monthly_usd IS NOT NULL) "
+    "    AND c.day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+    ") ks ON TRUE "
+)
 
 
 #: Advisory lock key held by every API-key write: shared by a write to one
@@ -1290,6 +1318,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                f"{_AUTH_KEY_COLUMNS}, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -1310,11 +1339,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         counter row yet reads the same as the separate query's default. The
         day expression is the counter write path's, so both sides of the quota
         gate bucket midnight identically.
+
+        The key's own limits come with it, and, for a key with a budget, what
+        the key spent today and this month (``key_spent_today_usd``,
+        ``key_spent_month_usd``; see ``_KEY_SPEND_JOIN``). Still one
+        round-trip.
         """
         identity = _JOINED_USER_IDENTITY
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                f"{_AUTH_KEY_COLUMNS}, ks.key_spent_today_usd, ks.key_spent_month_usd, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd "
                 "FROM api_keys k "
@@ -1322,6 +1357,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "LEFT JOIN user_daily_cost s "
                 "  ON s.user_id = k.user_id "
                 " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+                f"{_KEY_SPEND_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -1331,12 +1367,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return _coerce_user_row(row)
 
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
-        """Lightweight identity lookup (no quota check, no last_used write)."""
+        """Lightweight identity lookup (no quota check, no last_used write).
+
+        Carries the key's model allowlist, which the model listings apply.
+        """
         identity = _JOINED_USER_IDENTITY
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
-                "u.max_concurrent_requests "
+                "u.max_concurrent_requests, k.allowed_models "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1383,6 +1422,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Set ``last_used_at = NOW()`` for the given key id."""
         async with self._pool.acquire() as conn:
             await conn.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", key_id)
+
+    async def get_key_spend(self, key_id: int) -> tuple[float, float]:
+        """What key *key_id* spent on the current UTC day and month, from its counter."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(cost_usd) FILTER ("
+                "         WHERE day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
+                "         AS today, "
+                "       COALESCE(SUM(cost_usd), 0) AS month "
+                "FROM api_key_daily_cost "
+                "WHERE key_id = $1 "
+                "  AND day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')",
+                key_id,
+            )
+        return float(row["today"]), float(row["month"])
 
     async def create_key(
         self,
@@ -1495,7 +1549,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT k.id, k.key_prefix, k.name, k.created_at, k.last_used_at, k.status, "
-                "k.api_key_encrypted, "
+                f"k.api_key_encrypted, {_KEY_LIMIT_COLUMNS}, "
                 "COALESCE(s.today, 0) AS spent_today_usd, "
                 "COALESCE(s.month, 0) AS spent_month_usd "
                 "FROM api_keys k "
@@ -1514,18 +1568,46 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return [dict(row) for row in rows]
 
-    async def rename_key(self, account_id: str, key_prefix: str, name: str | None) -> bool:
-        """Set the label of the account's unrevoked key *key_prefix*. False when there is none."""
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "UPDATE api_keys SET name = $3 "
+    async def update_key_settings(
+        self, account_id: str, key_prefix: str, changes: dict[str, Any]
+    ) -> tuple[Row, Row] | None:
+        """Change the owner's settings on the account's unrevoked key *key_prefix*.
+
+        *changes* maps columns of :data:`KEY_SETTINGS_COLUMNS` to their new
+        values; a column it leaves out is unchanged, and None clears one.
+        Returns the key's settings ``(before, after)``, or None when the account
+        has no such key. The row lock keeps two concurrent changes from both
+        reporting the same ``before``.
+
+        Raises:
+            ValueError: *changes* is empty or names another column.
+        """
+        if not changes or set(changes) - set(KEY_SETTINGS_COLUMNS):
+            raise ValueError(f"key settings must be a non-empty subset of {KEY_SETTINGS_COLUMNS}")
+        columns = [c for c in KEY_SETTINGS_COLUMNS if c in changes]
+        assignments = ", ".join(f"{c} = ${i}" for i, c in enumerate(columns, start=3))
+        returned = ", ".join(KEY_SETTINGS_COLUMNS)
+        async with self._pool.acquire() as conn, conn.transaction():
+            before = await conn.fetchrow(
+                f"SELECT id, {returned} FROM api_keys "
                 "WHERE account_id = $1 AND key_prefix = $2 AND status <> 'revoked' "
-                "RETURNING id",
+                "FOR UPDATE",
                 account_id,
                 key_prefix,
-                name,
             )
-        return row is not None
+            if before is None:
+                return None
+            after = await conn.fetchrow(
+                f"UPDATE api_keys SET {assignments} WHERE account_id = $1 AND key_prefix = $2 "
+                f"AND id = ${len(columns) + 3} RETURNING {returned}",
+                account_id,
+                key_prefix,
+                *(changes[c] for c in columns),
+                before["id"],
+            )
+        old = dict(before)
+        del old["id"]
+        return old, dict(after)
 
     async def rotate_key(
         self,
@@ -1536,17 +1618,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         new_key_prefix: str,
         api_key_encrypted: str | None,
     ) -> Row | None:
-        """Replace the account's active key *key_prefix* with a new credential.
+        """Give the account's active key *key_prefix* a new credential.
 
-        One transaction under the account lock: the old key is revoked and a
-        new active key inserted with its name, owner fields, expiry, notes,
-        metadata and the account's quota, so the account's key count and
-        limits are unchanged.
+        The key stays the same key: its row, and so its id, name, limits,
+        quota, expiry, notes, metadata and creation time, are kept, and only
+        its secret changes (hash, prefix and ciphertext). Everything keyed by
+        the id carries on: what the key spent counts against its budgets after
+        the rotation as before, and its request history stays its own. The old
+        secret stops authenticating with the commit.
 
-        A *key_prefix* of None means the account's only active key, for
-        clients written when an account held one. Which key that is gets
-        decided under the lock, so a key created meanwhile is never rotated
-        in its place.
+        One transaction under the account lock. A *key_prefix* of None means the
+        account's only active key, for clients written when an account held
+        one. Which key that is gets decided under the lock, so a key created
+        meanwhile is never rotated in its place.
 
         Returns ``{"id", "created_at", "old_key_prefix"}``, or None when the
         account has no such active key.
@@ -1568,33 +1652,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 if not live:
                     return None
                 key_prefix = live[0]["key_prefix"]
-            old = await conn.fetchrow(
-                "UPDATE api_keys SET status = 'revoked' "
+            row = await conn.fetchrow(
+                "UPDATE api_keys SET key_hash = $3, key_prefix = $4, api_key_encrypted = $5 "
                 "WHERE account_id = $1 AND key_prefix = $2 AND status = 'active' "
-                "RETURNING id, user_id, user_name, quota_daily_cost_usd, "
-                "quota_monthly_cost_usd, expires_at, notes, metadata, account_id, name",
+                "RETURNING id, created_at",
                 account_id,
                 key_prefix,
-            )
-            if old is None:
-                return None
-            new = await conn.fetchrow(
-                f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}) VALUES ({_KEY_INSERT_VALUES}) "
-                "RETURNING id, created_at",
                 new_key_hash,
                 new_key_prefix,
-                old["user_id"],
-                old["user_name"],
-                old["quota_daily_cost_usd"],
-                old["quota_monthly_cost_usd"],
-                old["expires_at"],
-                old["notes"],
-                old["metadata"],
-                old["account_id"],
                 api_key_encrypted,
-                old["name"],
             )
-        return {"id": new["id"], "created_at": new["created_at"], "old_key_prefix": key_prefix}
+        if row is None:
+            return None
+        return {"id": row["id"], "created_at": row["created_at"], "old_key_prefix": key_prefix}
 
     async def check_active_key_exists(self, user_id: str) -> bool:
         """Return True if *user_id* already has an active key."""

@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
+#: These tests are about the baseline; later revisions have tests of their own.
+BASELINE = "0001_baseline"
+
 
 @pytest.fixture
 async def scratch():
@@ -32,7 +35,7 @@ async def _describe(database: str) -> dict:
 
 
 async def test_an_empty_database_migrates_to_the_recorded_baseline(scratch):
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
 
     assert schema_snapshot.differences(schema_snapshot.load(), await _describe(scratch)) == []
     async with mig.connected(scratch) as conn:
@@ -45,7 +48,7 @@ async def test_a_database_startup_built_is_recorded_without_change(scratch):
         await baseline.run(conn)
     before = await _describe(scratch)
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
 
     assert schema_snapshot.differences(before, await _describe(scratch)) == []
     async with mig.connected(scratch) as conn:
@@ -53,10 +56,10 @@ async def test_a_database_startup_built_is_recorded_without_change(scratch):
 
 
 async def test_upgrading_again_changes_nothing(scratch):
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
     before = await _describe(scratch)
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, BASELINE)
 
     assert await _describe(scratch) == before
 

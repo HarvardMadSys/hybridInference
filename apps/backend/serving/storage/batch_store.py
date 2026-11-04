@@ -2256,11 +2256,17 @@ class BatchStore:
         return True
 
     async def pause_user_batches(
-        self, user_id: str, until: datetime, reason: str | None = None
+        self,
+        user_id: str,
+        until: datetime,
+        reason: str | None = None,
+        *,
+        key_hash: str | None = None,
     ) -> int:
         """Hold a user's validating and in-progress batches back from claims until *until*.
 
-        ``reason`` (``quota`` or ``role``) is what the console shows.
+        ``reason`` (``quota``, ``role`` or ``key_budget``) is what the console
+        shows. With ``key_hash``, only the batches created with that API key.
 
         Returns:
             The number of batches paused.
@@ -2272,6 +2278,7 @@ class BatchStore:
                 WHERE id IN (
                     SELECT id FROM batch_jobs
                     WHERE user_id = $1 AND status IN ('validating', 'in_progress')
+                      AND ($4::text IS NULL OR key_hash = $4)
                     ORDER BY id
                     FOR NO KEY UPDATE
                 )
@@ -2279,6 +2286,7 @@ class BatchStore:
                 user_id,
                 until,
                 reason,
+                key_hash,
             )
         return _rowcount(result)
 

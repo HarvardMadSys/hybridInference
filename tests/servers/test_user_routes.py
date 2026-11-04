@@ -516,8 +516,8 @@ class TestAPIKeyManagement:
             ).json()["keys"]
         }
         assert keys[test_user_with_key["key_prefix"]]["status"] == "active"
-        assert keys[second["key_prefix"]]["status"] == "revoked"
-        # The successor keeps the key's name.
+        # The same key with a new secret: the old prefix is gone, not revoked.
+        assert second["key_prefix"] not in keys
         assert keys[rotated["key_prefix"]]["status"] == "active"
         assert keys[rotated["key_prefix"]]["name"] == "nightly"
 
@@ -581,7 +581,13 @@ class TestAPIKeyManagement:
             f"/user/api-keys/{prefix}", headers=auth_headers, json={"name": " laptop "}
         )
         assert renamed.status_code == 200
-        assert renamed.json() == {"key_prefix": prefix, "name": "laptop"}
+        assert renamed.json() == {
+            "key_prefix": prefix,
+            "name": "laptop",
+            "budget_daily_usd": None,
+            "budget_monthly_usd": None,
+            "allowed_models": None,
+        }
 
         cleared = await auth_app_client.patch(
             f"/user/api-keys/{prefix}", headers=auth_headers, json={"name": "   "}
