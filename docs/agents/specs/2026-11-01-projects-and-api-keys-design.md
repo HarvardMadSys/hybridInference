@@ -906,6 +906,13 @@ shows the limits, for example "$5/day · 3 models", or "No limits".
 - P2a does not change this. Enforcing it means summing `user_daily_cost` over
   the month on the auth path, and it deserves its own change and an
   announcement to the accounts that have a monthly quota set.
+- **Enforced since the change after P2a.** The auth lookup sums the month's
+  `user_daily_cost` rows in the same round trip, only for an account with a
+  monthly quota. It is checked after the daily quota, on the API-key door, the
+  grant door and for batches, and refuses with `scope: "account"`,
+  `window: "month"`, resetting on the 1st (UTC). NULL stays "no monthly
+  limit". Batches pause with reason `monthly_quota` and are checked again
+  within the hour, so a raised quota takes effect.
 
 ### 18.9 Testing
 
@@ -966,7 +973,7 @@ the same account is unaffected.
   key's hash, and regenerate changes it, so the batch worker no longer finds
   the key, as before P2a. Now that a key keeps its id across a rotation,
   batches could be bound to the id instead.
-- **The account monthly quota** is still not enforced (§18.8).
+- **The account monthly quota** is now enforced (§18.8).
 
 ## References
 

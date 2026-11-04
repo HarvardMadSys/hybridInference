@@ -69,7 +69,7 @@ class StoredKeyQuotaExceeded(Exception):
     """The stored API key, or its owner's account, has spent its cost limit.
 
     Raised by :func:`authenticate_stored_key`. ``scope`` says whose limit ran
-    out: the account's daily quota (``"account"``) or the key's own budget
+    out: the account's quota (``"account"``) or the key's own budget
     (``"key"``); ``window`` is ``"day"`` or ``"month"``, and ``reset_at`` is
     when that window renews.
     """
@@ -351,6 +351,12 @@ async def _budget_refusal(
     user's money, not the key's. The key's spend normally arrives with the
     auth lookup (``get_auth_context_with_spend``); a path without it reads the
     key's counter here, and only for a key that has a budget.
+
+    The account's monthly quota is read the same way: the month's spend
+    arrives with the lookup (``account_spent_month_usd``), or is read here, and
+    only for an account that has one. An identity resolved by user rather than
+    by key (``X-On-Behalf-Of``) carries no quota columns, so its daily quota is
+    the default and it has no monthly quota, as before.
     """
     daily = monthly = None
     if api_key_id is not None:
@@ -363,9 +369,18 @@ async def _budget_refusal(
             key_month = float(identity.get("key_spent_month_usd") or 0.0)
         elif op_store:
             key_today, key_month = await op_store.get_key_spend(api_key_id)
+    monthly_quota = _optional_usd(identity.get("quota_monthly_cost_usd"))
+    account_month = 0.0
+    if monthly_quota is not None:
+        if identity.get("account_spent_month_usd") is not None:
+            account_month = float(identity["account_spent_month_usd"])
+        elif op_store:
+            account_month = await op_store.get_user_cost_period(identity["user_id"], "month")
     return quota.first_refusal(
         account_quota_usd=quota_daily_cost_usd,
         account_spent_usd=spent_today_usd,
+        account_quota_monthly_usd=monthly_quota,
+        account_spent_month_usd=account_month,
         key_budget_daily_usd=daily,
         key_budget_monthly_usd=monthly,
         key_spent_today_usd=key_today,
@@ -845,8 +860,8 @@ async def verify_api_key(
             )
         try:
             if grants.looks_like_grant_token(presented_key):
-                # The grant path meters against the account's daily quota,
-                # which the legacy branch below this return never reached.
+                # The grant path meters against the account's quotas, which
+                # the legacy branch below this return never reached.
                 return publish_caller_role(
                     await authenticate_grant_model_call(presented_key, op_store=op_store)
                 )
@@ -854,7 +869,7 @@ async def verify_api_key(
             # Same body and headers as the direct path's 429, from the same
             # builder: a caller must not be able to tell which door it used.
             body, headers = quota.refusal_payload(
-                quota.BudgetRefusal("account", "day", exc.quota_usd, exc.spent_usd),
+                quota.BudgetRefusal("account", exc.window, exc.quota_usd, exc.spent_usd),
                 contact_email=_quota_contact(),
             )
             raise HTTPException(status_code=429, detail=body, headers=headers) from exc
@@ -939,7 +954,7 @@ async def authenticate_stored_key(
     item -- and has to stop wherever a live request presenting the same key
     would be refused. Applies what :func:`verify_api_key` applies to an
     ``hyi-`` key: key status and expiry, account status, email/phone
-    verification and the daily cost quota, read uncached
+    verification and the cost quotas, read uncached
     (:func:`_auth_context_with_spend`), and returns the same user context --
     role, disabled models, per-user concurrency override -- from the same
     builder.
@@ -961,12 +976,12 @@ async def authenticate_stored_key(
 
     Raises:
         StoredKeyRejected: The key no longer authenticates its owner.
-        StoredKeyQuotaExceeded: The key has spent its budget, or the owner
-            today's cost quota.
+        StoredKeyQuotaExceeded: The key has spent its budget, or the owner's
+            account its daily or monthly cost quota.
         Exception: Whatever the store raised, unchanged: the answer is unknown,
             not no. Also raised without an operational store to ask.
 
-    ``check_quota`` False skips the daily cost quota, for work that spends
+    ``check_quota`` False skips the cost quotas, for work that spends
     nothing (validating a batch's input).
     """
     if not is_user_auth_enabled():
@@ -1025,7 +1040,7 @@ async def verify_batch_management_identity(
     Everything :func:`verify_api_key` checks about the key and the account
     still applies -- a revoked or expired key, a suspended, deleted or
     unverified account, a blocked IP -- and the same user context comes back,
-    role and admin flag included. Only the daily cost quota is left out:
+    role and admin flag included. Only the cost quotas are left out:
     listing, reading, downloading, cancelling and deleting what one already
     submitted spends nothing, and must keep working exactly when the quota is
     spent. The context carries ``quota_exceeded`` (and the refusal itself) so a

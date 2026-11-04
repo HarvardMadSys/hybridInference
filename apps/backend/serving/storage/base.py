@@ -504,7 +504,8 @@ class OperationalStore(ABC):
         """Materialized auth lookup for ``verify_api_key``.
 
         Returns the full projection needed in a **single** call:
-        ``id, user_id, user_name, quota_daily_cost_usd, email, role``.
+        ``id, user_id, user_name, quota_daily_cost_usd, quota_monthly_cost_usd,
+        email, role``.
 
         The query joins ``api_keys`` with ``users`` and filters on
         ``status='active'``, unexpired key, and active user.
@@ -521,7 +522,9 @@ class OperationalStore(ABC):
         :meth:`get_auth_context_by_key_hash`, plus a ``cost_usd`` field: the
         ``user_daily_cost`` counter for the key's owner, UTC-midnight day,
         ``0.0`` when no counter row exists. ``None`` means the key did not
-        resolve, exactly like the identity-only lookup.
+        resolve, exactly like the identity-only lookup. When the account has a
+        monthly quota, ``account_spent_month_usd`` is the owner's spend this
+        UTC month (the sum :meth:`get_user_cost_period` returns); 0 otherwise.
 
         Not cached: the quota gate reads ``cost_usd`` on every request, and
         caching the merged row would stale the gate by the auth TTL. The
@@ -1153,7 +1156,7 @@ class OperationalStore(ABC):
         two numbers from :mod:`serving.quota`
         (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD` and the NULL
         fallback :data:`~serving.quota.DEFAULT_DAILY_QUOTA_USD`), which is what
-        the cloud-agent *grant* door uses via :func:`serving.quota.check`.
+        the cloud-agent *grant* door uses via :func:`serving.quota.first_refusal`.
 
         Be aware that this is not a guarantee across both doors. The API-key
         door — ``verify_api_key`` in :mod:`serving.servers.auth`, and the path

@@ -934,6 +934,46 @@ async def test_the_auth_lookup_carries_a_budgeted_keys_spend(keys):
     assert await store.get_key_spend(key_b) == (2.0, 2.0 + earlier)
 
 
+async def test_the_auth_lookup_carries_the_months_spend_under_a_monthly_quota(keys):
+    """The account's month, summed as the console sums it, read only under a monthly quota."""
+    store, pool = keys
+    capped, uncapped = "u-admkey-month", "u-admkey-nomonth"
+    now = datetime.now(UTC)
+    today = now.strftime("%Y-%m-%d")
+    month_start = now.replace(day=1).strftime("%Y-%m-%d")
+    last_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m-%d")
+    for uid, name in ((capped, "month"), (uncapped, "nomonth")):
+        await _user(store, uid)
+        await _key(pool, uid, name, "active")
+        await store.increment_user_cost(uid, 2.0, day=today)
+        await store.increment_user_cost(uid, 7.0, day=last_month)
+        if month_start != today:
+            await store.increment_user_cost(uid, 3.0, day=month_start)
+    earlier = 0.0 if month_start == today else 3.0
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET quota_monthly_cost_usd = 50 WHERE user_id = $1", capped
+        )
+
+    with_quota = await store.get_auth_context_with_spend("hash-month")
+    without = await store.get_auth_context_with_spend("hash-nomonth")
+
+    assert with_quota["quota_monthly_cost_usd"] == Decimal("50")
+    assert float(with_quota["account_spent_month_usd"]) == 2.0 + earlier
+    assert float(with_quota["account_spent_month_usd"]) == await store.get_user_cost_period(
+        capped, "month"
+    )
+    assert float(with_quota["cost_usd"]) == 2.0
+    # No monthly quota, no month read.
+    assert without["quota_monthly_cost_usd"] is None
+    assert float(without["account_spent_month_usd"]) == 0.0
+    # The identity-only lookup and the grant door's carry the quota too.
+    identity = await store.get_auth_context_by_key_hash("hash-month")
+    assert identity["quota_monthly_cost_usd"] == Decimal("50")
+    rows = await store.get_quota_context_for_user(capped)
+    assert [row["quota_monthly_cost_usd"] for row in rows] == [Decimal("50")]
+
+
 async def test_the_listing_lookup_carries_the_allowlist(keys):
     store, pool = keys
     uid = "u-admkey-light"

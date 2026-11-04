@@ -86,3 +86,37 @@ def test_a_key_refusal_names_the_key_by_its_label_or_prefix():
     assert named["message"].startswith('API key "ci" reached its daily budget of $5.00')
     assert unnamed["message"].startswith("API key hyi-abc reached its monthly budget")
     assert unnamed["key_prefix"] == "hyi-abc"
+
+
+@pytest.mark.parametrize(
+    ("monthly_quota", "spent_month", "expected"),
+    [
+        (None, 1e6, None),
+        (30, 29.98, None),
+        (30, 30, ("account", "month")),
+        (0, 0, ("account", "month")),
+    ],
+)
+def test_the_accounts_monthly_quota_is_checked_last(monthly_quota, spent_month, expected):
+    refusal = quota.first_refusal(
+        account_quota_usd=10,
+        account_spent_usd=1,
+        account_quota_monthly_usd=monthly_quota,
+        account_spent_month_usd=spent_month,
+    )
+
+    assert (None if refusal is None else (refusal.scope, refusal.window)) == expected
+
+
+def test_the_accounts_monthly_body_has_the_daily_fields_and_renews_next_month():
+    daily, daily_headers = quota.refusal_payload(quota.BudgetRefusal("account", "day", 10, 10))
+    monthly, headers = quota.refusal_payload(
+        quota.BudgetRefusal("account", "month", 30, 30), contact_email="ops@example.test"
+    )
+
+    assert monthly.keys() == daily.keys()
+    assert monthly["error"] == "Monthly cost quota exceeded"
+    assert (monthly["scope"], monthly["window"]) == ("account", "month")
+    assert monthly["reset_at"] == quota.next_utc_month_start().isoformat()
+    assert "ops@example.test" in monthly["message"]
+    assert headers.keys() == daily_headers.keys()

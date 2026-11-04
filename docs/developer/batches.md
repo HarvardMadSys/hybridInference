@@ -95,6 +95,9 @@ again:
   deleted, the batch fails;
 - if your daily quota is used up, your batches pause until it renews at
   midnight UTC;
+- if your monthly quota is used up, your batches pause and are checked again
+  within the hour, so they resume when the quota is raised or renews on the
+  1st (UTC);
 - if the key has spent its own daily or monthly budget, the batches created
   with that key pause, and are checked again within the hour, so raising the
   key's budget lets them resume; batches of your other keys keep running;
@@ -736,7 +739,7 @@ The operator may have changed any of them. A larger job is several batches.
 | `409` | The `Idempotency-Key` was already used with a different request |
 | `410` | The `Idempotency-Key`'s batch has been deleted |
 | `413` | The body is larger than the size limit |
-| `429` | You have the most unfinished batches allowed, the batch would take your unfinished requests over their limit, your daily quota is used up, or the key has spent its own budget |
+| `429` | You have the most unfinished batches allowed, the batch would take your unfinished requests over their limit, your daily or monthly quota is used up, or the key has spent its own budget |
 
 A file batch is counted against the limit on unfinished requests while its file
 is read, after the create call has answered: over the limit, the batch is

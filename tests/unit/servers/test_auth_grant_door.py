@@ -167,6 +167,26 @@ async def test_a_spent_quota_gets_the_direct_paths_429(grant_calls, monkeypatch)
     assert body["remaining_usd"] == 0 and headers["Retry-After"] == "43200"
 
 
+async def test_a_spent_monthly_quota_gets_the_direct_paths_monthly_429(grant_calls, monkeypatch):
+    _, outcome = grant_calls
+    outcome["raise"] = AgentQuotaExceeded(quota_usd=30.0, spent_usd=30.0, window="month")
+    monkeypatch.setattr(auth, "_quota_contact", lambda: "quota@example.test")
+
+    with pytest.raises(HTTPException) as caught:
+        await _verify("/v1/messages")
+
+    body, headers = quota.refusal_payload(
+        quota.BudgetRefusal("account", "month", 30.0, 30.0), contact_email="quota@example.test"
+    )
+    assert caught.value.status_code == 429
+    assert (caught.value.detail["scope"], caught.value.detail["window"]) == ("account", "month")
+    # Seconds to the reset are counted from each side's own "now".
+    for key in body.keys() - {"retry_after"}:
+        assert caught.value.detail[key] == body[key], key
+    assert abs(caught.value.detail["retry_after"] - body["retry_after"]) <= 1
+    assert caught.value.headers.keys() == headers.keys()
+
+
 @pytest.mark.parametrize("status", [401, 403, 503])
 async def test_other_grant_refusals_keep_their_status(grant_calls, status):
     _, outcome = grant_calls
