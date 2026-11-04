@@ -27,8 +27,9 @@ by read the same number: which key's limit wins is never a question.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 #: What an old row with no configured quota means. Matches ``verify_api_key``
 #: exactly; diverging would make the two doors disagree about the same account.
@@ -56,6 +57,15 @@ def next_utc_midnight(now: datetime | None = None) -> datetime:
     """Return the next UTC midnight — when the daily counter resets."""
     current = now or datetime.now(UTC)
     return (current + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def next_utc_month_start(now: datetime | None = None) -> datetime:
+    """Return the first instant of next UTC month — when a monthly counter resets."""
+    current = now or datetime.now(UTC)
+    year, month = (
+        (current.year + 1, 1) if current.month == 12 else (current.year, current.month + 1)
+    )
+    return datetime(year, month, 1, tzinfo=UTC)
 
 
 def seconds_until_utc_midnight(now: datetime | None = None) -> int:
@@ -116,6 +126,118 @@ def exceeded_payload(
     headers = {
         "Retry-After": str(retry_after),
         "X-RateLimit-Limit-Cost": str(quota_usd),
+        "X-RateLimit-Remaining-Cost": str(remaining),
+        "X-RateLimit-Reset": str(int(reset_at.timestamp())),
+    }
+    return body, headers
+
+
+Scope = Literal["key", "account"]
+Window = Literal["day", "month"]
+
+
+@dataclass(frozen=True, slots=True)
+class BudgetRefusal:
+    """Which limit a request would exceed, and by how much it is already spent.
+
+    ``scope`` names whose limit it is: the presented API key's own budget, or
+    the account's quota. ``key_label`` is how a message names the key (its
+    name, else its masked prefix); None for the account.
+    """
+
+    scope: Scope
+    window: Window
+    limit_usd: float
+    spent_usd: float
+    key_prefix: str | None = None
+    key_label: str | None = None
+
+    def reset_at(self, now: datetime | None = None) -> datetime:
+        """When the window's counter starts again."""
+        return next_utc_midnight(now) if self.window == "day" else next_utc_month_start(now)
+
+
+def _over(limit_usd: float | None, spent_usd: float) -> bool:
+    return limit_usd is not None and spent_usd + ESTIMATED_REQUEST_COST_USD > limit_usd
+
+
+def first_refusal(
+    *,
+    account_quota_usd: float,
+    account_spent_usd: float,
+    key_budget_daily_usd: float | None = None,
+    key_budget_monthly_usd: float | None = None,
+    key_spent_today_usd: float = 0.0,
+    key_spent_month_usd: float = 0.0,
+    key_prefix: str | None = None,
+    key_label: str | None = None,
+) -> BudgetRefusal | None:
+    """Return the narrowest limit this request does not fit under, or None.
+
+    Checked in order key/day, key/month, account/day, so a refusal names the
+    narrowest scope that ran out. Each uses the same optimistic estimate, so a
+    key and its account behave alike near their limits. A key budget of None
+    is no limit at the key.
+    """
+    if _over(key_budget_daily_usd, key_spent_today_usd):
+        return BudgetRefusal(
+            "key", "day", float(key_budget_daily_usd), key_spent_today_usd, key_prefix, key_label
+        )
+    if _over(key_budget_monthly_usd, key_spent_month_usd):
+        return BudgetRefusal(
+            "key",
+            "month",
+            float(key_budget_monthly_usd),
+            key_spent_month_usd,
+            key_prefix,
+            key_label,
+        )
+    if _over(account_quota_usd, account_spent_usd):
+        return BudgetRefusal("account", "day", account_quota_usd, account_spent_usd)
+    return None
+
+
+def refusal_payload(
+    refusal: BudgetRefusal, *, contact_email: str = ""
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Build the 429 body and headers for *refusal*.
+
+    The account's refusal is :func:`exceeded_payload` unchanged plus ``code``,
+    ``scope`` and ``window``, so clients reading today's fields keep working.
+    A key's refusal has the same fields, names the key, and resets with its
+    window.
+    """
+    if refusal.scope == "account":
+        body, headers = exceeded_payload(
+            quota_usd=refusal.limit_usd, spent_usd=refusal.spent_usd, contact_email=contact_email
+        )
+        return {**body, "code": "budget_exceeded", "scope": "account", "window": "day"}, headers
+    now = datetime.now(UTC)
+    reset_at = refusal.reset_at(now)
+    retry_after = max(1, int((reset_at - now).total_seconds()))
+    remaining = max(0, refusal.limit_usd - refusal.spent_usd)
+    period = "daily" if refusal.window == "day" else "monthly"
+    body = {
+        "error": f"API key {period} budget exceeded",
+        "code": "budget_exceeded",
+        "scope": "key",
+        "window": refusal.window,
+        "key_prefix": refusal.key_prefix,
+        "quota_usd": refusal.limit_usd,
+        "spent_usd": refusal.spent_usd,
+        "remaining_usd": remaining,
+        "reset_at": reset_at.isoformat(),
+        "contact_email": contact_email,
+        "message": (
+            f"API key {refusal.key_label or refusal.key_prefix} reached its {period} budget "
+            f"of ${refusal.limit_usd:.2f}. Raise the key's budget in the console, or use "
+            "another key."
+        ),
+        "retry_after": retry_after,
+    }
+    headers = {
+        "Retry-After": str(retry_after),
+        "X-RateLimit-Limit-Cost": str(refusal.limit_usd),
         "X-RateLimit-Remaining-Cost": str(remaining),
         "X-RateLimit-Reset": str(int(reset_at.timestamp())),
     }

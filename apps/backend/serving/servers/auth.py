@@ -21,7 +21,7 @@ from serving.grant_auth import (
     AgentQuotaExceeded,
     authenticate_grant_model_call,
 )
-from serving.model_access import get_disabled_models_from_preferences
+from serving.model_access import KEY_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
 from serving.observability.rejection_log import (
     bounded_enrichment,
     capture_rejected_prompt,
@@ -45,9 +45,6 @@ from serving.utils.request_ip import get_client_ip_info
 
 logger = get_logger(__name__)
 
-# What the daily cost quota gate assumes the request about to run will cost: a
-# caller is refused once today's spend leaves less than this under the quota.
-_ESTIMATED_REQUEST_COST_USD = 0.01
 # Quota of a key whose ``quota_daily_cost_usd`` is NULL (rows from before the
 # column existed).
 _DEFAULT_DAILY_QUOTA_USD = 1000.0
@@ -69,20 +66,33 @@ class StoredKeyRejected(Exception):
 
 
 class StoredKeyQuotaExceeded(Exception):
-    """The owner of a stored API key has spent today's cost quota.
+    """The stored API key, or its owner's account, has spent its cost limit.
 
-    Raised by :func:`authenticate_stored_key`; ``reset_at`` is when the quota
-    renews (the next UTC midnight).
+    Raised by :func:`authenticate_stored_key`. ``scope`` says whose limit ran
+    out: the account's daily quota (``"account"``) or the key's own budget
+    (``"key"``); ``window`` is ``"day"`` or ``"month"``, and ``reset_at`` is
+    when that window renews.
     """
 
-    def __init__(self, *, quota_usd: float, spent_usd: float, reset_at: datetime) -> None:
-        """Record the quota, today's spend and when the quota renews."""
+    def __init__(
+        self,
+        *,
+        quota_usd: float,
+        spent_usd: float,
+        reset_at: datetime,
+        scope: quota.Scope = "account",
+        window: quota.Window = "day",
+    ) -> None:
+        """Record the limit, the spend, and when and for whom it renews."""
         super().__init__(
-            f"daily cost quota exceeded (quota_usd={quota_usd:.4f} spent_usd={spent_usd:.4f})"
+            f"{scope} {window} cost limit exceeded "
+            f"(quota_usd={quota_usd:.4f} spent_usd={spent_usd:.4f})"
         )
         self.quota_usd = quota_usd
         self.spent_usd = spent_usd
         self.reset_at = reset_at
+        self.scope = scope
+        self.window = window
 
 
 def _quota_contact() -> str:
@@ -316,9 +326,53 @@ def _daily_quota_usd(identity: dict[str, Any]) -> float:
     return _DEFAULT_DAILY_QUOTA_USD if quota is None else float(quota)
 
 
-def _over_daily_quota(spent_usd: float, quota_usd: float) -> bool:
-    """Whether a request may no longer run against *quota_usd* after *spent_usd* today."""
-    return spent_usd + _ESTIMATED_REQUEST_COST_USD > quota_usd
+def _key_label(identity: dict[str, Any]) -> str | None:
+    """How a refusal names the presented key: its name in quotes, else its prefix."""
+    name = identity.get("key_name")
+    return f'"{name}"' if name else identity.get("key_prefix")
+
+
+def _optional_usd(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+async def _budget_refusal(
+    identity: dict[str, Any],
+    *,
+    api_key_id: int | None,
+    op_store: Any,
+    quota_daily_cost_usd: float,
+    spent_today_usd: float,
+) -> quota.BudgetRefusal | None:
+    """Return the limit this request would exceed: the key's budgets, then the account's.
+
+    A key's budgets apply exactly when the request is attributed to the key
+    (``api_key_id`` set); a request on behalf of another user spends that
+    user's money, not the key's. The key's spend normally arrives with the
+    auth lookup (``get_auth_context_with_spend``); a path without it reads the
+    key's counter here, and only for a key that has a budget.
+    """
+    daily = monthly = None
+    if api_key_id is not None:
+        daily = _optional_usd(identity.get("budget_daily_usd"))
+        monthly = _optional_usd(identity.get("budget_monthly_usd"))
+    key_today = key_month = 0.0
+    if daily is not None or monthly is not None:
+        if identity.get("key_spent_today_usd") is not None:
+            key_today = float(identity["key_spent_today_usd"])
+            key_month = float(identity.get("key_spent_month_usd") or 0.0)
+        elif op_store:
+            key_today, key_month = await op_store.get_key_spend(api_key_id)
+    return quota.first_refusal(
+        account_quota_usd=quota_daily_cost_usd,
+        account_spent_usd=spent_today_usd,
+        key_budget_daily_usd=daily,
+        key_budget_monthly_usd=monthly,
+        key_spent_today_usd=key_today,
+        key_spent_month_usd=key_month,
+        key_prefix=identity.get("key_prefix"),
+        key_label=_key_label(identity),
+    )
 
 
 def _anonymous_context() -> dict[str, Any]:
@@ -356,9 +410,11 @@ def _user_context(
     ``api_key_id`` is the ``api_keys.id`` the request's usage is attributed to:
     the presented key, or None when the request is attributed to someone other
     than the key's owner (``X-On-Behalf-Of``), whose spend no key of theirs made.
+    The key's model allowlist, when it has one, applies on the same condition
+    (``key_allowed_models``, see :func:`serving.model_access.model_access_denial`).
     """
     user_role = identity.get("role") or "free"
-    return {
+    context = {
         "user_id": identity["user_id"],
         "user_name": identity.get("user_name"),
         "role": user_role,
@@ -375,6 +431,10 @@ def _user_context(
         "auth_key_hash": key_hash,
         "api_key_id": api_key_id,
     }
+    allowed = identity.get("allowed_models")
+    if api_key_id is not None and allowed is not None:
+        context[KEY_ALLOWED_MODELS_KEY] = list(allowed)
+    return context
 
 
 async def _authenticate_by_api_key(
@@ -716,18 +776,19 @@ def _quota_exceeded(
     *,
     user_id: str,
     role: str,
-    quota_usd: float,
-    spent_usd: float,
+    refusal: quota.BudgetRefusal,
 ) -> HTTPException:
-    """Log the quota rejection and return the 429 every quota-gated route answers."""
-    seconds_until_midnight_utc = _seconds_until_utc_midnight()
-    quota_reset_at = _next_utc_midnight()
+    """Log the budget rejection and return the 429 every quota-gated route answers."""
+    error_code = "quota_exceeded" if refusal.scope == "account" else "key_budget_exceeded"
     asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
         log_rejection(
             request=request,
             status_code=429,
-            error_code="quota_exceeded",
-            reason=(f"quota_usd={quota_usd:.4f} spent_usd={spent_usd:.4f}"),
+            error_code=error_code,
+            reason=(
+                f"scope={refusal.scope} window={refusal.window} "
+                f"quota_usd={refusal.limit_usd:.4f} spent_usd={refusal.spent_usd:.4f}"
+            ),
             user={
                 "user_id": user_id,
                 "role": role,
@@ -737,29 +798,8 @@ def _quota_exceeded(
             },
         )
     )
-    return HTTPException(
-        status_code=429,
-        detail={
-            "error": "Daily cost quota exceeded",
-            "quota_usd": quota_usd,
-            "spent_usd": spent_usd,
-            "remaining_usd": max(0, quota_usd - spent_usd),
-            "reset_at": quota_reset_at.isoformat(),
-            "contact_email": _quota_contact(),
-            "message": (
-                f"Need more quota? Email {_quota_contact()} and explain your use case."
-                if _quota_contact()
-                else "Daily quota exhausted. Contact the operator of this deployment."
-            ),
-            "retry_after": seconds_until_midnight_utc,
-        },
-        headers={
-            "Retry-After": str(seconds_until_midnight_utc),
-            "X-RateLimit-Limit-Cost": str(quota_usd),
-            "X-RateLimit-Remaining-Cost": str(max(0, quota_usd - spent_usd)),
-            "X-RateLimit-Reset": str(int(quota_reset_at.timestamp())),
-        },
-    )
+    body, headers = quota.refusal_payload(refusal, contact_email=_quota_contact())
+    return HTTPException(status_code=429, detail=body, headers=headers)
 
 
 async def verify_api_key(
@@ -813,9 +853,8 @@ async def verify_api_key(
         except AgentQuotaExceeded as exc:
             # Same body and headers as the direct path's 429, from the same
             # builder: a caller must not be able to tell which door it used.
-            body, headers = quota.exceeded_payload(
-                quota_usd=exc.quota_usd,
-                spent_usd=exc.spent_usd,
+            body, headers = quota.refusal_payload(
+                quota.BudgetRefusal("account", "day", exc.quota_usd, exc.spent_usd),
                 contact_email=_quota_contact(),
             )
             raise HTTPException(status_code=429, detail=body, headers=headers) from exc
@@ -856,15 +895,22 @@ async def verify_api_key(
             cost_spent = await op_store.get_user_cost_today(effective_user_id)
 
     quota_daily_cost_usd = _daily_quota_usd(identity)
+    api_key_id = caller_key_id if identity is caller else None
 
-    # Check cost quota
-    if _over_daily_quota(cost_spent, quota_daily_cost_usd):
+    # Check the key's budgets, then the account's quota.
+    refusal = await _budget_refusal(
+        identity,
+        api_key_id=api_key_id,
+        op_store=op_store,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
+    )
+    if refusal is not None:
         raise _quota_exceeded(
             request,
             user_id=effective_user_id,
             role=identity.get("role") or "free",
-            quota_usd=quota_daily_cost_usd,
-            spent_usd=cost_spent,
+            refusal=refusal,
         )
 
     # Update last_used timestamp on the presented key — fire-and-forget
@@ -877,7 +923,7 @@ async def verify_api_key(
         _user_context(
             identity,
             key_hash=key_hash,
-            api_key_id=caller_key_id if identity is caller else None,
+            api_key_id=api_key_id,
             quota_daily_cost_usd=quota_daily_cost_usd,
             spent_today_usd=cost_spent,
         )
@@ -915,7 +961,8 @@ async def authenticate_stored_key(
 
     Raises:
         StoredKeyRejected: The key no longer authenticates its owner.
-        StoredKeyQuotaExceeded: The owner has spent today's cost quota.
+        StoredKeyQuotaExceeded: The key has spent its budget, or the owner
+            today's cost quota.
         Exception: Whatever the store raised, unchanged: the answer is unknown,
             not no. Also raised without an operational store to ask.
 
@@ -941,12 +988,22 @@ async def authenticate_stored_key(
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
-    if check_quota and _over_daily_quota(cost_spent, quota_daily_cost_usd):
-        raise StoredKeyQuotaExceeded(
-            quota_usd=quota_daily_cost_usd,
-            spent_usd=cost_spent,
-            reset_at=_next_utc_midnight(),
+    if check_quota:
+        refusal = await _budget_refusal(
+            user,
+            api_key_id=user.get("id"),
+            op_store=op_store,
+            quota_daily_cost_usd=quota_daily_cost_usd,
+            spent_today_usd=cost_spent,
         )
+        if refusal is not None:
+            raise StoredKeyQuotaExceeded(
+                quota_usd=refusal.limit_usd,
+                spent_usd=refusal.spent_usd,
+                reset_at=refusal.reset_at(),
+                scope=refusal.scope,
+                window=refusal.window,
+            )
     return _user_context(
         user,
         key_hash=key_hash,
@@ -971,9 +1028,9 @@ async def verify_batch_management_identity(
     role and admin flag included. Only the daily cost quota is left out:
     listing, reading, downloading, cancelling and deleting what one already
     submitted spends nothing, and must keep working exactly when the quota is
-    spent. The context carries ``quota_exceeded`` so a route that does create
-    work enforces the quota itself (:func:`enforce_daily_quota`), after its
-    idempotency check.
+    spent. The context carries ``quota_exceeded`` (and the refusal itself) so a
+    route that does create work enforces the key's budgets and the account's
+    quota itself (:func:`enforce_daily_quota`), after its idempotency check.
 
     Agent-sandbox grant tokens and ``X-On-Behalf-Of`` are refused: batch work
     runs later under the key that created it, which neither of those is.
@@ -1011,20 +1068,37 @@ async def verify_batch_management_identity(
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )
-    context["quota_exceeded"] = _over_daily_quota(cost_spent, quota_daily_cost_usd)
+    refusal = await _budget_refusal(
+        user,
+        api_key_id=user["id"],
+        op_store=op_store,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
+    )
+    context["quota_exceeded"] = refusal is not None
+    context[_BUDGET_REFUSAL_KEY] = refusal
     return publish_caller_role(context)
 
 
+#: Where a management identity carries the limit it has spent, if any.
+_BUDGET_REFUSAL_KEY = "budget_refusal"
+
+
 def enforce_daily_quota(request: Request, user_ctx: dict[str, Any]) -> None:
-    """Refuse with the quota 429 when a management identity has spent today's quota."""
+    """Refuse with the budget 429 when a management identity has spent a limit."""
     if not user_ctx.get("quota_exceeded"):
         return
+    refusal = user_ctx.get(_BUDGET_REFUSAL_KEY) or quota.BudgetRefusal(
+        "account",
+        "day",
+        float(user_ctx.get("quota_daily_cost_usd") or 0.0),
+        float(user_ctx.get("spent_today_usd") or 0.0),
+    )
     raise _quota_exceeded(
         request,
         user_id=user_ctx.get("user_id") or "anonymous",
         role=user_ctx.get("role") or "free",
-        quota_usd=float(user_ctx.get("quota_daily_cost_usd") or 0.0),
-        spent_usd=float(user_ctx.get("spent_today_usd") or 0.0),
+        refusal=refusal,
     )
 
 
@@ -1132,12 +1206,13 @@ async def optional_verify_api_key(
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,
+        # The key's allowlist narrows the listings this context is for.
+        **(
+            {KEY_ALLOWED_MODELS_KEY: list(row["allowed_models"])}
+            if row.get("allowed_models") is not None
+            else {}
+        ),
     }
-
-
-def _seconds_until_utc_midnight() -> int:
-    """Calculate seconds until next UTC midnight."""
-    return int((_next_utc_midnight() - datetime.now(UTC)).total_seconds())
 
 
 def _next_utc_midnight() -> datetime:

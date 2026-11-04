@@ -2,8 +2,9 @@
 
 Status: P1a (several keys per account) and P1b usage attribution are
 implemented; see §16 and §17 for what was built and where it departs from the
-original plan. Rotation with a grace period was dropped (§17). P2 and P3 are a
-draft for discussion. Baseline: `dev` at `09a0dbcff`.
+original plan. Rotation with a grace period was dropped (§17). P2 is split:
+P2a (per-key limits) is implemented as §18 describes; P2b (projects) and P3 are a draft for
+discussion. Baseline: `dev` at `09a0dbcff`.
 
 ## 1. Summary
 
@@ -363,8 +364,8 @@ and `project`.
   similar ceiling on active projects.
 - **Signup** creates the user, the personal org, an `owner` membership and the
   Default project in one transaction, then mints the first key as today.
-- **Rotation** copies the name, allowlist and limits and revokes the old key
-  in the same transaction (§16, §17).
+- **Rotation** gives the key a new secret in place: same row and id, so its
+  name, allowlist, limits, spend and request history carry on (§18.5).
 - **Revocation** is unchanged in behavior; it now also stamps `revoked_at`.
 - **Batches** record the `key_hash` that created them (`routers/batches.py`).
   They will also record `project_id` so their cost lands on the right project.
@@ -411,7 +412,8 @@ per-key and per-project views start at cut-over, and the console says so.
 |---|---|---|
 | **P1a Several keys per account** (built, §16) | Retire the one-key indexes; no product limit (a safety ceiling of 100); key names; per-key rotation; account-level quota kept on every live key; console list with revoked keys folded away | Full unit, `dbtest` and frontend suites green; concurrent creates never pass the ceiling |
 | **P1b Attribution** (attribution built, §17) | Key attribution on each log row; a per-key daily cost counter; per-key spend and a key filter in the console. Rotation with a grace period was dropped (§17) | Per-key spend never exceeds the account's, and equals it when every request used a key |
-| **P2 Projects and limits** | Organizations and projects (M1–M4, which now also move the account quota off the key rows onto the personal org); projects API and UI; daily and monthly budgets at key/project/org; `spend_counters`; the estimate in §7.2; scoped error fields; allowlists; per-project/per-key concurrency caps; `GET /v1/key`; filtered `/v1/models`; admin org endpoints; retargeted per-role bulk apply | Concurrency test: N in-flight requests never overshoot a budget by more than N × the maximum estimate error. Monthly limit enforced and shown |
+| **P2a Per-key limits** (built, §18) | Daily and monthly budgets and a model allowlist on each key; enforced on every key-authenticated path; scoped 429 body; filtered `/v1/models`; a key detail page in the console | A key over its budget is refused on chat, messages, embeddings and batches while the account's other keys keep working; a key cannot call or list a model outside its allowlist |
+| **P2b Projects and limits** | Organizations and projects (M1–M4, which now also move the account quota off the key rows onto the personal org); projects API and UI; daily and monthly budgets at key/project/org; `spend_counters`; the estimate in §7.2; scoped error fields; allowlists; per-project/per-key concurrency caps; `GET /v1/key`; filtered `/v1/models`; admin org endpoints; retargeted per-role bulk apply | Concurrency test: N in-flight requests never overshoot a budget by more than N × the maximum estimate error. Monthly limit enforced and shown |
 | **P3 Teams and policies** | `team` orgs, invitations, roles, org switcher; project routing and logging policies; budget alerts through the existing webhook/notification sinks; RPM/TPM if the metrics in §11.1 show a need; grants scoped to projects | Separate spec |
 
 ### 11.1 Observability
@@ -670,6 +672,301 @@ administrator can set `expires_at` (through `/admin/api-keys`, which the
 console does not call), and production had no key with an expiry on
 2026-11-02. If key expiry becomes a product feature, those checks should
 switch to `status = 'active' AND (expires_at IS NULL OR expires_at > NOW())`.
+
+## 18. P2a: per-key limits
+
+P2 was one phase. It is split because its two halves have very different costs.
+Per-key limits need three columns on `api_keys` and the counter P1b already
+writes. Projects need two new tables, a migration of every account and new
+UI. Per-key limits also meet the most common request on their own: "this key,
+used by CI, may spend at most $5 a day and only call these models."
+
+### 18.1 Scope
+
+**In P2a**
+- Each key may have a daily budget, a monthly budget and a model allowlist.
+  Each of the three is optional; when it is not set, nothing changes for that
+  key.
+- The limits are enforced on every path that authenticates with a key:
+  - chat completions, Anthropic messages and embeddings;
+  - batches, which run under the key that created them.
+- `/v1/models`, read with a limited key, lists only the models in its allowlist.
+- In the console:
+  - a key detail page, `/dashboard/keys/{key_prefix}`, that shows the key's
+    spend against its budgets and edits its limits;
+  - the key list, which shows a summary of each key's limits.
+
+**Not in P2a**
+- Organizations and projects. These are P2b.
+- Per-key concurrency caps and RPM/TPM limits.
+- Limits set by administrators. Admin endpoints stay account-level, as in
+  P1a.
+- Splitting usage onto its own `/dashboard/usage` page. This follows
+  separately; P2a puts per-key spend on the detail page.
+- Enforcing the account's monthly quota (see §18.8).
+
+### 18.2 Data model
+
+Three nullable columns on `api_keys`. Their names match §6.2, so P2b reuses
+them.
+
+```text
+budget_daily_usd    DECIMAL(12, 4)   -- NULL: no key-level daily limit
+budget_monthly_usd  DECIMAL(12, 4)   -- NULL: no key-level monthly limit
+allowed_models      TEXT[]           -- NULL: every model the account may use
+```
+
+**Migration**
+- The columns arrive in the Alembic revision `0002_api_key_limits`
+  (`compatibility = "expand"`). Versioned migrations (#1710) replaced the
+  startup DDL while this was being designed, so the deferral handling first
+  planned here is not needed: the gateway refuses to start on a database the
+  revision has not reached.
+- Adding a nullable column without a default is a catalog-only change. The
+  previous release selects named columns and never sees them, so a rollback
+  keeps working on the new schema.
+
+**Validation on write** (`PATCH /user/api-keys/{key_prefix}`)
+- **Budgets**
+  - A budget must be at least $0. A budget of $0 pauses the key without
+    revoking it.
+  - A budget is not compared with the account's quota when it is written. At
+    run time the narrower of the two applies, so lowering the account's quota
+    later never needs to rewrite the keys' budgets (invariant 2 in §5).
+  - The console shows the account's quota beside the key's budget, so a key
+    budget above it is visibly moot rather than rejected.
+- **Allowlist**
+  - The allowlist holds canonical model ids. An alias is resolved to its
+    model when it is written.
+  - An id the account cannot use today is rejected with 422.
+  - An empty list is rejected with 422. `null` means "all models", so `[]`
+    could only mean "no models", and a revoke does that more plainly.
+
+### 18.3 Enforcement
+
+**Reading spend**
+- The quota gate already reads the account's spend in the same query that
+  authenticates the key (`get_auth_context_with_spend`, uncached).
+- P2a adds a `LEFT JOIN LATERAL` on `api_key_daily_cost` for the key's spend
+  today and this month. The lookup uses the primary key `(key_id, day)` and
+  reads at most 31 rows.
+- It runs only when the key has a budget, so keys without limits pay nothing
+  extra. The gate still costs one round trip.
+- Because the query is not cached, a budget change takes effect on the key's
+  next request.
+
+**Order of checks** (`verify_api_key`, `authenticate_stored_key`)
+1. Key daily budget.
+2. Key monthly budget.
+3. Account daily quota (as today).
+
+The first check that fails is reported, so the error names the narrowest
+scope that ran out. Each check uses the existing fixed $0.01 estimate,
+`spent + 0.01 > limit`, so a key and its account behave alike near their
+limits.
+
+**Which requests the limits apply to.** A key's limits apply exactly when P1b
+attributes the request to that key, that is, when `api_key_id` is set:
+- A request made directly with the key: yes.
+- A batch: yes, under the key that created it. `StoredKeyQuotaExceeded`
+  gains `scope` and `window`. On a key's refusal the scheduler pauses only
+  the batches created with that key (`pause_user_batches(..., key_hash=)`,
+  reason `key_budget`), for at most `key_budget_pause_seconds` (an hour)
+  before checking again, so a budget the owner raises takes effect without
+  waiting for the window to renew. The account's other keys keep running.
+- A service account calling with `X-On-Behalf-Of`: no. The cost belongs to
+  the end user, not to the service key.
+- An agent grant: no, because a grant carries no key.
+
+**Allowlist**
+- `_user_context` puts the key's `allowed_models` into the context as
+  `key_allowed_models`.
+- `model_access_denial` gains a reason, `OUTSIDE_KEY`, checked after
+  `DISABLED`. This mirrors `OUTSIDE_GRANT`, except that it applies to the
+  listings as well as to inference.
+- Because every surface already calls `model_access_denial`, the allowlist
+  reaches all of them: chat, messages, embeddings, batch targets, auto mode's
+  candidates, `/v1/models` and the console's model catalog.
+- `auto` is not stored in an allowlist. It resolves among the allowed models,
+  and is listed when at least one of its candidates is allowed.
+- **Listings read a cached lookup.** `/v1/models` authenticates through
+  `optional_verify_api_key`, whose lookup is cached for 30 s. That lookup gains
+  `allowed_models`, and a new store method, `update_key_settings`, invalidates it
+  write-through, as `update_key` does. Without that invalidation, the listing
+  could show a removed model for up to 30 s.
+
+### 18.4 Errors
+
+**An exhausted key budget**
+- It keeps today's 429 body and headers, so clients that parse them do not
+  break.
+- It adds the fields from §7.3 and the key's prefix:
+
+```json
+{
+  "error": "API key daily budget exceeded",
+  "code": "budget_exceeded",
+  "scope": "key",
+  "window": "day",
+  "key_prefix": "hyi-xxxxxxxx",
+  "quota_usd": 5.0,
+  "spent_usd": 5.004,
+  "remaining_usd": 0,
+  "reset_at": "2026-11-04T00:00:00+00:00",
+  "retry_after": 41000,
+  "message": "API key \"ci\" reached its daily budget of $5.00."
+}
+```
+
+- An exhausted account quota gets `"code": "budget_exceeded"` and
+  `"scope": "account"` as well. Every other field stays as it is today.
+- 429 remains the status code. §15.2 (402) stays open; nothing here depends on
+  it.
+
+**A model outside the allowlist**
+- It is answered exactly as an unknown model is (`404 model_not_found` on
+  OpenAI routes, and the Anthropic route's equivalent).
+- This keeps the rule `ModelAccessDenial` states: a caller cannot tell an
+  unpublished, role-gated, disabled or out-of-grant model from one that does
+  not exist.
+- This departs from §7.3's `model_not_allowed`. The departure is deliberate:
+  a leaked limited key should not learn which models the account could reach.
+  Because the key's own `/v1/models` already omits the model, a client sees
+  the same answer from both endpoints.
+- The surface still logs the reason, `outside_key`.
+
+### 18.5 How far a key can overspend
+
+The check runs before a request; the cost is known only after it. A key can
+therefore overshoot its budget by what its in-flight requests cost: at most the
+account's concurrency cap (`max_concurrent_requests`) times the cost of one
+request. This is the same bound the account quota already has. §7.2's priced
+estimate would tighten it, and remains P2b.
+
+Two smaller gaps, both covered by the account quota, which stays the
+authoritative cap:
+- **The per-key counter is best-effort.** P1b writes it after the account
+  counter, and a failed write is logged and ignored, so a failure under-counts
+  the key.
+- **Regenerating a key keeps its spend.** P2a changes rotation (§16) to
+  update the key's row in place: the hash, prefix and ciphertext change, the
+  id does not. Everything keyed by the id carries on, with no rows copied:
+  the counter its budgets read, its limits, and its request history in
+  `api_logs.metadata.api_key_id`. The old secret stops authenticating at the
+  commit, and the console's list no longer shows a revoked predecessor.
+
+### 18.6 API
+
+**`PATCH /user/api-keys/{key_prefix}`** now also takes the limits. Any field
+may be sent. A field that is left out is unchanged, and `null` clears it. A
+rename-only body keeps working.
+
+```json
+{ "name": "ci", "budget_daily_usd": 5, "budget_monthly_usd": 50,
+  "allowed_models": ["qwen3-32b", "llama-3.3-70b"] }
+```
+
+- The response is the updated key.
+- Errors:
+  - 404 for a key that is revoked or that belongs to another account;
+  - 422 for an invalid value: a negative budget or one above $1,000,000,
+    more than four decimal places, an empty allowlist, or a model the
+    account's console list does not show.
+- Each change is written to the audit log as `update_key_settings`, with the
+  old and new values. A rename alone stays `rename_key`, as before.
+
+**`GET /user/api-keys/all`** returns `budget_daily_usd`, `budget_monthly_usd`
+and `allowed_models` for each key, next to P1b's `spent_today_usd` and
+`spent_month_usd`.
+
+### 18.7 Console
+
+**The key detail page**, `/dashboard/keys/{key_prefix}`:
+- **Header:** the key's name and masked prefix, with its status, creation time
+  and last use.
+- **Spend:** today and this month (UTC). When a budget is set, a bar shows the
+  spend against it.
+- **Limits form:**
+  - The daily and monthly budgets. A blank field means no limit.
+  - The account's daily quota, shown beside the daily budget as "also
+    applies".
+  - The model allowlist: "All models" or a chosen set. The choices are the
+    account's models, from the same catalog the Models page uses.
+- **Actions:** Rename, Regenerate and Delete, as in the list.
+
+**The key list:** the key's name links to its detail page. A short summary
+shows the limits, for example "$5/day · 3 models", or "No limits".
+
+### 18.8 Found while designing: the account monthly quota is not enforced
+
+- `api_keys.quota_monthly_cost_usd` is stored, copied across an account's keys
+  (§16) and shown in the admin console.
+- No request path checks it. `quota.check` and `_over_daily_quota` read only
+  the daily quota.
+- P2a does not change this. Enforcing it means summing `user_daily_cost` over
+  the month on the auth path, and it deserves its own change and an
+  announcement to the accounts that have a monthly quota set.
+
+### 18.9 Testing
+
+**Store (`dbtest`)**
+- The migration adds the three nullable columns and leaves existing keys
+  unlimited. The baseline tests pin `0001_baseline`.
+- The auth query returns the key's spend today and this month, and computes no
+  key spend for a key with no budget.
+- `update_key_settings` changes only what it is given, refuses other columns,
+  and invalidates the cached lightweight context.
+- Rotation keeps the row, id, limits and spend; only the new secret
+  authenticates.
+- Pausing by key holds back only that key's batches.
+
+**Auth and routes**
+- For each of the daily budget, the monthly budget and the account quota, a
+  request just under the limit passes and one at the limit is refused with
+  the scoped body.
+- When several limits are spent, the narrowest is reported.
+- `X-On-Behalf-Of` and grants ignore key limits.
+- A batch whose key is over its budget pauses, with the right `reset_at` for
+  each window.
+
+**Allowlist**
+- On every surface (chat, messages, embeddings, batch targets, auto mode,
+  `/v1/models`, the console catalog), a model outside the allowlist is denied,
+  or omitted from the listing.
+- An alias is resolved when it is written.
+- `[]` and unknown ids are rejected.
+
+**PATCH**
+- Absent, `null` and set fields behave as specified.
+- Another account's prefix returns 404, and so does a revoked key (OWASP
+  API1).
+- The audit row is written.
+
+**Console**
+- The detail page renders spend and limits.
+- The form round-trips; a blank budget sends `null`.
+- The list shows the summary.
+- New strings are in the zh-CN catalog.
+
+**Live:** before acceptance, verify against `make up DISTRIBUTION=example`.
+Limit a key to one model and a $0 budget, and confirm that the other key of
+the same account is unaffected.
+
+### 18.10 Decisions (confirmed 2026-11-03)
+
+1. **A $0 budget pauses the key** rather than being rejected.
+2. **A model outside the allowlist looks like an unknown model**, rather than
+   a distinct 403 `model_not_allowed`.
+3. **Regenerating is the same key with a new secret**: limits and spend carry
+   on (§18.5).
+
+### 18.11 Known follow-ups
+
+- **A regenerated key's unfinished batches still fail.** Batches store the
+  key's hash, and regenerate changes it, so the batch worker no longer finds
+  the key, as before P2a. Now that a key keeps its id across a rotation,
+  batches could be bound to the id instead.
+- **The account monthly quota** is still not enforced (§18.8).
 
 ## References
 

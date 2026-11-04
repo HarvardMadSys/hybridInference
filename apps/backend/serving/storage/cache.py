@@ -422,6 +422,10 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_auth_caches()
         return rotated
 
+    async def get_key_spend(self, key_id: int) -> tuple[float, float]:
+        """Delegate to wrapped store — never cached, a budget gate reads it."""
+        return await self._store.get_key_spend(key_id)
+
     async def count_active_keys(self, user_id: str) -> int:
         """Delegate to wrapped store."""
         return await self._store.count_active_keys(user_id)
@@ -430,9 +434,14 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_account_keys(account_id)
 
-    async def rename_key(self, account_id: str, key_prefix: str, name: str | None) -> bool:
-        """Delegate to wrapped store; a key's name is not part of any cached context."""
-        return await self._store.rename_key(account_id, key_prefix, name)
+    async def update_key_settings(
+        self, account_id: str, key_prefix: str, changes: dict[str, Any]
+    ) -> tuple[Row, Row] | None:
+        """Delegate then invalidate auth caches: the limits ride the cached contexts."""
+        changed = await self._store.update_key_settings(account_id, key_prefix, changes)
+        if changed is not None and set(changes) - {"name"}:
+            await self.invalidate_auth_caches()
+        return changed
 
     # -- role quotas (invalidate auth caches on bulk write) ------------------
 

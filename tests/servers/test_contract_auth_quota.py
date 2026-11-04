@@ -98,12 +98,12 @@ async def test_hand_rolled_quota_429_matches_the_shared_builder(
 ):
     """The two quota doors must answer identically -- checked on the busy one.
 
-    ``quota.exceeded_payload`` has exactly one caller: the agent-grant door in
-    ``verify_api_key``. The API-key door a few lines below it hand-rolls the
-    same body and headers inline, and that is the door that fires ~122k times a
-    day. A "both doors agree" test written against ``exceeded_payload`` twice
-    would pass while the hand-rolled copy drifted, so this one drives the real
-    dependency over HTTP and compares what came back against the builder.
+    Both the agent-grant door and the API-key door build their body with
+    ``quota.refusal_payload``; the API-key door is the one that fires ~122k
+    times a day. A "both doors agree" test written against the builder twice
+    would pass while one door drifted to a body of its own, so this one drives
+    the real dependency over HTTP and compares what came back against the
+    builder.
 
     It also pins what the redaction pass must never take out of this body: the
     caller's own quota, spend, remaining, and reset time. None of that is
@@ -115,8 +115,8 @@ async def test_hand_rolled_quota_429_matches_the_shared_builder(
         headers={"Authorization": "Bearer hyi-contract"},
     )
 
-    expected_body, expected_headers = quota.exceeded_payload(
-        quota_usd=10.0, spent_usd=10.0, contact_email=_quota_contact()
+    expected_body, expected_headers = quota.refusal_payload(
+        quota.BudgetRefusal("account", "day", 10.0, 10.0), contact_email=_quota_contact()
     )
     body = resp.json()
 

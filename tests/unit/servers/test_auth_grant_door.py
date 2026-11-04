@@ -158,8 +158,8 @@ async def test_a_spent_quota_gets_the_direct_paths_429(grant_calls, monkeypatch)
     with pytest.raises(HTTPException) as caught:
         await _verify("/v1/messages")
 
-    body, headers = quota.exceeded_payload(
-        quota_usd=5.0, spent_usd=5.25, contact_email="quota@example.test"
+    body, headers = quota.refusal_payload(
+        quota.BudgetRefusal("account", "day", 5.0, 5.25), contact_email="quota@example.test"
     )
     assert caught.value.status_code == 429
     assert caught.value.detail == body

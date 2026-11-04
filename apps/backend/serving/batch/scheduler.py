@@ -124,6 +124,10 @@ class SchedulerTimings:
     #: How long the batches of an owner whose role no longer qualifies stay
     #: paused before the role is checked again.
     role_pause_seconds: float = 300.0
+    #: At most how long the batches of a key that has spent its own budget stay
+    #: paused before the budget is checked again: the owner can raise it any
+    #: time, and a monthly budget renews only at the start of the month.
+    key_budget_pause_seconds: float = 3600.0
     #: How long one attempt may run before it is abandoned as a timeout. The
     #: adapters bound each upstream call already; this bounds an attempt that
     #: never returns, which would otherwise hold its slot, and with the
@@ -749,6 +753,23 @@ class BatchScheduler:
             return
         except StoredKeyQuotaExceeded as exc:
             await self._release(entry, delay=self._timings.owner_retry_seconds)
+            if exc.scope == "key":
+                # Only this key's batches: the account's other keys still have
+                # budget, and their batches keep running.
+                until = min(
+                    exc.reset_at,
+                    datetime.now(UTC) + timedelta(seconds=self._timings.key_budget_pause_seconds),
+                )
+                await self._pause_owner(
+                    owner,
+                    until,
+                    "API key daily budget spent"
+                    if exc.window == "day"
+                    else "API key monthly budget spent",
+                    kind="key_budget",
+                    key_hash=item.get("key_hash"),
+                )
+                return
             await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
             return
         except Exception:
@@ -1027,8 +1048,20 @@ class BatchScheduler:
                 extra={"event": "batch_owner_unauthorized", "reason": reason},
             )
 
-    async def _pause_owner(self, user_id: str, until: datetime, reason: str, *, kind: str) -> None:
-        paused = await self._store.pause_user_batches(user_id, until, kind)
+    async def _pause_owner(
+        self,
+        user_id: str,
+        until: datetime,
+        reason: str,
+        *,
+        kind: str,
+        key_hash: str | None = None,
+    ) -> None:
+        paused = (
+            await self._store.pause_user_batches(user_id, until, kind, key_hash=key_hash)
+            if key_hash is not None
+            else await self._store.pause_user_batches(user_id, until, kind)
+        )
         logger.info(
             "batch: paused %d batch(es) of user %s until %s: %s",
             paused,

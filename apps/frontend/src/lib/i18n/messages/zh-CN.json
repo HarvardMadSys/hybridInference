@@ -1827,6 +1827,10 @@
     "source": "Created in the console",
     "text": "在控制台创建"
   },
+  "batches.paused.key_budget": {
+    "source": "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
+    "text": "已暂停：这个批次所用的 API key 已用完预算。将在 {until} 之后再次检查；在该 key 的页面调高预算可以更早恢复。"
+  },
   "batches.paused.other": {
     "source": "Paused until {until}.",
     "text": "已暂停，直到 {until}。"
@@ -2431,6 +2435,130 @@
     "source": "Admin Console",
     "text": "管理后台"
   },
+  "dashboard.key_detail.account_quota_hint": {
+    "source": "Your account's daily quota of {amount} also applies.",
+    "text": "账户的每日额度 {amount} 同时生效。"
+  },
+  "dashboard.key_detail.all_models": {
+    "source": "All models",
+    "text": "全部模型"
+  },
+  "dashboard.key_detail.back": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "dashboard.key_detail.budget_invalid": {
+    "source": "Enter an amount in USD, such as 5 or 12.50, or leave it blank.",
+    "text": "请输入美元金额，例如 5 或 12.50；留空表示不限。"
+  },
+  "dashboard.key_detail.created": {
+    "source": "Created {date}",
+    "text": "创建于 {date}"
+  },
+  "dashboard.key_detail.daily_budget": {
+    "source": "Daily budget (USD)",
+    "text": "每日预算（美元）"
+  },
+  "dashboard.key_detail.last_used": {
+    "source": "Last used {date}",
+    "text": "最近使用 {date}"
+  },
+  "dashboard.key_detail.limits_intro": {
+    "source": "Limit what this key can spend and which models it can call. Requests over a limit are refused; your other keys are not affected.",
+    "text": "限制这个 key 能花多少钱、能调用哪些模型。超出限制的请求会被拒绝，你的其他 key 不受影响。"
+  },
+  "dashboard.key_detail.limits_title": {
+    "source": "Limits",
+    "text": "限制"
+  },
+  "dashboard.key_detail.models_hint": {
+    "source": "Other models answer this key as if they did not exist, and its model list shows only these.",
+    "text": "其他模型对这个 key 来说就像不存在一样，用它获取的模型列表也只包含这些模型。"
+  },
+  "dashboard.key_detail.models_title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "dashboard.key_detail.monthly_budget": {
+    "source": "Monthly budget (USD)",
+    "text": "每月预算（美元）"
+  },
+  "dashboard.key_detail.no_limit": {
+    "source": "No limit",
+    "text": "不限"
+  },
+  "dashboard.key_detail.not_found": {
+    "source": "This key does not exist or was regenerated under a new prefix. Find it in the list of your keys.",
+    "text": "这个 key 不存在，或者已经重新生成、换了新的前缀。请在 key 列表中查找。"
+  },
+  "dashboard.key_detail.not_found_title": {
+    "source": "API key not found",
+    "text": "找不到这个 API key"
+  },
+  "dashboard.key_detail.pick_a_model": {
+    "source": "Pick at least one model, or allow all models. To stop the key, revoke it or set a budget of 0.",
+    "text": "请至少选择一个模型，或者允许全部模型。要停用这个 key，可以吊销它或把预算设为 0。"
+  },
+  "dashboard.key_detail.save": {
+    "source": "Save limits",
+    "text": "保存限制"
+  },
+  "dashboard.key_detail.saved_toast": {
+    "source": "Limits saved.",
+    "text": "限制已保存。"
+  },
+  "dashboard.key_detail.some_models": {
+    "source": "Only the models selected below",
+    "text": "仅限下面选中的模型"
+  },
+  "dashboard.key_detail.spend_note": {
+    "source": "Counted since usage was first attributed to keys. Regenerating the key keeps its spend.",
+    "text": "从开始按 key 统计用量时算起。重新生成 key 不会清零花费。"
+  },
+  "dashboard.key_detail.spend_title": {
+    "source": "Spend (UTC)",
+    "text": "花费（UTC）"
+  },
+  "dashboard.key_detail.spent_of": {
+    "source": "{spent} of {budget}",
+    "text": "{spent} / {budget}"
+  },
+  "dashboard.key_detail.this_month": {
+    "source": "This month",
+    "text": "本月"
+  },
+  "dashboard.key_detail.today": {
+    "source": "Today",
+    "text": "今天"
+  },
+  "dashboard.key_detail.unavailable": {
+    "source": "no longer available",
+    "text": "已不可用"
+  },
+  "dashboard.key_detail.zero_hint": {
+    "source": "A budget of 0 pauses the key.",
+    "text": "预算设为 0 会暂停这个 key。"
+  },
+  "dashboard.keys.limit_daily": {
+    "source": "{amount}/day",
+    "text": "{amount}/天"
+  },
+  "dashboard.keys.limit_models_one": {
+    "source": "1 model",
+    "text": "1 个模型"
+  },
+  "dashboard.keys.limit_models_other": {
+    "source": "{count} models",
+    "text": "{count} 个模型"
+  },
+  "dashboard.keys.limit_monthly": {
+    "source": "{amount}/month",
+    "text": "{amount}/月"
+  },
+  "dashboard.keys.limits": {
+    "source": "Limits",
+    "text": "限制"
+  },
   "dashboard.keys.more_actions": {
     "source": "Actions for {name}",
     "text": "{name} 的操作"
@@ -2460,8 +2588,8 @@
     "text": "状态"
   },
   "dashboard.keys.confirm_regenerate": {
-    "source": "Regenerate API Key? The old key will be immediately invalidated.",
-    "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。"
+    "source": "Regenerate API Key? The old key will be immediately invalidated. The key keeps its name, limits and spend.",
+    "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。这个 key 的名称、限制和花费都会保留。"
   },
   "dashboard.keys.confirm_remove": {
     "source": "Remove this revoked API Key from the dashboard?",
@@ -2516,8 +2644,8 @@
     "text": "名称（可选）"
   },
   "dashboard.keys.name_prompt": {
-    "source": "Name this key (optional), for example \"laptop\" or \"CI\". All of your keys share one quota.",
-    "text": "给这个 key 起个名字（可选），例如“laptop”或“CI”。你的所有 key 共用同一份额度。"
+    "source": "Name this key (optional), for example \"laptop\" or \"CI\". All of your keys share your account's quota; each can also have limits of its own.",
+    "text": "给这个 key 起个名字（可选），例如“laptop”或“CI”。你的所有 key 共用账户的额度，每个 key 还可以设置自己的限制。"
   },
   "dashboard.keys.never": {
     "source": "Never",
@@ -2526,6 +2654,10 @@
   "dashboard.keys.no_actions": {
     "source": "No actions",
     "text": "无可用操作"
+  },
+  "dashboard.keys.no_limits": {
+    "source": "No limits",
+    "text": "无限制"
   },
   "dashboard.keys.regenerate": {
     "source": "Regenerate",

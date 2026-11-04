@@ -63,6 +63,7 @@ class FakeStore:
         self.batches: dict[str, dict[str, Any]] = {}
         self.paused: dict[str, datetime] = {}
         self.pause_reasons: dict[str, str | None] = {}
+        self.pause_key_hashes: dict[str, str | None] = {}
         self.claims: list[dict[str, Any]] = []
         self.calls: Counter[str] = Counter()
         self.heartbeats: list[list[int]] = []
@@ -222,9 +223,10 @@ class FakeStore:
                 item.update(status="failed", error={"code": "batch_failed", "message": "failed"})
         return True
 
-    async def pause_user_batches(self, user_id, until, reason=None):
+    async def pause_user_batches(self, user_id, until, reason=None, *, key_hash=None):
         self.paused[user_id] = until
         self.pause_reasons[user_id] = reason
+        self.pause_key_hashes[user_id] = key_hash
         return sum(1 for b in self.batches.values() if b["user_id"] == user_id)
 
     async def sweep(self, *, retention_days):
@@ -575,6 +577,36 @@ async def test_a_spent_quota_pauses_the_owners_batches_until_it_renews(worker, d
     assert store.pause_reasons[OWNER] == "quota"
     assert store.count("queued") == 2
     assert {item["attempts"] for item in store.items.values()} == {0}
+    assert dispatch.calls == []
+
+
+async def test_a_spent_key_budget_pauses_only_that_keys_batches(worker, dispatch, auth):
+    """The account's other keys still have budget; only this key's batches wait."""
+    auth.outcome = StoredKeyQuotaExceeded(
+        quota_usd=5.0,
+        spent_usd=5.0,
+        reset_at=datetime.now(UTC) + timedelta(days=20),
+        scope="key",
+        window="month",
+    )
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    before = datetime.now(UTC)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+    await settle()
+
+    assert store.pause_reasons[OWNER] == "key_budget"
+    assert store.pause_key_hashes[OWNER] == "owner-key-hash"
+    # Checked again within the hour rather than at the start of next month,
+    # so a budget the owner raises takes effect.
+    assert store.paused[OWNER] <= datetime.now(UTC) + timedelta(
+        seconds=SLOW.key_budget_pause_seconds
+    )
+    assert store.paused[OWNER] >= before + timedelta(seconds=SLOW.key_budget_pause_seconds)
+    assert store.status(1) == "queued"
     assert dispatch.calls == []
 
 

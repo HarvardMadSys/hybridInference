@@ -114,6 +114,15 @@ export function pauseText(batch: ConsoleBatch, t: Translate): string | null {
       { until },
     );
   }
+  if (batch.paused_reason === 'key_budget') {
+    return fill(
+      t(
+        'batches.paused.key_budget',
+        "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
+      ),
+      { until },
+    );
+  }
   if (batch.paused_reason === 'role') {
     return fill(
       t(

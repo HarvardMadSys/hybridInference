@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,8 @@ import pytest
 import pytest_asyncio
 
 from migrations.baseline import operational_store
+from serving.storage.cache import CachedOperationalStore
+from serving.storage.cache_backend import InMemoryCache
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 
@@ -469,13 +472,19 @@ async def test_listing_puts_live_keys_first_and_carries_names(keys):
     assert all("key_hash" not in row for row in rows)
 
 
-async def test_rotation_replaces_one_key_and_keeps_its_settings(keys):
+async def test_rotation_gives_one_key_a_new_secret_and_keeps_everything_else(keys):
     store, pool = keys
     await _user(store, "u-admkey-rot")
     await _key(pool, "u-admkey-rot", "rot-other", "active")
     await _key(pool, "u-admkey-rot", "rot-old", "active", '{"team": "ml"}')
     await _set_quota(pool, "rot-old", "9.0000", "90.0000")
-    await store.rename_key("u-admkey-rot", f"{_PREFIX}-rot-old", "eval")
+    await store.update_key_settings(
+        "u-admkey-rot",
+        f"{_PREFIX}-rot-old",
+        {"name": "eval", "budget_daily_usd": Decimal("2"), "allowed_models": ["m-a"]},
+    )
+    key_id = await _key_id(pool, "rot-old")
+    await store.increment_user_cost("u-admkey-rot", 1.5, api_key_id=key_id)
 
     rotated = await store.rotate_key(
         "u-admkey-rot",
@@ -486,14 +495,23 @@ async def test_rotation_replaces_one_key_and_keeps_its_settings(keys):
     )
 
     assert rotated is not None and rotated["old_key_prefix"] == f"{_PREFIX}-rot-old"
+    # The same row: no revoked predecessor, no second key.
+    assert rotated["id"] == key_id
     rows = await _rows(pool, "u-admkey-rot")
-    assert rows[f"{_PREFIX}-rot-old"]["status"] == "revoked"
+    assert set(rows) == {f"{_PREFIX}-rot-other", f"{_PREFIX}-rot-new"}
     assert rows[f"{_PREFIX}-rot-other"]["status"] == "active"
     assert rows[f"{_PREFIX}-rot-new"]["status"] == "active"
     assert json.loads(rows[f"{_PREFIX}-rot-new"]["metadata"]) == {"team": "ml"}
     assert (await _quotas(pool, "u-admkey-rot"))["rot-new"] == ("9.0000", "90.0000")
     listed = {row["key_prefix"]: row for row in await store.list_account_keys("u-admkey-rot")}
-    assert listed[f"{_PREFIX}-rot-new"]["name"] == "eval"
+    new = listed[f"{_PREFIX}-rot-new"]
+    assert new["id"] == key_id and new["name"] == "eval"
+    assert new["budget_daily_usd"] == Decimal("2") and new["allowed_models"] == ["m-a"]
+    # What it spent still counts against its budget.
+    assert float(new["spent_today_usd"]) == 1.5
+    # Only the new secret authenticates.
+    assert await store.get_auth_context_with_spend("hash-rot-new") is not None
+    assert await store.get_auth_context_with_spend("hash-rot-old") is None
 
 
 async def test_rotation_of_a_key_that_is_not_active_changes_nothing(keys):
@@ -522,7 +540,9 @@ async def test_another_accounts_key_cannot_be_renamed_or_rotated(keys):
     await _user(store, "u-admkey-thief")
     await _key(pool, "u-admkey-own", "own", "active")
 
-    assert not await store.rename_key("u-admkey-thief", f"{_PREFIX}-own", "mine")
+    assert (
+        await store.update_key_settings("u-admkey-thief", f"{_PREFIX}-own", {"name": "x"}) is None
+    )
     assert (
         await store.rotate_key(
             "u-admkey-thief",
@@ -829,3 +849,113 @@ async def test_a_hard_delete_erases_the_accounts_key_counters(keys):
 
     assert wiped["api_key_daily_cost"] == 1
     assert (await _counters(pool, uid))[1] == []
+
+
+# --- a key's own limits (P2a) ------------------------------------------------
+
+
+async def test_key_settings_change_only_what_is_sent(keys):
+    store, pool = keys
+    uid = "u-admkey-set"
+    await _user(store, uid)
+    await _key(pool, uid, "set", "active")
+    prefix = f"{_PREFIX}-set"
+
+    before, after = await store.update_key_settings(
+        uid, prefix, {"name": "ci", "budget_daily_usd": Decimal("5")}
+    )
+    assert before == {
+        "name": None,
+        "budget_daily_usd": None,
+        "budget_monthly_usd": None,
+        "allowed_models": None,
+    }
+    assert after == {
+        "name": "ci",
+        "budget_daily_usd": Decimal("5.0000"),
+        "budget_monthly_usd": None,
+        "allowed_models": None,
+    }
+
+    _, after = await store.update_key_settings(uid, prefix, {"allowed_models": ["m-a", "m-b"]})
+    assert after["name"] == "ci" and after["budget_daily_usd"] == Decimal("5")
+    assert after["allowed_models"] == ["m-a", "m-b"]
+
+    _, after = await store.update_key_settings(uid, prefix, {"budget_daily_usd": None})
+    assert after["budget_daily_usd"] is None and after["allowed_models"] == ["m-a", "m-b"]
+
+
+async def test_key_settings_reach_neither_a_revoked_key_nor_other_columns(keys):
+    store, pool = keys
+    uid = "u-admkey-setno"
+    await _user(store, uid)
+    await _key(pool, uid, "setno-dead", "revoked")
+    await _key(pool, uid, "setno", "active")
+
+    assert await store.update_key_settings(uid, f"{_PREFIX}-setno-dead", {"name": "x"}) is None
+    for bad in ({}, {"status": "active"}, {"quota_daily_cost_usd": 1}):
+        with pytest.raises(ValueError):
+            await store.update_key_settings(uid, f"{_PREFIX}-setno", bad)
+
+
+async def test_the_auth_lookup_carries_a_budgeted_keys_spend(keys):
+    store, pool = keys
+    uid = "u-admkey-spend"
+    await _user(store, uid)
+    await _key(pool, uid, "spend-a", "active")
+    await _key(pool, uid, "spend-b", "active")
+    key_a, key_b = await _key_id(pool, "spend-a"), await _key_id(pool, "spend-b")
+    now = datetime.now(UTC)
+    today = now.strftime("%Y-%m-%d")
+    month_start = now.replace(day=1)
+    last_month = (month_start - timedelta(days=1)).strftime("%Y-%m-%d")
+    for key_id in (key_a, key_b):
+        await store.increment_user_cost(uid, 2.0, day=today, api_key_id=key_id)
+        await store.increment_user_cost(uid, 7.0, day=last_month, api_key_id=key_id)
+        if month_start.strftime("%Y-%m-%d") != today:
+            await store.increment_user_cost(
+                uid, 3.0, day=month_start.strftime("%Y-%m-%d"), api_key_id=key_id
+            )
+    earlier = 0.0 if month_start.strftime("%Y-%m-%d") == today else 3.0
+    await store.update_key_settings(
+        uid, f"{_PREFIX}-spend-a", {"budget_monthly_usd": Decimal("100")}
+    )
+
+    budgeted = await store.get_auth_context_with_spend("hash-spend-a")
+    unbudgeted = await store.get_auth_context_with_spend("hash-spend-b")
+
+    assert float(budgeted["key_spent_today_usd"]) == 2.0
+    assert float(budgeted["key_spent_month_usd"]) == 2.0 + earlier
+    assert budgeted["budget_monthly_usd"] == Decimal("100")
+    assert budgeted["key_prefix"] == f"{_PREFIX}-spend-a"
+    # No budget, no counter read.
+    assert float(unbudgeted["key_spent_today_usd"]) == 0.0
+    assert float(unbudgeted["key_spent_month_usd"]) == 0.0
+    assert await store.get_key_spend(key_b) == (2.0, 2.0 + earlier)
+
+
+async def test_the_listing_lookup_carries_the_allowlist(keys):
+    store, pool = keys
+    uid = "u-admkey-light"
+    await _user(store, uid)
+    await _key(pool, uid, "light", "active")
+    await store.update_key_settings(uid, f"{_PREFIX}-light", {"allowed_models": ["m-a"]})
+
+    row = await store.get_auth_context_lightweight("hash-light")
+    listed = (await store.list_account_keys(uid))[0]
+
+    assert row["allowed_models"] == ["m-a"]
+    assert listed["allowed_models"] == ["m-a"]
+
+
+async def test_the_cache_drops_cached_contexts_when_a_limit_changes(keys):
+    store, pool = keys
+    uid = "u-admkey-cache"
+    await _user(store, uid)
+    await _key(pool, uid, "cache", "active")
+    cached = CachedOperationalStore(store, InMemoryCache())
+
+    assert (await cached.get_auth_context_lightweight("hash-cache"))["allowed_models"] is None
+    await cached.update_key_settings(uid, f"{_PREFIX}-cache", {"allowed_models": ["m-a"]})
+
+    assert (await cached.get_auth_context_lightweight("hash-cache"))["allowed_models"] == ["m-a"]

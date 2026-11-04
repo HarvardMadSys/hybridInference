@@ -230,6 +230,28 @@ def is_model_outside_grant_scope(canonical_model_id: str, user_ctx: dict[str, An
     return canonical_model_id not in set(allowed)
 
 
+#: Set by the key auth paths when the presented key has a model allowlist, and
+#: only when the request is attributed to that key. Absent means the key allows
+#: every model its account may use. Never empty: the console refuses an empty
+#: allowlist, since revoking the key says "no models" more plainly.
+KEY_ALLOWED_MODELS_KEY = "key_allowed_models"
+
+
+def is_model_outside_key_scope(canonical_model_id: str, user_ctx: dict[str, Any] | None) -> bool:
+    """Return True if the caller's API key does not allow this model.
+
+    Unlike a grant's list, a key's allowlist also narrows the listings: the
+    owner set it so that the key reaches these models and no others, and
+    ``/v1/models`` read with the key should say exactly that.
+    """
+    if not user_ctx:
+        return False
+    allowed = user_ctx.get(KEY_ALLOWED_MODELS_KEY)
+    if allowed is None:
+        return False
+    return canonical_model_id not in set(allowed)
+
+
 class ModelAccessDenial(enum.Enum):
     """Why a caller may not use a model.
 
@@ -241,6 +263,7 @@ class ModelAccessDenial(enum.Enum):
     UNPUBLISHED = "unpublished"
     ROLE = "role"
     DISABLED = "disabled"
+    OUTSIDE_KEY = "outside_key"
     OUTSIDE_GRANT = "outside_grant"
 
 
@@ -273,7 +296,8 @@ async def model_access_denial(
     The check every surface applies before it serves or lists a model: the
     route is published, the caller's role meets the role the model requires
     (after the runtime visibility override), the caller has not disabled the
-    model, and, with ``grant_scope``, an inference grant names it. Overrides,
+    model, the caller's API key allows it, and, with ``grant_scope``, an
+    inference grant names it. Overrides,
     denylists and grants are all keyed by the canonical id, so every check reads
     the canonical id: an alias is held to the same rules as its model.
 
@@ -304,6 +328,8 @@ async def model_access_denial(
         return ModelAccessDenial.ROLE
     if is_model_disabled_for_user(canonical, user_ctx):
         return ModelAccessDenial.DISABLED
+    if is_model_outside_key_scope(canonical, user_ctx):
+        return ModelAccessDenial.OUTSIDE_KEY
     if grant_scope and is_model_outside_grant_scope(canonical, user_ctx):
         return ModelAccessDenial.OUTSIDE_GRANT
     return None

@@ -269,9 +269,9 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(QuotaExceededError)
     async def quota_exceeded_handler(request: Request, exc: QuotaExceededError):
-        # The fourth 429 quota shape in this codebase (the other three: the
-        # hand-rolled body in servers/auth.py, quota.exceeded_payload used by
-        # the grant door, and the concurrency limiter). Nothing here is
+        # The third 429 quota shape in this codebase (the other two:
+        # quota.refusal_payload, which both the API-key and the grant door
+        # answer with, and the concurrency limiter). Nothing here is
         # redacted: the numbers are the caller's own spend against their own
         # cap, which is exactly what a client needs to decide how long to wait,
         # and the message is rendered from those typed fields rather than taken

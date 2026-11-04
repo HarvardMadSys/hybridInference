@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
 import type { ApiKeyListItem } from '@/lib/api/user';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
@@ -20,6 +22,7 @@ import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
 import { formatUsd } from '@/lib/utils/currency';
+import { keyDetailHref, limitsSummary } from './keyLimits';
 
 function EyeIcon(): JSX.Element {
   return (
@@ -101,6 +104,7 @@ type KeyAction =
 
 export function ApiKeyManager(): JSX.Element {
   const toast = useAccountToast();
+  const router = useRouter();
   const branding = useBranding();
   const t = useT();
   const fmt = useFormatter();
@@ -215,14 +219,14 @@ export function ApiKeyManager(): JSX.Element {
     action?.type === 'create'
       ? t(
           'dashboard.keys.name_prompt',
-          'Name this key (optional), for example "laptop" or "CI". All of your keys share one quota.',
+          'Name this key (optional), for example "laptop" or "CI". All of your keys share your account\'s quota; each can also have limits of its own.',
         )
       : action?.type === 'rename'
         ? t('dashboard.keys.rename_prompt', 'Rename this key. Leave it blank to remove the name.')
         : action?.type === 'regenerate'
           ? t(
               'dashboard.keys.confirm_regenerate',
-              'Regenerate API Key? The old key will be immediately invalidated.',
+              'Regenerate API Key? The old key will be immediately invalidated. The key keeps its name, limits and spend.',
             )
           : action?.type === 'delete' && action.key.status === 'active'
             ? t(
@@ -255,13 +259,19 @@ export function ApiKeyManager(): JSX.Element {
         className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-3 px-4 py-4 md:col-span-full md:grid-cols-subgrid md:items-center"
       >
         <div className="col-span-full min-w-0 md:col-span-1">
-          <p
-            title={apiKey.name ?? undefined}
-            className={`mb-1.5 truncate text-sm ${
-              apiKey.name ? 'font-medium text-gray-900' : 'italic text-gray-400'
-            }`}
-          >
-            {apiKey.name ?? t('dashboard.keys.unnamed', 'Unnamed key')}
+          <p className="mb-1.5 flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm">
+            <Link
+              href={keyDetailHref(apiKey.key_prefix)}
+              title={apiKey.name ?? undefined}
+              className={`truncate hover:underline ${
+                apiKey.name ? 'font-medium text-gray-900' : 'italic text-gray-400'
+              }`}
+            >
+              {apiKey.name ?? t('dashboard.keys.unnamed', 'Unnamed key')}
+            </Link>
+            {apiKey.status === 'active' && (
+              <span className="text-xs text-gray-500">{limitsSummary(apiKey, t)}</span>
+            )}
           </p>
           <div className="grid grid-cols-[minmax(0,1fr)_1.75rem_1.75rem] items-center gap-2">
             <code
@@ -359,6 +369,10 @@ export function ApiKeyManager(): JSX.Element {
               items={
                 apiKey.status === 'active'
                   ? [
+                      {
+                        label: t('dashboard.keys.limits', 'Limits'),
+                        onSelect: () => router.push(keyDetailHref(apiKey.key_prefix)),
+                      },
                       {
                         label: t('dashboard.keys.rename', 'Rename'),
                         onSelect: () => openAction({ type: 'rename', key: apiKey }),
