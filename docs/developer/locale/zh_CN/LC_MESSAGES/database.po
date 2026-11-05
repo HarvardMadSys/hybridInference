@@ -447,19 +447,15 @@ msgstr "账号与认证"
 
 #: ../developer/database.md
 msgid ""
-"`users`, `api_keys`, `auth_sessions`, `browser_sessions`, "
+"`users`, `organizations`, `org_members`, `projects`, `api_keys`, `auth_sessions`, `browser_sessions`, "
 "`browser_session_accounts`, `login_events`, `email_verification_tokens`, "
 "`password_reset_tokens`, `identity_auth_codes`"
 msgstr ""
 
 #: ../developer/database.md
 msgid ""
-"User records, hashed API keys with their quotas and their own budgets and "
-"model allowlists, refresh sessions (each deleted a day after it expires or "
-"is signed out) and the accounts signed in on each browser, sign-in history"
-msgstr ""
-"用户记录、哈希后的 API key 及其配额和它们各自的预算与模型白名单、refresh token "
-"会话（过期或登出一天后删除）及每个浏览器上已登录的账号、登录历史"
+"User records, each account's personal organization, projects and API keys with their own budgets and model allowlists, refresh sessions (each deleted a day after it expires or is signed out) and the accounts signed in on each browser, sign-in history"
+msgstr "用户记录、每个账号的个人组织、项目及具有独立预算和模型白名单的 API key、refresh token 会话（过期或登出一天后删除）及每个浏览器上已登录的账号、登录历史"
 
 #: ../developer/database.md
 msgid "Admin actions"
@@ -504,14 +500,13 @@ msgid "Cost and quota"
 msgstr "成本与配额"
 
 #: ../developer/database.md
-msgid "`user_daily_cost`, `api_key_daily_cost`"
+msgid "`user_daily_cost`, `api_key_daily_cost`, `spend_counters`"
 msgstr ""
 
 #: ../developer/database.md
 msgid ""
-"Per-user daily spend used for quota enforcement, and the same per API key for "
-"the console's per-key spend"
-msgstr "每个用户每天的花费，用于配额控制；以及按 API key 统计的同类数据，用于控制台展示每把 key 的花费"
+"Per-user daily spend used for quota enforcement, the same per API key for the console's per-key spend, and counters for every organization, project and key scope by day and month"
+msgstr "每个用户每天的花费，用于配额控制；按 API key 统计的同类数据，用于控制台展示每把 key 的花费；以及每个组织、项目和 key 按日和月统计的计数器"
 
 #: ../developer/database.md
 msgid "RouteWise"
