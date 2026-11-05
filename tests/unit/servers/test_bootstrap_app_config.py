@@ -134,6 +134,10 @@ async def test_boot_wires_runtime_import_setup_state_and_refresh_loops(
 
     db_logger = AsyncMock()
     db_logger.pool = MagicMock()
+    connection = AsyncMock()
+    connection.fetch.return_value = []
+    connection.execute.return_value = "INSERT 0 0"
+    db_logger.pool.acquire.return_value.__aenter__.return_value = connection
     monkeypatch.setattr(bootstrap, "_init_db_logger", MagicMock(return_value=db_logger))
     monkeypatch.setattr(bootstrap, "_init_router_and_models", AsyncMock(return_value=({}, [])))
     monkeypatch.setattr(bootstrap, "_apply_routing_manager", MagicMock(return_value=None))
