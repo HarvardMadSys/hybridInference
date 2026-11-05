@@ -9,7 +9,6 @@ const push = vi.fn();
 const replace = vi.fn();
 const switchAccount = vi.fn();
 const logout = vi.fn();
-const logoutAll = vi.fn();
 const chooseLocale = vi.fn();
 const setTheme = vi.fn();
 let selectedTheme = 'system';
@@ -49,7 +48,6 @@ vi.mock('@/components/providers', () => ({
     maxAccounts,
     switchAccount,
     logout,
-    logoutAll,
   }),
 }));
 
@@ -77,7 +75,6 @@ beforeEach(() => {
   chooseLocale.mockResolvedValue(undefined);
   switchAccount.mockResolvedValue(undefined);
   logout.mockResolvedValue(undefined);
-  logoutAll.mockResolvedValue(undefined);
 });
 
 afterEach(() => cleanup());
@@ -159,16 +156,6 @@ describe('AccountMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Log out' }));
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/'));
-  });
-
-  it('logs every account out', async () => {
-    render(<AccountMenu />);
-    openMenu();
-
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Log out of all accounts' }));
-
-    await waitFor(() => expect(logoutAll).toHaveBeenCalledTimes(1));
-    expect(replace).toHaveBeenCalledWith('/');
   });
 
   it('closes on Escape', () => {
@@ -264,7 +251,7 @@ describe('AccountMenu', () => {
   it('wraps keyboard navigation and opens at the end with ArrowUp', () => {
     render(<AccountMenu />);
     fireEvent.keyDown(screen.getByRole('button', { name: 'Ada' }), { key: 'ArrowUp' });
-    expect(screen.getByRole('menuitem', { name: 'Log out of all accounts' })).toHaveFocus();
+    expect(screen.getByRole('menuitem', { name: 'Log out' })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
     expect(screen.getByRole('menuitem', { name: 'My settings' })).toHaveFocus();
   });

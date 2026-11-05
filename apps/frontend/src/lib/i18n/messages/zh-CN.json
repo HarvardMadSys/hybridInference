@@ -2211,10 +2211,6 @@
     "source": "Log out",
     "text": "退出登录"
   },
-  "chrome.account_menu.log_out_all": {
-    "source": "Log out of all accounts",
-    "text": "退出所有账户"
-  },
   "chrome.account_menu.settings": {
     "source": "My settings",
     "text": "我的设置"
