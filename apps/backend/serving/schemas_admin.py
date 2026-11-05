@@ -40,6 +40,7 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     )
     notes: str | None = Field(None, description="Admin notes")
     metadata: dict[str, Any] | None = Field(None, description="Custom metadata")
+    project_id: str | None = Field(None, description="Project the key belongs to")
 
     @field_validator("user_id")
     @classmethod

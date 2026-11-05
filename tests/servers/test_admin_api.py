@@ -92,9 +92,16 @@ async def test_create_api_key_success(admin_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_api_key_conflict(admin_client, monkeypatch):
+async def test_create_api_key_allows_a_second_active_key(admin_client, monkeypatch):
     client, op_store, _log_store, log_action = admin_client
     op_store.check_active_key_exists.return_value = True
+    op_store.create_key.return_value = {"id": 1, "created_at": datetime(2025, 1, 1, tzinfo=UTC)}
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-second-key"
+    )
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.api_keys.hash_api_key", lambda _: "hashed-second"
+    )
 
     response = await client.post(
         "/admin/api-keys",
@@ -102,10 +109,8 @@ async def test_create_api_key_conflict(admin_client, monkeypatch):
         json={"user_id": "alice"},
     )
 
-    assert response.status_code == 409
+    assert response.status_code == 201
     log_action.assert_awaited()
-    call = log_action.await_args
-    assert call.kwargs.get("success") is False
 
 
 @pytest.mark.asyncio

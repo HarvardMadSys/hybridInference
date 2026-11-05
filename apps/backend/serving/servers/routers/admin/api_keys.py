@@ -49,20 +49,10 @@ async def create_api_key(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    if await op_store.check_active_key_exists(payload.user_id):
-        await log_admin_action(
-            op_store,
-            admin_id,
-            "create_key",
-            payload.user_id,
-            {"error": "user_id already exists"},
-            success=False,
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=f"User '{payload.user_id}' already has an active API key. "
-            "Revoke it first, then create a new one.",
-        )
+    if payload.project_id:
+        project = await op_store.get_project(payload.user_id, payload.project_id)
+        if not project:
+            raise HTTPException(404, f"Project '{payload.project_id}' not found.")
 
     plaintext_key = generate_api_key()
     key_hash = hash_api_key(plaintext_key)
@@ -78,6 +68,7 @@ async def create_api_key(
         expires_at=payload.expires_at,
         notes=payload.notes,
         metadata=payload.metadata,
+        project_id=payload.project_id,
     )
 
     await log_admin_action(
