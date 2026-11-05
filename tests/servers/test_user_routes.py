@@ -161,6 +161,26 @@ class TestAPIKeyManagement:
         assert "*" in data["keys"][0]["key_masked"]
 
     @pytest.mark.asyncio
+    async def test_list_api_keys_reports_the_project(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """The dashboard groups keys by project, so the list must carry project_id."""
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO projects (id, account_id, name) VALUES ('prj_list_test', $1, 'listed')",
+                test_user_with_key["id"],
+            )
+            await conn.execute(
+                "UPDATE api_keys SET project_id = 'prj_list_test' WHERE key_prefix = $1",
+                test_user_with_key["key_prefix"],
+            )
+
+        response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
+
+        assert response.status_code == 200
+        assert response.json()["keys"][0]["project_id"] == "prj_list_test"
+
+    @pytest.mark.asyncio
     async def test_list_api_keys_reveals_full_key_for_active_key(
         self, auth_app_client: AsyncClient, test_user, auth_headers
     ):

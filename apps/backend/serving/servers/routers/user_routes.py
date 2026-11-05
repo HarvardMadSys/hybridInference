@@ -581,6 +581,7 @@ async def list_api_keys(
                 created_at=row["created_at"],
                 last_used_at=row["last_used_at"],
                 status=row["status"],
+                project_id=row["project_id"],
             )
         )
     return APIKeyListResponse(keys=keys)
