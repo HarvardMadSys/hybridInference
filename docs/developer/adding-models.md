@@ -181,7 +181,7 @@ itself and are read only at the model level.
 | `supports_tools` | bool | No | Function calling support (default: false) |
 | `supports_structured_output` | bool | No | JSON mode support (default: false) |
 | `supported_params` | list[string] | No | Allowed parameter names (default: `temperature`, `top_p`, `max_tokens`) |
-| `reasoning_efforts` | list[string] | No | The values this model's `reasoning_effort` accepts. Meaningful only when `reasoning_effort` is in `supported_params`; empty means "not offered". It has no default, because the accepted values differ from model to model |
+| `reasoning_efforts` | list[string] | No | The values this model's `reasoning_effort` accepts. Meaningful only when `reasoning_effort` is in `supported_params`; empty means "not offered". It has no default, because the accepted values differ from model to model. The model listings publish it; see [Reasoning effort in the model listings](#reasoning-effort-in-the-model-listings) |
 | `on_demand` | bool | No | Model is lazily loaded on shared GPUs (started on first request, stopped when idle). Exposed in `/v1/models`, and the RouteWise background latency prober never probes such endpoints (default: false) |
 | `processor` | string | No | Output-processor override for `OpenAICompatAdapter`, bypassing model-ID auto-detection. Accepted: `"default"`, `"glm"`, `"qwen_coder"`, `"think_block"` |
 | `extra_body` | dict | No | Default fields merged into OpenAI-compatible upstream request bodies. Core fields and validated client parameters win |
@@ -211,6 +211,30 @@ An explicit `required_role` also takes the place of `admin_only: true`, with
 one exception kept from earlier releases: `admin_only: true` together with
 `required_role: free` stays admin-only. To open such a model to the free tier,
 remove `admin_only`.
+
+### Reasoning effort in the model listings
+
+`/v1/models` tells a client which `reasoning_effort` values a request would
+deliver to each model, so a client can offer those and nothing else. The
+OpenAI/OpenRouter shape carries `reasoning: {"supported_efforts": [...]}`, in
+the order `reasoning_efforts` declares them; the Anthropic shape (an
+`anthropic-version` header, or `/anthropic/v1/models`) carries
+`capabilities.effort` as the Anthropic Models API spells it, with
+`supported` and one `{"supported": true|false}` for each of `low`, `medium`,
+`high`, `xhigh` and `max`. Only `effort` is filled in under `capabilities`.
+
+A value is published only when every route of the model delivers it:
+
+- an `openai_compat` route (OpenRouter included) with `reasoning_effort` in
+  `supported_params` delivers its `reasoning_efforts`;
+- a route without `reasoning_effort` in `supported_params` delivers none, and
+  the model is published with an empty list (`supported: false`);
+- for anything else nothing is published (`reasoning: null`, no
+  `capabilities`): a route whose adapter does not forward the parameter itself
+  (`anthropic`, `claude`, `gemini`), `reasoning_effort` without a declared
+  domain, or a domain that is not a list of distinct level names.
+
+Auto models publish nothing, because selection picks the model per request.
 
 ### Automatic DeepSeek prices
 

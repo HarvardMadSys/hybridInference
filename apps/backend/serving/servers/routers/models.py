@@ -19,6 +19,13 @@ The dedicated ``/anthropic/v1/models`` route always returns that shape.
 
 While auto mode is on, the auto models (``auto``, ``auto-<tier>``) are listed
 after the models, each to a caller who may use any of its tier's models.
+
+Each model also says which reasoning-effort values its routes deliver
+(``serving.model_effort_capabilities``): ``reasoning.supported_efforts`` in the
+OpenAI/OpenRouter shape, ``capabilities.effort`` in the Anthropic one. Where the
+configuration does not settle it -- and for auto models, whose selection picks
+the model per request -- nothing is claimed: ``reasoning`` is ``null`` and
+``capabilities`` is absent.
 """
 
 from __future__ import annotations
@@ -32,6 +39,11 @@ from fastapi.responses import JSONResponse
 from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX
 from serving.auto_mode import AutoMode, auto_mode_enabled, candidate_info
 from serving.model_access import model_access_denial
+from serving.model_effort_capabilities import (
+    anthropic_capabilities,
+    model_effort_domain,
+    openai_reasoning,
+)
 from serving.pricing import PricingUnavailableError, effective_pricing
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key
@@ -188,14 +200,18 @@ async def _format_anthropic_model_list(
         if canonical_id in emitted:
             continue
         emitted.add(canonical_id)
-        data.append(
-            {
-                "type": "model",
-                "id": canonical_id,
-                "display_name": primary.name or canonical_id,
-                "created_at": _CREATED_AT_ISO,
-            }
+        entry: dict[str, Any] = {
+            "type": "model",
+            "id": canonical_id,
+            "display_name": primary.name or canonical_id,
+            "created_at": _CREATED_AT_ISO,
+        }
+        capabilities = anthropic_capabilities(
+            model_effort_domain(adapter for adapter, _ in route.adapters)
         )
+        if capabilities is not None:
+            entry["capabilities"] = capabilities
+        data.append(entry)
     for model_id, tier, _configs in await _auto_models_for(
         auto_mode, router_exec, model_visibility_resolver, user_ctx
     ):
@@ -335,6 +351,9 @@ async def _build_model_list_async(
             # Any adapter marking the model on-demand makes the whole model
             # on-demand: a probe that hits the lazy route still pins its GPU.
             on_demand=any(cfg.on_demand for cfg in configs),
+            reasoning=openai_reasoning(
+                model_effort_domain(adapter for adapter, _ in route.adapters)
+            ),
         )
         # Optional OpenRouter-specific metadata
         if model_id != canonical_id:

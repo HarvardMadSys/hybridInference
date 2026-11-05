@@ -1,0 +1,259 @@
+{
+  "data": [
+    {
+      "context_length": 8192,
+      "created": 0,
+      "id": "deepseek-like-reasoner",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "deepseek-like-reasoner",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "p",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": {
+        "supported_efforts": [
+          "high",
+          "max"
+        ]
+      },
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "reasoning_effort",
+        "stream",
+        "temperature"
+      ]
+    },
+    {
+      "context_length": 8192,
+      "created": 0,
+      "id": "plain-chat",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "plain-chat",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "p",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": {
+        "supported_efforts": []
+      },
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "stream",
+        "temperature"
+      ]
+    },
+    {
+      "context_length": 8192,
+      "created": 0,
+      "id": "undeclared-reasoner",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "undeclared-reasoner",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "p",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": null,
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "reasoning_effort",
+        "stream",
+        "temperature"
+      ]
+    },
+    {
+      "context_length": 8192,
+      "created": 0,
+      "id": "malformed-domain",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "malformed-domain",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "p",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": null,
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "reasoning_effort",
+        "stream",
+        "temperature"
+      ]
+    },
+    {
+      "context_length": 8192,
+      "created": 0,
+      "id": "native-anthropic",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "native-anthropic",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "p",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": null,
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "reasoning_effort",
+        "stream",
+        "temperature"
+      ]
+    },
+    {
+      "context_length": 8192,
+      "created": 0,
+      "id": "mixed-routes",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "mixed-routes",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "a",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": {
+        "supported_efforts": [
+          "high",
+          "max"
+        ]
+      },
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "reasoning_effort",
+        "stream",
+        "temperature"
+      ]
+    },
+    {
+      "context_length": 8192,
+      "created": 0,
+      "id": "minimal-only",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "minimal-only",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "p",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": {
+        "supported_efforts": [
+          "none",
+          "minimal"
+        ]
+      },
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "reasoning_effort",
+        "stream",
+        "temperature"
+      ]
+    }
+  ],
+  "object": "list"
+}
