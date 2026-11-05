@@ -1393,6 +1393,28 @@ async def initialize() -> AppServices:
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
+
+        from serving.storage.project_backfill import backfill_projects, seed_spend_counters
+
+        async def _run_project_backfill() -> None:
+            try:
+                async with db_logger.pool.acquire() as conn:
+                    accounts = await backfill_projects(conn)
+                    seeded = await seed_spend_counters(conn)
+                logger.info(
+                    "project_backfill_complete",
+                    extra={
+                        "event": "project_backfill_complete",
+                        "accounts": accounts,
+                        "counters": seeded,
+                    },
+                )
+            except Exception:
+                logger.warning("Project backfill failed", exc_info=True)
+
+        _project_backfill_task = asyncio.create_task(_run_project_backfill())
+        _BACKGROUND_TASKS.add(_project_backfill_task)
+        _project_backfill_task.add_done_callback(_BACKGROUND_TASKS.discard)
         # The Responses store is always constructed so reads, deletes and the
         # hard-delete purge work on any pre-existing rows. *Writing* new
         # responses is gated on the same privacy switch as prompt/response
