@@ -2421,6 +2421,8 @@ async def execute_messages(
     # The key the usage is attributed to, for its owner's per-key views.
     if user_ctx.get("api_key_id") is not None:
         metadata["api_key_id"] = user_ctx["api_key_id"]
+    if user_ctx.get("project_id"):
+        metadata["project_id"] = user_ctx["project_id"]
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
     metadata.update(ctx.batch_log_metadata())
     # The usage window query needs the grant itself and the real start time;

@@ -30,6 +30,13 @@ MODEL_QUEUED = "model_queued"
 # REQUEST_SCOPED_KEYS is what makes "absent" trustworthy.
 USER_ROLE = "user_role"
 
+# req_ctx key holding the project and personal organization the presented key
+# belongs to. Billing reads them to charge every spend counter the request
+# touches. A leftover value would bill the next request to the previous
+# caller's project, so both are request-scoped.
+PROJECT_ID = "project_id"
+ORG_ID = "org_id"
+
 # UTC datetime captured once at the HTTP request boundary. Scheduled pricing
 # consumers use it so routing, logs, and quota charging cannot disagree when a
 # long-running request crosses a price-window boundary.
@@ -129,6 +136,8 @@ REQUEST_SCOPED_KEYS = (
     "auth_key_hash",
     "affinity_key",
     USER_ROLE,
+    PROJECT_ID,
+    ORG_ID,
     PRICING_TIME,
     PRICING_SNAPSHOT,
     CLIENT_ERROR_KIND,

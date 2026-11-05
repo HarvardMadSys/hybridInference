@@ -31,6 +31,8 @@ def mock_stores():
     op_store.revoke_key = AsyncMock()
     op_store.log_admin_action = AsyncMock()
     op_store.get_batch_usage = AsyncMock(return_value={})
+    op_store.get_default_project = AsyncMock(return_value=None)
+    op_store.get_project = AsyncMock(return_value=None)
 
     log_store = MagicMock()
     log_store.get_key_detail_usage = AsyncMock(return_value={})

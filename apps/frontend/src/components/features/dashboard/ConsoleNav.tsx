@@ -73,6 +73,7 @@ export function ConsoleNav() {
       ? [{ href: agentsEntryUrl(agentsUrl, state.user?.id), label: 'Agents', external: true }]
       : []),
     { href: '/dashboard/keys', label: t('console.nav.keys', 'API Keys') },
+    { href: '/dashboard/projects', label: t('console.nav.projects', 'Projects') },
     { href: '/dashboard/requests', label: t('console.nav.requests', 'Requests') },
     { href: '/dashboard/models', label: t('console.nav.models', 'Models') },
     ...(showBatches

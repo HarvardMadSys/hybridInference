@@ -84,6 +84,19 @@ key_rows AS (
         cost_usd = k.cost_usd + EXCLUDED.cost_usd,
         requests = k.requests + EXCLUDED.requests,
         last_request_at = NOW()
+),
+scope_rows AS (
+    INSERT INTO spend_counters AS c (scope_id, period, cost_usd, requests, last_request_at)
+    SELECT scope_id, period, SUM(cost_usd), SUM(requests), NOW()
+    FROM batch
+    CROSS JOIN LATERAL (VALUES ('key:' || key_id::text), (org_id), (project_id)) scopes(scope_id)
+    CROSS JOIN LATERAL (VALUES ('d:' || day), ('m:' || left(day, 7))) periods(period)
+    WHERE scope_id IS NOT NULL
+    GROUP BY scope_id, period
+    ON CONFLICT (scope_id, period) DO UPDATE SET
+        cost_usd = c.cost_usd + EXCLUDED.cost_usd,
+        requests = c.requests + EXCLUDED.requests,
+        last_request_at = NOW()
 )
 SELECT txid_current()
 """
@@ -259,9 +272,9 @@ def _decode_grant(row: Any) -> Row:
 _KEY_INSERT_COLUMNS = (
     "key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd, "
     "quota_monthly_cost_usd, expires_at, notes, metadata, account_id, "
-    "api_key_encrypted, name"
+    "api_key_encrypted, name, org_id, project_id"
 )
-_KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12"
+_KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14"
 
 #: A key's own limits (P2a), on top of its account's quota. NULL means no limit
 #: at the key.
@@ -300,11 +313,72 @@ _ACCOUNT_MONTH_SPEND_JOIN = (
     "  SELECT COALESCE(SUM(m.cost_usd), 0) AS account_spent_month_usd "
     "  FROM user_daily_cost m "
     "  WHERE m.user_id = k.user_id "
-    "    AND k.quota_monthly_cost_usd IS NOT NULL "
+    "    AND COALESCE(o.budget_monthly_usd, k.quota_monthly_cost_usd) IS NOT NULL "
     "    AND m.day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
     ") am ON TRUE "
 )
 
+
+#: The key's project and organization: where the request is attributed, and the
+#: budgets above the key. The org ceiling falls back to the legacy key quota
+#: until every organization has one, so a half-migrated database keeps the
+#: limit it had.
+_PROJECT_SCOPE_COLUMNS = (
+    "k.project_id, k.org_id, p.name AS project_name, o.name AS org_name, "
+    "p.budget_daily_usd AS project_budget_daily_usd, "
+    "p.budget_monthly_usd AS project_budget_monthly_usd, "
+    "p.allowed_models AS project_allowed_models, "
+    "COALESCE(o.budget_daily_usd, k.quota_daily_cost_usd) AS quota_daily_cost_usd, "
+    "COALESCE(o.budget_monthly_usd, k.quota_monthly_cost_usd) AS quota_monthly_cost_usd, "
+    "o.status AS org_status, "
+    "p.max_concurrent_requests AS project_max_concurrent_requests, "
+    "o.max_concurrent_requests AS org_max_concurrent_requests, "
+    "k.max_concurrent_requests AS key_max_concurrent_requests"
+)
+
+_PROJECT_SCOPE_JOIN = (
+    "LEFT JOIN projects p ON p.id = k.project_id AND p.status = 'active' "
+    "LEFT JOIN organizations o ON o.id = COALESCE(p.org_id, k.org_id) "
+)
+
+#: Daily and monthly spend for the key's project and organization, read from
+#: ``spend_counters`` through its primary key. Project and org counters are
+#: written at settlement; the account's own counters stay in ``user_daily_cost``
+#: during the transition, so the gate keeps reading both sources.
+_SCOPE_SPEND_COLUMNS = (
+    "COALESCE(ps.cost_usd, 0) AS project_spent_today_usd, "
+    "COALESCE(pm.cost_usd, 0) AS project_spent_month_usd, "
+    "COALESCE(os.cost_usd, 0) AS org_spent_today_usd, "
+    "COALESCE(om.cost_usd, 0) AS org_spent_month_usd"
+)
+
+_SCOPE_SPEND_JOIN = (
+    "LEFT JOIN spend_counters ps "
+    "  ON ps.scope_id = k.project_id "
+    " AND ps.period = 'd:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+    "LEFT JOIN spend_counters pm "
+    "  ON pm.scope_id = k.project_id "
+    " AND pm.period = 'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
+    "LEFT JOIN spend_counters os "
+    "  ON os.scope_id = COALESCE(p.org_id, k.org_id) "
+    " AND os.period = 'd:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+    "LEFT JOIN spend_counters om "
+    "  ON om.scope_id = COALESCE(p.org_id, k.org_id) "
+    " AND om.period = 'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
+)
+
+#: Postgres types the project and organization write paths cast their bound
+#: values to. A bare ``SET status = $1`` leaves the parameter's type unknown
+#: to asyncpg's prepare step, so every assignment names it.
+_COLUMN_CASTS = {
+    "name": "text",
+    "description": "text",
+    "status": "text",
+    "budget_daily_usd": "numeric",
+    "budget_monthly_usd": "numeric",
+    "max_concurrent_requests": "integer",
+    "allowed_models": "text[]",
+}
 
 #: Advisory lock key held by every API-key write: shared by a write to one
 #: account's keys, exclusive by a write that spans accounts. The per-account
@@ -417,6 +491,14 @@ def _coerce_user_row(row: Any) -> Row | None:
             d["preferences"] = {}
     elif not isinstance(val, dict):
         d["preferences"] = {}
+    for field in ("allowed_models", "project_allowed_models"):
+        models = d.get(field)
+        if isinstance(models, str):
+            try:
+                parsed = json.loads(models)
+            except (json.JSONDecodeError, TypeError):
+                parsed = []
+            d[field] = parsed if isinstance(parsed, list) else []
     return d
 
 
@@ -567,8 +649,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         signup_reason: str | None = None,
         login_name: str | None = None,
     ) -> None:
-        """Insert a new user row."""
-        async with self._pool.acquire() as conn:
+        """Insert a new user row and its personal organization."""
+        from serving.storage.project_backfill import ensure_personal_org
+
+        async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, user_name, "
                 "email_verified, status, signup_reason, login_name) "
@@ -582,6 +666,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 signup_reason,
                 login_name.lower() if login_name is not None else None,
             )
+            await ensure_personal_org(conn, user_id=user_id, user_name=user_name)
 
     async def get_or_create_setup_code(
         self,
@@ -654,6 +739,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         a fresh snapshot, so a claim that waited on the lock sees the winner's
         committed user and marker and backs out.
         """
+        from serving.storage.project_backfill import ensure_personal_org
+
         audit = audit_columns(
             admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
         )
@@ -679,6 +766,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 marker_value,
                 login_name.lower(),
             )
+            await ensure_personal_org(conn, user_id=user_id, user_name=user_name)
             # The code has done its job; it must not outlive the setup it guards.
             await conn.execute("DELETE FROM site_settings WHERE key = $1", code_key)
             await insert_audit_row(
@@ -946,6 +1034,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 or user_row["hard_delete_claim_token"] != claim_token
             ):
                 raise HardDeleteStateChanged(f"Account {user_id} was not claimed for hard-delete.")
+
+            from serving.storage.project_backfill import personal_org_id
+
+            org_id = personal_org_id(user_id)
+            await conn.execute(
+                "DELETE FROM spend_counters WHERE scope_id = $1 "
+                "OR scope_id IN (SELECT id FROM projects WHERE org_id = $1) "
+                "OR scope_id IN (SELECT 'key:' || id::text FROM api_keys WHERE user_id = $2)",
+                org_id,
+                user_id,
+            )
+            await conn.execute("DELETE FROM organizations WHERE id = $1", org_id)
 
             keys_status = await conn.execute(
                 "DELETE FROM api_keys WHERE account_id = $1 OR user_id = $1",
@@ -1516,12 +1616,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = _JOINED_USER_IDENTITY
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                f"k.quota_monthly_cost_usd, {_AUTH_KEY_COLUMNS}, "
-                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
-                "u.max_concurrent_requests "
+                "SELECT k.id, k.user_id, k.user_name, "
+                f"{_PROJECT_SCOPE_COLUMNS}, {_AUTH_KEY_COLUMNS}, "
+                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                f"{_PROJECT_SCOPE_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -1550,19 +1650,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = _JOINED_USER_IDENTITY
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
-                "k.quota_monthly_cost_usd, am.account_spent_month_usd, "
+                "SELECT k.id, k.user_id, k.user_name, "
+                f"{_PROJECT_SCOPE_COLUMNS}, am.account_spent_month_usd, "
                 f"{_AUTH_KEY_COLUMNS}, ks.key_spent_today_usd, ks.key_spent_month_usd, "
-                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
-                "u.max_concurrent_requests, "
+                f"{_SCOPE_SPEND_COLUMNS}, "
+                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "LEFT JOIN user_daily_cost s "
                 "  ON s.user_id = k.user_id "
                 " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+                f"{_PROJECT_SCOPE_JOIN}"
                 f"{_KEY_SPEND_JOIN}"
                 f"{_ACCOUNT_MONTH_SPEND_JOIN}"
+                f"{_SCOPE_SPEND_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -1579,10 +1681,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = _JOINED_USER_IDENTITY
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
-                f"SELECT k.user_id, {identity}, u.role, u.email_verified, "
-                f"{_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, k.allowed_models "
+                f"SELECT k.user_id, {identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
+                "u.max_concurrent_requests, k.allowed_models, "
+                "p.allowed_models AS project_allowed_models, o.status AS org_status "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                f"{_PROJECT_SCOPE_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -1670,6 +1774,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         inherit_account_quota: bool = False,
         name: str | None = None,
         max_active_keys: int | None = None,
+        project_id: str | None = None,
     ) -> Row:
         """Insert a new API key. Returns the inserted row.
 
@@ -1715,6 +1820,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 if current is not None:
                     daily = current["quota_daily_cost_usd"]
                     monthly = current["quota_monthly_cost_usd"]
+            from serving.storage.project_backfill import (
+                default_project_id,
+                personal_org_id,
+            )
+
+            target_project = project_id or default_project_id(user_id)
+            project_row = await conn.fetchrow(
+                "SELECT org_id FROM projects WHERE id = $1", target_project
+            )
+            org = project_row["org_id"] if project_row else personal_org_id(user_id)
             row = await conn.fetchrow(
                 f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}) VALUES ({_KEY_INSERT_VALUES}) "
                 "RETURNING id, created_at",
@@ -1730,6 +1845,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 effective_account_id,
                 api_key_encrypted,
                 name,
+                org,
+                target_project,
             )
             await _sync_account_quota(
                 conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
@@ -1759,10 +1876,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT k.id, k.key_prefix, k.name, k.created_at, k.last_used_at, k.status, "
+                "k.project_id, p.name AS project_name, "
                 f"k.api_key_encrypted, {_KEY_LIMIT_COLUMNS}, "
                 "COALESCE(s.today, 0) AS spent_today_usd, "
                 "COALESCE(s.month, 0) AS spent_month_usd "
                 "FROM api_keys k "
+                "LEFT JOIN projects p ON p.id = k.project_id "
                 "LEFT JOIN LATERAL ("
                 "  SELECT SUM(c.cost_usd) FILTER (WHERE c.day = d.today) AS today, "
                 "         SUM(c.cost_usd) AS month "
@@ -1777,6 +1896,232 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 account_id,
             )
         return [dict(row) for row in rows]
+
+    # -- projects ------------------------------------------------------------
+
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        description: str | None = None,
+        budget_daily_usd: Decimal | float | None = None,
+        budget_monthly_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+        max_concurrent_requests: int | None = None,
+    ) -> Row:
+        """Create a project in the account's personal organization."""
+        from serving.storage.project_backfill import personal_org_id
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO projects "
+                "(id, org_id, name, budget_daily_usd, budget_monthly_usd, "
+                "allowed_models, max_concurrent_requests, description) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
+                project_id,
+                personal_org_id(user_id),
+                name,
+                budget_daily_usd,
+                budget_monthly_usd,
+                allowed_models,
+                max_concurrent_requests,
+                description,
+            )
+        return self._project_row(row)
+
+    async def list_projects(self, user_id: str) -> list[Row]:
+        """List active projects owned by the account."""
+        from serving.storage.project_backfill import personal_org_id
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM projects WHERE org_id = $1 AND status = 'active' "
+                "ORDER BY is_default DESC, created_at DESC",
+                personal_org_id(user_id),
+            )
+        return [self._project_row(row) for row in rows]
+
+    async def get_default_project(self, user_id: str) -> Row | None:
+        """Return the account's active Default project."""
+        from serving.storage.project_backfill import personal_org_id
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM projects WHERE org_id = $1 AND is_default AND status = 'active'",
+                personal_org_id(user_id),
+            )
+        return self._project_row(row) if row else None
+
+    async def get_project(self, user_id: str, project_id: str) -> Row | None:
+        """Return an active project owned by the account."""
+        from serving.storage.project_backfill import personal_org_id
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM projects WHERE id = $1 AND org_id = $2 AND status = 'active'",
+                project_id,
+                personal_org_id(user_id),
+            )
+        return self._project_row(row) if row else None
+
+    async def update_project(
+        self, user_id: str, project_id: str, changes: dict[str, Any]
+    ) -> Row | None:
+        """Update an active project owned by the account."""
+        from serving.storage.project_backfill import personal_org_id
+
+        allowed = {
+            "name",
+            "description",
+            "budget_daily_usd",
+            "budget_monthly_usd",
+            "allowed_models",
+            "max_concurrent_requests",
+        }
+        assignments: list[str] = []
+        values: list[Any] = []
+        for name, value in changes.items():
+            if name not in allowed:
+                continue
+            values.append(value)
+            assignments.append(f"{name} = ${len(values) + 2}::{_COLUMN_CASTS[name]}")
+        if not assignments:
+            return await self.get_project(user_id, project_id)
+        assignments.append("archived_at = archived_at")
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE projects SET {', '.join(assignments)} "
+                "WHERE id = $1::text AND org_id = $2::text AND status = 'active' RETURNING *",
+                project_id,
+                personal_org_id(user_id),
+                *values,
+            )
+        return self._project_row(row) if row else None
+
+    async def archive_project(self, user_id: str, project_id: str) -> int:
+        """Archive a non-default project and revoke its keys atomically."""
+        from serving.storage.project_backfill import personal_org_id
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
+            project = await conn.fetchrow(
+                "SELECT is_default FROM projects WHERE id = $1 AND org_id = $2 "
+                "AND status = 'active'",
+                project_id,
+                personal_org_id(user_id),
+            )
+            if project is None:
+                return 0
+            if project["is_default"]:
+                raise ValueError("The Default project cannot be archived.")
+            revoked = await conn.execute(
+                "UPDATE api_keys SET status = 'revoked', revoked_at = NOW() "
+                "WHERE project_id = $1 AND status = 'active'",
+                project_id,
+            )
+            await conn.execute(
+                "UPDATE projects SET status = 'archived', archived_at = NOW() WHERE id = $1",
+                project_id,
+            )
+        return _parse_command_tag_count(revoked)
+
+    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
+        """Update the organization's ceilings and status."""
+        allowed = {
+            "name",
+            "status",
+            "budget_daily_usd",
+            "budget_monthly_usd",
+            "max_concurrent_requests",
+        }
+        assignments: list[str] = []
+        values: list[Any] = []
+        for name, value in changes.items():
+            if name not in allowed:
+                continue
+            values.append(value)
+            assignments.append(f"{name} = ${len(values)}::{_COLUMN_CASTS[name]}")
+        if not assignments:
+            return None
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE organizations SET {', '.join(assignments)} "
+                f"WHERE id = ${len(values) + 1}::text RETURNING *",
+                *values,
+                org_id,
+            )
+        return dict(row) if row else None
+
+    async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
+        """Resolve organization ceilings with the legacy account fallback."""
+        from serving.storage.project_backfill import personal_org_id
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT o.budget_daily_usd, o.budget_monthly_usd, "
+                " (SELECT k.quota_daily_cost_usd FROM api_keys k "
+                "  WHERE k.user_id = $2 AND k.status <> 'revoked' "
+                "  ORDER BY k.created_at LIMIT 1) AS legacy_daily, "
+                " (SELECT k.quota_monthly_cost_usd FROM api_keys k "
+                "  WHERE k.user_id = $2 AND k.status <> 'revoked' "
+                "  ORDER BY k.created_at LIMIT 1) AS legacy_monthly "
+                "FROM organizations o WHERE o.id = $1",
+                personal_org_id(user_id),
+                user_id,
+            )
+        if row is None:
+            return quota.DEFAULT_DAILY_QUOTA_USD, None
+        daily = row["budget_daily_usd"]
+        if daily is None:
+            daily = row["legacy_daily"]
+        monthly = row["budget_monthly_usd"]
+        if monthly is None:
+            monthly = row["legacy_monthly"]
+        return (
+            quota.resolve_quota(daily),
+            None if monthly is None else float(monthly),
+        )
+
+    async def count_project_keys(self, project_id: str) -> int:
+        """Count active keys attached to a project."""
+        async with self._pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM api_keys WHERE project_id = $1 AND status = 'active'",
+                project_id,
+            )
+        return int(count or 0)
+
+    async def get_project_spend(self, project_id: str) -> tuple[float, float]:
+        """Read the project's current UTC daily and monthly spend."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT period, cost_usd FROM spend_counters "
+                "WHERE scope_id = $1 AND period IN ("
+                "  'd:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), "
+                "  'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM'))",
+                project_id,
+            )
+        today = month = 0.0
+        for row in rows:
+            if row["period"].startswith("d:"):
+                today = float(row["cost_usd"])
+            else:
+                month = float(row["cost_usd"])
+        return today, month
+
+    @staticmethod
+    def _project_row(row: Any) -> Row:
+        record = dict(row)
+        models = record.get("allowed_models")
+        if isinstance(models, str):
+            try:
+                parsed = json.loads(models)
+                record["allowed_models"] = parsed if isinstance(parsed, list) else []
+            except (json.JSONDecodeError, TypeError):
+                record["allowed_models"] = []
+        return record
 
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
@@ -1897,7 +2242,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         params: list[Any] = []
 
         if status:
-            where_clauses.append(f"status = ${len(params) + 1}")
+            where_clauses.append(f"k.status = ${len(params) + 1}")
             params.append(status)
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
@@ -1906,17 +2251,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         async with self._pool.acquire() as conn:
             count_row = await conn.fetchrow(
-                f"SELECT COUNT(*) as total FROM api_keys {where_sql}",
+                f"SELECT COUNT(*) as total FROM api_keys k {where_sql}",
                 *params[: len(params) - 2],
             )
             total = count_row["total"] if count_row else 0
 
             rows = await conn.fetch(
-                f"SELECT user_id, user_name, key_prefix, status, "
-                f"quota_daily_cost_usd, quota_monthly_cost_usd, "
-                f"created_at, last_used_at, expires_at, notes "
-                f"FROM api_keys {where_sql} "
-                f"ORDER BY created_at DESC "
+                f"SELECT k.user_id, k.user_name, k.key_prefix, k.status, "
+                f"k.quota_daily_cost_usd, k.quota_monthly_cost_usd, "
+                f"k.created_at, k.last_used_at, k.expires_at, k.notes, "
+                f"k.project_id, p.name AS project_name "
+                f"FROM api_keys k LEFT JOIN projects p ON p.id = k.project_id {where_sql} "
+                f"ORDER BY k.created_at DESC "
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
             )
@@ -2057,10 +2403,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, key_prefix, created_at, last_used_at, status, "
-                "quota_daily_cost_usd "
-                "FROM api_keys WHERE account_id = $1 AND status = 'active' "
-                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                "SELECT k.id, k.key_prefix, k.created_at, k.last_used_at, k.status, "
+                "k.quota_daily_cost_usd, k.project_id, p.name AS project_name "
+                "FROM api_keys k LEFT JOIN projects p ON p.id = k.project_id "
+                "WHERE k.account_id = $1 AND k.status = 'active' "
+                "ORDER BY k.created_at DESC, k.id DESC LIMIT 1",
                 account_id,
             )
         return dict(row) if row else None
@@ -2592,18 +2939,30 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """
         async with self._request_connection() as conn:
             rows = await conn.fetch(
-                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, k.quota_monthly_cost_usd, u.role "
+                "SELECT k.id, k.user_id, p.id AS project_id, p.org_id, "
+                "p.name AS project_name, p.allowed_models AS project_allowed_models, "
+                "p.budget_daily_usd AS project_budget_daily_usd, "
+                "p.budget_monthly_usd AS project_budget_monthly_usd, "
+                "p.max_concurrent_requests AS project_max_concurrent_requests, "
+                "o.max_concurrent_requests AS org_max_concurrent_requests, "
+                f"{_SCOPE_SPEND_COLUMNS}, "
+                "COALESCE(o.budget_daily_usd, k.quota_daily_cost_usd) AS quota_daily_cost_usd, "
+                "COALESCE(o.budget_monthly_usd, k.quota_monthly_cost_usd) AS quota_monthly_cost_usd, u.role "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                "LEFT JOIN organizations o ON o.id = k.org_id "
+                "LEFT JOIN projects p ON p.org_id = o.id AND p.is_default AND p.status = 'active' "
+                f"{_SCOPE_SPEND_JOIN.replace('k.project_id', 'p.id')}"
                 "WHERE k.user_id = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
                 "  AND u.id IS NOT NULL AND u.status = 'active' "
+                "  AND (o.id IS NULL OR o.status = 'active') "
                 "ORDER BY k.created_at, k.id "
                 "LIMIT 1",
                 user_id,
             )
-        return [dict(row) for row in rows]
+        return [_coerce_user_row(row) for row in rows]
 
     async def upsert_agent_grant(
         self,
@@ -3856,6 +4215,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counters via upsert.
 
@@ -3868,7 +4229,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if day is None:
             day = datetime.now(UTC).strftime("%Y-%m-%d")
         await self.increment_user_costs(
-            [CostIncrement(user_id, day, api_key_id, cost_usd, requests)]
+            [CostIncrement(user_id, day, api_key_id, cost_usd, requests, org_id, project_id)]
         )
 
     atomic_cost_increments = True
@@ -3902,6 +4263,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             [increment.api_key_id for increment in increments],
             [increment.cost_usd for increment in increments],
             [increment.requests for increment in increments],
+            [increment.org_id for increment in increments],
+            [increment.project_id for increment in increments],
         )
         fence_keys = (
             [
@@ -4407,6 +4770,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     WHERE status <> 'revoked'
                       AND user_id IN (SELECT id FROM users WHERE role = $2)
                     """,
+                quota,
+                role,
+            )
+            await conn.execute(
+                "UPDATE organizations o SET budget_daily_usd = $1 "
+                "FROM users u WHERE u.role = $2 AND o.id = 'org_p_' || u.id",
                 quota,
                 role,
             )

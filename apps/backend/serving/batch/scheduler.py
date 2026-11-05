@@ -90,7 +90,7 @@ from serving.servers.auth import (
     authenticate_stored_key,
     stored_key_quota_exceeded,
 )
-from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id
+from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id, scope_concurrency_limits
 from serving.spend_ledger import spend_check_of
 from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
 from serving.utils.logging import get_logger
@@ -1230,11 +1230,16 @@ class BatchScheduler:
             return None
         self._owner_slots[owner] += 1
 
+        scoped_limiter = getattr(self._services, "user_concurrency_limiter", None)
+        acquired_scopes: list[str] = []
+
         def give_back() -> None:
             self._owner_slots[owner] -= 1
             if self._owner_slots[owner] <= 0:
                 del self._owner_slots[owner]
             try:
+                for slot in reversed(acquired_scopes):
+                    scoped_limiter.release(slot)
                 self._role_slots.release(user_id)
             except Exception:
                 logger.exception(
@@ -1246,6 +1251,22 @@ class BatchScheduler:
                     },
                 )
 
+        try:
+            if scoped_limiter is not None:
+                for _scope, slot, capacity in scope_concurrency_limits(user_ctx):
+                    granted, _, _ = await scoped_limiter.try_acquire(
+                        slot,
+                        user_ctx.get("role") or "free",
+                        bool(user_ctx.get("is_admin", False)),
+                        capacity,
+                    )
+                    if not granted:
+                        give_back()
+                        return None
+                    acquired_scopes.append(slot)
+        except BaseException:
+            give_back()
+            raise
         return give_back
 
     async def _settle(
