@@ -66,6 +66,36 @@ producer warns on the first drop, every 100th drop, and at least once per
 is still observable. The rule uses the alert engine's existing cooldown, so a
 sustained loss episode does not page once per warning.
 
+The `notification_policy` block decides which alerts reach the channel at all.
+It is off by default. When it is on:
+
+- Alert types listed as `record` or `digest` stay out of the channel.
+- Each alert key posts once per problem, not once per cooldown. A recurrence
+  within `renotify_after_sec` of the last close counts as the same problem.
+- `circuit_open` waits until a circuit has been open for two hours in total.
+
+Everything the policy holds back is still recorded in alert history, and a
+problem it kept out of the channel closes without a "Recovered" card.
+
+```yaml
+notification_policy:
+  enabled: true
+  destinations:               # replaces the built-in map; unlisted types post
+    p95_latency: record
+    tracked_task_failure: digest
+  min_open_sec:
+    circuit_open: 7200
+  renotify_after_sec: 86400
+  renotify_on_recurrence: ["failed_request_rate_db", "db_disconnect:*"]
+state_changes:
+  circuit_open:
+    page_on_usage_limit: true # let usage-limit trips reach the policy
+```
+
+Before switching a policy on, replay recorded alert history through it to see
+what the channel would have received. Use
+`ops/db/analysis/alert_policy_replay.py` for this.
+
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded

@@ -2407,3 +2407,40 @@ msgstr "内置的 `rules.request_log_queue_saturation` 规则会在有界请求�
 #: ../developer/configuration.md
 msgid "`threshold_count` counts the producer's loss warnings, not dropped rows. The producer warns on the first drop, every 100th drop, and at least once per 60 seconds while drops continue, so a second small burst after a quiet period is still observable. The rule uses the alert engine's existing cooldown, so a sustained loss episode does not page once per warning."
 msgstr "`threshold_count` 统计生产端发出的丢弃警告次数，而不是丢弃行数。生产端在首次丢弃、每累计丢弃 100 行时发出警告；持续丢弃期间还会按 60 秒间隔刷新警告，因此静默一段时间后再次出现的小批量丢弃仍可被观测。该规则复用告警引擎现有的冷却机制，不会在持续丢弃期间每收到一次警告就发送一次通知。"
+
+
+#: ../developer/configuration.md:69
+msgid ""
+"The `notification_policy` block decides which alerts reach the channel at"
+" all. It is off by default. When it is on:"
+msgstr "`notification_policy` 配置块决定哪些告警会发到通知渠道。它默认关闭。开启后："
+
+#: ../developer/configuration.md:72
+msgid "Alert types listed as `record` or `digest` stay out of the channel."
+msgstr "列为 `record` 或 `digest` 的告警类型不会发到通知渠道。"
+
+#: ../developer/configuration.md:73
+msgid ""
+"Each alert key posts once per problem, not once per cooldown. A "
+"recurrence within `renotify_after_sec` of the last close counts as the "
+"same problem."
+msgstr "每个告警键在一个问题期间只发一次，而不是每个冷却周期发一次。上次恢复后 `renotify_after_sec` 之内再次出现，算作同一个问题。"
+
+#: ../developer/configuration.md:75
+msgid "`circuit_open` waits until a circuit has been open for two hours in total."
+msgstr "`circuit_open` 要等熔断器累计打开满两小时才会发送。"
+
+#: ../developer/configuration.md:77
+msgid ""
+"Everything the policy holds back is still recorded in alert history, and "
+"a problem it kept out of the channel closes without a \"Recovered\" card."
+msgstr "被策略拦下的告警仍会记入告警历史；从未发到通知渠道的问题在恢复时也不会发送“Recovered”卡片。"
+
+#: ../developer/configuration.md:95
+msgid ""
+"Before switching a policy on, replay recorded alert history through it to"
+" see what the channel would have received. Use "
+"`ops/db/analysis/alert_policy_replay.py` for this."
+msgstr ""
+"开启策略前，可以用已记录的告警历史回放一遍，看看通知渠道本来会收到哪些消息。回放工具是 "
+"`ops/db/analysis/alert_policy_replay.py`。"
