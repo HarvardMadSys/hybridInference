@@ -25,6 +25,7 @@ from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
 from serving.storage.utils import billable_output_tokens
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -311,7 +312,14 @@ class CostTracker:
 
         async def _increment() -> None:
             try:
-                await self._op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
+                context = req_ctx.get() or {}
+                await self._op_store.increment_user_cost(
+                    user_id,
+                    cost,
+                    api_key_id=api_key_id,
+                    org_id=context.get(req_ctx.ORG_ID) or None,
+                    project_id=context.get(req_ctx.PROJECT_ID) or None,
+                )
             except Exception as exc:
                 logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
                 raise  # let tracked_task record the failure

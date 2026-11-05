@@ -396,7 +396,7 @@ async def test_cost_tracker_uses_typed_routing_pricing_first(op_store, empty_loo
     call_args = op_store.increment_user_cost.call_args
     assert call_args[0][0] == "u1"
     assert call_args[0][1] == pytest.approx(expected)
-    assert call_args.kwargs == {"api_key_id": 12}
+    assert call_args.kwargs == {"api_key_id": 12, "org_id": None, "project_id": None}
 
 
 @pytest.mark.asyncio

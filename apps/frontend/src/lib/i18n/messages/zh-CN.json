@@ -4154,5 +4154,137 @@
   "terms.s9.title": {
     "source": "9. Changes to These Terms",
     "text": "9. 条款变更"
+  },
+  "console.nav.projects": {
+    "source": "Projects",
+    "text": "项目"
+  },
+  "dashboard.keys.project_label": {
+    "source": "Project",
+    "text": "项目"
+  },
+  "dashboard.projects.archive": {
+    "source": "Archive",
+    "text": "归档"
+  },
+  "dashboard.projects.archive_prompt": {
+    "source": "Archive {name}? Its keys stop working immediately. Its usage history stays available.",
+    "text": "归档 {name}？其密钥将立即失效，使用记录会保留。"
+  },
+  "dashboard.projects.archived_toast": {
+    "source": "Project archived. {count} key(s) revoked.",
+    "text": "项目已归档，已撤销 {count} 个密钥。"
+  },
+  "dashboard.projects.concurrency_label": {
+    "source": "Max concurrent requests",
+    "text": "最大并发请求数"
+  },
+  "dashboard.projects.create": {
+    "source": "Create Project",
+    "text": "创建项目"
+  },
+  "dashboard.projects.created_toast": {
+    "source": "Project created.",
+    "text": "项目已创建。"
+  },
+  "dashboard.projects.daily_budget": {
+    "source": "Daily {amount}",
+    "text": "每日 {amount}"
+  },
+  "dashboard.projects.daily_label": {
+    "source": "Daily budget (USD)",
+    "text": "每日预算（美元）"
+  },
+  "dashboard.projects.default_badge": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "dashboard.projects.edit": {
+    "source": "Edit Project",
+    "text": "编辑项目"
+  },
+  "dashboard.projects.empty": {
+    "source": "No projects yet.",
+    "text": "暂无项目。"
+  },
+  "dashboard.projects.invalid_limits": {
+    "source": "Enter non-negative budgets and a positive whole concurrency limit.",
+    "text": "请输入非负预算和正整数并发限制。"
+  },
+  "dashboard.projects.key_count": {
+    "source": "{count} key(s)",
+    "text": "{count} 个密钥"
+  },
+  "dashboard.projects.load_failed": {
+    "source": "Failed to load projects. Please try again later.",
+    "text": "无法加载项目，请稍后重试。"
+  },
+  "dashboard.projects.models_label": {
+    "source": "Allowed models (comma separated)",
+    "text": "允许的模型（以逗号分隔）"
+  },
+  "dashboard.projects.models_placeholder": {
+    "source": "Every visible model",
+    "text": "所有可见模型"
+  },
+  "dashboard.projects.monthly_budget": {
+    "source": "Monthly {amount}",
+    "text": "每月 {amount}"
+  },
+  "dashboard.projects.monthly_label": {
+    "source": "Monthly budget (USD)",
+    "text": "每月预算（美元）"
+  },
+  "dashboard.projects.name_label": {
+    "source": "Name",
+    "text": "名称"
+  },
+  "dashboard.projects.name_required": {
+    "source": "Name is required.",
+    "text": "请输入名称。"
+  },
+  "dashboard.projects.no_daily_budget": {
+    "source": "No daily budget",
+    "text": "未设置每日预算"
+  },
+  "dashboard.projects.no_limit": {
+    "source": "No limit",
+    "text": "无限制"
+  },
+  "dashboard.projects.no_monthly_budget": {
+    "source": "No monthly budget",
+    "text": "未设置每月预算"
+  },
+  "dashboard.projects.spend_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
+  },
+  "dashboard.projects.spend_today": {
+    "source": "{amount} today",
+    "text": "今日 {amount}"
+  },
+  "dashboard.projects.subtitle": {
+    "source": "Group API keys under a shared budget and model allowlist. Keys without a project use your Default project.",
+    "text": "将 API 密钥分组，共享预算和模型允许列表。未指定项目的密钥使用默认项目。"
+  },
+  "dashboard.projects.title": {
+    "source": "Projects",
+    "text": "项目"
+  },
+  "dashboard.projects.updated_toast": {
+    "source": "Project updated.",
+    "text": "项目已更新。"
+  },
+  "common.edit": {
+    "source": "Edit",
+    "text": "编辑"
+  },
+  "dashboard.keys.project_default": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "dashboard.keys.project_placeholder": {
+    "source": "Account default",
+    "text": "账户默认项目"
   }
 }

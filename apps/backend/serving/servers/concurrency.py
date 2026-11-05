@@ -336,6 +336,20 @@ async def user_slot_for(
     return await _slot_for_canonical(user, model, canonical, concurrency_resolver)
 
 
+def scope_concurrency_limits(user: dict[str, Any]) -> list[tuple[str, str, int]]:
+    """Return shared key, project and organization slots with explicit caps."""
+    limits = []
+    for scope, scope_id in (
+        ("key", user.get("api_key_id")),
+        ("project", user.get("project_id")),
+        ("org", user.get("org_id")),
+    ):
+        capacity = user.get(f"{scope}_max_concurrent_requests")
+        if scope_id is not None and capacity is not None:
+            limits.append((scope, f"scope:{scope}:{scope_id}", int(capacity)))
+    return limits
+
+
 async def enforce_user_concurrency(
     request: Request,
     user: dict[str, Any] = Depends(verify_api_key),
@@ -436,7 +450,24 @@ async def enforce_user_concurrency(
             headers={"Retry-After": "1"},
         )
 
+    acquired_slots = [slot_key]
     try:
+        for scope, scoped_key, capacity in scope_concurrency_limits(user):
+            granted, limit, _ = await limiter.try_acquire(scoped_key, role, is_admin, capacity)
+            if not granted:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "error": {
+                            "code": "concurrency_limit_exceeded",
+                            "message": f"Too many concurrent requests (limit: {limit})",
+                            "scope": scope,
+                            "limit": limit,
+                        }
+                    },
+                    headers={"Retry-After": "1"},
+                )
+            acquired_slots.append(scoped_key)
         if not parse_before_acquire:
             model, canonical = await _request_model(
                 request, router=router, embedding_adapters=embedding_adapters
@@ -445,7 +476,8 @@ async def enforce_user_concurrency(
             yield InteractiveAdmission(tracker)
     finally:
         try:
-            limiter.release(slot_key)
+            for acquired_key in reversed(acquired_slots):
+                limiter.release(acquired_key)
         except Exception:
             # Never let cleanup break the request lifecycle.
             logger.exception(

@@ -69,6 +69,21 @@ async def create_api_key(
             "Revoke it first, then create a new one.",
         )
 
+    project_id = payload.project_id
+    project_name = None
+    if project_id is not None:
+        project = await op_store.get_project(payload.user_id, project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=404, detail=f"Project '{project_id}' not found for this user"
+            )
+        project_name = project["name"]
+    else:
+        project = await op_store.get_default_project(payload.user_id)
+        if project is not None:
+            project_id = project["id"]
+            project_name = project["name"]
+
     plaintext_key = generate_api_key()
     key_hash = hash_api_key(plaintext_key)
     key_prefix = plaintext_key[:12]
@@ -83,6 +98,7 @@ async def create_api_key(
         expires_at=payload.expires_at,
         notes=payload.notes,
         metadata=payload.metadata,
+        project_id=project_id,
     )
 
     await log_admin_action(
@@ -104,6 +120,8 @@ async def create_api_key(
         quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
         expires_at=payload.expires_at,
         created_at=row["created_at"],
+        project_id=project_id,
+        project_name=project_name,
     )
 
 
@@ -159,6 +177,8 @@ async def list_api_keys(
                 usage_today_usd=Decimal(str(usage_today_map.get(uid, 0))),
                 usage_month_usd=Decimal(str(usage_month_map.get(uid, 0))),
                 notes=row["notes"],
+                project_id=row.get("project_id"),
+                project_name=row.get("project_name"),
             )
         )
 

@@ -364,6 +364,7 @@ class APIKeyCreateRequest(BaseModel):
     """Optional settings for a new API key."""
 
     name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
+    project_id: str | None = None
 
 
 #: Highest budget an owner may give a key, per day or per month: far above any
@@ -400,6 +401,8 @@ class APIKeyResponse(BaseModel):
     api_key: str
     key_prefix: str
     name: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
     warning: str = "Save this API key now. It will not be shown again."
     created_at: datetime
 
@@ -414,6 +417,8 @@ class APIKeyInfo(BaseModel):
     created_at: datetime | None = None
     last_used_at: datetime | None = None
     status: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
 
 
 class APIKeyListItem(BaseModel):
@@ -431,6 +436,8 @@ class APIKeyListItem(BaseModel):
     #: from before then are in the account's totals only.
     spent_today_usd: float = 0.0
     spent_month_usd: float = 0.0
+    project_id: str | None = None
+    project_name: str | None = None
     #: The key's own limits; null is no limit at the key.
     budget_daily_usd: float | None = None
     budget_monthly_usd: float | None = None
@@ -638,3 +645,54 @@ class RecentRequestsResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ProjectResponse(BaseModel):
+    """A project with its budgets, keys and current spend."""
+
+    id: str
+    name: str
+    description: str | None = None
+    is_default: bool
+    budget_daily_usd: float | None = None
+    budget_monthly_usd: float | None = None
+    allowed_models: list[str] | None = None
+    max_concurrent_requests: int | None = None
+    spent_today_usd: float = 0.0
+    spent_month_usd: float = 0.0
+    key_count: int = 0
+    created_at: datetime
+
+
+class ProjectCreateRequest(BaseModel):
+    """Create a project under the caller's personal organization."""
+
+    name: str = Field(..., min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    budget_daily_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    budget_monthly_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
+        default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
+    )
+    max_concurrent_requests: int | None = Field(default=None, ge=1)
+
+
+class ProjectUpdateRequest(BaseModel):
+    """Patch a project; omitted fields are unchanged."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    budget_daily_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    budget_monthly_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
+        default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
+    )
+    max_concurrent_requests: int | None = Field(default=None, ge=1)

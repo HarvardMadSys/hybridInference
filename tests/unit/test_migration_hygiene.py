@@ -51,6 +51,15 @@ def _revision_files() -> list[Path]:
 
 def breaks_older_code(source: str) -> bool:
     """Whether a revision's source removes or narrows something, by its SQL or ``op`` calls."""
+    source = ast.unparse(ast.parse(source))
+    new_tables = set(re.findall(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", source, re.I))
+    for table in new_tables:
+        source = re.sub(
+            rf"CREATE\s+UNIQUE\s+INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+{re.escape(table)}\b",
+            "CREATE INDEX ON new_table",
+            source,
+            flags=re.I,
+        )
     return bool(_CONTRACT.search(source))
 
 
@@ -186,6 +195,7 @@ def test_the_contract_check_recognizes_narrowing(source):
         'op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS note TEXT")',
         'op.execute("CREATE TABLE IF NOT EXISTS t (id BIGINT PRIMARY KEY)")',
         'op.execute("CREATE INDEX IF NOT EXISTS idx_t ON t(id)")',
+        'op.execute("CREATE TABLE t (id BIGINT)")\nop.execute("CREATE UNIQUE INDEX idx_t ON t(id)")',
         'op.execute("DROP INDEX IF EXISTS idx_unused")',
         """op.execute("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'")""",
         "op.add_column('users', sa.Column('plan', sa.Text(), nullable=True))",

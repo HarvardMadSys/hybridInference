@@ -1157,3 +1157,26 @@ async def test_a_queued_answer_counts_toward_the_wait(worker, dispatch, settings
     await until(lambda: store.calls["release_item"] == 1)
 
     assert noted == [("m1", 12)]
+
+
+@pytest.mark.asyncio
+async def test_project_cap_is_shared_by_batch_and_interactive_work():
+    limiter = UserConcurrencyLimiter(static_limits_provider({"free": 10}))
+    scheduler = object.__new__(BatchScheduler)
+    scheduler._role_slots = UserConcurrencyLimiter(static_limits_provider({"free": 10}))
+    scheduler._services = types.SimpleNamespace(user_concurrency_limiter=limiter)
+    user = {"user_id": OWNER, "project_id": "proj_shared", "project_max_concurrent_requests": 1}
+    slot = "scope:project:proj_shared"
+    granted, _, _ = await limiter.try_acquire(slot, "free", False, 1)
+    assert granted
+
+    assert await scheduler._take_user_slot(user, "model") is None
+    assert scheduler._role_slots._slots[OWNER].in_use == 0
+    limiter.release(slot)
+
+    release = await scheduler._take_user_slot(user, "model")
+    assert release is not None
+    assert limiter._slots[slot].in_use == 1
+    release()
+    assert limiter._slots[slot].in_use == 0
+    assert scheduler._role_slots._slots[OWNER].in_use == 0

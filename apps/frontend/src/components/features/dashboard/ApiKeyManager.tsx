@@ -9,9 +9,11 @@ import {
   useApiKeys,
   useCreateApiKey,
   useDeleteApiKey,
+  useProjects,
   useRegenerateApiKey,
   useRenameApiKey,
 } from '@/lib/hooks';
+import { Select } from '@/components/ui/Select';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
@@ -123,11 +125,13 @@ export function ApiKeyManager(): JSX.Element {
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
   const [action, setAction] = useState<KeyAction | null>(null);
   const [keyName, setKeyName] = useState('');
+  const [projectId, setProjectId] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const submittingRef = useRef(false);
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
+  const { data: projects } = useProjects();
   const createMutation = useCreateApiKey();
   const deleteMutation = useDeleteApiKey();
   const regenerateMutation = useRegenerateApiKey();
@@ -150,6 +154,9 @@ export function ApiKeyManager(): JSX.Element {
 
   function openAction(next: KeyAction): void {
     setKeyName(next.type === 'rename' ? (next.key.name ?? '') : '');
+    if (next.type === 'create') {
+      setProjectId(projects?.find((project) => project.is_default)?.id ?? '');
+    }
     setActionError(null);
     setAction(next);
   }
@@ -169,7 +176,7 @@ export function ApiKeyManager(): JSX.Element {
     setActionError(null);
     try {
       if (action.type === 'create') {
-        const response = await createMutation.mutateAsync(name);
+        const response = await createMutation.mutateAsync({ name, projectId: projectId || null });
         showNewKey(response.api_key);
         toast.success(
           t('dashboard.keys.created_toast', 'API Key created successfully! Please save it now.'),
@@ -269,6 +276,11 @@ export function ApiKeyManager(): JSX.Element {
             >
               {apiKey.name ?? t('dashboard.keys.unnamed', 'Unnamed key')}
             </Link>
+            {apiKey.project_name && (
+              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
+                {apiKey.project_name}
+              </span>
+            )}
             {apiKey.status === 'active' && (
               <span className="text-xs text-gray-500">{limitsSummary(apiKey, t)}</span>
             )}
@@ -534,6 +546,28 @@ export function ApiKeyManager(): JSX.Element {
               />
               <button type="submit" className="hidden" tabIndex={-1} disabled={isLoading} />
             </form>
+          )}
+          {action.type === 'create' && (
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">
+                {t('dashboard.keys.project_label', 'Project')}
+              </span>
+              <Select
+                value={projectId}
+                onValueChange={setProjectId}
+                options={(projects ?? []).map((project) => ({
+                  value: project.id,
+                  label: project.name,
+                  description: project.is_default
+                    ? t('dashboard.keys.project_default', 'Default')
+                    : undefined,
+                }))}
+                placeholder={t('dashboard.keys.project_placeholder', 'Account default')}
+                aria-label={t('dashboard.keys.project_label', 'Project')}
+                disabled={isLoading}
+                className="mt-1.5 w-full"
+              />
+            </label>
           )}
         </ConfirmDialog>
       )}
