@@ -88,6 +88,10 @@ this until the model is up or the batch's completion window ends. The same
 answer reaches an interactive caller as a `503` with the deployment's message,
 and neither the circuit breaker nor the failed-request alerts count it.
 
+Only a wait longer than `BATCH_QUEUED_ALERT_HOURS` (six hours by default; `0`
+turns it off) is reported: one "Batch model waiting for capacity" alert for the
+model, resolved when the model next serves a batch request.
+
 Before each request runs, the gateway checks the API key that created the batch
 again:
 

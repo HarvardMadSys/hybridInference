@@ -77,6 +77,8 @@ INTERACTIVE_RESERVE_KEY = "BATCH_INTERACTIVE_RESERVE"
 ANTHROPIC_VERSIONS_KEY = "BATCH_ANTHROPIC_VERSIONS"
 #: Webhooks may target private, loopback or link-local addresses (testing only).
 WEBHOOK_ALLOW_PRIVATE_KEY = "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS"
+#: Hours a model may wait for capacity upstream before one alert says so.
+QUEUED_ALERT_HOURS_KEY = "BATCH_QUEUED_ALERT_HOURS"
 
 DEFAULT_MIN_ROLE = "internal"
 DEFAULT_MODEL_CONCURRENCY = 64
@@ -95,6 +97,8 @@ DEFAULT_FILE_RETENTION_DAYS = 30
 #: 0 means no cap for that role.
 DEFAULT_ROLE_CONCURRENCY: dict[str, int] = {"free": 8, "pro": 16, "internal": 64, "admin": 64}
 DEFAULT_INTERACTIVE_RESERVE = 0
+#: 0 means never.
+DEFAULT_QUEUED_ALERT_HOURS = 6
 #: Every Anthropic version a batch can be validated and run under (see
 #: :mod:`serving.batch.profiles`); the setting chooses among these.
 KNOWN_ANTHROPIC_VERSIONS: tuple[str, ...] = ("2023-06-01", "2026-10-21")
@@ -128,6 +132,7 @@ class BatchConfig:
     interactive_reserve: int = DEFAULT_INTERACTIVE_RESERVE
     anthropic_versions: tuple[str, ...] = KNOWN_ANTHROPIC_VERSIONS
     webhook_allow_private: bool = False
+    queued_alert_hours: int = DEFAULT_QUEUED_ALERT_HOURS
 
     @property
     def completion_window_seconds(self) -> int:
@@ -200,6 +205,7 @@ def batch_config() -> BatchConfig:
         interactive_reserve=_int(INTERACTIVE_RESERVE_KEY, DEFAULT_INTERACTIVE_RESERVE, minimum=0),
         anthropic_versions=_versions(ANTHROPIC_VERSIONS_KEY),
         webhook_allow_private=_flag(WEBHOOK_ALLOW_PRIVATE_KEY, False),
+        queued_alert_hours=_int(QUEUED_ALERT_HOURS_KEY, DEFAULT_QUEUED_ALERT_HOURS, minimum=0),
     )
 
 
