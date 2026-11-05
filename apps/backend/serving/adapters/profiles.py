@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any
 
 from serving.config.app_config import config_value
 from serving.utils.logging import get_logger
-from serving.utils.token_utils import extract_cache_tokens, extract_reasoning_tokens
+from serving.utils.token_utils import (
+    extract_cache_tokens,
+    extract_reasoning_tokens,
+    optional_token_count,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -385,15 +389,17 @@ def normalize_usage_default(
     cache_read, cache_write = extract_cache_tokens(
         usage_data, null_details_means_miss=null_cache_details_means_miss
     )
+    reasoning = optional_token_count(extract_reasoning_tokens(usage_data))
 
     return UsageInfo(
         prompt_tokens=usage_data.get("prompt_tokens", 0),
         completion_tokens=usage_data.get("completion_tokens", 0),
         total_tokens=usage_data.get("total_tokens", 0),
-        reasoning_tokens=extract_reasoning_tokens(usage_data) or 0,
+        reasoning_tokens=reasoning or 0,
         cache_read_tokens=cache_read or 0,
         cache_write_tokens=cache_write or 0,
         cache_read_reported=cache_read is not None,
+        reasoning_reported=reasoning is not None,
     )
 
 

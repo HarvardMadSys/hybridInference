@@ -466,3 +466,103 @@ async def test_an_ndjson_stream_is_read_and_stops_at_done(upstream):
 
     text = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
     assert text == "Hello"
+
+
+# --- reasoning usage -------------------------------------------------------------------
+
+_THINKING_USAGE = {
+    "promptTokenCount": 9,
+    "candidatesTokenCount": 3,
+    "totalTokenCount": 20,
+    "thoughtsTokenCount": 8,
+}
+
+
+@pytest.mark.parametrize(
+    ("usage_meta", "expected"),
+    [
+        ({"promptTokenCount": 9, "candidatesTokenCount": 3, "totalTokenCount": 12}, None),
+        (
+            {
+                "promptTokenCount": 9,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 12,
+                "thoughtsTokenCount": 0,
+            },
+            0,
+        ),
+        (_THINKING_USAGE, 8),
+    ],
+    ids=["unreported", "reported-zero", "reported"],
+)
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_a_reported_thought_count_is_kept_even_when_zero(
+    upstream, mode, usage_meta, expected
+):
+    """A reported 0 is a measurement (stored as 0); an absent count stays absent."""
+    reply = {"candidates": [_candidate([{"text": "ok"}])], "usageMetadata": usage_meta}
+    if mode == "chat":
+        upstream.reply = reply
+        usage = (await _adapter(upstream).chat_completion(USER))["usage"]
+    else:
+        usage = (await _stream(upstream, [_frame(reply)]))[-1]["usage"]
+
+    assert usage.get("reasoning_tokens") == expected
+    assert ("reasoning_tokens" in usage) is (expected is not None)
+
+
+async def test_messages_count_thoughts_in_output_and_bill_them_like_chat(upstream):
+    """Gemini's candidatesTokenCount excludes thoughts; Anthropic output includes them."""
+    from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY
+    from serving.storage.utils import calculate_cost
+    from serving.utils.token_utils import normalize_usage
+
+    upstream.reply = {
+        "candidates": [_candidate([{"text": "ok"}])],
+        "usageMetadata": _THINKING_USAGE,
+    }
+    adapter = _adapter(upstream)
+    sink: dict[str, Any] = {}
+
+    resp = await adapter.messages(
+        {"model": "gemini-test", "max_tokens": 64, "messages": USER},
+        request_id="r",
+        usage_sink=sink,
+    )
+
+    assert resp["usage"] == {"input_tokens": 9, "output_tokens": 3 + 8}
+    record = sink[OPENAI_USAGE_SINK_KEY]
+    assert record["completion_tokens"] == 3
+    assert record["reasoning_tokens"] == 8
+    assert record["total_tokens"] == 20
+    pricing = {"prompt": "1", "completion": "10"}
+    chat = await adapter.chat_completion(USER)
+    assert calculate_cost(record, pricing) == pytest.approx(
+        calculate_cost(normalize_usage(chat["usage"]), pricing)
+    )
+    assert calculate_cost(record, pricing) == pytest.approx((9 * 1 + 11 * 10) / 1_000_000)
+
+
+async def test_streamed_messages_count_thoughts_in_output(upstream):
+    from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY
+
+    upstream.lines = [
+        _frame({"candidates": [_candidate([{"text": "ok"}])], "usageMetadata": _THINKING_USAGE})
+    ]
+    sink: dict[str, Any] = {}
+    wire = b"".join(
+        [
+            frame
+            async for frame in _adapter(upstream).stream_messages(
+                {"model": "gemini-test", "max_tokens": 64, "messages": USER},
+                request_id="r",
+                usage_sink=sink,
+            )
+        ]
+    )
+
+    assert b'"output_tokens": 11' in wire
+    assert b"reasoning_tokens" not in wire
+    assert sink["output_tokens"] == 11
+    assert sink[OPENAI_USAGE_SINK_KEY]["reasoning_tokens"] == 8
+    assert sink[OPENAI_USAGE_SINK_KEY]["completion_tokens"] == 3

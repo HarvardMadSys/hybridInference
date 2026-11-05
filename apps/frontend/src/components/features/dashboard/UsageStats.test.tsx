@@ -143,3 +143,42 @@ describe('UsageStats cache and reasoning tokens', () => {
     expect(detail('Cache reads')).toBe('150 · 100%');
   });
 });
+
+describe('UsageStats reasoning reporting', () => {
+  function renderUsage(usage: Record<string, unknown>) {
+    mockedUseUsageStats.mockReturnValue({
+      data: {
+        ...baseStats,
+        usage: { ...baseStats.usage, requests: 4, ...usage },
+      },
+      isLoading: false,
+      error: null,
+    });
+    render(<UsageStats />);
+  }
+
+  it('says not reported when no request reported a count, rather than 0', () => {
+    renderUsage({ reasoning_tokens: null, reasoning_tokens_known_requests: 0 });
+    expect(detail('Reasoning tokens')).toBe('Not reported');
+  });
+
+  it('shows a reported zero as 0', () => {
+    renderUsage({ reasoning_tokens: 0, reasoning_tokens_known_requests: 4 });
+    expect(detail('Reasoning tokens')).toBe('0');
+  });
+
+  it('labels a sum that only some requests reported', () => {
+    renderUsage({ reasoning_tokens: 1250, reasoning_tokens_known_requests: 3 });
+    expect(detail('Reasoning tokens')).toBe('1,250 · reported by 3 of 4 requests');
+  });
+
+  it('shows an exact sum when every request reported', () => {
+    renderUsage({ reasoning_tokens: 1250, reasoning_tokens_known_requests: 4 });
+    expect(detail('Reasoning tokens')).toBe('1,250');
+  });
+
+  it('reads an older backend without a reporting count as an exact sum', () => {
+    renderUsage({ reasoning_tokens: 80 });
+    expect(detail('Reasoning tokens')).toBe('80');
+  });
+});

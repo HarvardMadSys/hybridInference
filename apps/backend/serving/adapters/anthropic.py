@@ -396,9 +396,15 @@ class AnthropicAdapter(BaseAdapter):
         body: dict[str, Any],
         *,
         request_id: str,
+        usage_sink: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages."""
+        """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages.
+
+        ``usage_sink`` is accepted for interface compatibility and left empty:
+        the response's own Anthropic usage is all there is, with thinking
+        already counted in ``output_tokens`` and no separate reasoning count.
+        """
         forward = dict(body)
         forward["model"] = self._upstream_model()
 

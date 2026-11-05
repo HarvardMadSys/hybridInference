@@ -173,7 +173,15 @@ export function UsageStats(): JSX.Element {
   const promptTokens = stats?.usage.prompt_tokens ?? 0;
   const cacheReadTokens = stats?.usage.cache_read_tokens ?? 0;
   const cacheWriteTokens = stats?.usage.cache_write_tokens ?? 0;
-  const reasoningTokens = stats?.usage.reasoning_tokens ?? 0;
+  const requests = stats?.usage.requests ?? 0;
+  // Null when no request in the period reported a reasoning count (a native
+  // Anthropic upstream never does), which is not the same as a reported 0.
+  const reasoningTokens = stats?.usage.reasoning_tokens;
+  const reasoningKnown = stats?.usage.reasoning_tokens_known_requests;
+  const reasoningUnreported = reasoningTokens == null && requests > 0;
+  // An older backend sends no count of reporting requests; read its sum as complete.
+  const reasoningPartial =
+    reasoningTokens != null && reasoningKnown != null && reasoningKnown < requests;
   // Cache reads are a subset of input tokens; clamp in case a provider
   // reports them outside the prompt count.
   const cacheReadShare = share(cacheReadTokens, promptTokens);
@@ -182,7 +190,7 @@ export function UsageStats(): JSX.Element {
 
   const values = {
     cost: formatUsd(stats?.usage.cost_usd ?? 0),
-    requests: fmt.number(stats?.usage.requests ?? 0),
+    requests: fmt.number(requests),
     input: fmt.number(promptTokens),
     output: fmt.number(stats?.usage.completion_tokens ?? 0),
   };
@@ -391,7 +399,27 @@ export function UsageStats(): JSX.Element {
             )}
             {/* No share or bar: providers differ on whether reasoning is part of output. */}
             <Detail label={t('dashboard.usage.reasoning_label', 'Reasoning tokens')}>
-              {fmt.number(reasoningTokens)}
+              {reasoningUnreported ? (
+                <span className="font-normal text-gray-500">
+                  {t('dashboard.usage.reasoning_unreported', 'Not reported')}
+                </span>
+              ) : (
+                <>
+                  {fmt.number(reasoningTokens ?? 0)}
+                  {reasoningPartial && (
+                    <span className="font-normal text-gray-500">
+                      {' · '}
+                      {fill(
+                        t(
+                          'dashboard.usage.reasoning_partial',
+                          'reported by {known} of {total} requests',
+                        ),
+                        { known: fmt.number(reasoningKnown ?? 0), total: fmt.number(requests) },
+                      )}
+                    </span>
+                  )}
+                </>
+              )}
             </Detail>
           </div>
 

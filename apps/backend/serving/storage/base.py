@@ -1929,8 +1929,11 @@ class LogStore(ABC):
         Used by the user dashboard ``/user/usage`` endpoint.
         Returns dict with keys ``today``, ``week``, ``month``, ``alltime``
         each containing ``requests``, ``cost_usd``, ``prompt_tokens``,
-        ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``
-        and ``reasoning_tokens``.
+        ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
+        ``reasoning_tokens`` and ``reasoning_tokens_known_requests``.
+        ``reasoning_tokens`` is summed over the rows that report it and is
+        ``None`` when none does; ``reasoning_tokens_known_requests`` counts
+        those rows.
         """
 
     @abstractmethod
