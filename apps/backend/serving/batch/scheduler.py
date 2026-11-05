@@ -66,6 +66,7 @@ from serving.batch.dispatch import dispatch_item
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoad
 from serving.batch.validation import validate_file_batch
 from serving.batch.webhooks import deliver_due_events
+from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
     StoredKeyRejected,
@@ -83,6 +84,12 @@ if TYPE_CHECKING:
     from serving.batch.interactive_load import SharedInteractiveLoad
 
 logger = get_logger(__name__)
+
+#: "Model queued" answers for a model at most this far apart are one wait for
+#: capacity; the scheduler asks again every couple of minutes while it has work.
+QUEUED_GAP_SECONDS = 3600.0
+#: The long-wait alert repeats at most daily while the wait goes on.
+QUEUED_ALERT_COOLDOWN_SECONDS = 86400
 
 
 @dataclass(frozen=True)
@@ -245,6 +252,12 @@ class BatchScheduler:
         self._running: Counter[str] = Counter()
         self._failure_streak: Counter[str] = Counter()
         self._cooldown_until: dict[str, float] = {}
+        # A model's current wait for capacity upstream: since when, the latest
+        # "queued" answer, and whether its alert has been sent.
+        self._queued_since: dict[str, float] = {}
+        self._queued_last: dict[str, float] = {}
+        self._queued_alerted: set[str] = set()
+        self._alerts: set[asyncio.Task[Any]] = set()
         self._next_sweep = 0.0
         self._next_heartbeat = 0.0
         self._next_webhooks = 0.0
@@ -698,6 +711,63 @@ class BatchScheduler:
 
     def _model_succeeded(self, model_id: str) -> None:
         self._failure_streak.pop(model_id, None)
+        self._queued_since.pop(model_id, None)
+        self._queued_last.pop(model_id, None)
+        if model_id in self._queued_alerted:
+            self._queued_alerted.discard(model_id)
+            self._send_queued_alert(model_id, breached=False, waited=0.0)
+
+    def _note_queued(self, model_id: str, alert_hours: int) -> None:
+        """Count the model's wait for capacity; alert once if it outlasts ``alert_hours``.
+
+        A wait for a GPU job is normal and says nothing is broken, so each
+        "queued" answer alerts nothing. Only a wait longer than an operator
+        would expect -- the job cannot be scheduled -- is worth one alert, and
+        it resolves when the model serves again. Answers less than
+        ``QUEUED_GAP_SECONDS`` apart are one wait; a longer silence (no batch
+        work for the model) starts the count again.
+        """
+        now = self._clock()
+        last = self._queued_last.get(model_id)
+        if last is None or now - last > QUEUED_GAP_SECONDS:
+            self._queued_since[model_id] = now
+        self._queued_last[model_id] = now
+        waited = now - self._queued_since[model_id]
+        if alert_hours <= 0 or waited < alert_hours * 3600 or model_id in self._queued_alerted:
+            return
+        self._queued_alerted.add(model_id)
+        self._send_queued_alert(model_id, breached=True, waited=waited)
+
+    def _send_queued_alert(self, model_id: str, *, breached: bool, waited: float) -> None:
+        if self._stopping:
+            return
+        context = {
+            "model": model_id,
+            "waiting_hours": round(waited / 3600, 1),
+            "detail": "Its upstream has answered 'model queued' (GPU job waiting for a "
+            "node) since then; its batch requests are held, not failed, until the "
+            "batch window closes.",
+        }
+
+        async def send() -> None:
+            try:
+                await alert_on_transition(
+                    key=f"batch_model_queued:{model_id}",
+                    breached=breached,
+                    severity=AlertSeverity.WARN,
+                    title="Batch model waiting for capacity",
+                    context=lambda: context,
+                    cooldown_sec=QUEUED_ALERT_COOLDOWN_SECONDS,
+                    kind="state",
+                )
+            except Exception:
+                logger.exception("batch: queued-model alert for %s failed", model_id)
+
+        task = asyncio.create_task(
+            send(), name=f"batch_queued_alert:{model_id}", context=contextvars.Context()
+        )
+        self._alerts.add(task)
+        task.add_done_callback(self._alerts.discard)
 
     def _backoff(self, attempt: int) -> float:
         ceiling = min(
@@ -911,6 +981,7 @@ class BatchScheduler:
             # retry, once the next try would start after the window closes the
             # item fails now with this answer instead.
             self._hold_model(entry.model_id, requeue)
+            self._note_queued(entry.model_id, cfg.queued_alert_hours)
             retry_at = datetime.now(UTC) + timedelta(seconds=requeue)
             if entry.expires_at is None or retry_at < entry.expires_at:
                 await self._release(entry, delay=requeue)
