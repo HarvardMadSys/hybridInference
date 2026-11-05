@@ -86,7 +86,11 @@ async def create_api_key(
         "create_key",
         payload.user_id,
         {
-            "quota_daily_usd": float(payload.quota_daily_cost_usd),
+            "quota_daily_usd": (
+                float(payload.quota_daily_cost_usd)
+                if payload.quota_daily_cost_usd is not None
+                else None
+            ),
             "key_prefix": key_prefix,
         },
     )
@@ -255,20 +259,34 @@ async def update_api_key(
     if not existing:
         raise HTTPException(404, f"User '{user_id}' not found")
 
-    await op_store.update_key(user_id, **payload_dict)
+    quota_fields = {
+        name: payload_dict.pop(name)
+        for name in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
+        if name in payload_dict
+    }
+    if quota_fields:
+        await op_store.update_user_fields(user_id, **quota_fields)
+    if payload_dict:
+        await op_store.update_key(user_id, **payload_dict)
 
+    updated_fields = list(quota_fields) + list(payload_dict)
     await log_admin_action(
         op_store,
         admin_id,
         "update_key",
         user_id,
-        _serialize_for_audit({"updated_fields": list(payload_dict), "new_values": payload_dict}),
+        _serialize_for_audit(
+            {
+                "updated_fields": updated_fields,
+                "new_values": {**quota_fields, **payload_dict},
+            }
+        ),
     )
 
     return UpdateAPIKeyResponse(
         user_id=user_id,
-        updated_fields=list(payload_dict),
-        new_values=payload_dict,
+        updated_fields=updated_fields,
+        new_values={**quota_fields, **payload_dict},
     )
 
 

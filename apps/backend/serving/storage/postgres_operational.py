@@ -98,6 +98,8 @@ _USER_COLUMNS = (
     "signup_reason",
     "admin_note",
     "suspension_message",
+    "daily_cost_quota_usd",
+    "monthly_cost_quota_usd",
 )
 
 # The preferences column as a JSON object, whatever an older row holds there
@@ -196,6 +198,13 @@ def _coerce_user_row(row: Any) -> Row | None:
             d["preferences"] = {}
     elif not isinstance(val, dict):
         d["preferences"] = {}
+    models = d.get("project_allowed_models")
+    if isinstance(models, str):
+        try:
+            parsed_models = json.loads(models)
+            d["project_allowed_models"] = parsed_models if isinstance(parsed_models, list) else []
+        except (json.JSONDecodeError, TypeError):
+            d["project_allowed_models"] = []
     return d
 
 
@@ -316,7 +325,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 last_login_at TIMESTAMPTZ,
                 max_concurrent_requests INT DEFAULT NULL,
                 admin_note TEXT,
-                suspension_message TEXT
+                suspension_message TEXT,
+                daily_cost_quota_usd DECIMAL(10, 4),
+                monthly_cost_quota_usd DECIMAL(10, 4)
             )
         """)
         # Tables requests use that came after the users table. Creating a new
@@ -435,6 +446,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     (
                         "avatar_data_url",
                         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data_url TEXT",
+                    ),
+                    # Account-level cost ceilings. They used to live on the
+                    # account's single API key; projects are sub-limits below
+                    # them. NULL keeps the historical default.
+                    (
+                        "daily_cost_quota_usd",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "daily_cost_quota_usd DECIMAL(10, 4)",
+                    ),
+                    (
+                        "monthly_cost_quota_usd",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "monthly_cost_quota_usd DECIMAL(10, 4)",
                     ),
                 ],
             )
@@ -572,7 +596,37 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             if seeded:
                 logger.info("Seeded %d admin role assignments from ADMIN_EMAILS.", seeded)
 
+        # --- projects ---
+        # Grouping of an account's API keys under shared, account-bounded
+        # budgets and a model allowlist (issue #1724). ``allowed_models`` is
+        # empty when every model the account may reach is allowed.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                daily_cost_quota_usd DECIMAL(10, 4),
+                monthly_cost_quota_usd DECIMAL(10, 4),
+                allowed_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'deleted')),
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                FOREIGN KEY (account_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_projects_account ON projects(account_id)"
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_account_name_active "
+            "ON projects(account_id, lower(name)) WHERE status = 'active'"
+        )
+
         # --- api_keys ---
+        # Any number of active keys per account: a key is global (no project)
+        # or belongs to one project. The old one-active-key indexes are dropped
+        # below, after their rows are migrated.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS api_keys (
                 id BIGSERIAL PRIMARY KEY,
@@ -582,13 +636,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id TEXT NOT NULL,
                 user_name TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
-                quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00,
-                quota_monthly_cost_usd DECIMAL(10, 4),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 expires_at TIMESTAMPTZ,
                 last_used_at TIMESTAMPTZ,
                 notes TEXT,
-                metadata JSONB
+                metadata JSONB,
+                project_id TEXT
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)")
@@ -598,10 +651,6 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         await conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique ON api_keys(key_prefix)"
         )
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
-            "ON api_keys(user_id) WHERE status = 'active'"
-        )
         # Migrations — catalog-gated; this exact cluster (bare, on the auth
         # read path) is what the 2026-08-21 production outage queued behind
         # the nightly pg_dump.
@@ -610,35 +659,29 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             "api_keys",
             [
                 (
-                    "quota_daily_cost_usd",
-                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                    "quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00",
-                ),
-                (
-                    "quota_monthly_cost_usd",
-                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                    "quota_monthly_cost_usd DECIMAL(10, 4)",
-                ),
-                (
                     "api_key_encrypted",
                     "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
                 ),
                 ("account_id", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT"),
+                ("project_id", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS project_id TEXT"),
             ],
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id)"
         )
         await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
-            "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_project ON api_keys(project_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_user_status ON api_keys(user_id, status)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_keys_account_status ON api_keys(account_id, status)"
         )
         # Backfill account_id = user_id for legacy self-registered keys created
         # before the account_id column existed (account_id IS NULL). Makes those
-        # keys visible/manageable in the dashboard and reconciles
-        # idx_api_keys_user_unique (user_id) with
-        # idx_api_keys_account_active_unique (account_id). Idempotent: only NULL
-        # rows whose user still exists are touched.
+        # keys visible/manageable in the dashboard. Idempotent: only NULL rows
+        # whose user still exists are touched.
         tag = await conn.execute(
             "UPDATE api_keys k SET account_id = k.user_id "
             "WHERE k.account_id IS NULL "
@@ -647,6 +690,67 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         backfilled = _parse_command_tag_count(tag)
         if backfilled:
             logger.info("Backfilled account_id for %d legacy api_keys rows.", backfilled)
+        # The account quota moved from the single key to the account. Read the
+        # legacy columns only while they still exist, then drop them: a second
+        # boot must not fail on a column that is gone.
+        legacy_key_columns = await existing_columns(conn, "api_keys")
+        user_columns = await existing_columns(conn, "users")
+        account_quota_ready = "daily_cost_quota_usd" in user_columns
+        if "quota_daily_cost_usd" in legacy_key_columns and account_quota_ready:
+            await conn.execute(
+                "UPDATE users u SET daily_cost_quota_usd = k.quota_daily_cost_usd "
+                "FROM api_keys k "
+                "WHERE k.user_id = u.id AND k.status = 'active' "
+                "  AND k.quota_daily_cost_usd IS NOT NULL "
+                "  AND u.daily_cost_quota_usd IS NULL"
+            )
+        if "quota_monthly_cost_usd" in legacy_key_columns and account_quota_ready:
+            await conn.execute(
+                "UPDATE users u SET monthly_cost_quota_usd = k.quota_monthly_cost_usd "
+                "FROM api_keys k "
+                "WHERE k.user_id = u.id AND k.status = 'active' "
+                "  AND k.quota_monthly_cost_usd IS NOT NULL "
+                "  AND u.monthly_cost_quota_usd IS NULL"
+            )
+        # One-active-key uniqueness is what projects remove, and the quota
+        # columns moved to users. Both take ACCESS EXCLUSIVE on api_keys, so a
+        # boot during the nightly pg_dump defers them rather than queueing.
+        try:
+            async with bounded_ddl(conn):
+                await execute_ddl(conn, "DROP INDEX IF EXISTS idx_api_keys_user_unique")
+                await execute_ddl(conn, "DROP INDEX IF EXISTS idx_api_keys_account_active_unique")
+            await drop_columns_if_present(
+                conn,
+                "api_keys",
+                [
+                    (
+                        "quota_daily_cost_usd",
+                        "ALTER TABLE api_keys DROP COLUMN IF EXISTS quota_daily_cost_usd",
+                    ),
+                    (
+                        "quota_monthly_cost_usd",
+                        "ALTER TABLE api_keys DROP COLUMN IF EXISTS quota_monthly_cost_usd",
+                    ),
+                ],
+            )
+            projects_fk = await constraint_definition(conn, "projects", "projects_account_id_fkey")
+            if projects_fk is None:
+                async with bounded_ddl(conn):
+                    await execute_ddl(
+                        conn,
+                        "ALTER TABLE projects ADD CONSTRAINT projects_account_id_fkey "
+                        "FOREIGN KEY (account_id) REFERENCES users(id) ON DELETE CASCADE",
+                    )
+            project_fk = await constraint_definition(conn, "api_keys", "api_keys_project_id_fkey")
+            if project_fk is None:
+                async with bounded_ddl(conn):
+                    await execute_ddl(
+                        conn,
+                        "ALTER TABLE api_keys ADD CONSTRAINT api_keys_project_id_fkey "
+                        "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL",
+                    )
+        except SchemaLockUnavailable as exc:
+            deferred = deferred or exc
         # Drop legacy 'tier' column — tier/role unified on users.role
         # (spec: docs/agents/specs/2026-05-02-unify-tier-role-design.md).
         await drop_columns_if_present(
@@ -828,18 +932,69 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         )
 
         # --- user_daily_cost ---
+        # ``project_id = ''`` is the account ledger row; every billable request
+        # increments it. A project-bound request also increments the matching
+        # project row, so the account total stays one indexed read and project
+        # spend is never double-counted into it.
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS user_daily_cost (
                 user_id TEXT NOT NULL,
+                project_id TEXT NOT NULL DEFAULT '',
                 day TEXT NOT NULL,
                 cost_usd DECIMAL(12, 6) NOT NULL DEFAULT 0,
                 requests INTEGER NOT NULL DEFAULT 0,
                 last_request_at TIMESTAMPTZ,
-                PRIMARY KEY (user_id, day)
+                PRIMARY KEY (user_id, project_id, day)
             )
         """)
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_project "
+            "ON user_daily_cost(project_id, day)"
+        )
+        # Upgrade databases whose primary key predates the project dimension.
+        daily_pk = await constraint_definition(conn, "user_daily_cost", "user_daily_cost_pkey")
+        if daily_pk is None or "project_id" not in daily_pk:
+            cols = await existing_columns(conn, "user_daily_cost")
+            if "project_id" not in cols:
+                async with bounded_ddl(conn):
+                    await execute_ddl(
+                        conn,
+                        "ALTER TABLE user_daily_cost ADD COLUMN "
+                        "project_id TEXT NOT NULL DEFAULT ''",
+                    )
+            async with bounded_ddl(conn), conn.transaction():
+                await execute_ddl(
+                    conn,
+                    "ALTER TABLE user_daily_cost DROP CONSTRAINT IF EXISTS user_daily_cost_pkey",
+                )
+                await execute_ddl(
+                    conn,
+                    "ALTER TABLE user_daily_cost ADD PRIMARY KEY (user_id, project_id, day)",
+                )
+
+        # --- user_monthly_cost ---
+        # Same shape and sentinel as the daily table; the month is ``YYYY-MM``
+        # in UTC. The account row is the ceiling, project rows are sub-limits.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_monthly_cost (
+                user_id TEXT NOT NULL,
+                project_id TEXT NOT NULL DEFAULT '',
+                month TEXT NOT NULL,
+                cost_usd DECIMAL(12, 6) NOT NULL DEFAULT 0,
+                requests INTEGER NOT NULL DEFAULT 0,
+                last_request_at TIMESTAMPTZ,
+                PRIMARY KEY (user_id, project_id, month)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_monthly_cost_month ON user_monthly_cost(month)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_monthly_cost_project "
+            "ON user_monthly_cost(project_id, month)"
         )
 
         # --- signup_allowed_domains ---
@@ -1881,15 +2036,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             filter_params.append(active_within_hours)
         if quota_state == "default":
-            where_clauses.append(
-                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
-                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NULL)"
-            )
+            where_clauses.append("u.daily_cost_quota_usd IS NULL")
         elif quota_state == "custom":
-            where_clauses.append(
-                "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
-                "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NOT NULL)"
-            )
+            where_clauses.append("u.daily_cost_quota_usd IS NOT NULL")
         if provider:
             # Keep users who hit `provider` in the last 30 days.
             where_clauses.append(
@@ -1939,18 +2088,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             # threshold: 0.80 for near, 1.00 for over.
             threshold = "0.80" if quota_state == "near" else "1.00"
             where_clauses.append(
-                f"EXISTS ("
-                f"  SELECT 1 FROM api_keys kq "
-                f"  WHERE kq.account_id = u.id "
-                f"    AND kq.status = 'active' "
-                f"    AND kq.quota_daily_cost_usd IS NOT NULL "
-                f"    AND kq.quota_daily_cost_usd > 0 "
-                f"    AND COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
-                f"                  WHERE l.user_id = u.id "
-                f"                    AND l.timestamp >= (date_trunc('day', "
-                f"                        NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
-                f"                 ), 0) >= {threshold} * kq.quota_daily_cost_usd"
-                f")"
+                f"u.daily_cost_quota_usd IS NOT NULL AND u.daily_cost_quota_usd > 0 "
+                f"AND COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"              WHERE l.user_id = u.id "
+                f"                AND l.timestamp >= (date_trunc('day', "
+                f"                    NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
+                f"             ), 0) >= {threshold} * u.daily_cost_quota_usd"
             )
         if anomaly:
             # Anomaly applies only to active users (status='active').
@@ -1968,12 +2111,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 f"  WITH t AS ("
                 f"    SELECT COALESCE(SUM(cost_usd), 0) AS today_cost "
                 f"    FROM user_daily_cost "
-                f"    WHERE user_id = u.id AND day = ${today_idx} "
+                f"    WHERE user_id = u.id AND project_id = '' AND day = ${today_idx} "
                 f"  ), p AS ("
                 f"    SELECT COALESCE(SUM(cost_usd), 0) AS total_prior, "
                 f"           COUNT(DISTINCT day) AS days_history "
                 f"    FROM user_daily_cost "
-                f"    WHERE user_id = u.id "
+                f"    WHERE user_id = u.id AND project_id = '' "
                 f"      AND day BETWEEN ${prior_start_idx} AND ${prior_end_idx}"
                 f"  ) "
                 f"  SELECT 1 FROM t, p "
@@ -2155,7 +2298,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 alltime_rows = await conn.fetch(
                     "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
                     "FROM user_daily_cost "
-                    "WHERE user_id = ANY($1::text[]) "
+                    "WHERE user_id = ANY($1::text[]) AND project_id = '' "
                     "GROUP BY user_id",
                     user_ids,
                 )
@@ -2258,10 +2401,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                "SELECT k.id, k.user_id, k.user_name, k.project_id, "
+                "u.daily_cost_quota_usd AS quota_daily_cost_usd, "
+                "u.monthly_cost_quota_usd AS quota_monthly_cost_usd, "
+                "p.daily_cost_quota_usd AS project_daily_cost_quota_usd, "
+                "p.monthly_cost_quota_usd AS project_monthly_cost_quota_usd, "
+                "p.allowed_models AS project_allowed_models, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                "LEFT JOIN projects p ON p.id = k.project_id AND p.status = 'active' "
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -2283,14 +2432,32 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                "SELECT k.id, k.user_id, k.user_name, k.project_id, "
+                "u.daily_cost_quota_usd AS quota_daily_cost_usd, "
+                "u.monthly_cost_quota_usd AS quota_monthly_cost_usd, "
+                "p.daily_cost_quota_usd AS project_daily_cost_quota_usd, "
+                "p.monthly_cost_quota_usd AS project_monthly_cost_quota_usd, "
+                "p.allowed_models AS project_allowed_models, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
-                "COALESCE(s.cost_usd, 0) AS cost_usd "
+                "COALESCE(s.cost_usd, 0) AS cost_usd, "
+                "COALESCE(sm.cost_usd, 0) AS cost_month_usd, "
+                "COALESCE(ps.cost_usd, 0) AS project_cost_usd, "
+                "COALESCE(psm.cost_usd, 0) AS project_cost_month_usd "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                "LEFT JOIN projects p ON p.id = k.project_id AND p.status = 'active' "
                 "LEFT JOIN user_daily_cost s "
-                "  ON s.user_id = k.user_id "
+                "  ON s.user_id = k.user_id AND s.project_id = '' "
                 " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+                "LEFT JOIN user_monthly_cost sm "
+                "  ON sm.user_id = k.user_id AND sm.project_id = '' "
+                " AND sm.month = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
+                "LEFT JOIN user_daily_cost ps "
+                "  ON ps.user_id = k.user_id AND ps.project_id = k.project_id "
+                " AND ps.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+                "LEFT JOIN user_monthly_cost psm "
+                "  ON psm.user_id = k.user_id AND psm.project_id = k.project_id "
+                " AND psm.month = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -2304,10 +2471,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
+                f"SELECT k.user_id, k.project_id, "
+                "p.allowed_models AS project_allowed_models, "
+                f"{identity}, u.role, u.email_verified, u.preferences, "
                 "u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                "LEFT JOIN projects p ON p.id = k.project_id AND p.status = 'active' "
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -2360,15 +2530,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_daily_cost_usd: Decimal | float | None = None,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
         metadata: str | dict[str, Any] | None = None,
         account_id: str | None = None,
+        project_id: str | None = None,
     ) -> Row:
-        """Insert a new API key. Returns the inserted row."""
+        """Insert a new API key. Returns the inserted row.
+
+        The quota arguments now set the account ceiling on ``users`` when
+        given; a key no longer carries its own limit.
+        """
         import asyncpg as _asyncpg
 
         # Default account_id to user_id so self-service AND admin-created keys
@@ -2383,40 +2558,39 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if isinstance(metadata, dict):
             metadata = json.dumps(metadata)
 
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            if quota_daily_cost_usd is not None or quota_monthly_cost_usd is not None:
+                await conn.execute(
+                    "UPDATE users SET "
+                    "daily_cost_quota_usd = COALESCE($2, daily_cost_quota_usd), "
+                    "monthly_cost_quota_usd = COALESCE($3, monthly_cost_quota_usd) "
+                    "WHERE id = $1",
+                    user_id,
+                    quota_daily_cost_usd,
+                    quota_monthly_cost_usd,
+                )
             try:
                 row = await conn.fetchrow(
                     "INSERT INTO api_keys "
                     "(key_hash, key_prefix, user_id, user_name, "
-                    "quota_daily_cost_usd, quota_monthly_cost_usd, "
-                    "expires_at, notes, metadata, account_id, api_key_encrypted) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11) "
+                    "expires_at, notes, metadata, account_id, api_key_encrypted, project_id) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10) "
                     "RETURNING id, created_at",
                     key_hash,
                     key_prefix,
                     user_id,
                     user_name,
-                    quota_daily_cost_usd,
-                    quota_monthly_cost_usd,
                     expires_at,
                     notes,
                     metadata,
                     effective_account_id,
                     api_key_encrypted,
+                    project_id,
                 )
             except _asyncpg.UniqueViolationError as exc:
-                # Active-key uniqueness is enforced per user_id
-                # (idx_api_keys_user_unique) and per account_id
-                # (idx_api_keys_account_active_unique). Convert either to a clean
-                # 409 (DuplicateAPIKeyError has a global handler) instead of a
-                # 500, and guard the concurrent-create race. Re-raise other
-                # unique violations (e.g. key_prefix collision).
-                if exc.constraint_name in (
-                    "idx_api_keys_user_unique",
-                    "idx_api_keys_account_active_unique",
-                ):
-                    raise DuplicateAPIKeyError("You already have an active API key") from exc
-                raise
+                # A key_prefix collision is the only expected unique violation;
+                # multiple active keys per account are allowed now.
+                raise DuplicateAPIKeyError("That API key prefix already exists") from exc
         return dict(row)
 
     async def check_active_key_exists(self, user_id: str) -> bool:
@@ -2440,7 +2614,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         params: list[Any] = []
 
         if status:
-            where_clauses.append(f"status = ${len(params) + 1}")
+            where_clauses.append(f"k.status = ${len(params) + 1}")
             params.append(status)
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
@@ -2449,17 +2623,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         async with self._pool.acquire() as conn:
             count_row = await conn.fetchrow(
-                f"SELECT COUNT(*) as total FROM api_keys {where_sql}",
+                f"SELECT COUNT(*) as total FROM api_keys k "
+                f"LEFT JOIN users u ON u.id = k.user_id {where_sql}",
                 *params[: len(params) - 2],
             )
             total = count_row["total"] if count_row else 0
 
             rows = await conn.fetch(
-                f"SELECT user_id, user_name, key_prefix, status, "
-                f"quota_daily_cost_usd, quota_monthly_cost_usd, "
-                f"created_at, last_used_at, expires_at, notes "
-                f"FROM api_keys {where_sql} "
-                f"ORDER BY created_at DESC "
+                f"SELECT k.user_id, k.user_name, k.key_prefix, k.status, "
+                f"COALESCE(u.daily_cost_quota_usd, 1000.0) AS quota_daily_cost_usd, "
+                f"u.monthly_cost_quota_usd AS quota_monthly_cost_usd, "
+                f"k.created_at, k.last_used_at, k.expires_at, k.notes "
+                f"FROM api_keys k LEFT JOIN users u ON u.id = k.user_id {where_sql} "
+                f"ORDER BY k.created_at DESC "
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
             )
@@ -2475,12 +2651,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT user_id, user_name, key_prefix, status, "
-                "quota_daily_cost_usd, quota_monthly_cost_usd, "
-                "created_at, last_used_at, expires_at, notes, metadata "
-                "FROM api_keys WHERE user_id = $1 "
-                "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'suspended' THEN 1 ELSE 2 END, "
-                "created_at DESC "
+                "SELECT k.user_id, k.user_name, k.key_prefix, k.status, "
+                "COALESCE(u.daily_cost_quota_usd, 1000.0) AS quota_daily_cost_usd, "
+                "u.monthly_cost_quota_usd AS quota_monthly_cost_usd, "
+                "k.created_at, k.last_used_at, k.expires_at, k.notes, k.metadata "
+                "FROM api_keys k LEFT JOIN users u ON u.id = k.user_id "
+                "WHERE k.user_id = $1 "
+                "ORDER BY CASE k.status WHEN 'active' THEN 0 WHEN 'suspended' THEN 1 "
+                "ELSE 2 END, k.created_at DESC "
                 "LIMIT 1",
                 user_id,
             )
@@ -2554,17 +2732,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """
         async with self._pool.acquire() as conn, conn.transaction():
             old_row = await conn.fetchrow(
-                "SELECT key_prefix FROM api_keys WHERE user_id = $1 AND status = 'active'",
+                "SELECT id, key_prefix FROM api_keys "
+                "WHERE user_id = $1 AND status = 'active' "
+                "ORDER BY created_at DESC LIMIT 1",
                 user_id,
             )
             if not old_row:
                 raise ValueError(f"No active key found for user_id={user_id}")
             await conn.execute(
-                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 "
-                "WHERE user_id = $3 AND status = 'active'",
+                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3",
                 new_key_hash,
                 new_key_prefix,
-                user_id,
+                old_row["id"],
             )
         return old_row["key_prefix"]
 
@@ -2578,25 +2757,144 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, key_prefix, created_at, last_used_at, status, "
-                "quota_daily_cost_usd "
+                "SELECT id, key_prefix, created_at, last_used_at, status, project_id "
                 "FROM api_keys "
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active' "
-                "LIMIT 1",
+                "ORDER BY created_at DESC LIMIT 1",
                 account_id,
             )
         return dict(row) if row else None
 
     async def get_active_key_by_account(self, account_id: str) -> Row | None:
-        """Fetch the active key for self-registered user by account_id."""
+        """Fetch the newest active key for a self-registered user by account_id."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, key_prefix, created_at, last_used_at, status, "
-                "quota_daily_cost_usd "
-                "FROM api_keys WHERE account_id = $1 AND status = 'active'",
+                "SELECT id, key_prefix, created_at, last_used_at, status, project_id "
+                "FROM api_keys WHERE account_id = $1 AND status = 'active' "
+                "ORDER BY created_at DESC LIMIT 1",
                 account_id,
             )
         return dict(row) if row else None
+
+    # -- projects ------------------------------------------------------------
+
+    @staticmethod
+    def _project_row(row: Any) -> Row:
+        """Decode a projects row's JSONB allowlist for callers."""
+        record = dict(row)
+        models = record.get("allowed_models")
+        if isinstance(models, str):
+            try:
+                parsed = json.loads(models)
+                record["allowed_models"] = parsed if isinstance(parsed, list) else []
+            except (json.JSONDecodeError, TypeError):
+                record["allowed_models"] = []
+        return record
+
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        account_id: str,
+        name: str,
+        daily_cost_quota_usd: Decimal | float | None = None,
+        monthly_cost_quota_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+    ) -> Row:
+        """Insert a project and return it."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO projects "
+                "(id, account_id, name, daily_cost_quota_usd, monthly_cost_quota_usd, "
+                "allowed_models) VALUES ($1, $2, $3, $4, $5, $6::jsonb) "
+                "RETURNING *",
+                project_id,
+                account_id,
+                name,
+                daily_cost_quota_usd,
+                monthly_cost_quota_usd,
+                json.dumps(list(allowed_models or [])),
+            )
+        return self._project_row(row)
+
+    async def list_projects(self, account_id: str) -> list[Row]:
+        """Return the account's active projects, newest first."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM projects WHERE account_id = $1 AND status = 'active' "
+                "ORDER BY created_at DESC",
+                account_id,
+            )
+        return [self._project_row(row) for row in rows]
+
+    async def get_project(self, account_id: str, project_id: str) -> Row | None:
+        """Return one active project owned by the account, or None."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM projects WHERE id = $1 AND account_id = $2 AND status = 'active'",
+                project_id,
+                account_id,
+            )
+        return self._project_row(row) if row else None
+
+    async def update_project(
+        self,
+        account_id: str,
+        project_id: str,
+        **fields: Any,
+    ) -> Row | None:
+        """Update named project columns and return the row."""
+        allowed = {"name", "daily_cost_quota_usd", "monthly_cost_quota_usd", "allowed_models"}
+        assignments: list[str] = []
+        values: list[Any] = []
+        for name, value in fields.items():
+            if name not in allowed:
+                continue
+            values.append(value)
+            if name == "allowed_models":
+                values[-1] = json.dumps(list(value or []))
+                assignments.append(f"allowed_models = ${len(values) + 2}::jsonb")
+            else:
+                assignments.append(f"{name} = ${len(values) + 2}")
+        if not assignments:
+            return await self.get_project(account_id, project_id)
+        assignments.append("updated_at = NOW()")
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE projects SET {', '.join(assignments)} "
+                "WHERE id = $1 AND account_id = $2 AND status = 'active' RETURNING *",
+                project_id,
+                account_id,
+                *values,
+            )
+        return self._project_row(row) if row else None
+
+    async def count_active_keys_for_project(self, project_id: str) -> int:
+        """Return how many active keys the project holds."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COUNT(*)::int AS n FROM api_keys "
+                "WHERE project_id = $1 AND status = 'active'",
+                project_id,
+            )
+        return int(row["n"]) if row else 0
+
+    async def delete_project(self, account_id: str, project_id: str) -> int:
+        """Soft-delete a project and revoke its keys; return keys revoked."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            revoked = await conn.execute(
+                "UPDATE api_keys SET status = 'revoked' "
+                "WHERE project_id = $1 AND account_id = $2 AND status = 'active'",
+                project_id,
+                account_id,
+            )
+            await conn.execute(
+                "UPDATE projects SET status = 'deleted', updated_at = NOW() "
+                "WHERE id = $1 AND account_id = $2 AND status = 'active'",
+                project_id,
+                account_id,
+            )
+        return _parse_command_tag_count(revoked)
 
     # -- auth sessions -------------------------------------------------------
 
@@ -3061,19 +3359,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     # -- inference grants ----------------------------------------------------
 
     async def get_quota_context_for_user(self, user_id: str) -> list[Row]:
-        """Return the quota-bearing rows for a user's active API keys."""
+        """Return the account ceiling for a user, in the grant path's shape."""
         async with self._pool.acquire() as conn:
-            # LIMIT 2, not 1: the caller must be able to *detect* a duplicate
-            # rather than silently take the first of an impossible set.
             rows = await conn.fetch(
-                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, u.role "
-                "FROM api_keys k "
-                "LEFT JOIN users u ON u.id = k.user_id "
-                "WHERE k.user_id = $1 "
-                "  AND k.status = 'active' "
-                "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
-                "  AND u.id IS NOT NULL AND u.status = 'active' "
-                "LIMIT 2",
+                "SELECT u.id AS id, u.id AS user_id, "
+                "u.daily_cost_quota_usd AS quota_daily_cost_usd, u.role "
+                "FROM users u WHERE u.id = $1 AND u.status = 'active'",
                 user_id,
             )
         return [dict(row) for row in rows]
@@ -4264,34 +4555,72 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         cost_usd: float,
         *,
         day: str | None = None,
+        project_id: str = "",
     ) -> None:
-        """Atomically increment the daily cost counter via upsert."""
+        """Atomically increment the account and project cost counters.
+
+        One transaction, two ledgers: the account row (``project_id = ''``)
+        is always written, and a project-bound request also writes its project
+        row. Both the daily and monthly tables follow the same shape.
+        """
         from datetime import datetime
 
+        now = datetime.now(UTC)
         if day is None:
-            day = datetime.now(UTC).strftime("%Y-%m-%d")
-        async with self._pool.acquire() as conn:
+            day = now.strftime("%Y-%m-%d")
+        month = day[:7]
+
+        async def _bump(table: str, column: str, bucket: str, project: str) -> None:
             await conn.execute(
-                "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
-                "VALUES ($1, $2, $3, 1, NOW()) "
-                "ON CONFLICT (user_id, day) DO UPDATE SET "
-                "cost_usd = user_daily_cost.cost_usd + $3, "
-                "requests = user_daily_cost.requests + 1, "
+                f"INSERT INTO {table} (user_id, project_id, {column}, cost_usd, requests, "
+                "last_request_at) VALUES ($1, $2, $3, $4, 1, NOW()) "
+                f"ON CONFLICT (user_id, project_id, {column}) DO UPDATE SET "
+                f"cost_usd = {table}.cost_usd + $4, "
+                f"requests = {table}.requests + 1, "
                 "last_request_at = NOW()",
                 user_id,
-                day,
+                project,
+                bucket,
                 cost_usd,
             )
 
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _bump("user_daily_cost", "day", day, "")
+            await _bump("user_monthly_cost", "month", month, "")
+            if project_id:
+                await _bump("user_daily_cost", "day", day, project_id)
+                await _bump("user_monthly_cost", "month", month, project_id)
+
     async def get_user_cost_today(self, user_id: str) -> float:
-        """Return today's cost from the counter table."""
+        """Return today's account spend from the counter table."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT cost_usd FROM user_daily_cost "
-                "WHERE user_id = $1 AND day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
+                "WHERE user_id = $1 AND project_id = '' "
+                "AND day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
                 user_id,
             )
         return float(row["cost_usd"]) if row else 0.0
+
+    async def get_project_cost(
+        self,
+        project_id: str,
+        period: Literal["today", "month"],
+    ) -> float:
+        """Return the project's spend for the UTC day or month."""
+        table, column, bucket = (
+            ("user_monthly_cost", "month", "YYYY-MM")
+            if period == "month"
+            else ("user_daily_cost", "day", "YYYY-MM-DD")
+        )
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT COALESCE(SUM(cost_usd), 0) AS total FROM {table} "
+                f"WHERE project_id = $1 AND {column} = "
+                f"to_char(NOW() AT TIME ZONE 'UTC', '{bucket}')",
+                project_id,
+            )
+        return float(row["total"]) if row else 0.0
 
     async def query_users_at_daily_quota(
         self,
@@ -4376,18 +4705,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             SELECT u.id AS user_id,
                    u.role AS role,
                    udc.cost_usd::float8 AS spend_usd,
-                   COALESCE(k.quota_daily_cost_usd, $2::float8)::float8 AS quota_usd
+                   COALESCE(u.daily_cost_quota_usd, $2::float8)::float8 AS quota_usd
             FROM user_daily_cost udc
             JOIN users u
               ON u.id = udc.user_id
              AND u.status = 'active'
-            JOIN api_keys k
-              ON k.user_id = u.id
-             AND k.status = 'active'
-             AND (k.expires_at IS NULL OR k.expires_at > NOW())
             WHERE udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
-              AND udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)
-            ORDER BY (udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)) DESC
+              AND udc.project_id = ''
+              AND udc.cost_usd + $3::float8 > COALESCE(u.daily_cost_quota_usd, $2::float8)
+            ORDER BY (udc.cost_usd - COALESCE(u.daily_cost_quota_usd, $2::float8)) DESC
             LIMIT $1
         """
         # Fetch one more row than asked for, so truncation is a fact rather
@@ -4424,7 +4750,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(cost_usd), 0) as total FROM user_daily_cost "
-                "WHERE user_id = $1 "
+                "WHERE user_id = $1 AND project_id = '' "
                 "AND day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')",
                 user_id,
             )
@@ -4451,7 +4777,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             rows = await conn.fetch(
                 "SELECT day, cost_usd, requests "
                 "FROM user_daily_cost "
-                "WHERE user_id = $1 "
+                "WHERE user_id = $1 AND project_id = '' "
                 "  AND day >= $2 "
                 "ORDER BY day ASC",
                 user_id,
@@ -4481,7 +4807,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             rows = await conn.fetch(
                 "SELECT user_id, day, cost_usd, requests "
                 "FROM user_daily_cost "
-                "WHERE user_id = ANY($1::text[]) "
+                "WHERE user_id = ANY($1::text[]) AND project_id = '' "
                 "  AND day >= $2 "
                 "ORDER BY user_id, day ASC",
                 user_ids,
@@ -4550,7 +4876,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 WITH today_costs AS (
                     SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost
                     FROM user_daily_cost
-                    WHERE day = $1
+                    WHERE day = $1 AND project_id = ''
                     GROUP BY user_id
                 ),
                 prior_7d AS (
@@ -4558,18 +4884,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                            COALESCE(SUM(cost_usd), 0) AS total,
                            COUNT(DISTINCT day) AS days_with_history
                     FROM user_daily_cost
-                    WHERE day BETWEEN $2 AND $3
+                    WHERE day BETWEEN $2 AND $3 AND project_id = ''
                     GROUP BY user_id
                 )
                 SELECT {schema.select(identity, "u")},
                        COALESCE(t.today_cost, 0) AS today_cost,
                        COALESCE(p.total, 0) AS prior_7d_total,
                        COALESCE(p.days_with_history, 0) AS days_with_history,
-                       k.quota_daily_cost_usd
+                       u.daily_cost_quota_usd
                 FROM users u
                 LEFT JOIN today_costs t ON t.user_id = u.id
                 LEFT JOIN prior_7d p ON p.user_id = u.id
-                LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
                 WHERE u.status = 'active'
                 """,
                 today_str,
@@ -4586,7 +4911,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 prior = _Decimal(str(r["prior_7d_total"] or 0))
                 days = int(r["days_with_history"] or 0)
                 avg_7d = (prior / days) if days > 0 else _Decimal("0")
-                quota = r["quota_daily_cost_usd"]
+                quota = r["daily_cost_quota_usd"]
 
                 base_item = {
                     "id": r["id"],
@@ -4683,7 +5008,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             rows = await conn.fetch(
                 f"SELECT user_id, COALESCE(SUM(cost_usd), 0) as cost "
                 f"FROM user_daily_cost "
-                f"WHERE {date_filter} AND user_id = ANY($1::text[]) "
+                f"WHERE {date_filter} AND user_id = ANY($1::text[]) AND project_id = '' "
                 f"GROUP BY user_id",
                 user_ids,
             )
@@ -4709,18 +5034,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return int(row["keys"]), int(row["users"])
 
     async def apply_role_quota(self, role: str, quota: Decimal) -> int:
-        """Bulk-update ``quota_daily_cost_usd`` for all active keys whose owner has *role*.
+        """Bulk-update the account daily ceiling for every user with *role*.
 
-        Returns the number of rows updated.
+        Returns the number of users updated. The limit lives on the account now,
+        so this is one write per user rather than one per key.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             tag = await conn.execute(
-                """
-                    UPDATE api_keys
-                    SET quota_daily_cost_usd = $1
-                    WHERE status = 'active'
-                      AND user_id IN (SELECT id FROM users WHERE role = $2)
-                    """,
+                "UPDATE users SET daily_cost_quota_usd = $1 WHERE role = $2",
                 quota,
                 role,
             )

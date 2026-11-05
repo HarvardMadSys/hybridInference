@@ -24,6 +24,7 @@ from serving.exceptions import (
 from serving.model_access import get_disabled_models_from_preferences
 from serving.schemas import ModelList
 from serving.schemas_auth import (
+    APIKeyCreateRequest,
     APIKeyDeleteResponse,
     APIKeyInfo,
     APIKeyListItem,
@@ -433,14 +434,15 @@ async def update_locale_preference(
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)
 async def create_api_key(
     request: Request,
+    payload: APIKeyCreateRequest | None = None,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyResponse:
     """Generate a new API key for the current user.
 
-    Only available after email verification.
-    Users can only have one active API key at a time.
+    Only available after email verification. An account may hold any number of
+    active keys; each is global or belongs to one of its projects.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -459,13 +461,11 @@ async def create_api_key(
     ) or phone_identity_unverified(current_user):
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
-    # Check if user already has an active API key. Use the account-or-user
-    # lookup so legacy keys with account_id IS NULL are also detected — the DB
-    # uniqueness is on user_id, so checking account_id alone would miss them and
-    # let the INSERT fail with a 500 instead of a clean 409.
-    existing = await op_store.get_key_by_account_or_user(current_user["user_id"])
-    if existing:
-        raise HTTPException(status_code=409, detail="You already have an active API key")
+    project_id = payload.project_id if payload else None
+    if project_id:
+        project = await op_store.get_project(current_user["user_id"], project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
 
     # Generate new API key
     api_key = generate_api_key()
@@ -475,7 +475,10 @@ async def create_api_key(
         rt = get_runtime_settings_instance()
     except RuntimeError:
         rt = None
-    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
+    is_first_key = not await op_store.check_active_key_exists(current_user["user_id"])
+    default_quota = (
+        await get_default_daily_quota_for_role(current_user["role"], rt) if is_first_key else None
+    )
 
     await op_store.create_key(
         key_hash=key_hash,
@@ -484,6 +487,7 @@ async def create_api_key(
         account_id=current_user["user_id"],
         quota_daily_cost_usd=default_quota,
         api_key_encrypted=encrypt_api_key(api_key),
+        project_id=project_id,
     )
 
     logger.info(f"API key created for user: {current_user['user_id']}")
@@ -501,6 +505,7 @@ async def create_api_key(
     return APIKeyResponse(
         api_key=api_key,
         key_prefix=key_prefix,
+        project_id=project_id,
         warning="Save this API key now. It will not be shown again.",
         created_at=datetime.now(UTC),
     )
@@ -531,6 +536,7 @@ async def get_api_key_info(
         created_at=key_row["created_at"],
         last_used_at=key_row["last_used_at"],
         status=key_row["status"],
+        project_id=key_row.get("project_id"),
     )
 
 
@@ -549,7 +555,7 @@ async def list_api_keys(
     async with db_logger.pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT key_prefix, created_at, last_used_at, status, api_key_encrypted
+            SELECT key_prefix, created_at, last_used_at, status, api_key_encrypted, project_id
             FROM api_keys
             WHERE account_id = $1
             ORDER BY (status = 'active') DESC, created_at DESC
@@ -691,33 +697,18 @@ async def regenerate_api_key(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    # Account-or-user lookup so legacy keys with account_id IS NULL are found
-    # (matches the user_id uniqueness constraint); otherwise regenerate would
-    # 404 for these users even though they have a working key.
-    old_key_row = await op_store.get_key_by_account_or_user(current_user["user_id"])
-    if not old_key_row:
-        raise HTTPException(status_code=404, detail="No active API key found")
-
-    # Generate new API key
     api_key = generate_api_key()
     key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
-    try:
-        rt = get_runtime_settings_instance()
-    except RuntimeError:
-        rt = None
-    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
 
-    # Revoke old key via store, then create new one
-    await op_store.revoke_key(current_user["user_id"])
-    await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=current_user["user_id"],
-        account_id=current_user["user_id"],
-        quota_daily_cost_usd=default_quota,
-        api_key_encrypted=encrypt_api_key(api_key),
-    )
+    try:
+        old_key_prefix = await op_store.regenerate_key(
+            current_user["user_id"],
+            new_key_hash=key_hash,
+            new_key_prefix=key_prefix,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="No active API key found") from exc
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
     await log_admin_action(
@@ -727,7 +718,7 @@ async def regenerate_api_key(
         current_user["user_id"],
         {
             "actor": "user",
-            "old_key_prefix": old_key_row["key_prefix"],
+            "old_key_prefix": old_key_prefix,
             "new_key_prefix": key_prefix,
         },
     )
@@ -736,7 +727,7 @@ async def regenerate_api_key(
         api_key=api_key,
         key_prefix=key_prefix,
         warning="Save this API key now. It will not be shown again.",
-        old_key_prefix=old_key_row["key_prefix"],
+        old_key_prefix=old_key_prefix,
     )
 
 

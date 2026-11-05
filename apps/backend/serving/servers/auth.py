@@ -315,6 +315,12 @@ def _daily_quota_usd(identity: dict[str, Any]) -> float:
     return _DEFAULT_DAILY_QUOTA_USD if quota is None else float(quota)
 
 
+def _monthly_quota_usd(identity: dict[str, Any]) -> float | None:
+    """Return the identity's monthly cost quota, or None when unlimited."""
+    quota = identity.get("quota_monthly_cost_usd")
+    return None if quota is None else float(quota)
+
+
 def _over_daily_quota(spent_usd: float, quota_usd: float) -> bool:
     """Whether a request may no longer run against *quota_usd* after *spent_usd* today."""
     return spent_usd + _ESTIMATED_REQUEST_COST_USD > quota_usd
@@ -342,6 +348,9 @@ def _user_context(
     key_hash: str,
     quota_daily_cost_usd: float,
     spent_today_usd: float,
+    quota_monthly_cost_usd: float | None = None,
+    project_id: str | None = None,
+    project_allowed_models: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return the user context an authenticated API key resolves to.
 
@@ -360,6 +369,9 @@ def _user_context(
         "quota_daily_cost_usd": quota_daily_cost_usd,
         "spent_today_usd": spent_today_usd,
         "quota_remaining_cost_usd": quota_daily_cost_usd - spent_today_usd,
+        "quota_monthly_cost_usd": quota_monthly_cost_usd,
+        "project_id": project_id,
+        "project_allowed_models": project_allowed_models or [],
         "is_admin": user_role == "admin",
         "disabled_models": get_disabled_models_from_preferences(identity.get("preferences")),
         "max_concurrent_requests": identity.get("max_concurrent_requests"),
@@ -700,7 +712,12 @@ def publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
     through here too. Returns *user_ctx* unchanged so call sites can wrap their
     ``return``.
     """
-    req_ctx.update({req_ctx.USER_ROLE: user_ctx.get("role") or "free"})
+    req_ctx.update(
+        {
+            req_ctx.USER_ROLE: user_ctx.get("role") or "free",
+            req_ctx.PROJECT_ID: user_ctx.get("project_id") or "",
+        }
+    )
     return user_ctx
 
 
@@ -798,17 +815,66 @@ async def verify_api_key(
             cost_spent = await op_store.get_user_cost_today(effective_user_id)
 
     quota_daily_cost_usd = _daily_quota_usd(identity)
+    quota_monthly_cost_usd = _monthly_quota_usd(identity)
 
-    # Check cost quota
-    if _over_daily_quota(cost_spent, quota_daily_cost_usd):
-        seconds_until_midnight_utc = _seconds_until_utc_midnight()
-        quota_reset_at = _next_utc_midnight()
+    # Every ceiling this request must fit under. The account is the hard
+    # ceiling; a project is a sub-limit below it, so both are checked and the
+    # first one exhausted decides. Project limits attach to the presented key,
+    # so they are skipped under impersonation: the key's project must not
+    # constrain work billed to a different account.
+    checks: list[tuple[str, float, float, bool]] = [
+        ("account_daily", cost_spent, quota_daily_cost_usd, True)
+    ]
+    if quota_monthly_cost_usd is not None:
+        checks.append(
+            (
+                "account_monthly",
+                float(identity.get("cost_month_usd") or 0.0),
+                quota_monthly_cost_usd,
+                False,
+            )
+        )
+    if not x_on_behalf_of and caller.get("project_id"):
+        project_daily = caller.get("project_daily_cost_quota_usd")
+        if project_daily is not None:
+            checks.append(
+                (
+                    "project_daily",
+                    float(caller.get("project_cost_usd") or 0.0),
+                    float(project_daily),
+                    True,
+                )
+            )
+        project_monthly = caller.get("project_monthly_cost_quota_usd")
+        if project_monthly is not None:
+            checks.append(
+                (
+                    "project_monthly",
+                    float(caller.get("project_cost_month_usd") or 0.0),
+                    float(project_monthly),
+                    False,
+                )
+            )
+
+    exceeded = next(
+        (
+            (scope, spent, limit, daily)
+            for scope, spent, limit, daily in checks
+            if _over_daily_quota(spent, limit)
+        ),
+        None,
+    )
+    if exceeded is not None:
+        scope, spent, limit, daily = exceeded
+        quota_reset_at = _next_utc_midnight() if daily else quota.next_utc_month()
+        retry_after = _seconds_until_utc_midnight() if daily else quota.seconds_until_utc_month()
+        window = "Daily" if daily else "Monthly"
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
                 status_code=429,
                 error_code="quota_exceeded",
-                reason=(f"quota_usd={quota_daily_cost_usd:.4f} spent_usd={cost_spent:.4f}"),
+                reason=(f"scope={scope} quota_usd={limit:.4f} spent_usd={spent:.4f}"),
                 user={
                     "user_id": effective_user_id,
                     "role": identity.get("role") or "free",
@@ -821,24 +887,25 @@ async def verify_api_key(
         raise HTTPException(
             status_code=429,
             detail={
-                "error": "Daily cost quota exceeded",
-                "quota_usd": quota_daily_cost_usd,
-                "spent_usd": cost_spent,
-                "remaining_usd": max(0, quota_daily_cost_usd - cost_spent),
+                "error": f"{window} cost quota exceeded",
+                "quota_usd": limit,
+                "spent_usd": spent,
+                "remaining_usd": max(0, limit - spent),
                 "reset_at": quota_reset_at.isoformat(),
                 "contact_email": _quota_contact(),
                 "message": (
                     f"Need more quota? Email {_quota_contact()} and explain your use case."
                     if _quota_contact()
-                    else "Daily quota exhausted. Contact the operator of this deployment."
+                    else f"{window} quota exhausted. Contact the operator of this deployment."
                 ),
-                "retry_after": seconds_until_midnight_utc,
+                "retry_after": retry_after,
             },
             headers={
-                "Retry-After": str(seconds_until_midnight_utc),
-                "X-RateLimit-Limit-Cost": str(quota_daily_cost_usd),
-                "X-RateLimit-Remaining-Cost": str(max(0, quota_daily_cost_usd - cost_spent)),
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit-Cost": str(limit),
+                "X-RateLimit-Remaining-Cost": str(max(0, limit - spent)),
                 "X-RateLimit-Reset": str(int(quota_reset_at.timestamp())),
+                "X-RateLimit-Scope": scope,
             },
         )
 
@@ -854,6 +921,9 @@ async def verify_api_key(
             key_hash=key_hash,
             quota_daily_cost_usd=quota_daily_cost_usd,
             spent_today_usd=cost_spent,
+            quota_monthly_cost_usd=quota_monthly_cost_usd,
+            project_id=caller.get("project_id"),
+            project_allowed_models=caller.get("project_allowed_models") or [],
         )
     )
 
@@ -916,11 +986,22 @@ async def authenticate_stored_key(key_hash: str | None, op_store: Any) -> dict[s
             spent_usd=cost_spent,
             reset_at=_next_utc_midnight(),
         )
+    quota_monthly_cost_usd = _monthly_quota_usd(user)
+    cost_month = float(user.get("cost_month_usd") or 0.0)
+    if quota_monthly_cost_usd is not None and _over_daily_quota(cost_month, quota_monthly_cost_usd):
+        raise StoredKeyQuotaExceeded(
+            quota_usd=quota_monthly_cost_usd,
+            spent_usd=cost_month,
+            reset_at=quota.next_utc_month(),
+        )
     return _user_context(
         user,
         key_hash=key_hash,
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+        quota_monthly_cost_usd=quota_monthly_cost_usd,
+        project_id=user.get("project_id"),
+        project_allowed_models=user.get("project_allowed_models") or [],
     )
 
 
@@ -1025,6 +1106,8 @@ async def optional_verify_api_key(
         "is_admin": user_role == "admin",
         "disabled_models": get_disabled_models_from_preferences(row.get("preferences")),
         "max_concurrent_requests": row.get("max_concurrent_requests"),
+        "project_id": row.get("project_id"),
+        "project_allowed_models": row.get("project_allowed_models") or [],
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,

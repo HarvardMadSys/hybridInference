@@ -24,10 +24,10 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
 
     user_id: str = Field(..., min_length=1, max_length=255, description="Unique user identifier")
     user_name: str | None = Field(None, max_length=255, description="Display name for the user")
-    quota_daily_cost_usd: Decimal = Field(
-        Decimal("1000.00"),
+    quota_daily_cost_usd: Decimal | None = Field(
+        None,
         ge=0,
-        description="Daily cost quota in USD",
+        description="Account daily cost quota in USD; omitted leaves it unchanged",
     )
     quota_monthly_cost_usd: Decimal | None = Field(
         None,
@@ -56,7 +56,7 @@ class CreateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     api_key: str = Field(..., description="Plaintext API key (shown only once)")
     user_id: str
     key_prefix: str = Field(..., description="First 12 characters for identification")
-    quota_daily_cost_usd: Decimal
+    quota_daily_cost_usd: Decimal | None
     quota_monthly_cost_usd: Decimal | None
     expires_at: datetime | None
     created_at: datetime

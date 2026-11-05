@@ -33,6 +33,24 @@ def is_model_disabled_for_user(canonical_model_id: str, user_ctx: dict[str, Any]
     return canonical_model_id in disabled_models
 
 
+#: Set when the presented key belongs to a project. An empty list means every
+#: model the account may reach; absent means the key is global and carries no
+#: project restriction.
+PROJECT_ALLOWED_MODELS_KEY = "project_allowed_models"
+
+
+def is_model_outside_project_scope(
+    canonical_model_id: str, user_ctx: dict[str, Any] | None
+) -> bool:
+    """Return True if the caller's project does not list this model."""
+    if not user_ctx:
+        return False
+    allowed = user_ctx.get(PROJECT_ALLOWED_MODELS_KEY)
+    if allowed is None or not allowed:
+        return False
+    return canonical_model_id not in set(allowed)
+
+
 #: Set by the grant path on a request authenticated with an ``agr`` token; absent
 #: on every other kind of caller. Absence and emptiness therefore mean opposite
 #: things, and that asymmetry is the whole of the check below.
@@ -76,6 +94,7 @@ class ModelAccessDenial(enum.Enum):
     UNPUBLISHED = "unpublished"
     ROLE = "role"
     DISABLED = "disabled"
+    OUTSIDE_PROJECT = "outside_project"
     OUTSIDE_GRANT = "outside_grant"
 
 
@@ -102,6 +121,7 @@ async def model_access_denial(
     *,
     visibility_resolver: Any | None = None,
     grant_scope: bool = True,
+    project_scope: bool = True,
 ) -> ModelAccessDenial | None:
     """Return why ``user_ctx`` may not use the model behind ``route``, or None.
 
@@ -139,6 +159,8 @@ async def model_access_denial(
         return ModelAccessDenial.ROLE
     if is_model_disabled_for_user(canonical, user_ctx):
         return ModelAccessDenial.DISABLED
+    if project_scope and is_model_outside_project_scope(canonical, user_ctx):
+        return ModelAccessDenial.OUTSIDE_PROJECT
     if grant_scope and is_model_outside_grant_scope(canonical, user_ctx):
         return ModelAccessDenial.OUTSIDE_GRANT
     return None

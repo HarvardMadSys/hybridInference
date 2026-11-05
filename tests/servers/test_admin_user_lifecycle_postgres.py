@@ -128,7 +128,7 @@ async def test_a_pending_signup_is_decided_once_and_audited(gateway, test_user, 
     assert again.status_code == 409
 
 
-async def test_a_quota_change_lands_on_the_live_key(gateway, test_user_with_key):
+async def test_a_quota_change_lands_on_the_account(gateway, test_user_with_key):
     client, _store, pool = gateway
     user = test_user_with_key
 
@@ -139,7 +139,7 @@ async def test_a_quota_change_lands_on_the_live_key(gateway, test_user_with_key)
     assert response.status_code == 200, response.text
     async with pool.acquire() as conn:
         quota = await conn.fetchval(
-            "SELECT quota_daily_cost_usd FROM api_keys WHERE user_id = $1 AND status = 'active'",
+            "SELECT daily_cost_quota_usd FROM users WHERE id = $1",
             user["id"],
         )
     assert float(quota) == 7.5

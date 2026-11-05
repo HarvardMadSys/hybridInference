@@ -608,14 +608,17 @@ async def test_verify_api_key_against_real_database(db_logger: DatabaseLogger, m
         )
         await conn.execute(
             """
-            INSERT INTO api_keys (
-                key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd
-            ) VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO api_keys (key_hash, key_prefix, user_id, user_name)
+            VALUES ($1, $2, $3, $4)
             """,
             key_hash,
             key_prefix,
             user_id,
             "Integration User",
+        )
+        await conn.execute(
+            "UPDATE users SET daily_cost_quota_usd = $2 WHERE id = $1",
+            user_id,
             Decimal("1000.00"),
         )
 

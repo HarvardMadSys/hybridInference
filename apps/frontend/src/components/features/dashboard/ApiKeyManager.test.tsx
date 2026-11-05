@@ -10,6 +10,7 @@ vi.mock('@/lib/hooks', () => ({
   useApiKeys: vi.fn(),
   useCreateApiKey: vi.fn(),
   useDeleteApiKey: vi.fn(),
+  useProjects: vi.fn(),
   useRegenerateApiKey: vi.fn(),
 }));
 
@@ -21,11 +22,21 @@ vi.mock('react-hot-toast', () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
 
-import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/hooks';
+import {
+  useApiKeys,
+  useCreateApiKey,
+  useDeleteApiKey,
+  useProjects,
+  useRegenerateApiKey,
+} from '@/lib/hooks';
 
 const idleMutation = { mutateAsync: vi.fn(), isPending: false };
 
 function mockList(item: ApiKeyListItem): void {
+  vi.mocked(useProjects).mockReturnValue({
+    data: [],
+    isLoading: false,
+  } as unknown as ReturnType<typeof useProjects>);
   vi.mocked(useApiKeys).mockReturnValue({
     data: { keys: [item] },
     isLoading: false,

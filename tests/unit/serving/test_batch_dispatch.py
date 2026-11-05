@@ -180,7 +180,7 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
             break
         await asyncio.sleep(0.001)
     services.operational_store.increment_user_cost.assert_awaited_once_with(
-        "owner-1", pytest.approx(0.0002)
+        "owner-1", pytest.approx(0.0002), project_id=""
     )
 
 

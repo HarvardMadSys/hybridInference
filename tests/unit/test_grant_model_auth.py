@@ -71,6 +71,11 @@ class FakeStore:
             raise RuntimeError("database down")
         return self.spend
 
+    async def get_user_cost_period(self, user_id: str, period: str) -> float:
+        if self.fail == "spend":
+            raise RuntimeError("database down")
+        return self.spend
+
 
 @pytest.fixture
 def store() -> FakeStore:
@@ -188,7 +193,7 @@ async def test_removing_the_quota_lookup_makes_that_test_fail(store, token, monk
     store.spend = CUSTOM_QUOTA
 
     async def _no_gate(_op_store, _user_id):
-        return (float("inf"), 0.0)
+        return (float("inf"), None, 0.0, 0.0)
 
     monkeypatch.setattr(model_auth, "_quota_context", _no_gate)
     context = await authenticate_grant_model_call(token, op_store=store)
@@ -245,16 +250,14 @@ async def test_an_account_with_no_active_key_is_refused_not_defaulted(store, tok
     assert caught.value.status_code == 403
 
 
-async def test_two_active_keys_refuse_rather_than_pick_a_winner(store, token) -> None:
-    """The schema forbids this; reaching it means an index is gone.
-
-    Choosing one would settle a spending question by papering over a schema
-    failure, so the call is refused and the event logged.
-    """
+async def test_multiple_active_keys_do_not_change_the_account_answer(store, token) -> None:
+    """Keys are per-endpoint now; the ceiling is one account-level row."""
     store.keys.append({"id": 2, "user_id": "user_1", "quota_daily_cost_usd": 999.0, "role": "pro"})
-    with pytest.raises(AgentModelAuthError) as caught:
-        await authenticate_grant_model_call(token, op_store=store)
-    assert caught.value.status_code == 403
+    store.spend = 1.0
+
+    context = await authenticate_grant_model_call(token, op_store=store)
+
+    assert context["user_id"] == "user_1"
 
 
 @pytest.mark.parametrize("status_value", ["suspended", "deleted", "pending_approval"])

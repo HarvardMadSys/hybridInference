@@ -78,15 +78,19 @@ async def seeded():
     await op_store.create_user(user_id=USER, email=f"{USER}@utcwin.test", password_hash="x")
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id, "
-            "quota_daily_cost_usd) VALUES ('h-utcwin', 'sk-utcwin', $1, $1, 1.2)",
+            "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id) "
+            "VALUES ('h-utcwin', 'sk-utcwin', $1, $1)",
+            USER,
+        )
+        await conn.execute(
+            "UPDATE users SET daily_cost_quota_usd = 1.2 WHERE id = $1",
             USER,
         )
         for suffix, at, cost in _rows():
             # The daily counter the operational store reads, keyed by UTC day.
             await conn.execute(
-                "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests) "
-                "VALUES ($1, $2, $3, 1) ON CONFLICT (user_id, day) DO UPDATE "
+                "INSERT INTO user_daily_cost (user_id, project_id, day, cost_usd, requests) "
+                "VALUES ($1, '', $2, $3, 1) ON CONFLICT (user_id, project_id, day) DO UPDATE "
                 "SET cost_usd = user_daily_cost.cost_usd + EXCLUDED.cost_usd",
                 USER,
                 at.date().isoformat(),

@@ -15,7 +15,6 @@ Run with: make test-db
 import pytest
 import pytest_asyncio
 
-from serving.exceptions import DuplicateAPIKeyError
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures.auth_factories import create_test_user
@@ -163,15 +162,8 @@ class TestKeyLookupAndCreate:
         assert await store.get_active_key_by_account(user_id) is None
 
     @pytest.mark.asyncio
-    async def test_create_key_duplicate_active_raises_duplicate_error(
-        self, backfill_db: DatabaseLogger
-    ):
-        """create_key colliding on idx_api_keys_user_unique → DuplicateAPIKeyError.
-
-        Reproduces the issue #630 path: a pre-existing NULL-account_id active key
-        plus an INSERT that sets account_id = user_id. The unique violation on
-        user_id must surface as DuplicateAPIKeyError (clean 409), not a raw 500.
-        """
+    async def test_create_key_allows_a_second_active_key(self, backfill_db: DatabaseLogger):
+        """Projects group keys, so the old one-active-key index is gone."""
         pool = backfill_db.pool
         assert pool is not None
         store = PostgresOperationalStore(pool)
@@ -180,13 +172,19 @@ class TestKeyLookupAndCreate:
             user_id = await _insert_user(conn)
             await _insert_key(conn, user_id=user_id, account_id=None, key_prefix="dupe1234")
 
-        with pytest.raises(DuplicateAPIKeyError):
-            await store.create_key(
-                key_hash="newhash",
-                key_prefix="newprefix",
-                user_id=user_id,
-                account_id=user_id,
+        await store.create_key(
+            key_hash="newhash",
+            key_prefix="newprefix",
+            user_id=user_id,
+            account_id=user_id,
+        )
+
+        async with pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT count(*) FROM api_keys WHERE user_id = $1 AND status = 'active'",
+                user_id,
             )
+        assert count == 2
 
     @pytest.mark.asyncio
     async def test_create_key_defaults_account_id_to_user_id(self, backfill_db: DatabaseLogger):

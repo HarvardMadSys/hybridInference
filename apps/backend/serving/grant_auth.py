@@ -125,20 +125,17 @@ async def _resolve_grant(
     return row
 
 
-async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
-    """Return ``(limit, spent)`` for the account behind a grant.
+async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float | None, float, float]:
+    """Return ``(daily_limit, monthly_limit, spent_today, spent_month)``.
 
-    The limit lives on the user's API key and the spend on the user, so this
-    is two reads that the direct path gets in one — a grant carries no key to
-    join through.
+    The limits live on the account and the spend in its counter tables, so a
+    grant needs no key to join through.
 
     Raises:
-        AgentModelAuthError: If the account has no active key, if it somehow
-            has more than one, or if either read fails. Every branch refuses;
-            none defaults to "no ceiling".
+        AgentModelAuthError: If the account cannot be read or has no ceiling.
     """
     try:
-        keys = await op_store.get_quota_context_for_user(user_id)
+        rows = await op_store.get_quota_context_for_user(user_id)
     except Exception as exc:
         logger.warning(
             "agent_grant_quota_lookup_failed",
@@ -149,32 +146,16 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             "Spending limits cannot be verified right now.", status_code=503
         ) from exc
 
-    if not keys:
-        # No key means no configured limit, and absence of a limit must never
-        # be read as absence of a ceiling.
+    if not rows:
         raise AgentModelAuthError(
-            "This account has no active API key, so its spending limit cannot be applied.",
-            status_code=403,
-        )
-    if len(keys) > 1:
-        # UNIQUE (user_id) WHERE status='active' forbids this. Reaching it
-        # means the index is gone; picking a winner would settle a spending
-        # question by papering over a schema failure.
-        logger.error(
-            "agent_grant_duplicate_active_keys",
-            extra={
-                "event": "agent_grant_duplicate_active_keys",
-                "user_id": user_id,
-                "count": len(keys),
-            },
-        )
-        raise AgentModelAuthError(
-            "This account's spending limit is ambiguous and cannot be applied.",
+            "This account has no active key, so its spending limit cannot be applied.",
             status_code=403,
         )
 
+    row = rows[0]
     try:
-        spent = await op_store.get_user_cost_today(user_id)
+        spent_today = await op_store.get_user_cost_today(user_id)
+        spent_month = await op_store.get_user_cost_period(user_id, "month")
     except Exception as exc:
         logger.warning(
             "agent_grant_spend_lookup_failed",
@@ -185,7 +166,17 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             "Spending cannot be measured right now.", status_code=503
         ) from exc
 
-    return quota.resolve_quota(keys[0].get("quota_daily_cost_usd")), float(spent or 0.0)
+    return (
+        quota.resolve_quota(row.get("quota_daily_cost_usd")),
+        _monthly_limit(row.get("quota_monthly_cost_usd")),
+        float(spent_today or 0.0),
+        float(spent_month or 0.0),
+    )
+
+
+def _monthly_limit(raw: Any) -> float | None:
+    """Return a monthly limit, or None when the account has none."""
+    return None if raw is None else float(raw)
 
 
 async def authenticate_grant_model_call(
@@ -207,9 +198,11 @@ async def authenticate_grant_model_call(
     row = await _resolve_grant(api_key, op_store=op_store)
 
     user = await _active_subject(op_store, row["user_id"])
-    quota_usd, spent_usd = await _quota_context(op_store, row["user_id"])
+    quota_usd, monthly_usd, spent_usd, spent_month = await _quota_context(op_store, row["user_id"])
     try:
         quota.check(quota_usd=quota_usd, spent_usd=spent_usd)
+        if monthly_usd is not None:
+            quota.check(quota_usd=monthly_usd, spent_usd=spent_month)
     except quota.QuotaExceeded as exc:
         raise AgentQuotaExceeded(quota_usd=exc.quota_usd, spent_usd=exc.spent_usd) from exc
 

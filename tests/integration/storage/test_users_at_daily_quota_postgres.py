@@ -23,7 +23,7 @@ this file asks:
    ``status = 'active'`` filters on both sides of the join.
 3. **A NULL quota falls back to the enforcer's default of 1000** —
    ``test_null_quota_falls_back_to_the_enforcers_default``. Exercises
-   ``COALESCE(k.quota_daily_cost_usd, $2)`` against a real pre-migration row.
+   ``COALESCE(u.daily_cost_quota_usd, $2)`` against a real pre-migration row.
 
 If any of those three regressed, the default suite would stay green.
 """
@@ -199,16 +199,8 @@ async def test_yesterdays_spend_is_not_todays(postgres_op_store):
     assert rows == []
 
 
-async def test_suspended_user_and_revoked_key_are_excluded(postgres_op_store):
-    """Both are excluded because the enforcer resolves no cap for them.
-
-    ``UserCostOverrunJob`` compensates for an already-reported user: when one
-    leaves the result set it re-checks them with ``get_quota_context_for_user``,
-    gets the same empty answer this exclusion produces, and holds the incident
-    open rather than letting the stale sweep post a false "Recovered". (A user
-    who leaves because their cap was *raised* still resolves there, and is
-    allowed to close.)
-    """
+async def test_suspended_user_is_excluded(postgres_op_store):
+    """A suspended account has no ceiling to hit: the gate refuses it earlier."""
     await _seed(
         postgres_op_store,
         suffix="susp",
@@ -216,6 +208,14 @@ async def test_suspended_user_and_revoked_key_are_excluded(postgres_op_store):
         spend=Decimal("80.00"),
         user_status="suspended",
     )
+
+    rows = await postgres_op_store.query_users_at_daily_quota()
+
+    assert rows == []
+
+
+async def test_key_status_does_not_change_the_account_answer(postgres_op_store):
+    """The ceiling is the account's; one revoked key does not hide its spend."""
     await _seed(
         postgres_op_store,
         suffix="revk",
@@ -226,10 +226,10 @@ async def test_suspended_user_and_revoked_key_are_excluded(postgres_op_store):
 
     rows = await postgres_op_store.query_users_at_daily_quota()
 
-    assert rows == []
+    assert _ids(rows) == [f"{_USER_PREFIX}revk"]
 
 
-async def test_expired_key_is_excluded(postgres_op_store):
+async def test_expired_key_does_not_change_the_account_answer(postgres_op_store):
     await _seed(
         postgres_op_store,
         suffix="expd",
@@ -240,7 +240,7 @@ async def test_expired_key_is_excluded(postgres_op_store):
 
     rows = await postgres_op_store.query_users_at_daily_quota()
 
-    assert rows == []
+    assert _ids(rows) == [f"{_USER_PREFIX}expd"]
 
 
 async def test_null_quota_falls_back_to_the_enforcers_default(postgres_op_store):
@@ -249,7 +249,7 @@ async def test_null_quota_falls_back_to_the_enforcers_default(postgres_op_store)
     # Clear the column the way an old row would have it.
     async with postgres_op_store._pool.acquire() as conn:
         await conn.execute(
-            "UPDATE api_keys SET quota_daily_cost_usd = NULL WHERE user_id = $1",
+            "UPDATE users SET daily_cost_quota_usd = NULL WHERE id = $1",
             f"{_USER_PREFIX}nullq",
         )
 
@@ -259,7 +259,7 @@ async def test_null_quota_falls_back_to_the_enforcers_default(postgres_op_store)
 
     async with postgres_op_store._pool.acquire() as conn:
         await conn.execute(
-            "UPDATE user_daily_cost SET cost_usd = $2 WHERE user_id = $1",
+            "UPDATE user_daily_cost SET cost_usd = $2 WHERE user_id = $1 AND project_id = ''",
             f"{_USER_PREFIX}nullq",
             Decimal("1000.00"),
         )

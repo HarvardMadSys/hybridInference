@@ -2046,17 +2046,10 @@ async def test_an_empty_patch_is_refused(admin_client):
 
 
 @pytest.mark.asyncio
-async def test_a_quota_needs_a_live_key_and_is_written_to_it(admin_client):
+async def test_a_quota_is_written_to_the_account_without_a_key(admin_client):
     client, op_store, _log_store, _log = admin_client
     op_store.get_user_by_id.return_value = _user_row()
-    op_store.update_key = AsyncMock()
 
-    op_store.get_active_key_by_account.return_value = None
-    resp = await client.patch("/admin/users/u1", headers=AUTH, json={"quota_daily_cost_usd": "5"})
-    assert resp.status_code == 409
-    op_store.update_key.assert_not_awaited()
-
-    op_store.get_active_key_by_account.return_value = {"id": 1}
     resp = await client.patch(
         "/admin/users/u1",
         headers=AUTH,
@@ -2067,10 +2060,12 @@ async def test_a_quota_needs_a_live_key_and_is_written_to_it(admin_client):
         },
     )
     assert resp.status_code == 200, resp.text
-    op_store.update_key.assert_awaited_once_with(
-        "u1", quota_daily_cost_usd=Decimal("5"), quota_monthly_cost_usd=Decimal("50")
+    op_store.update_user_fields.assert_awaited_once_with(
+        "u1",
+        quota_daily_cost_usd=Decimal("5"),
+        quota_monthly_cost_usd=Decimal("50"),
+        max_concurrent_requests=3,
     )
-    op_store.update_user_fields.assert_awaited_with("u1", max_concurrent_requests=3)
     assert set(resp.json()["updated_fields"]) == {
         "quota_daily_cost_usd",
         "quota_monthly_cost_usd",

@@ -13,9 +13,10 @@ export function useCreateApiKey() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: createApiKey,
+    mutationFn: (projectId?: string | null) => createApiKey(projectId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
   });
@@ -28,6 +29,7 @@ export function useDeleteApiKey() {
     mutationFn: deleteApiKey,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
   });
@@ -40,6 +42,7 @@ export function useRegenerateApiKey() {
     mutationFn: regenerateApiKey,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
     },
   });

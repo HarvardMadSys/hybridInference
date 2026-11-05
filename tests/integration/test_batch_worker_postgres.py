@@ -333,7 +333,9 @@ async def test_an_owner_whose_role_drops_is_paused_until_it_returns(gateway, own
 
 async def test_a_spent_daily_quota_pauses_the_owner_until_it_renews(gateway, owner):
     store, a = gateway.store, gateway.models["a"]
-    await owner["op_store"].update_key(owner["user_id"], quota_daily_cost_usd=Decimal("0.001"))
+    await owner["op_store"].update_user_fields(
+        owner["user_id"], daily_cost_quota_usd=Decimal("0.001")
+    )
     async with store._pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO user_daily_cost (user_id, day, cost_usd) "

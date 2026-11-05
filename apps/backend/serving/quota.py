@@ -63,6 +63,20 @@ def seconds_until_utc_midnight(now: datetime | None = None) -> int:
     return max(1, int((next_utc_midnight(current) - current).total_seconds()))
 
 
+def next_utc_month(now: datetime | None = None) -> datetime:
+    """Return the first moment of the next UTC month — when the monthly counter resets."""
+    current = now or datetime.now(UTC)
+    return (current.replace(day=1) + timedelta(days=32)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def seconds_until_utc_month(now: datetime | None = None) -> int:
+    """Return whole seconds until the monthly counter resets."""
+    current = now or datetime.now(UTC)
+    return max(1, int((next_utc_month(current) - current).total_seconds()))
+
+
 def resolve_quota(raw: Any) -> float:
     """Return the effective daily limit for a raw column value.
 

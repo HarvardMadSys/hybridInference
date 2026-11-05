@@ -26,6 +26,7 @@ export interface User {
 export interface ApiKeyResponse {
   api_key: string;
   key_prefix: string;
+  project_id?: string | null;
   warning: string;
   created_at: string;
 }
@@ -37,6 +38,7 @@ export interface ApiKeyListItem {
   created_at: string;
   last_used_at?: string | null;
   status: string;
+  project_id?: string | null;
 }
 
 export interface ApiKeyListResponse {
@@ -125,11 +127,67 @@ export async function getModels(): Promise<ModelCatalogResponse> {
   return jsonOrThrow<ModelCatalogResponse>(resp);
 }
 
-export async function createApiKey(): Promise<ApiKeyResponse> {
+export async function createApiKey(projectId?: string | null): Promise<ApiKeyResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_id: projectId ?? null }),
   });
   return jsonOrThrow<ApiKeyResponse>(resp);
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  daily_cost_quota_usd: string | null;
+  monthly_cost_quota_usd: string | null;
+  allowed_models: string[];
+  spent_today_usd: string;
+  spent_month_usd: string;
+  key_count: number;
+  created_at: string;
+}
+
+export interface ProjectInput {
+  name: string;
+  daily_cost_quota_usd?: number | null;
+  monthly_cost_quota_usd?: number | null;
+  allowed_models: string[];
+}
+
+export async function listProjects(): Promise<Project[]> {
+  const resp = await fetchWithAuth(API_BASE, '/user/projects');
+  return jsonOrThrow<Project[]>(resp);
+}
+
+export async function createProject(input: ProjectInput): Promise<Project> {
+  const resp = await fetchWithAuth(API_BASE, '/user/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<Project>(resp);
+}
+
+export async function updateProject(
+  projectId: string,
+  input: Partial<ProjectInput>,
+): Promise<Project> {
+  const resp = await fetchWithAuth(API_BASE, `/user/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<Project>(resp);
+}
+
+export async function deleteProject(
+  projectId: string,
+): Promise<{ project_id: string; keys_revoked: number }> {
+  const resp = await fetchWithAuth(API_BASE, `/user/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  });
+  return jsonOrThrow<{ project_id: string; keys_revoked: number }>(resp);
 }
 
 export async function listApiKeys(): Promise<ApiKeyListResponse> {

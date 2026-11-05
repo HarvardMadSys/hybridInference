@@ -95,7 +95,9 @@ class _CapturingOpStore:
     def __init__(self) -> None:
         self.increments: list[tuple[str, float]] = []
 
-    async def increment_user_cost(self, user_id: str, cost_usd: float, *, day=None) -> None:
+    async def increment_user_cost(
+        self, user_id: str, cost_usd: float, *, day=None, project_id=""
+    ) -> None:
         self.increments.append((user_id, cost_usd))
 
 

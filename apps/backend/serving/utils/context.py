@@ -27,6 +27,11 @@ MODEL_NOT_FOUND = "model_not_found"
 # REQUEST_SCOPED_KEYS is what makes "absent" trustworthy.
 USER_ROLE = "user_role"
 
+# req_ctx key holding the project the presented key belongs to, published by
+# the API-key auth dependency. Billing reads it to charge the project ledger
+# alongside the account one.
+PROJECT_ID = "project_id"
+
 # UTC datetime captured once at the HTTP request boundary. Scheduled pricing
 # consumers use it so routing, logs, and quota charging cannot disagree when a
 # long-running request crosses a price-window boundary.
@@ -108,6 +113,7 @@ REQUEST_SCOPED_KEYS = (
     "auth_key_hash",
     "affinity_key",
     USER_ROLE,
+    PROJECT_ID,
     PRICING_TIME,
     PRICING_SNAPSHOT,
     CLIENT_ERROR_KIND,

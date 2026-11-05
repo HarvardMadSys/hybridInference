@@ -80,7 +80,9 @@ _PRE_UPGRADE_USERS = """
         last_login_at TIMESTAMPTZ,
         max_concurrent_requests INT DEFAULT NULL,
         admin_note TEXT,
-        suspension_message TEXT
+        suspension_message TEXT,
+        daily_cost_quota_usd DECIMAL(10, 4),
+        monthly_cost_quota_usd DECIMAL(10, 4)
     )
 """
 
@@ -116,7 +118,8 @@ _BOOT_TIME_API_KEYS = """
         last_used_at TIMESTAMPTZ,
         notes TEXT,
         metadata JSONB,
-        account_id TEXT
+        account_id TEXT,
+        project_id TEXT
     )
 """
 

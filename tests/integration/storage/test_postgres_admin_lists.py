@@ -60,14 +60,19 @@ async def _key(
 ) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id, "
-            "quota_daily_cost_usd, status) VALUES ($1, $2, $3, $3, $4, $5)",
+            "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id, status) "
+            "VALUES ($1, $2, $3, $3, $4)",
             f"hash-{user_id}{tag}",
             f"sk-adml-{user_id[7:]}{tag}",
             user_id,
-            quota,
             status,
         )
+        if quota is not None:
+            await conn.execute(
+                "UPDATE users SET daily_cost_quota_usd = $2 WHERE id = $1",
+                user_id,
+                quota,
+            )
 
 
 _seq = iter(range(10**6))
@@ -110,17 +115,18 @@ def _start_of_month() -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-async def test_quota_state_default_and_custom_read_the_active_key(admin_store):
+async def test_quota_state_default_and_custom_read_the_account(admin_store):
     store, pool = admin_store
     await _key(pool, await _user(store, "inherits"), None)
     await _key(pool, await _user(store, "custom"), Decimal("5"))
     await _user(store, "keyless")
-    # Only the live key decides: an old revoked key without a quota does not.
+    # The account decides; a revoked key is irrelevant.
     switched = await _user(store, "switched")
     await _key(pool, switched, None, status="revoked", tag="-old")
     await _key(pool, switched, Decimal("5"))
 
-    assert await _listed(store, quota_state="default") == (1, ["inherits"])
+    total, default = await _listed(store, quota_state="default")
+    assert (total, sorted(default)) == (2, ["inherits", "keyless"])
     total, custom = await _listed(store, quota_state="custom")
     assert (total, sorted(custom)) == (2, ["custom", "switched"])
 

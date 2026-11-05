@@ -390,6 +390,58 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_auth_caches()
         return old_prefix
 
+    # -- projects (invalidate auth caches on writes) -------------------------
+
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        account_id: str,
+        name: str,
+        daily_cost_quota_usd: Decimal | float | None = None,
+        monthly_cost_quota_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+    ) -> Row:
+        """Delegate, then invalidate auth caches: keys may resolve the project."""
+        row = await self._store.create_project(
+            project_id=project_id,
+            account_id=account_id,
+            name=name,
+            daily_cost_quota_usd=daily_cost_quota_usd,
+            monthly_cost_quota_usd=monthly_cost_quota_usd,
+            allowed_models=allowed_models,
+        )
+        await self.invalidate_auth_caches()
+        return row
+
+    async def list_projects(self, account_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_projects(account_id)
+
+    async def get_project(self, account_id: str, project_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_project(account_id, project_id)
+
+    async def update_project(self, account_id: str, project_id: str, **fields: Any) -> Row | None:
+        """Delegate, then invalidate auth caches: budgets/allowlists changed."""
+        row = await self._store.update_project(account_id, project_id, **fields)
+        await self.invalidate_auth_caches()
+        return row
+
+    async def delete_project(self, account_id: str, project_id: str) -> int:
+        """Delegate, then invalidate auth caches: keys were revoked."""
+        revoked = await self._store.delete_project(account_id, project_id)
+        await self.invalidate_auth_caches()
+        return revoked
+
+    async def get_project_cost(self, project_id: str, period: Literal["today", "month"]) -> float:
+        """Delegate to wrapped store."""
+        return await self._store.get_project_cost(project_id, period)
+
+    async def count_active_keys_for_project(self, project_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.count_active_keys_for_project(project_id)
+
     # -- role quotas (invalidate auth caches on bulk write) ------------------
 
     async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
@@ -397,10 +449,10 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.count_active_keys_for_role(role)
 
     async def apply_role_quota(self, role: str, quota: Decimal) -> int:
-        """Delegate then invalidate auth caches (quota_daily_cost_usd changed for all role rows)."""
+        """Delegate then invalidate auth caches (the account ceiling changed)."""
         n = await self._store.apply_role_quota(role, quota)
-        # Bulk write touches quota_daily_cost_usd on all keys for a role; clear
-        # all per-key auth cache entries to prevent stale quota lookups.
+        # Bulk write touches every user's account ceiling; clear all per-key
+        # auth cache entries to prevent stale quota lookups.
         await self.invalidate_auth_caches()
         return n
 
@@ -545,13 +597,14 @@ class CachedOperationalStore(OperationalStore):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_daily_cost_usd: Decimal | float | None = None,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
+        project_id: str | None = None,
     ) -> Row:
         """Delegate to wrapped store."""
         return await self._store.create_key(
@@ -566,6 +619,7 @@ class CachedOperationalStore(OperationalStore):
             api_key_encrypted=api_key_encrypted,
             metadata=metadata,
             account_id=account_id,
+            project_id=project_id,
         )
 
     async def check_active_key_exists(self, user_id: str) -> bool:
@@ -1390,10 +1444,17 @@ class CachedOperationalStore(OperationalStore):
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(
-        self, user_id: str, cost_usd: float, *, day: str | None = None
+        self,
+        user_id: str,
+        cost_usd: float,
+        *,
+        day: str | None = None,
+        project_id: str = "",
     ) -> None:
         """Delegate to wrapped store."""
-        return await self._store.increment_user_cost(user_id, cost_usd, day=day)
+        return await self._store.increment_user_cost(
+            user_id, cost_usd, day=day, project_id=project_id
+        )
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Delegate to wrapped store."""

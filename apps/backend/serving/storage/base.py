@@ -78,13 +78,13 @@ USERS_MUTABLE_COLUMNS: dict[str, str] = {
     "max_concurrent_requests": "max_concurrent_requests",
     "admin_note": "admin_note",
     "suspension_message": "suspension_message",
+    "daily_cost_quota_usd": "daily_cost_quota_usd",
+    "monthly_cost_quota_usd": "monthly_cost_quota_usd",
 }
 
 API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
     "user_name": "user_name",
     "status": "status",
-    "quota_daily_cost_usd": "quota_daily_cost_usd",
-    "quota_monthly_cost_usd": "quota_monthly_cost_usd",
     "expires_at": "expires_at",
     "last_used_at": "last_used_at",
     "notes": "notes",
@@ -571,15 +571,21 @@ class OperationalStore(ABC):
         key_prefix: str,
         user_id: str,
         user_name: str | None = None,
-        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_daily_cost_usd: Decimal | float | None = None,
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
+        project_id: str | None = None,
     ) -> Row:
-        """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``)."""
+        """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
+
+        ``quota_daily_cost_usd`` and ``quota_monthly_cost_usd`` still name the
+        account ceiling: the limit moved to ``users`` with projects, so passing
+        them sets it there rather than on the key.
+        """
 
     @abstractmethod
     async def check_active_key_exists(self, user_id: str) -> bool:
@@ -629,6 +635,62 @@ class OperationalStore(ABC):
     @abstractmethod
     async def get_active_key_by_account(self, account_id: str) -> Row | None:
         """Fetch the active key for self-registered user by account_id."""
+
+    # -- projects ------------------------------------------------------------
+    #
+    # A project groups an account's keys under sub-limits below the account
+    # ceiling plus an optional model allowlist (empty list = every model the
+    # account may reach).
+
+    @abstractmethod
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        account_id: str,
+        name: str,
+        daily_cost_quota_usd: Decimal | float | None = None,
+        monthly_cost_quota_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+    ) -> Row:
+        """Insert a project and return its row."""
+
+    @abstractmethod
+    async def list_projects(self, account_id: str) -> list[Row]:
+        """Return the account's active projects, newest first."""
+
+    @abstractmethod
+    async def get_project(self, account_id: str, project_id: str) -> Row | None:
+        """Return one active project owned by *account_id*, or None."""
+
+    @abstractmethod
+    async def update_project(
+        self,
+        account_id: str,
+        project_id: str,
+        **fields: Any,
+    ) -> Row | None:
+        """Update named project columns and return the row, or None when absent."""
+
+    @abstractmethod
+    async def delete_project(self, account_id: str, project_id: str) -> int:
+        """Soft-delete a project and revoke its keys; return keys revoked.
+
+        The project row is kept with ``status = 'deleted'`` so spend history
+        stays attributable; its keys are revoked in the same transaction.
+        """
+
+    @abstractmethod
+    async def get_project_cost(
+        self,
+        project_id: str,
+        period: Literal["today", "month"],
+    ) -> float:
+        """Return the project's spend for the current UTC day or month."""
+
+    @abstractmethod
+    async def count_active_keys_for_project(self, project_id: str) -> int:
+        """Return how many active keys the project holds."""
 
     # -- auth sessions -------------------------------------------------------
 
@@ -976,12 +1038,14 @@ class OperationalStore(ABC):
         cost_usd: float,
         *,
         day: str | None = None,
+        project_id: str = "",
     ) -> None:
-        """Atomically increment the daily cost counter for *user_id*.
+        """Atomically increment the cost counters for *user_id*.
 
-        Uses upsert: inserts a new row if none exists for (user_id, day),
-        otherwise adds *cost_usd* to the existing total and increments
-        the request count.
+        Always increments the account row (``project_id = ''``) and the
+        current month's counterpart. When *project_id* is non-empty, the
+        matching project rows are incremented too, so account ceilings and
+        project sub-limits are both readable in one indexed read.
 
         Only call this for billed requests (successful responses where
         cost > 0), not for auth failures or 4xx errors.
@@ -990,13 +1054,15 @@ class OperationalStore(ABC):
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
             day: Date string (YYYY-MM-DD). Defaults to UTC today.
+            project_id: Project the request is attributed to, or ``''``.
         """
 
     @abstractmethod
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return total cost_usd for *user_id* since UTC midnight today.
 
-        Reads from the ``user_daily_cost`` counter table, not from logs.
+        Reads the account row (``project_id = ''``) from ``user_daily_cost``,
+        not from logs.
         """
 
     @abstractmethod

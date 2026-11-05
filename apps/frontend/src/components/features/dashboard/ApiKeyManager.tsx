@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
-import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/hooks';
+import { useApiKeys, useCreateApiKey, useDeleteApiKey, useProjects, useRegenerateApiKey } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
@@ -94,6 +94,8 @@ export function ApiKeyManager(): JSX.Element {
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
+  const { data: projects = [] } = useProjects();
+  const [selectedProject, setSelectedProject] = useState<string>('');
   const createMutation = useCreateApiKey();
   const deleteMutation = useDeleteApiKey();
   const regenerateMutation = useRegenerateApiKey();
@@ -105,7 +107,7 @@ export function ApiKeyManager(): JSX.Element {
     if (!window.confirm(t('dashboard.keys.confirm_create', 'Create a new API Key?'))) return;
 
     try {
-      const response = await createMutation.mutateAsync();
+      const response = await createMutation.mutateAsync(selectedProject || null);
       setNewApiKey(response.api_key);
       setShowKey(true);
       toast.success(
@@ -186,6 +188,9 @@ export function ApiKeyManager(): JSX.Element {
   const apiKeys = apiKeysResponse?.keys ?? [];
   const activeKeys = apiKeys.filter((key) => key.status === 'active');
   const hasActiveKey = activeKeys.length > 0;
+  const projectName = (projectId?: string | null): string =>
+    (projectId && projects.find((project) => project.id === projectId)?.name) ||
+    t('dashboard.keys.global_project', 'Global');
 
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
@@ -204,14 +209,25 @@ export function ApiKeyManager(): JSX.Element {
             )}
           </p>
         </div>
-        {!isLoadingKeys && !hasActiveKey && (
-          <Button
-            onClick={handleCreateKey}
-            disabled={isLoading}
-            isLoading={createMutation.isPending}
-          >
-            {t('dashboard.keys.create', 'Create API Key')}
-          </Button>
+        {!isLoadingKeys && (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <select
+              value={selectedProject}
+              onChange={(event) => setSelectedProject(event.target.value)}
+              className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
+              aria-label={t('dashboard.keys.project', 'Project')}
+            >
+              <option value="">{t('dashboard.keys.global_project', 'Global')}</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+            <Button onClick={handleCreateKey} disabled={isLoading} isLoading={createMutation.isPending}>
+              {t('dashboard.keys.create', 'Create API Key')}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -255,9 +271,10 @@ export function ApiKeyManager(): JSX.Element {
 
       {apiKeys.length > 0 && (
         <div className="overflow-hidden rounded-lg ring-1 ring-gray-200">
-          <div className="hidden grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] gap-4 bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:grid">
+          <div className="hidden grid-cols-[minmax(0,1.3fr)_auto_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_auto] gap-4 bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:grid">
             <span>{t('dashboard.keys.col_key', 'API Key')}</span>
             <span>{t('dashboard.keys.col_status', 'Status')}</span>
+            <span>{t('dashboard.keys.col_project', 'Project')}</span>
             <span>{t('dashboard.keys.col_created', 'Created')}</span>
             <span>{t('dashboard.keys.col_last_used', 'Last Used')}</span>
             <span className="text-right">{t('dashboard.keys.col_actions', 'Actions')}</span>
@@ -270,7 +287,7 @@ export function ApiKeyManager(): JSX.Element {
               return (
                 <div
                   key={apiKey.key_prefix}
-                  className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center"
+                  className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1.3fr)_auto_minmax(0,0.8fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_auto] md:items-center"
                 >
                   <div>
                     <div className="flex items-center gap-2">
@@ -324,6 +341,12 @@ export function ApiKeyManager(): JSX.Element {
                   >
                     {statusLabel(apiKey.status)}
                   </span>
+                  <div className="text-sm text-gray-600">
+                    <span className="md:hidden font-medium text-gray-500">
+                      {t('dashboard.keys.project_inline', 'Project: ')}
+                    </span>
+                    {projectName(apiKey.project_id)}
+                  </div>
                   <div className="text-sm text-gray-600">
                     <span className="md:hidden font-medium text-gray-500">
                       {t('dashboard.keys.created_inline', 'Created: ')}

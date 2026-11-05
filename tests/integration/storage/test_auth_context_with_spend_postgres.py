@@ -53,9 +53,10 @@ async def _set_spend(pool, user_id: str, cost: str) -> None:
     """Write today's counter row the way the increment path would."""
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO user_daily_cost (user_id, day, cost_usd) "
-            "VALUES ($1, to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), $2::numeric) "
-            "ON CONFLICT (user_id, day) DO UPDATE SET cost_usd = EXCLUDED.cost_usd",
+            "INSERT INTO user_daily_cost (user_id, project_id, day, cost_usd) "
+            "VALUES ($1, '', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), $2::numeric) "
+            "ON CONFLICT (user_id, project_id, day) DO UPDATE "
+            "SET cost_usd = EXCLUDED.cost_usd",
             user_id,
             Decimal(cost),
         )

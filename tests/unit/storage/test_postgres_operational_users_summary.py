@@ -178,7 +178,7 @@ class TestGetUsersSummary:
                     "today_cost": Decimal("10.00"),
                     "prior_7d_total": Decimal("7.00"),
                     "days_with_history": 7,
-                    "quota_daily_cost_usd": None,
+                    "daily_cost_quota_usd": None,
                 },
                 {
                     "id": "user_b",
@@ -188,7 +188,7 @@ class TestGetUsersSummary:
                     "today_cost": Decimal("0.50"),
                     "prior_7d_total": Decimal("0.07"),
                     "days_with_history": 7,
-                    "quota_daily_cost_usd": None,
+                    "daily_cost_quota_usd": None,
                 },
                 {
                     "id": "user_c",
@@ -198,7 +198,7 @@ class TestGetUsersSummary:
                     "today_cost": Decimal("10.00"),
                     "prior_7d_total": Decimal("0.10"),
                     "days_with_history": 1,
-                    "quota_daily_cost_usd": None,
+                    "daily_cost_quota_usd": None,
                 },
             ],
         ]
@@ -252,7 +252,7 @@ class TestGetUsersSummary:
                     "today_cost": Decimal("1.00"),
                     "prior_7d_total": Decimal("0"),
                     "days_with_history": 0,
-                    "quota_daily_cost_usd": None,
+                    "daily_cost_quota_usd": None,
                 },
                 {
                     "id": "big",
@@ -262,7 +262,7 @@ class TestGetUsersSummary:
                     "today_cost": Decimal("100.00"),
                     "prior_7d_total": Decimal("0"),
                     "days_with_history": 0,
-                    "quota_daily_cost_usd": None,
+                    "daily_cost_quota_usd": None,
                 },
             ],
         ]
@@ -287,7 +287,7 @@ class TestGetUsersSummary:
                     "today_cost": Decimal("8.00"),
                     "prior_7d_total": Decimal("0"),
                     "days_with_history": 0,
-                    "quota_daily_cost_usd": Decimal("10.00"),
+                    "daily_cost_quota_usd": Decimal("10.00"),
                 },
                 {
                     "id": "far_q",
@@ -297,7 +297,7 @@ class TestGetUsersSummary:
                     "today_cost": Decimal("1.00"),
                     "prior_7d_total": Decimal("0"),
                     "days_with_history": 0,
-                    "quota_daily_cost_usd": Decimal("10.00"),
+                    "daily_cost_quota_usd": Decimal("10.00"),
                 },
             ],
         ]

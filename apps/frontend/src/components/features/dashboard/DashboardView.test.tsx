@@ -32,6 +32,7 @@ vi.mock('@/components/providers/SiteConfigProvider', () => ({
 }));
 
 vi.mock('@/components/features/dashboard/ApiKeyManager', () => ({ ApiKeyManager: () => null }));
+vi.mock('@/components/features/dashboard/ProjectsManager', () => ({ ProjectsManager: () => null }));
 vi.mock('@/components/features/dashboard/ModelsSection', () => ({ ModelsSection: () => null }));
 vi.mock('@/components/features/dashboard/RecentRequests', () => ({ RecentRequests: () => null }));
 vi.mock('@/components/features/dashboard/UsageStats', () => ({ UsageStats: () => null }));

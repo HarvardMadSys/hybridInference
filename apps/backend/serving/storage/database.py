@@ -8,6 +8,7 @@ Pure utility functions (``calculate_cost``, etc.) have been moved to
 ``serving.storage.utils`` so they can be imported without pulling in asyncpg.
 """
 
+import contextlib
 import json
 from typing import Any
 
@@ -17,6 +18,7 @@ from serving.config.settings import get_settings
 from serving.storage.browser_session_schema import ensure_browser_session_tables
 from serving.storage.log_schema import (
     ErasureFenceUnavailable,
+    SchemaLockUnavailable,
     apply_column_migrations,
     bounded_ddl,
     column_metadata,
@@ -25,6 +27,7 @@ from serving.storage.log_schema import (
     drop_columns_if_present,
     ensure_api_logs_schema,
     execute_ddl,
+    existing_columns,
     protect_api_logs_insert,
     validate_or_init_fingerprint,
 )
@@ -60,6 +63,28 @@ def _parse_command_tag_count(command_tag: str) -> int:
         return int(parts[-1])
     except ValueError:
         return 0
+
+
+async def _ensure_projects_account_fk(conn: Any) -> None:
+    """Add the projects -> users FK when the lock is available."""
+    if await constraint_definition(conn, "projects", "projects_account_id_fkey") is None:
+        async with bounded_ddl(conn):
+            await execute_ddl(
+                conn,
+                "ALTER TABLE projects ADD CONSTRAINT projects_account_id_fkey "
+                "FOREIGN KEY (account_id) REFERENCES users(id) ON DELETE CASCADE",
+            )
+
+
+async def _ensure_api_keys_project_fk(conn: Any) -> None:
+    """Add the api_keys -> projects FK when the lock is available."""
+    if await constraint_definition(conn, "api_keys", "api_keys_project_id_fkey") is None:
+        async with bounded_ddl(conn):
+            await execute_ddl(
+                conn,
+                "ALTER TABLE api_keys ADD CONSTRAINT api_keys_project_id_fkey "
+                "FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL",
+            )
 
 
 class DatabaseLogger:
@@ -125,7 +150,34 @@ class DatabaseLogger:
             # schema changes in serving.storage.log_schema, never here.
             await ensure_api_logs_schema(conn)
 
-            # API Keys table for user authentication
+            # Projects: shared, account-bounded budgets and model allowlists.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    daily_cost_quota_usd DECIMAL(10, 4),
+                    monthly_cost_quota_usd DECIMAL(10, 4),
+                    allowed_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    status TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'deleted')),
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_projects_account
+                ON projects(account_id)
+            """)
+
+            await conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_account_name_active
+                ON projects(account_id, lower(name)) WHERE status = 'active'
+            """)
+
+            # API Keys table for user authentication. Any number of active
+            # keys per account; each is global or belongs to one project.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_keys (
                     id BIGSERIAL PRIMARY KEY,
@@ -135,9 +187,7 @@ class DatabaseLogger:
                     user_id TEXT NOT NULL,
                     user_name TEXT,
                     status TEXT NOT NULL DEFAULT 'active',
-
-                    quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00,
-                    quota_monthly_cost_usd DECIMAL(10, 4),
+                    project_id TEXT,
 
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     expires_at TIMESTAMPTZ,
@@ -164,31 +214,14 @@ class DatabaseLogger:
                 ON api_keys(key_prefix)
             """)
 
-            # Enforce 1:1 user-to-key relationship (one active key per user)
-            await conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique
-                ON api_keys(user_id) WHERE status = 'active'
-            """)
-
-            # Migrations for api_keys table (from token-based to cost-based
-            # quotas). Catalog-gated (serving.storage.log_schema): ALTER TABLE
-            # takes ACCESS EXCLUSIVE before evaluating IF NOT EXISTS, and this
-            # exact bare cluster queued behind the nightly pg_dump and took
-            # production down on 2026-08-21.
+            # Migrations for api_keys. Catalog-gated (serving.storage.log_schema):
+            # ALTER TABLE takes ACCESS EXCLUSIVE before evaluating IF NOT EXISTS,
+            # and this exact bare cluster queued behind the nightly pg_dump and
+            # took production down on 2026-08-21.
             await apply_column_migrations(
                 conn,
                 "api_keys",
                 [
-                    (
-                        "quota_daily_cost_usd",
-                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                        "quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00",
-                    ),
-                    (
-                        "quota_monthly_cost_usd",
-                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                        "quota_monthly_cost_usd DECIMAL(10, 4)",
-                    ),
                     (
                         "api_key_encrypted",
                         "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
@@ -198,6 +231,10 @@ class DatabaseLogger:
                         "account_id",
                         "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT",
                     ),
+                    (
+                        "project_id",
+                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS project_id TEXT",
+                    ),
                 ],
             )
 
@@ -206,12 +243,64 @@ class DatabaseLogger:
                 ON api_keys(account_id)
             """)
 
-            # Prevent concurrent duplicate active keys per account (self-registered users)
             await conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique
-                ON api_keys(account_id)
-                WHERE status = 'active' AND account_id IS NOT NULL
+                CREATE INDEX IF NOT EXISTS idx_api_keys_project
+                ON api_keys(project_id)
             """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_keys_user_status
+                ON api_keys(user_id, status)
+            """)
+
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_keys_account_status
+                ON api_keys(account_id, status)
+            """)
+
+            # One-active-key uniqueness is what projects remove. The quota
+            # columns moved to users; read them only while they still exist.
+            legacy_key_columns = await existing_columns(conn, "api_keys")
+            user_columns = await existing_columns(conn, "users")
+            account_quota_ready = "daily_cost_quota_usd" in user_columns
+            if "quota_daily_cost_usd" in legacy_key_columns and account_quota_ready:
+                await conn.execute(
+                    "UPDATE users u SET daily_cost_quota_usd = k.quota_daily_cost_usd "
+                    "FROM api_keys k "
+                    "WHERE k.user_id = u.id AND k.status = 'active' "
+                    "  AND k.quota_daily_cost_usd IS NOT NULL "
+                    "  AND u.daily_cost_quota_usd IS NULL"
+                )
+            if "quota_monthly_cost_usd" in legacy_key_columns and account_quota_ready:
+                await conn.execute(
+                    "UPDATE users u SET monthly_cost_quota_usd = k.quota_monthly_cost_usd "
+                    "FROM api_keys k "
+                    "WHERE k.user_id = u.id AND k.status = 'active' "
+                    "  AND k.quota_monthly_cost_usd IS NOT NULL "
+                    "  AND u.monthly_cost_quota_usd IS NULL"
+                )
+
+            async with bounded_ddl(conn):
+                await execute_ddl(conn, "DROP INDEX IF EXISTS idx_api_keys_user_unique")
+                await execute_ddl(conn, "DROP INDEX IF EXISTS idx_api_keys_account_active_unique")
+
+            await drop_columns_if_present(
+                conn,
+                "api_keys",
+                [
+                    (
+                        "quota_daily_cost_usd",
+                        "ALTER TABLE api_keys DROP COLUMN IF EXISTS quota_daily_cost_usd",
+                    ),
+                    (
+                        "quota_monthly_cost_usd",
+                        "ALTER TABLE api_keys DROP COLUMN IF EXISTS quota_monthly_cost_usd",
+                    ),
+                ],
+            )
+
+            with contextlib.suppress(SchemaLockUnavailable):
+                await _ensure_api_keys_project_fk(conn)
 
             await drop_columns_if_present(
                 conn, "api_keys", [("tier", "ALTER TABLE api_keys DROP COLUMN IF EXISTS tier")]
@@ -240,7 +329,9 @@ class DatabaseLogger:
                     reviewed_at TIMESTAMPTZ,
                     reviewed_by TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW(),
-                    last_login_at TIMESTAMPTZ
+                    last_login_at TIMESTAMPTZ,
+                    daily_cost_quota_usd DECIMAL(10, 4),
+                    monthly_cost_quota_usd DECIMAL(10, 4)
                 )
             """)
 
@@ -286,6 +377,16 @@ class DatabaseLogger:
                         "login_name",
                         "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT",
                     ),
+                    (
+                        "daily_cost_quota_usd",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "daily_cost_quota_usd DECIMAL(10, 4)",
+                    ),
+                    (
+                        "monthly_cost_quota_usd",
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "monthly_cost_quota_usd DECIMAL(10, 4)",
+                    ),
                 ],
             )
 
@@ -300,6 +401,18 @@ class DatabaseLogger:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name
                 ON users (lower(login_name)) WHERE login_name IS NOT NULL
             """)
+
+            with contextlib.suppress(SchemaLockUnavailable):
+                await _ensure_projects_account_fk(conn)
+
+            projects_fk = await constraint_definition(conn, "projects", "projects_account_id_fkey")
+            if projects_fk is None:
+                async with bounded_ddl(conn):
+                    await execute_ddl(
+                        conn,
+                        "ALTER TABLE projects ADD CONSTRAINT projects_account_id_fkey "
+                        "FOREIGN KEY (account_id) REFERENCES users(id) ON DELETE CASCADE",
+                    )
 
             # Expand status CHECK constraint to include pending_approval and rejected.
             # Rebuild inside a transaction so a failed ADD does not leave the table

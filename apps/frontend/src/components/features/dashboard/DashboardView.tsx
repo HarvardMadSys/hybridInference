@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
+import { ProjectsManager } from '@/components/features/dashboard/ProjectsManager';
 import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
 import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
@@ -141,6 +142,8 @@ export function DashboardView() {
           </div>
         </div>
       </div>
+
+      <ProjectsManager />
 
       <ApiKeyManager />
 

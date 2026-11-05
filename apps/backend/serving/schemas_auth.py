@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
@@ -355,11 +356,18 @@ class LLMProberLayoutResponse(BaseModel):
 
 
 # API key schemas
+class APIKeyCreateRequest(BaseModel):
+    """Optional body for creating a key inside a project."""
+
+    project_id: str | None = None
+
+
 class APIKeyResponse(BaseModel):
     """API key creation response."""
 
     api_key: str
     key_prefix: str
+    project_id: str | None = None
     warning: str = "Save this API key now. It will not be shown again."
     created_at: datetime
 
@@ -374,6 +382,7 @@ class APIKeyInfo(BaseModel):
     created_at: datetime | None = None
     last_used_at: datetime | None = None
     status: str | None = None
+    project_id: str | None = None
 
 
 class APIKeyListItem(BaseModel):
@@ -385,6 +394,7 @@ class APIKeyListItem(BaseModel):
     created_at: datetime
     last_used_at: datetime | None = None
     status: str
+    project_id: str | None = None
 
 
 class APIKeyListResponse(BaseModel):
@@ -562,3 +572,36 @@ class RecentRequestsResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# Project schemas
+class ProjectCreateRequest(BaseModel):
+    """Create a project under the current account."""
+
+    name: str = Field(..., min_length=1, max_length=80)
+    daily_cost_quota_usd: Decimal | None = Field(None, ge=0)
+    monthly_cost_quota_usd: Decimal | None = Field(None, ge=0)
+    allowed_models: list[str] = Field(default_factory=list)
+
+
+class ProjectUpdateRequest(BaseModel):
+    """Patch a project; omitted fields are unchanged."""
+
+    name: str | None = Field(None, min_length=1, max_length=80)
+    daily_cost_quota_usd: Decimal | None = Field(None, ge=0)
+    monthly_cost_quota_usd: Decimal | None = Field(None, ge=0)
+    allowed_models: list[str] | None = None
+
+
+class ProjectResponse(BaseModel):
+    """A project with its spend for the current day and month."""
+
+    id: str
+    name: str
+    daily_cost_quota_usd: Decimal | None
+    monthly_cost_quota_usd: Decimal | None
+    allowed_models: list[str]
+    spent_today_usd: Decimal
+    spent_month_usd: Decimal
+    key_count: int
+    created_at: datetime

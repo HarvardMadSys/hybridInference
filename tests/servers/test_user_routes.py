@@ -86,15 +86,14 @@ class TestAPIKeyManagement:
         assert data["api_key"] not in json.dumps(details)
 
     @pytest.mark.asyncio
-    async def test_create_duplicate_api_key(
+    async def test_an_account_can_hold_several_active_keys(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
     ):
-        """Test creating duplicate API key fails."""
+        """Projects group keys, so a second active key is allowed."""
         response = await auth_app_client.post("/user/api-keys", headers=auth_headers)
 
-        assert response.status_code == 409
-        data = response.json()
-        assert "already" in data["detail"].lower()  # More flexible matching
+        assert response.status_code == 201
+        assert response.json()["api_key"].startswith("hyi-")
 
     @pytest.mark.asyncio
     async def test_get_api_key_info_success(
@@ -715,38 +714,21 @@ class TestConcurrentAPIKeyCreation:
     """Test concurrent API key creation (database constraint)."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_key_creation_prevented(
+    async def test_concurrent_key_creation_creates_two_keys(
         self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend
     ):
-        """Test that concurrent key creation is prevented by database constraint.
-
-        Note: This test assumes the unique constraint is in place.
-        """
+        """Multiple active keys per account are supported by design."""
         import asyncio
 
-        operational_store, _, _, _ = auth_backend
-
-        # Try to create two keys concurrently
         tasks = [
             auth_app_client.post("/user/api-keys", headers=auth_headers),
             auth_app_client.post("/user/api-keys", headers=auth_headers),
         ]
 
         responses = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # One should succeed, one should fail
         status_codes = [r.status_code for r in responses if hasattr(r, "status_code")]
 
-        # At least one should succeed
-        assert 201 in status_codes
-
-        # At least one should fail with 409 (or both if timing is perfect)
-        success_count = status_codes.count(201)
-        assert success_count == 1, "Only one concurrent key creation should succeed"
-
-        # Verify one active key exists
-        has_active = await operational_store.check_active_key_exists(test_user["id"])
-        assert has_active, "Only one active key should exist"
+        assert status_codes == [201, 201]
 
 
 class TestAuthenticationEdgeCases:

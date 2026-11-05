@@ -111,15 +111,18 @@ async def test_apply_role_quota_updates_only_matching_role(
     updated = await postgres_op_store.apply_role_quota("pro", Decimal("250.00"))
     assert updated == 1
 
-    pro_key = await postgres_op_store.get_active_key_by_account("u-pro-1")
-    free_key = await postgres_op_store.get_active_key_by_account("u-free-1")
-    assert pro_key is not None
-    assert free_key is not None
-    assert pro_key["quota_daily_cost_usd"] == Decimal("250.00")
-    assert free_key["quota_daily_cost_usd"] == Decimal("100.00")
+    async with postgres_op_store._pool.acquire() as conn:
+        pro_quota = await conn.fetchval(
+            "SELECT daily_cost_quota_usd FROM users WHERE id = 'u-pro-1'"
+        )
+        free_quota = await conn.fetchval(
+            "SELECT daily_cost_quota_usd FROM users WHERE id = 'u-free-1'"
+        )
+    assert pro_quota == Decimal("250.00")
+    assert free_quota == Decimal("100.00")
 
 
-async def test_apply_role_quota_skips_revoked_keys(
+async def test_apply_role_quota_does_not_depend_on_key_status(
     postgres_op_store: PostgresOperationalStore,
 ):
     await _seed_user_with_key(
@@ -130,7 +133,7 @@ async def test_apply_role_quota_skips_revoked_keys(
         status="revoked",
     )
     updated = await postgres_op_store.apply_role_quota("pro", Decimal("250.00"))
-    assert updated == 0
+    assert updated == 1
 
 
 async def test_create_key_persists_encrypted_column(

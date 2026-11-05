@@ -23,6 +23,7 @@ def mock_stores():
     op_store.list_keys = AsyncMock(return_value=(0, []))
     op_store.get_key_detail = AsyncMock()
     op_store.update_key = AsyncMock()
+    op_store.update_user_fields = AsyncMock()
     op_store.revoke_key = AsyncMock()
     op_store.log_admin_action = AsyncMock()
     op_store.get_batch_usage = AsyncMock(return_value={})
@@ -205,6 +206,7 @@ async def test_update_api_key_success(admin_client):
     assert response.status_code == 200
     body = response.json()
     assert body["updated_fields"] == ["quota_daily_cost_usd"]
+    op_store.update_user_fields.assert_awaited_once_with("alice", quota_daily_cost_usd=200)
     log_action.assert_awaited()
 
 

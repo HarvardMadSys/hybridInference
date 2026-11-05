@@ -142,6 +142,9 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "user_id",
         "user_name",
         "user_role",
+        # The key's project, published by the auth dependency and read by
+        # billing to charge the project ledger alongside the account one.
+        "project_id",
         "auth_key_hash",
         "affinity_key",
         "client_error_kind",

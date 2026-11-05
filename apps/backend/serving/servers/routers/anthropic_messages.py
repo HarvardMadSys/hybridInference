@@ -970,9 +970,11 @@ def _schedule_messages_cost_increment(
     if not cost or cost <= 0:
         return
 
+    project_id = (req_ctx.get() or {}).get(req_ctx.PROJECT_ID, "")
+
     async def _increment() -> None:
         try:
-            await op_store.increment_user_cost(user_id, cost)
+            await op_store.increment_user_cost(user_id, cost, project_id=project_id)
         except Exception as exc:
             logger.warning(f"Failed to increment messages cost counter for {user_id}: {exc}")
             raise  # let tracked_task record the failure

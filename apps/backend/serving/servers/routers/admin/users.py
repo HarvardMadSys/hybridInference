@@ -707,6 +707,13 @@ async def get_user_detail(
             models_used = detail.get("models_used", [])
             last_request_at = detail.get("last_request_at")
 
+    quota_daily = user_row.get("daily_cost_quota_usd")
+    if quota_daily is None and key_row:
+        quota_daily = key_row.get("quota_daily_cost_usd")
+    quota_monthly = user_row.get("monthly_cost_quota_usd")
+    if quota_monthly is None and key_row:
+        quota_monthly = key_row.get("quota_monthly_cost_usd")
+
     return UserDetailResponse(
         id=user_row["id"],
         email=user_row["email"],
@@ -721,12 +728,8 @@ async def get_user_detail(
         last_login_at=user_row.get("last_login_at"),
         has_key=has_key,
         key_prefix=key_row["key_prefix"] if key_row else None,
-        quota_daily_usd=float(key_row["quota_daily_cost_usd"])
-        if key_row and key_row.get("quota_daily_cost_usd")
-        else None,
-        quota_monthly_usd=float(key_row["quota_monthly_cost_usd"])
-        if key_row and key_row.get("quota_monthly_cost_usd")
-        else None,
+        quota_daily_usd=quota_daily,
+        quota_monthly_usd=quota_monthly,
         usage_today_usd=usage_today_usd,
         usage_today_requests=usage_today_req,
         usage_month_usd=usage_month_usd,
@@ -807,6 +810,13 @@ async def update_user(
     if "max_concurrent_requests" in payload_dict:
         user_table_updates["max_concurrent_requests"] = payload_dict["max_concurrent_requests"]
         updated.append("max_concurrent_requests")
+    for api_field, column in (
+        ("quota_daily_cost_usd", "daily_cost_quota_usd"),
+        ("quota_monthly_cost_usd", "monthly_cost_quota_usd"),
+    ):
+        if api_field in payload_dict:
+            user_table_updates[column] = payload_dict[api_field]
+            updated.append(api_field)
     if "admin_note" in payload_dict:
         note = payload_dict["admin_note"]
         # Normalize blank/whitespace-only notes to NULL so "clear the note"
@@ -836,20 +846,6 @@ async def update_user(
         await op_store.suspend_user(user_id, **fields)
     elif user_table_updates:
         await op_store.update_user_fields(user_id, **user_table_updates)
-
-    # Update key-level fields
-    key_fields = {
-        k: v
-        for k, v in payload_dict.items()
-        if k in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
-    }
-    if key_fields:
-        has_key = await op_store.get_active_key_by_account(user_id)
-        if not has_key:
-            raise HTTPException(409, "User has no active API key to update")
-
-        await op_store.update_key(user_id, **key_fields)
-        updated.extend(key_fields)
 
     if "disabled_models" in payload_dict:
         known_model_ids = {

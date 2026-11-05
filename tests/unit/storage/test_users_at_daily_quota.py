@@ -95,17 +95,17 @@ class TestQueryShape:
         await store.query_users_at_daily_quota()
 
         sql = _normalized_sql(pg_conn)
-        assert "udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)" in sql
+        assert "udc.cost_usd + $3::float8 > COALESCE(u.daily_cost_quota_usd, $2::float8)" in sql
+        assert "udc.project_id = ''" in sql
 
     async def test_join_matches_canonical_quota_context_join(self, store, pg_conn):
-        """Same join get_quota_context_for_user uses to resolve a user's cap."""
+        """The cap comes from the account, not from one of its keys."""
         await store.query_users_at_daily_quota()
 
         sql = _normalized_sql(pg_conn)
-        assert "k.user_id = u.id" in sql
-        assert "k.status = 'active'" in sql
-        assert "(k.expires_at IS NULL OR k.expires_at > NOW())" in sql
+        assert "FROM user_daily_cost udc JOIN users u" in sql
         assert "u.status = 'active'" in sql
+        assert "api_keys" not in sql
 
     async def test_day_key_matches_the_counter_tables_text_day(self, store, pg_conn):
         """``user_daily_cost.day`` is TEXT in UTC; compare it as stored."""
@@ -119,7 +119,7 @@ class TestQueryShape:
         await store.query_users_at_daily_quota()
 
         sql = _normalized_sql(pg_conn)
-        assert "ORDER BY (udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)) DESC" in sql
+        assert "ORDER BY (udc.cost_usd - COALESCE(u.daily_cost_quota_usd, $2::float8)) DESC" in sql
 
 
 class TestResults:
