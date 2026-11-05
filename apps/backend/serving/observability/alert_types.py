@@ -120,6 +120,14 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="upstream_auth:<endpoint>",
     ),
     AlertType(
+        id="batch_model_queued",
+        label="Batch model waiting for capacity",
+        description="A model has answered batch requests 'waiting for a GPU' for longer "
+        "than BATCH_QUEUED_ALERT_HOURS.",
+        group="Providers",
+        key_pattern="batch_model_queued:<model>",
+    ),
+    AlertType(
         id="auth_failure_spike",
         label="Auth failure spike",
         description=(

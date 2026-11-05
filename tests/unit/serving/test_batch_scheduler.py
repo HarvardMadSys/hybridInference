@@ -1088,3 +1088,72 @@ async def test_a_model_queued_answer_fails_once_the_window_would_close(worker, d
     assert store.items[1]["error"]["code"] == "model_queued"
     assert store.calls["release_item"] == 0
     assert store.calls["retry_item"] == 0
+
+
+@pytest.fixture
+def queued_alerts(monkeypatch):
+    sent: list[dict[str, Any]] = []
+
+    async def fake_alert(**kwargs):
+        sent.append({**kwargs, "context": kwargs["context"]()})
+        return True
+
+    monkeypatch.setattr(scheduler_module, "alert_on_transition", fake_alert)
+    return sent
+
+
+async def test_a_long_wait_for_capacity_alerts_once_and_resolves(worker, queued_alerts):
+    # Waiting for a GPU job is normal: no alert per answer, one only once the
+    # wait outlasts the setting, and its resolution when the model serves.
+    now = [0.0]
+    scheduler = worker(FakeStore())
+    scheduler._clock = lambda: now[0]
+
+    for _ in range(int(6 * 3600 / 120)):
+        scheduler._note_queued("m1", alert_hours=6)
+        now[0] += 120
+    await asyncio.sleep(0)
+    assert queued_alerts == []
+
+    scheduler._note_queued("m1", alert_hours=6)
+    scheduler._note_queued("m1", alert_hours=6)
+    await asyncio.sleep(0)
+    assert [a["breached"] for a in queued_alerts] == [True]
+    assert queued_alerts[0]["key"] == "batch_model_queued:m1"
+    assert queued_alerts[0]["context"]["waiting_hours"] == 6.0
+
+    scheduler._model_succeeded("m1")
+    scheduler._model_succeeded("m1")
+    await asyncio.sleep(0)
+    assert [a["breached"] for a in queued_alerts] == [True, False]
+
+
+async def test_a_gap_in_queued_answers_starts_a_new_wait(worker, queued_alerts):
+    now = [0.0]
+    scheduler = worker(FakeStore())
+    scheduler._clock = lambda: now[0]
+
+    scheduler._note_queued("m1", alert_hours=6)
+    now[0] += 5 * 3600  # no batch work for the model in between
+    scheduler._note_queued("m1", alert_hours=6)
+    now[0] += 3 * 3600
+    scheduler._note_queued("m1", alert_hours=6)  # 8h since the first, 3h of this wait
+    scheduler._note_queued("m1", alert_hours=0)  # 0: never
+    await asyncio.sleep(0)
+
+    assert queued_alerts == []
+
+
+async def test_a_queued_answer_counts_toward_the_wait(worker, dispatch, settings, queued_alerts):
+    settings["BATCH_QUEUED_ALERT_HOURS"] = "12"
+    dispatch.results["m1"] = _queued(60)
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    noted: list[tuple[str, int]] = []
+    scheduler._note_queued = lambda model, hours: noted.append((model, hours))
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 1)
+
+    assert noted == [("m1", 12)]

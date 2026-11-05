@@ -1110,6 +1110,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=0,
     ),
     ConfigEntry(
+        "BATCH_QUEUED_ALERT_HOURS",
+        "batch",
+        "Hours a model may answer batch requests with 'waiting for capacity' (an "
+        "on-demand model whose GPU job is queued) before one alert says so; it resolves "
+        "when the model next serves a batch request. Shorter waits alert nothing. 0 "
+        "never alerts.",
+        type="int",
+        default="6",
+        minimum=0,
+    ),
+    ConfigEntry(
         "BATCH_MAX_LINE_KB",
         "batch",
         "Largest line of an uploaded batch input file, in KiB.",

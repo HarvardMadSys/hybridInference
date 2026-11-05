@@ -259,6 +259,16 @@ msgstr ""
 "不再接收新的批次请求，请求就这样一直等待，直到模型就绪或批次的完成窗口结束。交互式调用方收到的同样是 `503` "
 "和部署给出的说明，熔断器和失败请求告警都不会把它计入。"
 
+#: ../developer/batches.md:91
+msgid ""
+"Only a wait longer than `BATCH_QUEUED_ALERT_HOURS` (six hours by "
+"default; `0` turns it off) is reported: one \"Batch model waiting for "
+"capacity\" alert for the model, resolved when the model next serves a "
+"batch request."
+msgstr ""
+"只有超过 `BATCH_QUEUED_ALERT_HOURS`（默认六小时；设为 `0` 则关闭）的等待才会上报：该模型发出一条“Batch model "
+"waiting for capacity”告警，并在模型下一次成功处理批次请求时解除。"
+
 #: ../developer/batches.md:79
 msgid ""
 "Before each request runs, the gateway checks the API key that created the"
