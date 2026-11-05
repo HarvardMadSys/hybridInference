@@ -52,6 +52,11 @@ DECISION_REASONS = frozenset(
         "channel_config_invalid",
         "policy_disabled",
         "rate_limited",
+        # The notification policy (``serving.observability.alert_policy``).
+        "record_only",
+        "digest_only",
+        "already_notified",
+        "below_min_duration",
         "resolution_silenced",
         "source_suppressed",
         "superseded_by_new_episode",
