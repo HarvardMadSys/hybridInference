@@ -1043,9 +1043,10 @@ class EndpointHealthRegistry:
         fine, readiness still passes) strictly separate from model-serving
         progress (this response did inference work).
 
-        A valid :class:`CompletionOutcome` is mandatory. A caller that cannot
-        classify a response must call :meth:`record_liveness` instead; silence is
-        never positive evidence.
+        A valid :class:`CompletionOutcome` is mandatory (see the module-level
+        note on pre-outcome call sites): a caller that cannot classify a
+        response must call :meth:`record_liveness` instead; silence is never
+        positive evidence.
         """
         if not isinstance(outcome, CompletionOutcome) or not outcome.admits_real_work:
             return

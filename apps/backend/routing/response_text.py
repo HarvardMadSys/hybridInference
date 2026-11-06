@@ -37,10 +37,27 @@ def response_usage(response: Any) -> dict[str, Any] | None:
     return usage if isinstance(usage, dict) else None
 
 
+# Repeated scans of the same prefix (one per streamed chunk) re-parse the
+# same SSE frames; cache the extraction so a long whitespace tail does not
+# re-run json.loads O(n^2) times. Bounded so it cannot grow without limit.
+_CHUNK_TEXT_CACHE: dict[Any, str | None] = {}
+_CHUNK_TEXT_CACHE_MAX = 4096
+
+
 def chunk_text(chunk: Any) -> str | None:
     """Extract generated text from a stream chunk for outcome classification."""
     if not isinstance(chunk, str | bytes):
         return None
+    if chunk in _CHUNK_TEXT_CACHE:
+        return _CHUNK_TEXT_CACHE[chunk]
+    extracted = _extract_chunk_text(chunk)
+    if len(_CHUNK_TEXT_CACHE) >= _CHUNK_TEXT_CACHE_MAX:
+        _CHUNK_TEXT_CACHE.clear()
+    _CHUNK_TEXT_CACHE[chunk] = extracted
+    return extracted
+
+
+def _extract_chunk_text(chunk: str | bytes) -> str | None:
     text = chunk.decode("utf-8", errors="surrogatepass") if isinstance(chunk, bytes) else chunk
     prefix = "data: "
     if not text.startswith(prefix):
@@ -66,6 +83,39 @@ def chunk_text(chunk: Any) -> str | None:
     return None
 
 
+class StreamPrefixAccumulator:
+    """Bounded running prefix for incremental stream classification.
+
+    ``observe`` appends one chunk's text and truncates at the cap; callers
+    classify from :meth:`prefix` instead of re-scanning every chunk seen so
+    far (which is O(n^2) JSON parsing over a long whitespace tail).
+    """
+
+    def __init__(self, max_chars: int = 512) -> None:
+        self.max_chars = max_chars
+        self._parts: list[str] = []
+        self._total = 0
+
+    @property
+    def saturated(self) -> bool:
+        return self._total >= self.max_chars
+
+    def observe(self, chunk: Any) -> None:
+        if self.saturated:
+            return
+        text = chunk_text(chunk)
+        if not text:
+            return
+        room = self.max_chars - self._total
+        self._parts.append(text[:room])
+        self._total += min(len(text), room)
+
+    def prefix(self) -> str | None:
+        if not self._parts:
+            return None
+        return "".join(self._parts)
+
+
 def accumulate_stream_prefix(chunks: list[Any], max_chars: int = 512) -> str | None:
     """Accumulate generated text from the first content-bearing stream chunks.
 
@@ -80,8 +130,9 @@ def accumulate_stream_prefix(chunks: list[Any], max_chars: int = 512) -> str | N
     for chunk in chunks:
         text = chunk_text(chunk)
         if text:
-            parts.append(text)
-            total += len(text)
+            room = max_chars - total
+            parts.append(text[:room])
+            total += min(len(text), room)
             if total >= max_chars:
                 break
     if not parts:

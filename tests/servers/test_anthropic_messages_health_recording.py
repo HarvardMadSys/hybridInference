@@ -943,3 +943,40 @@ async def test_a_running_stream_holds_the_probe_until_it_ends(
     assert held_at_first_frame == [True]
     # The stream's own finally returned it (and its success closed the circuit).
     assert registry.begin_dispatch(endpoint_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_streaming_warmup_delta_does_not_close_circuit(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
+):
+    """A warmup notice is content, but not progress: it must not close a breaker.
+
+    The accumulated prefix is classified incrementally; a prefix that can still
+    be a bounded warmup notice defers. Even once complete, terminal
+    classification is TRANSIENT, so no success is recorded.
+    """
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "0")
+    registry = anthropic_compat_router.endpoint_health_registry
+    endpoint_id = _endpoint_id(anthropic_compat_router)
+    for _ in range(5):
+        registry.record_failure(endpoint_id, reason="seeded")
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
+
+    warmup_delta = (
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The model is starting up. Please wait..."}}\n\n'
+    )
+
+    async def _iter():
+        yield _MESSAGE_START + warmup_delta + _MESSAGE_STOP
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    async with anthropic_test_client.stream("POST", "/v1/messages", json=_body(stream=True), headers=_auth()) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert registry.snapshot()[endpoint_id]["circuit_state"] != _CircuitState.CLOSED

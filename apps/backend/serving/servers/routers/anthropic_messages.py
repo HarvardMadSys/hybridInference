@@ -30,8 +30,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from routing.completion_outcome import (
-    CompletionOutcome,
     classify_completion_outcome,
+    classify_stream_prefix,
 )
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
@@ -2327,19 +2327,27 @@ async def execute_messages(
                             # thinking-first stream is not classified EMPTY from
                             # its first delta.
                             saw_content_delta = True
-                            # The first useful output proves recovery while the
-                            # response is still streaming. Waiting for terminal
-                            # classification held a half-open probe (and allowed
-                            # no other dispatch) for a whole Claude Code turn.
-                            health_registry.record_success(
-                                dispatch_endpoint_id,
-                                outcome=CompletionOutcome.PROGRESS,
+                            # The first useful output proves recovery only once
+                            # the accumulated prefix proves real progress. A
+                            # warmup notice is also a content delta; recording
+                            # success here would close a breaker the warmup
+                            # failures had opened. Defer until the prefix
+                            # diverges from every warmup notice (or terminates
+                            # as one, in which case terminal classification in
+                            # the finally block records nothing).
+                            outcome = classify_stream_prefix(
+                                _accumulated_output_text(response_acc),
                             )
-                            health_success_recorded = True
-                            # Prefill is done once content flows; the prompt
-                            # is resident, so the endpoint is decoding and
-                            # its prefix is safe to remember.
-                            prefill_load.release(prefill_lease, prefill_confirmed=True)
+                            if outcome is not None and outcome.admits_real_work:
+                                health_registry.record_success(
+                                    dispatch_endpoint_id,
+                                    outcome=outcome,
+                                )
+                                health_success_recorded = True
+                                # Prefill is done once content flows; the prompt
+                                # is resident, so the endpoint is decoding and
+                                # its prefix is safe to remember.
+                                prefill_load.release(prefill_lease, prefill_confirmed=True)
                     return well_formed
 
                 reader_task = asyncio.create_task(_reader())

@@ -110,12 +110,10 @@ _TRANSIENT_SUFFIX_PREFIXES: tuple[str, ...] = (
     "now",
 )
 
-_NOTICE_SUFFIX = (
-    # Bound the zero-width fallback to exactly one iteration. Repeating an
-    # optional group allowed exponentially many punctuation decompositions and
-    # caused catastrophic backtracking on caller-influenced output.
-    r"[\s.!\u2026,;:-]*"
-    r"(?:"
+# Possessive punctuation + atomic alternatives: overlapping words ("try again" /
+# "please try again" / "shortly") are tried once, so a failing tail is linear.
+_NOTICE_PUNCT = r"[\s.!\u2026,;:-]*+"
+_NOTICE_ALTERNATIVES = (
     r"(?:"
     r"this (?:takes|will take) about \d{1,4} (?:seconds?|minutes?)"
     r"|please wait(?: while (?:the )?model (?:loads|starts|initializes))?"
@@ -126,9 +124,9 @@ _NOTICE_SUFFIX = (
     r"|shortly"
     r"|yet"
     r"|now"
-    r")[\s.!\u2026,;:-]*"
-    r")*$"
+    r")"
 )
+_NOTICE_SUFFIX = _NOTICE_PUNCT + r"(?:(?>" + _NOTICE_ALTERNATIVES + r")" + _NOTICE_PUNCT + r")*+$"
 _TRANSIENT_MARKERS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(r"^" + re.escape(marker) + _NOTICE_SUFFIX, re.IGNORECASE)
     for marker in _DEFAULT_TRANSIENT_MARKERS
@@ -174,11 +172,12 @@ def could_still_be_transient_prefix(content: str | None) -> bool:
     Streaming callers must defer a success decision while this is true. The
     final response classifier remains authoritative once the stream terminates.
     """
-    normalized = (content or "").strip().lower()
+    raw = content or ""
+    if len(raw) > _TRANSIENT_TEXT_MAX_CHARS:
+        return False
+    normalized = raw.strip().lower()
     if not normalized:
         return True
-    if len(normalized) > _TRANSIENT_TEXT_MAX_CHARS:
-        return False
 
     for marker in _DEFAULT_TRANSIENT_MARKERS:
         if marker.startswith(normalized):

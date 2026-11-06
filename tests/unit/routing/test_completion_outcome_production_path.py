@@ -17,6 +17,7 @@ import pytest
 
 from routing.completion_outcome import (
     CompletionOutcome,
+    classify_completion_outcome,
     classify_stream_prefix,
     could_still_be_transient_prefix,
 )
@@ -299,3 +300,52 @@ class TestStreamingOutcomePrefixes:
             response_text({"choices": [{"message": {"function_call": function_call}}]})
             == "[tool_call]"
         )
+
+
+def test_record_success_requires_explicit_outcome():
+    """Unclassified success is rejected; #1712 call sites pass explicit outcomes.
+
+    The pre-outcome signature (dev #1712) is updated at the production call
+    sites rather than defaulted: a default PROGRESS would silently turn a
+    warmup notice into evidence of progress.
+    """
+    from routing.endpoint_health import EndpointHealthRegistry
+
+    registry = EndpointHealthRegistry()
+    try:
+        registry.record_success("endpoint")  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("record_success without outcome must raise TypeError")
+
+
+def test_alternating_notice_alternatives_do_not_backtrack():
+    """Repeated overlapping notice words with a failing tail stay linear (#1501 ancestry)."""
+    import time
+
+    adversarial = "The model is starting up" + (" try again shortly" * 20) + " x"
+    start = time.perf_counter()
+    outcome = classify_completion_outcome(content=adversarial, usage=None, http_status=200, terminal=True)
+    elapsed = time.perf_counter() - start
+    assert outcome is CompletionOutcome.PROGRESS
+    assert elapsed < 0.1, f"classification took {elapsed:.3f}s"
+
+
+def test_whitespace_stream_prefix_stays_bounded():
+    """2000 whitespace chunks must classify quickly without recording success."""
+    import time
+
+    from routing.completion_outcome import classify_stream_prefix
+    from routing.response_text import accumulate_stream_prefix
+
+    import json as _json
+    ws = _json.dumps({"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m", "choices": [{"index": 0, "delta": {"content": " "}, "finish_reason": None}]})
+    whitespace_chunk = "data: " + ws + "\n\n"
+    chunks = [whitespace_chunk for _ in range(2000)]
+    start = time.perf_counter()
+    for i in range(1, 2001):
+        out = classify_stream_prefix(accumulate_stream_prefix(chunks[:i]))
+        assert out is None or out is CompletionOutcome.EMPTY
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, f"whitespace classification took {elapsed:.3f}s"
