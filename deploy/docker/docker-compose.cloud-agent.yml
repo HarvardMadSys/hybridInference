@@ -12,8 +12,7 @@
 # `${AGENT_NETWORK_NAME:-cloud-agent}`), so it is `external: true` here — and
 # an external network that does not exist is a hard failure for *every*
 # compose command, not a degraded feature. A deployment that runs no cloud
-# agent must never see this file. Same shape as the `AGENT_RUNNER=1` overlay
-# above it in the Makefile, for the same reason.
+# agent must never see this file.
 #
 # Both sides must agree on the name. That is one variable, defaulted the same
 # way in both repositories, and if they disagree the symptom is this same 500.
