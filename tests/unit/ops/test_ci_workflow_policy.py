@@ -1,5 +1,6 @@
 """Regression tests for CI filtering and CD trigger safety."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -511,7 +512,8 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert "make demo-reset DISTRIBUTION=example || true" not in reset
     assert "tutorial cleanup left ${leaked} behind" in reset
     assert '"${COMPOSE_PROJECT_NAME}_example_postgres_data"' in reset
-    assert '"${COMPOSE_PROJECT_NAME}_hybridinference"' in reset
+    assert "for network in hybridinference pgadmin; do" in reset
+    assert '"${COMPOSE_PROJECT_NAME}_${network}"' in reset
     assert 'rm -f "${EXAMPLE_RESET_STATE_FILE}"' in reset
     assert "test ! -e var" in reset
     assert "git diff --exit-code" in reset
@@ -534,3 +536,46 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     )
     assert '"tutorial_e2e":' in gate_env["CLASSIFICATION_JSON"]
     assert '"tutorial-e2e":' in gate_env["JOB_RESULTS_JSON"]
+
+
+def _workflow_files() -> list[Path]:
+    return sorted(WORKFLOWS.glob("*.yml"))
+
+
+@pytest.mark.parametrize("path", _workflow_files(), ids=lambda path: path.name)
+def test_every_workflow_states_its_token_permissions(path: Path) -> None:
+    """A workflow without a ``permissions`` block gets the repository default.
+
+    That default can be read-write on every scope, and these jobs run on
+    self-hosted runners a push reaches.
+    """
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    assert "permissions" in workflow, path.name
+
+
+def test_ci_is_read_only_unless_a_job_asks_for_more() -> None:
+    workflow = _workflow("ci.yml")
+
+    assert workflow["permissions"] == {"contents": "read"}
+    for name, job in workflow["jobs"].items():
+        scripts = "\n".join(str(step.get("run", "")) for step in job.get("steps") or [])
+        logs_in = any(
+            "login-action" in str(step.get("uses", "")) for step in job.get("steps") or []
+        )
+        if "/packages/" in scripts or "ghcr.io" in scripts or logs_in:
+            # The Packages API and the registry need the package scope; the
+            # token has none of it by default any more.
+            assert (job.get("permissions") or {}).get("packages") in ("read", "write"), name
+
+
+@pytest.mark.parametrize("path", _workflow_files(), ids=lambda path: path.name)
+def test_every_action_is_pinned_to_a_commit(path: Path) -> None:
+    """A tag can be moved to other code; a commit cannot.
+
+    Each pin names the release it was taken from, so an update reads as one.
+    """
+    pinned = re.compile(r"^\s*(?:-\s+)?uses:\s*[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(?:\.\d+)*\s*$")
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if re.match(r"^\s*(?:-\s+)?uses:", line) and "uses: ./" not in line:
+            assert pinned.match(line), f"{path.name}:{number}: {line.strip()}"
