@@ -55,7 +55,7 @@ async def test_the_copy_goes_and_the_unique_index_still_serves_writes_and_lookup
         "idx_api_logs_request_id": (False, True),
     }
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, REVISION)
 
     assert await _indexes(scratch) == {"api_logs_request_id_key": (True, True)}
     assert await _revision(scratch) == REVISION
@@ -80,7 +80,7 @@ async def test_a_database_whose_request_id_is_not_unique_keeps_its_only_index(sc
     async with mig.connected(scratch) as conn:
         await conn.execute("ALTER TABLE api_logs DROP CONSTRAINT api_logs_request_id_key")
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, REVISION)
 
     assert await _indexes(scratch) == {"idx_api_logs_request_id": (False, True)}
     assert await _revision(scratch) == REVISION
@@ -102,7 +102,7 @@ async def test_writes_pass_while_it_waits_and_a_long_reader_stops_it_until_the_r
     writer = await postgres.connect(database=scratch)
     try:
         await reader.execute("SELECT count(*) FROM api_logs")
-        run = asyncio.ensure_future(mig.upgrade(scratch))
+        run = asyncio.ensure_future(mig.upgrade(scratch, REVISION))
         for _ in range(200):
             if await writer.fetchval(
                 "SELECT count(*) FROM pg_stat_activity "
@@ -136,7 +136,7 @@ async def test_writes_pass_while_it_waits_and_a_long_reader_stops_it_until_the_r
         "idx_api_logs_request_id": (False, False),
     }
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, REVISION)
 
     assert await _indexes(scratch) == {"api_logs_request_id_key": (True, True)}
     assert await _revision(scratch) == REVISION
@@ -144,7 +144,7 @@ async def test_writes_pass_while_it_waits_and_a_long_reader_stops_it_until_the_r
 
 async def test_its_statements_can_run_again(scratch):
     """The schema-local test tables apply them after the baseline; running twice is harmless."""
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, REVISION)
     revision = importlib.import_module(f"migrations.versions.{REVISION}")
     async with mig.connected(scratch) as conn:
         for statement in revision.STATEMENTS:
