@@ -1296,6 +1296,7 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
     )
     used_keys: list[str] = []
     paths: list[str] = []
+    reveals: list[tuple[object, object]] = []
 
     monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
 
@@ -1305,11 +1306,15 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
             return 200, {"access_token": "refreshed-jwt"}
         if path == "/auth/setup/status":
             return 200, {"setup_required": False}
+        if path == f"/user/api-keys/{state.key_prefix}/reveal":
+            # The listing masks the key; the account's password reveals it.
+            reveals.append((kwargs.get("bearer"), kwargs.get("payload")))
+            return 200, {"key_prefix": state.key_prefix, "api_key": state.api_key}
         return 200, {
             "keys": [
                 {
                     "status": "active",
-                    "api_key": state.api_key,
+                    "api_key": None,
                     "key_prefix": state.key_prefix,
                 }
             ]
@@ -1336,6 +1341,7 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
     )
 
     assert used_keys == [state.api_key]
+    assert reveals == [("original-jwt", {"password": "not-printed"})]
     # The recreated backend found the setup marker in the database.
     assert paths[0] == "/auth/setup/status"
 
