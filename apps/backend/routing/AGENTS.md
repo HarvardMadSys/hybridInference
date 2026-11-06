@@ -72,10 +72,17 @@ The following invariants should survive implementation changes:
 
 ### Dated design and implementation records
 
-No single accepted target architecture is established by this pilot. The
-following are dated records and retain their historical status; they are not
-evergreen replacements for this guide:
+The router, leaf and pool contracts follow the agreed composable-routing
+design that the root [AGENTS.md](../../../AGENTS.md) summarises in section 6.2.
+The following are dated records and retain their historical status; they are
+not evergreen replacements for this guide:
 
+- [Composable hybrid routing design](../../../docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
+  is the agreed contract for routers, leaves and pools, with its opt-in wiring
+  and deferred work.
+- [Hybrid routing abstraction design](../../../docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
+  and its [implementation plan](../../../docs/agents/plans/2026-09-13-hybrid-routing-implementation.zh.md)
+  precede that design.
 - [RouteWise current body router design](../../../docs/agents/specs/2026-05-17-routewise-current-body-router-design.md)
   is a draft proposal for the RouteWise body-router semantics.
 - [RouteWise session/cache-aware routing design](../../../docs/agents/specs/2026-06-01-routewise-session-cache-aware-routing-design.md)

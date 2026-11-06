@@ -229,13 +229,6 @@ async def get_batch_model_limits(
     return getattr(services, "batch_model_limits", None)
 
 
-async def get_batch_scheduler(
-    services: AppServices = Depends(get_services),
-) -> BatchScheduler | None:
-    """Dependency to obtain the in-process batch worker (if running)."""
-    return getattr(services, "batch_scheduler", None)
-
-
 async def get_user_concurrency_limiter(
     services: AppServices = Depends(get_services),
 ) -> UserConcurrencyLimiter | None:

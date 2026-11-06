@@ -289,7 +289,7 @@ async def _aggregate_geo_demand(
 
 
 def _load_env(env_path: str | None = None) -> None:
-    """Load the first available .env file, matching export_logs.py conventions."""
+    """Load the first available .env file."""
     candidates = [
         env_path,
         os.environ.get("ENV_FILE"),
@@ -314,7 +314,7 @@ def _dsn() -> str:
         f":{os.environ.get('DB_PASSWORD', '')}"
         f"@{os.environ.get('DB_HOST', 'localhost')}"
         f":{os.environ.get('DB_PORT', '5432')}"
-        f"/{os.environ.get('DB_NAME', 'freeinference_db')}"
+        f"/{os.environ.get('DB_NAME', 'hybridinference')}"
     )
 
 

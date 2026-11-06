@@ -23,8 +23,8 @@ everyone who clones the repository.
 The layout is in [docs/developer/contributing.md](docs/developer/contributing.md),
 under "Repository layout". Two things it does not tell you:
 
-- Deployment overlays under `distributions/` move out of this repository before
-  publication. `example/` is the one that remains.
+- Deployment overlays live in their own repositories; `distributions/example/`
+  is the only one here.
 - `distributions/example/` is marked `EXAMPLE_OVERLAY`, and that marker is what
   excludes it from automatic distribution discovery. Select it explicitly
   with `make up DISTRIBUTION=example` to run the local tutorial.
@@ -260,7 +260,10 @@ What remains here is the gateway's side of the two service contracts:
   browser bundle.
 
 The old `agent_*` tables stay in existing databases as read-only history
-(decision DR5); nothing here creates, reads or migrates them.
+(decision DR5); nothing here creates, reads or migrates them. `agent_grants` is
+the exception: it belongs to the inference-grant contract above, so the
+migrations create it and `serving/storage/postgres_operational.py` reads and
+writes it.
 
 ## 7. Common tasks
 

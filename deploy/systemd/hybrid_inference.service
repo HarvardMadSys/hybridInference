@@ -1,7 +1,7 @@
 [Unit]
 Description=HybridInference
 Wants=network-online.target
-After=network-online.target home.mount
+After=network-online.target
 
 [Service]
 User=hybridinference

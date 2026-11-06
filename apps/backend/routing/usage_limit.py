@@ -6,7 +6,7 @@ window is spent, for example::
 
     {"error": {"code": "1308", "message":
       "Usage limit reached for 5 hour. Your limit will reset at 2026-07-30 22:45:10"}}
-    {"error": "you (1a1a11a) have reached your weekly usage limit, upgrade ..."}
+    {"error": "you (example-user) have reached your weekly usage limit, upgrade ..."}
     {"error": {"code": "1313", "message":
       "Your account's current usage pattern does not comply with the Fair Usage
        Policy, and your request frequency has been limited. ..."}}

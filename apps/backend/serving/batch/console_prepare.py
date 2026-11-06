@@ -130,16 +130,6 @@ class SourceUnavailable(RuntimeError):
     """The source file is gone, deleted, expired, not the user's, or not the one previewed."""
 
 
-class ResolutionChanged(RuntimeError):
-    """The model the submission confirmed no longer resolves to the canonical id it showed."""
-
-    def __init__(self, requested: str | None, canonical: str | None) -> None:
-        """Record what the model resolves to now."""
-        super().__init__(f"{requested!r} now resolves to {canonical!r}")
-        self.requested = requested
-        self.canonical = canonical
-
-
 # -- limits on concurrent scans --------------------------------------------------------
 
 _active_users: set[str] = set()

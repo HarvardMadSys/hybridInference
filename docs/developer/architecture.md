@@ -512,8 +512,8 @@ always return the OpenAI/OpenRouter shape.
 
 The repository ships Dockerfiles and Compose files under `deploy/docker/`:
 `Dockerfile.backend` (the gateway), `Dockerfile.frontend` (the Next.js console
-in `apps/frontend/`), `Dockerfile.rocm` (an AMD GPU variant), and
-`docker-compose.yml`. Systemd units live in `deploy/systemd/`.
+in `apps/frontend/`), and `docker-compose.yml`. Systemd units live in
+`deploy/systemd/`.
 
 The console and the API share one origin: the Next.js rewrites in
 `apps/frontend/next.config.js` proxy `/v1`, `/anthropic`, `/auth`, `/user`,

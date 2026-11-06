@@ -28,12 +28,6 @@ var/
 tests/
 docs/
 
-# Binaries on host
-alertmanager-*.linux-amd64/
-
-# Rollback backup (created during migration)
-deploy/docker/.rollback-backup/
-
 # IDE
 .vscode/
 .idea/

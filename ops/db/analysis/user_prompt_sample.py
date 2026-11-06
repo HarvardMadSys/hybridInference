@@ -5,7 +5,7 @@ rows (optionally filtered to a single model substring). For each sampled request
 it surfaces the client/user-agent, the opening of the system prompt (which usually
 identifies the calling agent -- Kilo Code, opencode, Claude Code, etc.), and the
 user-turn text. This answers "what is this person building?" rather than just how
-much traffic they generate (see ``user_usage_pattern.py`` for the latter).
+much traffic they generate.
 
 Handles both OpenAI-shape (``messages``) and Anthropic-shape (``system`` + content
 blocks) requests, and both storage eras: the conversation turns are read from the
@@ -67,7 +67,7 @@ def _dsn() -> str:
     return (
         f"postgresql://{user}:{os.environ.get('DB_PASSWORD', '')}"
         f"@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}"
-        f"/{os.environ.get('DB_NAME', 'freeinference_db')}"
+        f"/{os.environ.get('DB_NAME', 'hybridinference')}"
     )
 
 

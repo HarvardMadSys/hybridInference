@@ -58,10 +58,8 @@ _LEGACY_DEFAULTS: dict[str, str] = {
     "models": "config/examples/models.openrouter.yaml",
     "routing": "config/examples/routing.minimal.yaml",
     "alerts": "config/alerts.yaml",
-    # Same reasoning as alerts: there is no example worth defaulting to, and
-    # the loader's answer to a missing file is "no MCP servers", which is the
-    # right neutral behaviour. config/examples/mcp.example.yaml exists to be
-    # copied, deliberately not to be loaded.
+    # Accepted for compatibility and read by nothing: the MCP loader left with
+    # the cloud agent (configuration.md, "Settings that currently have no effect").
     "mcp": "config/mcp.yaml",
 }
 
