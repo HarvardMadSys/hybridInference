@@ -70,7 +70,7 @@ from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
-from serving.utils.tokens import estimate_prompt_tokens
+from serving.utils.tokens import estimate_prompt_tokens, run_tokenization
 from serving.utils.workers import configured_worker_count
 
 from .candidates import (
@@ -393,6 +393,61 @@ def _refused_for_its_content(obs: RoutingObservation) -> bool:
 def _row_refused_for_its_content(status_code: Any) -> bool:
     """``_refused_for_its_content`` for a replayed ``api_logs`` row or attempt record."""
     return is_client_error_status(_int_status(status_code))
+
+
+# Where a request's prefix-cache blocks are kept in its routing context.
+_PREFIX_BLOCKS_KEY = "prefix_cache_blocks"
+
+
+@dataclass(frozen=True, slots=True)
+class _PrefixBlocksMemo:
+    """One request's prefix-cache blocks and the inputs they were built from.
+
+    ``blocks`` is None when building failed. That is kept as well: the same
+    inputs fail the same way, and each solve used to find out again.
+    """
+
+    coordinator: Any
+    messages: Any
+    tools: Any
+    response_format: Any
+    blocks: tuple[Any, ...] | None
+
+    @classmethod
+    def build(
+        cls,
+        coordinator: Any,
+        context: Mapping[str, Any],
+        params: Mapping[str, Any],
+    ) -> _PrefixBlocksMemo:
+        """Build the blocks for the request ``context`` and ``params`` describe."""
+        messages = context.get("messages")
+        tools = params.get("tools")
+        response_format = params.get("response_format")
+        try:
+            blocks = coordinator.build_blocks(
+                messages or [],
+                tools=tools,
+                response_format=response_format,
+            )
+        except Exception:
+            logger.debug("prefix_cache cost build_blocks failed", exc_info=True)
+            blocks = None
+        return cls(coordinator, messages, tools, response_format, blocks)
+
+    def matches(
+        self,
+        coordinator: Any,
+        context: Mapping[str, Any],
+        params: Mapping[str, Any],
+    ) -> bool:
+        """Return whether these blocks were built from exactly these inputs."""
+        return (
+            self.coordinator is coordinator
+            and self.messages is context.get("messages")
+            and self.tools is params.get("tools")
+            and self.response_format is params.get("response_format")
+        )
 
 
 class RouteWiseRouter:
@@ -1676,12 +1731,8 @@ class RouteWiseRouter:
             )
         return candidates, prefix_context
 
-    def _prefix_cache_cost_context(
-        self,
-        model_id: str,
-        context: dict[str, Any] | None,
-    ) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
-        """Return request prefix-cache inputs for cost adjustment, if eligible."""
+    def _prefix_cache_session(self, context: dict[str, Any] | None) -> str | None:
+        """Return the session a request's prefix-cache costing is scoped to, if it is eligible."""
         if not self.config.prefix_cache_cost_adjustment_enabled or context is None:
             return None
         # Synthetic probes intentionally skip observations, so creating a
@@ -1690,17 +1741,52 @@ class RouteWiseRouter:
             return None
         params = context.get("params")
         session = str(params.get("session_id") or "") if isinstance(params, dict) else ""
-        if not session:
+        return session or None
+
+    def _request_prefix_blocks(self, context: dict[str, Any]) -> tuple[Any, ...] | None:
+        """Return the request's prefix-cache blocks, built at most once per request.
+
+        Every solve prices the candidates again -- the first decision, each
+        re-solve after a failure, each hedge checkpoint -- and building the
+        blocks serializes and tokenizes the whole request. The first build is
+        kept in the request context and reused while the inputs are the same
+        objects; ``_prepare_prefix_cache_blocks`` usually makes it, off the event
+        loop, before the first solve.
+        """
+        params = context["params"]
+        memo = context.get(_PREFIX_BLOCKS_KEY)
+        if isinstance(memo, _PrefixBlocksMemo) and memo.matches(self.prefix_cache, context, params):
+            return memo.blocks
+        memo = _PrefixBlocksMemo.build(self.prefix_cache, context, params)
+        context[_PREFIX_BLOCKS_KEY] = memo
+        return memo.blocks
+
+    async def _prepare_prefix_cache_blocks(self, context: dict[str, Any]) -> None:
+        """Build an eligible request's prefix-cache blocks in the tokenizer pool.
+
+        The same blocks the first solve would build (``_request_prefix_blocks``),
+        built before it on a worker thread: tokenizing a long prompt takes
+        hundreds of milliseconds, which would otherwise run on the event loop
+        under the router's commit lock.
+        """
+        if self._prefix_cache_session(context) is None:
+            return
+        context[_PREFIX_BLOCKS_KEY] = await run_tokenization(
+            _PrefixBlocksMemo.build, self.prefix_cache, context, context["params"]
+        )
+
+    def _prefix_cache_cost_context(
+        self,
+        model_id: str,
+        context: dict[str, Any] | None,
+    ) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
+        """Return request prefix-cache inputs for cost adjustment, if eligible."""
+        session = self._prefix_cache_session(context)
+        if session is None or context is None:
             return None
-        messages = context.get("messages") or []
-        try:
-            blocks = self.prefix_cache.build_blocks(
-                messages,
-                tools=params.get("tools") if isinstance(params, dict) else None,
-                response_format=params.get("response_format") if isinstance(params, dict) else None,
-            )
-        except Exception:
-            logger.debug("prefix_cache cost build_blocks failed", exc_info=True)
+        params = context["params"]
+        blocks = self._request_prefix_blocks(context)
+        if blocks is None:
             return None
         user = str(req_ctx.get().get("affinity_key") or "")
         cache_params = self._cache_affecting_params(params)
@@ -3039,6 +3125,7 @@ class RouteWiseRouter:
             ),
             "routing_options": routing_options,
         }
+        await self._prepare_prefix_cache_blocks(context)
         trace = RoutingTrace(request_id=str(request_id))
         decision: RoutingDecision | None = None
         last_attempted: BaseAdapter | None = None
@@ -3162,6 +3249,7 @@ class RouteWiseRouter:
             ),
             "routing_options": routing_options,
         }
+        await self._prepare_prefix_cache_blocks(context)
         trace = RoutingTrace(request_id=str(request_id))
         decision: RoutingDecision | None = None
         last_attempted: BaseAdapter | None = None
