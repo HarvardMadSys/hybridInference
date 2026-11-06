@@ -527,3 +527,90 @@ def test_export_is_audited_before_any_row_is_streamed():
     assert audit_kwargs["actor"] is ADMIN_ACTOR
     assert audit_kwargs.get("target") is None
     assert audit_kwargs.get("admin_ip") is None
+
+
+def _tracking_db(rows_per_batch: list[list[dict]]):
+    """A mock db_logger whose pool records how many connections are out at a time."""
+    mock_db = MagicMock()
+    mock_db.log_admin_action = AsyncMock()
+    fetch_results = iter(rows_per_batch)
+    state = {"held": 0, "acquired": 0}
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(side_effect=lambda *a, **kw: next(fetch_results, []))
+
+    class _Acquire:
+        async def __aenter__(self):
+            state["held"] += 1
+            state["acquired"] += 1
+            return mock_conn
+
+        async def __aexit__(self, *exc):
+            state["held"] -= 1
+            return False
+
+    mock_db.pool = MagicMock()
+    mock_db.pool.acquire = MagicMock(side_effect=lambda *a, **kw: _Acquire())
+    return mock_db, state
+
+
+async def _export(db):
+    from serving.servers.routers.admin import export as export_routes
+
+    return await export_routes.admin_export_requests(
+        start_time=datetime(2024, 1, 1, tzinfo=UTC),
+        end_time=datetime(2024, 12, 31, tzinfo=UTC),
+        user_id=None,
+        session_id=None,
+        model_id=None,
+        errors_only=False,
+        outcome=None,
+        request_type=None,
+        include_content=False,
+        actor=ADMIN_ACTOR,
+        db_logger=db,
+    )
+
+
+def test_export_holds_no_connection_while_the_client_reads():
+    """A connection is taken for each page's query and given back before the page is sent.
+
+    The export used to hold one pooled connection for the whole download, so a
+    slow client kept it out of the pool for as long as it took to read.
+    """
+    import asyncio
+
+    full_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500)]
+    partial_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500, 502)]
+    db, state = _tracking_db([full_batch, partial_batch])
+
+    async def held_while_sending() -> list[int]:
+        response = await _export(db)
+        return [state["held"] async for _chunk in response.body_iterator]
+
+    assert asyncio.run(held_while_sending()) == [0, 0]
+    assert state["acquired"] == 2  # one per page
+    assert state["held"] == 0
+
+
+def test_export_sends_a_page_per_chunk_with_the_same_lines():
+    """Rows are batched per page; the bytes are what one line per row always was."""
+    import asyncio
+
+    full_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500)]
+    partial_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500, 502)]
+    db, _ = _tracking_db([full_batch, partial_batch])
+
+    async def chunks_of_export() -> list[str]:
+        response = await _export(db)
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(chunks_of_export())
+
+    assert len(chunks) == 2
+    assert [chunk.count("\n") for chunk in chunks] == [500, 2]
+    lines = "".join(chunks).split("\n")
+    assert lines[-1] == ""
+    assert [json.loads(line)["request_id"] for line in lines[:-1]] == [
+        f"req-{i}" for i in range(502)
+    ]
