@@ -317,37 +317,101 @@ async def test_cache_control_blocks_do_not_break_the_warm_path(
     await asyncio.sleep(0)
 
 
+def _forget_spy(monkeypatch, tracker) -> list[str]:
+    """Record every endpoint the tracker is told to forget, and still forget it."""
+    forgotten: list[str] = []
+    real_forget = tracker.forget_endpoint
+    monkeypatch.setattr(
+        tracker, "forget_endpoint", lambda eid: (forgotten.append(eid), real_forget(eid))[1]
+    )
+    return forgotten
+
+
 @pytest.mark.asyncio
 async def test_failed_dispatch_forgets_the_endpoint_hints(
     anthropic_test_client, anthropic_compat_router, monkeypatch, no_log_store, priority_route
 ):
     """This surface records its own outcomes, so it must forget its own hints.
 
-    `FixedRouter._on_failure` drops an endpoint's warm-prefix hints because a
-    failure most likely means it restarted and lost its radix cache. Without the
-    same call here, the chat path would forget a restarted backend while Claude
-    Code traffic kept discounting against a cache that no longer exists -- and a
-    cold continuation stamped interactive is one that preempts.
+    `FixedRouter._on_failure` drops an endpoint's warm-prefix hints when a
+    failure can mean it restarted and lost its radix cache -- a 5xx, or no
+    answer at all. Without the same call here, the chat path would forget a
+    restarted backend while Claude Code traffic kept discounting against a cache
+    that no longer exists -- and a cold continuation stamped interactive is one
+    that preempts.
     """
-    from serving.adapters.key_pool import KeyPoolExhausted
+    import aiohttp
+
     from serving.adapters.openai_compat import OpenAICompatAdapter
 
     tracker = anthropic_compat_router.prefill_load
     endpoint_id = endpoint_id_for_adapter(_adapter(anthropic_compat_router))
-    forgotten: list[str] = []
-    real_forget = tracker.forget_endpoint
-    monkeypatch.setattr(
-        tracker, "forget_endpoint", lambda eid: (forgotten.append(eid), real_forget(eid))[1]
-    )
+    forgotten = _forget_spy(monkeypatch, tracker)
 
     async def fake_post(self, url, payload):
-        raise KeyPoolExhausted("all keys muted")
+        raise aiohttp.ClientResponseError(
+            request_info=None, history=None, status=502, message="bad gateway"
+        )
 
     monkeypatch.setattr(OpenAICompatAdapter, "_post_with_pool", fake_post)
 
     r = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
 
-    assert r.status_code == 429
+    assert r.status_code == 502
     assert forgotten == [endpoint_id]
+    assert tracker.backlog(endpoint_id) == 0
+    await asyncio.sleep(0)
+
+
+def _client_400():
+    import aiohttp
+
+    return aiohttp.ClientResponseError(
+        request_info=None, history=None, status=400, message="bad request"
+    )
+
+
+def _all_keys_muted():
+    from serving.adapters.key_pool import KeyPoolExhausted
+
+    return KeyPoolExhausted("all keys muted")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make_error", "status"),
+    [(_client_400, 400), (_all_keys_muted, 429)],
+    ids=["upstream-400", "key-pool-exhausted"],
+)
+async def test_a_failure_that_cannot_lose_the_cache_keeps_the_hints(
+    anthropic_test_client,
+    anthropic_compat_router,
+    monkeypatch,
+    no_log_store,
+    priority_route,
+    make_error,
+    status,
+):
+    """One caller's bad request, or a refusal before anything was sent, is no restart.
+
+    An endpoint that answered a 4xx is up with its cache intact, and one whose
+    keys were all muted was never reached. Forgetting on either let any caller
+    wipe every other caller's warm-prefix hints for the endpoint.
+    """
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    tracker = anthropic_compat_router.prefill_load
+    endpoint_id = endpoint_id_for_adapter(_adapter(anthropic_compat_router))
+    forgotten = _forget_spy(monkeypatch, tracker)
+
+    async def fake_post(self, url, payload):
+        raise make_error()
+
+    monkeypatch.setattr(OpenAICompatAdapter, "_post_with_pool", fake_post)
+
+    r = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+
+    assert r.status_code == status
+    assert forgotten == []
     assert tracker.backlog(endpoint_id) == 0
     await asyncio.sleep(0)

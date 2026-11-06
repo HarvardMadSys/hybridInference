@@ -29,6 +29,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from routing.endpoint_health import failure_may_lose_prefix_cache
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     conversation_fingerprint,
@@ -2191,17 +2192,20 @@ async def execute_messages(
     prefill_affinity = affinity_key
 
     def _record_dispatch_failure(endpoint_id: str, **kwargs: Any) -> None:
-        """Record an endpoint failure and drop its warm-prefix hints.
+        """Record an endpoint failure and drop its warm-prefix hints when it may have lost them.
 
-        The mirror of ``FixedRouter._on_failure``: a failing endpoint has most
-        likely lost its radix cache (restart, OOM, a container replaced under
-        the same id), so hints describing that cache stop being evidence. This
-        surface records its own outcomes rather than going through the router,
-        so without this the chat path would forget a restarted backend's hints
-        while Claude Code traffic kept discounting against them -- and a cold
-        continuation stamped interactive is one that preempts.
+        The mirror of ``FixedRouter._on_failure``: an endpoint failing with a 5xx
+        or with no answer at all may have lost its radix cache (restart, OOM, a
+        container replaced under the same id), so hints describing that cache
+        stop being evidence. This surface records its own outcomes rather than
+        going through the router, so without this the chat path would forget a
+        restarted backend's hints while Claude Code traffic kept discounting
+        against them -- and a cold continuation stamped interactive is one that
+        preempts. A 4xx, or a failure that never reached the endpoint, leaves
+        them, as it does there.
         """
-        prefill_load.forget_endpoint(endpoint_id)
+        if failure_may_lose_prefix_cache(kwargs.get("exc")):
+            prefill_load.forget_endpoint(endpoint_id)
         health_registry.record_failure(endpoint_id, **kwargs)
 
     def _begin_prefill():

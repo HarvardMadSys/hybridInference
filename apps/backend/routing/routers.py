@@ -24,7 +24,12 @@ if TYPE_CHECKING:
 
 from routing.backends import LeafBackend
 from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
-from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
+from routing.endpoint_health import (
+    DispatchClaim,
+    EndpointHealthRegistry,
+    _http_status_of,
+    failure_may_lose_prefix_cache,
+)
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
 from routing.engine_wait import EngineWaitExpired, FirstTokenWatch
 from routing.offload import (
@@ -32,7 +37,6 @@ from routing.offload import (
     FallbackOrder,
     OffloadPolicy,
     abandoned_for_offload,
-    offload_reason_for,
 )
 from routing.prefill_load import (
     PrefillLoadTracker,
@@ -809,16 +813,18 @@ class FixedRouter:
         detail: str | None = None,
         exc: BaseException | None = None,
     ) -> None:
-        # A failing endpoint has most likely lost its prefix cache (restart,
-        # OOM, a container replaced under the same id), so the hints describing
-        # it stop being evidence. See PrefillLoadTracker.forget_endpoint.
-        # A request that ended waiting -- in this gateway's own outbound queue,
-        # or at an engine that had not started it -- is the exception: nothing
-        # failed and the endpoint's cache is untouched. With an offload route
-        # that is a routine event under load, and wiping the hints on each one
+        # An endpoint failing with a 5xx or with no answer at all may have lost
+        # its prefix cache (restart, OOM, a container replaced under the same
+        # id), so the hints describing it stop being evidence. See
+        # PrefillLoadTracker.forget_endpoint. Every other failure leaves them:
+        # an endpoint that answered a 4xx is up with its cache intact, and so is
+        # one this request never reached (a key-pool refusal) or left waiting
+        # -- in this gateway's own outbound queue, or at an engine that had not
+        # started it. Forgetting on those let one caller's malformed request
+        # wipe every caller's hints for the endpoint, and with an offload route
         # would blind prefill-aware selection exactly when the endpoint is
         # busiest.
-        if exc is None or offload_reason_for(exc) is None:
+        if failure_may_lose_prefix_cache(exc):
             self._prefill_load.forget_endpoint(endpoint_id)
         self._health_registry.record_failure(
             endpoint_id,
