@@ -323,7 +323,8 @@ export interface BatchCreateContext {
     max_active_batches: number;
     file_retention_days: number;
     result_retention_days: number;
-    completion_window_hours: number;
+    /** Null when new batches have no window: none of their requests expire. */
+    completion_window_hours: number | null;
     /** How long the gateway is certain to recognise a submission key again. */
     submission_replay_seconds: number;
   };

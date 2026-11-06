@@ -273,7 +273,8 @@ def _claimable_job_sql(alias: str) -> str:
         f"({alias}.phase = 'runnable' "
         f"AND {alias}.status IN ('validating', 'in_progress') "
         f"AND ({alias}.paused_until IS NULL OR {alias}.paused_until <= now()) "
-        f"AND {alias}.expires_at > now() "
+        # A null expires_at is a batch with no window: it never expires.
+        f"AND ({alias}.expires_at IS NULL OR {alias}.expires_at > now()) "
         f"AND {alias}.delete_requested_at IS NULL "
         f"AND {_supported_kinds_sql(alias)})"
     )
@@ -696,7 +697,7 @@ class BatchStore:
         model_ids: list[str],
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         api_surface: str = SURFACE_OPENAI_INLINE,
         target: str = TARGET_CHAT,
         protocol_profile: str | None = None,
@@ -724,7 +725,8 @@ class BatchStore:
                 stored already ``failed`` and never claimed.
             metadata: The caller's metadata, or None.
             completion_window_seconds: Time the batch has before its
-                unstarted items expire.
+                unstarted items expire; None for no window (``expires_at``
+                stays null and the batch never expires).
             api_surface: ``openai_inline`` or ``openai_file`` (``anthropic`` only
                 for a batch stored the way the retired Message Batches API stored them).
             target: ``chat``, ``embeddings``, ``messages`` or ``responses``.
@@ -844,7 +846,7 @@ class BatchStore:
         models: list[str],
         request_count: int,
         metadata: dict[str, Any] | None,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         api_surface: str,
         target: str,
         protocol_profile: str | None,
@@ -875,7 +877,7 @@ class BatchStore:
                  idempotency_key, in_progress_at, display_name, description,
                  created_via, console_spec, cache_read_tokens)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
-                    now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14,
+                    now() + make_interval(secs => $8::double precision), $9, $10, $11, $12, $13, $14,
                     $15, $16, $17, CASE WHEN $14 = 'in_progress' THEN now() END,
                     $18, $19, $20, $21::jsonb, 0)
             RETURNING {_BATCH_COLUMNS}
@@ -887,7 +889,7 @@ class BatchStore:
             json.dumps(models),
             request_count,
             _dump_json(metadata),
-            float(completion_window_seconds),
+            None if completion_window_seconds is None else float(completion_window_seconds),
             api_surface,
             target,
             SCHEMA_VERSION,
@@ -947,7 +949,7 @@ class BatchStore:
         source_sha256: str,
         derived: dict[str, Any] | None,
         file_retention_seconds: int,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         retention_seconds: int,
         idempotency: dict[str, str],
         max_active: int | None,
@@ -1782,7 +1784,8 @@ class BatchStore:
             (the fencing token for this attempt), ``error`` (the previous
             attempt's, or None), and the batch's ``user_id``, ``key_hash``,
             ``api_surface``, ``target``, ``protocol_profile``, ``endpoint`` and
-            ``expires_at`` (when it stops starting requests).
+            ``expires_at`` (when it stops starting requests; None when it
+            never does).
         """
         if limit <= 0 or max_running <= 0:
             return []
@@ -2296,7 +2299,8 @@ class BatchStore:
         1. A validating or in-progress batch past ``expires_at`` becomes
            ``expired``; its queued items expire as ``batch_expired`` and count
            as failed. Items already running finish normally. A batch already
-           sealing is not touched: its result is fixed.
+           sealing is not touched: its result is fixed. A batch with no window
+           (null ``expires_at``) is never expired here.
         2. An active batch with no open item left is finalized, and a batch no
            longer claimable from passes its verdict on to running items whose
            lease ran out.

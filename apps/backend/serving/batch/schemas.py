@@ -37,6 +37,9 @@ CHAT_COMPLETIONS_URL = "/v1/chat/completions"
 
 #: The completion window file batches accept (OpenAI's only value).
 FILE_COMPLETION_WINDOW = "24h"
+#: The ``completion_window`` an inline batch with no window reports: it never
+#: expires (``BATCH_COMPLETION_WINDOW_HOURS`` was 0 when it was created).
+NO_COMPLETION_WINDOW = "none"
 
 #: Longest ``custom_id`` accepted. It is indexed (unique within a batch), and an
 #: index entry must stay well under Postgres's limit of about 2.7 KB.

@@ -261,6 +261,20 @@ msgstr ""
 
 #: ../developer/batches.md:91
 msgid ""
+"An operator may lift the window altogether by setting "
+"`BATCH_COMPLETION_WINDOW_HOURS` to `0` (see [Running batch "
+"inference](#running-batch-inference)). A batch created then has a `null` "
+"`expires_at` and never expires: it runs until every request is done, "
+"however long its models wait for capacity. A request that keeps failing "
+"for a reason that may pass is still tried at most 2,000 times (about two "
+"weeks at the backoff cap), then fails with its last error."
+msgstr ""
+"运维人员可以把 `BATCH_COMPLETION_WINDOW_HOURS` 设为 `0`，彻底取消执行窗口（见[运行批量推理"
+"](#running-batch-inference)）。此后创建的批次 `expires_at` 为 `null`，永不过期：无论模型等待算力多久，它都会一直运行，直到每个请求都完成。"
+"因可能自行恢复的原因反复失败的请求仍最多尝试 2,000 次（按退避上限计约两周），之后以最后一次得到的错误失败。"
+
+#: ../developer/batches.md:91
+msgid ""
 "Only a wait longer than `BATCH_QUEUED_ALERT_HOURS` (six hours by "
 "default; `0` turns it off) is reported: one \"Batch model waiting for "
 "capacity\" alert for the model, resolved when the model next serves a "
@@ -1296,11 +1310,12 @@ msgid ""
 "billing anything. Each problem names its line, `custom_id` and field, "
 "never the request's content, and the list can be downloaded as CSV or "
 "JSONL. When the file is valid, the page shows the first stored requests, "
-"the canonical model the batch will run on, its 24-hour window, how it is "
-"billed and how long its results are kept."
+"the canonical model the batch will run on, its window (24 hours, unless "
+"the operator set none), how it is billed and how long its results are "
+"kept."
 msgstr ""
 "**校验与确认。** 网关逐行检查文件，不执行也不计费。每个问题都给出行号、`custom_id` 和字段，从不回显请求内容；问题清单可以下载为 "
-"CSV 或 JSONL。文件有效时，页面会展示存储的前几条请求、批次实际使用的规范模型、24 小时执行窗口、计费方式和结果的保留期。"
+"CSV 或 JSONL。文件有效时，页面会展示存储的前几条请求、批次实际使用的规范模型、执行窗口（24 小时，除非运维人员取消了限制）、计费方式和结果的保留期。"
 
 #: ../developer/batches.md:636
 msgid ""
@@ -1453,8 +1468,10 @@ msgid "Time a batch has to start its pending requests (`completion_window`)"
 msgstr "批次启动待处理请求的时间窗口（`completion_window`）"
 
 #: ../developer/batches.md:41
-msgid "24 hours (always 24 hours for file batches)"
-msgstr "24 小时（文件批次始终为 24 小时）"
+msgid ""
+"24 hours (always 24 hours for file batches), or no limit if the operator "
+"set none"
+msgstr "24 小时（文件批次始终为 24 小时）；运维人员取消限制时则不限"
 
 #: ../developer/batches.md:41
 msgid "Time a finished batch is kept"
@@ -1585,10 +1602,12 @@ msgstr "限制由部署决定（见[限制](#limits)），低于供应商自己�
 msgid ""
 "The 24-hour window of file batches is when the gateway stops *starting* "
 "requests. Requests already running when it ends finish, so a batch may "
-"reach its final status after `expires_at`."
+"reach its final status after `expires_at`. An operator may lift the "
+"window: such a batch still reports `completion_window` `24h`, but its "
+"`expires_at` is `null` and it never expires."
 msgstr ""
 "文件批次的 24 小时窗口是网关停止*开始*请求的时间。窗口结束时已在运行的请求会运行完，所以批次可能在 `expires_at` "
-"之后才进入最终状态。"
+"之后才进入最终状态。运维人员可以取消该窗口：此时批次的 `completion_window` 仍为 `24h`，但 `expires_at` 为 `null`，永不过期。"
 
 #: ../developer/batches.md:722
 #, python-brace-format
@@ -1749,8 +1768,14 @@ msgid "24"
 msgstr ""
 
 #: ../developer/batches.md:41
-msgid "Hours a new batch has before its unstarted requests expire, 1–168"
-msgstr "新批次中未开始的请求过期前的小时数，1–168"
+msgid ""
+"Hours a new batch has before its unstarted requests expire, 1–168. `0` "
+"means no limit: new batches, inline and from a file, never expire "
+"(`expires_at` is `null`, and an inline batch's `completion_window` reads "
+"`none`). A batch keeps the value it was created with"
+msgstr ""
+"新批次中未开始的请求过期前的小时数，1–168。`0` 表示不限：新批次（无论内联还是来自文件）永不过期（`expires_at` 为 "
+"`null`，内联批次的 `completion_window` 为 `none`）。批次保留创建时的取值"
 
 #: ../developer/batches.md:41
 msgid "`BATCH_RETENTION_DAYS`"
