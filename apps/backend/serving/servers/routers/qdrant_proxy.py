@@ -40,6 +40,11 @@ async def _verify_qdrant_user(request: Request) -> dict:
 
     Qdrant clients send credentials via the ``api-key`` header rather than
     the standard ``Authorization`` header, so we map it before delegating.
+
+    Called directly rather than as a dependency, so every parameter is passed:
+    one left out keeps its ``Header(...)`` default object, which is truthy.
+    ``x_on_behalf_of`` is ``None`` because nobody acts for another user here --
+    the collections a caller reaches are scoped by its own user id.
     """
     auth = request.headers.get("authorization")
     x_key = request.headers.get("x-api-key")
@@ -53,6 +58,7 @@ async def _verify_qdrant_user(request: Request) -> dict:
         request,
         authorization=auth,
         x_api_key=x_key,
+        x_on_behalf_of=None,
         op_store=services.operational_store,
         log_store=services.log_store,
     )

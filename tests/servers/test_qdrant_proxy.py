@@ -280,6 +280,37 @@ class TestAuth:
             assert resp.status_code == status.HTTP_401_UNAUTHORIZED
 
     @pytest.mark.asyncio
+    async def test_the_wrapper_never_takes_the_impersonation_path(self, monkeypatch):
+        """A parameter left out of a direct call keeps its truthy ``Header()`` default.
+
+        ``x_on_behalf_of`` missing made every Qdrant call look like an
+        ``X-On-Behalf-Of`` request: a WARNING per call and a second spend query.
+        """
+        from types import SimpleNamespace
+
+        from serving.servers.routers import qdrant_proxy
+
+        verify = AsyncMock(return_value={"user_id": TEST_USER_ID, "authenticated": True})
+        monkeypatch.setattr(qdrant_proxy, "verify_api_key", verify)
+        services = SimpleNamespace(operational_store=object(), log_store=object())
+        request = SimpleNamespace(
+            headers={"api-key": "hyi-qdrant-client-key", "x-on-behalf-of": "user-victim"},
+            app=SimpleNamespace(state=SimpleNamespace(services=services)),
+        )
+
+        assert await _verify_qdrant_user(request) == {
+            "user_id": TEST_USER_ID,
+            "authenticated": True,
+        }
+
+        kwargs = verify.await_args.kwargs
+        assert kwargs["x_on_behalf_of"] is None
+        assert kwargs["authorization"] == "Bearer hyi-qdrant-client-key"
+        assert kwargs["x_api_key"] is None
+        assert kwargs["op_store"] is services.operational_store
+        assert kwargs["log_store"] is services.log_store
+
+    @pytest.mark.asyncio
     async def test_anonymous_rejected(self, qdrant_app: FastAPI, mock_upstream):
         # Override to return anonymous user
         qdrant_app.dependency_overrides[_verify_qdrant_user] = lambda: {
