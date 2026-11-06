@@ -1,7 +1,7 @@
 # Alert noise reduction (2026-11-04)
 
-Status: draft for discussion. Nothing here is implemented. Baseline: `dev` at
-`e1d733421`.
+Status: agreed. Rollout step 1 (§8) is implemented next to this document,
+switched off by default. Baseline: `dev` at `e1d733421`.
 
 Scope: the backend gateway alert path, `alert_slack()` in
 `apps/backend/serving/observability/alerts.py`. The status-monitor path, owned
@@ -168,12 +168,15 @@ remains available for comparison. They stop posting.
 
 ### 5.3 Circuits post only when they stay open
 
-A `circuit_open` episode posts only when both of these hold:
+A `circuit_open` episode posts only once the circuit has been open, or
+flapping, for longer than a configured duration (`min_open_sec`, 2 hours by
+default). Flapping counts: the open time of every stretch inside the 24-hour
+window (§5.4) adds up.
 
-- The circuit has been open, or flapping, for longer than a configured duration
-  (proposed: 2 hours).
-- Either the model has no healthy route left, or users got failures for that
-  model (§5.2).
+The first draft also required that the model had no healthy route left, or that
+users got failures for it. That condition is left out: replaying production
+(§8) shows the duration alone already posts each long outage once, and a model
+whose users fail is reported by §5.2 anyway.
 
 This holds whatever the cause: an outage, a revoked key or an exhausted quota.
 It replaces `page_on_usage_limit: false`, which today silences an exhausted
@@ -191,7 +194,8 @@ quota forever, and makes type-muting `circuit_open` unnecessary.
   1. **The problem got bigger.** A per-model failure becomes deployment-wide,
      or one route becomes every route of a model.
   2. **A deployment-wide failure recurs** after it recovered. This is always
-     posted, because it is the 10-25 case.
+     posted, because it is the 10-25 case. In configuration this is the
+     `renotify_on_recurrence` list of keys (a trailing `*` matches a prefix).
 - A recovery card is posted only for a problem that had a channel card. Flaps
   inside the 24-hour window are not posted.
 - The environment label moves to the front of the title, for example
@@ -264,25 +268,29 @@ The design does not assume one gateway process.
 | Type mute, per-problem mute, snooze | `site_settings`, cached | Shared by all workers. Survives restarts. |
 | Unified failure detector | Reads `api_logs`, runs under an advisory lock | Runs once across workers, so all workers agree. |
 | Digest | Advisory lock plus a sent marker | Sent once. |
-| "Already posted" and the 24-hour reopen window | In process, as today | Each worker and each restart starts empty. Before posting, the key's last delivery is looked up in alert history, so a problem that posted in the last 24 hours is not announced again. |
+| "Already posted" and the 24-hour reopen window | In process, as today | At startup each process reads the keys this deployment posted in the last 24 hours from alert history, so a restart or a new worker does not announce them again. After that, workers do not see each other's posts. |
 
-If alert history cannot be read, the lookup defaults to posting. A possible
-duplicate is better than a lost alert.
+If alert history cannot be read within 3 seconds, the process starts empty and
+posts. A possible duplicate is better than a lost alert.
 
 ## 8. Rollout
 
 Each step can be reverted on its own.
 
-1. **Shadow run.** Add the §5.2 detector and the §5.3–5.4 rules in
-   record-only mode. They record what they would have posted, with
-   `origin=shadow`, and post nothing.
-   - Run for one week next to the current rules.
-   - Compare: did shadow have a card for every problem a maintainer acted on,
-     and for every outage the probe saw?
+1. **Notification policy** (§5.1, §5.3, §5.4). Implemented as
+   `notification_policy` in `alerts.yaml`, off by default. Alert history
+   already records every decision the gateway made, so these rules are checked
+   by replaying it (`ops/db/analysis/alert_policy_replay.py`) instead of a
+   shadow week. Replaying production from 10-28 to 11-05 gives 57 messages
+   instead of 95; 44 of the 57 come from the old deployment-wide detector,
+   which step 2 replaces. Production turns the policy on after step 2.
+2. **Per-model detector** (§5.2). It has no history to replay, so it runs one
+   week in record-only mode next to the current rules.
+   - Compare: did it have a card for every problem a maintainer acted on, and
+     for every outage the probe saw?
    - Also run fault drills on staging: stop a local model, revoke a key, and
      force a deployment-wide error.
-2. **Switch.** Turn the shadow rules on. The replaced detectors (§5.1) become
-   record only.
+   - Then switch it on. The replaced detectors (§5.1) become record only.
 3. **Per-problem mute** (§5.5), including the console control.
 4. **Daily digest** (§5.6).
 5. **Optional: resource checks.** File descriptors and disk below a threshold
@@ -304,7 +312,8 @@ replay. "A few messages a week" is something to watch for, not a quota.
 ## 9. Open questions
 
 1. The starting thresholds. The proposal is ≥ 20% / 10 min / ≥ 20 requests,
-   and 2 hours for circuits. The shadow week should settle them.
+   and 2 hours for circuits. The replay and the detector's record-only week
+   should settle them.
 2. Whether "Recovered" cards are wanted at all, or only for deployment-wide
    problems.
 3. Whether the status monitor should export its history (built, but off by
