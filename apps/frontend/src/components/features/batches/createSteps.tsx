@@ -794,13 +794,18 @@ export function ReviewStep({
                 {t('batches.create.summary.window', 'Execution window')}
               </dt>
               <dd className="sm:col-span-2">
-                {fill(
-                  t(
-                    'batches.create.summary.window_text',
-                    'Every request starts within {hours} hours; requests already started may finish after that. Requests not started by then expire.',
-                  ),
-                  { hours: String(limits?.completion_window_hours ?? 24) },
-                )}
+                {limits?.completion_window_hours === null
+                  ? t(
+                      'batches.create.summary.window_none',
+                      'No limit: the batch keeps running until every request is done, however long that takes. No request expires.',
+                    )
+                  : fill(
+                      t(
+                        'batches.create.summary.window_text',
+                        'Every request starts within {hours} hours; requests already started may finish after that. Requests not started by then expire.',
+                      ),
+                      { hours: String(limits?.completion_window_hours ?? 24) },
+                    )}
               </dd>
             </div>
             <div className="grid gap-1 py-2 sm:grid-cols-3">

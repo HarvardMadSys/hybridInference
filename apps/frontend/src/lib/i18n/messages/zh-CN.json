@@ -1523,6 +1523,10 @@
     "source": "Execution window",
     "text": "执行窗口"
   },
+  "batches.create.summary.window_none": {
+    "source": "No limit: the batch keeps running until every request is done, however long that takes. No request expires.",
+    "text": "不限：批次会一直运行，直到每个请求都完成，无论需要多久。不会有请求过期。"
+  },
   "batches.create.summary.window_text": {
     "source": "Every request starts within {hours} hours; requests already started may finish after that. Requests not started by then expire.",
     "text": "所有请求在 {hours} 小时内开始执行；已开始的请求可以在此之后完成。届时仍未开始的请求将过期。"
@@ -1722,6 +1726,10 @@
   "batches.detail.window": {
     "source": "Start requests by",
     "text": "请求开始期限"
+  },
+  "batches.detail.window_none": {
+    "source": "No limit",
+    "text": "不限"
   },
   "batches.empty_create": {
     "source": "You have no batches. Create one here, or submit one through the API.",

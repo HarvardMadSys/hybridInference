@@ -88,6 +88,14 @@ this until the model is up or the batch's completion window ends. The same
 answer reaches an interactive caller as a `503` with the deployment's message,
 and neither the circuit breaker nor the failed-request alerts count it.
 
+An operator may lift the window altogether by setting
+`BATCH_COMPLETION_WINDOW_HOURS` to `0` (see
+[Running batch inference](#running-batch-inference)). A batch created then has
+a `null` `expires_at` and never expires: it runs until every request is done,
+however long its models wait for capacity. A request that keeps failing for a
+reason that may pass is still tried at most 2,000 times (about two weeks at the
+backoff cap), then fails with its last error.
+
 Only a wait longer than `BATCH_QUEUED_ALERT_HOURS` (six hours by default; `0`
 turns it off) is reported: one "Batch model waiting for capacity" alert for the
 model, resolved when the model next serves a batch request.
@@ -670,7 +678,8 @@ in three steps; nothing runs until you confirm the last one:
    billing anything. Each problem names its line, `custom_id` and field, never
    the request's content, and the list can be downloaded as CSV or JSONL. When
    the file is valid, the page shows the first stored requests, the canonical
-   model the batch will run on, its 24-hour window, how it is billed and how
+   model the batch will run on, its window (24 hours, unless the operator set
+   none), how it is billed and how
    long its results are kept.
 
 The console is stricter than `/v1/batches`. A field the gateway would not
@@ -727,7 +736,7 @@ and submit as a new batch.
 | Unfinished requests across all your batches | 100,000 (`429` above it) |
 | Size of an input file, and of one of its lines | 32 MiB; 4 MiB per line |
 | Input files you may keep, and upload per hour | 512 MiB; 60 |
-| Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches) |
+| Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches), or no limit if the operator set none |
 | Time a finished batch is kept | 7 days |
 
 The operator may have changed any of them. A larger job is several batches.
@@ -758,7 +767,9 @@ is read, after the create call has answered: over the limit, the batch is
   providers' own: 50,000 requests and 32 MiB per batch by default.
 - The 24-hour window of file batches is when the gateway stops *starting*
   requests. Requests already running when it ends finish, so
-  a batch may reach its final status after `expires_at`.
+  a batch may reach its final status after `expires_at`. An operator may lift
+  the window: such a batch still reports `completion_window` `24h`, but its
+  `expires_at` is `null` and it never expires.
 - Direct requests, `GET /v1/batches/{id}/results`, the JSONL export,
   `DELETE /v1/batches/{id}`, `Idempotency-Key`, the Messages target with its
   `anthropic-version` header, and the cost fields are this gateway's own. OpenAI's
@@ -787,7 +798,7 @@ and to the worker's next round.
 | `BATCH_MAX_REQUESTS` | 50000 | Requests one batch may hold |
 | `BATCH_MAX_BODY_MB` | 32 | Largest create request, in MiB |
 | `BATCH_MAX_ACTIVE_PER_USER` | 10 | Unfinished batches one user may have |
-| `BATCH_COMPLETION_WINDOW_HOURS` | 24 | Hours a new batch has before its unstarted requests expire, 1–168 |
+| `BATCH_COMPLETION_WINDOW_HOURS` | 24 | Hours a new batch has before its unstarted requests expire, 1–168. `0` means no limit: new batches, inline and from a file, never expire (`expires_at` is `null`, and an inline batch's `completion_window` reads `none`). A batch keeps the value it was created with |
 | `BATCH_RETENTION_DAYS` | 7 | Days a finished batch and its results are kept. A batch keeps the value it was created with |
 | `BATCH_MAX_QUEUED_REQUESTS_PER_USER` | 100000 | Unfinished requests one user may have across all their batches |
 | `BATCH_ROLE_CONCURRENCY_FREE` / `_PRO` / `_INTERNAL` / `_ADMIN` | 8 / 16 / 64 / 64 | Batch requests one user of that role may have running at once, across every model. Counted in each gateway process on its own, so with several processes a user may run up to this many in each; a model's cap, by contrast, is counted in the database across every process. Separate from the role's interactive concurrency limit (`user_concurrency_<role>` and a user's own override apply to interactive requests only); `0` removes this cap |
