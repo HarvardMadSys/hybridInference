@@ -18,19 +18,24 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from serving.audit import AuditTarget
 from serving.exceptions import (
+    AmbiguousAPIKeyError,
+    APIKeyLimitReachedError,
     UserNotFoundError,
     generic_message_for_status,
     user_safe_error_for_log,
 )
-from serving.model_access import get_disabled_models_from_preferences
+from serving.model_access import get_disabled_models_from_preferences, route_canonical_model_id
 from serving.schemas import ModelList
 from serving.schemas_auth import (
+    APIKeyCreateRequest,
     APIKeyDeleteResponse,
     APIKeyInfo,
     APIKeyListItem,
     APIKeyListResponse,
     APIKeyRegenerateResponse,
     APIKeyResponse,
+    APIKeyUpdateRequest,
+    APIKeyUpdateResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
     LLMProberLayoutResponse,
@@ -69,11 +74,26 @@ from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
+from serving.utils.token_utils import optional_token_count
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 LOCALE_PREFERENCE_KEY = "locale"
+
+#: A safety ceiling on an account's active API keys, not a product limit: the
+#: console does not show it and ordinary use never reaches it. Every key spends
+#: the same account quota, so it is not about spend; it bounds what a runaway
+#: or hostile script can write through the unthrottled create route, and the
+#: listing, which decrypts every active key.
+MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 100
+
+
+def _clean_key_name(name: str | None) -> str | None:
+    """A key label as stored: surrounding whitespace dropped, blank meaning none."""
+    if name is None:
+        return None
+    return name.strip() or None
 
 
 def _quota_contact() -> str:
@@ -108,35 +128,45 @@ _SHOWN_MODEL_SQL = "COALESCE(metadata->'auto'->>'requested', model_id)"
 
 
 def _build_user_recent_requests_filters(
-    user_id: str, model_id: str | None
+    user_id: str, model_id: str | None, api_key_id: int | None = None
 ) -> tuple[str, list[Any]]:
     """Build the shared WHERE clause + bind params for /user/recent-requests.
 
     Used by both the COUNT cache helper and the paginated SELECT so the two
     queries cannot drift if a future filter is added.
+
+    The key filter reads ``metadata->>'api_key_id'`` after ``user_id`` has
+    narrowed the scan to the account's rows (``idx_api_logs_user``): the key
+    is not a column of its own, so that a log write never depends on a
+    migration of ``api_logs``.
     """
     where_clauses = ["user_id = $1"]
     params: list[Any] = [user_id]
     if model_id:
         params.append(_escape_ilike_substring_term(model_id))
         where_clauses.append(f"{_SHOWN_MODEL_SQL} ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
+    if api_key_id is not None:
+        params.append(str(api_key_id))
+        where_clauses.append(f"metadata->>'api_key_id' = ${len(params)}")
     return " AND ".join(where_clauses), params
 
 
-async def _get_cached_user_request_count(conn: Any, user_id: str, model_id: str | None) -> int:
+async def _get_cached_user_request_count(
+    conn: Any, user_id: str, model_id: str | None, api_key_id: int | None = None
+) -> int:
     """Return the cached or freshly-queried ``api_logs`` row count for *user_id*.
 
     Cached for ``_RECENT_REQUESTS_COUNT_TTL_SECONDS`` to keep heavy-history
     users from paying a full COUNT(*) on every 60s dashboard poll.
     """
-    key = (user_id, model_id)
+    key = (user_id, model_id, api_key_id)
     now = time.monotonic()
     cached = _RECENT_REQUESTS_COUNT_CACHE.get(key)
     if cached is not None and (now - cached[0]) < _RECENT_REQUESTS_COUNT_TTL_SECONDS:
         _RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
         return cached[1]
 
-    where_sql, params = _build_user_recent_requests_filters(user_id, model_id)
+    where_sql, params = _build_user_recent_requests_filters(user_id, model_id, api_key_id)
     count_row = await conn.fetchrow(
         f"""
         SELECT COUNT(*) as total
@@ -434,14 +464,19 @@ async def update_locale_preference(
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)
 async def create_api_key(
     request: Request,
+    payload: APIKeyCreateRequest | None = None,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyResponse:
     """Generate a new API key for the current user.
 
-    Only available after email verification.
-    Users can only have one active API key at a time.
+    Only available after email verification. An account may hold several
+    active keys (up to the :data:`MAX_ACTIVE_API_KEYS_PER_ACCOUNT` safety
+    ceiling), all spending the same account quota: a key added to an account
+    takes its quota, and only the first key is seeded with the role default.
+    The body is optional and may
+    give the key a ``name``.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -460,13 +495,7 @@ async def create_api_key(
     ) or phone_identity_unverified(current_user):
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
-    # Check if user already has an active API key. Use the account-or-user
-    # lookup so legacy keys with account_id IS NULL are also detected — the DB
-    # uniqueness is on user_id, so checking account_id alone would miss them and
-    # let the INSERT fail with a 500 instead of a clean 409.
-    existing = await op_store.get_key_by_account_or_user(current_user["user_id"])
-    if existing:
-        raise HTTPException(status_code=409, detail="You already have an active API key")
+    name = _clean_key_name(payload.name if payload else None)
 
     # Generate new API key
     api_key = generate_api_key()
@@ -478,14 +507,27 @@ async def create_api_key(
         rt = None
     default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
 
-    await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=current_user["user_id"],
-        account_id=current_user["user_id"],
-        quota_daily_cost_usd=default_quota,
-        api_key_encrypted=encrypt_api_key(api_key),
-    )
+    try:
+        row = await op_store.create_key(
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=current_user["user_id"],
+            account_id=current_user["user_id"],
+            quota_daily_cost_usd=default_quota,
+            api_key_encrypted=encrypt_api_key(api_key),
+            inherit_account_quota=True,
+            name=name,
+            max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT,
+        )
+    except APIKeyLimitReachedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"You already have {MAX_ACTIVE_API_KEYS_PER_ACCOUNT} active API keys, the "
+                "most an account may hold. Revoke one, or contact the operator of this "
+                "deployment if you need more."
+            ),
+        ) from exc
 
     logger.info(f"API key created for user: {current_user['user_id']}")
     await log_admin_action(
@@ -494,16 +536,19 @@ async def create_api_key(
         details={
             "actor": "user",
             "key_prefix": key_prefix,
+            "name": name,
         },
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
 
+    created_at = row.get("created_at") if isinstance(row, dict) else None
     return APIKeyResponse(
         api_key=api_key,
         key_prefix=key_prefix,
+        name=name,
         warning="Save this API key now. It will not be shown again.",
-        created_at=datetime.now(UTC),
+        created_at=created_at or datetime.now(UTC),
     )
 
 
@@ -512,9 +557,11 @@ async def get_api_key_info(
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> APIKeyInfo:
-    """Get current user's active API key information.
+    """Get current user's newest active API key information.
 
-    Full keys are only returned at creation/regeneration time.
+    Kept for clients written when an account held one key; the console lists
+    every key through ``GET /user/api-keys/all``. Full keys are only returned
+    at creation/regeneration time.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -538,30 +585,22 @@ async def get_api_key_info(
 @router.get("/api-keys/all", response_model=APIKeyListResponse)
 async def list_api_keys(
     current_user=Depends(get_current_user),
-    db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> APIKeyListResponse:
-    """List all API keys owned by the current user.
+    """List all API keys owned by the current user, live ones first.
 
-    Only masked identifiers are returned after creation/regeneration.
+    Active and revoked keys carry their saved full value for the owner to
+    show and copy. Revealing a revoked key does not make it valid again.
     """
-    if not db_logger or not db_logger.pool:
+    if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    async with db_logger.pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT key_prefix, created_at, last_used_at, status, api_key_encrypted
-            FROM api_keys
-            WHERE account_id = $1
-            ORDER BY (status = 'active') DESC, created_at DESC
-            """,
-            current_user["user_id"],
-        )
+    rows = await op_store.list_account_keys(current_user["user_id"])
 
     keys: list[APIKeyListItem] = []
     for row in rows:
         full_key: str | None = None
-        if row["status"] == "active" and row["api_key_encrypted"]:
+        if row["status"] in ("active", "revoked") and row["api_key_encrypted"]:
             # Display-only decryption: never break the listing on a bad
             # ciphertext — log and fall back to a masked (api_key=None) row.
             try:
@@ -573,12 +612,149 @@ async def list_api_keys(
                 api_key=full_key,
                 key_prefix=row["key_prefix"],
                 key_masked=mask_key_prefix(row["key_prefix"]),
+                name=row.get("name"),
                 created_at=row["created_at"],
                 last_used_at=row["last_used_at"],
                 status=row["status"],
+                spent_today_usd=float(row.get("spent_today_usd") or 0),
+                spent_month_usd=float(row.get("spent_month_usd") or 0),
+                **_key_limits(row),
             )
         )
     return APIKeyListResponse(keys=keys)
+
+
+def _key_limits(row: dict[str, Any]) -> dict[str, Any]:
+    """A key row's own limits as the API shows them."""
+
+    def usd(value: Any) -> float | None:
+        return None if value is None else float(value)
+
+    allowed = row.get("allowed_models")
+    return {
+        "budget_daily_usd": usd(row.get("budget_daily_usd")),
+        "budget_monthly_usd": usd(row.get("budget_monthly_usd")),
+        "allowed_models": None if allowed is None else list(allowed),
+    }
+
+
+async def _canonical_allowlist(
+    requested: list[str],
+    *,
+    current_user: dict[str, Any],
+    router_exec: Any,
+    embedding_adapters: dict[str, Any],
+    model_visibility_resolver: Any,
+    op_store: Any,
+) -> list[str]:
+    """The allowlist as stored: canonical ids the account may use, sorted and unique.
+
+    An alias is stored as its model's id, since every access check reads the
+    canonical id. Chat and embedding models live in different route tables
+    (embedding models never enter ``routes``), so an alias is looked up in
+    both. A model is accepted only if the console's own model list shows it
+    to this account (``GET /user/models``): that list already applies the
+    account's role, model visibility and the models it disabled.
+
+    Raises:
+        HTTPException: 422 naming the ids the account cannot use.
+    """
+    available = await get_user_models(
+        current_user=current_user,
+        router_exec=router_exec,
+        embedding_adapters=embedding_adapters,
+        model_visibility_resolver=model_visibility_resolver,
+        op_store=op_store,
+    )
+    usable = {model.id for model in available.data}
+    tables = (
+        (router_exec.routes, getattr(router_exec, "embedding_routes", None) or {})
+        if router_exec is not None
+        else ()
+    )
+    canonical: set[str] = set()
+    unknown: list[str] = []
+    for model_id in requested:
+        route = next((t[model_id] for t in tables if model_id in t), None)
+        resolved = route_canonical_model_id(route, model_id) if route is not None else model_id
+        if resolved in usable:
+            canonical.add(resolved)
+        else:
+            unknown.append(model_id)
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Not models this account can use: {', '.join(sorted(set(unknown)))}",
+        )
+    return sorted(canonical)
+
+
+@router.patch("/api-keys/{key_prefix}", response_model=APIKeyUpdateResponse)
+async def update_api_key(
+    request: Request,
+    key_prefix: str,
+    payload: APIKeyUpdateRequest,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+    router_exec=Depends(get_router),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+) -> APIKeyUpdateResponse:
+    """Change the name or the limits of one of the current user's unrevoked keys.
+
+    Only the fields sent change; ``null`` clears one. A blank name clears it
+    too. The limits apply from the key's next request.
+    """
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+    sent = payload.model_fields_set
+    if not sent:
+        raise HTTPException(status_code=422, detail="Nothing to change")
+
+    changes: dict[str, Any] = {}
+    if "name" in sent:
+        changes["name"] = _clean_key_name(payload.name)
+    for field in ("budget_daily_usd", "budget_monthly_usd"):
+        if field in sent:
+            changes[field] = getattr(payload, field)
+    if "allowed_models" in sent:
+        changes["allowed_models"] = (
+            None
+            if payload.allowed_models is None
+            else await _canonical_allowlist(
+                payload.allowed_models,
+                current_user=current_user,
+                router_exec=router_exec,
+                embedding_adapters=embedding_adapters,
+                model_visibility_resolver=model_visibility_resolver,
+                op_store=op_store,
+            )
+        )
+
+    changed = await op_store.update_key_settings(current_user["user_id"], key_prefix, changes)
+    if changed is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    before, after = changed
+
+    def shown(row: dict[str, Any]) -> dict[str, Any]:
+        return {"name": row.get("name"), **_key_limits(row)}
+
+    old, new = shown(before), shown(after)
+    await log_admin_action(
+        db_logger,
+        # A rename alone keeps the action it has always been audited as.
+        action="rename_key" if set(changes) == {"name"} else "update_key_settings",
+        details={
+            "actor": "user",
+            "key_prefix": key_prefix,
+            **({"name": new["name"]} if "name" in changes else {}),
+            "changed": {field: {"from": old[field], "to": new[field]} for field in changes},
+        },
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(current_user["user_id"]),
+    )
+    return APIKeyUpdateResponse(key_prefix=key_prefix, **new)
 
 
 @router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
@@ -678,47 +854,40 @@ async def delete_api_key(
     raise HTTPException(status_code=409, detail="Only active or revoked API keys can be deleted")
 
 
-@router.post("/api-keys/regenerate", response_model=APIKeyRegenerateResponse)
-async def regenerate_api_key(
+async def _rotate_api_key(
     request: Request,
-    current_user=Depends(get_current_user),
-    op_store=Depends(get_operational_store),
-    db_logger=Depends(get_db_logger),
+    current_user: dict[str, Any],
+    old_key_prefix: str | None,
+    op_store: Any,
+    db_logger: Any,
 ) -> APIKeyRegenerateResponse:
-    """Regenerate API key for current user.
+    """Give one of the current user's active keys a new secret; the old one stops at once.
 
-    Immediately invalidates the old key and creates a new one.
+    It stays the same key: its name, limits, the account's quota (a rotation
+    is not a reason to reset a limit an admin granted), what it has spent
+    against its budgets and its request history all carry on. An *old_key_prefix* of
+    None means the account's only active key, which the store picks under
+    the account lock; 409 when there are several. 404 when the account has
+    no such active key.
     """
-    if not op_store:
-        raise HTTPException(status_code=500, detail="Database not available")
-
-    # Account-or-user lookup so legacy keys with account_id IS NULL are found
-    # (matches the user_id uniqueness constraint); otherwise regenerate would
-    # 404 for these users even though they have a working key.
-    old_key_row = await op_store.get_key_by_account_or_user(current_user["user_id"])
-    if not old_key_row:
-        raise HTTPException(status_code=404, detail="No active API key found")
-
-    # Generate new API key
     api_key = generate_api_key()
-    key_hash = hash_api_key(api_key)
     key_prefix = api_key[:12]
     try:
-        rt = get_runtime_settings_instance()
-    except RuntimeError:
-        rt = None
-    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
-
-    # Revoke old key via store, then create new one
-    await op_store.revoke_key(current_user["user_id"])
-    await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=current_user["user_id"],
-        account_id=current_user["user_id"],
-        quota_daily_cost_usd=default_quota,
-        api_key_encrypted=encrypt_api_key(api_key),
-    )
+        rotated = await op_store.rotate_key(
+            current_user["user_id"],
+            old_key_prefix,
+            new_key_hash=hash_api_key(api_key),
+            new_key_prefix=key_prefix,
+            api_key_encrypted=encrypt_api_key(api_key),
+        )
+    except AmbiguousAPIKeyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="You have several active API keys; regenerate one by its prefix.",
+        ) from exc
+    if not rotated:
+        raise HTTPException(status_code=404, detail="No active API key found")
+    old_key_prefix = rotated["old_key_prefix"]
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")
     await log_admin_action(
@@ -726,7 +895,7 @@ async def regenerate_api_key(
         action="regenerate_key",
         details={
             "actor": "user",
-            "old_key_prefix": old_key_row["key_prefix"],
+            "old_key_prefix": old_key_prefix,
             "new_key_prefix": key_prefix,
         },
         actor=user_audit_actor(request, current_user),
@@ -737,8 +906,41 @@ async def regenerate_api_key(
         api_key=api_key,
         key_prefix=key_prefix,
         warning="Save this API key now. It will not be shown again.",
-        old_key_prefix=old_key_row["key_prefix"],
+        old_key_prefix=old_key_prefix,
     )
+
+
+@router.post("/api-keys/regenerate", response_model=APIKeyRegenerateResponse)
+async def regenerate_api_key(
+    request: Request,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyRegenerateResponse:
+    """Regenerate the current user's only active API key.
+
+    Kept for clients written when an account held one key. With several
+    active keys it cannot tell which one is meant and answers 409; use
+    ``POST /user/api-keys/{key_prefix}/regenerate`` instead.
+    """
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    return await _rotate_api_key(request, current_user, None, op_store, db_logger)
+
+
+@router.post("/api-keys/{key_prefix}/regenerate", response_model=APIKeyRegenerateResponse)
+async def regenerate_api_key_by_prefix(
+    request: Request,
+    key_prefix: str,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyRegenerateResponse:
+    """Replace one of the current user's active API keys with a new one."""
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+    return await _rotate_api_key(request, current_user, key_prefix, op_store, db_logger)
 
 
 @router.get("/usage", response_model=UsageResponse)
@@ -854,6 +1056,12 @@ async def get_usage(
             requests=int(period_data.get("requests") or 0),
             prompt_tokens=int(period_data.get("prompt_tokens") or 0),
             completion_tokens=int(period_data.get("completion_tokens") or 0),
+            cache_read_tokens=int(period_data.get("cache_read_tokens") or 0),
+            cache_write_tokens=int(period_data.get("cache_write_tokens") or 0),
+            reasoning_tokens=optional_token_count(period_data.get("reasoning_tokens")),
+            reasoning_tokens_known_requests=int(
+                period_data.get("reasoning_tokens_known_requests") or 0
+            ),
             cost_usd=float(period_data.get("cost_usd") or 0),
         ),
     )
@@ -981,13 +1189,17 @@ async def get_recent_requests(
     limit: int = 50,
     offset: int = 0,
     model_id: str | None = None,
+    key_prefix: str | None = None,
     current_user=Depends(get_current_user),
     db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> RecentRequestsResponse:
     """Get the current user's recent API requests.
 
     Returns a paginated list of recent requests with metadata, token usage,
-    and cost information. Supports optional filtering by model_id.
+    and cost information. Supports optional filtering by model_id, and by
+    ``key_prefix``: one of the account's keys, any status, 404 otherwise. Each
+    request names the key it was made with, when it was attributed to one.
     """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -996,17 +1208,33 @@ async def get_recent_requests(
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
 
+    # The account's keys, to resolve the filter and to name each row's key.
+    prefixes: dict[str, str] = {}
+    if op_store:
+        prefixes = {
+            str(row["id"]): row["key_prefix"]
+            for row in await op_store.list_account_keys(current_user["user_id"])
+        }
+    api_key_id: int | None = None
+    if key_prefix is not None:
+        matches = [int(i) for i, prefix in prefixes.items() if prefix == key_prefix]
+        if not matches:
+            raise HTTPException(status_code=404, detail="API key not found")
+        api_key_id = matches[0]
+
     async with db_logger.pool.acquire() as conn:
         try:
             where_sql, params = _build_user_recent_requests_filters(
-                current_user["user_id"], model_id
+                current_user["user_id"], model_id, api_key_id
             )
             limit_idx = len(params) + 1
             offset_idx = len(params) + 2
             page_params = [*params, limit, offset]
 
             # Cached COUNT(*) — see ``_get_cached_user_request_count``.
-            total = await _get_cached_user_request_count(conn, current_user["user_id"], model_id)
+            total = await _get_cached_user_request_count(
+                conn, current_user["user_id"], model_id, api_key_id
+            )
 
             # Get paginated recent requests
             rows = await conn.fetch(
@@ -1019,7 +1247,8 @@ async def get_recent_requests(
                     total_tokens, cost_usd, error,
                     metadata->'routewise' AS routewise,
                     metadata->>'request_type' AS request_type,
-                    metadata->'auto'->>'requested' IS NOT NULL AS is_auto
+                    metadata->'auto'->>'requested' IS NOT NULL AS is_auto,
+                    metadata->>'api_key_id' AS api_key_id
                 FROM api_logs
                 WHERE {where_sql}
                 ORDER BY timestamp DESC
@@ -1059,6 +1288,7 @@ async def get_recent_requests(
             ),
             routewise=None if row["is_auto"] else coerce_json_object(row["routewise"]),
             request_type=row["request_type"],
+            key_prefix=prefixes.get(row["api_key_id"]) if row["api_key_id"] else None,
         )
         for row in rows
     ]

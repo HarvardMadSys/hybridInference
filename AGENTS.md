@@ -168,12 +168,14 @@ For the full diagram (network layer, observability, storage), see
   [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))
   is applied by `RoutingManager` in
   [apps/backend/routing/manager.py](apps/backend/routing/manager.py) from
-  `config/routing.yaml` (`default_router:`, formerly `routing_strategy:`).
+  the distribution's `config/routing.yaml` (`default_router:`, formerly
+  `routing_strategy:`).
   Per-model router selection (`fixed` / `routewise`) lives in the
   [apps/backend/routing/strategies/](apps/backend/routing/strategies/) package
   and is dispatched by
   [apps/backend/routing/model_router_registry.py](apps/backend/routing/model_router_registry.py)
-  from each model's `router:` field in `config/models.yaml`.
+  from each model's `router:` field in the distribution's `config/models.yaml`
+  (see 6.3).
 - **Circuit breaker / EWMA health** — provider health tracking in
   [apps/backend/routing/](apps/backend/routing/).
 
@@ -218,6 +220,11 @@ always kept). To run anything else against that database,
 - Storage layer is Postgres (asyncpg), in `apps/backend/serving/storage/`.
   Cloudflare D1 support was removed in #460; `DB_BACKEND` and `DB_DUAL_WRITE`
   are read by no code. There is one SQL dialect — write Postgres.
+- The schema comes only from the migrations in `apps/backend/migrations/`; the
+  service issues no DDL, and a test enforces it. A schema change is a new
+  revision that leaves the previous release working, never an edit to the
+  frozen `baseline/` (its digest is pinned). See
+  [docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md](docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md).
 - Alerting has two permanent, independent paths (decision: issue #1103).
   Backend gateway alerts go through `alert_slack()`
   (`apps/backend/serving/observability/alerts.py`) to one configured Slack or

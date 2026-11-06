@@ -2480,29 +2480,159 @@ def test_request_tool_result_and_text_ordering():
     assert messages[1]["content"] == "<system-reminder>be brief</system-reminder>"
 
 
-def test_request_tool_result_image_block_becomes_placeholder():
-    """C10: image blocks in a tool_result don't vanish into an empty string."""
+def _tool_result_body(*blocks: dict) -> dict:
+    return {"model": "m", "max_tokens": 10, "messages": [{"role": "user", "content": list(blocks)}]}
+
+
+_PNG = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}}
+_PNG_PART = {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}}
+
+
+def test_request_tool_result_image_follows_the_tool_message():
+    """C10: a tool's image reaches the model, in the user message after the tool message.
+
+    A tool message holds text only. Replacing the image with ``[image]`` left a
+    model that reads images guessing at a screenshot it never saw.
+    """
+    body = _tool_result_body({"type": "tool_result", "tool_use_id": "toolu_1", "content": [_PNG]})
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages == [
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_1",
+            "content": "[The tool returned an image; attached in the next user message.]",
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "Image output of tool call toolu_1:"}, _PNG_PART],
+        },
+    ]
+    assert "[image]" not in str(messages)
+
+
+def test_request_tool_images_follow_every_tool_message_and_join_the_turn_text():
+    """Tool messages stay contiguous; the turn keeps one user message, images first."""
+    body = _tool_result_body(
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": [{"type": "text", "text": "shot"}, _PNG, _PNG],
+        },
+        {"type": "tool_result", "tool_use_id": "toolu_2", "content": "plain"},
+        {"type": "text", "text": "<system-reminder>be brief</system-reminder>"},
+    )
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert [m["role"] for m in messages] == ["tool", "tool", "user"]
+    assert messages[0]["content"] == (
+        "shot\n[The tool returned 2 images; attached in the next user message.]"
+    )
+    assert messages[1]["content"] == "plain"
+    assert messages[2]["content"] == [
+        {"type": "text", "text": "Image output of tool call toolu_1:"},
+        _PNG_PART,
+        _PNG_PART,
+        {"type": "text", "text": "<system-reminder>be brief</system-reminder>"},
+    ]
+
+
+def test_request_tool_result_error_with_image_keeps_marker_and_image():
+    body = _tool_result_body(
+        {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True, "content": [_PNG]}
+    )
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages[0]["content"] == (
+        "[tool error]\n[The tool returned an image; attached in the next user message.]"
+    )
+    assert messages[1]["content"][1] == _PNG_PART
+
+
+def test_request_tool_images_wait_for_results_split_over_adjacent_user_messages():
+    """The Anthropic surface allows one turn's results in adjacent user messages.
+
+    The tool messages answering one assistant turn must stay contiguous, so a
+    result's images go after the whole run, not between its tool messages.
+    """
     body = {
         "model": "m",
         "max_tokens": 10,
         "messages": [
             {
-                "role": "user",
+                "role": "assistant",
                 "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_1",
-                        "content": [
-                            {"type": "image", "source": {"type": "base64", "data": "x"}},
-                        ],
-                    }
+                    {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {}},
+                    {"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {}},
                 ],
-            }
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": [_PNG]}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_2", "content": "ok"}],
+            },
+            {"role": "assistant", "content": "seen"},
         ],
     }
+
     messages, _ = anthropic_request_to_openai(body)
-    assert messages[0]["role"] == "tool"
-    assert messages[0]["content"] == "[image]"
+
+    assert [m["role"] for m in messages] == ["assistant", "tool", "tool", "user", "assistant"]
+    assert messages[3]["content"] == [
+        {"type": "text", "text": "Image output of tool call toolu_1:"},
+        _PNG_PART,
+    ]
+    assert all("_tool_images" not in m for m in messages)
+
+
+@pytest.mark.parametrize("source", ["abc", ["x"], 3, None])
+def test_request_malformed_image_source_is_not_a_server_error(source):
+    """``source`` arrives unvalidated; a bad one is an image that cannot be carried."""
+    image = {"type": "image", "source": source}
+    body = _tool_result_body(
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": [image]},
+        image,
+        {"type": "text", "text": "look"},
+    )
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages == [
+        {"role": "tool", "tool_call_id": "toolu_1", "content": "[image]"},
+        {"role": "user", "content": "look"},
+    ]
+
+
+def test_request_tool_result_image_is_a_placeholder_for_a_text_only_destination():
+    body = _tool_result_body(
+        {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": [{"type": "text", "text": "shot"}, _PNG],
+        }
+    )
+
+    messages, _ = anthropic_request_to_openai(body, tool_images=False)
+
+    assert messages == [{"role": "tool", "tool_call_id": "toolu_1", "content": "shot\n[image]"}]
+
+
+def test_request_tool_result_image_without_url_form_becomes_placeholder():
+    """An image the chat surface cannot carry still leaves the result non-empty."""
+    unknown = {"type": "image", "source": {"type": "file", "file_id": "f_1"}}
+    body = _tool_result_body(
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": [unknown]}
+    )
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert messages == [{"role": "tool", "tool_call_id": "toolu_1", "content": "[image]"}]
 
 
 def test_request_tool_result_is_error_prefixed():

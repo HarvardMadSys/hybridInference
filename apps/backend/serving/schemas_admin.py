@@ -994,6 +994,9 @@ class AnalyticsModelUserEntry(BaseModel):
     user_id: str
     requests: int
     tokens: int  # prompt + completion tokens attributed to this user + model
+    prompt_tokens: int  # prefill tokens, cached ones included
+    cache_read_tokens: int  # prefill tokens served from the prompt cache
+    completion_tokens: int  # output tokens, reasoning included
 
 
 class AnalyticsModelUsers(BaseModel):
@@ -1007,6 +1010,9 @@ class AnalyticsModelUsers(BaseModel):
     model: str  # model_id
     requests: int  # total user-attributed requests for this model
     tokens: int  # total user-attributed tokens for this model
+    prompt_tokens: int
+    cache_read_tokens: int
+    completion_tokens: int
     users: list[AnalyticsModelUserEntry]
 
 
@@ -1822,7 +1828,27 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
         return cleaned
 
 
-class UpdateProviderRouteCandidateRequest(BaseModel):
+class RouteCapabilityEdit(BaseModel):
+    """A route edit's optional capability change, saved with the route's other fields.
+
+    Leave both out to keep the route's capabilities as they are. ``capabilities``
+    sets them for this route, as the capabilities endpoint's PUT does;
+    ``reset_capabilities`` clears that setting, as its DELETE does, so the route
+    follows its models.yaml or creation values again.
+    """
+
+    capabilities: RuntimeModelCapabilities | None = None
+    reset_capabilities: StrictBool = False
+
+    @model_validator(mode="after")
+    def validate_one_capability_change(self) -> "RouteCapabilityEdit":
+        """Refuse a body that both sets and clears the capabilities."""
+        if self.reset_capabilities and self.capabilities is not None:
+            raise ValueError("send capabilities or reset_capabilities, not both")
+        return self
+
+
+class UpdateProviderRouteCandidateRequest(RouteCapabilityEdit):
     """Request payload for editing one runtime provider route candidate in place.
 
     A field left out keeps the route's current value, so ``{"concurrency_limit":
@@ -1853,8 +1879,11 @@ class UpdateProviderRouteStateRequest(BaseModel):
     disabled: bool
 
 
-class UpdateProviderRouteRequest(BaseModel):
-    """Request payload for updating one provider route target."""
+class UpdateProviderRouteRequest(RouteCapabilityEdit):
+    """Request payload for updating one provider route target.
+
+    Verifying an edit reads the same body and ignores its capability fields.
+    """
 
     provider: str | None = Field(None, min_length=1, max_length=64)
     upstream_provider: str | None = Field(None, min_length=1, max_length=64)

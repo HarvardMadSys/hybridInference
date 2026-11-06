@@ -64,9 +64,12 @@ from routing.endpoints import endpoint_id_for_adapter
 from routing.response_text import accumulate_stream_prefix, response_text, response_usage
 from routing.route_scope import adapter_in_endpoint_scope
 from routing.routers import (
+    ROUTE_REFUSAL_CIRCUIT_OPEN,
+    ROUTE_REFUSAL_NO_CAPACITY,
     AllCircuitsOpenError,
     TargetUnavailableError,
     adapter_supports_modalities,
+    describe_route_refusals,
 )
 from routing.streaming import has_non_empty_content
 from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
@@ -1527,6 +1530,7 @@ class RouteWiseRouter:
         context: dict[str, Any] | None = None,
         admission_refused: set[str] | None = None,
         capacity_refused: set[str] | None = None,
+        modality_refused: set[str] | None = None,
     ) -> tuple[list[FeasibleProviderCandidate], tuple[tuple[Any, ...], dict[str, Any]] | None]:
         model_id = self.canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
@@ -1547,9 +1551,10 @@ class RouteWiseRouter:
 
         for route_candidate in entries:
             adapter = route_candidate.adapter
-            if not adapter_supports_modalities(adapter, required_modalities):
-                continue
-            has_modality_match = True
+            # Whether any route accepts the media is a property of the whole
+            # model, so it is judged before the range checks below.
+            accepts_modalities = adapter_supports_modalities(adapter, required_modalities)
+            has_modality_match = has_modality_match or accepts_modalities
             endpoint_id = route_candidate.endpoint_id
             if required_endpoint_id is not None and endpoint_id != required_endpoint_id:
                 # An exact dispatch: this endpoint and no other, so the solve
@@ -1558,6 +1563,12 @@ class RouteWiseRouter:
             if endpoint_scope is not None and not adapter_in_endpoint_scope(
                 adapter, endpoint_scope
             ):
+                continue
+            if not accepts_modalities:
+                # Remembered only for this range, so an empty solve can name the
+                # routes the media ruled out instead of hiding them.
+                if modality_refused is not None:
+                    modality_refused.add(endpoint_id)
                 continue
             self._health_registry.ensure(endpoint_id)
             # A query, not a commit: this loop builds the feasible set and the
@@ -1687,7 +1698,8 @@ class RouteWiseRouter:
         if not has_modality_match:
             raise AllCircuitsOpenError(
                 f"No route for model {model_id} accepts input modalities "
-                f"{sorted(required_modalities)}"
+                f"{sorted(required_modalities)}: filtered out "
+                + ", ".join(candidate.endpoint_id for candidate in entries)
             )
         return candidates, prefix_context
 
@@ -2332,6 +2344,7 @@ class RouteWiseRouter:
         trace: RoutingTrace,
         *,
         required_endpoint_id: str | None = None,
+        required_modalities: frozenset[str] | None = None,
     ) -> Exception:
         """Say *why* the solve came back empty, in the terms the client needs.
 
@@ -2350,27 +2363,62 @@ class RouteWiseRouter:
         candidate" instead of "the deployment is wrong" or "an upstream failed".
         An endpoint that is not configured for this model at all is still the
         configuration error the ValueError describes.
+
+        Whichever type is chosen, the message names every endpoint the solve
+        passed over with its reason -- an open circuit, spent capacity, or input
+        modalities the route does not accept -- so one refused endpoint cannot
+        hide the others: a busy local server is not reported as missing just
+        because a cloud endpoint's circuit is open.
         """
+        detail = self._no_decision_detail(model_id, trace, required_modalities)
         if required_endpoint_id is not None and required_endpoint_id in {
             candidate.endpoint_id for candidate in self.route_candidates.get(model_id, ())
         }:
-            refused = sorted(trace.admission_refused | trace.capacity_refused)
             return TargetUnavailableError(
                 f"endpoint {required_endpoint_id!r} is configured for model {model_id} but "
-                f"cannot be dispatched right now: "
-                f"{refused or ['no admissible candidate']}"
+                f"cannot be dispatched right now: {detail}"
             )
         if trace.admission_refused:
-            return AllCircuitsOpenError(
-                f"All provider circuits are open for model {model_id}: "
-                f"{sorted(trace.admission_refused)}"
-            )
+            return AllCircuitsOpenError(f"No admissible route for model {model_id}: {detail}")
         if trace.capacity_refused:
             return TargetUnavailableError(
-                f"no candidate for model {model_id} has capacity right now: "
-                f"{sorted(trace.capacity_refused)}"
+                f"no candidate for model {model_id} has capacity right now: {detail}"
             )
+        if trace.modality_refused:
+            return ValueError(f"No route configured for model {model_id}: {detail}")
         return ValueError(f"No route configured for model {model_id}")
+
+    def _no_decision_detail(
+        self,
+        model_id: str,
+        trace: RoutingTrace,
+        required_modalities: frozenset[str] | None,
+    ) -> str:
+        """Return each endpoint the latest solve passed over, with its reason.
+
+        Listed in route order, the order an operator reads ``models.yaml`` in;
+        an endpoint a route refresh has since removed sorts after the rest.
+        """
+        order = {
+            candidate.endpoint_id: index
+            for index, candidate in enumerate(
+                self.route_candidates.get(self.canonical_model_id(model_id), ())
+            )
+        }
+
+        def in_route_order(endpoint_ids: set[str]) -> list[str]:
+            return sorted(
+                endpoint_ids,
+                key=lambda endpoint_id: (order.get(endpoint_id, len(order)), endpoint_id),
+            )
+
+        reasons = dict.fromkeys(trace.capacity_refused, ROUTE_REFUSAL_NO_CAPACITY)
+        reasons.update(dict.fromkeys(trace.admission_refused, ROUTE_REFUSAL_CIRCUIT_OPEN))
+        return describe_route_refusals(
+            [(endpoint_id, reasons[endpoint_id]) for endpoint_id in in_route_order(set(reasons))],
+            required_modalities=required_modalities,
+            modality_filtered=in_route_order(trace.modality_refused),
+        )
 
     def _select_decision(
         self,
@@ -2409,6 +2457,7 @@ class RouteWiseRouter:
 
         admission_refused: set[str] = set()
         capacity_refused: set[str] = set()
+        modality_refused: set[str] = set()
         candidates, prefix_context = self._build_candidates(
             model_id,
             prompt_tokens=prompt_tokens,
@@ -2418,9 +2467,11 @@ class RouteWiseRouter:
             context=context,
             admission_refused=admission_refused,
             capacity_refused=capacity_refused,
+            modality_refused=modality_refused,
         )
         trace.admission_refused = admission_refused
         trace.capacity_refused = capacity_refused
+        trace.modality_refused = modality_refused
         excluded_endpoint_ids = trace.excluded_endpoint_ids
         if excluded_endpoint_ids:
             candidates = [
@@ -2539,10 +2590,17 @@ class RouteWiseRouter:
                     # ownership lexical even if metadata or hedge setup fails.
                     reservation.release()
                     raise
-            # Losing the commit race on a recovering endpoint is the same
-            # condition the build filter reports, just observed a moment later.
+            # A failed commit is one of the two refusals the build filter
+            # reports, just observed a moment later. ``_commit_candidate`` hands
+            # a granted claim straight back, so a circuit that refuses now is
+            # what refused the commit. One that still admits granted the claim,
+            # and the reservation lost its race instead: a slot or the last
+            # quota unit went to another request after the build saw it free.
+            # Nothing was sent upstream, so neither case is a provider failure.
             if not self._health_registry.allow_request(selected.endpoint_id):
                 admission_refused.add(selected.endpoint_id)
+            else:
+                capacity_refused.add(selected.endpoint_id)
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
             if not candidates:
                 return None
@@ -3029,6 +3087,7 @@ class RouteWiseRouter:
                         model_id,
                         trace,
                         required_endpoint_id=context.get("required_endpoint_id"),
+                        required_modalities=context.get("required_modalities"),
                     )
 
                 decision = next_decision
@@ -3153,6 +3212,7 @@ class RouteWiseRouter:
                         model_id,
                         trace,
                         required_endpoint_id=context.get("required_endpoint_id"),
+                        required_modalities=context.get("required_modalities"),
                     )
 
                 decision = next_decision

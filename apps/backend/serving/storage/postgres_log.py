@@ -14,9 +14,8 @@ from serving.storage import (
     user_usage_rollup,
 )
 from serving.storage.base import LogStore, Row
-from serving.storage.log_schema import (
+from serving.storage.erasure_fence import (
     check_erasure_fence,
-    ensure_api_logs_schema,
     establish_erasure_fence,
     fence_account_digest,
     protect_api_logs_insert,
@@ -83,6 +82,54 @@ _GRANT_METRIC_COLUMNS = {
     "spent_usd": "cost_usd",
 }
 
+# Dashboard usage windows. ``today`` and ``month`` start at 00:00 UTC, when the
+# daily quota resets, regardless of the session time zone; ``week`` is rolling.
+_USER_USAGE_WINDOWS = {
+    "today": "timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
+    "week": "timestamp >= NOW() - INTERVAL '7 days'",
+    "month": "timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
+    "alltime": "TRUE",
+}
+
+# Summed per window. Cache tokens are a subset of ``prompt_tokens``; whether
+# ``reasoning_tokens`` is inside ``completion_tokens`` depends on the provider.
+_USER_USAGE_SUMS = (
+    "cost_usd",
+    "prompt_tokens",
+    "completion_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+)
+
+# Summed over the rows that carry them, never coalesced: a NULL
+# ``reasoning_tokens`` means the upstream reported no count (a native Anthropic
+# upstream never does; thinking is inside its output), so a window whose rows
+# all lack one sums to "unknown", not to 0, and the rows that do carry one are
+# counted so a partial sum is labelled as such.
+_USER_USAGE_KNOWN_SUMS = ("reasoning_tokens",)
+
+# One pass over the user's rows instead of one query per window; the
+# all-time window scans every row anyway.
+_USER_USAGE_SQL = "SELECT {} FROM api_logs WHERE user_id = $1".format(
+    ",\n       ".join(
+        [
+            f"COUNT(*) FILTER (WHERE {cond}) AS {window}__requests"
+            for window, cond in _USER_USAGE_WINDOWS.items()
+        ]
+        + [
+            (
+                f"SUM({col}) FILTER (WHERE {cond}) AS {window}__{col}, "
+                f"COUNT({col}) FILTER (WHERE {cond}) AS {window}__{col}_known"
+            )
+            if col in _USER_USAGE_KNOWN_SUMS
+            else f"COALESCE(SUM({col}) FILTER (WHERE {cond}), 0) AS {window}__{col}"
+            for window, cond in _USER_USAGE_WINDOWS.items()
+            for col in _USER_USAGE_SUMS
+        ]
+    )
+)
+
 
 class PostgresLogStore(LogStore):
     """LogStore backed by an asyncpg connection pool."""
@@ -101,7 +148,7 @@ class PostgresLogStore(LogStore):
             store_full_prompts: If False, prompt and response fields will be NULL.
             fence_secret: Server secret used to derive non-reversible
                 erasure-fence digests. Resolved at startup by
-                :func:`serving.storage.log_schema.resolve_fence_secret`,
+                :func:`serving.storage.erasure_fence.resolve_fence_secret`,
                 which fails closed if no stable secret is configured.
         """
         self.pool = pool
@@ -111,23 +158,16 @@ class PostgresLogStore(LogStore):
     # -- lifecycle -----------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Create api_logs and api_stats_hourly tables with indexes.
+        """Validate the erasure-fence secret fingerprint (issue #1421).
 
-        Delegates to :func:`serving.storage.log_schema.ensure_api_logs_schema`,
-        the single source of truth shared with ``DatabaseLogger._create_tables``
-        so the two initializers cannot drift.
-
-        Also validates the erasure-fence secret fingerprint (issue #1421),
-        refusing to start if the configured secret no longer matches the
-        pinned fingerprint (which would silently orphan existing tombstones).
+        Refuses to start if the configured secret no longer matches the pinned
+        fingerprint, which would silently orphan existing tombstones. The tables
+        come from the schema migrations.
         """
+        if not self.fence_secret:
+            return
         async with self.pool.acquire() as conn:
-            if self.fence_secret:
-                # Validate existing tombstones before any API-log migration
-                # that may defer on a bounded table lock. A mismatched secret
-                # must never reach a usable writer with a fresh digest space.
-                await validate_or_init_fingerprint(conn, secret=self.fence_secret)
-            await ensure_api_logs_schema(conn)
+            await validate_or_init_fingerprint(conn, secret=self.fence_secret)
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
@@ -574,75 +614,24 @@ class PostgresLogStore(LogStore):
     async def get_user_usage_detail(self, user_id: str) -> dict[str, Any]:
         """Return detailed usage stats for the user dashboard."""
         async with self.pool.acquire() as conn:
-            today = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-                """,
-                user_id,
-            )
-            week = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= NOW() - INTERVAL '7 days'
-                """,
-                user_id,
-            )
-            month = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
-                """,
-                user_id,
-            )
-            alltime = await conn.fetchrow(
-                """
-                SELECT COALESCE(SUM(cost_usd), 0) AS cost,
-                       COUNT(*) AS reqs,
-                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens
-                FROM api_logs
-                WHERE user_id = $1
-                """,
-                user_id,
-            )
+            row = await conn.fetchrow(_USER_USAGE_SQL, user_id)
 
-        def _extract(row: Any) -> dict[str, Any]:
-            if not row:
-                return {
-                    "cost_usd": 0.0,
-                    "requests": 0,
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                }
-            return {
-                "cost_usd": float(row["cost"]),
-                "requests": int(row["reqs"]),
-                "prompt_tokens": int(row["prompt_tokens"]),
-                "completion_tokens": int(row["completion_tokens"]),
+        def _window(window: str) -> dict[str, Any]:
+            stats: dict[str, Any] = {
+                "requests": int(row[f"{window}__requests"]) if row else 0,
             }
+            for col in _USER_USAGE_SUMS:
+                if col in _USER_USAGE_KNOWN_SUMS:
+                    known = int(row[f"{window}__{col}_known"] or 0) if row else 0
+                    value = row[f"{window}__{col}"] if row and known else None
+                    stats[col] = None if value is None else int(value)
+                    stats[f"{col}_known_requests"] = known
+                    continue
+                value = row[f"{window}__{col}"] if row else 0
+                stats[col] = float(value) if col == "cost_usd" else int(value)
+            return stats
 
-        return {
-            "today": _extract(today),
-            "week": _extract(week),
-            "month": _extract(month),
-            "alltime": _extract(alltime),
-        }
+        return {window: _window(window) for window in _USER_USAGE_WINDOWS}
 
     async def get_batch_usage(
         self,

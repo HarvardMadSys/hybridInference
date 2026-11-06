@@ -21,8 +21,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.storage import user_usage_rollup
-from serving.storage.log_schema import SchemaLockUnavailable, ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
@@ -383,49 +383,6 @@ async def test_upgrading_tables_from_before_the_turn_and_ask_columns(db):
         assert await conn.fetchval("SELECT count(*) FROM user_usage_daily_coverage") == 40
 
     # So none of them reads as stored: they are all counted live, then filled.
-    await _assert_matches_oracle(pool, op_store)
-    assert await user_usage_rollup.backfill_missing(pool) == 40
-    await _assert_matches_oracle(pool, op_store)
-
-
-@pytest.mark.parametrize("held", ["user_usage_daily", "user_usage_daily_coverage"])
-async def test_reads_count_from_the_logs_while_the_migration_is_deferred(db, held):
-    """An upgrade whose column migration meets pg_dump keeps every read working.
-
-    pg_dump holds ACCESS SHARE on every table for hours. The migration's ALTER
-    gives up after its bounded wait and is retried in the background, while the
-    gateway already serves requests. Holding the main table defers every new
-    column; holding the coverage table lets the metric columns land without
-    ``definition``. Either way reads count from api_logs and fills wait, until
-    the migration lands.
-    """
-    pool, op_store, _, settled = db
-    await _seed(pool, settled)
-    async with pool.acquire() as conn:
-        await _create_first_release_tables(conn, settled)
-
-    dump = await pool.acquire()
-    try:
-        tx = dump.transaction()
-        await tx.start()
-        await dump.execute(f"LOCK TABLE {held} IN ACCESS SHARE MODE")
-        async with pool.acquire() as conn:
-            with pytest.raises(SchemaLockUnavailable):
-                await ensure_api_logs_schema(conn)
-            assert not await user_usage_rollup.stored_ready(conn)
-
-        # The Users list, both usage sorts, the totals, the turn averages, the
-        # ask-question share and the detail view all answer, from api_logs.
-        await _assert_matches_oracle(pool, op_store)
-        assert await user_usage_rollup.backfill_missing(pool) == 0
-        await tx.rollback()
-    finally:
-        await pool.release(dump)
-
-    # The background retry lands; from then on the rollup is read and filled.
-    async with pool.acquire() as conn:
-        await ensure_api_logs_schema(conn)
-        assert await user_usage_rollup.stored_ready(conn)
     await _assert_matches_oracle(pool, op_store)
     assert await user_usage_rollup.backfill_missing(pool) == 40
     await _assert_matches_oracle(pool, op_store)

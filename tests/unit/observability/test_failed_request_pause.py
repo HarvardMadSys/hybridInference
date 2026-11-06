@@ -3,7 +3,7 @@
 With ``SLACK_WEBHOOK_URL`` and ``WECOM_ALERTS_WEBHOOK_URL`` both empty the
 detector is paused: it queries nothing and changes nothing. Its open incident
 must then not be closed on its behalf -- the stale sweep would otherwise post
-"Recovered (no recent samples)" through a remaining generic Slack channel, or,
+a "Recovered: <key> (no recent samples)" card through a remaining generic Slack channel, or,
 with no channel at all, retry until it forgot the incident -- and the pause
 must not count as healthy settling once the detector resumes.
 """
@@ -174,7 +174,7 @@ async def test_an_unrelated_metric_is_still_swept_meanwhile(clock, channel) -> N
 
     await sweep_at(clock, STALE)
 
-    assert channel.recoveries() == ["Recovered (no recent samples): other_metric"]
+    assert channel.recoveries() == ["other_metric (no recent samples)"]
     assert not alerts._TRANSITIONS.is_firing("other_metric")
     assert alerts._TRANSITIONS.is_firing(ALERT_KEY)
     assert alerter.last_state == "running"
@@ -216,7 +216,7 @@ async def test_a_queued_recovery_waits_out_the_pause_then_reconciles(clock, chan
         await alerter.run_check()
         await alerts.sweep_stale_breaches()
     assert len(channel.recoveries()) == 1
-    assert channel.recoveries()[0].startswith("Recovered: Failed-request rate exceeded")
+    assert channel.recoveries()[0].startswith("Failed-request rate exceeded")
     assert not alerts._TRANSITIONS.is_firing(ALERT_KEY)
     assert ALERT_KEY not in alerts._PENDING_RESOLUTIONS
 
@@ -270,7 +270,7 @@ async def test_resuming_healthy_settles_afresh(clock, channel) -> None:
     assert channel.recoveries() == []
     clock.at(2000 + DEFAULT_CLEAR_AFTER_SEC)
     await alerter.run_check()
-    assert channel.recoveries() == ["Recovered: Failed-request rate exceeded (DB-query detector)"]
+    assert channel.recoveries() == ["Failed-request rate exceeded (DB-query detector)"]
     assert not alerts._TRANSITIONS.is_firing(ALERT_KEY)
 
 
@@ -350,9 +350,7 @@ async def test_a_pause_during_a_recovery_send_keeps_the_incident_for_a_fresh_che
     channel.hook = lambda: publish(GENERIC)
     clock.at(60 + DEFAULT_CLEAR_AFTER_SEC)
     await alerter.run_check()
-    assert channel.posted[-1].endswith(
-        "Recovered: Failed-request rate exceeded (DB-query detector)"
-    )
+    assert channel.posted[-1].endswith("Failed-request rate exceeded (DB-query detector)")
     assert channel.recoveries() == []
     assert ALERT_KEY not in alerts._PENDING_RESOLUTIONS
     assert alerts._TRANSITIONS.is_firing(ALERT_KEY)
@@ -367,7 +365,7 @@ async def test_a_pause_during_a_recovery_send_keeps_the_incident_for_a_fresh_che
     for offset in (3000, 3060, 3120):
         clock.at(offset)
         await alerter.run_check()
-    assert channel.recoveries() == ["Recovered: Failed-request rate exceeded (DB-query detector)"]
+    assert channel.recoveries() == ["Failed-request rate exceeded (DB-query detector)"]
     assert not alerts._TRANSITIONS.is_firing(ALERT_KEY)
 
 
@@ -392,7 +390,7 @@ async def test_a_pause_during_a_breach_send_keeps_its_cooldown_and_incident(cloc
 # each send in turn. A pause during one of those awaits must reach every key
 # the sweep has not sent for yet, and a recovery's own admission.
 
-DETECTOR_RECOVERY = "Recovered: Failed-request rate exceeded (DB-query detector)"
+DETECTOR_RECOVERY = "Failed-request rate exceeded (DB-query detector)"
 
 
 async def open_metric(key: str) -> None:
@@ -522,7 +520,7 @@ async def test_a_pause_during_an_earlier_stale_close_fences_the_sweep(
 
     await sweep_at(clock, STALE)
 
-    assert channel.recoveries() == ["Recovered (no recent samples): a_metric"]
+    assert channel.recoveries() == ["a_metric (no recent samples)"]
     # Put back as it was: the liveness clock kept, no retry counted, and no
     # no-samples end recorded for a close that did not happen.
     assert alerts._TRANSITIONS.is_firing(ALERT_KEY)
@@ -534,7 +532,7 @@ async def test_a_pause_during_an_earlier_stale_close_fences_the_sweep(
     await sweep_at(clock, 2 * STALE)
     publish(running())
     await sweep_at(clock, 3 * STALE)
-    assert channel.recoveries() == ["Recovered (no recent samples): a_metric"]
+    assert channel.recoveries() == ["a_metric (no recent samples)"]
     assert alerts._TRANSITIONS.is_firing(ALERT_KEY)
 
 
@@ -557,7 +555,7 @@ async def test_a_pause_resume_and_check_during_an_earlier_close_still_fences(
     # The hold reads clear again by now; the generation still tells the sweep
     # that what it decided no longer stands.
     assert not alerter._holds_incident()
-    assert channel.recoveries() == ["Recovered (no recent samples): a_metric"]
+    assert channel.recoveries() == ["a_metric (no recent samples)"]
     # The check landed on the open incident, and nothing overwrote it.
     state = alerts._TRANSITIONS._firing[ALERT_KEY]
     assert (state.last_observed_at, state.clear_started_at) == (T0 + STALE, T0 + STALE)
@@ -569,7 +567,7 @@ async def test_a_pause_resume_and_check_during_an_earlier_close_still_fences(
         clock.at(offset)
         await alerter.run_check()
         await alerts.sweep_stale_breaches()
-    assert channel.recoveries() == ["Recovered (no recent samples): a_metric"]
+    assert channel.recoveries() == ["a_metric (no recent samples)"]
     clock.at(STALE + DEFAULT_CLEAR_AFTER_SEC)
     await alerter.run_check()
     assert channel.recoveries()[1:] == [DETECTOR_RECOVERY]
@@ -598,7 +596,7 @@ async def test_a_pause_during_an_earlier_retry_fences_a_queued_recovery(
 
     await sweep_at(clock, 240)
 
-    assert channel.recoveries() == ["Recovered: Other"]
+    assert channel.recoveries() == ["Other"]
     if resumed:
         # The healthy check under the resumed configuration settles afresh:
         # the card queued before the pause is no evidence any more.
@@ -614,7 +612,7 @@ async def test_a_pause_during_an_earlier_retry_fences_a_queued_recovery(
         clock.at(offset)
         await alerter.run_check()
         await alerts.sweep_stale_breaches()
-    assert channel.recoveries() == ["Recovered: Other", DETECTOR_RECOVERY]
+    assert channel.recoveries() == ["Other", DETECTOR_RECOVERY]
     assert channel.urls[-1] == SLACK_B
     assert ALERT_KEY not in alerts._PENDING_RESOLUTIONS
     assert not alerts._TRANSITIONS.is_firing(ALERT_KEY)
@@ -753,7 +751,7 @@ async def test_a_wait_that_runs_out_defers_the_close_untouched(
         assert alerts._TRANSITIONS.is_firing(ALERT_KEY)
     else:
         # Deferred, not dropped: the next sweep closes it.
-        assert channel.recoveries() == ["Recovered (no recent samples): failed_request_rate_db"]
+        assert channel.recoveries() == ["failed_request_rate_db (no recent samples)"]
         assert ended == [ALERT_KEY]
         assert not alerts._TRANSITIONS.is_firing(ALERT_KEY)
 
@@ -793,7 +791,7 @@ async def test_a_breach_during_an_earlier_stale_close_is_not_swept(
 
     # The breach opened a new incident on b_metric; this sweep took the old one
     # and must neither end the new episode nor announce it as recovered.
-    assert channel.recoveries() == ["Recovered (no recent samples): a_metric"]
+    assert channel.recoveries() == ["a_metric (no recent samples)"]
     assert alerts._TRANSITIONS.is_firing("b_metric")
     assert alerts._TRANSITIONS._firing["b_metric"].last_observed_at == T0 + STALE
     assert ended == ["a_metric"]

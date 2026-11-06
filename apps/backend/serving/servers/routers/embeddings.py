@@ -16,6 +16,7 @@ from routing.endpoints import endpoint_id_for_config
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.batch.attempts import note_request_id, observe_billing
 from serving.config.runtime_settings import get_runtime_settings
+from serving.exceptions import UpstreamModelQueued, user_safe_upstream_error
 from serving.grant_auth import ledger_attribution
 from serving.model_access import ModelAccessDenial, model_access_denial
 from serving.observability.tracked_tasks import tracked_task
@@ -36,6 +37,7 @@ from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import calculate_cost
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
+from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import derive_affinity_key
 from serving.utils.session_identity import session_identity
@@ -58,6 +60,8 @@ def _schedule_cost_increment(
     user_id: str | None,
     usage: dict[str, Any] | None,
     pricing: dict[str, str] | None,
+    *,
+    api_key_id: int | None = None,
 ) -> None:
     """Fire-and-forget the daily quota cost increment for a billed embedding.
 
@@ -77,7 +81,7 @@ def _schedule_cost_increment(
 
     async def _increment() -> None:
         try:
-            await op_store.increment_user_cost(user_id, cost)
+            await op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
         except Exception as exc:
             logger.warning(f"Failed to increment embedding cost counter for {user_id}: {exc}")
             raise  # let tracked_task record the failure
@@ -287,6 +291,9 @@ async def execute_embeddings(
         # Agent-sandbox attribution (issue #1041); None for ordinary traffic.
         "agent_job_id": user_ctx.get("agent_job_id"),
     }
+    # The key the usage is attributed to, for its owner's per-key views.
+    if user_ctx.get("api_key_id") is not None:
+        metadata["api_key_id"] = user_ctx["api_key_id"]
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
     metadata.update(ctx.batch_log_metadata())
@@ -483,7 +490,9 @@ async def execute_embeddings(
         # header is caller-controlled, so exempting it from billing would let
         # any authenticated client bypass quota by setting it. The probe flag
         # affects log suppression only — never cost/quota.
-        _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
+        _schedule_cost_increment(
+            op_store, user_ctx.get("user_id"), usage, pricing, api_key_id=user_ctx.get("api_key_id")
+        )
         # What this request is charged, for a batch attempt watching it; the
         # same inputs as the increment above. Unpriced reads as unknown.
         observe_billing(
@@ -494,6 +503,24 @@ async def execute_embeddings(
         return response
     except HTTPException:
         raise
+    except UpstreamModelQueued as exc:
+        # The model's on-demand deployment is waiting for capacity. The caller
+        # gets the 503 and the deployment's own message; the log row keeps the
+        # type name, which the failed-request alerts leave out, as does the tag.
+        logger.info(f"Embedding model {model} is queued for capacity upstream")
+        req_ctx.publish_upstream_provider(provider)
+        req_ctx.mark_model_queued()
+        _schedule_log(
+            provider=provider,
+            endpoint_id=endpoint_id,
+            status_code=exc.status,
+            response=None,
+            usage=None,
+            pricing=None,
+            error=format_exception_for_db(exc),
+        )
+        message = user_safe_upstream_error(getattr(exc, "error_body", None))
+        raise HTTPException(exc.status, message or "Embedding service error") from exc
     except aiohttp.ClientResponseError as exc:
         logger.error(f"Embedding request failed for model={model}: {exc.status} {exc.message}")
         # Publish the upstream attribution, not just log it as a value: the DB row

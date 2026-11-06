@@ -451,6 +451,7 @@ def parse_usage(usage_data: dict[str, Any]) -> UsageInfo:
         cache_write_tokens=cache_write,
         reasoning_tokens=thinking_tokens,
         cache_read_reported="cache_read_input_tokens" in usage_data,
+        reasoning_reported=usage_data.get("thinking_tokens") is not None,
     )
 
 

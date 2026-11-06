@@ -25,7 +25,7 @@ from serving.servers.deps import (
     get_db_logger,
     verify_admin_access,
 )
-from serving.storage import account_schema, daily_activity_rollup
+from serving.storage import daily_activity_rollup
 
 router = APIRouter(prefix="/admin")
 
@@ -134,10 +134,8 @@ async def admin_get_analytics(
     lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
     # ``email`` is the user's display label: the email, else the login name
     # of an account created without one, else the id of a deleted account.
-    # A login name column the upgrade has not added yet holds nothing.
-    users = account_schema.current()
-    login_name = users.column("login_name", "u")
-    group_login_name = ", u.login_name" if users.has("login_name") else ""
+    login_name = "u.login_name"
+    group_login_name = ", u.login_name"
 
     # Acquire ONE connection and run all queries sequentially. Acquiring 5
     # connections via asyncio.gather can starve the pool when two admin
@@ -275,7 +273,10 @@ async def admin_get_analytics(
         # the window (per_user), then aggregated in SQL. Scoped to signed-in
         # users (user_id IS NOT NULL), mirroring the top_users query above.
         # Tokens = prompt + completion (total_tokens is only populated when the
-        # provider returns it, so SUM(total_tokens) would undercount).
+        # provider returns it, so SUM(total_tokens) would undercount). The
+        # breakdown splits that into prefill (prompt), the part of prefill
+        # served from the prompt cache (cache_read, a subset of prompt), and
+        # output (completion, reasoning included).
         by_model_top_users_rows = await conn.fetch(
             f"""
             WITH per_user AS (
@@ -287,7 +288,10 @@ async def admin_get_analytics(
                     COALESCE(
                         SUM(COALESCE(l.prompt_tokens, 0) + COALESCE(l.completion_tokens, 0)),
                         0
-                    ) AS token_count
+                    ) AS token_count,
+                    COALESCE(SUM(l.prompt_tokens), 0) AS prompt_token_count,
+                    COALESCE(SUM(l.cache_read_tokens), 0) AS cache_read_token_count,
+                    COALESCE(SUM(l.completion_tokens), 0) AS completion_token_count
                 FROM api_logs l
                 LEFT JOIN users u ON u.id = l.user_id
                 WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
@@ -299,7 +303,10 @@ async def admin_get_analytics(
                 SELECT
                     model_id,
                     SUM(req_count)::bigint AS model_req_count,
-                    SUM(token_count)::bigint AS model_token_count
+                    SUM(token_count)::bigint AS model_token_count,
+                    SUM(prompt_token_count)::bigint AS model_prompt_token_count,
+                    SUM(cache_read_token_count)::bigint AS model_cache_read_token_count,
+                    SUM(completion_token_count)::bigint AS model_completion_token_count
                 FROM per_user
                 GROUP BY model_id
             ),
@@ -325,8 +332,14 @@ async def admin_get_analytics(
                 r.email,
                 r.req_count,
                 r.token_count,
+                r.prompt_token_count,
+                r.cache_read_token_count,
+                r.completion_token_count,
                 mt.model_req_count,
-                mt.model_token_count
+                mt.model_token_count,
+                mt.model_prompt_token_count,
+                mt.model_cache_read_token_count,
+                mt.model_completion_token_count
             FROM ranked r
             JOIN model_totals mt ON mt.model_id = r.model_id
             WHERE r.rn <= $3
@@ -402,6 +415,9 @@ async def admin_get_analytics(
                 model=model,
                 requests=int(row["model_req_count"]),
                 tokens=int(row["model_token_count"]),
+                prompt_tokens=int(row["model_prompt_token_count"]),
+                cache_read_tokens=int(row["model_cache_read_token_count"]),
+                completion_tokens=int(row["model_completion_token_count"]),
                 users=[],
             )
             by_model_top_users_map[model] = entry
@@ -411,6 +427,9 @@ async def admin_get_analytics(
                 user_id=str(row["user_id"]),
                 requests=int(row["req_count"]),
                 tokens=int(row["token_count"]),
+                prompt_tokens=int(row["prompt_token_count"]),
+                cache_read_tokens=int(row["cache_read_token_count"]),
+                completion_tokens=int(row["completion_token_count"]),
             )
         )
 

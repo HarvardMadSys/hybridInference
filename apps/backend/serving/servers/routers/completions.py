@@ -27,7 +27,7 @@ from serving.auto_mode import (
     session_key,
 )
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
-from serving.exceptions import scrub_error_for_user
+from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.grant_auth import ledger_attribution
 from serving.model_access import ModelAccessDenial, model_access_denial, route_canonical_model_id
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
@@ -553,6 +553,8 @@ class ChatStream:
             # the gateway's own routine auth churn to RequestLogMiddleware and the
             # failed-request rule. The session only records the label.
             req_ctx.publish_upstream_provider(self.session.error_provider)
+            if self.session.model_queued:
+                req_ctx.mark_model_queued()
             status_code, message = pre_commit_error
             raise HTTPException(
                 status_code=status_code,
@@ -667,6 +669,8 @@ async def _render_chat_stream(
             # generator runs inside the wrapper's reader task, so its own
             # publish landed in a context copy that ends with the task.
             req_ctx.publish_upstream_provider(stream.session.error_provider)
+            if stream.session.model_queued:
+                req_ctx.mark_model_queued()
             raise
         if stream.provider_header:
             http_response.headers["X-Provider"] = stream.provider_header
@@ -900,6 +904,9 @@ async def execute_chat(
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
     }
+    # The key the usage is attributed to, for its owner's per-key views.
+    if user_ctx.get("api_key_id") is not None:
+        metadata["api_key_id"] = user_ctx["api_key_id"]
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
     if declared_session is not None:
@@ -1340,6 +1347,7 @@ async def execute_chat(
         if _ns_usage:
             routing = await cost_tracker.schedule_increment(
                 user_id=user_id,
+                api_key_id=metadata.get("api_key_id"),
                 routing=routing,
                 prompt_tokens=int(_ns_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(_ns_usage.get("completion_tokens", 0) or 0),
@@ -1516,6 +1524,9 @@ async def execute_chat(
         # See ``_publish_error_provider`` for why the "router" sentinel is not
         # published and what breaks when the label is missing.
         provider_for_error = _publish_error_provider(exc_routing)
+        if isinstance(exc, UpstreamModelQueued):
+            # Not a failure: the failed-request alert leaves it out.
+            req_ctx.mark_model_queued()
 
         if log_store and not suppress_synthetic_logging:
             metadata_for_error = metadata

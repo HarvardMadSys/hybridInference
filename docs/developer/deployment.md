@@ -33,6 +33,47 @@ for a backend started directly from source.
 One more service exists in the same file but starts only when its profile is
 named: `pgadmin` (profile `admin`).
 
+### pgAdmin over mutual TLS
+
+The optional `/pgadmin/` console proxy checks the caller's administrator session
+before connecting to pgAdmin. By default it uses `http://pgadmin:80`; setting
+`PGADMIN_INTERNAL_URL` overrides that address. For a separately hosted pgAdmin
+behind a gateway that requires client certificates, configure the **frontend
+server's runtime environment** with:
+
+```text
+PGADMIN_INTERNAL_URL=https://pgadmin-gateway.internal:8443
+PGADMIN_MTLS_ENABLED=true
+PGADMIN_MTLS_CA_FILE=/run/pgadmin-tls/ca.crt
+PGADMIN_MTLS_CERT_FILE=/run/pgadmin-tls/client.crt
+PGADMIN_MTLS_KEY_FILE=/run/pgadmin-tls/client.key
+```
+
+The URL hostname must match the gateway server certificate. The CA file verifies
+that server; the client certificate and key authenticate the frontend to the
+gateway. Supply the files through a read-only secret mount accessible to the
+frontend process, and restrict who may read or mount the client private key.
+These are file paths inside the frontend container, not certificate contents.
+The upstream gateway must enforce mTLS itself and restrict access to pgAdmin;
+the console's administrator check does not protect a separately exposed backend.
+
+The example Compose file does not forward these variables or mount these files;
+a deployment using Compose must explicitly add the frontend environment and
+secret volumes in an override. Setting only the root `.env` is not sufficient.
+With mTLS enabled, an HTTPS URL and all three files are required; invalid or
+unreadable settings make `/pgadmin/` return 502 without falling back to HTTP.
+Unset `PGADMIN_MTLS_ENABLED` or set it to the literal `false` to retain the
+existing proxy behavior. Values other than `true` or `false` fail closed.
+
+The proxy rereads credentials for each new request and supports Kubernetes
+Secret volume projections that place all three files in the same projection
+directory. Ordinary files must not be modified while a request reads them;
+independent file updates cannot provide an atomic three-file snapshot.
+Certificate rotation across the frontend and gateway requires a coordinated
+procedure: their Secret projections do not update at the same time, and the
+gateway may need a reload. Existing in-flight requests can continue using the
+credentials they already acquired.
+
 `frontend` depends on `backend` with `condition:
 service_started`, not `service_healthy` — deliberately, so that a backend
 reporting unhealthy because its database logging is down does not stop the
@@ -126,12 +167,16 @@ make restart s=backend   # restart one service
 make ps                  # services and health status
 make logs                # tail all logs
 make logs s=backend      # tail one service
-make build               # rebuild images and restart
+make build               # rebuild images, migrate, and restart
 make build s=frontend    # rebuild one service
+make migrate             # apply the schema migrations only
 ```
 
 `make up` and `make build` first run the `docker-volumes` target, which creates
-the external volume `hybridinference_postgres_data` when it is missing.
+the external volume `hybridinference_postgres_data` when it is missing, and then
+apply the schema migrations with the backend image before they start the
+services. `make restart` starts the existing containers again and migrates
+nothing.
 
 To start an optional profile, pass it on the `make` command line — a variable
 set there is exported into the environment of the recipe, and a shell variable
@@ -451,6 +496,10 @@ and a breach still live when the mute lifts pages at its next evaluation. A mute
 is for an alert you want back later; to retire a rule for good, turn it off in
 your alerts file instead.
 
+A snooze treats recoveries the same way: an incident that opens while alerts are
+snoozed closes without a recovery message, and one that was posted before the
+snooze still gets its recovery.
+
 ## The first admin account
 
 A new deployment creates its first administrator on the console's setup page.
@@ -530,10 +579,10 @@ It reads only the `DB_*` settings, asks twice for the new password — or, with
 every browser must sign in again. It takes an email address as well, for any
 other account. From a source checkout, run
 `uv run python -m serving.auth.reset_password <username>` in the repository
-root. It also works on a database the backend's upgrade has not migrated yet —
-while an upgrade's users migration is still waiting for the table's lock, say —
-and changes no schema. Such a database has no login names yet, so name the
-account by its email address there.
+root. It also works on a database the schema migrations have not brought up to
+date — while a migration waits for the users table's lock and the previous
+release goes on serving, say — and changes no schema. Such a database may have
+no login names yet, so name the account by its email address there.
 
 **A setting that breaks the console.** Settings live in the database, so a
 value that stops sign-in from working cannot be fixed by editing `.env`, nor
@@ -601,6 +650,52 @@ docker exec -it hybridinference-postgres psql -U "${DB_USER}" -d "${DB_NAME}"
 
 Schema details are in [Database](database.md).
 
+### Applying schema migrations
+
+Every deployment method has the same step: run the migrations with the image
+you are about to start, while the old one still serves, and start it only when
+they succeed.
+
+| Deployment | The step |
+|---|---|
+| The bundled Compose stack | `make migrate`; `make up` and `make build` run it for you |
+| Compose with a pinned image (`docker-compose.digest-backend.yml`) | `docker compose ... run --rm --no-deps backend python -m migrations upgrade` once PostgreSQL is up, with the same files and `BACKEND_IMAGE` as the `up` that follows |
+| A systemd unit (`deploy/systemd/`) | `.venv/bin/python -m migrations upgrade` in the unit's working directory, with its environment, before `systemctl restart` |
+
+Rules for a deploy script that does this itself:
+
+- Run the migrations with the same image, by digest, that you then start. The
+  image carries the label `org.hybridinference.schema.migrations=alembic`; an
+  image without it predates versioned migrations, builds its schema at
+  startup, and has no step to run.
+- `run --rm backend` gives the one-off container the backend service's
+  networks, fixed addresses included. If the service pins an address
+  (`ipv4_address`), the running backend holds it and Docker refuses the
+  one-off with `Address already in use`. Give the migrations a service of
+  their own instead: the same image and `DB_*` settings, only the database's
+  network, and a Compose profile so that no `up` starts it.
+- Do not let the one-off start or recreate the database. Pass `--no-deps` and
+  check yourself that the database is up: Compose recreates a dependency whose
+  configuration changed, before a migration that may then fail.
+- If the deploy script itself arrives on stdin (`ssh host bash -s`), run the
+  one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so it
+  reads the rest of the script, and the deploy ends with status 0 having done
+  nothing more.
+- Do not make the migrations a step that every start runs (Compose's
+  `depends_on: condition: service_completed_successfully`, a Kubernetes init
+  container). Every restart would migrate first and wait on table locks before
+  it serves. Where they are wired that way anyway, a restored earlier image
+  finds nothing to apply on the newer schema: the command exits 0, or 1 when
+  that schema no longer supports the earlier code.
+- If the step fails, stop: do not restart the service. Exit status 75 means a
+  lock was not available in time (a backup holding a table, or another
+  migration run); the same command can be run again later.
+- Have the deploy in place, and seen working once on an image without the
+  label, before the first image with it arrives. The backend refuses to start
+  on a database that has not been migrated, so a missed step shows up as a
+  failed start and, where the deploy restores the previous image, an outage
+  while it does.
+
 ```{warning}
 The database holds every setting in plaintext: provider keys, the SMTP
 password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that
@@ -645,6 +740,11 @@ make ps
   greppable part of the line.
 - Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`.
 - Database connection failed — check `make ps` for the `postgres` health status.
+- `The database records no schema version` or `The database is at revision …,
+  behind this code's …` — the migrations have not been applied for this image.
+  Run `make migrate` (or your deployment's step, see
+  [Applying schema migrations](#applying-schema-migrations)), then start the
+  backend again.
 - `Configuration load failed after 3 attempts`, then
   `Authentication configuration incomplete` — the backend could not read its
   settings from the database and fell back to the environment, which holds no

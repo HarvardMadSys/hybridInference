@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
@@ -355,11 +356,50 @@ class LLMProberLayoutResponse(BaseModel):
 
 
 # API key schemas
+#: Longest label an owner may give a key.
+API_KEY_NAME_MAX_LENGTH = 64
+
+
+class APIKeyCreateRequest(BaseModel):
+    """Optional settings for a new API key."""
+
+    name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
+
+
+#: Highest budget an owner may give a key, per day or per month: far above any
+#: real quota, it only keeps a typo from becoming a twelve-digit number.
+API_KEY_BUDGET_MAX_USD = Decimal("1000000")
+#: Most models a key's allowlist may name.
+API_KEY_ALLOWED_MODELS_MAX = 200
+
+
+class APIKeyUpdateRequest(BaseModel):
+    """Settings to change on one of the owner's API keys.
+
+    A field that is not sent stays as it is; ``null`` clears it. A cleared
+    budget is no limit at the key (the account's quota still applies); a
+    cleared allowlist is every model the account may use. A budget of 0 pauses
+    the key without revoking it.
+    """
+
+    name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
+    budget_daily_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    budget_monthly_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
+        default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
+    )
+
+
 class APIKeyResponse(BaseModel):
     """API key creation response."""
 
     api_key: str
     key_prefix: str
+    name: str | None = None
     warning: str = "Save this API key now. It will not be shown again."
     created_at: datetime
 
@@ -382,15 +422,35 @@ class APIKeyListItem(BaseModel):
     api_key: str | None = None
     key_prefix: str
     key_masked: str
+    name: str | None = None
     created_at: datetime
     last_used_at: datetime | None = None
     status: str
+    #: What requests made with this key cost on the current UTC day and month.
+    #: Counted since the gateway began attributing usage to keys; requests
+    #: from before then are in the account's totals only.
+    spent_today_usd: float = 0.0
+    spent_month_usd: float = 0.0
+    #: The key's own limits; null is no limit at the key.
+    budget_daily_usd: float | None = None
+    budget_monthly_usd: float | None = None
+    allowed_models: list[str] | None = None
 
 
 class APIKeyListResponse(BaseModel):
     """All API keys owned by the current user."""
 
     keys: list[APIKeyListItem]
+
+
+class APIKeyUpdateResponse(BaseModel):
+    """The owner's settings on an API key after a change."""
+
+    key_prefix: str
+    name: str | None = None
+    budget_daily_usd: float | None = None
+    budget_monthly_usd: float | None = None
+    allowed_models: list[str] | None = None
 
 
 class APIKeyDeleteResponse(BaseModel):
@@ -448,6 +508,27 @@ class UsageStats(BaseModel):
     requests: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_read_tokens: int = Field(
+        default=0, description="Input tokens served from the prompt cache; part of prompt_tokens"
+    )
+    cache_write_tokens: int = Field(
+        default=0, description="Input tokens written to the prompt cache; part of prompt_tokens"
+    )
+    reasoning_tokens: int | None = Field(
+        default=None,
+        description=(
+            "Tokens the model spent reasoning, summed over the requests whose "
+            "upstream reported a count; null when none did. Depending on the "
+            "provider, these may already be counted in completion_tokens"
+        ),
+    )
+    reasoning_tokens_known_requests: int = Field(
+        default=0,
+        description=(
+            "How many of the requests reported a reasoning count; fewer than "
+            "requests means reasoning_tokens is a partial sum"
+        ),
+    )
     cost_usd: float = 0.0
 
 
@@ -553,6 +634,9 @@ class RecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+    # The account's key the request was made with; None for requests from
+    # before usage was attributed to keys, or made without one of its keys.
+    key_prefix: str | None = None
 
 
 class RecentRequestsResponse(BaseModel):

@@ -57,12 +57,24 @@ export interface ConsoleBatch {
   request_counts: { total: number; completed: number; failed: number };
   cancelled: number;
   expired: number;
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    /**
+     * The part of `input_tokens` the upstream served from its prompt cache.
+     * Null for a batch stored before cache hits were recorded; absent from an
+     * older gateway.
+     */
+    cached_input_tokens?: number | null;
+  };
   /** What the batch's finished attempts were billed; attempts of unknown cost are not in it. */
   cost_usd: number;
   /** Attempts whose cost is unknown (an upstream may have run without reporting back). */
   cost_unknown_attempts: number;
   created_at: number | null;
+  /** When its requests began to run; null while it is validating. Absent from an older gateway. */
+  started_at?: number | null;
   expires_at: number | null;
   ended_at: number | null;
   results_expires_at: number | null;
@@ -76,12 +88,15 @@ export interface ConsoleBatch {
   protocol_profile: string | null;
   /** The name and description given in the console (null for a batch the API created). */
   name?: string | null;
+  /** The owner's display (or login) name and email: in the administrators' list only. */
+  user_name?: string | null;
+  user_email?: string | null;
   description?: string | null;
   /** `console` or `api`: where the batch was created. */
   created_via?: 'console' | 'api';
   /** Set while the batch is paused: until when, and why (`quota`, `role`, or null if unknown). */
   paused_until?: number | null;
-  paused_reason?: 'quota' | 'role' | string | null;
+  paused_reason?: 'quota' | 'monthly_quota' | 'role' | 'key_budget' | string | null;
 }
 
 /** A source file's state for its owner. */
@@ -593,21 +608,75 @@ export interface AdminBatchUserSummary {
   failed: number;
   /** Requests a cancel settled before they ran: done, never answered. */
   cancelled: number;
+  /**
+   * Requests that never started before their batch's window closed: a part of
+   * `failed`, as in each batch's counts. Absent from a gateway older than it.
+   */
+  expired?: number;
   cost_usd: number;
   prompt_tokens: number;
   completion_tokens: number;
   unknown_cost_attempts: number;
+  /** Of `prompt_tokens`, those served from a prompt cache, over the batches that recorded it. */
+  cached_tokens?: number;
+  /** Batches stored before cached input was recorded: left out of `cached_tokens`. */
+  cache_unrecorded_batches?: number;
   last_created_at: number | null;
+  /** The owner's display (or login) name and email, when the account has them. */
+  user_name?: string | null;
+  email?: string | null;
 }
 
 export interface AdminBatchSummary {
   users: AdminBatchUserSummary[];
-  totals: Omit<AdminBatchUserSummary, 'user_id' | 'last_created_at'>;
+  totals: Omit<AdminBatchUserSummary, 'user_id' | 'last_created_at' | 'user_name' | 'email'>;
 }
 
 export async function getBatchSummary(): Promise<AdminBatchSummary> {
   const resp = await fetchWithAuth(API_BASE, '/admin/batch/summary');
   return jsonOrThrow<AdminBatchSummary>(resp);
+}
+
+/** One request of a batch, with what was sent and answered: administrators only. */
+export interface AdminBatchItem {
+  id: number;
+  custom_id: string;
+  model_id: string;
+  status: string;
+  status_code: number | null;
+  attempts: number;
+  /** The request body as it was stored. */
+  request: unknown;
+  /** The answer, once the request succeeded. */
+  response: unknown;
+  error: { code?: string; message?: string } | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  completed_at: number | null;
+}
+
+export interface AdminBatchItemPage {
+  object: 'list';
+  data: AdminBatchItem[];
+  has_more: boolean;
+  last_id: number | null;
+}
+
+/**
+ * A page of one batch's requests with their prompts and answers. Refused (403)
+ * where the gateway does not keep prompts; opening the first page is audited.
+ */
+export async function getAdminBatchRequests(
+  batchId: string,
+  after = 0,
+  limit = 25,
+): Promise<AdminBatchItemPage> {
+  const params = new URLSearchParams({ after: String(after), limit: String(limit) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/batch/jobs/${encodeURIComponent(batchId)}/requests?${params.toString()}`,
+  );
+  return jsonOrThrow<AdminBatchItemPage>(resp);
 }
 
 export async function adminCancelBatch(batchId: string): Promise<ConsoleBatch> {

@@ -3065,3 +3065,103 @@ async def test_image_rejected_streaming_text_only_model(image_gate_client: Async
         },
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["plain", "forced_stream", "sse"])
+async def test_upstream_model_queued_is_relayed_and_left_out_of_the_failure_rate(
+    monkeypatch, mock_db_logger, mock_log_store, caplog, mode
+):
+    """An on-demand model waiting for a node: a 503 for the caller, no failure.
+
+    The deployment answers 503 ``model_queued`` for as long as its cluster job
+    waits, which can be hours; counted as failures, those answers page all along.
+    The tag has to reach the request log on every way a chat request is served,
+    and the stream paths cross a task boundary to get there (see the 401 tests
+    above), so each is driven through the real route.
+    """
+    from serving.exceptions import UpstreamModelQueued
+    from serving.observability.alert_rules import _is_failed_request
+
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+
+    def _queued() -> UpstreamModelQueued:
+        error = UpstreamModelQueued(
+            request_info=MagicMock(), history=(), status=503, message="Service Unavailable"
+        )
+        error.retry_after = 120.0
+        error.error_body = json.dumps(
+            {
+                "error": {
+                    "message": "on-demand-model is queued on the cluster, waiting for a GPU.",
+                    "type": "model_queued",
+                    "code": "model_queued",
+                }
+            }
+        )
+        return error
+
+    class QueuedAdapter(BaseAdapter):
+        async def chat_completion(self, messages: list[dict[str, Any]], **params):
+            raise _queued()
+
+        async def stream_chat_completion(
+            self, messages: list[dict[str, Any]], **params
+        ) -> AsyncGenerator[str, None]:
+            raise _queued()
+            if False:  # pragma: no cover
+                yield ""
+
+    cfg = ModelConfig(
+        id="on-demand-model",
+        name="on-demand-model",
+        provider="cluster-ondemand",
+        base_url="http://localhost:8010/v1",
+        context_length=8192,
+        max_output_length=4096,
+        supported_params=["temperature", "max_tokens"],
+    )
+    router = FixedRouter()
+    router.register_route("on-demand-model", [(QueuedAdapter(cfg), 1.0)])
+
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=mode == "forced_stream")
+    app = FastAPI(title="Model Queued App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=mock_db_logger,
+        log_store=mock_log_store,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+    app.add_middleware(RequestLogMiddleware)
+
+    transport = ASGITransport(app=app)
+    with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "on-demand-model",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "stream": mode == "sse",
+                },
+            )
+
+    assert resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    if mode != "forced_stream":
+        # The buffered path answers every relayed error with the generic text.
+        assert "waiting for a GPU" in resp.text
+
+    records = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.client_error_kind == "model_queued"
+    assert not _is_failed_request(
+        {
+            "status": int(record.status_code),
+            "provider": getattr(record, "provider", None),
+            "client_error_kind": record.client_error_kind,
+        }
+    )

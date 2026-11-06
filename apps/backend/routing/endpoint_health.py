@@ -16,9 +16,9 @@ from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value
-from serving.exceptions import operator_safe_error
+from serving.exceptions import UpstreamModelQueued, operator_safe_error
 from serving.observability.alert_history import hooks as alert_history
-from serving.observability.alerts import AlertSeverity, alert_on_transition
+from serving.observability.alerts import AlertSeverity, alert_on_transition, interrupt_settle
 from serving.observability.state_alert_policy import (
     circuit_open_policy,
     set_usage_limit_paging as _set_usage_limit_paging,
@@ -115,7 +115,7 @@ _AUTH_ALERT_COOLDOWN_SEC = 300
 _MIN_ALERT_GAP_SEC = MIN_ALERT_GAP.total_seconds()
 
 # The ``state_changes.circuit_open`` block of alerts.yaml, installed at startup
-# by ``serving.servers.bootstrap`` and read here on every page. Three fields
+# by ``serving.servers.bootstrap`` and read here on every page. Four fields
 # matter to this module:
 #
 # ``page_on_usage_limit`` — whether a subscription usage-limit trip pages at
@@ -129,6 +129,8 @@ _MIN_ALERT_GAP_SEC = MIN_ALERT_GAP.total_seconds()
 # ``enabled`` — whether the circuit-open page is raised at all.
 # ``cooldown_sec`` — the spacing between repeats of one provider's page, which
 #   until now was a literal 300 here and ignored whatever alerts.yaml asked for.
+# ``settle_sec`` — how long a circuit must stay closed before its incident
+#   closes and "Recovered" is posted, so a flapping endpoint is one incident.
 
 # Title of the upstream-auth page. Shared by the firing and resolving edges so
 # the recovery card reads as the same incident ("Recovered: <title>").
@@ -605,6 +607,25 @@ class _CircuitBreaker:
                 # With no running loop (sync teardown) nothing else will close
                 # this incident: a circuit has one healthy edge and state alerts
                 # are never swept, because silence is not recovery.
+                #
+                # Settled, not immediate. Any success closes the circuit -- a
+                # request admitted before the trip, a stream's first token -- and
+                # once availability sits under its floor one failure reopens it,
+                # so a partially failing endpoint cycles many times a minute.
+                # Closing the incident on each close made every cycle a page
+                # plus a "Recovered" card. The incident now closes only once the
+                # circuit has stayed closed for ``settle_sec``; a reopen before
+                # then is the same incident (see ``interrupt_settle`` in
+                # ``on_failure``).
+                #
+                # The report runs later, as a task, so it is fenced on the
+                # circuit still being closed when it does: a reopen landing
+                # before it -- one whose page the policy holds back, which only
+                # reaches ``interrupt_settle`` while nothing is settling yet --
+                # must not start a settle on an open circuit. The same fence is
+                # asked again when the settle is confirmed and when its card is
+                # sent.
+                policy = circuit_open_policy()
                 _fire_and_forget(
                     alert_on_transition(
                         key=f"circuit_open:{self.provider}",
@@ -612,10 +633,16 @@ class _CircuitBreaker:
                         severity=AlertSeverity.ERROR,
                         title="Provider circuit opened",
                         context=dict,
-                        cooldown_sec=circuit_open_policy().cooldown_sec,
+                        cooldown_sec=policy.cooldown_sec,
                         kind="state",
+                        settle_sec=policy.settle_sec,
+                        fence=self._is_closed,
                     )
                 )
+
+    def _is_closed(self) -> bool:
+        """Whether the circuit is closed now; the fence on its recovery report."""
+        return self.state == _CircuitState.CLOSED
 
     def _trip_cause(
         self, by_streak: bool, by_availability: bool, availability: float | None
@@ -693,6 +720,14 @@ class _CircuitBreaker:
             self.last_opened = time.perf_counter()
             if prev_state not in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
                 return
+            # The circuit reopened, so a close still settling from its last
+            # recovery is not a recovery after all. Reported here, before any
+            # gate below can hold the page back: a held-back trip never reaches
+            # ``alert_on_transition``, and the settle timer would otherwise post
+            # "Recovered" while the circuit is open again. A close whose own
+            # report has not run yet is not settling, so this cannot cancel it;
+            # that report's fence (``_is_closed``) refuses it instead.
+            interrupt_settle(f"circuit_open:{self.provider}")
 
             # A subscription usage-limit outage re-trips on every half-open probe
             # until the provider's window resets. Fire one alert per outage and
@@ -1165,6 +1200,21 @@ class EndpointHealthRegistry:
                     "event": "engine_wait_skip_breaker",
                     "endpoint_id": endpoint_id,
                     "detail": _detail_str(detail or operator_safe_error(exc)),
+                },
+            )
+            return
+        if exc is not None and isinstance(exc, UpstreamModelQueued):
+            # An on-demand deployment answered that the model is queued for
+            # capacity (a cluster job waiting for a node). The endpoint is
+            # working as designed, and while the job waits every request gets
+            # this answer, so counting it would hold the circuit open, and page,
+            # for as long as the queue does.
+            logger.info(
+                "model_queued_skip_breaker",
+                extra={
+                    "event": "model_queued_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "retry_after": exc.retry_after,
                 },
             )
             return
