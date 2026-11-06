@@ -173,7 +173,7 @@ def _iso_utc(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
-def _http_status_of(exc: BaseException) -> int | None:
+def http_status_of(exc: BaseException) -> int | None:
     """Best-effort extract of an upstream HTTP status code from an exception.
 
     Adapters surface upstream HTTP errors as exceptions that carry the status on
@@ -197,6 +197,10 @@ def _http_status_of(exc: BaseException) -> int | None:
     return None
 
 
+# The name this module and ``routing.routers`` read it by.
+_http_status_of = http_status_of
+
+
 def _is_auth_misconfig(status: int | None) -> bool:
     """Return whether ``status`` means this gateway's own credential was rejected.
 
@@ -211,9 +215,13 @@ def _is_auth_misconfig(status: int | None) -> bool:
     return status is not None and status in _AUTH_MISCONFIG_STATUSES
 
 
-def _is_client_error(exc: BaseException) -> bool:
-    """Return whether ``exc`` is a client error that must not trip the breaker."""
-    status = _http_status_of(exc)
+def is_client_error_status(status: int | None) -> bool:
+    """Return whether an upstream ``status`` blames the request rather than the endpoint.
+
+    The breaker's client-error exemption, read off a status alone so that a
+    status carried away from its exception (``RoutingObservation.status_code``,
+    a ``failed_attempts`` record) is classified the same way.
+    """
     if status is None or not (400 <= status < 500):
         return False
     # 408 and 429 signal upstream slowness/overload, not a malformed request.
@@ -221,6 +229,11 @@ def _is_client_error(exc: BaseException) -> bool:
         return False
     # Auth statuses reject the gateway's credential, not the user's request.
     return not _is_auth_misconfig(status)
+
+
+def _is_client_error(exc: BaseException) -> bool:
+    """Return whether ``exc`` is a client error that must not trip the breaker."""
+    return is_client_error_status(_http_status_of(exc))
 
 
 def _uncharged_failure_event(exc: BaseException) -> str | None:

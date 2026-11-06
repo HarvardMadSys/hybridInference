@@ -425,6 +425,7 @@ class CompletionsLogger:
         completion_tokens: int,
         success: bool,
         cached_tokens: int | None = None,
+        status_code: int | None = None,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -437,6 +438,12 @@ class CompletionsLogger:
         ``cached_tokens`` is the authoritative observed cache usage from the
         provider (``None`` = unknown). It MUST NOT be synthesized: if the
         provider did not report usage, leave it as ``None``.
+
+        ``status_code`` is the upstream HTTP status of the failure that ended
+        the request, ``None`` when it had none; each earlier failed attempt
+        carries its own in its ``failed_attempts`` record. Both reach the
+        observation, so a learning router can leave a request refused for its
+        own content out of what it learns about the endpoint.
         """
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         terminal_key = endpoint_id or provider or "unknown"
@@ -474,6 +481,7 @@ class CompletionsLogger:
                     terminal=False,
                     cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
+                    status_code=_status_or_none(attempt.get("status_code")),
                 )
             )
 
@@ -490,6 +498,7 @@ class CompletionsLogger:
             terminal=True,
             cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
+            status_code=None if success else status_code,
         )
         active_router.record_observation(obs)
 
@@ -577,3 +586,10 @@ def _extract_failed_attempt_keys(
 
 def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _status_or_none(value: Any) -> int | None:
+    """Return an HTTP status read back from a ``failed_attempts`` record, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 100 <= value <= 599 else None

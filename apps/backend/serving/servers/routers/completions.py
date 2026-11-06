@@ -14,6 +14,7 @@ import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from routing.endpoint_health import http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import conversation_fingerprint
 from routing.protocols import RoutingRequestOptions
@@ -1512,6 +1513,9 @@ async def execute_chat(
                     prompt_tokens=0,
                     completion_tokens=0,
                     success=False,
+                    # The upstream's own status, or None: not the 500 the
+                    # response below defaults a status-less failure to.
+                    status_code=http_status_of(exc),
                 )
             except Exception:
                 logger.exception(

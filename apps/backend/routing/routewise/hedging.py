@@ -112,7 +112,7 @@ class HedgedAdapter(BaseAdapter):
         self.backup_won = False
         self.hedge_delay_sec: float | None = None
         self.hedge_success_probability: float | None = None
-        self.failed_attempts: list[dict[str, str]] = []
+        self.failed_attempts: list[dict[str, Any]] = []
         self.leg_first_content_ttft_ms: dict[str, float] = {}
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
         self._stream_backup_gen: AsyncGenerator[str, None] | None = None

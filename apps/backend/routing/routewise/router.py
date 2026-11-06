@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 
 from routing.backends import LeafBackend
 from routing.dispatch import DispatchMismatchError, binding_for_adapter, execution_adapter
-from routing.endpoint_health import EndpointHealthRegistry
+from routing.endpoint_health import EndpointHealthRegistry, is_client_error_status
 from routing.endpoints import endpoint_id_for_adapter
 from routing.route_scope import adapter_in_endpoint_scope
 from routing.routers import (
@@ -375,6 +375,24 @@ def _is_routewise_retryable_error(exc: BaseException) -> bool:
             TimeoutError,
         ),
     )
+
+
+def _refused_for_its_content(obs: RoutingObservation) -> bool:
+    """Return whether ``obs`` is a failure the upstream blamed on the request itself.
+
+    The breaker's client-error exemption (``is_client_error_status``): such a
+    refusal says nothing about how fast the endpoint answers. Recorded in a
+    latency profile it became a ``RATE_LIMIT_ERROR_PENALTY_MS`` TTFT sample that
+    any caller could add at will, steering the LP and hedging away from an
+    endpoint with malformed requests. 408, 429, 5xx and failures without a
+    status still count.
+    """
+    return not obs.success and is_client_error_status(getattr(obs, "status_code", None))
+
+
+def _row_refused_for_its_content(status_code: Any) -> bool:
+    """``_refused_for_its_content`` for a replayed ``api_logs`` row or attempt record."""
+    return is_client_error_status(_int_status(status_code))
 
 
 class RouteWiseRouter:
@@ -2646,7 +2664,11 @@ class RouteWiseRouter:
         if obs.completion_tokens > 0:
             self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
-        if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:
+        if (
+            obs.endpoint_id
+            and obs.endpoint_id in self._latency_profiles
+            and not _refused_for_its_content(obs)
+        ):
             now = time.time()
             error_type: str | None = None if obs.success else "error"
             latency_ms = (
@@ -2714,7 +2736,14 @@ class RouteWiseRouter:
                 )
                 success = self._is_success_status(row.get("status_code"), row.get("error"))
 
-                if endpoint_id and endpoint_id in self._latency_profiles:
+                # Replayed under the same rule as a live observation
+                # (``_refused_for_its_content``), so a restart does not bring
+                # back the samples the live path leaves out.
+                if (
+                    endpoint_id
+                    and endpoint_id in self._latency_profiles
+                    and (success or not _row_refused_for_its_content(row.get("status_code")))
+                ):
                     latency_ms = self._bootstrap_latency_ms(row, success)
                     error_type = None if success else self._bootstrap_error_type(row)
                     self._latency_profiles[endpoint_id].record(ts, latency_ms, error_type)
@@ -2730,6 +2759,8 @@ class RouteWiseRouter:
                         or self._string_or_none(attempt.get("provider"))
                     )
                     if not failed_endpoint or failed_endpoint not in self._latency_profiles:
+                        continue
+                    if _row_refused_for_its_content(attempt.get("status_code")):
                         continue
                     error_type = self._string_or_none(attempt.get("error_type")) or "error"
                     self._latency_profiles[failed_endpoint].record(ts, -1.0, error_type)

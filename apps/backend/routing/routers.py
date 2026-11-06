@@ -197,6 +197,14 @@ class RoutingObservation:
     leave it as ``None``. ``None`` and ``0`` MUST remain distinct.
     """
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
+    status_code: int | None = None
+    """HTTP status the failed attempt was answered with, if it carried one.
+
+    ``None`` for a success and for a failure with no status (a timeout, a
+    connection error). Lets a learning router tell a request refused for its
+    own content (``routing.endpoint_health.is_client_error_status``) from an
+    endpoint that is slow, overloaded or down.
+    """
 
 
 @dataclass
@@ -470,7 +478,7 @@ def _mark_offload(routing: dict[str, Any], attempts: Sequence[_RouteAttempt]) ->
 
 def _raise_surfaced_error(
     attempts: Sequence[_RouteAttempt],
-    failed_attempts: list[dict[str, str]],
+    failed_attempts: list[dict[str, Any]],
 ) -> NoReturn:
     """Raise the error the caller is told about, once every route has failed.
 
@@ -1129,7 +1137,7 @@ class FixedRouter:
         adapter: BaseAdapter,
         reason: str,
         policy: OffloadPolicy | None,
-        failed_attempts: Sequence[dict[str, str]],
+        failed_attempts: Sequence[dict[str, Any]],
     ) -> None:
         """Record that a request is being sent to its model's offload route."""
         logger.info(

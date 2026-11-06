@@ -31,6 +31,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from routing.endpoint_health import http_status_of
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
@@ -1084,6 +1085,7 @@ class StreamSession:
                     prompt_tokens=0,
                     completion_tokens=0,
                     success=False,
+                    status_code=http_status_of(exc),
                 )
             except Exception:
                 logger.exception(
