@@ -536,8 +536,13 @@ msgid "Responses API"
 msgstr ""
 
 #: ../developer/database.md
-msgid "Stored `/v1/responses` state, when content storage is enabled"
-msgstr "启用内容存储时保存下来的 `/v1/responses` 状态"
+msgid ""
+"Stored `/v1/responses` state, when content storage is enabled, kept for 30"
+" days from each response's creation; a conversation is stored only while"
+" its history is no larger than `REQUEST_MAX_BODY_MB`"
+msgstr ""
+"启用内容存储时保存下来的 `/v1/responses` 状态，每条响应自创建起保留 30 "
+"天；对话历史不超过 `REQUEST_MAX_BODY_MB` 时才继续保存"
 
 #: ../developer/database.md
 msgid "Geo analytics"

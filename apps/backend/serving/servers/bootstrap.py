@@ -983,6 +983,9 @@ async def initialize() -> AppServices:
                             register_rollup_job as register_request_volume_job,
                         )
                         from serving.storage import daily_activity_rollup, user_usage_rollup
+                        from serving.storage.responses_store import (
+                            register_retention_job as register_responses_retention_job,
+                        )
 
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
@@ -991,6 +994,8 @@ async def initialize() -> AppServices:
                             register_request_volume_job(sched, db_logger.pool)
                             user_usage_rollup.register_rollup_job(sched, db_logger.pool)
                             daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
+                            # Stored Responses past their retention, hourly.
+                            register_responses_retention_job(sched, db_logger.pool)
 
                             # Failed-request alerter: one job, paused while
                             # neither SLACK_WEBHOOK_URL nor
