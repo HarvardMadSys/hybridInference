@@ -487,7 +487,9 @@ The gateway reports through these; it has no Prometheus exporter:
   admin dashboards and usage reporting.
 - **Health endpoints.** `/health` is a liveness check that returns 200 with
   `status: "degraded"` when a configured store is down but traffic can still be
-  served, and 503 only when every configured store is unreachable.
+  served, and 503 only when every configured store is unreachable. It answers
+  from one shared store probe for two seconds, and concurrent callers wait for
+  the probe in flight, so polling it does not cost a database query per call.
   `/health/ready` is the strict variant: 503 unless everything configured is up.
   `/health/deep` adds per-endpoint availability and circuit state, and reports
   `degraded` when any endpoint is.

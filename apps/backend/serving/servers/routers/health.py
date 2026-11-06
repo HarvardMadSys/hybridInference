@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -24,6 +25,7 @@ from serving.servers.middleware.proxy_trust import (
     proxy_discovery_ready,
     proxy_discovery_required,
 )
+from serving.utils.single_flight import SingleFlightCache
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -34,6 +36,21 @@ router = APIRouter()
 #: Detached alert deliveries. Held so the loop cannot garbage-collect a task
 #: mid-send, which would drop the report silently.
 _ALERT_TASKS: set[asyncio.Task[Any]] = set()
+
+#: How long anonymous ``/health`` answers from its last store probe. The probe
+#: is a ``SELECT 1`` per store plus the outage/recovery alert bookkeeping; any
+#: caller can ask for it, as often as it likes, and the container probe, load
+#: balancers and monitors all poll it. Two seconds keeps it current for every
+#: one of them and bounds the database work to one probe per window, however
+#: many callers there are. ``/health/ready`` and ``/health/deep`` still probe on
+#: every call.
+HEALTH_PROBE_TTL_SEC = 2.0
+
+#: The last probe, keyed by the stores it probed. Concurrent callers share the
+#: probe in flight rather than each starting one.
+_HEALTH_PROBES: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
+    HEALTH_PROBE_TTL_SEC, max_entries=1
+)
 
 
 def _report_in_background(coro: Coroutine[Any, Any, bool]) -> None:
@@ -216,6 +233,19 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     return result
 
 
+async def _cached_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
+    """:func:`_test_store_health` for ``/health``: shared for a moment, run once at a time.
+
+    The alert transitions it reports are evaluated by the probe itself, so they
+    fire once per probe rather than once per caller. Each caller gets its own
+    copy of the result.
+    """
+    result = await _HEALTH_PROBES.get(
+        (op_store, log_store), lambda: _test_store_health(op_store, log_store)
+    )
+    return copy.deepcopy(result)
+
+
 @router.get("/")
 async def root() -> dict[str, Any]:
     """Root endpoint showing API information and static metadata."""
@@ -261,10 +291,14 @@ async def health(
     log_store hiccups if we returned 503 for partial degradation. Strict
     readiness consumers should use ``/health/ready`` instead, which does
     AND-logic and returns 503 unless every configured store is up.
+
+    The store probe behind it is shared: one probe answers every caller for
+    :data:`HEALTH_PROBE_TTL_SEC`, and callers arriving while it runs wait for
+    it rather than starting their own.
     """
     routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
-    store_health = await _test_store_health(op_store, log_store)
+    store_health = await _cached_store_health(op_store, log_store)
     db_connected = store_health["healthy"]
 
     if not store_health["database_configured"]:
