@@ -812,12 +812,20 @@ class _PromptAnchor:
         self._computed = False
 
     def for_endpoint(self, adapter: BaseAdapter) -> tuple[int, str] | None:
-        """Return the anchor to store with a lease on ``adapter``'s endpoint, or None."""
+        """Return the anchor to store with a lease on ``adapter``'s endpoint, or None.
+
+        Never raises: it runs where the caller holds a dispatch claim and a
+        prefill lease that only its ``try`` returns. A prompt that cannot be
+        anchored is stored without one, which forgoes the discount.
+        """
         if not _schedules_by_priority(adapter):
             return None
         if not self._computed:
-            self._anchor = prompt_anchor(self._messages)
             self._computed = True
+            try:
+                self._anchor = prompt_anchor(self._messages)
+            except Exception:
+                logger.warning("prompt anchor failed; storing the hint without one", exc_info=True)
         return self._anchor
 
 

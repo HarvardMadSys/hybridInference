@@ -199,3 +199,31 @@ async def test_the_anchor_is_not_computed_inside_the_routing_transaction(monkeyp
 
     assert depths == [0]
     assert answering.seen == [prefill_load.PRIORITY_ELEPHANT]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@_PATHS
+async def test_a_prompt_that_cannot_be_anchored_is_still_served(monkeypatch, stream):
+    """The anchor is now taken while the request holds its claim and lease.
+
+    It used to be computed before either was taken, so it must not be able to
+    strand them: a failure stores the hint without an anchor instead.
+    """
+
+    def broken(messages):
+        raise RuntimeError("cannot anchor")
+
+    monkeypatch.setattr(routers_module, "prompt_anchor", broken)
+    adapter = _Capturing(_cfg("sglang", priority_scheduling=True))
+    router = FixedRouter()
+    router.register_route("m", [(adapter, 1.0)])
+    req_ctx.set({"affinity_key": "u1"})
+
+    await _turn(router, _HUGE, stream=stream)
+
+    assert adapter.seen == [prefill_load.PRIORITY_ELEPHANT]
+    assert router.prefill_load.backlog("sglang") == 0
+    assert router.prefill_load._prefix_hints[("u1", "sglang")].anchor is None
+    # The dispatch claim went back: the endpoint still admits.
+    assert router.endpoint_health_registry.allow_request("sglang")
