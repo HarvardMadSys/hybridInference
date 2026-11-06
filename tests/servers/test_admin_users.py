@@ -2110,10 +2110,12 @@ async def test_status_moves_only_between_active_and_suspended(
     # Only a suspension takes the key, and every signed-in session, away -- with
     # the status, in the store's one transaction rather than three writes.
     if allowed and target == "suspended":
-        op_store.suspend_user.assert_awaited_once_with("u1")
+        op_store.suspend_user.assert_awaited_once_with("u1", expected_status=current)
         op_store.update_user_fields.assert_not_awaited()
     elif allowed:
-        op_store.update_user_fields.assert_awaited_once_with("u1", status=target)
+        op_store.update_user_fields.assert_awaited_once_with(
+            "u1", expected_status=current, status=target
+        )
         op_store.suspend_user.assert_not_awaited()
     else:
         op_store.update_user_fields.assert_not_awaited()
@@ -2135,7 +2137,7 @@ async def test_a_suspension_carries_its_other_fields_into_the_same_write(admin_c
 
     assert response.status_code == 200
     op_store.suspend_user.assert_awaited_once_with(
-        "u1", suspension_message="abuse", admin_note="ticket 9"
+        "u1", expected_status="active", suspension_message="abuse", admin_note="ticket 9"
     )
     op_store.update_user_fields.assert_not_awaited()
 

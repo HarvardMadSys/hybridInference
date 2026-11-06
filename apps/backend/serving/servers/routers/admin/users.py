@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 from decimal import Decimal
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -72,6 +73,77 @@ from serving.servers.routers.admin.providers import _enumerate_routable_provider
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+# The claim lease has no wall-clock expiry in the DB; recovery grace is an
+# operator decision. Heartbeat every 300s so a long purge cannot look
+# abandoned to a concurrent recovery caller.
+_HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS = 300.0
+# Retry transient renewal failures until 45min into the grace window so a
+# failover does not strand the claim for a full operator wait.
+_HARD_DELETE_CLAIM_RENEW_UNTIL_SECONDS = 60.0 * 45.0
+_HARD_DELETE_CLAIM_HEARTBEAT_RETRY_SECONDS = 1.0
+
+
+async def _run_hard_delete_stage_with_heartbeat(
+    stage: Awaitable[Any],
+    *,
+    op_store,
+    user_id: str,
+    claim_token: str,
+) -> Any:
+    """Run one destructive stage while retaining its hard-delete claim.
+
+    A stage may live in a different database, so it cannot share the claim
+    transaction. The heartbeat keeps a slow healthy purge from looking
+    abandoned; an authoritative mismatch cancels the stage immediately.
+    Stage completion is authoritative (the final operational purge deletes
+    the row the heartbeat would renew), so a simultaneous heartbeat mismatch
+    never masks the stage result or masks a 409 raised by the state machine.
+    """
+    renew = getattr(op_store, "renew_hard_delete_user_claim", None)
+    # Stores without lease support (tests with fakes) run the stage directly.
+    if renew is None:
+        return await stage
+
+    async def _heartbeat() -> None:
+        while True:
+            await asyncio.sleep(_HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS)
+            give_up_at = asyncio.get_running_loop().time() + _HARD_DELETE_CLAIM_RENEW_UNTIL_SECONDS
+            while True:
+                try:
+                    await renew(user_id, claim_token)
+                except HardDeleteStateChanged:
+                    raise
+                except Exception as exc:
+                    if asyncio.get_running_loop().time() >= give_up_at:
+                        raise RuntimeError("hard-delete claim renewal failed") from exc
+                    await asyncio.sleep(_HARD_DELETE_CLAIM_HEARTBEAT_RETRY_SECONDS)
+                else:
+                    break
+
+    stage_task = asyncio.create_task(stage)
+    heartbeat_task = asyncio.create_task(_heartbeat())
+    try:
+        done, _ = await asyncio.wait(
+            (stage_task, heartbeat_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if stage_task in done:
+            return await stage_task
+        heartbeat_task.result()
+        raise RuntimeError("hard-delete claim heartbeat stopped unexpectedly")
+    except BaseException:
+        if not stage_task.done():
+            stage_task.cancel()
+        await asyncio.gather(stage_task, return_exceptions=True)
+        raise
+    finally:
+        if not heartbeat_task.done():
+            heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
 
 
 def _user_label(user_row: dict) -> str:
@@ -531,7 +603,16 @@ async def approve_user(
 
     note = payload.note if payload else None
 
-    await op_store.approve_user(user_id, admin_id=admin_id, note=note)
+    try:
+        await op_store.approve_user(
+            user_id, admin_id=admin_id, note=note, expected_status=user_row["status"]
+        )
+    except HardDeleteStateChanged:
+        raise HTTPException(
+            409,
+            "Account state changed before approval. Refresh and retry "
+            "if the account is still pending approval.",
+        ) from None
 
     await log_admin_action(
         op_store,
@@ -585,7 +666,16 @@ async def reject_user(
             f"User is not pending approval (current status: {user_row['status']})",
         )
 
-    await op_store.reject_user(user_id, admin_id=admin_id, reason=payload.reason)
+    try:
+        await op_store.reject_user(
+            user_id, admin_id=admin_id, reason=payload.reason, expected_status=user_row["status"]
+        )
+    except HardDeleteStateChanged:
+        raise HTTPException(
+            409,
+            "Account state changed before rejection. Refresh and retry "
+            "if the account is still pending approval.",
+        ) from None
 
     await log_admin_action(
         op_store,
@@ -857,10 +947,30 @@ async def update_user(
         # One transaction, because a suspension that committed its status alone
         # could not be retried (suspended -> suspended is refused) and its
         # sessions would come back on resume. Resuming does not restore them.
+        # ``expected_status`` makes the write a compare-and-swap on the status
+        # read above: a concurrent delete/resume/claim that moved the account
+        # fails closed with 409 instead of resurrecting it.
         fields = {k: v for k, v in user_table_updates.items() if k != "status"}
-        await op_store.suspend_user(user_id, **fields)
+        try:
+            await op_store.suspend_user(user_id, expected_status=current_status, **fields)
+        except HardDeleteStateChanged:
+            raise HTTPException(
+                409,
+                "Account state changed before the update. Refresh and retry.",
+            ) from None
     elif user_table_updates:
-        await op_store.update_user_fields(user_id, **user_table_updates)
+        try:
+            if new_status is not None:
+                await op_store.update_user_fields(
+                    user_id, expected_status=current_status, **user_table_updates
+                )
+            else:
+                await op_store.update_user_fields(user_id, **user_table_updates)
+        except HardDeleteStateChanged:
+            raise HTTPException(
+                409,
+                "Account state changed before the update. Refresh and retry.",
+            ) from None
 
     # Update key-level fields
     if key_fields:
@@ -1192,15 +1302,28 @@ async def hard_delete_user(
 
         # Purge stored Responses API rows (openai_responses).
         if response_store is not None:
-            await response_store.delete_user_responses(user_id)
+            await _run_hard_delete_stage_with_heartbeat(
+                response_store.delete_user_responses(user_id),
+                op_store=op_store,
+                user_id=user_id,
+                claim_token=claim_token,
+            )
 
         # Purge the user's batches, with the requests and results they hold
         # (also while the batch schema migration is still pending at boot).
+        # The heartbeat is the batch lease: a multi-minute purge renews the
+        # claim instead of letting a concurrent recovery take over mid-delete.
         if batch_store is not None:
-            await batch_store.delete_user_batches(user_id)
+            await _run_hard_delete_stage_with_heartbeat(
+                batch_store.delete_user_batches(user_id),
+                op_store=op_store,
+                user_id=user_id,
+                claim_token=claim_token,
+            )
 
         # Wipe operational rows + write the new hard-delete audit row,
-        # atomically.
+        # atomically. The final purge deletes the claim row, so it runs
+        # without heartbeat: stage completion is authoritative (see wrapper).
         await op_store.hard_delete_user(
             user_id,
             claim_token=claim_token,
