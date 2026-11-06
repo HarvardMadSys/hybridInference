@@ -404,6 +404,7 @@ async def test_owner_codes_go_only_to_the_accounts_own_number(
     monkeypatch.setattr(phone_auth_routes, "run_in_threadpool", sender)
     store = Store(phone_account())
     store.get_user_by_phone.return_value = owner
+    store.session_is_live = AsyncMock(return_value=True)
     token, _ = create_access_token(user_id="owner", email=None)
     await phone_auth_routes.send_phone_code(
         request(authorization=f"Bearer {token}"),

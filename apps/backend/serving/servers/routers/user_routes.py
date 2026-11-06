@@ -14,7 +14,7 @@ from serving.config.site_identity import get_site_identity
 if TYPE_CHECKING:
     from serving.config.runtime_settings import RuntimeSettings
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.audit import AuditTarget
 from serving.exceptions import (
@@ -34,6 +34,8 @@ from serving.schemas_auth import (
     APIKeyListResponse,
     APIKeyRegenerateResponse,
     APIKeyResponse,
+    APIKeyRevealRequest,
+    APIKeyRevealResponse,
     APIKeyUpdateRequest,
     APIKeyUpdateResponse,
     ChangePasswordRequest,
@@ -84,9 +86,14 @@ LOCALE_PREFERENCE_KEY = "locale"
 #: A safety ceiling on an account's active API keys, not a product limit: the
 #: console does not show it and ordinary use never reaches it. Every key spends
 #: the same account quota, so it is not about spend; it bounds what a runaway
-#: or hostile script can write through the unthrottled create route, and the
-#: listing, which decrypts every active key.
+#: or hostile script can write through the unthrottled create route, and what
+#: the listing reads.
 MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 100
+
+#: The statuses of a key whose saved value its owner may still reveal. A
+#: revoked key stays revealable for reference; showing it does not make it
+#: valid again.
+_REVEALABLE_STATUSES = ("active", "revoked")
 
 
 def _clean_key_name(name: str | None) -> str | None:
@@ -589,8 +596,11 @@ async def list_api_keys(
 ) -> APIKeyListResponse:
     """List all API keys owned by the current user, live ones first.
 
-    Active and revoked keys carry their saved full value for the owner to
-    show and copy. Revealing a revoked key does not make it valid again.
+    Every key is masked. A bearer token is all this takes, and one lifted from
+    a browser is good for minutes while an API key lasts until revoked, so the
+    full value of a saved key comes only from
+    ``POST /user/api-keys/{key_prefix}/reveal``, which asks for the password;
+    ``revealable`` says which keys have one saved.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -599,19 +609,12 @@ async def list_api_keys(
 
     keys: list[APIKeyListItem] = []
     for row in rows:
-        full_key: str | None = None
-        if row["status"] in ("active", "revoked") and row["api_key_encrypted"]:
-            # Display-only decryption: never break the listing on a bad
-            # ciphertext — log and fall back to a masked (api_key=None) row.
-            try:
-                full_key = decrypt_api_key(row["api_key_encrypted"])
-            except Exception:
-                logger.warning("api_key_decrypt_failed key_prefix=%s", row["key_prefix"])
         keys.append(
             APIKeyListItem(
-                api_key=full_key,
                 key_prefix=row["key_prefix"],
                 key_masked=mask_key_prefix(row["key_prefix"]),
+                revealable=row["status"] in _REVEALABLE_STATUSES
+                and bool(row.get("api_key_encrypted")),
                 name=row.get("name"),
                 created_at=row["created_at"],
                 last_used_at=row["last_used_at"],
@@ -622,6 +625,85 @@ async def list_api_keys(
             )
         )
     return APIKeyListResponse(keys=keys)
+
+
+@router.post("/api-keys/{key_prefix}/reveal", response_model=APIKeyRevealResponse)
+async def reveal_api_key(
+    request: Request,
+    response: Response,
+    key_prefix: str,
+    body: APIKeyRevealRequest,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyRevealResponse:
+    """Show one of the current user's saved keys in full, once its owner gives the password.
+
+    The session alone is not enough: its token proves a browser, not a
+    person, and the key it would hand out outlives it. The password is checked
+    as :func:`confirm_account_owner` checks it for every sensitive change,
+    each attempt counting against the sign-in limits. An account without a
+    password (one made by phone) is refused: it can set one, or regenerate the
+    key, which shows the new value once. Every reveal is audited.
+
+    Raises:
+        HTTPException: 400 without the right password, or for an account
+            without one; 404 when the account has no such key with a saved
+            value; 409 when the saved value cannot be read; 429 when
+            rate-limited.
+    """
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    user_id = current_user["user_id"]
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user_row.get("password_hash"):
+        raise HTTPException(
+            status_code=400,
+            detail="Showing a saved key needs your password, and this account has none. "
+            "Set one in Settings, or regenerate the key to see a new one.",
+        )
+
+    row = next(
+        (
+            key
+            for key in await op_store.list_account_keys(user_id)
+            if key["key_prefix"] == key_prefix
+        ),
+        None,
+    )
+    if row is None or row["status"] not in _REVEALABLE_STATUSES or not row["api_key_encrypted"]:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    await confirm_account_owner(
+        request,
+        op_store,
+        user_row,
+        password=body.password,
+        phone_code=None,
+        purpose="reveal_api_key",
+    )
+
+    try:
+        api_key = decrypt_api_key(row["api_key_encrypted"])
+    except Exception:
+        logger.warning("api_key_decrypt_failed key_prefix=%s", key_prefix)
+        raise HTTPException(
+            status_code=409,
+            detail="This key's saved value cannot be read. Regenerate the key to get a new one.",
+        ) from None
+
+    await log_admin_action(
+        db_logger,
+        action="reveal_key",
+        details={"actor": "user", "key_prefix": key_prefix},
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(user_id),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return APIKeyRevealResponse(key_prefix=key_prefix, api_key=api_key)
 
 
 def _key_limits(row: dict[str, Any]) -> dict[str, Any]:
@@ -773,6 +855,9 @@ async def delete_api_key(
     response: APIKeyDeleteResponse | None = None
     audit_action: str | None = None
     audit_details: dict[str, Any] | None = None
+    # Whose cached auth the change evicts: the key's owner, which is the
+    # account it was found under.
+    key_owner: str = current_user["user_id"]
 
     async with db_logger.pool.acquire() as conn:
         revoked = await conn.fetchrow(
@@ -780,12 +865,13 @@ async def delete_api_key(
             UPDATE api_keys
             SET status = 'revoked'
             WHERE account_id = $1 AND key_prefix = $2 AND status = 'active'
-            RETURNING key_prefix, status
+            RETURNING key_prefix, status, user_id
             """,
             current_user["user_id"],
             key_prefix,
         )
         if revoked:
+            key_owner = revoked.get("user_id") or key_owner
             logger.info(
                 "API key revoked for user: %s key_prefix=%s",
                 current_user["user_id"],
@@ -813,11 +899,12 @@ async def delete_api_key(
                     """
                     DELETE FROM api_keys
                     WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
-                    RETURNING key_prefix
+                    RETURNING key_prefix, user_id
                     """,
                     current_user["user_id"],
                     key_prefix,
                 )
+                key_owner = deleted.get("user_id") or key_owner
                 logger.info(
                     "Revoked API key removed for user: %s key_prefix=%s",
                     current_user["user_id"],
@@ -844,9 +931,10 @@ async def delete_api_key(
         # by the store. Revoking, so the key cannot be used afterwards; and
         # deleting, because the audit lookup caches revoked rows the auth
         # lookups never did (see ``get_key_owner_for_audit``) and would go on
-        # naming the former owner of a key that no longer exists.
+        # naming the former owner of a key that no longer exists. Only the
+        # owner's entries: every one of them is tagged with the owner.
         if op_store:
-            await op_store.invalidate_auth_caches()
+            await op_store.invalidate_user_auth_caches(key_owner)
         return response
 
     if not existing:
@@ -1009,8 +1097,12 @@ async def get_usage(
     _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
     try:
         if log_store:
-            all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
             period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
+            # The period shown, and the month, whose cost is the quota's
+            # spent_month_usd; nothing else is read.
+            all_usage = await log_store.get_user_usage_detail(
+                current_user["user_id"], windows=(period_key, "month")
+            )
             period_data = all_usage.get(period_key, _zero)
             spent_month = all_usage.get("month", _zero).get("cost_usd", 0.0)
         else:
@@ -1160,7 +1252,7 @@ async def change_password(
             status_code=400, detail="New password must be different from current password."
         )
 
-    new_password_hash = password_utils.hash_password(body.new_password)
+    new_password_hash = await password_utils.hash_password_async(body.new_password)
     await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
     # Whoever else holds a session (the reason to change a password, often)
     # loses it; this one stays signed in.

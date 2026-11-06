@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import hmac
 import secrets
+import time
+import weakref
 from base64 import urlsafe_b64encode
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,7 +16,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from serving import grants, quota
 from serving.audit import AuditActor, AuditTarget, audit_columns
 from serving.config.app_config import config_value
-from serving.config.settings import get_settings
+from serving.config.settings import get_settings, has_role
 from serving.config.site_identity import get_site_identity
 from serving.grant_auth import (
     AgentModelAuthError,
@@ -36,7 +38,9 @@ from serving.servers.deps import (
     get_log_store,
     get_operational_store,
 )
+from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.storage.base import OperationalStore
+from serving.storage.pools import DatabaseBusyError
 from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
@@ -48,6 +52,51 @@ logger = get_logger(__name__)
 # Quota of a key whose ``quota_daily_cost_usd`` is NULL (rows from before the
 # column existed).
 _DEFAULT_DAILY_QUOTA_USD = 1000.0
+
+#: Seconds after one ``last_used_at`` write for a key during which this process
+#: writes no other. The store's UPDATE carries the same window as a guard, so a
+#: key used from several processes is still written about once a minute.
+LAST_USED_DEBOUNCE_SECONDS = 60.0
+
+#: Past this many keys remembered for one store, expired ones are swept out.
+_LAST_USED_SWEEP_AT = 4096
+
+# When this process last scheduled a ``last_used_at`` write, per store and key
+# id. Per store rather than per process so two stores (tests build one each)
+# never debounce each other.
+_last_used_written: weakref.WeakKeyDictionary[Any, dict[int, float]] = weakref.WeakKeyDictionary()
+
+
+def touch_key_last_used(op_store: Any, key_id: int) -> None:
+    """Schedule the ``last_used_at`` write for *key_id*, at most once a minute per process.
+
+    Every authenticated request used to fire one: an unconditional UPDATE of
+    the key's row as an unbounded background task, contending on that one row
+    for a busy key and piling up ahead of the auth lookups on the shared pool
+    while the database was slow. The column is informational (the console's
+    "last used"), so minute resolution is all it needs: a write is skipped when
+    this process scheduled one for the key within
+    :data:`LAST_USED_DEBOUNCE_SECONDS`, and the store skips the row when any
+    process wrote it within the same window.
+
+    The time is noted when the write is scheduled, not when it lands, so a slow
+    database sees at most one pending write per key, never a queue of them.
+    """
+    now = time.monotonic()
+    try:
+        written = _last_used_written.setdefault(op_store, {})
+    except TypeError:
+        # A store that cannot be weakly referenced: no debounce, as before.
+        written = None
+    if written is not None:
+        last = written.get(key_id)
+        if last is not None and now - last < LAST_USED_DEBOUNCE_SECONDS:
+            return
+        if len(written) >= _LAST_USED_SWEEP_AT:
+            for stale in [k for k, at in written.items() if now - at >= LAST_USED_DEBOUNCE_SECONDS]:
+                del written[stale]
+        written[key_id] = now
+    tracked_task(op_store.update_key_last_used(key_id), name="key_last_used")
 
 
 class StoredKeyRejected(Exception):
@@ -336,15 +385,16 @@ def _optional_usd(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
-async def _budget_refusal(
+async def _spend_check(
     identity: dict[str, Any],
     *,
     api_key_id: int | None,
     op_store: Any,
     quota_daily_cost_usd: float,
     spent_today_usd: float,
-) -> quota.BudgetRefusal | None:
-    """Return the limit this request would exceed: the key's budgets, then the account's.
+    read_at: float,
+) -> SpendCheck:
+    """Read what the request is checked against: the key's budgets, then the account's.
 
     A key's budgets apply exactly when the request is attributed to the key
     (``api_key_id`` set); a request on behalf of another user spends that
@@ -357,6 +407,11 @@ async def _budget_refusal(
     only for an account that has one. An identity resolved by user rather than
     by key (``X-On-Behalf-Of``) carries no quota columns, so its daily quota is
     the default and it has no monthly quota, as before.
+
+    ``read_at`` is when the first of these reads began
+    (:attr:`~serving.spend_ledger.SpendCheck.read_at`). The check counts, on
+    top of what was read, what the spend ledger knows and the counters do not
+    show yet: requests in flight and costs not yet written.
     """
     daily = monthly = None
     if api_key_id is not None:
@@ -376,7 +431,11 @@ async def _budget_refusal(
             account_month = float(identity["account_spent_month_usd"])
         elif op_store:
             account_month = await op_store.get_user_cost_period(identity["user_id"], "month")
-    return quota.first_refusal(
+    return SpendCheck(
+        ledger=ledger_for(op_store),
+        user_id=identity["user_id"],
+        key_id=api_key_id,
+        read_at=read_at,
         account_quota_usd=quota_daily_cost_usd,
         account_spent_usd=spent_today_usd,
         account_quota_monthly_usd=monthly_quota,
@@ -396,7 +455,8 @@ def _anonymous_context() -> dict[str, Any]:
     The admin role opens the API, but ``authenticated`` stays False on purpose:
     the synthetic-probe trust check (serving/utils/synthetic_probe.py) requires
     a *presented, resolved* key, so on an auth-disabled deployment no caller's
-    X-Probe marker is honoured.
+    X-Probe marker is honoured. Nor does the role open other owners' stored
+    work: see :func:`reads_every_owner`.
     """
     return {
         "user_id": "anonymous",
@@ -404,6 +464,20 @@ def _anonymous_context() -> dict[str, Any]:
         "authenticated": False,
         "is_admin": True,
     }
+
+
+def reads_every_owner(user_ctx: dict[str, Any]) -> bool:
+    """Whether a caller may reach stored work (batches, files) of every owner by id.
+
+    Only an administrator who authenticated as one. While user auth is
+    disabled every caller is the anonymous context, whose admin role opens the
+    API -- every model, the batch surface -- for whoever reaches it; it must not
+    also hand them the batches and files stored under real accounts (before
+    auth was turned off, say) to anyone who has an id. Those callers reach
+    what was stored as ``anonymous``, which is everything stored while auth is
+    off.
+    """
+    return bool(user_ctx.get("authenticated")) and has_role(user_ctx.get("role") or "free", "admin")
 
 
 def _user_context(
@@ -884,6 +958,8 @@ async def verify_api_key(
         # Auth disabled - allow all, mark as anonymous.
         return publish_caller_role(_anonymous_context())
 
+    # Before the first read of the spend counters: see SpendCheck.read_at.
+    spend_read_at = time.monotonic()
     caller, key_hash, caller_spend = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=not x_on_behalf_of
     )
@@ -912,14 +988,19 @@ async def verify_api_key(
     quota_daily_cost_usd = _daily_quota_usd(identity)
     api_key_id = caller_key_id if identity is caller else None
 
-    # Check the key's budgets, then the account's quota.
-    refusal = await _budget_refusal(
+    # Check the key's budgets, then the account's quota, counting requests in
+    # flight and costs not yet written as well. This refuses early; the
+    # request's admission (enforce_user_concurrency) checks again and reserves
+    # its estimate in one step, against the check carried in the context.
+    check = await _spend_check(
         identity,
         api_key_id=api_key_id,
         op_store=op_store,
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+        read_at=spend_read_at,
     )
+    refusal = check.refusal()
     if refusal is not None:
         raise _quota_exceeded(
             request,
@@ -930,19 +1011,20 @@ async def verify_api_key(
 
     # Update last_used timestamp on the presented key — fire-and-forget
     # (issue #185): telemetry, not a gate, so the response no longer waits on
-    # the write. Failures surface through the tracked-task alert rule.
-    tracked_task(op_store.update_key_last_used(caller_key_id), name="key_last_used")
+    # the write, and debounced to once a minute per key. Failures surface
+    # through the tracked-task alert rule.
+    touch_key_last_used(op_store, caller_key_id)
 
     # Return user context for the attributed identity.
-    return publish_caller_role(
-        _user_context(
-            identity,
-            key_hash=key_hash,
-            api_key_id=api_key_id,
-            quota_daily_cost_usd=quota_daily_cost_usd,
-            spent_today_usd=cost_spent,
-        )
+    context = _user_context(
+        identity,
+        key_hash=key_hash,
+        api_key_id=api_key_id,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
     )
+    context[SPEND_CHECK_KEY] = check
+    return publish_caller_role(context)
 
 
 async def authenticate_stored_key(
@@ -993,6 +1075,7 @@ async def authenticate_stored_key(
     if not op_store:
         raise RuntimeError(auth_database_detail())
 
+    spend_read_at = time.monotonic()
     user, spend_today = await _auth_context_with_spend(op_store, key_hash, want_spend=True)
     if not user:
         raise StoredKeyRejected(
@@ -1003,28 +1086,40 @@ async def authenticate_stored_key(
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
+    check: SpendCheck | None = None
     if check_quota:
-        refusal = await _budget_refusal(
+        check = await _spend_check(
             user,
             api_key_id=user.get("id"),
             op_store=op_store,
             quota_daily_cost_usd=quota_daily_cost_usd,
             spent_today_usd=cost_spent,
+            read_at=spend_read_at,
         )
+        refusal = check.refusal()
         if refusal is not None:
-            raise StoredKeyQuotaExceeded(
-                quota_usd=refusal.limit_usd,
-                spent_usd=refusal.spent_usd,
-                reset_at=refusal.reset_at(),
-                scope=refusal.scope,
-                window=refusal.window,
-            )
-    return _user_context(
+            raise stored_key_quota_exceeded(refusal)
+    context = _user_context(
         user,
         key_hash=key_hash,
         api_key_id=user.get("id"),
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+    )
+    if check is not None:
+        # The worker admits the work against it (SpendCheck.admit).
+        context[SPEND_CHECK_KEY] = check
+    return context
+
+
+def stored_key_quota_exceeded(refusal: quota.BudgetRefusal) -> StoredKeyQuotaExceeded:
+    """The :class:`StoredKeyQuotaExceeded` that reports *refusal*."""
+    return StoredKeyQuotaExceeded(
+        quota_usd=refusal.limit_usd,
+        spent_usd=refusal.spent_usd,
+        reset_at=refusal.reset_at(),
+        scope=refusal.scope,
+        window=refusal.window,
     )
 
 
@@ -1070,10 +1165,11 @@ async def verify_batch_management_identity(
     if not is_user_auth_enabled():
         return publish_caller_role({**_anonymous_context(), "quota_exceeded": False})
 
+    spend_read_at = time.monotonic()
     user, key_hash, spend_today = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=True
     )
-    tracked_task(op_store.update_key_last_used(user["id"]), name="key_last_used")
+    touch_key_last_used(op_store, user["id"])
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
     context = _user_context(
@@ -1083,13 +1179,15 @@ async def verify_batch_management_identity(
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )
-    refusal = await _budget_refusal(
+    check = await _spend_check(
         user,
         api_key_id=user["id"],
         op_store=op_store,
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+        read_at=spend_read_at,
     )
+    refusal = check.refusal()
     context["quota_exceeded"] = refusal is not None
     context[_BUDGET_REFUSAL_KEY] = refusal
     return publish_caller_role(context)
@@ -1187,6 +1285,9 @@ async def optional_verify_api_key(
 
     try:
         row = await op_store.get_auth_context_lightweight(key_hash)
+    except DatabaseBusyError:
+        # The app's 503 with Retry-After: busy, not broken.
+        raise
     except Exception as exc:
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc

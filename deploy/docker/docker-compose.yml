@@ -129,6 +129,20 @@ services:
       - ../../var/data:/app/var/data          # credentials and downloaded GeoIP data (read-write)
     ports:
       - "${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}:8080"
+    # The gateway runs as root (see Dockerfile.backend for why), so what it may
+    # do is bounded here instead: no privilege gained through exec, and none of
+    # root's capabilities but the four that let it read and write the files
+    # mounted above whoever owns them. Gone are raw sockets, changing user,
+    # signalling other processes, binding low ports and the rest.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
     depends_on:
       postgres:
         condition: service_healthy
@@ -182,6 +196,14 @@ services:
         # beforeFiles rewrites that outrank the runtime route handler below.
     container_name: hybridinference-frontend
     restart: unless-stopped
+    # A ceiling on what this container can take from the host. The console
+    # fronts the whole API, and request bodies pass through its memory -- the
+    # rewrites' up to 32MiB each (middlewareClientMaxBodySize in
+    # apps/frontend/next.config.js). Past the ceiling the kernel ends this
+    # container, which `restart` brings back, instead of starving the backend
+    # and the database on the same host. FRONTEND_MEM_LIMIT raises it for a
+    # deployment that needs more.
+    mem_limit: ${FRONTEND_MEM_LIMIT:-1g}
     environment:
       NODE_ENV: production
       PORT: "3001"
@@ -208,6 +230,11 @@ services:
       SITE_ASSETS_DIR: ${SITE_ASSETS_DIR-}
     ports:
       - "${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}:3001"
+    # The image runs as an unprivileged user and needs no capability at all.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       backend:
         # Ordering only, deliberately not service_healthy. The console is a
@@ -220,6 +247,8 @@ services:
         condition: service_started
     networks:
       - hybridinference
+      # Where it reaches pgAdmin for /pgadmin; see the pgadmin service.
+      - pgadmin
 
   # ===== Database =====
 
@@ -256,8 +285,16 @@ services:
       -c work_mem=4MB
       -c min_wal_size=1GB
       -c max_wal_size=4GB
+    # The entrypoint starts as root, fixes ownership of the data directory and
+    # switches to the postgres user itself; nothing it runs gains a privilege
+    # through exec. Its capabilities are left as they are: which of them that
+    # startup needs is not something to find out on a production restart.
+    security_opt:
+      - no-new-privileges:true
     networks:
       - hybridinference
+      # pgAdmin reaches the database here, not on `hybridinference`.
+      - pgadmin
 
   # Reached two ways: directly on the published port (an SSH tunnel to
   # 127.0.0.1:5050 needs nothing else), and through the console at /pgadmin/,
@@ -271,8 +308,20 @@ services:
   # The `admin` profile means nothing starts this unless a profile is named:
   # `make up COMPOSE_PROFILES=admin`, or an env file the deploy reads (a
   # distribution's `deploy/compose.env`).
+  #
+  # It is on its own network, `pgadmin`, shared only with the console that
+  # proxies it and the database it manages. On `hybridinference` every other
+  # service -- the internet-facing backend first -- could open pgAdmin, which
+  # with SERVER_MODE False asks for no login. The image binds port 80 as an
+  # unprivileged user through a file capability, which `no-new-privileges` or
+  # dropping capabilities would take away, so neither is set here.
+  #
+  # An exact release, not a moving major tag: pgAdmin 8 is past its end of
+  # life, and a pull should never change the version under a running stack.
+  # pgAdmin upgrades its own settings database on the first start of a newer
+  # release; the volume then cannot go back to an older one.
   pgadmin:
-    image: dpage/pgadmin4:8
+    image: dpage/pgadmin4:9.19
     container_name: hybridinference-pgadmin
     restart: unless-stopped
     environment:
@@ -289,7 +338,7 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - hybridinference
+      - pgadmin
     profiles:
       - admin
 
@@ -302,4 +351,8 @@ volumes:
 
 networks:
   hybridinference:
+    driver: bridge
+  # pgAdmin, the console that proxies it and the database it manages: see the
+  # pgadmin service.
+  pgadmin:
     driver: bridge

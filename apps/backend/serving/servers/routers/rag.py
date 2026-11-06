@@ -28,9 +28,10 @@ import json
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from starlette.background import BackgroundTask
 
 from serving.config.distribution import DistributionConfigError, get_active_distribution_config
@@ -316,9 +317,78 @@ async def rag_status(
     }
 
 
-@router.post("/chat")
+def _is_json_content_type(content_type: str) -> bool:
+    mime = content_type.split(";", 1)[0].strip().lower()
+    return mime == "application/json" or (
+        mime.startswith("application/") and mime.endswith("+json")
+    )
+
+
+async def _authenticated_chat_body(
+    request: Request,
+    _user: dict[str, Any] = Depends(_require_rag_enabled),
+) -> RagChatRequest:
+    """Read and validate the chat body once the caller is authenticated.
+
+    A body model declared on the route would be read and parsed by FastAPI
+    before any dependency runs, authentication included, so an anonymous
+    request could make the server parse whatever it sent before refusing it.
+    This dependency depends on authentication, so the body is not read until
+    the caller is known; it answers an invalid body the way FastAPI would, with
+    a 422 that names the fields.
+    """
+    try:
+        raw = await request.body()
+    except Exception:
+        raise HTTPException(status_code=400, detail="There was an error parsing the body") from None
+    payload: Any = None
+    if raw:
+        if _is_json_content_type(request.headers.get("content-type", "")):
+            try:
+                payload = json.loads(raw)
+            except ValueError as exc:
+                position = exc.pos if isinstance(exc, json.JSONDecodeError) else 0
+                raise RequestValidationError(
+                    [
+                        {
+                            "type": "json_invalid",
+                            "loc": ("body", position),
+                            "msg": "JSON decode error",
+                            "input": {},
+                        }
+                    ]
+                ) from None
+        else:
+            payload = raw
+    try:
+        return RagChatRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise RequestValidationError(
+            [
+                {
+                    "type": error["type"],
+                    "loc": ("body", *error["loc"]),
+                    "msg": error["msg"],
+                    "input": error.get("input"),
+                }
+                for error in exc.errors(include_url=False)
+            ]
+        ) from None
+
+
+@router.post(
+    "/chat",
+    # The body is read by a dependency (see _authenticated_chat_body); describe
+    # it here so the API schema still shows it.
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {"application/json": {"schema": RagChatRequest.model_json_schema()}},
+        }
+    },
+)
 async def rag_chat(
-    body: RagChatRequest,
+    body: RagChatRequest = Depends(_authenticated_chat_body),
     user: dict[str, Any] = Depends(_require_rag_enabled),
 ) -> Any:
     """Answer the latest user question, grounded in retrieved docs."""

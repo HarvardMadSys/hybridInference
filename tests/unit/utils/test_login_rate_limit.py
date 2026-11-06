@@ -1,4 +1,4 @@
-"""Sign-in windows: per device, per account per address, per account, and per address."""
+"""Sign-in windows: per device, per account's devices, per account per address, per account and per address."""
 
 from __future__ import annotations
 
@@ -150,6 +150,68 @@ async def test_a_device_signs_in_while_every_window_it_would_share_is_exhausted(
     assert await check_and_record_login("admin", SHARED, device="d1") == (True, None)
 
 
+async def test_fresh_device_entries_do_not_lift_the_account_limit():
+    """Every sign-in issues a new entry; presenting the newest one is still bounded.
+
+    Each successful sign-in gives the browser a new nonce, and so a new device
+    window, which alone let an account's owner sign in without limit by
+    presenting the latest entry every time.
+    """
+    for n in range(50):
+        assert await check_and_record_login("admin", SHARED, device=f"entry-{n}") == (True, None)
+
+    assert await check_and_record_login("admin", SHARED, device="entry-50") == (False, "devices")
+    assert await check_and_record_login("ADMIN", OWNER, device="entry-51") == (False, "devices")
+    # Another account's browsers are untouched.
+    assert await check_and_record_login("root@example.com", SHARED, device="r1") == (True, None)
+
+
+async def test_the_devices_window_follows_the_account_wide_setting(monkeypatch):
+    monkeypatch.setattr(settings, "login_account_rate_limit_per_15min", 3)
+    for n in range(3):
+        assert await check_and_record_login("admin", SHARED, device=f"entry-{n}") == (True, None)
+
+    assert await check_and_record_login("admin", SHARED, device="entry-3") == (False, "devices")
+
+
+async def test_one_browser_adds_at_most_its_own_allowance_to_the_devices_window():
+    """A browser that keeps trying (a stolen entry, say) cannot lock out the others."""
+    refused = [await check_and_record_login("admin", SHARED, device="stolen") for _ in range(500)]
+
+    assert refused[:5] == [(True, None)] * 5
+    assert set(refused[5:]) == {(False, "device")}
+    assert len(login_rate_limit._account_device_attempts["admin"]) == 5
+    for n in range(45):
+        assert await check_and_record_login("admin", SHARED, device=f"owner-{n}") == (True, None)
+
+
+async def test_no_one_without_an_entry_uses_up_the_devices_window():
+    """The owner's browsers keep signing in while every other window is exhausted."""
+    for _ in range(25):
+        await check_and_record_login("admin", SHARED)
+    for n in range(10):
+        for _ in range(5):
+            await check_and_record_login("admin", f"203.0.113.{n + 1}")
+    assert await check_and_record_login("admin", SHARED) == (False, "ip")
+    assert await check_and_record_login("admin", OWNER) == (False, "account")
+
+    assert "admin" not in login_rate_limit._account_device_attempts
+    for n in range(50):
+        assert await check_and_record_login("admin", SHARED, device=f"owner-{n}") == (True, None)
+
+
+async def test_the_devices_window_slides(monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(login_rate_limit, "_now", lambda: now[0])
+    for n in range(50):
+        await check_and_record_login("admin", SHARED, device=f"entry-{n}")
+    assert await check_and_record_login("admin", SHARED, device="late") == (False, "devices")
+
+    now[0] += 15 * 60 + 1
+
+    assert await check_and_record_login("admin", SHARED, device="late") == (True, None)
+
+
 async def test_device_attempts_do_not_count_in_the_other_windows():
     for _ in range(100):
         await check_and_record_login("admin", SHARED, device="d1")
@@ -170,6 +232,7 @@ async def test_sweep_drops_expired_buckets_from_every_login_window(monkeypatch):
     await check_and_record_login("root@example.com", OWNER)  # the third call sweeps
 
     assert login_rate_limit._device_attempts == {}
+    assert login_rate_limit._account_device_attempts == {}
     assert set(login_rate_limit._account_address_attempts) == {("root@example.com", OWNER)}
     assert set(login_rate_limit._account_attempts) == {"root@example.com"}
     # The per-IP window is an hour, so the attacker's address is still counted.
@@ -185,3 +248,4 @@ async def test_reset_clears_every_login_window():
 
     assert await check_and_record_login("admin", ATTACKER) == (True, None)
     assert await check_and_record_login("admin", ATTACKER, device="d1") == (True, None)
+    assert len(login_rate_limit._account_device_attempts["admin"]) == 1

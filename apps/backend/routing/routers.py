@@ -24,7 +24,12 @@ if TYPE_CHECKING:
 
 from routing.backends import LeafBackend
 from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
-from routing.endpoint_health import DispatchClaim, EndpointHealthRegistry, _http_status_of
+from routing.endpoint_health import (
+    DispatchClaim,
+    EndpointHealthRegistry,
+    _http_status_of,
+    failure_may_lose_prefix_cache,
+)
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
 from routing.engine_wait import EngineWaitExpired, FirstTokenWatch
 from routing.offload import (
@@ -32,7 +37,6 @@ from routing.offload import (
     FallbackOrder,
     OffloadPolicy,
     abandoned_for_offload,
-    offload_reason_for,
 )
 from routing.prefill_load import (
     PrefillLoadTracker,
@@ -43,7 +47,11 @@ from routing.prefill_load import (
     prompt_anchor,
 )
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
-from routing.streaming import has_non_empty_content
+from routing.streaming import (
+    PRE_CONTENT_BUFFER_MAX_BYTES,
+    chunk_buffer_size,
+    has_non_empty_content,
+)
 from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
 from serving.adapters.upstream_limiter import EngineHold
 from serving.config.app_config import config_value, on_change
@@ -193,6 +201,14 @@ class RoutingObservation:
     leave it as ``None``. ``None`` and ``0`` MUST remain distinct.
     """
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
+    status_code: int | None = None
+    """HTTP status the failed attempt was answered with, if it carried one.
+
+    ``None`` for a success and for a failure with no status (a timeout, a
+    connection error). Lets a learning router tell a request refused for its
+    own content (``routing.endpoint_health.is_client_error_status``) from an
+    endpoint that is slow, overloaded or down.
+    """
 
 
 @dataclass
@@ -466,7 +482,7 @@ def _mark_offload(routing: dict[str, Any], attempts: Sequence[_RouteAttempt]) ->
 
 def _raise_surfaced_error(
     attempts: Sequence[_RouteAttempt],
-    failed_attempts: list[dict[str, str]],
+    failed_attempts: list[dict[str, Any]],
 ) -> NoReturn:
     """Raise the error the caller is told about, once every route has failed.
 
@@ -655,6 +671,63 @@ def _skips_for_context_window(
     return True
 
 
+# How many routes may refuse one request as malformed before fallback stops.
+#
+# A request-describing failure (``_REQUEST_DESCRIBING_STATUSES``) is usually the
+# answering server's own verdict -- one SGLang build rejects a tool schema
+# another accepts -- which is why the walk goes on after the first one. Once a
+# second route has refused the same request, the rest are very likely to refuse
+# it too, and walking on sent every malformed request to every weighted route: a
+# fallback weighted at 1%, a canary, another gateway, each received all of the
+# model's malformed traffic, and paid a full upload and tokenization for each.
+# Two independent verdicts end the walk, and the request is reported with the
+# error ``_select_surfaced_error`` picks, as before.
+#
+# A context-window refusal does not count: ``_skips_for_context_window`` already
+# passes over every route whose window could not fit the prompt, and keeps the
+# wider ones, which can.
+_REQUEST_REFUSAL_LIMIT = 2
+
+
+def _counts_as_request_refusal(exc: BaseException) -> bool:
+    """Return whether ``exc`` refuses the request as malformed, its length aside."""
+    return _describes_request(exc) and not exceeds_context_window(exc)
+
+
+def request_refusals_end_fallback(
+    model_id: str, failures: Sequence[tuple[str | None, BaseException]]
+) -> bool:
+    """Return whether enough routes refused the request as malformed to stop trying others.
+
+    ``failures`` pairs each failed attempt's endpoint id with its error, in
+    dispatch order. Logs ``request_refusal_fallback_stopped`` when it returns
+    True. Public because every router that walks candidates after a failure
+    needs the same bound; see ``_REQUEST_REFUSAL_LIMIT`` for the policy.
+    """
+    refused = [endpoint_id for endpoint_id, error in failures if _counts_as_request_refusal(error)]
+    if len(refused) < _REQUEST_REFUSAL_LIMIT:
+        return False
+    logger.info(
+        "Stopping fallback for %s: %d routes refused the request as malformed",
+        model_id,
+        len(refused),
+        extra={
+            "event": "request_refusal_fallback_stopped",
+            "model_id": model_id,
+            "endpoint_ids": refused,
+        },
+    )
+    return True
+
+
+def _stops_after_request_refusals(model_id: str, attempts: Sequence[_RouteAttempt]) -> bool:
+    """Return whether FixedRouter's fallback walk ends after ``attempts``."""
+    return request_refusals_end_fallback(
+        model_id,
+        [(endpoint_id_for_adapter(attempt.adapter), attempt.error) for attempt in attempts],
+    )
+
+
 class _PrimaryOffload(NamedTuple):
     """How one request's primary attempt relates to its model's offload route.
 
@@ -705,6 +778,55 @@ def adapter_in_endpoint_scope(adapter: BaseAdapter, scope: frozenset[str] | None
         endpoint_id_for_adapter(adapter) in scope
         or getattr(adapter.config, "provider", None) in scope
     )
+
+
+def _schedules_by_priority(adapter: BaseAdapter) -> bool:
+    """Return whether ``adapter`` sends the scheduling priority this router publishes.
+
+    Only a route declared to run sglang priority scheduling
+    (``ModelConfig.priority_scheduling``) puts it on the upstream request
+    (``OpenAICompatAdapter._apply_upstream_priority``). For any other endpoint
+    the priority, and the prompt anchor that exists only to compute it, are work
+    nobody reads.
+    """
+    return bool(getattr(getattr(adapter, "config", None), "priority_scheduling", False))
+
+
+class _PromptAnchor:
+    """One request's prompt anchor, computed the first time an attempt needs it.
+
+    The anchor is stored with the prefix hint so that a later turn can prove it
+    contains this prompt, and the only reader of that proof is the priority of
+    a dispatch to the same endpoint (``FixedRouter._dispatch_priority``). It
+    costs a pass over the whole prompt -- about 10 ms for a 3 MB history -- so a
+    request whose attempts reach no priority-scheduling endpoint never computes
+    it, and its hints carry none: the strict check then refuses to discount
+    against them, the direction that forgoes a discount rather than grants one.
+    """
+
+    __slots__ = ("_anchor", "_computed", "_messages")
+
+    def __init__(self, messages: Sequence[dict[str, Any]] | None) -> None:
+        self._messages = messages
+        self._anchor: tuple[int, str] | None = None
+        self._computed = False
+
+    def for_endpoint(self, adapter: BaseAdapter) -> tuple[int, str] | None:
+        """Return the anchor to store with a lease on ``adapter``'s endpoint, or None.
+
+        Never raises: it runs where the caller holds a dispatch claim and a
+        prefill lease that only its ``try`` returns. A prompt that cannot be
+        anchored is stored without one, which forgoes the discount.
+        """
+        if not _schedules_by_priority(adapter):
+            return None
+        if not self._computed:
+            self._computed = True
+            try:
+                self._anchor = prompt_anchor(self._messages)
+            except Exception:
+                logger.warning("prompt anchor failed; storing the hint without one", exc_info=True)
+        return self._anchor
 
 
 class FixedRouter:
@@ -809,16 +931,18 @@ class FixedRouter:
         detail: str | None = None,
         exc: BaseException | None = None,
     ) -> None:
-        # A failing endpoint has most likely lost its prefix cache (restart,
-        # OOM, a container replaced under the same id), so the hints describing
-        # it stop being evidence. See PrefillLoadTracker.forget_endpoint.
-        # A request that ended waiting -- in this gateway's own outbound queue,
-        # or at an engine that had not started it -- is the exception: nothing
-        # failed and the endpoint's cache is untouched. With an offload route
-        # that is a routine event under load, and wiping the hints on each one
+        # An endpoint failing with a 5xx or with no answer at all may have lost
+        # its prefix cache (restart, OOM, a container replaced under the same
+        # id), so the hints describing it stop being evidence. See
+        # PrefillLoadTracker.forget_endpoint. Every other failure leaves them:
+        # an endpoint that answered a 4xx is up with its cache intact, and so is
+        # one this request never reached (a key-pool refusal) or left waiting
+        # -- in this gateway's own outbound queue, or at an engine that had not
+        # started it. Forgetting on those let one caller's malformed request
+        # wipe every caller's hints for the endpoint, and with an offload route
         # would blind prefill-aware selection exactly when the endpoint is
         # busiest.
-        if exc is None or offload_reason_for(exc) is None:
+        if failure_may_lose_prefix_cache(exc):
             self._prefill_load.forget_endpoint(endpoint_id)
         self._health_registry.record_failure(
             endpoint_id,
@@ -1066,7 +1190,7 @@ class FixedRouter:
         adapter: BaseAdapter,
         reason: str,
         policy: OffloadPolicy | None,
-        failed_attempts: Sequence[dict[str, str]],
+        failed_attempts: Sequence[dict[str, Any]],
     ) -> None:
         """Record that a request is being sent to its model's offload route."""
         logger.info(
@@ -1157,12 +1281,20 @@ class FixedRouter:
         as a tool call it buffers whole, is the engine answering, and the wait
         for it to reach this loop has no deadline.
 
+        What is held is bounded, as the hedge race's buffer is
+        (``routing.streaming.PRE_CONTENT_BUFFER_MAX_BYTES``). Once the chunks
+        held reach that many bytes this stops holding and returns them, without
+        a first token: they go out, which commits the stream to this attempt,
+        and the wait ends -- an upstream that has streamed that much is
+        answering, and the caller records the first token when it comes.
+
         Raises:
             EngineWaitExpired: The watch's deadline passed first. The attempt's
                 stream has been unwound by then, which closes its connection and
                 aborts the request at the engine.
         """
         held: list[Any] = []
+        held_bytes = 0
         try:
             async with watch.deadline() as deadline:
                 watch.arm(deadline)
@@ -1173,6 +1305,18 @@ class FixedRouter:
                         break
                     held.append(chunk)
                     if has_non_empty_content(chunk):
+                        break
+                    held_bytes += chunk_buffer_size(chunk)
+                    if held_bytes >= PRE_CONTENT_BUFFER_MAX_BYTES:
+                        logger.warning(
+                            "first_token_hold_cap_reached",
+                            extra={
+                                "event": "first_token_hold_cap_reached",
+                                "endpoint_id": watch.endpoint_id,
+                                "held_bytes": held_bytes,
+                                "limit_bytes": PRE_CONTENT_BUFFER_MAX_BYTES,
+                            },
+                        )
                         break
         except TimeoutError:
             # Only the watch's own deadline becomes an offload: a TimeoutError the
@@ -2286,13 +2430,18 @@ class FixedRouter:
 
     def _dispatch_priority(
         self,
+        execution: BaseAdapter,
         endpoint_id: str,
         prefill_tokens: int,
         affinity_key: str | None,
         fingerprint: str | None = None,
         messages: Sequence[dict[str, Any]] | None = None,
-    ) -> int:
+    ) -> int | None:
         """Scheduling priority for one dispatch, ranked on *this* endpoint's work.
+
+        ``None`` when ``execution`` does not schedule by priority
+        (``_schedules_by_priority``): its adapter never sends the value, and
+        computing it walks the prompt against the stored anchor for nothing.
 
         Deliberately the un-cached estimate rather than the prompt size: the
         fleet runs above 90% prefix-cache hit, so ranking on the total would
@@ -2316,6 +2465,8 @@ class FixedRouter:
         never seen this conversation, and that fallback really is facing the
         cold prefill.
         """
+        if not _schedules_by_priority(execution):
+            return None
         return priority_for_prefill(
             self._prefill_load.uncached_estimate(
                 endpoint_id,
@@ -2372,8 +2523,9 @@ class FixedRouter:
             tools=params.get("tools"),
             response_format=params.get("response_format"),
         )
-        # Proof, for the next turn, that it really contains this prompt.
-        anchor = prompt_anchor(messages)
+        # Proof, for the next turn, that it really contains this prompt -- for
+        # the attempts whose endpoint reads it (see _PromptAnchor).
+        anchors = _PromptAnchor(messages)
         primary = None
         primary_claim = None
         lease = None
@@ -2395,7 +2547,6 @@ class FixedRouter:
                         prefill_tokens,
                         affinity_key=affinity_key,
                         fingerprint=fingerprint,
-                        anchor=anchor,
                     )
         except BaseException:
             if primary_claim is not None:
@@ -2417,6 +2568,10 @@ class FixedRouter:
             self._prefill_load.release(lease)
             raise
         execution = leaf.adapter
+        # Read only where the hint is written, at release; set here, outside the
+        # routing transaction every request's selection waits on, because it is
+        # a pass over the whole prompt.
+        lease.anchor = anchors.for_endpoint(execution)
         primary_plan = self._primary_offload(
             model_id,
             primary,
@@ -2435,7 +2590,7 @@ class FixedRouter:
                 provider=execution.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                        execution, endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     # A response that arrives whole has no first token to watch,
@@ -2563,7 +2718,12 @@ class FixedRouter:
                         provider=execution.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                                endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                                execution,
+                                endpoint_id,
+                                prefill_tokens,
+                                affinity_key,
+                                fingerprint,
+                                messages,
                             ),
                             # The offload attempt queues normally: there is
                             # nowhere left to send it.
@@ -2581,13 +2741,15 @@ class FixedRouter:
                         },
                     ):
                         self._ensure_health(endpoint_id)
+                        # Before the transaction: a pass over the whole prompt.
+                        fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
                             lease = self._prefill_load.acquire(
                                 endpoint_id,
                                 prefill_tokens,
                                 affinity_key=affinity_key,
                                 fingerprint=fingerprint,
-                                anchor=anchor,
+                                anchor=fallback_anchor,
                             )
                         try:
                             resp = await leaf.chat_completion(messages, **params)
@@ -2623,6 +2785,8 @@ class FixedRouter:
                     )
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
+                    if _stops_after_request_refusals(model_id, attempts):
+                        break
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
@@ -2682,8 +2846,9 @@ class FixedRouter:
             tools=params.get("tools"),
             response_format=params.get("response_format"),
         )
-        # Proof, for the next turn, that it really contains this prompt.
-        anchor = prompt_anchor(messages)
+        # Proof, for the next turn, that it really contains this prompt -- for
+        # the attempts whose endpoint reads it (see _PromptAnchor).
+        anchors = _PromptAnchor(messages)
         primary = None
         primary_claim = None
         lease = None
@@ -2705,7 +2870,6 @@ class FixedRouter:
                         prefill_tokens,
                         affinity_key=affinity_key,
                         fingerprint=fingerprint,
-                        anchor=anchor,
                     )
         except BaseException:
             if primary_claim is not None:
@@ -2723,6 +2887,8 @@ class FixedRouter:
             self._prefill_load.release(lease)
             raise
         execution = leaf.adapter
+        # As in chat_completion: outside the routing transaction.
+        lease.anchor = anchors.for_endpoint(execution)
         primary_plan = self._primary_offload(
             model_id,
             primary,
@@ -2745,7 +2911,12 @@ class FixedRouter:
                 provider=execution.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        primary_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                        execution,
+                        primary_endpoint_id,
+                        prefill_tokens,
+                        affinity_key,
+                        fingerprint,
+                        messages,
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     req_ctx.UPSTREAM_DISPATCH_WATCH: primary_watch,
@@ -2912,6 +3083,7 @@ class FixedRouter:
                         provider=execution.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                                execution,
                                 adapter_endpoint_id,
                                 prefill_tokens,
                                 affinity_key,
@@ -2935,13 +3107,15 @@ class FixedRouter:
                             offload_endpoint_id=earlier_offload_endpoint,
                         )
                         first = True
+                        # Before the transaction: a pass over the whole prompt.
+                        fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
                             lease = self._prefill_load.acquire(
                                 adapter_endpoint_id,
                                 prefill_tokens,
                                 affinity_key=affinity_key,
                                 fingerprint=fingerprint,
-                                anchor=anchor,
+                                anchor=fallback_anchor,
                             )
                         stream = aiter(leaf.stream_chat_completion(messages, **params))
                         if fallback_watch is not None:
@@ -2994,6 +3168,8 @@ class FixedRouter:
                         raise
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
+                    if _stops_after_request_refusals(model_id, attempts):
+                        break
                     continue
                 finally:
                     # Covers the attempt that never reached a first token.

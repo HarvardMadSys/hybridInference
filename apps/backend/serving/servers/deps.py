@@ -319,6 +319,31 @@ async def get_cost_tracker(
     return _CT(op_store=services.operational_store, pricing=pricing)
 
 
+async def require_live_session(op_store: Any, payload: dict[str, Any]) -> None:
+    """Refuse an access token whose session has ended.
+
+    A token is good until it expires, but its session can end first: signing
+    out, a password change or reset, signing out the other devices, a
+    suspension or deletion all revoke or delete the ``auth_sessions`` row its
+    ``sid`` names. The store answers from a cache of a few seconds that every
+    such revocation in this process clears
+    (:meth:`serving.storage.cache.CachedOperationalStore.session_is_live`).
+    Every token this gateway mints carries a ``sid``; one without is refused.
+
+    Raises:
+        HTTPException: 401 when the session is not live; the console then
+            refreshes, which fails the same way for an ended session.
+    """
+    sid = payload.get("sid")
+    if not isinstance(sid, str) or not sid:
+        raise HTTPException(status_code=401, detail="Invalid token payload.")
+    if not await op_store.session_is_live(payload["sub"], sid):
+        raise HTTPException(
+            status_code=401,
+            detail="This session has ended. Please login again.",
+        )
+
+
 async def get_current_user(
     authorization: str | None = Header(None),
     op_store=Depends(get_operational_store),
@@ -337,7 +362,8 @@ async def get_current_user(
         setup administrator), whose token carries an empty ``email`` claim.
 
     Raises:
-        HTTPException: 401 if token is missing, invalid, or expired.
+        HTTPException: 401 if token is missing, invalid, or expired, or its
+            session has ended (see :func:`require_live_session`).
     """
     from serving.utils.jwt import verify_access_token
 
@@ -378,6 +404,8 @@ async def get_current_user(
             status_code=503,
             detail=auth_database_detail(),
         )
+
+    await require_live_session(op_store, payload)
 
     user_row = await op_store.get_user_by_id(user_id)
 
@@ -484,6 +512,7 @@ async def verify_admin_access(
         user_id = payload.get("sub")
 
         if op_store and user_id:
+            await require_live_session(op_store, payload)
             user_row = await op_store.get_user_by_id(user_id)
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")

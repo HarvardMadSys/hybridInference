@@ -13,7 +13,11 @@ import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from copy import deepcopy
-from typing import Any
+from itertools import islice
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 __all__ = [
     "CacheBackend",
@@ -36,6 +40,10 @@ class CacheBackend(ABC):
     generations treat every publication as current, which is safe only for
     caches without invalidation events -- :class:`InMemoryCache` below is the
     canonical tracking implementation.
+
+    A value may be published with *tags*, names it can later be removed by all
+    together (:meth:`delete_tag`) -- one account's entries, say -- so evicting
+    them needs neither a scan of every key nor a flush of everyone else's.
     """
 
     @abstractmethod
@@ -43,8 +51,8 @@ class CacheBackend(ABC):
         """Return cached value or None on miss."""
 
     @abstractmethod
-    async def set(self, key: str, value: Any, ttl: int) -> None:
-        """Store *value* under *key* with a TTL in seconds."""
+    async def set(self, key: str, value: Any, ttl: int, *, tags: Iterable[str] = ()) -> None:
+        """Store *value* under *key* with a TTL in seconds, indexed under each of *tags*."""
 
     async def set_if_generation(
         self,
@@ -53,6 +61,7 @@ class CacheBackend(ABC):
         ttl: int,
         *,
         generation: int,
+        tags: Iterable[str] = (),
     ) -> bool:
         """Atomically publish *value* iff the store's generation still matches.
 
@@ -67,7 +76,7 @@ class CacheBackend(ABC):
         """
         if self.current_generation() != generation:
             return False
-        await self.set(key, value, ttl)
+        await self.set(key, value, ttl, tags=tags)
         return True
 
     @abstractmethod
@@ -77,6 +86,15 @@ class CacheBackend(ABC):
     @abstractmethod
     async def delete_pattern(self, pattern: str) -> None:
         """Remove all keys matching a glob *pattern* (e.g. ``user:*``)."""
+
+    async def delete_tag(self, tag: str) -> None:
+        """Remove every key published with *tag*; an invalidation event like :meth:`delete`.
+
+        A backend without a tag index cannot find those keys, so this default
+        removes every key instead: evicting too much costs a refill, while a
+        key left behind would be served stale.
+        """
+        await self.delete_pattern("*")
 
     # -- generation hooks (optional; a tracking implementation overrides) ----
 
@@ -100,12 +118,20 @@ class InMemoryCache(CacheBackend):
     interleave between the fill's generation check and its publication.
     Holding the lock across both is the only way to make that promise, and the
     critical section is a few dict operations -- microseconds, not I/O.
+
+    Tags are an index beside the entries: each tag names the keys published
+    with it, and each key its tags, so :meth:`delete_tag` touches only the
+    keys it removes. Every way a key leaves the cache -- delete, expiry, LRU
+    eviction, being overwritten -- leaves the index too, so it never holds
+    more than the cache does.
     """
 
     def __init__(self, max_entries: int = 4096) -> None:
         if max_entries < 1:
             raise ValueError("max_entries must be >= 1")
         self._store: OrderedDict[str, tuple[Any, float]] = OrderedDict()
+        self._tag_keys: dict[str, set[str]] = {}
+        self._key_tags: dict[str, tuple[str, ...]] = {}
         self._lock = asyncio.Lock()
         self._generation = 0
         self._hits = 0
@@ -118,27 +144,56 @@ class InMemoryCache(CacheBackend):
     def _expired(self, expires_at: float) -> bool:
         return time.monotonic() > expires_at
 
+    def _untag_locked(self, key: str) -> None:
+        """Drop *key* from the tag index; the caller removes the entry itself."""
+        for tag in self._key_tags.pop(key, ()):
+            keys = self._tag_keys.get(tag)
+            if keys is not None:
+                keys.discard(key)
+                if not keys:
+                    del self._tag_keys[tag]
+
+    def _remove_locked(self, key: str) -> None:
+        """Remove *key*'s entry and its index entries, if it has any."""
+        self._store.pop(key, None)
+        self._untag_locked(key)
+
+    def _put_locked(self, key: str, value: Any, ttl: int, tags: Iterable[str]) -> None:
+        """Store an entry under *tags* alone: an overwritten entry's old tags go."""
+        self._untag_locked(key)
+        self._store[key] = (value, time.monotonic() + ttl)
+        self._store.move_to_end(key)
+        unique = tuple(dict.fromkeys(tags))
+        if unique:
+            self._key_tags[key] = unique
+            for tag in unique:
+                self._tag_keys.setdefault(tag, set()).add(key)
+        self._evict_lru_if_needed()
+
     def _evict_lru_if_needed(self) -> None:
         """Drop least-recently-used entries until size <= max_entries."""
         while len(self._store) > self._max_entries:
-            _, _ = self._store.popitem(last=False)
+            key, _ = self._store.popitem(last=False)
+            self._untag_locked(key)
             self._evictions += 1
 
     def _purge_expired_locked(self, bound: int = 256) -> None:
         """Drop up to *bound* expired entries, oldest-first.
 
         Only the first *bound* items (oldest by insertion order) are inspected,
-        so a cache miss never pays for a full-map scan. An expired entry that
-        falls beyond the inspected window is still evicted lazily when it is
-        accessed on a later get(); bounding the sweep here only caps the
-        per-miss cleanup cost.
+        and only they are copied out of the map, so a cache miss never pays for
+        a full-map scan or copy. An expired entry that falls beyond the
+        inspected window is still evicted lazily when it is accessed on a later
+        get(); bounding the sweep here only caps the per-miss cleanup cost.
         """
         now = time.monotonic()
         purged = 0
-        for key in list(self._store.keys())[:bound]:
+        # Materialized before anything is deleted: the map cannot change size
+        # under its own iterator.
+        for key in list(islice(self._store.keys(), bound)):
             _, expires_at = self._store[key]
             if now > expires_at:
-                del self._store[key]
+                self._remove_locked(key)
                 purged += 1
         if purged:
             # Expiry is a form of eviction for observability purposes.
@@ -156,7 +211,7 @@ class InMemoryCache(CacheBackend):
                 return None
             value, expires_at = entry
             if self._expired(expires_at):
-                del self._store[key]
+                self._remove_locked(key)
                 self._evictions += 1
                 self._misses += 1
                 return None
@@ -165,12 +220,10 @@ class InMemoryCache(CacheBackend):
             self._store.move_to_end(key)
             return value
 
-    async def set(self, key: str, value: Any, ttl: int) -> None:
-        """Store *value* with monotonic-clock expiry."""
+    async def set(self, key: str, value: Any, ttl: int, *, tags: Iterable[str] = ()) -> None:
+        """Store *value* with monotonic-clock expiry, indexed under *tags*."""
         async with self._lock:
-            self._store[key] = (value, time.monotonic() + ttl)
-            self._store.move_to_end(key)
-            self._evict_lru_if_needed()
+            self._put_locked(key, value, ttl, tags)
 
     async def set_if_generation(
         self,
@@ -179,6 +232,7 @@ class InMemoryCache(CacheBackend):
         ttl: int,
         *,
         generation: int,
+        tags: Iterable[str] = (),
     ) -> bool:
         """Publish *value* atomically iff the generation still matches.
 
@@ -189,9 +243,7 @@ class InMemoryCache(CacheBackend):
         async with self._lock:
             if self._generation != generation:
                 return False
-            self._store[key] = (value, time.monotonic() + ttl)
-            self._store.move_to_end(key)
-            self._evict_lru_if_needed()
+            self._put_locked(key, value, ttl, tags)
             return True
 
     async def delete(self, key: str) -> None:
@@ -203,7 +255,7 @@ class InMemoryCache(CacheBackend):
         the *intent* of the write was to invalidate.
         """
         async with self._lock:
-            self._store.pop(key, None)
+            self._remove_locked(key)
             self._generation += 1
 
     async def delete_pattern(self, pattern: str) -> None:
@@ -216,7 +268,19 @@ class InMemoryCache(CacheBackend):
         async with self._lock:
             to_delete = [k for k in self._store if fnmatch.fnmatch(k, pattern)]
             for k in to_delete:
-                del self._store[k]
+                self._remove_locked(k)
+            self._generation += 1
+
+    async def delete_tag(self, tag: str) -> None:
+        """Remove every key published with *tag*, through the index: no scan.
+
+        Bumps the generation unconditionally, for the same reason as
+        :meth:`delete`: a fill racing this call -- one that has not published
+        yet, so is not in the index -- must not publish what it read before.
+        """
+        async with self._lock:
+            for k in self._tag_keys.pop(tag, ()):
+                self._remove_locked(k)
             self._generation += 1
 
     # -- generation hooks ----------------------------------------------------

@@ -20,10 +20,12 @@
 services:
   frontend:
     networks:
-      # Re-listing `hybridinference` is required, not redundant: compose merges
-      # this list by replacement, so naming only the agent network here would
-      # cut the console off from the backend it proxies everything else to.
+      # Re-listing the base file's networks is deliberate. Current Compose
+      # merges this list key by key, but one that replaced it would cut the
+      # console off from the backend it proxies everything else to (and from
+      # pgAdmin), so the overlay does not depend on which it is.
       - hybridinference
+      - pgadmin
       - cloud-agent
 
 networks:

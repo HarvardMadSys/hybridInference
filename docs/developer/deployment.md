@@ -53,6 +53,10 @@ The URL hostname must match the gateway server certificate. The CA file verifies
 that server; the client certificate and key authenticate the frontend to the
 gateway. Supply the files through a read-only secret mount accessible to the
 frontend process, and restrict who may read or mount the client private key.
+The console runs as uid 1000, not root, so the files must be readable by that
+user: for example group 1000 with mode `0440`, or a Kubernetes `fsGroup: 1000`
+with `defaultMode: 0440`. A file only root can read makes `/pgadmin/` answer
+502, and the console logs that the credentials are not readable by its user.
 These are file paths inside the frontend container, not certificate contents.
 The upstream gateway must enforce mTLS itself and restrict access to pgAdmin;
 the console's administrator check does not protect a separately exposed backend.
@@ -113,7 +117,7 @@ none of them, and nothing warns you:
 | Protection | What a proxy in front typically does |
 |---|---|
 | Next.js Server Action guard | Refuse requests carrying a `Next-Action` header (`if ($http_next_action) { return 403; }`), so console server actions cannot be invoked from outside the console |
-| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`). The gateway enforces no size limit of its own |
+| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`), so oversized ones never cross your network. The gateway refuses bodies over `REQUEST_MAX_BODY_MB` (32 MiB) itself, and the console streams `/v1/` bodies to it without holding them |
 | `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy inserted reach the gateway |
 
 The gateway reads forwarded headers only from the proxies you authorize (see
@@ -538,14 +542,19 @@ other limits let through), and twenty per address in an hour
 account before, including the one you used for setup, holds a device cookie
 (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/auth`, kept on sign-out,
 valid for 180 days) and gets five attempts per 15 minutes of its own, so other
-people's guesses never lock it out. Changing `JWT_SECRET_KEY` invalidates
-every device cookie until that browser's next sign-in.
+people's guesses never lock it out. Together, the account's browsers that hold
+one get `LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget
+only requests carrying such a cookie count against. Changing `JWT_SECRET_KEY`
+invalidates every device cookie until that browser's next sign-in.
 
 Other browsers share the limits with their address, and behind the bundled
 Compose file's console proxy every browser has the same address unless
 [trusted-proxy settings](trusted-proxies-and-client-ips.md) name the console;
-`admin` is the first username anyone tries. The counts are held in memory, so
-a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
+`admin` is the first username anyone tries. The pages that mail a link to an
+address anyone types, password reset and resending the verification email,
+are limited too: three of each kind an hour per address, whether or not an
+account has it, and ten an hour per client address. The counts are held
+in memory, so a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
 when set, still reaches the admin API, and the command-line tools work on the
 database directly.
 
@@ -723,6 +732,28 @@ One thing to get right: whether pgAdmin *also* asks for its own login is set by
 falls back to `False`, which serves pgAdmin with no login at all; `.env.example`
 suggests `True`, which turns pgAdmin's own login on behind the console's gate.
 `True` is the safer of the two.
+
+pgAdmin is on a network of its own, `pgadmin`, shared only with the console and
+the database. The backend and any other service on `hybridinference` cannot
+reach it. The first `make up` after this change recreates the `postgres`
+container to attach it to that network, a restart of a few seconds.
+
+The Compose service runs an exact pgAdmin release (`dpage/pgadmin4:9.19`).
+Moving from the earlier `dpage/pgadmin4:8` upgrades pgAdmin's settings
+database in the `pgadmin_data` volume on the first start, which an 8.x image
+cannot read afterwards.
+
+```{note}
+pgAdmin and the agent web app (`/agents`) are served on the console's own
+origin. Any script either app serves runs with the authority of the console
+session open in that browser, because the session's access token and
+`/auth/refresh` are same-origin. The proxies keep each app's cookies under its
+own path and refuse any cookie named like one of the console's, which stops an
+app from replacing or clearing the console's session, but only a separate
+origin removes the shared authority. Serving each app from its own hostname
+behind the same admin gate needs DNS and tunnel routes per deployment and is
+tracked as follow-up work.
+```
 
 ## Troubleshooting
 

@@ -21,9 +21,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from serving.batch.attempts import observe_billing
-from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
+from serving.spend_ledger import ledger_for
 from serving.storage.utils import billable_output_tokens
 from serving.utils.logging import get_logger
 
@@ -215,7 +215,7 @@ def _pricing_from_dict(raw: dict[str, Any]) -> Pricing | None:
 
 
 class CostTracker:
-    """Compute upstream cost from token usage and fire-and-forget the DB increment.
+    """Compute upstream cost from token usage and record it in the spend ledger.
 
     Replaces the module-level ``_schedule_cost_increment`` helper from
     completions.py. The cost-math is centralized in ``_compute_cost`` and
@@ -228,8 +228,8 @@ class CostTracker:
         """Construct with the operational store and pricing lookup.
 
         Args:
-            op_store: Any object exposing
-                ``async increment_user_cost(user_id, cost_usd, *, api_key_id)``.
+            op_store: The operational store whose counters the costs are
+                written to (:func:`serving.spend_ledger.ledger_for`).
                 ``None``-tolerant: if there's no operational store
                 configured the increment is skipped silently.
             pricing: The shared :class:`PricingLookup` instance. Used
@@ -254,12 +254,46 @@ class CostTracker:
     ) -> RoutingInfo:
         """Compute cost, schedule the DB increment, return enriched routing.
 
+        The awaitable form of :meth:`charge`, which does the work: nothing here
+        suspends.
+        """
+        return self.charge(
+            user_id=user_id,
+            routing=routing,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+            api_key_id=api_key_id,
+        )
+
+    def charge(
+        self,
+        *,
+        user_id: str,
+        routing: RoutingInfo,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int | None = None,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
+        reasoning_tokens: int = 0,
+        api_key_id: int | None = None,
+    ) -> RoutingInfo:
+        """Compute cost, schedule the DB increment, return enriched routing.
+
+        Synchronous, so a caller that must not suspend -- a stream being torn
+        down by a cancellation -- can still bill.
+
         ``api_key_id`` is the key the request was made with (the log row's
         ``metadata["api_key_id"]``), whose own counter is bumped as well.
 
         Returns a *new* :class:`RoutingInfo` (frozen dataclass) with
-        ``upstream_cost_usd`` populated when pricing is available; the
-        increment is dispatched as a background task so the response path
+        ``upstream_cost_usd`` populated when pricing is available; the cost
+        is recorded in the spend ledger, which counts it against the quota at
+        once and writes the counters in the background, so the response path
         is never blocked. If pricing is unavailable, returns ``routing``
         unchanged.
 
@@ -309,16 +343,12 @@ class CostTracker:
         if cost is None or cost <= 0 or self._op_store is None:
             return enriched
 
-        async def _increment() -> None:
-            try:
-                await self._op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
-            except Exception as exc:
-                logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
-                raise  # let tracked_task record the failure
-
-        task = tracked_task(_increment(), name="cost_increment")
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        # Recorded in the spend ledger, which counts it against the quota at
+        # once and writes it to the counters with whatever else is pending.
+        task = ledger_for(self._op_store).record(user_id, cost, api_key_id=api_key_id)
+        if task is not None:
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         return enriched
 
     @staticmethod

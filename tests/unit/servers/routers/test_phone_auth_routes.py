@@ -513,6 +513,8 @@ async def test_phone_only_unverified_identity_refused_even_when_email_gate_disab
     monkeypatch.setattr(get_settings(), "signup_require_email_verification", False)
     monkeypatch.setattr(routes.settings, "signup_require_email_verification", False)
     store = Store(user(phone_verified=False))
+    # A session the token names is live; only the identity check refuses it.
+    store.session_is_live = AsyncMock(return_value=True)
     token, _ = create_access_token(user_id="existing-user", email=None)
     with pytest.raises(HTTPException) as exc:
         await get_current_user("Bearer " + token, store)

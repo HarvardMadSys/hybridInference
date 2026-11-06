@@ -70,6 +70,7 @@ def _make_session(
             return kwargs["routing"]
 
         cost_tracker.schedule_increment = AsyncMock(side_effect=_identity_increment)
+        cost_tracker.charge = MagicMock(side_effect=lambda **kwargs: kwargs["routing"])
     if pricing_lookup is None:
         pricing_lookup = MagicMock(spec=PricingLookup)
         pricing_lookup.raw_dict_for_routing = MagicMock(return_value=None)

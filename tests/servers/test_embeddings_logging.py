@@ -101,7 +101,7 @@ class _CapturingOpStore:
         self.key_ids: list[int | None] = []
 
     async def increment_user_cost(
-        self, user_id: str, cost_usd: float, *, day=None, api_key_id=None
+        self, user_id: str, cost_usd: float, *, day=None, api_key_id=None, requests=1
     ) -> None:
         self.increments.append((user_id, cost_usd))
         self.key_ids.append(api_key_id)

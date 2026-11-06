@@ -159,12 +159,12 @@ msgstr "1\\. 中间件"
 
 #: ../developer/architecture.md:96
 msgid ""
-"`create_app()` in `apps/backend/serving/servers/app.py` registers five "
+"`create_app()` in `apps/backend/serving/servers/app.py` registers seven "
 "middlewares. Starlette runs the last-registered outermost, so the "
 "effective order from the outside in is:"
 msgstr ""
 "`apps/backend/serving/servers/app.py` 中的 `create_app()` "
-"注册了五个中间件。Starlette 把最后注册的跑在最外层，因此从外到内的实际顺序是："
+"注册了七个中间件。Starlette 把最后注册的跑在最外层，因此从外到内的实际顺序是："
 
 #: ../developer/architecture.md:100
 msgid ""
@@ -177,6 +177,14 @@ msgid "`FallbackErrorMiddleware` — last-resort error shaping."
 msgstr "`FallbackErrorMiddleware`——兜底，统一错误响应的格式。"
 
 #: ../developer/architecture.md:102
+msgid ""
+"`KubernetesProxyTrustMiddleware` — discovers which proxies may report the"
+" client address, when Kubernetes proxy discovery is configured."
+msgstr ""
+"`KubernetesProxyTrustMiddleware`——配置了 Kubernetes "
+"代理发现时，找出哪些代理可以报告客户端地址。"
+
+#: ../developer/architecture.md:104
 msgid "`RequestLogMiddleware` — one structured log record per HTTP request."
 msgstr "`RequestLogMiddleware`——每个 HTTP 请求一条结构化日志记录。"
 
@@ -190,18 +198,19 @@ msgstr ""
 "120s）；响应一旦被标记为流式，就改用 `STREAM_REQUEST_TIMEOUT_SECONDS`（默认 3600s，`<=0` "
 "表示取消该上限）。"
 
-#: ../developer/architecture.md:106
+#: ../developer/architecture.md:108
 msgid "`CORSMiddleware`."
 msgstr ""
 
-#: ../developer/architecture.md:108
+#: ../developer/architecture.md:114
 msgid ""
 "Middleware order matters: streaming responses are `StreamingResponse` "
 "objects that must not be buffered. Any new middleware that reads a "
-"response body before forwarding it will break Server-Sent Events."
+"response body before forwarding it will break Server-Sent Events. The "
+"body limit counts request bytes as they pass and holds none of them."
 msgstr ""
 "中间件的顺序很重要：流式响应是 `StreamingResponse` 对象，不能缓冲。新加的中间件只要在转发前读取了响应体，就会破坏 "
-"Server-Sent Events。"
+"Server-Sent Events。请求体上限只在字节经过时计数，一个字节也不保留。"
 
 #: ../developer/architecture.md:112
 msgid "2. Authentication and quota"
@@ -1075,20 +1084,6 @@ msgid ""
 "the admin dashboards and usage reporting."
 msgstr "**请求日志**。`api_logs` 持久保存请求记录，也是管理员仪表盘和用量报表的数据来源。"
 
-#: ../developer/architecture.md:455
-msgid ""
-"**Health endpoints.** `/health` is a liveness check that returns 200 with"
-" `status: \"degraded\"` when a configured store is down but traffic can "
-"still be served, and 503 only when every configured store is unreachable."
-" `/health/ready` is the strict variant: 503 unless everything configured "
-"is up. `/health/deep` adds per-endpoint availability and circuit state, "
-"and reports `degraded` when any endpoint is."
-msgstr ""
-"**健康检查端点**。`/health` 是存活检查：某个已配置的存储挂了、但仍能处理流量时，返回 200 和 `status: "
-"\"degraded\"`；只有所有已配置的存储都连不上时才返回 503。`/health/ready` "
-"是严格版：只要有任何已配置的组件没起来，就返回 503。`/health/deep` "
-"额外给出每个端点的可用率和熔断器状态，任何一个端点降级，它就报告 `degraded`。"
-
 #: ../developer/architecture.md:461
 msgid ""
 "**Alerting.** `alert_slack()` and `alert_on_transition()` in "
@@ -1172,8 +1167,8 @@ msgid "`GET /health`, `/health/ready`, `/health/deep`"
 msgstr ""
 
 #: ../developer/architecture.md
-msgid "None"
-msgstr "无"
+msgid "None; upstream addresses only for an admin"
+msgstr "无；上游地址只对管理员展示"
 
 #: ../developer/architecture.md
 msgid "Public routing disclosure"
@@ -1205,18 +1200,9 @@ msgstr "视路径而定"
 
 #: ../developer/architecture.md:485
 msgid ""
-"`GET /routing` requires no authentication and returns each published "
-"route's provider label, **upstream base URL**, and traffic weight. If "
-"your gateway is reachable from the internet, block this path at your "
-"reverse proxy unless you intend to publish your upstream topology. `GET "
-"/admin/routing` additionally includes unpublished routes and routing-"
-"manager status, but requires an administrator's JWT or `ADMIN_TOKEN` in "
-"the `Authorization: Bearer ...` header."
+"`GET /routing` requires no authentication and returns each published route's provider label and traffic weight. Its upstream base URL, and the routing file's probe results, which are keyed by endpoint URL, are shown only to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header, and `/health/deep` leaves the base URL out of its `route_exclusions` on the same terms. `GET /admin/routing` requires those credentials and additionally includes unpublished routes."
 msgstr ""
-"`GET /routing` 不需要认证，会返回每条已发布路由的 provider 标签、**上游 base URL** "
-"和流量权重。如果你的网关能从公网访问，除非你有意公开自己的上游拓扑，否则请在反向代理上封掉这个路径。`GET /admin/routing` "
-"还额外包含未发布的路由和路由管理器状态，但需要在 `Authorization: Bearer ...` 请求头中提供管理员的 JWT 或 "
-"`ADMIN_TOKEN`。"
+"`GET /routing` 不需要认证，会返回每条已发布路由的 provider 标签和流量权重。路由的上游 base URL，以及以端点 URL 为键的路由配置文件探测结果，只展示给在 `Authorization: Bearer ...` 请求头中提供管理员 JWT 或 `ADMIN_TOKEN` 的调用方；`/health/deep` 的 `route_exclusions` 也按同样的条件省略 base URL。`GET /admin/routing` 必须带这些凭据，并且还额外包含未发布的路由。"
 
 #: ../developer/architecture.md:493
 msgid ""
@@ -1772,3 +1758,98 @@ msgstr "API 密钥；上传文件需要达到 `BATCH_MIN_ROLE`"
 #: ../developer/architecture.md:0
 msgid "API key; setting up or changing a webhook needs `BATCH_MIN_ROLE`"
 msgstr "API 密钥；设置或修改 webhook 需要达到 `BATCH_MIN_ROLE`"
+
+#: ../developer/architecture.md:109
+msgid ""
+"`RequestBodyLimitMiddleware` — answers `413` to a request body larger "
+"than `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when"
+" `Content-Length` declares more, otherwise as soon as the bytes received "
+"pass the limit. Batch input uploads keep their own limit, "
+"`BATCH_MAX_BODY_MB`. Behind the console, `/v1`, `/anthropic`, "
+"`/internal/playground` and `/user/batch-files` stream through route "
+"handlers and are bounded only here. The console's other paths are Next.js"
+" rewrites, which copy a body in memory up to 32 MiB "
+"(`middlewareClientMaxBodySize`), this limit's default: raising "
+"`REQUEST_MAX_BODY_MB` past it does not reach them."
+msgstr ""
+"`RequestBodyLimitMiddleware`——请求体超过 `REQUEST_MAX_BODY_MB`（默认 32 MiB）时回复 "
+"`413`：`Content-Length` "
+"声明的长度已经超出时，一个字节都不读；否则在收到的字节数超过上限的那一刻回复。批处理输入文件的上传保留自己的上限 "
+"`BATCH_MAX_BODY_MB`。在控制台后面，`/v1`、`/anthropic`、`/internal/playground` 和 "
+"`/user/batch-files` 经由路由处理器以流式转发，只受这里的限制。控制台的其他路径是 Next.js "
+"重写，会在内存中复制请求体，最多 32 MiB（`middlewareClientMaxBodySize`），也就是这个上限的默认值：把 "
+"`REQUEST_MAX_BODY_MB` 调到它之上，对这些路径不起作用。"
+
+#: ../developer/architecture.md:144
+msgid ""
+"The spend the gate reads comes from the counter tables "
+"(`user_daily_cost`, `api_key_daily_cost`), and the spend ledger "
+"(`apps/backend/serving/spend_ledger.py`) adds what those tables do not "
+"show yet:"
+msgstr "门禁读取的花费来自计数表（`user_daily_cost`、`api_key_daily_cost`），花费账本（`apps/backend/serving/spend_ledger.py`）再补上这些表里还看不到的部分："
+
+#: ../developer/architecture.md:148
+msgid ""
+"**Requests in flight.** `enforce_user_concurrency` (and the batch worker,"
+" for each item) checks the quotas and the key's budgets again and "
+"reserves the request's estimated cost (`ESTIMATED_REQUEST_COST_USD`) in "
+"one step, then releases the reservation when the request ends, however it"
+" ends. Requests admitted at the same time therefore cannot all fit into "
+"the same remaining budget."
+msgstr ""
+"**进行中的请求**。`enforce_user_concurrency`（以及批处理 worker，对每个条目）会再检查一次配额和该 key "
+"的预算，并在同一步里预留这个请求的估算成本（`ESTIMATED_REQUEST_COST_USD`），请求结束时——无论以何种方式结束——再释放这份预留。因此，同时放行的多个请求不可能都挤进同一份剩余预算。"
+
+#: ../developer/architecture.md:154
+msgid ""
+"**Costs not yet written.** A finished request's cost is recorded in the "
+"ledger and written to the counters by one writer per store: costs "
+"recorded while a write is in flight are coalesced per user, key and UTC "
+"day into the next, which goes out as one statement, account and key "
+"counters together. The ledger keeps counting a cost until its write is "
+"confirmed (and for a while after, for a gate whose read began before it "
+"landed), so the delay never lets a request past a limit. A failed write "
+"is retried; shutdown writes what is left and logs anything it could not."
+msgstr ""
+"**尚未写入的成本**。已完成请求的成本先记入账本，再由每个存储各自的一个写入者写进计数表：某次写入进行期间记下的成本，会按用户、key 和 "
+"UTC 日合并进下一次写入，并以一条语句发出，账号计数和 key "
+"计数一起写。在写入得到确认之前（以及确认之后的一段时间内，供读取早于写入落地的门禁使用），账本会一直计入这笔成本，所以这段延迟绝不会让请求越过限额。写入失败会重试；关闭时会写出剩余的部分，写不出去的会记录到日志。"
+
+#: ../developer/architecture.md:163
+msgid ""
+"The ledger is per process. With several worker processes each sees only "
+"its own requests in flight and costs not yet written, so the limits are "
+"protected within each process, not across them; production runs one "
+"worker."
+msgstr ""
+"账本按进程划分。有多个 worker "
+"进程时，每个进程只能看到自己的进行中请求和尚未写入的成本，因此限额只在单个进程内受保护，跨进程则不受保护；生产环境只运行一个 worker。"
+
+#: ../developer/architecture.md:167
+msgid ""
+"A streamed response the client closes early, or that the gateway's "
+"request timeout cuts off, is billed for what the upstream already did: "
+"the usage it reported, or else an estimate of the prompt and of the "
+"output so far (`metadata.usage_estimated` marks the estimate). A request "
+"the upstream fails is not billed."
+msgstr ""
+"客户端提前关闭的流式响应，或被网关请求超时截断的流式响应，按上游已经完成的部分计费：上游报告了用量就用它，否则估算提示词和目前为止的输出（`metadata.usage_estimated`"
+" 标记这是估算值）。上游失败的请求不计费。"
+
+#: ../developer/architecture.md:493
+msgid ""
+"**Health endpoints.** `/health` is a liveness check that returns 200 with"
+" `status: \"degraded\"` when a configured store is down but traffic can "
+"still be served, and 503 only when every configured store is unreachable."
+" It answers from one shared store probe for two seconds, and concurrent "
+"callers wait for the probe in flight, so polling it does not cost a "
+"database query per call. `/health/ready` is the strict variant: 503 "
+"unless everything configured is up. `/health/deep` adds per-endpoint "
+"availability and circuit state, and reports `degraded` when any endpoint "
+"is."
+msgstr ""
+"**健康检查端点**。`/health` 是存活检查：某个已配置的存储挂了、但仍能处理流量时，返回 200 和 `status: "
+"\"degraded\"`；只有所有已配置的存储都连不上时才返回 "
+"503。它在两秒内复用同一次共享的存储探测结果，并发的调用方会等待正在进行的那次探测，所以轮询它不会每次都花一次数据库查询。`/health/ready`"
+" 是严格版：只要有任何已配置的组件没起来，就返回 503。`/health/deep` "
+"额外给出每个端点的可用率和熔断器状态，任何一个端点降级，它就报告 `degraded`。"

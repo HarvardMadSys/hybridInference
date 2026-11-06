@@ -16,6 +16,13 @@ on:
   pull_request:
     branches: [main, dev]
 
+# Read-only unless a job asks for more. Most of these jobs run on self-hosted
+# runners that a push reaches, so the token a step could leak or misuse holds
+# no write scope by default; the jobs that pull or publish candidate images
+# name the package scope they need.
+permissions:
+  contents: read
+
 concurrency:
   # Keep daily/manual backstops from cancelling a deployment-triggering push.
   group: ci-v2-${{ github.event_name }}-${{ github.ref }}
@@ -52,7 +59,7 @@ jobs:
       full: ${{ steps.validate.outputs.full }}
       docker_matrix: ${{ steps.validate.outputs.docker_matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full history so base...head / before..sha diffs resolve; matches
           # the shallow-clone workaround used by every other job here.
@@ -107,7 +114,7 @@ jobs:
     # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full fetch: GitHub intermittently serves shallow-clone packs with
           # missing delta bases ("pack has N unresolved deltas" / "missing
@@ -129,7 +136,7 @@ jobs:
           echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
           # This only caches while UV_CACHE_DIR is stable across runs. The
@@ -149,7 +156,7 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Cache .venv
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
           key: venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
@@ -197,7 +204,7 @@ jobs:
       run:
         working-directory: ./apps/frontend
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full fetch: GitHub intermittently serves shallow-clone packs with
           # missing delta bases ("pack has N unresolved deltas" / "missing
@@ -206,7 +213,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -270,7 +277,7 @@ jobs:
       # left behind by a failed run blocked every run after it.
       SITE_UI_RUN: site-ui-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -362,8 +369,9 @@ jobs:
 
           # Without it the packaged file answers, through the route: its bytes,
           # its SVG sandbox and its cache policy, none of which Next's static
-          # handler would send.
-          docker exec "${SITE_UI_RUN}-example" rm /srv/site-assets/example/mark.svg
+          # handler would send. As root: `docker cp` wrote the file as root,
+          # and the image runs as an unprivileged user that may only read it.
+          docker exec -u 0 "${SITE_UI_RUN}-example" rm /srv/site-assets/example/mark.svg
           curl -fsS -D "${RUNNER_TEMP}/packaged.headers" -o "${RUNNER_TEMP}/packaged.svg" "${url}"
           cmp "${RUNNER_TEMP}/packaged.svg" "${packaged}"
           tr -d '\r' <"${RUNNER_TEMP}/packaged.headers" | tee "${RUNNER_TEMP}/packaged.txt"
@@ -399,7 +407,7 @@ jobs:
     # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full fetch: GitHub intermittently serves shallow-clone packs with
           # missing delta bases, which has been failing random jobs at checkout.
@@ -413,7 +421,7 @@ jobs:
           echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -423,7 +431,7 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Cache .venv
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
           # Own key namespace: this job's venv holds only the `dev` group, so
@@ -509,7 +517,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full fetch: GitHub intermittently serves shallow-clone packs with
           # missing delta bases ("pack has N unresolved deltas" / "missing
@@ -527,7 +535,7 @@ jobs:
           echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -540,7 +548,7 @@ jobs:
         run: uv python install ${{ env.PYTHON_VERSION }}
 
       - name: Cache .venv
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .venv
           key: venv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
@@ -734,7 +742,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
         with:
           files: ./coverage-${{ matrix.shard }}.xml
           flags: backend-shard-${{ matrix.shard }}
@@ -744,7 +752,7 @@ jobs:
       - name: Upload pytest file durations
         if: always() && github.event_name == 'push'
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pytest-file-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/pytest-file-durations-${{ matrix.shard }}.json
@@ -756,7 +764,7 @@ jobs:
     # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full fetch: GitHub intermittently serves shallow-clone packs with
           # missing delta bases ("pack has N unresolved deltas" / "missing
@@ -794,7 +802,7 @@ jobs:
           echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-cache" >> "${GITHUB_ENV}"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
 
@@ -836,7 +844,7 @@ jobs:
         # unavailable or malformed.
         image: ${{ fromJSON(needs.changes.outputs.docker_matrix != '' && needs.changes.outputs.docker_matrix != '[]' && needs.changes.outputs.docker_matrix || '["frontend","backend"]') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full fetch avoids the intermittent unresolved-delta failures seen
           # with shallow clones on the self-hosted runner pool.
@@ -871,14 +879,14 @@ jobs:
         run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build ${{ matrix.image }} image
         id: build
         # A transient buildkit/runner recycle can surface as graceful_stop.
         # Recreate the builder and retry once before failing the matrix cell.
         continue-on-error: true
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.${{ matrix.image }}
@@ -892,11 +900,11 @@ jobs:
 
       - name: Set up Docker Buildx (retry)
         if: steps.build.outcome == 'failure'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build ${{ matrix.image }} image (retry)
         if: steps.build.outcome == 'failure'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.${{ matrix.image }}
@@ -994,7 +1002,7 @@ jobs:
       EXAMPLE_FRONTEND_CONTAINER_NAME: hi-tutorial-${{ github.run_id }}-${{ github.run_attempt }}-frontend
       EXAMPLE_POSTGRES_CONTAINER_NAME: hi-tutorial-${{ github.run_id }}-${{ github.run_attempt }}-postgres
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -1041,12 +1049,12 @@ jobs:
         run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build exact tutorial backend image
         id: tutorial-backend-build
         continue-on-error: true
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.backend
@@ -1060,11 +1068,11 @@ jobs:
 
       - name: Set up Docker Buildx for backend retry
         if: steps.tutorial-backend-build.outcome == 'failure'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build exact tutorial backend image (retry)
         if: steps.tutorial-backend-build.outcome == 'failure'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.backend
@@ -1079,7 +1087,7 @@ jobs:
       - name: Build exact same-origin tutorial frontend image
         id: tutorial-frontend-build
         continue-on-error: true
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.frontend
@@ -1100,11 +1108,11 @@ jobs:
 
       - name: Set up Docker Buildx for frontend retry
         if: steps.tutorial-frontend-build.outcome == 'failure'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build exact same-origin tutorial frontend image (retry)
         if: steps.tutorial-frontend-build.outcome == 'failure'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.frontend
@@ -1359,8 +1367,15 @@ jobs:
             --configure-upstream
           make demo DISTRIBUTION=example
 
+          # Anyone may read /routing, but only an administrator is shown where
+          # a route sends requests. That the route now reaches the host fixture
+          # is proved by the smoke below: only the fixture answers
+          # STAGE3_HOST_FIXTURE_OK, for the model and key it was started with.
           routing="$(curl --fail --silent --show-error "http://localhost:${BACKEND_PORT}/routing")"
-          grep -qF "host.docker.internal:${host_provider_port}" <<< "${routing}"
+          if grep -qF "host.docker.internal" <<< "${routing}"; then
+            echo "anonymous /routing disclosed an upstream address" >&2
+            exit 1
+          fi
 
           EXAMPLE_DEMO_EXPECT_EXISTING=1 \
             DEMO_BASE_URL="http://localhost:${port}" \
@@ -1436,11 +1451,13 @@ jobs:
             echo "tutorial cleanup left the example database volume behind" >&2
             exit 1
           fi
-          if docker network inspect \
-            "${COMPOSE_PROJECT_NAME}_hybridinference" >/dev/null 2>&1; then
-            echo "tutorial cleanup left the example network behind" >&2
-            exit 1
-          fi
+          for network in hybridinference pgadmin; do
+            if docker network inspect \
+              "${COMPOSE_PROJECT_NAME}_${network}" >/dev/null 2>&1; then
+              echo "tutorial cleanup left the example ${network} network behind" >&2
+              exit 1
+            fi
+          done
           docker image rm \
             "${COMPOSE_PROJECT_NAME}-backend" \
             "${COMPOSE_PROJECT_NAME}-frontend" \
@@ -1479,7 +1496,7 @@ jobs:
       - docker-build
       - tutorial-e2e
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
 
@@ -1551,6 +1568,10 @@ jobs:
     needs: [ci-gate]
     runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 5
+    # The Packages API lookup below reads this repository's container images.
+    permissions:
+      contents: read
+      packages: read
     outputs:
       existing: ${{ steps.existing.outputs.digest }}
     steps:
@@ -1584,7 +1605,7 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-backend-precheck.outputs.existing == ''
         with:
           # Full fetch avoids the intermittent unresolved-delta failures seen
@@ -1596,11 +1617,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: needs.publish-backend-precheck.outputs.existing == ''
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
         if: needs.publish-backend-precheck.outputs.existing == ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1609,7 +1630,7 @@ jobs:
       - name: Build and push by digest (native arm64)
         if: needs.publish-backend-precheck.outputs.existing == ''
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.backend
@@ -1643,7 +1664,7 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-backend-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
@@ -1653,11 +1674,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: needs.publish-backend-precheck.outputs.existing == ''
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
         if: needs.publish-backend-precheck.outputs.existing == ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1666,7 +1687,7 @@ jobs:
       - name: Build and push by digest (native amd64)
         if: needs.publish-backend-precheck.outputs.existing == ''
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.backend
@@ -1697,7 +1718,7 @@ jobs:
     steps:
       - name: Log in to GHCR
         if: needs.publish-backend-precheck.outputs.existing == ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1763,6 +1784,10 @@ jobs:
     needs: [ci-gate]
     runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 5
+    # The Packages API lookup below reads this repository's container images.
+    permissions:
+      contents: read
+      packages: read
     outputs:
       existing: ${{ steps.existing.outputs.digest }}
     steps:
@@ -1796,7 +1821,7 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-console-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
@@ -1806,11 +1831,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: needs.publish-console-precheck.outputs.existing == ''
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
         if: needs.publish-console-precheck.outputs.existing == ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1819,7 +1844,7 @@ jobs:
       - name: Build and push neutral console by digest (native arm64)
         if: needs.publish-console-precheck.outputs.existing == ''
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.frontend
@@ -1864,7 +1889,7 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-console-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
@@ -1874,11 +1899,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: needs.publish-console-precheck.outputs.existing == ''
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
         if: needs.publish-console-precheck.outputs.existing == ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1887,7 +1912,7 @@ jobs:
       - name: Build and push neutral console by digest (native amd64)
         if: needs.publish-console-precheck.outputs.existing == ''
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.frontend
@@ -1930,7 +1955,7 @@ jobs:
     steps:
       - name: Log in to GHCR
         if: needs.publish-console-precheck.outputs.existing == ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

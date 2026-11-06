@@ -74,8 +74,10 @@ from serving.servers.auth import (
     StoredKeyQuotaExceeded,
     StoredKeyRejected,
     authenticate_stored_key,
+    stored_key_quota_exceeded,
 )
 from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id
+from serving.spend_ledger import spend_check_of
 from serving.storage.batch_store import TARGET_CHAT
 from serving.utils.logging import get_logger
 
@@ -828,32 +830,7 @@ class BatchScheduler:
             await self._fail_batch(batch_id, exc.reason)
             return
         except StoredKeyQuotaExceeded as exc:
-            await self._release(entry, delay=self._timings.owner_retry_seconds)
-            if exc.scope == "account" and exc.window == "day":
-                await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
-                return
-            # A key budget or the monthly quota: checked again within the
-            # recheck interval, so one raised mid-window takes effect.
-            until = min(
-                exc.reset_at,
-                datetime.now(UTC) + timedelta(seconds=self._timings.budget_recheck_seconds),
-            )
-            if exc.scope == "account":
-                await self._pause_owner(
-                    owner, until, "monthly cost quota spent", kind="monthly_quota"
-                )
-                return
-            # Only this key's batches: the account's other keys still have
-            # budget, and their batches keep running.
-            await self._pause_owner(
-                owner,
-                until,
-                "API key daily budget spent"
-                if exc.window == "day"
-                else "API key monthly budget spent",
-                kind="key_budget",
-                key_hash=item.get("key_hash"),
-            )
+            await self._defer_for_spent_limit(entry, item, exc)
             return
         except Exception:
             logger.warning(
@@ -883,7 +860,20 @@ class BatchScheduler:
             logger.debug("batch item %s: owner at concurrency limit; deferred", entry.item_id)
             await self._release(entry, delay=self._timings.slot_retry_seconds)
             return
+        reservation = None
         try:
+            # Admitted against the owner's quotas and the key's budgets in one
+            # step with the reservation of its estimated cost, counting the
+            # owner's other requests in flight (interactive ones too): the
+            # check in authenticate_stored_key may since have been overtaken.
+            check = spend_check_of(user_ctx)
+            if check is not None:
+                reservation, refusal = check.admit()
+                if refusal is not None:
+                    await self._defer_for_spent_limit(
+                        entry, item, stored_key_quota_exceeded(refusal)
+                    )
+                    return
             marked = await self._store.mark_dispatched(
                 item_id=entry.item_id, worker_id=self._worker_id, attempt=entry.attempt
             )
@@ -906,8 +896,39 @@ class BatchScheduler:
                 timeout_s=self._timings.attempt_timeout_seconds,
             )
         finally:
+            # The item's real cost, if any, is recorded by now.
+            if reservation is not None:
+                reservation.release()
             give_back()
         await self._settle(entry, result, attempts, cfg)
+
+    async def _defer_for_spent_limit(
+        self, entry: _InFlight, item: dict[str, Any], exc: StoredKeyQuotaExceeded
+    ) -> None:
+        """Hand the item back and pause what the spent limit covers."""
+        owner = item["user_id"]
+        await self._release(entry, delay=self._timings.owner_retry_seconds)
+        if exc.scope == "account" and exc.window == "day":
+            await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
+            return
+        # A key budget or the monthly quota: checked again within the
+        # recheck interval, so one raised mid-window takes effect.
+        until = min(
+            exc.reset_at,
+            datetime.now(UTC) + timedelta(seconds=self._timings.budget_recheck_seconds),
+        )
+        if exc.scope == "account":
+            await self._pause_owner(owner, until, "monthly cost quota spent", kind="monthly_quota")
+            return
+        # Only this key's batches: the account's other keys still have
+        # budget, and their batches keep running.
+        await self._pause_owner(
+            owner,
+            until,
+            "API key daily budget spent" if exc.window == "day" else "API key monthly budget spent",
+            kind="key_budget",
+            key_hash=item.get("key_hash"),
+        )
 
     def _dispatch_body(self, item: dict[str, Any], entry: _InFlight, target: str) -> Any:
         """The body to run: the stored one, its model pinned to the admitted canonical id.

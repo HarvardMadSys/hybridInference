@@ -683,18 +683,9 @@ msgstr ""
 
 #: ../developer/configuration.md:244
 msgid ""
-"**The probe only reports; it never changes routing.** An endpoint that "
-"fails every probe keeps its weight and keeps receiving traffic. Each "
-"change of state is logged at `WARNING`, and `GET /routing` shows the "
-"latest results under `manager_status.endpoint_health`, next to "
-"`endpoint_health_enforced: false`. The [circuit breaker](routing.md"
-"#endpoint-health-and-circuit-breaking) is what takes a failing endpoint "
-"out of rotation."
+"**The probe only reports; it never changes routing.** An endpoint that fails every probe keeps its weight and keeps receiving traffic. Each change of state is logged at `WARNING`, and `GET /routing` shows the latest results to an administrator under `manager_status.endpoint_health`, next to `endpoint_health_enforced: false`. The map is keyed by endpoint URL, so an anonymous caller is shown `endpoint_health_enforced` without it. The [circuit breaker](routing.md#endpoint-health-and-circuit-breaking) is what takes a failing endpoint out of rotation."
 msgstr ""
-"**探测只报告结果，不会改变路由**。即使某个端点每次探测都失败，它也保有原来的权重，照样接收流量。每次状态变化都会记一条 `WARNING` "
-"日志，`GET /routing` 在 `manager_status.endpoint_health` 下展示最新结果，旁边是 "
-"`endpoint_health_enforced: false`。真正把故障端点暂时移出的是[熔断器](routing.md#endpoint-"
-"health-and-circuit-breaking)。"
+"**探测只报告结果，不会改变路由**。即使某个端点每次探测都失败，它也保有原来的权重，照样接收流量。每次状态变化都会记一条 `WARNING` 日志，`GET /routing` 向管理员在 `manager_status.endpoint_health` 下展示最新结果，旁边是 `endpoint_health_enforced: false`。这张映射以端点 URL 为键，所以匿名调用方只能看到 `endpoint_health_enforced`，看不到映射本身。真正把故障端点暂时移出的是[熔断器](routing.md#endpoint-health-and-circuit-breaking)。"
 
 #: ../developer/configuration.md:251
 #, python-brace-format
@@ -764,8 +755,9 @@ msgid "`health_check` probe results"
 msgstr "`health_check` 的探测结果"
 
 #: ../developer/configuration.md
-msgid "Logged and reported on `GET /routing`, never used for routing"
-msgstr "记入日志，并在 `GET /routing` 中报告；从不用于路由决策"
+msgid ""
+"Logged, and shown to administrators on `GET /routing`; never used for routing"
+msgstr "记入日志，并在 `GET /routing` 中向管理员展示；从不用于路由决策"
 
 #: ../developer/configuration.md
 msgid "`router_params.local_fraction`"
@@ -1717,6 +1709,22 @@ msgstr ""
 "`MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH /admin/config`，以及 "
 "`DELETE /admin/config/{key}`。"
 
+#: ../developer/configuration.md:520
+msgid "Backup and restore"
+msgstr "备份与恢复"
+
+#: ../developer/configuration.md:520
+msgid ""
+"**Backup** (`GET /admin/config/backup`) downloads every setting an administrator can change as one JSON file: the stored settings, the runtime and model settings, custom providers and their keys, routes and their overrides, the batch caps and the signup allowlist. It names each secret without its value: a stored setting has `value: null` and `is_set`, and a provider key keeps its id, provider and label. **Backup with secrets** (`POST /admin/config/backup` with `include_secrets: true`) puts the values in, in plain text, once the signed-in administrator gives the account's password again. The admin token cannot ask for them, and an account without a password, made by phone, sets one first. Store that file as you would the secrets themselves."
+msgstr ""
+"**Backup**（`GET /admin/config/backup`）把管理员能修改的全部设置下载为一个 JSON 文件：存储的设置、运行时与模型设置、自定义 provider 及其 key、路由及其覆盖、批处理上限和注册白名单。每个密钥只写名字、不写值：存储的设置是 `value: null` 加 `is_set`，provider key 保留它的 id、provider 和标签。**Backup with secrets**（`POST /admin/config/backup`，带 `include_secrets: true`）会把这些值以明文写进文件，前提是已登录的管理员再输入一次账号密码。admin token 不能请求这些值；没有密码的账号（用手机注册的）要先设置一个。保管这个文件要像保管密钥本身一样小心。"
+
+#: ../developer/configuration.md:520
+msgid ""
+"**Restore** (`POST /admin/config/restore`) replaces all of it in one database transaction, so a failure anywhere leaves the deployment as it was. A secret the file withholds keeps the value this deployment has; one the deployment has no value for stays unset, and the response names it under `secrets_not_restored`. A backup file is not signed, so a restore that changes anything security-relevant needs a confirmation and the password: any secret, the Security and Network settings, every `*_URL` setting and every variable a configuration file references, mail delivery, the identity issuer, keys and redirects, user authentication, the sign-up switches and allowlist, full request logging, private batch webhook targets, and where a custom provider or a route sends requests and keys. The console lists those changes before it restores, from `POST /admin/config/restore/preview`; a script sends that list back as `confirm_security_changes`, with `password`, and a restore whose changes differ from the confirmed list is refused with 409. The admin token can restore only a file that changes none of them."
+msgstr ""
+"**Restore**（`POST /admin/config/restore`）在一个数据库事务里替换上述全部内容，所以任何一处出错，部署都保持原样。文件里没有给出值的密钥保留本部署现有的值；本部署也没有值的，则保持未设置，并在响应的 `secrets_not_restored` 中列出。备份文件没有签名，所以凡是涉及安全的改动都需要确认并输入密码：任何密钥、Security 和 Network 分类的设置、所有 `*_URL` 设置和配置文件引用的每个变量、邮件投递、身份签发方及其密钥和重定向地址、用户认证、注册开关和白名单、完整请求日志、批处理 webhook 的内网目标，以及自定义 provider 或路由把请求和 key 发往何处。控制台在恢复之前会列出这些改动，来源是 `POST /admin/config/restore/preview`；脚本则要把这份列表作为 `confirm_security_changes` 连同 `password` 一起发回，改动与确认的列表不一致的恢复会被以 409 拒绝。admin token 只能恢复不涉及这些改动的文件。"
+
 #: ../developer/configuration.md:533
 msgid "When a change applies"
 msgstr "改动何时生效"
@@ -1937,15 +1945,9 @@ msgstr ""
 
 #: ../developer/configuration.md:637
 msgid ""
-"A configuration backup does not include this status. Restoring a backup "
-"applies its `app_config` rows to live groups like any other save; the "
-"other tables in the backup are written separately, so a failure there can"
-" leave them partly restored. After restoring a whole database, run "
-"`python -m serving.config.manage live reset-epoch --expect "
-"<epoch>:<revision>`: it starts a new version history and makes every "
-"process register again."
+"A configuration backup does not include this status. Restoring a backup applies its `app_config` rows to live groups like any other save, and writes the other tables in the same transaction, so a failure anywhere restores none of them. After restoring a whole database, run `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`: it starts a new version history and makes every process register again."
 msgstr ""
-"配置备份不包含这些状态。恢复备份时，备份中的 `app_config` 行会像任何一次保存一样应用到实时配置组；备份里的其他表是分开写入的，所以那里出错可能使它们只恢复了一部分。恢复整个数据库之后，运行 `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`：它会开始新的版本历史，并让每个进程重新登记。"
+"配置备份不包含这些状态。恢复备份时，备份中的 `app_config` 行会像任何一次保存一样应用到实时配置组，其他表也在同一个事务里写入，所以任何一处出错，就什么都不会恢复。恢复整个数据库之后，运行 `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`：它会开始新的版本历史，并让每个进程重新登记。"
 
 #: ../developer/configuration.md:644
 msgid "Without the console"
@@ -2122,19 +2124,9 @@ msgstr ""
 
 #: ../developer/configuration.md:744
 msgid ""
-"`GET /routing` requires no credentials and returns, for every published "
-"route, the upstream `base_url`, its provider label and its weight — that "
-"is, your complete upstream topology including any host and port embedded "
-"in a base URL. Block `/routing` at your reverse proxy on any gateway "
-"reachable from the internet unless you intend to publish this topology. "
-"`GET /admin/routing` additionally reports unpublished routes and requires"
-" an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer "
-"...` header. Treat both endpoints' output as sensitive."
+"`GET /routing` requires no credentials and returns, for every published route, its provider label and its weight. Each route's upstream `base_url`, and the routing file's probe results, which are keyed by endpoint URL, are shown only to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header; any other caller, or a credential that does not check out, gets the anonymous answer with the same status code. `GET /admin/routing` requires those credentials and additionally reports unpublished routes. Treat their output as sensitive: it is your upstream topology, including any host and port embedded in a base URL."
 msgstr ""
-"`GET /routing` 不需要任何凭据，会返回每条已发布路由的上游 `base_url`、provider "
-"标签和权重——也就是你完整的上游拓扑，包括 base URL 里的主机和端口。如果网关能从公网访问，而你又不打算公开这份拓扑，就在反向代理上屏蔽 "
-"`/routing`。`GET /admin/routing` 还会返回未发布的路由，需要在 `Authorization: Bearer "
-"...` 头里带上管理员的 JWT 或 `ADMIN_TOKEN`。两个接口的输出都要当作敏感信息。"
+"`GET /routing` 不需要任何凭据，会返回每条已发布路由的 provider 标签和权重。每条路由的上游 `base_url`，以及以端点 URL 为键的路由配置文件探测结果，只展示给在 `Authorization: Bearer ...` 头里带上管理员 JWT 或 `ADMIN_TOKEN` 的调用方；其他调用方，或者凭据校验不通过的调用方，得到的是匿名视图，状态码不变。`GET /admin/routing` 必须带这些凭据，并且还会返回未发布的路由。它们的输出要当作敏感信息：那是你的上游拓扑，包括 base URL 里的主机和端口。"
 
 #: ../developer/configuration.md:754
 msgid "Optional phone authentication"
@@ -2407,3 +2399,7 @@ msgstr "内置的 `rules.request_log_queue_saturation` 规则会在有界请求�
 #: ../developer/configuration.md
 msgid "`threshold_count` counts the producer's loss warnings, not dropped rows. The producer warns on the first drop, every 100th drop, and at least once per 60 seconds while drops continue, so a second small burst after a quiet period is still observable. The rule uses the alert engine's existing cooldown, so a sustained loss episode does not page once per warning."
 msgstr "`threshold_count` 统计生产端发出的丢弃警告次数，而不是丢弃行数。生产端在首次丢弃、每累计丢弃 100 行时发出警告；持续丢弃期间还会按 60 秒间隔刷新警告，因此静默一段时间后再次出现的小批量丢弃仍可被观测。该规则复用告警引擎现有的冷却机制，不会在持续丢弃期间每收到一次警告就发送一次通知。"
+
+#: ../developer/configuration.md
+msgid "Every record-driven rule keeps at most 250,000 samples in its window. At traffic that would exceed that, the oldest samples leave early: the window then covers less than `window_sec`, and a rate alert says `only the latest 250000 samples are kept`. The `top_paths` line of `failed_request_rate` tracks at most 256 distinct paths per window. Failures on any other path still count toward the rate, and the line says how many it left out."
+msgstr "每条由日志记录驱动的规则，其窗口内最多保留 250,000 个样本。流量高到会超出这一数量时，最早的样本会提前移出：此时窗口覆盖的时长短于 `window_sec`，比率类告警会注明 `only the latest 250000 samples are kept`。`failed_request_rate` 告警中的 `top_paths` 一行在每个窗口内最多跟踪 256 个不同路径。其他路径上的失败仍计入失败率，该行会注明有多少未列出。"

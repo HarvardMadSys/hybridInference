@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -2525,3 +2526,101 @@ async def test_resume_loses_to_a_hard_delete_in_progress(admin_client):
 
     assert resp.status_code == 409
     assert "hard-delete in progress" in resp.json()["detail"]
+
+
+# ========================================================================
+# Approval and rejection notices
+# ========================================================================
+
+_DECISIONS = [
+    pytest.param(
+        "approve", "send_approval_email", None, ("bob@example.com",), "active", id="approve"
+    ),
+    pytest.param(
+        "reject",
+        "send_rejection_email",
+        {"reason": "Outside the pilot"},
+        ("bob@example.com", "Outside the pilot"),
+        "rejected",
+        id="reject",
+    ),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("action", "sender", "body", "sent_with", "status"), _DECISIONS)
+async def test_decision_notice_is_sent_off_the_event_loop(
+    admin_client, monkeypatch, action, sender, body, sent_with, status
+):
+    """The notice is blocking I/O (SMTP, or a provider's HTTP API).
+
+    Sent inline, it froze the one event loop every request shares for as long
+    as the mail server took to answer, up to its timeout.
+    """
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(
+        uid="u2", email="bob@example.com", status="pending_approval"
+    )
+    loop_thread = threading.get_ident()
+    sent: list[tuple[tuple[Any, ...], int]] = []
+
+    def send(*args: Any) -> bool:
+        sent.append((args, threading.get_ident()))
+        return True
+
+    monkeypatch.setattr("serving.utils.email.is_email_enabled", lambda: True)
+    monkeypatch.setattr(f"serving.utils.email.{sender}", send)
+
+    resp = await client.post(f"/admin/users/u2/{action}", json=body, headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == status
+    assert [args for args, _thread in sent] == [sent_with]
+    assert sent[0][1] != loop_thread
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("action", "sender", "body", "sent_with", "status"), _DECISIONS)
+async def test_a_notice_that_fails_to_send_leaves_the_decision_standing(
+    admin_client, monkeypatch, action, sender, body, sent_with, status
+):
+    """As before: the decision is recorded and answered whatever the mail does."""
+    client, op_store, _log_store, log_action = admin_client
+    op_store.get_user_by_id.return_value = _user_row(
+        uid="u2", email="bob@example.com", status="pending_approval"
+    )
+    attempts: list[tuple[Any, ...]] = []
+
+    def send(*args: Any) -> bool:
+        attempts.append(args)
+        return False  # what send_email reports when the server refuses
+
+    monkeypatch.setattr("serving.utils.email.is_email_enabled", lambda: True)
+    monkeypatch.setattr(f"serving.utils.email.{sender}", send)
+
+    resp = await client.post(f"/admin/users/u2/{action}", json=body, headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == status
+    assert attempts == [sent_with]
+    getattr(op_store, f"{action}_user").assert_awaited_once()
+    log_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("action", "sender", "body", "sent_with", "status"), _DECISIONS)
+async def test_no_notice_is_queued_without_a_mail_provider(
+    admin_client, monkeypatch, action, sender, body, sent_with, status
+):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(
+        uid="u2", email="bob@example.com", status="pending_approval"
+    )
+    attempts: list[tuple[Any, ...]] = []
+    monkeypatch.setattr("serving.utils.email.is_email_enabled", lambda: False)
+    monkeypatch.setattr(f"serving.utils.email.{sender}", lambda *args: attempts.append(args))
+
+    resp = await client.post(f"/admin/users/u2/{action}", json=body, headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert attempts == []

@@ -802,17 +802,6 @@ msgstr ""
 "运行时先读 "
 "`SITE_ASSETS_DIR`，再读镜像里自带的那份。挂载了品牌目录的部署，可以继续覆盖模块的文件；什么都不挂载的部署，也能提供完整的站点。"
 
-#: ../developer/site-ui-modules.md:343
-msgid ""
-"The override works file by file, and `SITE_ASSETS_DIR` must be an "
-"absolute path. The build copies a relative symlink as the link it is, "
-"with its target unchanged, so a link that stays inside the module keeps "
-"working in the image. The route does not serve a link whose target is "
-"outside its directory."
-msgstr ""
-"覆盖按文件逐个生效，且 `SITE_ASSETS_DIR` "
-"必须是绝对路径。构建会把相对符号链接原样复制为链接，目标保持不变，因此留在模块内部的链接在镜像中仍然有效。目标位于所在目录之外的链接，路由不会提供。"
-
 #: ../developer/site-ui-modules.md:348
 msgid "Styling the shared forms"
 msgstr "共享表单样式"
@@ -1152,3 +1141,32 @@ msgstr "登录方式选择器通过 `auth.login.method_label`、`auth.login.pass
 #: ../developer/site-ui-modules.md
 msgid "The login and signup method group additionally exposes `data-auth-method-selector` for scoped styling, while keeping its `data-auth=\"secondary-actions\"` hook. Its buttons use `aria-pressed` to identify the selected method."
 msgstr "登录和注册的方式选择组额外提供 `data-auth-method-selector`，用于限定样式作用范围，同时保留 `data-auth=\"secondary-actions\"` 钩子。组内按钮通过 `aria-pressed` 标识当前选中的方式。"
+
+#: ../developer/site-ui-modules.md:348
+msgid ""
+"Every page is served with a `Content-Security-Policy` "
+"(`apps/frontend/src/lib/security/contentSecurityPolicy.ts`). A module's "
+"markup runs no inline `<script>` and no script from another host, its "
+"stylesheets and fonts load from the console's own origin, and its images "
+"load from `/site-assets` or over HTTPS. A module that needs more than "
+"that needs a change to the policy."
+msgstr ""
+"每个页面都带有 `Content-Security-"
+"Policy`（`apps/frontend/src/lib/security/contentSecurityPolicy.ts`）。模块的标记不能运行内联"
+" `<script>`，也不能运行来自其他主机的脚本；它的样式表和字体从控制台自己的源加载，图片从 `/site-assets` 或通过 "
+"HTTPS 加载。需要更多权限的模块，需要修改这项策略。"
+
+#: ../developer/site-ui-modules.md:355
+msgid ""
+"The override works file by file, and `SITE_ASSETS_DIR` must be an "
+"absolute path. The console runs as uid 1000, so the mounted directory and"
+" its files must be readable by that user; world-readable (`0755` "
+"directories, `0644` files) is enough. A file it cannot read is answered "
+"as missing. The build copies a relative symlink as the link it is, with "
+"its target unchanged, so a link that stays inside the module keeps "
+"working in the image. The route does not serve a link whose target is "
+"outside its directory."
+msgstr ""
+"覆盖按文件逐个生效，且 `SITE_ASSETS_DIR` 必须是绝对路径。控制台以 uid 1000 "
+"运行，所以挂载的目录及其中的文件必须能被该用户读取；所有人可读（目录 `0755`、文件 "
+"`0644`）就足够了。它读不了的文件会按不存在处理。构建会把相对符号链接原样复制为链接，目标保持不变，因此留在模块内部的链接在镜像中仍然有效。目标位于所在目录之外的链接，路由不会提供。"

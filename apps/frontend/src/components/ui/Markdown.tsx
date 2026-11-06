@@ -1,5 +1,6 @@
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { rehypeImagesAsLinks } from '@/lib/utils/markdownImages';
 
 /** Surface this Markdown renders on — picks the accent, border and code palette. */
 export type MarkdownTone = 'light' | 'dark';
@@ -80,15 +81,22 @@ const COMPONENTS: Record<MarkdownTone, Components> = {
   dark: buildComponents(PALETTES.dark),
 };
 
-// Hoisted so the plugin array keeps a stable identity across renders — this
+// Hoisted so the plugin arrays keep a stable identity across renders — this
 // renders token-by-token on the playground's streaming path.
 const REMARK_PLUGINS = [remarkGfm];
+// What this renders is model output, so an image in it must not load: see
+// rehypeImagesAsLinks. It reaches the `a` renderer above as a link.
+const REHYPE_PLUGINS = [rehypeImagesAsLinks];
 
 /** Render a Markdown string (GitHub-flavored) as styled HTML. */
 export function Markdown({ text, tone = 'light' }: { text: string; tone?: MarkdownTone }) {
   return (
     <div className="break-words text-sm leading-relaxed [&>*:last-child]:mb-0">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={COMPONENTS[tone]}>
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={COMPONENTS[tone]}
+      >
         {text}
       </ReactMarkdown>
     </div>

@@ -376,6 +376,20 @@ _SGLANG_UNDECODABLE_IMAGE = (
 )
 
 
+class _BodyStream:
+    """``ClientResponse.content`` for a body already in hand."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+        self.read_bytes = 0
+
+    async def iter_chunked(self, n: int):
+        for start in range(0, len(self._body), n):
+            chunk = self._body[start : start + n]
+            self.read_bytes += len(chunk)
+            yield chunk
+
+
 class _ErrorResp:
     """An upstream error response as ``_upstream_status_error`` reads it."""
 
@@ -385,10 +399,9 @@ class _ErrorResp:
         self.request_info = None
         self.history = ()
         self.headers = {"Content-Type": "application/json"}
-        self._body = body
-
-    async def text(self) -> str:
-        return self._body
+        self.charset = None
+        self.content_length = len(body.encode())
+        self.content = _BodyStream(body.encode())
 
 
 @pytest.mark.unit
