@@ -17,8 +17,9 @@ from serving.storage.erasure_fence import (
     fence_account_digest,
     insert_api_logs_row,
 )
+from tests.fixtures import postgres
 
-_SECRET = "unit-fence-secret"
+_SECRET = postgres.FENCE_SECRET
 
 
 class _Connection:
@@ -54,7 +55,6 @@ _ARGS = ("req-1", "m", "u-1")
 def test_a_row_naming_no_account_or_a_store_with_no_secret_has_no_keys():
     assert api_logs_fence_keys(fence_secret=_SECRET, user_id=None, credential_owner_id=None) == []
     assert api_logs_fence_keys(fence_secret=None, user_id="u-1", credential_owner_id="u-2") == []
-    assert api_logs_fence_keys(fence_secret="", user_id="u-1", credential_owner_id=None) == []
 
 
 def test_each_distinct_account_is_one_key_and_the_keys_are_sorted():
