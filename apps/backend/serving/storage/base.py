@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
     from datetime import datetime
     from decimal import Decimal
 
@@ -2019,17 +2019,20 @@ class LogStore(ABC):
     async def get_user_usage_detail(
         self,
         user_id: str,
+        windows: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Return detailed usage stats for a user (today, week, month, all-time).
 
         Used by the user dashboard ``/user/usage`` endpoint.
-        Returns dict with keys ``today``, ``week``, ``month``, ``alltime``
-        each containing ``requests``, ``cost_usd``, ``prompt_tokens``,
+        Returns dict with keys ``today``, ``week``, ``month``, ``alltime`` --
+        only those named in *windows* when given -- each containing
+        ``requests``, ``cost_usd``, ``prompt_tokens``,
         ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
         ``reasoning_tokens`` and ``reasoning_tokens_known_requests``.
         ``reasoning_tokens`` is summed over the rows that report it and is
         ``None`` when none does; ``reasoning_tokens_known_requests`` counts
-        those rows.
+        those rows. An implementation may answer from a cache a few seconds
+        old.
         """
 
     @abstractmethod

@@ -31,10 +31,11 @@ from serving.storage.utils import (
     user_message_stats,
 )
 from serving.utils.logging import get_logger
+from serving.utils.single_flight import SingleFlightCache
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
     import asyncpg
 
@@ -82,53 +83,14 @@ _GRANT_METRIC_COLUMNS = {
     "spent_usd": "cost_usd",
 }
 
-# Dashboard usage windows. ``today`` and ``month`` start at 00:00 UTC, when the
-# daily quota resets, regardless of the session time zone; ``week`` is rolling.
-_USER_USAGE_WINDOWS = {
-    "today": "timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
-    "week": "timestamp >= NOW() - INTERVAL '7 days'",
-    "month": "timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
-    "alltime": "TRUE",
-}
-
-# Summed per window. Cache tokens are a subset of ``prompt_tokens``; whether
-# ``reasoning_tokens`` is inside ``completion_tokens`` depends on the provider.
-_USER_USAGE_SUMS = (
-    "cost_usd",
-    "prompt_tokens",
-    "completion_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-    "reasoning_tokens",
-)
-
-# Summed over the rows that carry them, never coalesced: a NULL
-# ``reasoning_tokens`` means the upstream reported no count (a native Anthropic
-# upstream never does; thinking is inside its output), so a window whose rows
-# all lack one sums to "unknown", not to 0, and the rows that do carry one are
-# counted so a partial sum is labelled as such.
-_USER_USAGE_KNOWN_SUMS = ("reasoning_tokens",)
-
-# One pass over the user's rows instead of one query per window; the
-# all-time window scans every row anyway.
-_USER_USAGE_SQL = "SELECT {} FROM api_logs WHERE user_id = $1".format(
-    ",\n       ".join(
-        [
-            f"COUNT(*) FILTER (WHERE {cond}) AS {window}__requests"
-            for window, cond in _USER_USAGE_WINDOWS.items()
-        ]
-        + [
-            (
-                f"SUM({col}) FILTER (WHERE {cond}) AS {window}__{col}, "
-                f"COUNT({col}) FILTER (WHERE {cond}) AS {window}__{col}_known"
-            )
-            if col in _USER_USAGE_KNOWN_SUMS
-            else f"COALESCE(SUM({col}) FILTER (WHERE {cond}), 0) AS {window}__{col}"
-            for window, cond in _USER_USAGE_WINDOWS.items()
-            for col in _USER_USAGE_SUMS
-        ]
-    )
-)
+#: How long a user's dashboard usage (``get_user_usage_detail``) is answered from
+#: memory. The figures move with every request the user makes, and the
+#: dashboard shows them as they stood a moment ago; half a minute bounds what a
+#: user refreshing it, or a script polling it, costs the database to one read
+#: per window set.
+USER_USAGE_CACHE_TTL_SEC = 30.0
+#: Users whose usage is kept at once; the least recently computed goes first.
+USER_USAGE_CACHE_ENTRIES = 4096
 
 
 class PostgresLogStore(LogStore):
@@ -154,6 +116,9 @@ class PostgresLogStore(LogStore):
         self.pool = pool
         self.store_full_prompts = store_full_prompts
         self.fence_secret = fence_secret
+        self._user_usage: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
+            USER_USAGE_CACHE_TTL_SEC, max_entries=USER_USAGE_CACHE_ENTRIES
+        )
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -611,27 +576,32 @@ class PostgresLogStore(LogStore):
             )
         return float(row["cost_spent"]) if row else 0.0
 
-    async def get_user_usage_detail(self, user_id: str) -> dict[str, Any]:
-        """Return detailed usage stats for the user dashboard."""
+    async def get_user_usage_detail(
+        self, user_id: str, windows: Iterable[str] | None = None
+    ) -> dict[str, Any]:
+        """Return detailed usage stats for the user dashboard.
+
+        Read through the daily rollup (:func:`user_usage_rollup.fetch_usage_windows`):
+        the completed days it has stored plus the rest counted live, only for
+        the *windows* asked for (every one of ``today``, ``week``, ``month`` and
+        ``alltime`` when None), with the same figures summing the user's
+        ``api_logs`` rows directly gives. The answer is kept for
+        :data:`USER_USAGE_CACHE_TTL_SEC` per user and window set, and concurrent
+        calls for the same share one read.
+        """
+        asked = set(user_usage_rollup.USAGE_WINDOWS if windows is None else windows)
+        wanted = tuple(w for w in user_usage_rollup.USAGE_WINDOWS if w in asked)
+        if asked - set(wanted) or not wanted:
+            raise ValueError(f"unknown or no usage windows: {sorted(asked)}")
+        detail = await self._user_usage.get(
+            (user_id, wanted), lambda: self._read_user_usage(user_id, wanted)
+        )
+        # Callers get their own copy: the cached one answers the next caller.
+        return {window: dict(stats) for window, stats in detail.items()}
+
+    async def _read_user_usage(self, user_id: str, windows: tuple[str, ...]) -> dict[str, Any]:
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(_USER_USAGE_SQL, user_id)
-
-        def _window(window: str) -> dict[str, Any]:
-            stats: dict[str, Any] = {
-                "requests": int(row[f"{window}__requests"]) if row else 0,
-            }
-            for col in _USER_USAGE_SUMS:
-                if col in _USER_USAGE_KNOWN_SUMS:
-                    known = int(row[f"{window}__{col}_known"] or 0) if row else 0
-                    value = row[f"{window}__{col}"] if row and known else None
-                    stats[col] = None if value is None else int(value)
-                    stats[f"{col}_known_requests"] = known
-                    continue
-                value = row[f"{window}__{col}"] if row else 0
-                stats[col] = float(value) if col == "cost_usd" else int(value)
-            return stats
-
-        return {window: _window(window) for window in _USER_USAGE_WINDOWS}
+            return await user_usage_rollup.fetch_usage_windows(conn, user_id, windows)
 
     async def get_batch_usage(
         self,

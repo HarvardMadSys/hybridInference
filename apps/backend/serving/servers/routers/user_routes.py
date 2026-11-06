@@ -1097,8 +1097,12 @@ async def get_usage(
     _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
     try:
         if log_store:
-            all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
             period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
+            # The period shown, and the month, whose cost is the quota's
+            # spent_month_usd; nothing else is read.
+            all_usage = await log_store.get_user_usage_detail(
+                current_user["user_id"], windows=(period_key, "month")
+            )
             period_data = all_usage.get(period_key, _zero)
             spent_month = all_usage.get("month", _zero).get("cost_usd", 0.0)
         else:
