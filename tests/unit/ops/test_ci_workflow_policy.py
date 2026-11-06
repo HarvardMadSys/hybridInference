@@ -467,6 +467,10 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert "--configure-upstream" in stage3
     assert "make demo DISTRIBUTION=example" in stage3
     assert '"http://localhost:${BACKEND_PORT}/routing"' in stage3
+    # Read anonymously, /routing must not name the upstream; the smoke's
+    # expected content is what proves requests reach the host fixture.
+    assert 'if grep -qF "host.docker.internal" <<< "${routing}"; then' in stage3
+    assert "anonymous /routing disclosed an upstream address" in stage3
     assert "EXAMPLE_DEMO_EXPECT_EXISTING=1" in stage3
     assert "make demo-smoke DISTRIBUTION=example" in stage3
     assert (

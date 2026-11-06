@@ -1952,32 +1952,14 @@ msgstr ""
 
 #: ../developer/routing.md
 msgid ""
-"Current weight distribution per model, plus the probe's `endpoint_health`"
-" map."
-msgstr "每个模型当前的权重分布，外加探测循环的 `endpoint_health` 映射。"
+"Current weight distribution per model; for an administrator, also each route's `base_url` and the probe's `endpoint_health` map."
+msgstr "每个模型当前的权重分布；对管理员还会给出每条路由的 `base_url` 和探测循环的 `endpoint_health` 映射。"
 
 #: ../developer/routing.md:662
 msgid ""
-"`GET /routing` requires no authentication and returns, for every "
-"published model, each route's `provider`, **`base_url`**, and weight. On "
-"a public host that discloses your upstream topology — including private "
-"LAN addresses and any internal hostnames in a route's base URL. Put it "
-"behind your reverse proxy, or do not expose it."
+"`GET /routing` and `GET /health/deep` require no authentication. Anonymously, `/routing` returns each published route's `provider` and weight, and `/health/deep` keys its `providers` by `endpoint_id` (`<model-id>:<location>`) and lists `route_exclusions` without their upstream. Where requests go — each route's `base_url`, and the probe's `endpoint_health` map, keyed by endpoint URL — is shown only to a caller that sends an administrator's JWT or `ADMIN_TOKEN` as `Authorization: Bearer ...`. Any other credential, valid or not, gets the anonymous answer with the same status code. An `endpoint_id` can still carry a local port or a host's first label (`local-12003`, `10-api`); gate both paths at your reverse proxy if even that is too much for your deployment."
 msgstr ""
-"`GET /routing` 不需要任何鉴权，它会为每个已发布的模型返回各条路由的 `provider`、**`base_url`** "
-"和权重。在公网主机上，这等于泄露你的上游拓扑——包括内网地址，以及路由 base URL "
-"里出现的任何内部主机名。把它放到你的反向代理之后，或者干脆不要暴露它。"
-
-#: ../developer/routing.md:668
-msgid ""
-"`GET /health/deep` is unauthenticated on the same terms: its `providers` "
-"keys are `endpoint_id`s (`<model-id>:<location>`), and each "
-"`route_exclusions` entry carries that route's `base_url` too. Gate both, "
-"not just `/routing`."
-msgstr ""
-"`GET /health/deep` 同样不需要鉴权：它的 `providers` 键就是 `endpoint_id`（`<model-"
-"id>:<location>`），而每条 `route_exclusions` 记录还带着该路由的 "
-"`base_url`。两个端点都要设防，不是只管 `/routing`。"
+"`GET /routing` 和 `GET /health/deep` 都不需要鉴权。匿名访问时，`/routing` 返回每条已发布路由的 `provider` 和权重；`/health/deep` 的 `providers` 以 `endpoint_id`（`<model-id>:<location>`）为键，列出的 `route_exclusions` 不带上游地址。请求发往哪里——每条路由的 `base_url`，以及以端点 URL 为键的探测结果 `endpoint_health`——只展示给以 `Authorization: Bearer ...` 带上管理员 JWT 或 `ADMIN_TOKEN` 的调用方。其他任何凭据，无论是否有效，得到的都是匿名视图，状态码不变。`endpoint_id` 里仍可能带有本地端口或主机名的第一段（`local-12003`、`10-api`）；如果你的部署连这些都不能公开，就在反向代理上把这两个路径都拦下。"
 
 #: ../developer/routing.md:673
 msgid ""

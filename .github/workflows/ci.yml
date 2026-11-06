@@ -1359,8 +1359,15 @@ jobs:
             --configure-upstream
           make demo DISTRIBUTION=example
 
+          # Anyone may read /routing, but only an administrator is shown where
+          # a route sends requests. That the route now reaches the host fixture
+          # is proved by the smoke below: only the fixture answers
+          # STAGE3_HOST_FIXTURE_OK, for the model and key it was started with.
           routing="$(curl --fail --silent --show-error "http://localhost:${BACKEND_PORT}/routing")"
-          grep -qF "host.docker.internal:${host_provider_port}" <<< "${routing}"
+          if grep -qF "host.docker.internal" <<< "${routing}"; then
+            echo "anonymous /routing disclosed an upstream address" >&2
+            exit 1
+          fi
 
           EXAMPLE_DEMO_EXPECT_EXISTING=1 \
             DEMO_BASE_URL="http://localhost:${port}" \

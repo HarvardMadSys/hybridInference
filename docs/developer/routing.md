@@ -894,19 +894,19 @@ The design is in
 | `POST /v1/chat/completions` | Chat completion with automatic routing. |
 | `GET /health` | Liveness plus a `routes_configured` count. |
 | `GET /health/deep` | Per-endpoint availability, circuit state, and `route_exclusions`. |
-| `GET /routing` | Current weight distribution per model, plus the probe's `endpoint_health` map. |
+| `GET /routing` | Current weight distribution per model; for an administrator, also each route's `base_url` and the probe's `endpoint_health` map. |
 
-```{warning}
-`GET /routing` requires no authentication and returns, for every published
-model, each route's `provider`, **`base_url`**, and weight. On a public host
-that discloses your upstream topology — including private LAN addresses and
-any internal hostnames in a route's base URL. Put it behind your reverse proxy,
-or do not expose it.
-
-`GET /health/deep` is unauthenticated on the same terms: its `providers` keys
-are `endpoint_id`s (`<model-id>:<location>`), and each `route_exclusions` entry
-carries that route's `base_url` too. Gate both, not just `/routing`.
-```
+`GET /routing` and `GET /health/deep` require no authentication. Anonymously,
+`/routing` returns each published route's `provider` and weight, and
+`/health/deep` keys its `providers` by `endpoint_id` (`<model-id>:<location>`)
+and lists `route_exclusions` without their upstream. Where requests go — each
+route's `base_url`, and the probe's `endpoint_health` map, keyed by endpoint
+URL — is shown only to a caller that sends an administrator's JWT or
+`ADMIN_TOKEN` as `Authorization: Bearer ...`. Any other credential, valid or
+not, gets the anonymous answer with the same status code. An `endpoint_id` can
+still carry a local port or a host's first label (`local-12003`, `10-api`);
+gate both paths at your reverse proxy if even that is too much for your
+deployment.
 
 Runtime administration lives under `/admin/...`, requires admin
 authentication, and is backed by the operational store. The routing-related

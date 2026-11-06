@@ -683,18 +683,9 @@ msgstr ""
 
 #: ../developer/configuration.md:244
 msgid ""
-"**The probe only reports; it never changes routing.** An endpoint that "
-"fails every probe keeps its weight and keeps receiving traffic. Each "
-"change of state is logged at `WARNING`, and `GET /routing` shows the "
-"latest results under `manager_status.endpoint_health`, next to "
-"`endpoint_health_enforced: false`. The [circuit breaker](routing.md"
-"#endpoint-health-and-circuit-breaking) is what takes a failing endpoint "
-"out of rotation."
+"**The probe only reports; it never changes routing.** An endpoint that fails every probe keeps its weight and keeps receiving traffic. Each change of state is logged at `WARNING`, and `GET /routing` shows the latest results to an administrator under `manager_status.endpoint_health`, next to `endpoint_health_enforced: false`. The map is keyed by endpoint URL, so an anonymous caller is shown `endpoint_health_enforced` without it. The [circuit breaker](routing.md#endpoint-health-and-circuit-breaking) is what takes a failing endpoint out of rotation."
 msgstr ""
-"**探测只报告结果，不会改变路由**。即使某个端点每次探测都失败，它也保有原来的权重，照样接收流量。每次状态变化都会记一条 `WARNING` "
-"日志，`GET /routing` 在 `manager_status.endpoint_health` 下展示最新结果，旁边是 "
-"`endpoint_health_enforced: false`。真正把故障端点暂时移出的是[熔断器](routing.md#endpoint-"
-"health-and-circuit-breaking)。"
+"**探测只报告结果，不会改变路由**。即使某个端点每次探测都失败，它也保有原来的权重，照样接收流量。每次状态变化都会记一条 `WARNING` 日志，`GET /routing` 向管理员在 `manager_status.endpoint_health` 下展示最新结果，旁边是 `endpoint_health_enforced: false`。这张映射以端点 URL 为键，所以匿名调用方只能看到 `endpoint_health_enforced`，看不到映射本身。真正把故障端点暂时移出的是[熔断器](routing.md#endpoint-health-and-circuit-breaking)。"
 
 #: ../developer/configuration.md:251
 #, python-brace-format
@@ -764,8 +755,9 @@ msgid "`health_check` probe results"
 msgstr "`health_check` 的探测结果"
 
 #: ../developer/configuration.md
-msgid "Logged and reported on `GET /routing`, never used for routing"
-msgstr "记入日志，并在 `GET /routing` 中报告；从不用于路由决策"
+msgid ""
+"Logged, and shown to administrators on `GET /routing`; never used for routing"
+msgstr "记入日志，并在 `GET /routing` 中向管理员展示；从不用于路由决策"
 
 #: ../developer/configuration.md
 msgid "`router_params.local_fraction`"
@@ -2122,19 +2114,9 @@ msgstr ""
 
 #: ../developer/configuration.md:744
 msgid ""
-"`GET /routing` requires no credentials and returns, for every published "
-"route, the upstream `base_url`, its provider label and its weight — that "
-"is, your complete upstream topology including any host and port embedded "
-"in a base URL. Block `/routing` at your reverse proxy on any gateway "
-"reachable from the internet unless you intend to publish this topology. "
-"`GET /admin/routing` additionally reports unpublished routes and requires"
-" an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer "
-"...` header. Treat both endpoints' output as sensitive."
+"`GET /routing` requires no credentials and returns, for every published route, its provider label and its weight. Each route's upstream `base_url`, and the routing file's probe results, which are keyed by endpoint URL, are shown only to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header; any other caller, or a credential that does not check out, gets the anonymous answer with the same status code. `GET /admin/routing` requires those credentials and additionally reports unpublished routes. Treat their output as sensitive: it is your upstream topology, including any host and port embedded in a base URL."
 msgstr ""
-"`GET /routing` 不需要任何凭据，会返回每条已发布路由的上游 `base_url`、provider "
-"标签和权重——也就是你完整的上游拓扑，包括 base URL 里的主机和端口。如果网关能从公网访问，而你又不打算公开这份拓扑，就在反向代理上屏蔽 "
-"`/routing`。`GET /admin/routing` 还会返回未发布的路由，需要在 `Authorization: Bearer "
-"...` 头里带上管理员的 JWT 或 `ADMIN_TOKEN`。两个接口的输出都要当作敏感信息。"
+"`GET /routing` 不需要任何凭据，会返回每条已发布路由的 provider 标签和权重。每条路由的上游 `base_url`，以及以端点 URL 为键的路由配置文件探测结果，只展示给在 `Authorization: Bearer ...` 头里带上管理员 JWT 或 `ADMIN_TOKEN` 的调用方；其他调用方，或者凭据校验不通过的调用方，得到的是匿名视图，状态码不变。`GET /admin/routing` 必须带这些凭据，并且还会返回未发布的路由。它们的输出要当作敏感信息：那是你的上游拓扑，包括 base URL 里的主机和端口。"
 
 #: ../developer/configuration.md:754
 msgid "Optional phone authentication"

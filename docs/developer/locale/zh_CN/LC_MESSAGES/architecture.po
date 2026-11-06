@@ -1193,8 +1193,8 @@ msgid "`GET /health`, `/health/ready`, `/health/deep`"
 msgstr ""
 
 #: ../developer/architecture.md
-msgid "None"
-msgstr "无"
+msgid "None; upstream addresses only for an admin"
+msgstr "无；上游地址只对管理员展示"
 
 #: ../developer/architecture.md
 msgid "Public routing disclosure"
@@ -1226,18 +1226,9 @@ msgstr "视路径而定"
 
 #: ../developer/architecture.md:485
 msgid ""
-"`GET /routing` requires no authentication and returns each published "
-"route's provider label, **upstream base URL**, and traffic weight. If "
-"your gateway is reachable from the internet, block this path at your "
-"reverse proxy unless you intend to publish your upstream topology. `GET "
-"/admin/routing` additionally includes unpublished routes and routing-"
-"manager status, but requires an administrator's JWT or `ADMIN_TOKEN` in "
-"the `Authorization: Bearer ...` header."
+"`GET /routing` requires no authentication and returns each published route's provider label and traffic weight. Its upstream base URL, and the routing file's probe results, which are keyed by endpoint URL, are shown only to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header, and `/health/deep` leaves the base URL out of its `route_exclusions` on the same terms. `GET /admin/routing` requires those credentials and additionally includes unpublished routes."
 msgstr ""
-"`GET /routing` 不需要认证，会返回每条已发布路由的 provider 标签、**上游 base URL** "
-"和流量权重。如果你的网关能从公网访问，除非你有意公开自己的上游拓扑，否则请在反向代理上封掉这个路径。`GET /admin/routing` "
-"还额外包含未发布的路由和路由管理器状态，但需要在 `Authorization: Bearer ...` 请求头中提供管理员的 JWT 或 "
-"`ADMIN_TOKEN`。"
+"`GET /routing` 不需要认证，会返回每条已发布路由的 provider 标签和流量权重。路由的上游 base URL，以及以端点 URL 为键的路由配置文件探测结果，只展示给在 `Authorization: Bearer ...` 请求头中提供管理员 JWT 或 `ADMIN_TOKEN` 的调用方；`/health/deep` 的 `route_exclusions` 也按同样的条件省略 base URL。`GET /admin/routing` 必须带这些凭据，并且还额外包含未发布的路由。"
 
 #: ../developer/architecture.md:493
 msgid ""

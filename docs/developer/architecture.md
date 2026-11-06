@@ -521,8 +521,8 @@ Client-facing groups, all served by the same app:
 | [Batch files](batches.md#batches-from-a-file) | `POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | API key; uploading a file needs `BATCH_MIN_ROLE` |
 | [Batch webhooks](batches.md#webhooks) | `GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events` | API key; setting up or changing a webhook needs `BATCH_MIN_ROLE` |
 | Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
-| Health | `GET /health`, `/health/ready`, `/health/deep` | None |
-| Public routing disclosure | `GET /routing` | None |
+| Health | `GET /health`, `/health/ready`, `/health/deep` | None; upstream addresses only for an admin |
+| Public routing disclosure | `GET /routing` | None; upstream addresses only for an admin |
 | Admin | `GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*` | Admin |
 | Accounts and console APIs | `/auth/*`, `/user/*`, `/site-config` | Mixed |
 
@@ -533,14 +533,13 @@ creating batches, uploading files and setting up or changing a webhook. An
 owner whose role is lowered can still manage existing batches and files, read
 or delete their webhook, and receive its deliveries.
 
-```{warning}
 `GET /routing` requires no authentication and returns each published route's
-provider label, **upstream base URL**, and traffic weight. If your gateway is
-reachable from the internet, block this path at your reverse proxy unless you
-intend to publish your upstream topology. `GET /admin/routing` additionally
-includes unpublished routes and routing-manager status, but requires an
-administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header.
-```
+provider label and traffic weight. Its upstream base URL, and the routing
+file's probe results, which are keyed by endpoint URL, are shown only to a
+caller that sends an administrator's JWT or `ADMIN_TOKEN` in the
+`Authorization: Bearer ...` header, and `/health/deep` leaves the base URL out
+of its `route_exclusions` on the same terms. `GET /admin/routing` requires
+those credentials and additionally includes unpublished routes.
 
 `/v1/models` shape-shifts by client: an Anthropic-family client calling it
 receives the Anthropic list response, while `/models` and `/openrouter/models`

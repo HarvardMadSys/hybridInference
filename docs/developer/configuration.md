@@ -271,8 +271,10 @@ probe is a `GET` to the endpoint's origin root plus `/health`.
 
 **The probe only reports; it never changes routing.** An endpoint that fails
 every probe keeps its weight and keeps receiving traffic. Each change of state
-is logged at `WARNING`, and `GET /routing` shows the latest results under
-`manager_status.endpoint_health`, next to `endpoint_health_enforced: false`.
+is logged at `WARNING`, and `GET /routing` shows the latest results to an
+administrator under `manager_status.endpoint_health`, next to
+`endpoint_health_enforced: false`. The map is keyed by endpoint URL, so an
+anonymous caller is shown `endpoint_health_enforced` without it.
 The [circuit breaker](routing.md#endpoint-health-and-circuit-breaking) is what
 takes a failing endpoint out of rotation.
 
@@ -297,7 +299,7 @@ the routing file's weight split, nothing on a gateway with a database.
 | Setting | Where | What happens |
 |---|---|---|
 | `local_deployment` / `remote_deployment` weight split | routing file | Applied only on a gateway without a database; see [The routing file](#the-routing-file) |
-| `health_check` probe results | routing file | Logged and reported on `GET /routing`, never used for routing |
+| `health_check` probe results | routing file | Logged, and shown to administrators on `GET /routing`; never used for routing |
 | `router_params.local_fraction` | model registry, `router: fixed` | Accepted and validated, not read |
 | `features.routers` | distribution manifest | Published in `/site-config`, does not select or restrict a router |
 | `paths.mcp` | distribution manifest | Accepted, not read by any component |
@@ -808,16 +810,15 @@ the registry file that was used; `[distribution dark mode] ...` lines show what
 a manifest would change once activated; `Skipping model '<id>' ... after env
 expansion` names each model whose credentials were unset.
 
-```{warning}
 `GET /routing` requires no credentials and returns, for every published route,
-the upstream `base_url`, its provider label and its weight — that is, your
-complete upstream topology including any host and port embedded in a base URL.
-Block `/routing` at your reverse proxy on any gateway reachable from the
-internet unless you intend to publish this topology. `GET /admin/routing`
-additionally reports unpublished routes and requires an administrator's JWT
-or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header. Treat both endpoints'
-output as sensitive.
-```
+its provider label and its weight. Each route's upstream `base_url`, and the
+routing file's probe results, which are keyed by endpoint URL, are shown only
+to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the
+`Authorization: Bearer ...` header; any other caller, or a credential that does
+not check out, gets the anonymous answer with the same status code.
+`GET /admin/routing` requires those credentials and additionally reports
+unpublished routes. Treat their output as sensitive: it is your upstream
+topology, including any host and port embedded in a base URL.
 
 ## Optional phone authentication
 
