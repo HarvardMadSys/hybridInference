@@ -1675,7 +1675,7 @@ def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None
 _UNCLONEABLE_ENDPOINT_FACTS = ("null_cache_details_means_miss",)
 
 
-def _config_to_dict(config: Any) -> dict[str, Any]:
+def _config_to_dict(config: Any, *, strip_route_capabilities: bool = False) -> dict[str, Any]:
     if is_dataclass(config):
         values = asdict(config)
         # ``asdict`` recursively converts PricingSchedule into its internal
@@ -1688,6 +1688,8 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
                 values[field.name] = getattr(config, field.name)
     for name in _UNCLONEABLE_ENDPOINT_FACTS:
         values.pop(name, None)
+    if strip_route_capabilities:
+        values.pop("include_usage_in_stream", None)
     return values
 
 
@@ -2497,7 +2499,7 @@ async def _prepare_route_candidate(
     )
 
     template_adapter = entries[0][0]
-    cfg = _config_to_dict(template_adapter.config)
+    cfg = _config_to_dict(template_adapter.config, strip_route_capabilities=True)
     cfg.update(
         {
             "id": model_id,
@@ -2803,7 +2805,10 @@ async def _prepare_route_update(
     same_url = effective_url is not None and effective_url == _canonical_base_url(
         current_adapter.config.base_url
     )
-    cfg = _config_to_dict(current_adapter.config)
+    cfg = _config_to_dict(
+        current_adapter.config,
+        strip_route_capabilities=not (same_target and same_url),
+    )
     deployment_type_declaration = deployment_type_override
     if deployment_type_declaration is None and not (same_target and same_url):
         # Older clients and legacy DB overrides omit this field. A declaration
