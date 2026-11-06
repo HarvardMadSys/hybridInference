@@ -80,6 +80,7 @@ from serving.servers.deps import (
 )
 from serving.servers.model_availability import model_not_found_detail
 from serving.servers.surface_http import client_origin, timeout_probe
+from serving.storage.bounded_log import bound_rejected_log_payload
 from serving.storage.utils import calculate_cost
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
@@ -1163,7 +1164,7 @@ def _schedule_log_store_task(
         # member of app services and must not be used by request handlers.
         async def _log() -> None:
             try:
-                await log_store.log_request(**log_payload)
+                await log_store.log_request(**bound_rejected_log_payload(log_payload))
             except Exception:
                 logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
