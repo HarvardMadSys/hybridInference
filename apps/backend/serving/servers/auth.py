@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import hmac
 import secrets
+import time
+import weakref
 from base64 import urlsafe_b64encode
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -48,6 +50,51 @@ logger = get_logger(__name__)
 # Quota of a key whose ``quota_daily_cost_usd`` is NULL (rows from before the
 # column existed).
 _DEFAULT_DAILY_QUOTA_USD = 1000.0
+
+#: Seconds after one ``last_used_at`` write for a key during which this process
+#: writes no other. The store's UPDATE carries the same window as a guard, so a
+#: key used from several processes is still written about once a minute.
+LAST_USED_DEBOUNCE_SECONDS = 60.0
+
+#: Past this many keys remembered for one store, expired ones are swept out.
+_LAST_USED_SWEEP_AT = 4096
+
+# When this process last scheduled a ``last_used_at`` write, per store and key
+# id. Per store rather than per process so two stores (tests build one each)
+# never debounce each other.
+_last_used_written: weakref.WeakKeyDictionary[Any, dict[int, float]] = weakref.WeakKeyDictionary()
+
+
+def touch_key_last_used(op_store: Any, key_id: int) -> None:
+    """Schedule the ``last_used_at`` write for *key_id*, at most once a minute per process.
+
+    Every authenticated request used to fire one: an unconditional UPDATE of
+    the key's row as an unbounded background task, contending on that one row
+    for a busy key and piling up ahead of the auth lookups on the shared pool
+    while the database was slow. The column is informational (the console's
+    "last used"), so minute resolution is all it needs: a write is skipped when
+    this process scheduled one for the key within
+    :data:`LAST_USED_DEBOUNCE_SECONDS`, and the store skips the row when any
+    process wrote it within the same window.
+
+    The time is noted when the write is scheduled, not when it lands, so a slow
+    database sees at most one pending write per key, never a queue of them.
+    """
+    now = time.monotonic()
+    try:
+        written = _last_used_written.setdefault(op_store, {})
+    except TypeError:
+        # A store that cannot be weakly referenced: no debounce, as before.
+        written = None
+    if written is not None:
+        last = written.get(key_id)
+        if last is not None and now - last < LAST_USED_DEBOUNCE_SECONDS:
+            return
+        if len(written) >= _LAST_USED_SWEEP_AT:
+            for stale in [k for k, at in written.items() if now - at >= LAST_USED_DEBOUNCE_SECONDS]:
+                del written[stale]
+        written[key_id] = now
+    tracked_task(op_store.update_key_last_used(key_id), name="key_last_used")
 
 
 class StoredKeyRejected(Exception):
@@ -945,8 +992,9 @@ async def verify_api_key(
 
     # Update last_used timestamp on the presented key — fire-and-forget
     # (issue #185): telemetry, not a gate, so the response no longer waits on
-    # the write. Failures surface through the tracked-task alert rule.
-    tracked_task(op_store.update_key_last_used(caller_key_id), name="key_last_used")
+    # the write, and debounced to once a minute per key. Failures surface
+    # through the tracked-task alert rule.
+    touch_key_last_used(op_store, caller_key_id)
 
     # Return user context for the attributed identity.
     return publish_caller_role(
@@ -1088,7 +1136,7 @@ async def verify_batch_management_identity(
     user, key_hash, spend_today = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=True
     )
-    tracked_task(op_store.update_key_last_used(user["id"]), name="key_last_used")
+    touch_key_last_used(op_store, user["id"])
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
     context = _user_context(

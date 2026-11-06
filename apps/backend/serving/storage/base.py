@@ -568,7 +568,12 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def update_key_last_used(self, key_id: int) -> None:
-        """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget."""
+        """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget.
+
+        A row already written within the last minute may be left as it is: the
+        column is read at minute resolution, and a busy key must not turn it
+        into a write per request.
+        """
 
     @abstractmethod
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:

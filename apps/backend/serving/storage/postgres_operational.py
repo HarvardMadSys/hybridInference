@@ -1437,9 +1437,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return dict(row) if row is not None else None
 
     async def update_key_last_used(self, key_id: int) -> None:
-        """Set ``last_used_at = NOW()`` for the given key id."""
+        """Set ``last_used_at = NOW()`` for the given key id, at most once a minute.
+
+        The guard leaves a row written in the last minute alone: no new row
+        version and no row lock held to the end of a write, so the processes
+        serving a busy key do not queue on its row for a column the console
+        reads at minute resolution.
+        """
         async with self._pool.acquire() as conn:
-            await conn.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", key_id)
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1 "
+                "AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '60 seconds')",
+                key_id,
+            )
 
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:
         """What key *key_id* spent on the current UTC day and month, from its counter."""
