@@ -167,9 +167,14 @@ describe('UsageStats reasoning reporting', () => {
     expect(detail('Reasoning tokens')).toBe('0');
   });
 
-  it('labels a sum that only some requests reported', () => {
+  it('labels a sum that only some requests reported, without the total', () => {
     renderUsage({ reasoning_tokens: 1250, reasoning_tokens_known_requests: 3 });
-    expect(detail('Reasoning tokens')).toBe('1,250 · reported by 3 of 4 requests');
+    expect(detail('Reasoning tokens')).toBe('1,250 · reported by only 3 requests');
+  });
+
+  it('labels a sum one request reported in the singular', () => {
+    renderUsage({ reasoning_tokens: 40, reasoning_tokens_known_requests: 1 });
+    expect(detail('Reasoning tokens')).toBe('40 · reported by only 1 request');
   });
 
   it('shows an exact sum when every request reported', () => {

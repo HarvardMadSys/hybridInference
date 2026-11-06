@@ -409,12 +409,16 @@ export function UsageStats(): JSX.Element {
                   {reasoningPartial && (
                     <span className="font-normal text-gray-500">
                       {' · '}
+                      {/* No "of {requests}": failed and native Anthropic requests
+                          never carry a count, so that total reads as data loss. */}
                       {fill(
-                        t(
-                          'dashboard.usage.reasoning_partial',
-                          'reported by {known} of {total} requests',
-                        ),
-                        { known: fmt.number(reasoningKnown ?? 0), total: fmt.number(requests) },
+                        reasoningKnown === 1
+                          ? t('dashboard.usage.reasoning_partial', 'reported by only 1 request')
+                          : t(
+                              'dashboard.usage.reasoning_partial',
+                              'reported by only {known} requests',
+                            ),
+                        { known: fmt.number(reasoningKnown ?? 0) },
                       )}
                     </span>
                   )}

@@ -625,8 +625,13 @@ def anthropic_output_tokens(record: dict[str, int | None]) -> int:
     Anthropic counts thinking inside ``output_tokens``. OpenAI-compatible
     upstreams differ: DeepSeek and OpenAI already include reasoning in
     ``completion_tokens``, Gemini does not. This is the number the chat surface
-    bills at the completion price for the same usage, so a client, the log row
-    and the quota counter all see one count.
+    bills at the completion price for the same usage, so the client and the
+    billed output agree; the log row keeps the upstream's own
+    ``completion_tokens`` and ``reasoning_tokens`` beside it.
+
+    With no reported total there is no evidence either way, and like chat this
+    bills completion plus reasoning, even for a count nested in
+    ``completion_tokens_details`` that OpenAI semantics would already include.
     """
     return int(
         billable_output_tokens(
