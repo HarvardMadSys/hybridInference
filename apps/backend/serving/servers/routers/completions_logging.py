@@ -24,6 +24,8 @@ import enum
 import time
 from typing import Any
 
+from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+from routing.response_text import response_text
 from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
@@ -416,6 +418,7 @@ class CompletionsLogger:
         completion_tokens: int,
         success: bool,
         cached_tokens: int | None = None,
+        response_body: Any = None,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -429,6 +432,11 @@ class CompletionsLogger:
         provider (``None`` = unknown). It MUST NOT be synthesized: if the
         provider did not report usage, leave it as ``None``.
         """
+        outcome = self.classify_outcome(
+            success=success,
+            response_body=response_body,
+            usage={"completion_tokens": completion_tokens} if completion_tokens else None,
+        )
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         terminal_key = endpoint_id or provider or "unknown"
         failed_attempts = _extract_failed_attempts(routing)
@@ -463,6 +471,7 @@ class CompletionsLogger:
                     success=False,
                     request_id=request_id,
                     terminal=False,
+                    outcome=CompletionOutcome.PROVIDER_ERROR,
                     cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
                 )
@@ -479,10 +488,36 @@ class CompletionsLogger:
             success=success,
             request_id=request_id,
             terminal=True,
+            outcome=outcome,
             cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
         )
         active_router.record_observation(obs)
+
+    @staticmethod
+    def classify_outcome(
+        *,
+        success: bool,
+        response_body: Any,
+        usage: dict[str, Any] | None,
+    ) -> CompletionOutcome:
+        """Classify response content once for the routing observation.
+
+        Transport success alone is not evidence of real work: a provider may
+        return HTTP 200 with only a warmup notice. This outcome gates RouteWise
+        prefix memory and its learning signals.
+        """
+        if not success:
+            return CompletionOutcome.PROVIDER_ERROR
+        content = (
+            response_text(response_body) if not isinstance(response_body, str) else response_body
+        )
+        return classify_completion_outcome(
+            content=content,
+            usage=usage,
+            http_status=200,
+            terminal=True,
+        )
 
     # -- DB params builder --------------------------------------------------
 
