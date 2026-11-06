@@ -151,9 +151,13 @@ _CURRENT = f"'{DEFINITION}'"
 # The user dashboard's sums, stored beside :data:`METRICS` in the same rows: what
 # its windows add up besides the request count (``request_count`` above). The
 # sums of a day are exactly what summing its rows gives: SUM skips NULLs, so a
-# token count a row lacks adds nothing, and a day with no row reporting a
-# reasoning count stores 0 with ``reasoning_tokens_known`` 0, which a read turns
-# back into "unknown" over any window where every day says so.
+# token count a row lacks adds nothing. Cache tokens are a subset of
+# ``prompt_tokens``; whether ``reasoning_tokens`` is inside ``completion_tokens``
+# depends on the provider. A NULL ``reasoning_tokens`` means the upstream
+# reported no count (a native Anthropic upstream never does; thinking is inside
+# its output), so the rows that report one are counted too: a day where none
+# does stores 0 with ``reasoning_tokens_known`` 0, and a window where every day
+# says so reads "unknown", not 0, while a partial sum can be labelled as such.
 USAGE_METRICS: tuple[tuple[str, str], ...] = (
     ("cost_usd", "COALESCE(SUM(l.cost_usd), 0)"),
     ("prompt_tokens", "COALESCE(SUM(l.prompt_tokens), 0)"),
