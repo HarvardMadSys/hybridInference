@@ -103,12 +103,11 @@ _DEFAULT_TRANSIENT_MARKERS: tuple[str, ...] = (
 # provider-notice tails. This avoids classifying a genuine answer as transient
 # just because it quotes a warmup phrase in the middle or continues the phrase
 # with free-form explanation.
-_NOTICE_SUFFIX = (
-    # Keep the punctuation fallback outside the repeated group. Repeating an
-    # optional group let caller-controlled punctuation trigger exponential
-    # backtracking in the event loop.
-    r"[\s.!\u2026,;:-]*"  # punctuation / spacing
-    r"(?:"
+# Possessive punctuation so the repeated suffix cannot backtrack into the
+# punctuation run; atomic alternatives so overlapping words ("try again" /
+# "please try again" / "shortly") are tried once, not re-partitioned on failure.
+_NOTICE_PUNCT = r"[\s.!\u2026,;:-]*+"
+_NOTICE_ALTERNATIVES = (
     r"(?:"
     r"this (?:takes|will take) about \d{1,4} (?:seconds?|minutes?)"
     r"|please wait(?: while (?:the )?model (?:loads|starts|initializes))?"
@@ -118,15 +117,22 @@ _NOTICE_SUFFIX = (
     r"|shortly"
     r"|yet"
     r"|now"
-    r")[\s.!\u2026,;:-]*"
-    r")*$"
+    r")"
 )
+_NOTICE_SUFFIX = _NOTICE_PUNCT + r"(?:(?>" + _NOTICE_ALTERNATIVES + r")" + _NOTICE_PUNCT + r")*+$"
+
+# A bounded provider notice is short. Anything longer is a genuine answer,
+# not a notice tail, and must not be fed to the regex (it runs on the event
+# loop via record_routing_observation).
+_MAX_TRANSIENT_TEXT_LEN = 1000
 _TRANSIENT_MARKERS: list[re.Pattern[str]] = [
     re.compile(pattern + _NOTICE_SUFFIX, re.IGNORECASE) for pattern in _DEFAULT_TRANSIENT_MARKERS
 ]
 
 
 def _looks_transient_text(text: str) -> bool:
+    if len(text) > _MAX_TRANSIENT_TEXT_LEN:
+        return False
     return any(marker.match(text) for marker in _TRANSIENT_MARKERS)
 
 

@@ -246,3 +246,33 @@ def test_logger_classifies_response_body_when_supplied():
         usage={"completion_tokens": 20},
     )
     assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
+
+
+def test_alternating_notice_alternatives_do_not_backtrack():
+    """Repeated overlapping notice words with a failing tail stay linear."""
+    import time
+
+    adversarial = "The model is starting up" + (" try again shortly" * 20) + " x"
+    start = time.perf_counter()
+    outcome = classify_completion_outcome(
+        content=adversarial,
+        usage=None,
+        http_status=200,
+        terminal=True,
+    )
+    elapsed = time.perf_counter() - start
+    assert outcome is CompletionOutcome.PROGRESS
+    assert elapsed < 0.1, f"classification took {elapsed:.3f}s"
+
+
+def test_overlong_text_bypasses_transient_regex():
+    """Over-cap text is never a bounded provider notice."""
+    long_text = "The model is starting up" + (" try again shortly" * 100)
+    assert len(long_text) > 1000
+    outcome = classify_completion_outcome(
+        content=long_text,
+        usage=None,
+        http_status=200,
+        terminal=True,
+    )
+    assert outcome is CompletionOutcome.PROGRESS
