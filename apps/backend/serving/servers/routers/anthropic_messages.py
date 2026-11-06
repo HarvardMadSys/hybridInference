@@ -70,7 +70,10 @@ from serving.servers.auth import (
     verify_api_key,
     verify_api_key_for_balance,
 )
-from serving.servers.concurrency import enforce_user_concurrency
+from serving.servers.concurrency import (
+    enforce_count_tokens_concurrency,
+    enforce_user_concurrency,
+)
 from serving.servers.deps import (
     get_completions_logger,
     get_log_store,
@@ -89,7 +92,12 @@ from serving.utils.request_ip import derive_affinity_key
 from serving.utils.session_identity import consume_session_fields, session_identity
 from serving.utils.synthetic_probe import probe_marker_in
 from serving.utils.token_utils import optional_token_count, usage_count
-from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import (
+    estimate_prompt_tokens,
+    estimate_prompt_tokens_bounded,
+    estimate_text_tokens,
+    run_tokenization,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
@@ -2910,6 +2918,7 @@ async def anthropic_count_tokens(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    _slot: None = Depends(enforce_count_tokens_concurrency),
 ):
     """Handle Anthropic ``POST /v1/messages/count_tokens`` requests.
 
@@ -2918,9 +2927,13 @@ async def anthropic_count_tokens(
     OpenAI-compatible backends, so the count is estimated locally from the
     translated request (a useful estimate beats the 404 the client got before,
     which left its context tracking blind). Returns ``{"input_tokens": N}``.
-    """
-    from serving.adapters.anthropic_translator import anthropic_request_to_openai
 
+    Counting is not billed, so it is bounded instead: the body by the request
+    size limit, the caller by a per-user slot of its own
+    (:func:`enforce_count_tokens_concurrency`), and the work by running the
+    translation and the encode in the tokenizer pool, off the event loop,
+    tokenizing at most :data:`COUNT_TOKENS_MAX_CHARS` characters.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -2959,17 +2972,37 @@ async def anthropic_count_tokens(
         return _anthropic_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
     try:
-        oai_messages, oai_params = anthropic_request_to_openai(body)
-        input_tokens = estimate_prompt_tokens(oai_messages)
-        # Tool schemas are billed as input; approximate their serialized size.
-        tools = oai_params.get("tools")
-        if tools:
-            input_tokens += estimate_text_tokens(json.dumps(tools))
+        input_tokens = await run_tokenization(_count_request_tokens, body)
     except Exception:
         logger.exception("count_tokens estimation failed")
         return _anthropic_error(500, "Failed to count tokens")
 
     return JSONResponse(content={"input_tokens": int(input_tokens)})
+
+
+#: Most text one count_tokens request tokenizes: about two million characters,
+#: well past any model's context window and some 150 ms of the tokenizer pool.
+#: A request within it is counted exactly as before; a larger one is sampled
+#: (:func:`serving.utils.tokens.estimate_texts_tokens_bounded`).
+COUNT_TOKENS_MAX_CHARS = 2_000_000
+
+
+def _count_request_tokens(body: dict[str, Any]) -> int:
+    """The ``input_tokens`` count_tokens reports for an Anthropic request body.
+
+    The messages as translated for an OpenAI-backed upstream, plus the tool
+    schemas, which are billed as input, approximated by their serialized size.
+    Runs in the tokenizer pool, on a body no other code is using.
+    """
+    from serving.adapters.anthropic_translator import anthropic_request_to_openai
+
+    oai_messages, oai_params = anthropic_request_to_openai(body)
+    tools = oai_params.get("tools")
+    return estimate_prompt_tokens_bounded(
+        oai_messages,
+        max_chars=COUNT_TOKENS_MAX_CHARS,
+        extra_texts=(json.dumps(tools),) if tools else (),
+    )
 
 
 @router.get("/anthropic/user/balance")

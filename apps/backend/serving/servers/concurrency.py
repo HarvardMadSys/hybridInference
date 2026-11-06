@@ -38,6 +38,13 @@ UNLIMITED_CONCURRENCY = 0
 # concurrent requests against an exempt model.
 EXEMPT_MODEL_USER_CONCURRENCY_LIMIT = 64
 
+# Per-user cap on concurrent ``/v1/messages/count_tokens`` requests. Counting is
+# done in-process (it tokenizes the request) and is not billed, so it gets a
+# budget of its own: it must not take the slots the user's inference requests
+# run in -- Claude Code counts while its turns stream -- yet one user must not
+# be able to keep the tokenizer busy for everyone.
+COUNT_TOKENS_USER_CONCURRENCY_LIMIT = 4
+
 
 def _build_fallback_limits() -> dict[str, int]:
     """Derive fallback caps from the runtime-settings registry.
@@ -226,6 +233,11 @@ def _exempt_slot_key(user_id: str) -> str:
     can never collide with a real user's normal key.
     """
     return f"{user_id}:exempt"
+
+
+def _count_tokens_slot_key(user_id: str) -> str:
+    """Return the per-user budget key for token counting (see :func:`_exempt_slot_key`)."""
+    return f"{user_id}:count_tokens"
 
 
 def canonical_model_id(
@@ -452,3 +464,52 @@ async def enforce_user_concurrency(
                 "user_concurrency: release failed",
                 extra={"user_id": user_id},
             )
+
+
+async def enforce_count_tokens_concurrency(
+    request: Request,
+    user: dict[str, Any] = Depends(verify_api_key),
+    limiter: UserConcurrencyLimiter | None = Depends(get_user_concurrency_limiter),
+) -> AsyncGenerator[None, None]:
+    """Hold one of the caller's token-counting slots for the request, or raise 429.
+
+    A budget of its own (:data:`COUNT_TOKENS_USER_CONCURRENCY_LIMIT` per user),
+    separate from the inference slots, taken before the body is read: the
+    budget does not depend on the model, so nothing needs parsing first. A
+    per-user override below the cap is honoured, as for exempt models.
+    """
+    if limiter is None:
+        yield
+        return
+    user_id = user["user_id"]
+    override = user.get("max_concurrent_requests")
+    cap = (
+        COUNT_TOKENS_USER_CONCURRENCY_LIMIT
+        if override is None
+        else min(override, COUNT_TOKENS_USER_CONCURRENCY_LIMIT)
+    )
+    slot_key = _count_tokens_slot_key(user_id)
+    granted, limit, role_label = await limiter.try_acquire(
+        slot_key, user.get("role", "free") or "free", bool(user.get("is_admin", False)), cap
+    )
+    if not granted:
+        logger.info(
+            "per-user count_tokens limit hit",
+            extra={"user_id": user_id, "limit": limit, "route": request.url.path},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": {
+                    "code": "concurrency_limit_exceeded",
+                    "message": f"Too many concurrent token-count requests (limit: {limit})",
+                    "limit": limit,
+                    "role": role_label,
+                }
+            },
+            headers={"Retry-After": "1"},
+        )
+    try:
+        yield
+    finally:
+        limiter.release(slot_key)
