@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from serving.http import AsyncHTTPClient, read_error_text
+from serving.http import AsyncHTTPClient, read_error_text, stream_timeout
 from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -282,7 +282,8 @@ class AnthropicAdapter(BaseAdapter):
 
         http = AsyncHTTPClient.shared()
         session = await http._ensure_session()
-        timeout = aiohttp.ClientTimeout(total=None)
+        # No total (generation runs as long as it runs), but a bounded connect.
+        timeout = stream_timeout()
         accum = ToolCallAccumulator()
 
         input_tokens = 0
@@ -441,7 +442,8 @@ class AnthropicAdapter(BaseAdapter):
 
         http = AsyncHTTPClient.shared()
         session = await http._ensure_session()
-        timeout = aiohttp.ClientTimeout(total=None)
+        # No total (generation runs as long as it runs), but a bounded connect.
+        timeout = stream_timeout()
 
         usage = {
             "input_tokens": 0,

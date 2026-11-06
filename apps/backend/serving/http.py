@@ -111,6 +111,16 @@ MAX_LINE_CHARS = MAX_FRAME_CHARS
 
 _READ_CHUNK_BYTES = 64 * 1024
 
+#: Connection bounds for a request with no total timeout -- a stream, which then
+#: runs for as long as generation does. ``connect`` covers the whole acquisition
+#: of a connection (a wait for the pool, DNS, the handshakes), ``sock_connect``
+#: the TCP and TLS handshake with one address. Without them a stream to an
+#: unreachable host waited as long as the kernel kept retrying, and one waiting
+#: for a pooled connection waited forever, holding its user's and its
+#: provider's slots the whole time.
+STREAM_CONNECT_TIMEOUT_S = 30.0
+STREAM_SOCK_CONNECT_TIMEOUT_S = 10.0
+
 
 class UpstreamPayloadTooLarge(aiohttp.ClientPayloadError):
     """An upstream response body, or one frame of a stream, passed the size read.
@@ -120,6 +130,29 @@ class UpstreamPayloadTooLarge(aiohttp.ClientPayloadError):
     the router records it against the endpoint and falls back, and a stream ends
     with the usual upstream error.
     """
+
+
+def stream_timeout(timeout: aiohttp.ClientTimeout | None = None) -> aiohttp.ClientTimeout:
+    """Return the timeout for opening a stream: ``timeout`` with connection bounds.
+
+    A missing ``timeout`` means no total, as a generation runs as long as it
+    runs. Whatever the caller set (``total``, ``sock_read``) is kept; only an
+    unset ``connect`` / ``sock_connect`` is filled in. Running out of either
+    raises ``aiohttp.ConnectionTimeoutError``, a ``ClientError`` and a
+    ``TimeoutError``, which callers already treat as a failed attempt that has
+    sent nothing: the router falls back from it like any unreachable upstream.
+    """
+    if timeout is None:
+        timeout = aiohttp.ClientTimeout(total=None)
+    return aiohttp.ClientTimeout(
+        total=timeout.total,
+        connect=STREAM_CONNECT_TIMEOUT_S if timeout.connect is None else timeout.connect,
+        sock_read=timeout.sock_read,
+        sock_connect=(
+            STREAM_SOCK_CONNECT_TIMEOUT_S if timeout.sock_connect is None else timeout.sock_connect
+        ),
+        ceil_threshold=timeout.ceil_threshold,
+    )
 
 
 async def read_body(resp: Any, limit: int | None = None) -> bytes:
@@ -270,8 +303,19 @@ class AsyncHTTPClient:
             # Every adapter's upstream request goes through this connector, so
             # it is where a Base URL whose name now resolves to a cloud metadata
             # endpoint is refused -- whatever it resolved to when it was saved.
+            #
+            # No connection limit, in total or per host. What bounds the
+            # gateway's upstream concurrency is its own admission -- each
+            # user's concurrency limit, the per-account outbound limiter
+            # (``upstream_limiter``), engine holds for local servers -- and a
+            # request holds its slots there while it waits here. A pool limit
+            # under those ceilings only made the next request queue behind the
+            # pool instead: the 51st concurrent stream to one provider host
+            # waited, with no timeout at all, for one of fifty streams that
+            # each run for minutes. Every connection belongs to a request one of
+            # those limits admitted, so the count is theirs to bound.
             connector = aiohttp.TCPConnector(
-                limit=200, limit_per_host=50, socket_factory=refuse_metadata_socket
+                limit=0, limit_per_host=0, socket_factory=refuse_metadata_socket
             )
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
@@ -405,9 +449,9 @@ class AsyncHTTPClient:
         """
         session = await self._ensure_session()
         # Streaming responses can run for minutes (LLM generation + queue time).
-        # Let the upstream manage its own lifecycle via [DONE] sentinel.
-        if timeout is None:
-            timeout = aiohttp.ClientTimeout(total=None)
+        # Let the upstream manage its own lifecycle via [DONE] sentinel -- but
+        # not the connection: opening one is bounded (see ``stream_timeout``).
+        timeout = stream_timeout(timeout)
 
         # Phase 1: open connection. Retry once on a stale pooled keep-alive
         # socket, whether it surfaces as a clean disconnect or a reset/broken
