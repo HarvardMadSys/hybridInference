@@ -284,7 +284,7 @@ async def signup(
     # created while verification is disabled would be stuck as unverified and
     # locked out if verification is later re-enabled.
     user_id = generate_ulid()
-    password_hash_str = password_utils.hash_password(body.password)
+    password_hash_str = await password_utils.hash_password_async(body.password)
 
     await op_store.create_user(
         user_id=user_id,
@@ -441,14 +441,18 @@ async def login(
     else:
         user_row = await op_store.get_user_by_login_name(identifier)
 
+    # Verified whether or not the account exists or has a password at all (an
+    # account made by phone has none): answering an unknown name before the
+    # hash a known one costs would tell from the timing who holds an account.
+    password_matches = await password_utils.verify_password_async(
+        body.password, user_row.get("password_hash") if user_row else None
+    )
+
     if not user_row:
         await _record("failure", failure_reason="user_not_found", user_id=None)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Verify password
-    if not user_row.get("password_hash") or not password_utils.verify_password(
-        body.password, user_row["password_hash"]
-    ):
+    if not password_matches:
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -1022,7 +1026,7 @@ async def reset_password(
         )
 
     # Update password
-    password_hash_str = password_utils.hash_password(body.new_password)
+    password_hash_str = await password_utils.hash_password_async(body.new_password)
     await op_store.update_user_fields(token_row["user_id"], password_hash=password_hash_str)
 
     # The link is spent, and so is every other one the account still holds:
