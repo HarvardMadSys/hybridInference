@@ -24,6 +24,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from serving.grant_auth import ledger_attribution
+from serving.storage.bounded_log import (
+    LOGGED_ERROR_MAX_CHARS,
+    LOGGED_MODEL_ID_MAX_CHARS,
+    bounded_json,
+    elide_middle,
+)
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -493,6 +499,17 @@ async def log_rejection_from(
     if not await _logging_enabled(source, status_code=status_code, user=user):
         return
     is_synthetic_probe = source.probe_marker and is_trusted_probe_caller(user)
+    # A refused caller's prompt, model name and reason are whatever it sent:
+    # stored as bounded summaries, the way a refused request's row is on the
+    # handler paths (serving/storage/bounded_log.py). Some call sites pass the
+    # whole decoded ``messages``; the bound applies to all of them alike.
+    truncated = False
+    if prompt:
+        prompt, truncated = bounded_json(prompt, REJECTED_PROMPT_MAX_CHARS)
+    for limit, text in ((LOGGED_MODEL_ID_MAX_CHARS, model_id), (LOGGED_ERROR_MAX_CHARS, reason)):
+        truncated = truncated or (isinstance(text, str) and len(text) > limit)
+    model_id = elide_middle(model_id, LOGGED_MODEL_ID_MAX_CHARS) if model_id else model_id
+    reason = elide_middle(reason, LOGGED_ERROR_MAX_CHARS) if reason else reason
 
     ctx = req_ctx.get()
     request_id = ctx.get("request_id") or ""
@@ -542,6 +559,8 @@ async def log_rejection_from(
     # enforce_user_concurrency reject before the handler sets this metadata).
     if source.route_path.startswith("/v1/embeddings"):
         metadata["request_type"] = "embedding"
+    if truncated:
+        metadata["payload_truncated"] = True
 
     try:
         await log_store.log_request(

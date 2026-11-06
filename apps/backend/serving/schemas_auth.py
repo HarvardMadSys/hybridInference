@@ -419,9 +419,13 @@ class APIKeyInfo(BaseModel):
 class APIKeyListItem(BaseModel):
     """Single API key record for the current user."""
 
+    #: Always null: the listing never carries a full key. One saved key is
+    #: shown through ``POST /user/api-keys/{key_prefix}/reveal`` instead.
     api_key: str | None = None
     key_prefix: str
     key_masked: str
+    #: Whether the key's full value is saved, so that its owner can reveal it.
+    revealable: bool = False
     name: str | None = None
     created_at: datetime
     last_used_at: datetime | None = None
@@ -441,6 +445,19 @@ class APIKeyListResponse(BaseModel):
     """All API keys owned by the current user."""
 
     keys: list[APIKeyListItem]
+
+
+class APIKeyRevealRequest(BaseModel):
+    """Show one saved API key in full; the owner confirms with the account's password."""
+
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class APIKeyRevealResponse(BaseModel):
+    """One of the current user's API keys, in full."""
+
+    key_prefix: str
+    api_key: str
 
 
 class APIKeyUpdateResponse(BaseModel):

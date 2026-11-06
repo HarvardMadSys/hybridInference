@@ -497,9 +497,9 @@ class TestLogout:
     """Test user logout endpoint."""
 
     @pytest.mark.asyncio
-    async def test_logout_success(self, auth_app_client: AsyncClient, test_user, auth_headers):
+    async def test_logout_success(self, auth_app_client: AsyncClient, test_user):
         """Test successful logout."""
-        # First login to get refresh token
+        # Sign in for the session cookie and an access token of that session.
         login_response = await auth_app_client.post(
             "/auth/login",
             json={
@@ -508,15 +508,41 @@ class TestLogout:
             },
         )
         refresh_token = login_response.cookies.get("refresh_token")
+        headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
 
         # Logout
         response = await auth_app_client.post(
-            "/auth/logout", headers=auth_headers, cookies={"refresh_token": refresh_token}
+            "/auth/logout", headers=headers, cookies={"refresh_token": refresh_token}
         )
 
         assert response.status_code == 200
         data = response.json()
         assert "logged out" in data["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_the_tokens_of_an_ended_session_are_refused(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        """A session's access tokens stop with the session, not when they expire.
+
+        Signing in again on the same browser (this client keeps its cookie)
+        replaces the session ``auth_headers`` came from, and revokes it; signing
+        out ends the new one.
+        """
+        login_response = await auth_app_client.post(
+            "/auth/login",
+            json={"email": test_user["email"], "password": test_user["password"]},
+        )
+        assert login_response.status_code == 200
+        current = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+
+        replaced = await auth_app_client.get("/user/me", headers=auth_headers)
+        assert replaced.status_code == 401
+        assert replaced.json()["detail"] == "This session has ended. Please login again."
+        assert (await auth_app_client.get("/user/me", headers=current)).status_code == 200
+
+        assert (await auth_app_client.post("/auth/logout", headers=current)).status_code == 200
+        assert (await auth_app_client.get("/user/me", headers=current)).status_code == 401
 
     @pytest.mark.asyncio
     async def test_logout_without_auth(self, auth_app_client: AsyncClient):

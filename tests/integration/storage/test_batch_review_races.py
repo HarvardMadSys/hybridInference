@@ -149,7 +149,7 @@ async def test_read_lease_cannot_succeed_behind_gc_deletion_snapshot(store):
         await gate.execute("SELECT pg_advisory_lock($1)", lock_id)
         from serving.storage.batch_store import _PURGE_ONE_SQL
 
-        deletion = asyncio.create_task(deleting.fetchval(_PURGE_ONE_SQL, 7))
+        deletion = asyncio.create_task(deleting.fetchval(_PURGE_ONE_SQL, 7, batch["id"]))
         lease = None
         try:
             for _ in range(100):

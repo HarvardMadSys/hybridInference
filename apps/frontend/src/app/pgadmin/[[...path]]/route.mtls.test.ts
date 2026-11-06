@@ -363,6 +363,27 @@ describe('pgAdmin proxy — opt-in mTLS', () => {
     expect(ioMocks.agents).toHaveLength(0);
   });
 
+  // The console runs as uid 1000: a key mounted for root alone is an operator
+  // fix on the host, and the log has to say which, without the path.
+  it('names unreadable credentials in the log when the console user cannot open them', async () => {
+    enableMtls();
+    const denied = Object.assign(new Error(`EACCES: permission denied, open '${KEY_PATH}'`), {
+      code: 'EACCES',
+    });
+    ioMocks.plainFiles.set(KEY_PATH, { kind: 'error', error: denied });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { upstream } = stubFetch();
+    const { GET } = await loadRoute();
+
+    const response = await GET(request('/pgadmin/', ADMIN_COOKIE));
+
+    expect(response.status).toBe(502);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining('uid 1000'));
+    expect(JSON.stringify(errors.mock.calls)).not.toContain(KEY_PATH);
+    errors.mockRestore();
+  });
+
   it('fails closed with 502 when the upstream is not HTTPS', async () => {
     enableMtls({ PGADMIN_INTERNAL_URL: 'http://pgadmin:80' });
     const { upstream } = stubFetch();

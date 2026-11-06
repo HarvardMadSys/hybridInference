@@ -22,6 +22,7 @@ from serving.batch.interactive_load import InteractiveLoad
 from serving.batch.scheduler import BatchScheduler, SchedulerTimings
 from serving.servers.auth import StoredKeyQuotaExceeded, StoredKeyRejected
 from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
+from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, SpendLedger
 
 OWNER = "owner-1"
 OK = DispatchResult(
@@ -1204,3 +1205,81 @@ async def test_a_queued_answer_counts_toward_the_wait(worker, dispatch, settings
     await until(lambda: store.calls["release_item"] == 1)
 
     assert noted == [("m1", 12)]
+
+
+# -- the owner's spend, reserved while an item runs ----------------------------------
+
+
+def _spend_check(ledger: SpendLedger, *, quota_usd: float) -> SpendCheck:
+    return SpendCheck(
+        ledger=ledger,
+        user_id=OWNER,
+        key_id=11,
+        read_at=0.0,
+        account_quota_usd=quota_usd,
+        account_spent_usd=0.0,
+    )
+
+
+async def test_an_items_estimated_cost_is_reserved_while_it_runs(worker, dispatch, auth):
+    """Counted against the owner's quota with their interactive requests, then given back."""
+    ledger = SpendLedger(object())
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    store = FakeStore()
+    store.add(1)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+    assert ledger._reserved_users[OWNER][1] == 1
+    assert ledger._reserved_keys[11][1] == 1
+
+    gate.set()
+    await until(lambda: store.count("completed") == 1)
+    assert ledger._reserved_users == {}
+    assert ledger._reserved_keys == {}
+
+
+async def test_an_item_that_no_longer_fits_is_deferred_and_its_slot_given_back(
+    worker, dispatch, auth
+):
+    """The owner's interactive requests took the rest of the budget since the check."""
+    ledger = SpendLedger(object())
+    check = _spend_check(ledger, quota_usd=0.015)
+    interactive, _ = check.admit()  # in flight elsewhere
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: check})
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+    await settle()
+
+    assert store.pause_reasons[OWNER] == "quota"
+    assert store.status(1) == "queued"
+    assert dispatch.calls == []
+    assert scheduler._role_slots._slots[OWNER].in_use == 0
+    interactive.release()
+    assert ledger._reserved_users == {}
+
+
+async def test_a_failed_dispatch_gives_the_reservation_back(worker, dispatch, auth, monkeypatch):
+    ledger = SpendLedger(object())
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+
+    async def broken(**_kwargs):
+        raise RuntimeError("dispatch broke")
+
+    monkeypatch.setattr(scheduler_module, "dispatch_item", broken)
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.calls["mark_dispatched"] >= 1)
+    await settle()
+
+    assert ledger._reserved_users == {}
+    assert scheduler._role_slots._slots[OWNER].in_use == 0

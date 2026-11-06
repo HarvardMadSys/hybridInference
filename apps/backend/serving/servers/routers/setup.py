@@ -88,7 +88,7 @@ async def create_setup_admin(
         op_store,
         user_id=user_id,
         login_name=body.login_name,
-        password_hash=password_utils.hash_password(body.password),
+        password_hash=await password_utils.hash_password_async(body.password),
         user_name=body.display_name or body.login_name,
         source_ip=client_ip,
     )

@@ -426,14 +426,6 @@ msgid ""
 msgstr ""
 
 #: ../developer/database.md
-msgid ""
-"One row per request (model, provider, tokens, latency, TTFT, status, "
-"cost) plus hourly and daily rollups used by the dashboards and the admin "
-"Users table, and the last computed result of the admin console's slowest "
-"views"
-msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘和管理后台用户表用的小时级与天级汇总，以及管理后台最慢几个视图最近一次的计算结果"
-
-#: ../developer/database.md
 msgid "Settings"
 msgstr "设置项"
 
@@ -536,8 +528,13 @@ msgid "Responses API"
 msgstr ""
 
 #: ../developer/database.md
-msgid "Stored `/v1/responses` state, when content storage is enabled"
-msgstr "启用内容存储时保存下来的 `/v1/responses` 状态"
+msgid ""
+"Stored `/v1/responses` state, when content storage is enabled, kept for 30"
+" days from each response's creation; a conversation is stored only while"
+" its history is no larger than `REQUEST_MAX_BODY_MB`"
+msgstr ""
+"启用内容存储时保存下来的 `/v1/responses` 状态，每条响应自创建起保留 30 "
+"天；对话历史不超过 `REQUEST_MAX_BODY_MB` 时才继续保存"
 
 #: ../developer/database.md
 msgid "Geo analytics"
@@ -1282,3 +1279,31 @@ msgstr "三种批量 API 的批次及其请求、尝试和结果（保留到批�
 
 #~ msgid "Two independent gates, and by default neither is pgAdmin's own login:"
 #~ msgstr "有两道互相独立的关卡，但默认情况下都不是 pgAdmin 自己的登录："
+
+#: ../developer/database.md:51
+msgid ""
+"Each gateway process opens two connection pools to it (sizes and reasons "
+"in `apps/backend/serving/storage/pools.py`): a general pool of up to 10 "
+"connections for everything, and a request pool of up to 4 reserved for "
+"the lookups a request makes before it is served — API-key authentication "
+"and spend, session checks, quotas, and the runtime settings read on the "
+"way. Slow work on the general pool (reports, exports, rollups) cannot "
+"hold those up, and a request that cannot get a request-pool connection "
+"within 3 seconds is answered with a 503 and `Retry-After` instead of "
+"waiting. With the alert-history pool's 4, a process holds at most 18 "
+"connections; size `max_connections` for that times the number of gateway "
+"processes, plus the tools you run beside them."
+msgstr ""
+"每个网关进程会向它打开两个连接池（大小及理由见 `apps/backend/serving/storage/pools.py`）：一个最多 10 "
+"个连接的通用池，供所有工作使用；以及一个最多 4 个连接的请求池，专门留给请求在被处理之前要做的查询——API key "
+"认证与花费、会话检查、配额，以及途中读取的运行时设置。通用池上的慢工作（报表、导出、汇总）挡不住这些查询；请求如果在 3 "
+"秒内拿不到请求池的连接，会直接得到 503 和 `Retry-After`，而不是一直等。加上告警历史池的 4 个连接，一个进程最多持有 18 "
+"个连接；请按这个数乘以网关进程数、再加上你在旁边运行的工具来设置 `max_connections`。"
+
+#: ../developer/database.md
+msgid ""
+"One row per request (model, provider, tokens, latency, TTFT, status, "
+"cost) plus hourly and daily rollups used by the dashboards, the admin "
+"Users table and the user dashboard's usage figures, and the last computed"
+" result of the admin console's slowest views"
+msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘、管理后台用户表和用户仪表盘用量数字所用的小时级与天级汇总，以及管理后台最慢几个视图最近一次的计算结果"

@@ -686,6 +686,10 @@ class PrefillLoadTracker:
         self._by_caller: dict[tuple[str, str], int] = {}
         # (affinity_key, endpoint_id) -> (last prompt tokens, expiry).
         self._prefix_hints: OrderedDict[tuple[str, str], _PrefixHint] = OrderedDict()
+        # endpoint_id -> the affinity keys holding a hint on it: the same keys as
+        # ``_prefix_hints``, indexed so that forgetting one endpoint costs the
+        # hints it holds rather than a scan of every caller's.
+        self._hint_callers: dict[str, set[str]] = {}
         self._fixed_elephant_tokens = elephant_tokens
         self._fixed_elephant_limit = elephant_limit
         self._clock = clock
@@ -877,28 +881,37 @@ class PrefillLoadTracker:
             anchor=anchor,
         )
         self._prefix_hints.move_to_end(key)
+        self._hint_callers.setdefault(endpoint_id, set()).add(affinity_key)
         while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
-            self._prefix_hints.popitem(last=False)
+            (evicted_caller, evicted_endpoint), _ = self._prefix_hints.popitem(last=False)
+            callers = self._hint_callers.get(evicted_endpoint)
+            if callers is not None:
+                callers.discard(evicted_caller)
+                if not callers:
+                    del self._hint_callers[evicted_endpoint]
 
     def forget_endpoint(self, endpoint_id: str) -> None:
         """Drop every warm-prefix hint recorded against one endpoint.
 
-        Called when an endpoint fails, because the most likely explanations --
-        a restart, an OOM, a container replaced under the same ``endpoint_id``
-        -- all empty its radix cache while leaving the hints describing it
-        untouched. The TTL bounds how long a *quiet* endpoint is believed; this
-        bounds a *broken* one, which can lose its cache at any point inside that
-        window.
+        Called when an endpoint fails in a way that can mean it lost its cache
+        (``routing.endpoint_health.failure_may_lose_prefix_cache``): a restart,
+        an OOM, a container replaced under the same ``endpoint_id`` -- all empty
+        its radix cache while leaving the hints describing it untouched. The TTL
+        bounds how long a *quiet* endpoint is believed; this bounds a *broken*
+        one, which can lose its cache at any point inside that window.
 
-        Over-invalidates on purpose: a 4xx from one caller says nothing about
-        the cache, but forgetting costs at most a discount, while keeping a hint
-        for a cache that no longer exists costs a cold mega-prefill the
-        interactive tier -- and that tier preempts.
+        Errs toward forgetting within that class: a single dropped connection
+        need not mean a restart, but forgetting costs at most a discount, while
+        keeping a hint for a cache that no longer exists costs a cold
+        mega-prefill the interactive tier -- and that tier preempts. An endpoint
+        that answered with a 4xx is up, so its hints stay.
+
+        Costs the hints held on this endpoint, found through ``_hint_callers``,
+        not a scan of every hint the tracker holds.
         """
         with self._lock:
-            stale = [key for key in self._prefix_hints if key[1] == endpoint_id]
-            for key in stale:
-                del self._prefix_hints[key]
+            for affinity_key in self._hint_callers.pop(endpoint_id, ()):
+                self._prefix_hints.pop((affinity_key, endpoint_id), None)
 
     def release(self, lease: PrefillLease | None, *, prefill_confirmed: bool = False) -> None:
         """Return a lease's tokens to an endpoint's budget.

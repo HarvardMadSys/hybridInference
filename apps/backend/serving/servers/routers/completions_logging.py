@@ -11,7 +11,9 @@ Replaces the module-level helpers that previously lived in
 
 The DB log payload (kwargs to ``LogStore.log_request``) is preserved
 byte-for-byte — admin/recent-requests UI, billing reports, and the Slack
-alert rules from PR #372 all read these rows and must keep working.
+alert rules from PR #372 all read these rows and must keep working — except
+that a refused request's large fields are stored as a bounded summary (see
+``CompletionsLogger.schedule_log``).
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from typing import Any
 from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
+from serving.storage.bounded_log import bound_rejected_log_payload
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -123,10 +126,16 @@ class CompletionsLogger:
     def schedule_log(self, request_id: str, log_data: dict[str, Any]) -> None:
         """Schedule a fire-and-forget write of ``log_data`` to the log store.
 
-        ``log_data`` is forwarded verbatim as kwargs to
+        ``log_data`` is forwarded as kwargs to
         ``log_store.log_request(**log_data)``. The handler is responsible
         for assembling the dict; this method only owns the asyncio
         scheduling so the row write doesn't block the HTTP response.
+
+        The one exception is a refused request (a 4xx other than 499): its
+        prompt, body, tool definitions, model id and error are queued as the
+        bounded summary :func:`serving.storage.bounded_log.bound_rejected_log_payload`
+        makes, so an unbilled request can neither make the gateway serialize
+        and store whatever it sent nor hold its body in this queue.
 
         The payload joins a bounded queue drained by a fixed pool of
         ``_LOG_WORKERS`` worker tasks (issue #133): pending payloads are
@@ -201,7 +210,7 @@ class CompletionsLogger:
 
         # The producer's context, as a per-request task would have copied it:
         # the write and its log lines are attributed to this row's request.
-        item = (request_id, log_data, contextvars.copy_context())
+        item = (request_id, bound_rejected_log_payload(log_data), contextvars.copy_context())
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
@@ -416,6 +425,7 @@ class CompletionsLogger:
         completion_tokens: int,
         success: bool,
         cached_tokens: int | None = None,
+        status_code: int | None = None,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -428,6 +438,12 @@ class CompletionsLogger:
         ``cached_tokens`` is the authoritative observed cache usage from the
         provider (``None`` = unknown). It MUST NOT be synthesized: if the
         provider did not report usage, leave it as ``None``.
+
+        ``status_code`` is the upstream HTTP status of the failure that ended
+        the request, ``None`` when it had none; each earlier failed attempt
+        carries its own in its ``failed_attempts`` record. Both reach the
+        observation, so a learning router can leave a request refused for its
+        own content out of what it learns about the endpoint.
         """
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         terminal_key = endpoint_id or provider or "unknown"
@@ -465,6 +481,7 @@ class CompletionsLogger:
                     terminal=False,
                     cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
+                    status_code=_status_or_none(attempt.get("status_code")),
                 )
             )
 
@@ -481,6 +498,7 @@ class CompletionsLogger:
             terminal=True,
             cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
+            status_code=None if success else status_code,
         )
         active_router.record_observation(obs)
 
@@ -568,3 +586,10 @@ def _extract_failed_attempt_keys(
 
 def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _status_or_none(value: Any) -> int | None:
+    """Return an HTTP status read back from a ``failed_attempts`` record, or None."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 100 <= value <= 599 else None

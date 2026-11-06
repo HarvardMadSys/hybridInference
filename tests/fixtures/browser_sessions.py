@@ -9,7 +9,10 @@ A browser lists the auth sessions the routes created, read back from the
 ``create_session`` / ``create_phone_session`` mocks' calls, and a legacy one the
 store's ``get_session_by_token_hash`` mock answers with. The store's own mocks
 are left in place, so a test can still change what they return; one that hands
-out a legacy session some other way calls ``remember_session``.
+out a legacy session some other way calls ``remember_session``. The same
+sessions answer ``session_is_live``, which an access token's ``sid`` is
+checked against, so a token the routes issued keeps working until a sign-out
+revokes its session.
 """
 
 from __future__ import annotations
@@ -58,7 +61,31 @@ class BrowserSessionFake:
             return self.sessions[auth_session_id]
         return None
 
+    def _sessions_with_sid(self, sid: str) -> list[dict[str, Any]]:
+        for name in ("create_session", "create_phone_session"):
+            mock = getattr(self.store, name, None)
+            if not isinstance(mock, AsyncMock):
+                continue
+            for call in mock.await_args_list:
+                if call.kwargs.get("sid") == sid and call.kwargs.get("session_id"):
+                    self._session(call.kwargs["session_id"])
+        lookup = getattr(self.store, "get_session_by_token_hash", None)
+        legacy = getattr(lookup, "return_value", None)
+        if isinstance(legacy, dict) and legacy.get("sid") == sid and legacy.get("id"):
+            self._session(legacy["id"])
+        return [row for row in self.sessions.values() if row.get("sid") == sid]
+
     # -- store methods ---------------------------------------------------------
+
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Whether a session the routes created for *user_id* under *sid* is still live."""
+        now = datetime.now(UTC)
+        return any(
+            row.get("user_id") == user_id
+            and not row.get("revoked")
+            and (row.get("expires_at") is None or row["expires_at"] > now)
+            for row in self._sessions_with_sid(sid)
+        )
 
     async def create_browser_session(
         self, *, browser_session_id: str, secret_hash: str, expires_at: datetime
@@ -173,6 +200,7 @@ def install(store: Any) -> BrowserSessionFake:
         "set_browser_session_active",
         "detach_browser_session_account",
         "revoke_browser_session",
+        "session_is_live",
     ):
         setattr(store, name, AsyncMock(side_effect=getattr(fake, name)))
 

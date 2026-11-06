@@ -132,6 +132,14 @@ def _reset_login_rate_limit():
 
 
 @pytest.fixture(autouse=True)
+def _reset_mail_rate_limit():
+    from serving.utils.mail_rate_limit import reset_mail_rate_limit_state
+
+    reset_mail_rate_limit_state()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_auth_failure_block():
     from serving.utils.auth_failure_blocklist import reset_auth_failure_block_state
 

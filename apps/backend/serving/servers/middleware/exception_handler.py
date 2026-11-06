@@ -28,7 +28,8 @@ legitimate client rather than protect anyone:
 
 from datetime import UTC, datetime
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
 
 from serving.exceptions import (
@@ -47,6 +48,11 @@ from serving.exceptions import (
     UserAlreadyExistsError,
     UserNotFoundError,
     WeakPasswordError,
+)
+from serving.storage.pools import (
+    DATABASE_BUSY_DETAIL,
+    DATABASE_BUSY_RETRY_AFTER_SEC,
+    DatabaseBusyError,
 )
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -288,4 +294,38 @@ def install_exception_handlers(app: FastAPI) -> None:
             },
         )
 
+    @app.exception_handler(DatabaseBusyError)
+    async def database_busy_handler(request: Request, exc: DatabaseBusyError):
+        # A request-path lookup got no connection in time (serving.storage.pools):
+        # a 503 the client may retry, shaped like every other HTTP error on its
+        # path -- the Anthropic surfaces get their envelope -- by handing it to
+        # whichever HTTPException handler the app has installed.
+        logger.warning(
+            "database_busy",
+            extra={
+                "error_code": "DATABASE_BUSY",
+                "status_code": 503,
+                "path": request.url.path,
+                "method": request.method,
+                "detail": str(exc),
+            },
+        )
+        busy = HTTPException(
+            status_code=503,
+            detail=DATABASE_BUSY_DETAIL,
+            headers={"Retry-After": str(DATABASE_BUSY_RETRY_AFTER_SEC)},
+        )
+        return await _http_exception_handler(request.app)(request, busy)
+
     logger.info("Exception handlers installed")
+
+
+def _http_exception_handler(app: FastAPI):
+    """The handler *app* answers an ``HTTPException`` with, found as Starlette finds it."""
+    for cls in HTTPException.__mro__:
+        if cls is Exception:
+            break
+        handler = app.exception_handlers.get(cls)
+        if handler is not None:
+            return handler
+    return http_exception_handler

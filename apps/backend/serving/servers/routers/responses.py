@@ -20,6 +20,7 @@ global HTTP exception handler formats them correctly with no special-casing.
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -48,6 +49,7 @@ from serving.servers.deps import (
     get_response_store,
     get_router,
 )
+from serving.servers.middleware.body_limit import configured_max_body_bytes
 from serving.servers.routers.completions import (
     ChatOptions,
     ChatResponse,
@@ -133,8 +135,10 @@ async def _load_prior_messages(
     response_store: Any,
     previous_response_id: str,
     user_id: str | None,
-) -> list[dict[str, Any]]:
-    """Return the stored cumulative conversation for ``previous_response_id``.
+) -> tuple[list[dict[str, Any]], int]:
+    """Return the stored cumulative conversation for ``previous_response_id``, and its size.
+
+    The size is that of the stored JSON text, in bytes.
 
     Raises 404 (Responses/OpenAI error envelope) when statefulness is
     unavailable, the prior response is unknown, or it belongs to another user.
@@ -145,7 +149,35 @@ async def _load_prior_messages(
     if not row or row.get("user_id") != user_id:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
     msgs = row.get("messages")
-    return msgs if isinstance(msgs, list) else []
+    msgs = msgs if isinstance(msgs, list) else []
+    size = row.get("messages_bytes")
+    if not isinstance(size, int):
+        size = len(json.dumps(msgs).encode())
+    return msgs, size
+
+
+def _refuse_an_oversized_stored_conversation(previous_response_id: str, size: int) -> None:
+    """Refuse to store another turn of a conversation already larger than a request body may be.
+
+    Every stored turn holds the whole conversation so far, so a chain kept
+    growing would cost the store its size again on each turn. The limit is the
+    request body limit (``REQUEST_MAX_BODY_MB``): what a client could send as
+    the history itself. Checked before the model is called, so nothing is
+    served or billed. Continuing with ``store`` set to false is not refused:
+    nothing is kept.
+
+    Raises:
+        HTTPException: 400, saying what to do instead.
+    """
+    limit = configured_max_body_bytes()
+    if size <= limit:
+        return
+    raise HTTPException(
+        400,
+        f"The conversation stored for previous response '{previous_response_id}' is "
+        f"{size} bytes, more than the {limit} bytes a stored conversation may hold. "
+        "Start a new conversation, or continue this one with 'store' set to false.",
+    )
 
 
 @router.post("/v1/responses", response_model=None)
@@ -233,8 +265,11 @@ async def execute_responses(
     user_id = ctx.user_ctx.get("user_id") or "anonymous"
     previous_response_id = body.get("previous_response_id")
     prior_messages: list[dict[str, Any]] = []
+    prior_bytes = 0
     if previous_response_id:
-        prior_messages = await _load_prior_messages(response_store, previous_response_id, user_id)
+        prior_messages, prior_bytes = await _load_prior_messages(
+            response_store, previous_response_id, user_id
+        )
 
     instructions = body.get("instructions")
     # Conversation messages (no system/instructions message — that is per-turn
@@ -286,6 +321,8 @@ async def execute_responses(
         and response_store is not None
         and getattr(response_store, "persist_enabled", True)
     )
+    if store and previous_response_id:
+        _refuse_an_oversized_stored_conversation(previous_response_id, prior_bytes)
     response_id = new_response_id()
     created_at = now_ts()
 

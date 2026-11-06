@@ -427,6 +427,22 @@ streaming final chunk also carries `cached_tokens: 0` and
 `prompt_tokens_details: {"cached_tokens": 0}`. `/v1/messages` reports it as
 `cache_read_input_tokens: 0`.
 
+### Media URLs on a Self-Hosted Route
+
+vLLM and SGLang download any image, video or audio URL a request names, from
+the machine they run on. On a self-hosted route the gateway therefore fetches
+each such URL itself and sends the engine a `data:` URL instead, so a caller
+cannot make your model server read addresses on its own network. A route is
+self-hosted when it declares `deployment_type: self_hosted`, or under `auto`
+when its host is a loopback or Docker-host address. Declare it for an engine on
+a LAN address, which `auto` treats as a provider API.
+
+The gateway fetches only `http` and `https` URLs, connects only to public
+addresses, and accepts at most 20 MiB per file and 32 MiB per request within
+30 seconds. Anything else is answered with a 400 naming the message and part.
+It needs outbound internet access for this and does not use an HTTP proxy.
+`data:` URLs pass through unchanged, and provider routes forward URLs as before.
+
 ## Troubleshooting
 
 ### Model Does Not Appear in `/v1/models`

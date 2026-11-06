@@ -1,6 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
@@ -74,10 +83,12 @@ import {
   exportConfigBackup,
   getConfig,
   patchConfig,
+  previewConfigRestore,
   resetConfigKey,
   restoreConfigBackup,
   testAlertNotification,
   type ConfigBackupPayload,
+  type ConfigRestorePreview,
   type ConfigEntry,
   type ConfigResponse,
   type ConfigScalar,
@@ -92,7 +103,8 @@ function plural(count: number, one: string, many = `${one}s`): string {
 
 function downloadBackupJson(payload: ConfigBackupPayload): void {
   const datePart = (payload.exported_at ?? new Date().toISOString()).slice(0, 10);
-  const filename = `hybrid-inference-config-backup-${datePart}.json`;
+  const kind = payload.secrets_included ? '-with-secrets' : '';
+  const filename = `hybrid-inference-config-backup${kind}-${datePart}.json`;
   const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
     type: 'application/json',
   });
@@ -107,6 +119,54 @@ function downloadBackupJson(payload: ConfigBackupPayload): void {
   if (typeof URL.revokeObjectURL === 'function') {
     URL.revokeObjectURL(url);
   }
+}
+
+/**
+ * The administrator's password, inside a confirmation dialog. The dialog's body
+ * is fixed when it opens, so the field keeps its own state and hands the value
+ * to the write through `valueRef`.
+ */
+function ReauthPassword({
+  valueRef,
+  label,
+}: {
+  valueRef: MutableRefObject<string>;
+  label: string;
+}) {
+  const [value, setValue] = useState('');
+  return (
+    <label className="block text-[12px] text-gray-700">
+      {label}
+      <input
+        type="password"
+        value={value}
+        onChange={(event) => {
+          setValue(event.target.value);
+          valueRef.current = event.target.value;
+        }}
+        autoComplete="current-password"
+        className="mt-1 w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
+      />
+    </label>
+  );
+}
+
+/** One `domain:name` label from the backup API, as a dialog lists it. */
+function backupItem(label: string): string {
+  const at = label.indexOf(':');
+  if (at < 0) return label;
+  const domain = label.slice(0, at).replace(/_/g, ' ');
+  return `${label.slice(at + 1)} (${domain})`;
+}
+
+function BackupItemList({ items }: { items: readonly string[] }) {
+  return (
+    <ul className="list-disc space-y-0.5 pl-5 font-mono text-[12px] [overflow-wrap:anywhere]">
+      {items.map((item) => (
+        <li key={item}>{backupItem(item)}</li>
+      ))}
+    </ul>
+  );
 }
 
 /** A category's validated changes, as its save sends them. */
@@ -209,8 +269,10 @@ export function useConfigurationEditor({
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
-  // Restoring a backup overwrites everything, so it is confirmed; a download is not.
+  // Restoring a backup overwrites everything, so it is confirmed; so is a
+  // download with secret values, which asks for the password. A plain one is not.
   const backupConfirmation = useConfirmAction();
+  const backupPassword = useRef('');
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
   const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
@@ -639,18 +701,50 @@ export function useConfigurationEditor({
     setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
-  // A download changes nothing, so it goes on the click. The file holds every
-  // secret in plain text: the button's title says so before, the toast after.
+  // A download changes nothing, so it goes on the click. It names each secret
+  // without its value, and restoring it keeps this deployment's.
   const downloadBackup = async () => {
     const failure = await backupConfirmation.perform({
       run: async () => {
         downloadBackupJson(await exportConfigBackup());
         toast.success(
-          'Downloaded configuration backup. It holds API keys and secrets in plain text: store it securely.',
+          "Downloaded configuration backup. Secret values are left out: restoring it keeps this deployment's.",
         );
       },
     });
     if (failure) toast.error(`The backup could not be downloaded: ${failure}`);
+  };
+
+  // Secret values leave the server only after the administrator's password:
+  // the session alone may be someone else's.
+  const downloadBackupWithSecrets = () => {
+    backupPassword.current = '';
+    backupConfirmation.request({
+      title: 'Download backup with secret values?',
+      confirmLabel: 'Download',
+      busyLabel: 'Downloading…',
+      tone: 'danger',
+      body: (
+        <div className="space-y-2">
+          <p>
+            This backup holds every secret in plain text: the signing and encryption secrets, the
+            admin token, the identity key and every provider API key. Whoever holds the file can
+            sign in as any user and use your providers. Store it as you would the secrets
+            themselves.
+          </p>
+          <ReauthPassword valueRef={backupPassword} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const password = backupPassword.current;
+        if (!password) throw new Error('Enter your password to include secret values.');
+        downloadBackupJson(await exportConfigBackup({ includeSecrets: true, password }));
+        backupPassword.current = '';
+        toast.success(
+          'Downloaded configuration backup with secret values. It holds API keys and secrets in plain text: store it securely.',
+        );
+      },
+    });
   };
 
   const restoreFromFile = async (file: File) => {
@@ -672,6 +766,30 @@ export function useConfigurationEditor({
       toast.error('The selected file is not a valid configuration backup JSON.');
       return;
     }
+
+    // What the restore would change that only a confirmation and the password
+    // allow, and the secrets it cannot restore. Asked as the busy write, so the
+    // buttons wait for it.
+    const previewed: { result?: ConfigRestorePreview } = {};
+    const failure = await backupConfirmation.perform({
+      run: async () => {
+        try {
+          previewed.result = await previewConfigRestore(parsed);
+        } catch (e) {
+          // A gateway older than the preview restores as it always has.
+          if (!(e instanceof APIError) || (e.statusCode !== 404 && e.statusCode !== 405)) throw e;
+          previewed.result = { security_changes: [], secrets_not_restored: [] };
+        }
+      },
+    });
+    if (failure) {
+      toast.error(`The backup cannot be restored: ${failure}`);
+      return;
+    }
+    if (!previewed.result) return;
+    const securityChanges = previewed.result.security_changes;
+    const notRestored = previewed.result.secrets_not_restored;
+    backupPassword.current = '';
 
     const appConfigCount = Array.isArray(parsed.app_config) ? parsed.app_config.length : 0;
     const siteSettingsCount = Array.isArray(parsed.site_settings) ? parsed.site_settings.length : 0;
@@ -707,13 +825,42 @@ export function useConfigurationEditor({
           />
           <p className="font-medium text-red-800">
             Restoring replaces the current configuration, providers, API keys, routes, and runtime
-            settings with the contents of this backup. Existing user API key encryption secrets are
-            automatically preserved when user API keys already exist.
+            settings with the contents of this backup, all of it or, if anything fails, none of it.
+            Existing user API key encryption secrets are automatically preserved when user API keys
+            already exist.
           </p>
+          {parsed.secrets_included === false ? (
+            <p>
+              This backup has no secret values: each secret keeps the value this deployment has.
+            </p>
+          ) : null}
+          {notRestored.length > 0 ? (
+            <div className="space-y-1">
+              <p>This deployment has no value for these secrets, so they stay unset:</p>
+              <BackupItemList items={notRestored} />
+            </div>
+          ) : null}
+          {securityChanges.length > 0 ? (
+            <div className="space-y-2">
+              <p className="font-medium text-red-800">
+                It also changes security settings. A backup file is not signed, so check that you
+                expect each of these, then confirm with your password:
+              </p>
+              <BackupItemList items={securityChanges} />
+              <ReauthPassword valueRef={backupPassword} label="Your password" />
+            </div>
+          ) : null}
         </div>
       ),
       run: async () => {
-        const res = await restoreConfigBackup(parsed);
+        let confirmation: { securityChanges: string[]; password: string } | undefined;
+        if (securityChanges.length > 0) {
+          const password = backupPassword.current;
+          if (!password) throw new Error('Enter your password to restore security settings.');
+          confirmation = { securityChanges, password };
+        }
+        const res = await restoreConfigBackup(parsed, confirmation);
+        backupPassword.current = '';
         setConfig(res.config);
         setDrafts({});
         setDraftVersions({});
@@ -730,6 +877,12 @@ export function useConfigurationEditor({
           );
         } else {
           toast.success('Restored configuration from backup.');
+        }
+        const unset = res.secrets_not_restored ?? [];
+        if (unset.length > 0) {
+          toast.error(
+            `The backup had no value for ${unset.map(backupItem).join(', ')}: set them again.`,
+          );
         }
       },
     });
@@ -778,6 +931,7 @@ export function useConfigurationEditor({
     reloadForAdd,
     variableAdded,
     downloadBackup,
+    downloadBackupWithSecrets,
     restoreFromFile,
     /** Render its `dialog` once, where no sub-tab can hide it. */
     backupConfirmation,
@@ -1152,17 +1306,26 @@ export function ConfigurationBackupSection({ editor }: { editor: ConfigurationEd
   return (
     <AdminSection
       title="Backup & Restore"
-      description="A backup holds the configuration, custom providers and their API keys, routes and runtime settings. Restoring one replaces all of them. The file holds API keys and secrets in plain text: store it securely."
+      description="A backup holds the configuration, custom providers and their API keys, routes and runtime settings. It names each secret without its value, and restoring it keeps this deployment's secrets; a backup with secret values holds them in plain text and asks for your password. Restoring replaces everything else, and lists any change to security settings for you to confirm with your password."
     >
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => void editor.downloadBackup()}
           disabled={busy}
-          title="Downloads every setting and provider key as JSON, with secrets in plain text"
+          title="Downloads every setting as JSON. Secret values are left out: each secret is named, and restoring keeps this deployment's."
           className={BUTTON_SECONDARY}
         >
           Backup
+        </button>
+        <button
+          type="button"
+          onClick={() => editor.downloadBackupWithSecrets()}
+          disabled={busy}
+          title="Downloads every setting and provider key with secret values in plain text, after your password"
+          className={BUTTON_SECONDARY}
+        >
+          Backup with secrets
         </button>
         <button
           type="button"

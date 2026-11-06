@@ -32,9 +32,15 @@ export interface ApiKeyResponse {
 }
 
 export interface ApiKeyListItem {
+  /**
+   * The listing never carries a full key any more (older gateways did); a
+   * saved key is shown through `revealApiKey`.
+   */
   api_key?: string | null;
   key_prefix: string;
   key_masked: string;
+  /** Whether the key's full value is saved, so that its owner can reveal it. */
+  revealable?: boolean;
   /** The owner's label for the key; absent for keys made before keys had names. */
   name?: string | null;
   created_at: string;
@@ -52,6 +58,11 @@ export interface ApiKeyListItem {
 
 export interface ApiKeyListResponse {
   keys: ApiKeyListItem[];
+}
+
+export interface ApiKeyRevealResponse {
+  key_prefix: string;
+  api_key: string;
 }
 
 /** Settings to change on a key: a field left out is unchanged, `null` clears it. */
@@ -204,6 +215,27 @@ export async function renameApiKey(
 export async function listApiKeys(): Promise<ApiKeyListResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys/all');
   return jsonOrThrow<ApiKeyListResponse>(resp);
+}
+
+/**
+ * Show one saved key in full. The account's password confirms that its owner,
+ * not just a signed-in browser, is asking; each attempt counts against the
+ * sign-in limits.
+ */
+export async function revealApiKey(
+  keyPrefix: string,
+  password: string,
+): Promise<ApiKeyRevealResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/user/api-keys/${encodeURIComponent(keyPrefix)}/reveal`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    },
+  );
+  return jsonOrThrow<ApiKeyRevealResponse>(resp);
 }
 
 export async function deleteApiKey(keyPrefix: string): Promise<ApiKeyDeleteResponse> {

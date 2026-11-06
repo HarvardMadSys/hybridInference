@@ -61,7 +61,18 @@ def test_the_base_stack_never_mentions_it() -> None:
     base = yaml.safe_load(BASE.read_text())
 
     assert "cloud-agent" not in (base.get("networks") or {})
-    assert base["services"]["frontend"]["networks"] == ["hybridinference"]
+    assert "cloud-agent" not in base["services"]["frontend"]["networks"]
+    assert "hybridinference" in base["services"]["frontend"]["networks"]
+
+
+def test_the_overlay_keeps_every_network_the_base_gives_the_console() -> None:
+    """Re-listed, so a Compose that replaced the list would lose none of them."""
+    base = yaml.safe_load(BASE.read_text())
+    overlay = yaml.safe_load(OVERLAY.read_text())
+
+    assert set(base["services"]["frontend"]["networks"]) <= set(
+        overlay["services"]["frontend"]["networks"]
+    )
 
 
 def test_the_overlay_only_extends_services_the_base_defines() -> None:

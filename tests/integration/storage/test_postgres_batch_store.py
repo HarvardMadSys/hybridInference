@@ -1471,6 +1471,111 @@ async def test_sweep_purges_finished_batches_past_retention(pool, store):
     assert await store.get_batch(recent_done["id"]) is None
 
 
+async def _finished(store: BatchStore, pool: Any, *, days_ago: int) -> str:
+    """A completed batch whose results became final *days_ago* days ago; its id."""
+    model = _model()
+    created = await _create(store, _items(model, 1))
+    for item in await _claim(store, model):
+        assert await _complete(store, item)
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET completed_at = now() - make_interval(days => $2), "
+        "sealed_at = now() - make_interval(days => $2) WHERE id = $1",
+        created["id"],
+        days_ago,
+    )
+    return created["id"]
+
+
+class _OneConnection:
+    """A pool of one connection, so a query logger on it sees all a sweep sends."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def acquire(self) -> Any:
+        conn = self._conn
+
+        class _Acquired:
+            async def __aenter__(self) -> Any:
+                return conn
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        return _Acquired()
+
+
+async def test_a_sweep_finds_the_batches_it_purges_in_one_read(pool, store):
+    """Finding a purgeable batch reads every finished one: once a sweep, not once a batch."""
+    gone = [await _finished(store, pool, days_ago=8 + i) for i in range(3)]
+    kept = await _finished(store, pool, days_ago=1)
+    sent: list[str] = []
+
+    def _record(query: Any) -> None:
+        sent.append(" ".join(query.query.split()))
+
+    async with pool.acquire() as conn:
+        conn.add_query_logger(_record)
+        try:
+            counts = await BatchStore(_OneConnection(conn)).sweep(retention_days=7)
+            await asyncio.sleep(0)  # the logger is called soon after each statement
+        finally:
+            conn.remove_query_logger(_record)
+
+    assert counts["purged"] == 3
+    assert [await store.batch_exists(batch_id) for batch_id in gone] == [False] * 3
+    assert await store.batch_exists(kept)
+    searches = [s for s in sent if "j.id <> ALL(" in s]
+    purges = [s for s in sent if s.startswith("WITH victim AS")]
+    assert (len(searches), len(purges)) == (1, 3)
+
+
+async def test_the_purge_takes_the_oldest_first_and_the_next_sweep_the_rest(
+    pool, store, monkeypatch
+):
+    monkeypatch.setattr(batch_store, "_PURGE_LIMIT", 2)
+    newest = await _finished(store, pool, days_ago=8)
+    oldest = await _finished(store, pool, days_ago=30)
+    middle = await _finished(store, pool, days_ago=20)
+    deleted = await _finished(store, pool, days_ago=1)
+    # A deletion waiting for a download counts from when it was asked for.
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET delete_requested_at = now() - interval '25 days' WHERE id = $1",
+        deleted,
+    )
+
+    assert (await store.sweep(retention_days=7))["purged"] == 2
+    remaining = {b for b in (oldest, deleted, middle, newest) if await store.batch_exists(b)}
+    assert remaining == {middle, newest}
+    assert (await store.sweep(retention_days=7))["purged"] == 2
+    assert not await store.batch_exists(middle)
+    assert not await store.batch_exists(newest)
+
+
+async def test_a_batch_another_sweep_holds_is_skipped_for_the_next_one(pool, store, monkeypatch):
+    """As a statement per batch skipping locked rows did: the budget goes to the next batches."""
+    monkeypatch.setattr(batch_store, "_PURGE_LIMIT", 2)
+    held = await _finished(store, pool, days_ago=30)
+    second = await _finished(store, pool, days_ago=20)
+    third = await _finished(store, pool, days_ago=10)
+    holder = await pool.acquire()
+    holding = holder.transaction()
+    await holding.start()
+    try:
+        await holder.execute("SELECT 1 FROM batch_jobs WHERE id = $1 FOR UPDATE", held)
+        counts = await store.sweep(retention_days=7)
+    finally:
+        await holding.rollback()
+        await pool.release(holder)
+
+    assert counts["purged"] == 2
+    assert await store.batch_exists(held)
+    assert not await store.batch_exists(second)
+    assert not await store.batch_exists(third)
+
+
 # -- deletes ---------------------------------------------------------------------
 
 

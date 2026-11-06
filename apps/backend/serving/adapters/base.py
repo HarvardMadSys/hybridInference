@@ -335,7 +335,7 @@ class BaseAdapter(ABC):
             OpenAIToAnthropicStreamTranslator,
             anthropic_request_to_openai,
         )
-        from serving.utils.tokens import estimate_prompt_tokens
+        from serving.utils.tokens import estimate_prompt_tokens_bounded
 
         oai_messages, oai_params = anthropic_request_to_openai(
             body, tool_images=self._reads_images()
@@ -344,9 +344,14 @@ class BaseAdapter(ABC):
         # Seed message_start.usage.input_tokens with an estimate: OpenAI streams
         # report prompt tokens only in the final chunk, but Anthropic clients
         # read input usage from message_start. The exact count replaces this in
-        # the terminal message_delta once the upstream reports it.
+        # the terminal message_delta once the upstream reports it. It is also
+        # the input a stream cut off after message_start is billed for, so it
+        # stays a tiktoken estimate -- but a bounded one: this runs on the event
+        # loop for every streamed turn, and a full encode of a coding agent's
+        # context took tens of milliseconds there. Exact up to
+        # INLINE_ESTIMATE_MAX_CHARS of text, sampled within a few percent beyond.
         try:
-            input_estimate = estimate_prompt_tokens(oai_messages)
+            input_estimate = estimate_prompt_tokens_bounded(oai_messages)
         except Exception:
             input_estimate = 0
         translator = OpenAIToAnthropicStreamTranslator(

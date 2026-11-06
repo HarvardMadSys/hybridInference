@@ -185,3 +185,47 @@ def test_an_address_is_escaped_in_the_html(smtp, send):
     _, parts = _only_message(smtp)
     assert "<script>" not in parts["text/html"]
     assert "&lt;script&gt;" in parts["text/html"]
+
+
+def test_a_signup_notice_shows_every_signup_field_as_text(smtp):
+    """The admins' new-signup notice quotes an anonymous form.
+
+    Sent from the deployment's own domain, an unescaped display name could
+    plant a link or a tracking pixel in it; the use case was escaped, the name
+    was not.
+    """
+    name = '<a href="https://evil.test/login">Verify</a>'
+    user_id = 'u-1"><img src=x>'
+    assert email_mod.send_new_registration_admin_email(
+        "admin@acme.test",
+        user_email=HOSTILE,
+        user_name=name,
+        user_id=user_id,
+        use_case="line one\n<b>line two</b>",
+    )
+
+    msg, parts = _only_message(smtp)
+    assert msg["To"] == "admin@acme.test"
+    html = parts["text/html"]
+    for raw in (name, "<script>", "<img", "<b>"):
+        assert raw not in html
+    assert "&lt;a href=&quot;https://evil.test/login&quot;&gt;Verify&lt;/a&gt;" in html
+    assert "&lt;script&gt;" in html
+    assert "u-1&quot;&gt;&lt;img src=x&gt;" in html
+    assert "line one<br>&lt;b&gt;line two&lt;/b&gt;" in html
+    # The plain-text part is text already: it shows what was submitted.
+    text = parts["text/plain"]
+    assert f"Email: {HOSTILE}" in text
+    assert f"Name: {name}" in text
+    assert f"User ID: {user_id}" in text
+    assert "line one\n<b>line two</b>" in text
+
+
+def test_a_rejection_reason_is_shown_as_text(smtp):
+    reason = "Please reapply from your <work> address & mention the lab"
+    assert email_mod.send_rejection_email("owner@example.com", reason)
+
+    _, parts = _only_message(smtp)
+    assert "<work>" not in parts["text/html"]
+    assert "from your &lt;work&gt; address &amp; mention the lab" in parts["text/html"]
+    assert f"Reason: {reason}" in parts["text/plain"]

@@ -173,7 +173,7 @@ def _iso_utc(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
-def _http_status_of(exc: BaseException) -> int | None:
+def http_status_of(exc: BaseException) -> int | None:
     """Best-effort extract of an upstream HTTP status code from an exception.
 
     Adapters surface upstream HTTP errors as exceptions that carry the status on
@@ -197,6 +197,10 @@ def _http_status_of(exc: BaseException) -> int | None:
     return None
 
 
+# The name this module and ``routing.routers`` read it by.
+_http_status_of = http_status_of
+
+
 def _is_auth_misconfig(status: int | None) -> bool:
     """Return whether ``status`` means this gateway's own credential was rejected.
 
@@ -211,9 +215,13 @@ def _is_auth_misconfig(status: int | None) -> bool:
     return status is not None and status in _AUTH_MISCONFIG_STATUSES
 
 
-def _is_client_error(exc: BaseException) -> bool:
-    """Return whether ``exc`` is a client error that must not trip the breaker."""
-    status = _http_status_of(exc)
+def is_client_error_status(status: int | None) -> bool:
+    """Return whether an upstream ``status`` blames the request rather than the endpoint.
+
+    The breaker's client-error exemption, read off a status alone so that a
+    status carried away from its exception (``RoutingObservation.status_code``,
+    a ``failed_attempts`` record) is classified the same way.
+    """
     if status is None or not (400 <= status < 500):
         return False
     # 408 and 429 signal upstream slowness/overload, not a malformed request.
@@ -221,6 +229,109 @@ def _is_client_error(exc: BaseException) -> bool:
         return False
     # Auth statuses reject the gateway's credential, not the user's request.
     return not _is_auth_misconfig(status)
+
+
+def _is_client_error(exc: BaseException) -> bool:
+    """Return whether ``exc`` is a client error that must not trip the breaker."""
+    return is_client_error_status(_http_status_of(exc))
+
+
+def _uncharged_failure_event(exc: BaseException) -> str | None:
+    """Return the log event of a failure no endpoint is charged with, or None.
+
+    Each of these ends an attempt without saying anything against the endpoint:
+    nothing was sent, or the endpoint answered exactly as it is meant to.
+    ``EndpointHealthRegistry.record_failure`` keeps them out of the breaker, and
+    :func:`failure_may_lose_prefix_cache` reads the same classification, so the
+    two cannot disagree about which failures are the endpoint's.
+    """
+    if isinstance(exc, KeyPoolRoleRestricted):
+        # The endpoint holds no key this caller's *tier* may spend, but it is
+        # still serving the tiers that own those keys — nothing was even sent
+        # upstream. Counting it would let a burst of lower-tier traffic open
+        # the circuit and strip reserved capacity from the callers it was
+        # reserved for, re-tripping on every half-open probe. Filtered here
+        # rather than per-router so the FixedRouter, RouteWise and hedging
+        # paths all inherit it.
+        return "role_restricted_skip_breaker"
+    if isinstance(exc, KeyPoolExhausted):
+        # Every key this endpoint could use is muted (the tail of a provider
+        # 429/auth storm), removed, or already tried by this request, so
+        # ``acquire()`` refused before anything was sent. The pool's own
+        # mutes are what keep traffic off a struggling provider while they
+        # last, and the failures that did the muting were counted when they
+        # happened, so a real outage still opens the circuit from its own
+        # evidence. Charging the echo instead let one muted key pool open
+        # the circuit on every route sharing the provider's keys — streams
+        # died in ``AllCircuitsOpenError`` and every half-open probe
+        # re-tripped while the mutes outlived the cooldown (issue #1440:
+        # 462 dead streams in a 59h prod window). Filtered here rather than
+        # per-router so the FixedRouter, RouteWise and hedging paths all
+        # inherit it, mirroring the role-restricted case above.
+        return "key_pool_exhausted_skip_breaker"
+    if isinstance(exc, UpstreamSaturated):
+        # This gateway declined to open another concurrent request against
+        # the provider account behind this endpoint (see
+        # ``serving.adapters.upstream_limiter``). Nothing was sent, so the
+        # endpoint answered nothing and must not be charged for it — the
+        # same reading as the role-restricted case above, for a limit this
+        # process imposed on itself rather than one the vendor imposed.
+        #
+        # Counting it would also be self-amplifying in a way a real upstream
+        # failure is not. One bucket is shared by every endpoint on that
+        # account, so a burst on one model would open the circuit on models
+        # that never sent a byte; and an endpoint whose circuit is open is
+        # skipped entirely, which is the opposite of what a concurrency
+        # limiter is for — the point is to keep using the endpoint at a rate
+        # it accepts. The request still fails over: the router's fallback
+        # chain runs off the exception, not off this accounting.
+        return "gateway_throttle_skip_breaker"
+    if isinstance(exc, EngineWaitExpired):
+        # The router cancelled this attempt because the engine had not
+        # started it within the model's offload wait (``routing.engine_wait``),
+        # and sent the request to the offload route. A queued request is not a
+        # failure of the engine: it is busy, and the next request is still
+        # sent to it. Counting it here would open the circuit on a burst of
+        # load and hold the endpoint out for a cooldown long after its queue
+        # drained.
+        return "engine_wait_skip_breaker"
+    if isinstance(exc, UpstreamModelQueued):
+        # An on-demand deployment answered that the model is queued for
+        # capacity (a cluster job waiting for a node). The endpoint is
+        # working as designed, and while the job waits every request gets
+        # this answer, so counting it would hold the circuit open, and page,
+        # for as long as the queue does.
+        return "model_queued_skip_breaker"
+    return None
+
+
+def failure_may_lose_prefix_cache(exc: BaseException | None) -> bool:
+    """Return whether a failed attempt can mean its endpoint lost its prefix cache.
+
+    A restart, an OOM or a container replaced under the same endpoint id empties
+    the engine's radix cache, and from outside each looks like a 5xx or like no
+    answer at all: a refused or reset connection, a disconnect, a timeout. Those
+    are the failures this is true for, together with one that carries no
+    exception to classify.
+
+    False for the other failures no endpoint is charged with
+    (``_uncharged_failure_event``: nothing was sent, or the engine is busy) and
+    for every 4xx. An endpoint that answered with a status is up and holds what
+    it held, so a client's malformed request, a 429 or a rejected credential is
+    no evidence about its cache -- forgetting on one let any caller wipe every
+    other caller's warm-prefix hints for that endpoint.
+    """
+    if exc is None:
+        return True
+    if isinstance(exc, UpstreamModelQueued):
+        # Answered as designed, so the breaker leaves it alone, but the answer
+        # is that the model is not running: whatever its engine had cached went
+        # with the job that stopped.
+        return True
+    if _uncharged_failure_event(exc) is not None:
+        return False
+    status = _http_status_of(exc)
+    return status is None or status >= 500
 
 
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
@@ -1064,102 +1175,14 @@ class EndpointHealthRegistry:
         exc: BaseException | None = None,
     ) -> None:
         """Record a failed endpoint request unless it is a client error."""
-        if exc is not None and isinstance(exc, KeyPoolRoleRestricted):
-            # The endpoint holds no key this caller's *tier* may spend, but it is
-            # still serving the tiers that own those keys — nothing was even sent
-            # upstream. Counting it would let a burst of lower-tier traffic open
-            # the circuit and strip reserved capacity from the callers it was
-            # reserved for, re-tripping on every half-open probe. Filtered here
-            # rather than per-router so the FixedRouter, RouteWise and hedging
-            # paths all inherit it.
-            logger.info(
-                "role_restricted_skip_breaker",
-                extra={
-                    "event": "role_restricted_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "detail": _detail_str(detail or operator_safe_error(exc)),
-                },
-            )
-            return
-        if exc is not None and isinstance(exc, KeyPoolExhausted):
-            # Every key this endpoint could use is muted (the tail of a provider
-            # 429/auth storm), removed, or already tried by this request, so
-            # ``acquire()`` refused before anything was sent. The pool's own
-            # mutes are what keep traffic off a struggling provider while they
-            # last, and the failures that did the muting were counted when they
-            # happened, so a real outage still opens the circuit from its own
-            # evidence. Charging the echo instead let one muted key pool open
-            # the circuit on every route sharing the provider's keys — streams
-            # died in ``AllCircuitsOpenError`` and every half-open probe
-            # re-tripped while the mutes outlived the cooldown (issue #1440:
-            # 462 dead streams in a 59h prod window). Filtered here rather than
-            # per-router so the FixedRouter, RouteWise and hedging paths all
-            # inherit it, mirroring the role-restricted case above.
-            logger.info(
-                "key_pool_exhausted_skip_breaker",
-                extra={
-                    "event": "key_pool_exhausted_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "detail": _detail_str(detail or operator_safe_error(exc)),
-                },
-            )
-            return
-        if exc is not None and isinstance(exc, UpstreamSaturated):
-            # This gateway declined to open another concurrent request against
-            # the provider account behind this endpoint (see
-            # ``serving.adapters.upstream_limiter``). Nothing was sent, so the
-            # endpoint answered nothing and must not be charged for it — the
-            # same reading as the role-restricted case above, for a limit this
-            # process imposed on itself rather than one the vendor imposed.
-            #
-            # Counting it would also be self-amplifying in a way a real upstream
-            # failure is not. One bucket is shared by every endpoint on that
-            # account, so a burst on one model would open the circuit on models
-            # that never sent a byte; and an endpoint whose circuit is open is
-            # skipped entirely, which is the opposite of what a concurrency
-            # limiter is for — the point is to keep using the endpoint at a rate
-            # it accepts. The request still fails over: the router's fallback
-            # chain runs off the exception, not off this accounting.
-            logger.info(
-                "gateway_throttle_skip_breaker",
-                extra={
-                    "event": "gateway_throttle_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "detail": _detail_str(detail or operator_safe_error(exc)),
-                },
-            )
-            return
-        if exc is not None and isinstance(exc, EngineWaitExpired):
-            # The router cancelled this attempt because the engine had not
-            # started it within the model's offload wait (``routing.engine_wait``),
-            # and sent the request to the offload route. A queued request is not a
-            # failure of the engine: it is busy, and the next request is still
-            # sent to it. Counting it here would open the circuit on a burst of
-            # load and hold the endpoint out for a cooldown long after its queue
-            # drained.
-            logger.info(
-                "engine_wait_skip_breaker",
-                extra={
-                    "event": "engine_wait_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "detail": _detail_str(detail or operator_safe_error(exc)),
-                },
-            )
-            return
-        if exc is not None and isinstance(exc, UpstreamModelQueued):
-            # An on-demand deployment answered that the model is queued for
-            # capacity (a cluster job waiting for a node). The endpoint is
-            # working as designed, and while the job waits every request gets
-            # this answer, so counting it would hold the circuit open, and page,
-            # for as long as the queue does.
-            logger.info(
-                "model_queued_skip_breaker",
-                extra={
-                    "event": "model_queued_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "retry_after": exc.retry_after,
-                },
-            )
+        uncharged = _uncharged_failure_event(exc) if exc is not None else None
+        if uncharged is not None:
+            fields: dict[str, Any] = {"event": uncharged, "endpoint_id": endpoint_id}
+            if isinstance(exc, UpstreamModelQueued):
+                fields["retry_after"] = exc.retry_after
+            else:
+                fields["detail"] = _detail_str(detail or operator_safe_error(exc))
+            logger.info(uncharged, extra=fields)
             return
         status = _http_status_of(exc) if exc is not None else None
         # Checked before the client-error exemption: an auth rejection sits in the

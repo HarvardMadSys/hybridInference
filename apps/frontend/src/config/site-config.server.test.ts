@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildTimeSiteConfig } from './site-config';
 import { SITE_CONFIG_ERROR_DIGEST, SiteConfigLoadError } from './site-config-error';
-import { loadRuntimeSiteConfig } from './site-config.server';
+import { forgetRuntimeSiteConfig, loadRuntimeSiteConfig } from './site-config.server';
 
 const runtimeDocument = {
   schema_version: 1,
@@ -14,6 +14,7 @@ const runtimeDocument = {
 
 describe('loadRuntimeSiteConfig', () => {
   beforeEach(() => {
+    forgetRuntimeSiteConfig();
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.stubEnv('AGENT_PUBLIC_URL', '');
     vi.stubEnv('AGENT_WEB_INTERNAL_URL', '');
@@ -46,7 +47,7 @@ describe('loadRuntimeSiteConfig', () => {
     await expect(loadRuntimeSiteConfig()).rejects.toThrow(SiteConfigLoadError);
   });
 
-  it('keeps cross-request caching off and gives the runtime request a deadline', async () => {
+  it("keeps Next's fetch cache off and gives the runtime request a deadline", async () => {
     vi.stubEnv('BUILT_BACKEND_INTERNAL_URL', 'http://built-backend:9090/');
     vi.stubEnv('BACKEND_INTERNAL_URL', 'http://runtime-must-not-retarget:7070/');
     const fetchMock = vi.fn().mockResolvedValue({
@@ -269,5 +270,85 @@ describe('loadRuntimeSiteConfig', () => {
     await rejection;
 
     expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  describe('the copy shared across requests', () => {
+    function serving(document: object) {
+      return vi.fn().mockResolvedValue({ ok: true, json: async () => document });
+    }
+
+    it('answers every render for 30 seconds, then asks the gateway again', async () => {
+      vi.useFakeTimers();
+      const fetchMock = serving(runtimeDocument);
+      vi.stubGlobal('fetch', fetchMock);
+
+      await loadRuntimeSiteConfig();
+      await vi.advanceTimersByTimeAsync(29_000);
+      await loadRuntimeSiteConfig();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await loadRuntimeSiteConfig();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('asks the gateway once for renders that arrive together', async () => {
+      const fetchMock = serving(runtimeDocument);
+      vi.stubGlobal('fetch', fetchMock);
+
+      const results = await Promise.all([1, 2, 3].map(() => loadRuntimeSiteConfig()));
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(new Set(results).size).toBe(1);
+    });
+
+    it('serves the last good document while the gateway fails, and retries shortly', async () => {
+      vi.useFakeTimers();
+      const fetchMock = serving(runtimeDocument);
+      vi.stubGlobal('fetch', fetchMock);
+      const good = await loadRuntimeSiteConfig();
+
+      fetchMock.mockReset().mockRejectedValue(new Error('offline'));
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(loadRuntimeSiteConfig()).resolves.toBe(good);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(console.error).toHaveBeenCalled();
+
+      // Not on every render while it stays down...
+      await loadRuntimeSiteConfig();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // ...but again a few seconds later, and a recovered gateway is used.
+      fetchMock.mockReset().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ...runtimeDocument,
+          distribution: { id: 'next', display_name: '', release: '2' },
+        }),
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(loadRuntimeSiteConfig()).resolves.toMatchObject({
+        distribution: { id: 'next' },
+      });
+    });
+
+    // Setup ends with a full page load that has to see setup.required turn
+    // false, or SetupGate sends the new admin straight back to /setup.
+    it('reads a deployment that is mid-setup, or missing a setting, fresh every time', async () => {
+      for (const flags of [
+        { setup: { required: true } },
+        { configuration: { incomplete: true } },
+      ]) {
+        forgetRuntimeSiteConfig();
+        const fetchMock = serving({ ...runtimeDocument, ...flags });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await loadRuntimeSiteConfig();
+        await loadRuntimeSiteConfig();
+
+        expect(fetchMock, JSON.stringify(flags)).toHaveBeenCalledTimes(2);
+      }
+    });
   });
 });

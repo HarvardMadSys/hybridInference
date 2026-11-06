@@ -216,6 +216,28 @@ async def test_a_recognized_browser_signs_in_while_its_shared_address_is_locked_
     assert (blocked.status_code, blocked.headers["Retry-After"]) == (429, "900")
 
 
+async def test_presenting_each_new_entry_in_turn_is_still_limited(app, op_store):
+    """Every sign-in rotates the entry, which must not hand out a fresh allowance.
+
+    Replaying the newest entry each time used to sign the account in without
+    limit, each sign-in running Argon2id on the only worker and writing a
+    session. The account's recognized browsers share its account-wide budget.
+    """
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    device = _device(await _login(app, client_ip="5.6.7.8"))
+
+    for _ in range(50):
+        resp = await _login(app, device=device)
+        assert resp.status_code == 200, resp.text
+        device = _device(resp)
+
+    blocked = await _login(app, device=device)
+    assert (blocked.status_code, blocked.headers["Retry-After"]) == (429, "900")
+    # Nobody without an entry spent any of it: a fresh browser elsewhere is
+    # limited by the windows it shares, not refused for the account's browsers.
+    assert (await _login(app, client_ip="9.9.9.9")).status_code == 200
+
+
 async def test_no_exemption_without_a_valid_entry_for_the_account(app, op_store, monkeypatch):
     op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
     op_store.users["u-ops"] = _account("u-ops", "ops")

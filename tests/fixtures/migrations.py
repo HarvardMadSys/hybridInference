@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import uuid
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -68,3 +69,23 @@ async def scratch_database() -> AsyncIterator[str]:
             await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
         finally:
             await admin.close()
+
+
+#: Revisions after the baseline that change the tables
+#: :func:`migrations.baseline.api_logs.ensure_api_logs_schema` builds, oldest
+#: first. Each exposes its statements as ``STATEMENTS``.
+API_LOGS_REVISIONS = ("0004_user_usage_sums", "0005_drop_request_id_index")
+
+
+async def ensure_api_logs_tables(conn: Any) -> None:
+    """Build the ``api_logs`` tables on *conn* as the migrations leave them.
+
+    For a test that builds them in a schema of its own: the frozen baseline,
+    then the statements of every later revision that changes them.
+    """
+    from migrations.baseline.api_logs import ensure_api_logs_schema
+
+    await ensure_api_logs_schema(conn)
+    for name in API_LOGS_REVISIONS:
+        for statement in importlib.import_module(f"migrations.versions.{name}").STATEMENTS:
+            await conn.execute(statement)

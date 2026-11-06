@@ -679,3 +679,44 @@ async def test_concurrency_429_calls_log_rejection(monkeypatch):
     assert call["status_code"] == 429
     assert call["error_code"] == "concurrency_limit_exceeded"
     assert call["user"]["user_id"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_the_body_limit_applies_before_the_gate_parses_a_body():
+    """The gate reads the body before admission to find the model's budget.
+
+    That read is bounded by the request body limit, which refuses an oversized
+    body as its bytes arrive: the gate never parses it, and the request ends
+    there without taking a slot or reaching the handler.
+    """
+    from serving.servers.middleware.body_limit import RequestBodyLimitMiddleware
+
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=4096)
+    app.unary_event.set()  # type: ignore[attr-defined]
+    produced: list[int] = []
+
+    async def oversized():
+        yield b'{"model": "exempt-model", "messages": [{"role": "user", "content": "'
+        for i in range(64):
+            produced.append(i)
+            yield b"x" * 1024
+        yield b'"}]}'
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        refused = await client.post(
+            "/probe", content=oversized(), headers={"content-type": "application/json"}
+        )
+        # The body was cut off at the limit, not read to its end and parsed,
+        # and the refused request never reached admission.
+        assert refused.status_code == 413
+        assert len(produced) < 8
+        assert limiter._slots == {}
+
+        accepted = await client.post("/probe", json={"model": "exempt-model"})
+
+    assert accepted.status_code == 200
+    assert limiter._slots[_exempt_slot_key("u1")].in_use == 0

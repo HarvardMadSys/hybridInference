@@ -33,8 +33,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import DownloadInterrupted, stream_lines, stream_upload
 from serving.batch.multipart import MultipartError, boundary_of, limited, read_multipart
-from serving.config.settings import has_role
-from serving.servers.auth import verify_batch_management_identity
+from serving.servers.auth import reads_every_owner, verify_batch_management_identity
 from serving.servers.deps import get_batch_file_store, get_batch_store
 from serving.storage.batch_file_store import (
     CHUNK_BYTES,
@@ -79,7 +78,12 @@ def _owner(user_ctx: dict[str, Any]) -> str:
 
 
 def _lookup_scope(user_ctx: dict[str, Any]) -> str | None:
-    return None if has_role(user_ctx.get("role") or "free", "admin") else _owner(user_ctx)
+    """Return the owner a lookup is restricted to: the caller, or none for an admin.
+
+    An administrator who authenticated as one, that is: the anonymous caller of
+    an auth-disabled gateway holds the admin role too (:func:`reads_every_owner`).
+    """
+    return None if reads_every_owner(user_ctx) else _owner(user_ctx)
 
 
 def _epoch(value: Any) -> int | None:

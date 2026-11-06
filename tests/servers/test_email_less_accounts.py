@@ -116,6 +116,10 @@ def op_store(users: dict[str, dict[str, Any]]) -> MagicMock:
         )
     )
     store.browser_sessions = browser_sessions.install(store)
+    # The session the tokens of _admin_headers() name: the admin is signed in.
+    store.browser_sessions.remember_session(
+        {"id": "auth-sess", "user_id": ADMIN_ID, "sid": "sess", "expires_at": None}
+    )
     return store
 
 

@@ -31,3 +31,17 @@ def test_frontend_rewrite_input_is_pinned_and_dotenv_is_outside_the_build_contex
     assert ".env.*" in dockerignore
     assert "**/.env" in dockerignore
     assert "**/.env.*" in dockerignore
+
+
+def test_the_health_check_asks_the_console_and_not_the_gateway():
+    """`/` renders a page from the gateway's site configuration.
+
+    Checked every 15 seconds, it cost a render and a gateway call each time,
+    and a gateway outage made the console unhealthy too -- the coupling the
+    Compose file's `service_started` dependency exists to avoid.
+    """
+    dockerfile = Path("deploy/docker/Dockerfile.frontend").read_text()
+
+    assert "http://127.0.0.1:3001/healthz" in dockerfile
+    assert "http://127.0.0.1:3001/ " not in dockerfile
+    assert Path("apps/frontend/src/app/healthz/route.ts").is_file()

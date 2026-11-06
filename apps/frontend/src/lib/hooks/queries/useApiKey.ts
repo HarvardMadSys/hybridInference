@@ -5,6 +5,7 @@ import {
   listApiKeys,
   regenerateApiKey,
   renameApiKey,
+  revealApiKey,
   updateApiKey,
   type ApiKeyUpdate,
 } from '@/lib/api/user';
@@ -14,6 +15,15 @@ export function useApiKeys() {
     queryKey: ['apiKeys'],
     queryFn: listApiKeys,
     staleTime: 10 * 60 * 1000, // 10 minutes
+  });
+}
+
+/** Show one saved key in full; the answer is dropped as soon as nothing observes it. */
+export function useRevealApiKey() {
+  return useMutation({
+    mutationFn: ({ keyPrefix, password }: { keyPrefix: string; password: string }) =>
+      revealApiKey(keyPrefix, password),
+    gcTime: 0,
   });
 }
 

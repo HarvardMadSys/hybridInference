@@ -26,8 +26,8 @@ from serving.storage.cache import CachedOperationalStore, InMemoryCache
 pytestmark = pytest.mark.asyncio
 
 
-# The cache's own operation: it clears this layer and has nothing to forward.
-_CACHE_LOCAL = {"invalidate_auth_caches"}
+# The cache's own operations: they clear this layer and have nothing to forward.
+_CACHE_LOCAL = {"invalidate_auth_caches", "invalidate_user_auth_caches"}
 
 
 def _contract() -> list[str]:

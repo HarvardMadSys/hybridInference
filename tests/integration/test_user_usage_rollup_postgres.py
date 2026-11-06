@@ -21,11 +21,10 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.storage import user_usage_rollup
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
-from tests.fixtures import postgres
+from tests.fixtures import migrations as mig, postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -88,7 +87,7 @@ async def db():
         async with pool.acquire() as conn:
             for table in ("users", "api_keys", "user_daily_cost"):
                 await conn.execute(f"CREATE TABLE {table} (LIKE public.{table} INCLUDING ALL)")
-            await ensure_api_logs_schema(conn)
+            await mig.ensure_api_logs_tables(conn)
             for i, uid in enumerate(_USERS):
                 await conn.execute(
                     "INSERT INTO users (id, email, password_hash, status, created_at) "
@@ -370,7 +369,7 @@ async def test_upgrading_tables_from_before_the_turn_and_ask_columns(db):
     async with pool.acquire() as conn:
         await _create_first_release_tables(conn, settled)
 
-        await ensure_api_logs_schema(conn)
+        await mig.ensure_api_logs_tables(conn)
         columns = {
             r["attname"]
             for r in await conn.fetch(

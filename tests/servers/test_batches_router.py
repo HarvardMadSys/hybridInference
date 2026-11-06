@@ -1444,6 +1444,29 @@ async def test_an_admin_may_read_cancel_and_delete_any_batch(client, store):
     assert batch["id"] not in store.batches
 
 
+async def test_the_anonymous_caller_of_an_auth_disabled_gateway_reaches_only_its_own(
+    client, users, store
+):
+    """Its admin role opens the API, not the batches stored under real accounts."""
+    users["anon"] = {"user_id": "anonymous", "role": "admin", "authenticated": False}
+    theirs = await _create(client, "key-alice")
+    own = await _create(client, "anon")
+    path = f"/v1/batches/{theirs['id']}"
+
+    responses = [
+        await client.get(path, headers=_auth("anon")),
+        await client.get(f"{path}/results", headers=_auth("anon")),
+        await client.get(f"{path}/output.jsonl", headers=_auth("anon")),
+        await client.post(f"{path}/cancel", headers=_auth("anon")),
+        await client.delete(path, headers=_auth("anon")),
+    ]
+
+    assert [r.status_code for r in responses] == [404] * 5
+    assert store.batches[theirs["id"]]["status"] == "validating"
+    read = await client.get(f"/v1/batches/{own['id']}", headers=_auth("anon"))
+    assert read.json()["id"] == own["id"]
+
+
 async def test_an_unknown_batch_is_404(client):
     response = await client.get("/v1/batches/batch_missing", headers=_auth())
 

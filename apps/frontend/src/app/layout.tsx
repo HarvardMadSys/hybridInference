@@ -1,8 +1,9 @@
 import '../styles/globals.css';
 import '../site-ui/active/styles.css';
-import Script from 'next/script';
 import { Crimson_Text } from 'next/font/google';
+import { cookies, headers } from 'next/headers';
 import type { Metadata } from 'next';
+import { PublicAnalytics } from '@/components/analytics/PublicAnalytics';
 import { Providers } from '@/components/providers';
 import { THEME_BOOTSTRAP_SCRIPT } from '@/components/providers/theme';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
@@ -13,6 +14,7 @@ import { locale as publicLocale } from '@site-ui/server';
 import { loadRuntimeSiteConfig } from '@/config/site-config.server';
 import { rootMetadata } from '@/config/site-metadata';
 import { catalogFor, requestLocale } from '@/lib/i18n/request.server';
+import { consoleSessionCookieNames } from '@/lib/utils/consoleSessionCookie';
 
 const crimsonText = Crimson_Text({
   subsets: ['latin'],
@@ -28,8 +30,17 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const [siteConfig, locale] = await Promise.all([loadRuntimeSiteConfig(), requestLocale()]);
+  const [siteConfig, locale, requestHeaders, cookieStore] = await Promise.all([
+    loadRuntimeSiteConfig(),
+    requestLocale(),
+    headers(),
+    cookies(),
+  ]);
   const { branding } = siteConfig;
+  // This response's script nonce, from src/middleware.ts: the page's policy
+  // runs no script without it.
+  const nonce = requestHeaders.get('x-nonce') ?? undefined;
+  const signedOut = ![...consoleSessionCookieNames()].some((name) => cookieStore.has(name));
 
   // The document language follows whoever renders the route: the module's
   // server `locale` on the routes the module renders, the reader's language on
@@ -44,25 +55,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       className={`h-full ${crimsonText.variable}`}
     >
       <head>
-        <script id="console-theme" dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }} />
-        {/* Ternary, not `&&`: an unset project id is '', and `{'' && …}` renders
-            the empty string as a text node. A text node inside <head> is invalid
-            HTML, so the parser hoists it out, server and client trees diverge,
-            and the failed hydration tears out <head> — stylesheets included,
-            leaving the whole app unstyled. Only bites builds without a
-            statcounter id, i.e. local and neutral ones. */}
-        {branding.statcounterProjectId ? (
-          <>
-            <Script id="statcounter-config" strategy="afterInteractive">
-              {`var sc_project=${branding.statcounterProjectId}; var sc_invisible=1; var sc_security='${branding.statcounterSecurityKey}';`}
-            </Script>
-            <Script
-              id="statcounter-loader"
-              src="https://www.statcounter.com/counter/counter.js"
-              strategy="lazyOnload"
-            />
-          </>
-        ) : null}
+        <script
+          id="console-theme"
+          nonce={nonce}
+          dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }}
+        />
       </head>
       <body
         className="flex min-h-screen flex-col bg-gray-50 text-black antialiased"
@@ -82,25 +79,15 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <SiteUiBoundary>
               <PublicRouteBoundary>{children}</PublicRouteBoundary>
             </SiteUiBoundary>
+            {/* Ternary, not `&&`: an unset project id is '', which `&&` would
+                render as an empty text node. */}
             {branding.statcounterProjectId ? (
-              <noscript>
-                <div className="statcounter">
-                  <a
-                    title="Web Analytics"
-                    href="https://statcounter.com/"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      className="statcounter"
-                      src={`https://c.statcounter.com/${branding.statcounterProjectId}/0/${branding.statcounterSecurityKey}/1/`}
-                      alt="Web Analytics"
-                      referrerPolicy="no-referrer-when-downgrade"
-                    />
-                  </a>
-                </div>
-              </noscript>
+              <PublicAnalytics
+                projectId={branding.statcounterProjectId}
+                securityKey={branding.statcounterSecurityKey}
+                nonce={nonce}
+                signedOut={signedOut}
+              />
             ) : null}
           </Providers>
         </ErrorBoundary>

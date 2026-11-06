@@ -48,6 +48,17 @@ under **Privacy** on the admin console's **Configuration** tab:
 | `ERASURE_FENCE_SECRET` | *(empty)* | Secret for the records that keep deleted accounts deleted. It cannot be changed once set; see [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
 | `ERASURE_FENCE_PROTOCOL_READY` | `false` | Turns on permanent account deletion. See [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
 
+Each gateway process opens two connection pools to it (sizes and reasons in
+`apps/backend/serving/storage/pools.py`): a general pool of up to 10
+connections for everything, and a request pool of up to 4 reserved for the
+lookups a request makes before it is served — API-key authentication and spend,
+session checks, quotas, and the runtime settings read on the way. Slow work on
+the general pool (reports, exports, rollups) cannot hold those up, and a request
+that cannot get a request-pool connection within 3 seconds is answered with a
+503 and `Retry-After` instead of waiting. With the alert-history pool's 4, a
+process holds at most 18 connections; size `max_connections` for that times
+the number of gateway processes, plus the tools you run beside them.
+
 The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`,
 initialised with `-E UTF8 --locale=C.UTF-8`, and publishes it on
 `127.0.0.1:${DB_PORT:-5432}` — loopback only. Reach it from another machine with
@@ -147,14 +158,14 @@ settings govern this:
 
 | Group | Tables | Holds |
 |---|---|---|
-| Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats`, `provider_hourly_coverage`, `request_volume_hourly`, `user_usage_daily`, `user_usage_daily_coverage`, `daily_activity`, `admin_view_results`, `admin_view_state` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly and daily rollups used by the dashboards and the admin Users table, and the last computed result of the admin console's slowest views |
+| Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats`, `provider_hourly_coverage`, `request_volume_hourly`, `user_usage_daily`, `user_usage_daily_coverage`, `daily_activity`, `admin_view_results`, `admin_view_state` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly and daily rollups used by the dashboards, the admin Users table and the user dashboard's usage figures, and the last computed result of the admin console's slowest views |
 | Settings | `app_config` | The settings on the admin console's Settings tab, secrets included; see [Settings and first-run setup](#settings-and-first-run-setup) |
 | Accounts and auth | `users`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, hashed API keys with their quotas and their own budgets and model allowlists, refresh sessions and the accounts signed in on each browser, sign-in history |
 | Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings and the first-run setup marker, announcements, broadcast delivery state |
 | Runtime routing overrides | `provider_definitions`, `provider_api_keys`, `provider_route_configs`, `provider_route_candidates`, `provider_weight_overrides`, `disabled_providers`, `disabled_provider_env_keys`, `provider_env_key_min_roles`, `model_visibility_overrides`, `model_concurrency_exemptions` | Everything the admin console can change about routing without editing YAML — see [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console) |
 | Cost and quota | `user_daily_cost`, `api_key_daily_cost` | Per-user daily spend used for quota enforcement, and the same per API key for the console's per-key spend |
 | RouteWise | `routewise_probe_samples`, `routewise_probe_leases` | Latency probe samples and the lease that stops two workers probing at once |
-| Responses API | `openai_responses` | Stored `/v1/responses` state, when content storage is enabled |
+| Responses API | `openai_responses` | Stored `/v1/responses` state, when content storage is enabled, kept for 30 days from each response's creation; a conversation is stored only while its history is no larger than `REQUEST_MAX_BODY_MB` |
 | Batch inference | `batch_jobs`, `batch_items`, `batch_attempts`, `batch_idempotency`, `batch_files`, `batch_file_chunks`, `batch_webhooks`, `batch_webhook_events`, `batch_model_limits`, `batch_user_state`, `batch_interactive_load`, `batch_read_leases` | Batches of all three batch APIs with their requests, attempts and results until `BATCH_RETENTION_DAYS` after they finish; uploaded input files and result files; idempotency keys; webhooks and their deliveries; the per-model batch concurrency caps; and the worker's scheduling state and download leases. See [Running batch inference](batches.md#running-batch-inference) |
 | Geo analytics | `geo_hourly_coverage`, `geo_hourly_demand` | Hourly per-country request and token counts; aggregate only, no IP addresses stored |
 | Agent grants | `agent_grants` | Short-lived, model-scoped capabilities this gateway mints for an external agent control plane |

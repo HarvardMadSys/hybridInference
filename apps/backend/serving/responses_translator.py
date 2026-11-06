@@ -560,13 +560,17 @@ class ResponsesStreamTranslator:
         # text → tool call → text). Each is tracked as its own output item.
         self._cur_text_id: str | None = None
         self._cur_text_index: int | None = None
-        self._cur_text = ""
+        # The open item's text, and the reasoning, as the pieces they arrived
+        # in, joined once when read: appending to a string held in an attribute
+        # or a dict copies all of it on every delta, quadratic in the answer.
+        # Tool-call arguments below are kept the same way.
+        self._cur_text: list[str] = []
         # Completed text segments: {"item_id", "output_index", "text"}.
         self._text_segments: list[dict[str, Any]] = []
         # Accumulated reasoning_content (not emitted as Responses output, but
         # carried into the persisted assistant message for chaining — some
         # providers require it echoed in thinking-mode tool flows).
-        self._reasoning_accum = ""
+        self._reasoning_accum: list[str] = []
 
         # Tool call accumulation, keyed by chat delta index.
         self._tool_calls: dict[int, dict[str, Any]] = {}
@@ -693,7 +697,7 @@ class ResponsesStreamTranslator:
             delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
         )
         if isinstance(reasoning, str) and reasoning:
-            self._reasoning_accum += reasoning
+            self._reasoning_accum.append(reasoning)
 
         tool_calls = delta.get("tool_calls")
         if tool_calls:
@@ -704,7 +708,7 @@ class ResponsesStreamTranslator:
             self._cur_text_id = _msg_item_id()
             self._cur_text_index = self._next_output_index
             self._next_output_index += 1
-            self._cur_text = ""
+            self._cur_text = []
             item = {
                 "type": "message",
                 "id": self._cur_text_id,
@@ -725,7 +729,7 @@ class ResponsesStreamTranslator:
                     "part": {"type": "output_text", "text": "", "annotations": []},
                 },
             )
-        self._cur_text += content
+        self._cur_text.append(content)
         yield self._emit(
             "response.output_text.delta",
             {
@@ -753,7 +757,7 @@ class ResponsesStreamTranslator:
                     "output_index": self._next_output_index,
                     "call_id": "",
                     "name": "",
-                    "arguments": "",
+                    "arguments": [],
                 }
                 self._next_output_index += 1
                 self._tool_order.append(idx)
@@ -781,7 +785,10 @@ class ResponsesStreamTranslator:
                 )
             arg_delta = fn.get("arguments")
             if arg_delta:
-                state["arguments"] += arg_delta
+                if not isinstance(arg_delta, str):
+                    # What appending it to the arguments raised, here, as before.
+                    raise TypeError(f"arguments delta is {type(arg_delta).__name__}, not str")
+                state["arguments"].append(arg_delta)
                 yield self._emit(
                     "response.function_call_arguments.delta",
                     {
@@ -796,11 +803,11 @@ class ResponsesStreamTranslator:
         if item_id is None:
             return
         text_oi = self._cur_text_index
-        text = self._cur_text
+        text = "".join(self._cur_text)
         # Reset current-item state so a later text run opens a fresh item.
         self._cur_text_id = None
         self._cur_text_index = None
-        self._cur_text = ""
+        self._cur_text = []
         yield self._emit(
             "response.output_text.done",
             {
@@ -879,6 +886,7 @@ class ResponsesStreamTranslator:
         tool_calls_for_msg: list[dict[str, Any]] = []
         for idx in self._tool_order:
             st = self._tool_calls[idx]
+            st["arguments"] = "".join(st["arguments"])
             item = {
                 "type": "function_call",
                 "id": st["item_id"],
@@ -926,8 +934,9 @@ class ResponsesStreamTranslator:
         }
         if tool_calls_for_msg:
             assistant_msg["tool_calls"] = tool_calls_for_msg
-        if self._reasoning_accum:
-            assistant_msg["reasoning_content"] = self._reasoning_accum
+        reasoning = "".join(self._reasoning_accum)
+        if reasoning:
+            assistant_msg["reasoning_content"] = reasoning
         self._assistant_message = assistant_msg
 
         # Truncated responses (length / content_filter) terminate with

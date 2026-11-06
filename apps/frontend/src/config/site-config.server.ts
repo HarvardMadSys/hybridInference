@@ -83,8 +83,64 @@ async function loadRuntimeSiteConfigUncached(): Promise<RuntimeSiteConfig> {
   }
 }
 
+/**
+ * How long a parsed document answers every render before the next one asks the
+ * gateway again. Each page render reads it -- and so did the container's health
+ * check, every 15s -- while the document changes only when an admin edits the
+ * deployment's identity, which then shows within this long.
+ */
+const FRESH_FOR_MS = 30_000;
+
+/** How long the last good document stands in for a gateway that just failed. */
+const RETRY_AFTER_FAILURE_MS = 5_000;
+
+let remembered: { config: RuntimeSiteConfig; refreshAt: number } | null = null;
+let refreshing: Promise<RuntimeSiteConfig> | null = null;
+
+/**
+ * Whether a document may be kept. One that says first-run setup is pending, or
+ * a required setting is missing, describes a deployment an admin is about to
+ * change: setup ends with a full page load that must see `setup.required` turn
+ * false (see SetupGate), so those are read fresh on every render.
+ */
+function settled(config: RuntimeSiteConfig): boolean {
+  return !config.setup.required && !config.configuration.incomplete;
+}
+
+/**
+ * The document, shared across requests for `FRESH_FOR_MS`, and fetched once
+ * however many renders ask at the same moment.
+ *
+ * When the gateway fails, the last good document keeps answering -- the pages
+ * render as they did a moment ago rather than as the error page -- and the
+ * gateway is asked again after `RETRY_AFTER_FAILURE_MS`, not on every render.
+ * With no good document yet, the failure propagates as before.
+ */
+async function loadRuntimeSiteConfigShared(): Promise<RuntimeSiteConfig> {
+  if (remembered && Date.now() < remembered.refreshAt) return remembered.config;
+
+  refreshing ??= loadRuntimeSiteConfigUncached().finally(() => {
+    refreshing = null;
+  });
+  try {
+    const config = await refreshing;
+    remembered = settled(config) ? { config, refreshAt: Date.now() + FRESH_FOR_MS } : null;
+    return config;
+  } catch (error) {
+    if (!remembered) throw error;
+    remembered = { config: remembered.config, refreshAt: Date.now() + RETRY_AFTER_FAILURE_MS };
+    return remembered.config;
+  }
+}
+
+/** Forget the shared document. For tests, which each start from nothing. */
+export function forgetRuntimeSiteConfig(): void {
+  remembered = null;
+  refreshing = null;
+}
+
 // React cache is scoped to one server render. That lets metadata, layouts, and
-// pages share the parsed snapshot even though the abort signal intentionally
-// opts the underlying fetch out of Next.js fetch memoization. no-store still
-// prevents the result from crossing request boundaries.
-export const loadRuntimeSiteConfig = cachePerRender(loadRuntimeSiteConfigUncached);
+// pages share one snapshot even when the shared copy above is refreshed while
+// the render is under way. The fetch itself stays out of Next.js's fetch cache
+// (no-store, and an abort signal); the copy above is the only one kept.
+export const loadRuntimeSiteConfig = cachePerRender(loadRuntimeSiteConfigShared);

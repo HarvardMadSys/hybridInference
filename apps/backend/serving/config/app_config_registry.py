@@ -976,6 +976,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="float",
         default="3600",
     ),
+    # Read per request by serving.servers.middleware.body_limit, which falls
+    # back to the same default for a missing or invalid value.
+    ConfigEntry(
+        "REQUEST_MAX_BODY_MB",
+        "routing",
+        "Largest request body, in MiB, the gateway reads; a larger one gets 413 before "
+        "it is parsed. Raise it for requests that carry many images or long media. "
+        "Batch uploads keep their own limit, BATCH_MAX_BODY_MB.",
+        type="int",
+        default="32",
+        minimum=1,
+    ),
     # --- batch inference ---------------------------------------------------
     # Read through serving.batch.config, which falls back to the same defaults
     # and bounds; tests/unit/config/test_app_config_registry.py holds the two

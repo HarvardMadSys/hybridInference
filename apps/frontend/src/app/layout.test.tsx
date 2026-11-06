@@ -6,16 +6,36 @@ const state = vi.hoisted(() => ({
   siteConfig: undefined as unknown,
   error: null as Error | null,
   locale: 'en' as 'en' | 'zh-CN',
+  nonce: 'request-nonce' as string | null,
+  cookies: [] as string[],
+}));
+
+// What src/middleware.ts hands the layout, and the cookies the request carried.
+vi.mock('next/headers', () => ({
+  headers: async () => new Headers(state.nonce ? { 'x-nonce': state.nonce } : {}),
+  cookies: async () => ({ has: (name: string) => state.cookies.includes(name) }),
+}));
+
+// The analytics component decides by route on its own (PublicAnalytics.test.tsx);
+// here it shows what the layout handed it.
+vi.mock('@/components/analytics/PublicAnalytics', () => ({
+  PublicAnalytics: (props: {
+    projectId: string;
+    securityKey: string;
+    nonce?: string;
+    signedOut: boolean;
+  }) => (
+    <i
+      data-analytics={props.projectId}
+      data-analytics-key={props.securityKey}
+      data-analytics-nonce={props.nonce}
+      data-signed-out={String(props.signedOut)}
+    />
+  ),
 }));
 
 vi.mock('next/font/google', () => ({
   Crimson_Text: () => ({ variable: 'runtime-font' }),
-}));
-
-vi.mock('next/script', () => ({
-  default: ({ children, id }: { children?: React.ReactNode; id?: string }) => (
-    <script id={id}>{children}</script>
-  ),
 }));
 
 vi.mock('@/config/site-config.server', () => ({
@@ -113,6 +133,8 @@ describe('RootLayout runtime identity', () => {
     state.error = null;
     state.siteConfig = runtimeConfig();
     state.locale = 'en';
+    state.nonce = 'request-nonce';
+    state.cookies = [];
   });
 
   it('propagates configuration failures to the global error boundary before rendering the app', async () => {
@@ -150,11 +172,30 @@ describe('RootLayout runtime identity', () => {
 
   it('renders analytics only when the runtime document enables it', async () => {
     const enabled = renderToStaticMarkup(await RootLayout({ children: null }));
-    expect(enabled).toContain('var sc_project=12345');
+    expect(enabled).toContain('data-analytics="12345" data-analytics-key="runtime_key"');
 
     state.siteConfig = runtimeConfig('');
     const disabled = renderToStaticMarkup(await RootLayout({ children: null }));
-    expect(disabled).not.toContain('statcounter-config');
-    expect(disabled).not.toContain('c.statcounter.com');
+    expect(disabled).not.toContain('data-analytics');
+  });
+
+  // The page's policy runs no script without this response's nonce, the
+  // theme script included: without it the page renders in the wrong theme.
+  it("puts the response's nonce on its own script and hands it to the analytics", async () => {
+    const html = renderToStaticMarkup(await RootLayout({ children: null }));
+
+    expect(html).toContain('<script id="console-theme" nonce="request-nonce">');
+    expect(html).toContain('data-analytics-nonce="request-nonce"');
+  });
+
+  it('tells the analytics whether the request came with a console session', async () => {
+    expect(renderToStaticMarkup(await RootLayout({ children: null }))).toContain(
+      'data-signed-out="true"',
+    );
+
+    state.cookies = ['refresh_token'];
+    expect(renderToStaticMarkup(await RootLayout({ children: null }))).toContain(
+      'data-signed-out="false"',
+    );
   });
 });

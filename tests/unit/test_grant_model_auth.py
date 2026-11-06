@@ -25,6 +25,7 @@ from serving.grant_auth import (
     authenticate_grant_model_call,
 )
 from serving.grants import mint_grant_token
+from serving.spend_ledger import spend_check_of
 
 CUSTOM_QUOTA = 5.0
 
@@ -187,6 +188,21 @@ async def test_a_spent_custom_quota_refuses_a_grant_model_call(store, token) -> 
     assert caught.value.spent_usd == CUSTOM_QUOTA
 
 
+async def test_requests_in_flight_count_against_a_grants_quota(store, token) -> None:
+    """The owner's admitted requests still running hold their share of the quota."""
+    store.spend = CUSTOM_QUOTA - 0.015  # room for one more request
+    first = await authenticate_grant_model_call(token, op_store=store)
+    reservation, refusal = spend_check_of(first).admit()
+    assert refusal is None
+
+    with pytest.raises(AgentQuotaExceeded):
+        await authenticate_grant_model_call(token, op_store=store)
+
+    reservation.release()
+    second = await authenticate_grant_model_call(token, op_store=store)
+    assert spend_check_of(second).user_id == "user_1"
+
+
 async def test_removing_the_quota_lookup_makes_that_test_fail(store, token, monkeypatch) -> None:
     """Mutation check: the gate must be reachable, not merely present.
 
@@ -199,7 +215,7 @@ async def test_removing_the_quota_lookup_makes_that_test_fail(store, token, monk
     async def _no_gate(_op_store, _user_id):
         return None
 
-    monkeypatch.setattr(model_auth, "_quota_refusal", _no_gate)
+    monkeypatch.setattr(model_auth, "_quota_check", _no_gate)
     context = await authenticate_grant_model_call(token, op_store=store)
     assert context["user_id"] == "user_1"
 

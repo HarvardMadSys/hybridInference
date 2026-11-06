@@ -8,9 +8,15 @@
 //   gateway was still working on it. The gateway bounds every request itself
 //   (REQUEST_TIMEOUT_SECONDS; STREAM_REQUEST_TIMEOUT_SECONDS, an hour, for
 //   streams), so the console must outwait both rather than cut in first.
-// - `middlewareClientMaxBodySize`, 10MB. With a middleware present Next keeps
-//   only that much of a body and forwards it under the original
-//   Content-Length, so the gateway waited for the rest until the timeout.
+// - `middlewareClientMaxBodySize`, 10MB. Next keeps only that much of a body
+//   it copies -- for a middleware, and for every rewrite -- and forwards it
+//   under the original Content-Length, so the gateway waited for the rest
+//   until the timeout. The API's own paths are route handlers outside the
+//   middleware now (src/middleware.ts), which Next never copies; what remains
+//   are the rewrites, and they must pass whatever the gateway would accept.
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -22,9 +28,18 @@ describe('the gateway rewrites', () => {
     expect(config.experimental.proxyTimeout).toBeGreaterThanOrEqual(60 * 60 * 1000);
   });
 
-  it('forward a body as large as the edge accepts, not just its first 10MB', () => {
-    expect(config.experimental.middlewareClientMaxBodySize).toBeGreaterThanOrEqual(
-      100 * 1024 * 1024,
+  // Each copy is held in this container's memory until its request ends, so
+  // the limit is also what one anonymous caller can pin per request: it
+  // should cover what the gateway accepts and nothing beyond. A body over the
+  // gateway's limit is refused on its declared length, before it is read.
+  it('copy as much of a body as the gateway accepts by default, and no more', () => {
+    const bodyLimit = readFileSync(
+      join(__dirname, '../backend/serving/servers/middleware/body_limit.py'),
+      'utf8',
     );
+    const megabytes = Number(/^DEFAULT_MAX_BODY_MB = (\d+)$/m.exec(bodyLimit)?.[1]);
+
+    expect(megabytes).toBeGreaterThan(0);
+    expect(config.experimental.middlewareClientMaxBodySize).toBe(megabytes * 1024 * 1024);
   });
 });

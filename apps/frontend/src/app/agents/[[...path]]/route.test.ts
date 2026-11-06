@@ -216,6 +216,26 @@ describe('/agents runtime proxy', () => {
     expect(response.headers.get('content-type')).toBe('application/json');
   });
 
+  it('confines both services’ cookies to /agents and never relays the console’s', async () => {
+    vi.stubEnv('REFRESH_TOKEN_COOKIE_NAME', 'hybridinference_example_refresh');
+    const headers = new Headers();
+    headers.append('set-cookie', 'agent_csrf=two; Path=/');
+    headers.append('set-cookie', 'agent_pref=dark; Path=/v1/session; Domain=freeinference.org');
+    headers.append('set-cookie', 'hybridinference_example_refresh=planted; Path=/; HttpOnly');
+    headers.append('set-cookie', 'hybridinference_example_refresh_device=x; Path=/auth');
+    headers.append('set-cookie', '__Host-cloud_agent_session=agent; Path=/; Secure; HttpOnly');
+    stubFetch(() => new Response('{}', { headers }));
+
+    const response = await GET(request('/agents/api/v1/session'));
+
+    expect(response.headers.getSetCookie()).toEqual([
+      'agent_csrf=two; Path=/agents',
+      'agent_pref=dark; Path=/agents',
+      // A browser accepts a __Host- cookie only on `/`, so its path stays.
+      '__Host-cloud_agent_session=agent; Path=/; Secure; HttpOnly',
+    ]);
+  });
+
   it('folds internal redirects back through the public API prefix', async () => {
     stubFetch(
       () =>

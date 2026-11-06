@@ -41,7 +41,9 @@ from typing import Any, Literal
 DEFAULT_DAILY_QUOTA_USD = 1000.0
 
 #: Charged optimistically before the call, since the real cost is not known
-#: until it returns. Same value the direct path uses.
+#: until it returns. Same value the direct path uses. It is also what an
+#: admitted request reserves while it runs (:mod:`serving.spend_ledger`), so
+#: requests in flight count against the limits they may yet exceed.
 ESTIMATED_REQUEST_COST_USD = 0.01
 
 

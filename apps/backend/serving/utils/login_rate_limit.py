@@ -1,6 +1,6 @@
 """In-memory sliding-window rate limiters for the login and first-run setup endpoints.
 
-Login maintains four buckets. A sign-in from a browser that has not signed in
+Login maintains five buckets. A sign-in from a browser that has not signed in
 to the account before is counted in three of them:
 
 * Per account per client address: caps password-guessing against one account
@@ -24,12 +24,22 @@ the console's proxy, without trusted-proxy settings, is ``"unknown"`` — puts
 all of them on one address, where the per-account-per-address bucket is per
 account again. A browser that has signed in to the account before presents
 the device cookie that sign-in gave it (:mod:`serving.utils.device_cookie`)
-and is counted in the fourth bucket alone:
+and is counted in the last two buckets alone:
 
 * Per device: its own ``settings.login_rate_limit_per_15min`` attempts per
   15 minutes, keyed by the cookie entry's nonce. Such an attempt neither
   counts in nor is refused by the other three, so no one else's attempts,
   from any address, lock that browser out.
+* Per account, every recognized browser together:
+  ``settings.login_account_rate_limit_per_15min`` attempts per 15 minutes.
+  Every successful sign-in issues a fresh entry, and with it a fresh device
+  window, so the per-device bucket alone let an account's owner sign in
+  without limit by presenting the newest entry each time, each sign-in
+  running Argon2id and writing a session. Only attempts carrying a valid
+  entry for the account count here -- an entry is issued only to a browser
+  that gave the password -- so no one without one can use it up; and like
+  the account-wide bucket above it counts only the attempts a device's own
+  window lets through, so one browser adds at most its own allowance.
 
 First-run setup counts wrong setup codes per IP (``SETUP_ATTEMPTS_PER_15MIN``
 per 15 minutes). Only failures are recorded and a correct code is never
@@ -60,9 +70,11 @@ _SWEEP_EVERY = 1024
 # further wrong ones are answered 429.
 SETUP_ATTEMPTS_PER_15MIN = 10
 
-# Login attempts keyed by device-cookie nonce, by (identifier, address bucket),
-# by identifier alone, and by address bucket alone.
+# Login attempts keyed by device-cookie nonce, by identifier for the attempts
+# that carried a device entry, by (identifier, address bucket), by identifier
+# alone, and by address bucket alone.
 _device_attempts: dict[str, deque[float]] = {}
+_account_device_attempts: dict[str, deque[float]] = {}
 _account_address_attempts: dict[tuple[str, str], deque[float]] = {}
 _account_attempts: dict[str, deque[float]] = {}
 _ip_attempts: dict[str, deque[float]] = {}
@@ -105,19 +117,20 @@ async def check_and_record_login(
     bucket). *device* is the key of a valid device-cookie entry for that
     identifier (:func:`serving.utils.device_cookie.recognized_device`), when
     the request carries one; the attempt is then counted in that device's
-    window alone. Returns (True, None) if every window has capacity, or
-    (False, reason) naming the bucket that tripped: ``"device"`` (this
-    browser), ``"ip"`` (this address, any account), ``"email"`` (this account
-    from this address) or ``"account"`` (this account from every address
-    together).
+    window and the account's window for recognized browsers alone. Returns
+    (True, None) if every window has capacity, or (False, reason) naming the
+    bucket that tripped: ``"device"`` (this browser), ``"devices"`` (this
+    account's recognized browsers together), ``"ip"`` (this address, any
+    account), ``"email"`` (this account from this address) or ``"account"``
+    (this account from every address together).
 
     Recording happens on entry, in the same critical section as the check,
     so probing with varied payloads or concurrent requests cannot bypass the
-    limit. Both per-address buckets record every attempt, refused or not, so
-    an address that keeps trying stays refused. The account-wide bucket
-    records only the attempts that are let through: one address's refused
-    attempts never use it up, which is what keeps that address from locking
-    the owner out everywhere.
+    limit. Both per-address buckets, and the per-device one, record every
+    attempt, refused or not, so a source that keeps trying stays refused. The
+    two account-wide buckets record only the attempts that are let through:
+    one address's or one browser's refused attempts never use them up, which
+    is what keeps that source from locking the owner out everywhere.
     """
     global _sweep_counter
 
@@ -141,6 +154,7 @@ async def check_and_record_login(
             # Sweep each bucket using its own window's cutoff (ip is the
             # longer window, so use it for ip_attempts).
             _sweep_inactive(_device_attempts, window_cutoff)
+            _sweep_inactive(_account_device_attempts, window_cutoff)
             _sweep_inactive(_account_address_attempts, window_cutoff)
             _sweep_inactive(_account_attempts, window_cutoff)
             _sweep_inactive(_ip_attempts, ip_cutoff)
@@ -153,6 +167,13 @@ async def check_and_record_login(
             device_bucket.append(now)
             if device_count >= per_account_address:
                 return False, "device"
+            # Each sign-in issues a new entry, and a new device window with
+            # it; this one is what bounds an account that presents its newest
+            # entry every time. Only attempts its devices let through reach it.
+            devices_bucket = _window(_account_device_attempts, account_key, window_cutoff)
+            if len(devices_bucket) >= per_account:
+                return False, "devices"
+            devices_bucket.append(now)
             return True, None
 
         address_bucket = _window(_account_address_attempts, (account_key, ip_key), window_cutoff)
@@ -215,6 +236,7 @@ def reset_login_rate_limit_state() -> None:
     """Wipe all recorded attempts (login and setup). Test-only helper."""
     global _sweep_counter, _setup_sweep_counter
     _device_attempts.clear()
+    _account_device_attempts.clear()
     _account_address_attempts.clear()
     _account_attempts.clear()
     _ip_attempts.clear()

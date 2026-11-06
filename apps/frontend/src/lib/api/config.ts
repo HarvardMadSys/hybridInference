@@ -380,8 +380,21 @@ export async function resetConfigKey(
 export interface ConfigBackupPayload {
   schema_version: number;
   exported_at?: string | null;
-  app_config?: Array<{ key: string; value: string; secret?: boolean; source?: string }>;
-  site_settings?: Array<{ key: string; value: string; value_type?: string }>;
+  /**
+   * Whether the bundle carries secret values. False for the default backup, in
+   * which each secret is named with a `null` value; older bundles lack it and
+   * carry them.
+   */
+  secrets_included?: boolean;
+  app_config?: Array<{
+    key: string;
+    /** `null` for a secret in a backup without secret values. */
+    value: string | null;
+    secret?: boolean;
+    source?: string;
+    is_set?: boolean | null;
+  }>;
+  site_settings?: Array<{ key: string; value: string | null; value_type?: string }>;
   provider_definitions?: Array<Record<string, unknown>>;
   provider_keys?: Array<Record<string, unknown>>;
   disabled_provider_env_keys?: Array<Record<string, unknown>>;
@@ -401,28 +414,86 @@ export interface ConfigBackupPayload {
 export interface ConfigRestoreResponse {
   config: ConfigResponse;
   immutable_keys_preserved: string[];
+  /** The security-relevant changes the restore made; absent from older backends. */
+  security_changes?: string[];
+  /** Secrets the bundle withheld that the deployment had no value for. */
+  secrets_not_restored?: string[];
+}
+
+/** What restoring a bundle would do, before anything is written. */
+export interface ConfigRestorePreview {
+  /**
+   * Security-relevant changes, as `domain:name` labels. Restoring them needs
+   * this exact list back as confirmation, and the administrator's password.
+   */
+  security_changes: string[];
+  /** Secrets the bundle withholds that this deployment has no value for. */
+  secrets_not_restored: string[];
 }
 
 /**
- * Export all administrator-configurable state, including plaintext secrets, as a
- * portable JSON backup bundle.
+ * Export all administrator-configurable state as a portable JSON bundle.
+ *
+ * By default every secret is named without its value, and restoring the bundle
+ * keeps the deployment's own. With `includeSecrets` the bundle carries them in
+ * plain text, which the signed-in administrator's `password` must confirm:
+ * 400 when it is wrong, 403 for the admin token.
  */
-export async function exportConfigBackup(): Promise<ConfigBackupPayload> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/config/backup', {
-    headers: { accept: 'application/json' },
-    cache: 'no-store',
-  });
+export async function exportConfigBackup(
+  options: { includeSecrets?: boolean; password?: string } = {},
+): Promise<ConfigBackupPayload> {
+  const resp = options.includeSecrets
+    ? await fetchWithAuth(API_BASE, '/admin/config/backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ include_secrets: true, password: options.password ?? '' }),
+      })
+    : await fetchWithAuth(API_BASE, '/admin/config/backup', {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+      });
   return readJson<ConfigBackupPayload>(resp);
 }
 
-/**
- * Restore administrator-configurable state from a backup bundle.
- */
-export async function restoreConfigBackup(backup: unknown): Promise<ConfigRestoreResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/config/restore', {
+/** Ask what restoring a bundle would change, writing nothing. */
+export async function previewConfigRestore(backup: unknown): Promise<ConfigRestorePreview> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/config/restore/preview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(backup),
+  });
+  return readJson<ConfigRestorePreview>(resp);
+}
+
+/**
+ * Restore administrator-configurable state from a backup bundle, all of it or
+ * none. A bundle with security changes needs `confirmation`: the preview's
+ * `security_changes`, exactly, and the administrator's password. 409 when the
+ * changes are not the confirmed ones (the configuration moved since the
+ * preview), 400 for a wrong password, 403 for the admin token.
+ */
+export async function restoreConfigBackup(
+  backup: object,
+  confirmation?: { securityChanges: string[]; password: string },
+): Promise<ConfigRestoreResponse> {
+  // The confirmation is the administrator's, never the file's.
+  const bundle = Object.fromEntries(
+    Object.entries(backup).filter(
+      ([key]) => key !== 'confirm_security_changes' && key !== 'password',
+    ),
+  );
+  const body = confirmation
+    ? {
+        ...bundle,
+        confirm_security_changes: confirmation.securityChanges,
+        password: confirmation.password,
+      }
+    : bundle;
+  const resp = await fetchWithAuth(API_BASE, '/admin/config/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(body),
   });
   const result = await readJson<ConfigRestoreResponse>(resp);
   return {

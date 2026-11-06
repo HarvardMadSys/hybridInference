@@ -186,8 +186,9 @@ overrode it — and complete the browser flow:
    setting the gateway keeps in its database, the example's own values among
    them; see
    [Settings stored in the database](configuration.md#settings-stored-in-the-database).
-3. On the dashboard, create an API key, then reveal and copy it for the API
-   call below.
+3. On the dashboard, create an API key and copy it for the API call below.
+   To see a saved key again later, select **Show key** and enter your
+   password.
 4. Open **API Playground**, select `example-chat`, and send a message. The reply
    is `RUNNABLE_EXAMPLE_OK`.
 5. Open **Admin Console** again. This account is an administrator because

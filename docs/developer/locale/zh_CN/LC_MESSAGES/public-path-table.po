@@ -272,22 +272,9 @@ msgstr ""
 "这个 handler 会流式转发请求体和响应体，包括 SSE，但不支持 WebSocket 升级。以后如果要加 WebSocket 端点，需要在 "
 "Next.js 前面放一个支持协议升级的代理。"
 
-#: ../developer/public-path-table.md:84
-msgid ""
-"Hop-by-hop headers are removed, cookies are preserved, and redirects that"
-" name either internal agent service are folded back through its public "
-"prefix."
-msgstr "逐跳（hop-by-hop）头会去掉，cookie 原样保留；如果重定向指向任一 agent 内部服务，会改写回对应的公开前缀下。"
-
 #: ../developer/public-path-table.md:87
 msgid "Runtime route handlers — the gateway's streaming surfaces"
 msgstr "运行时 route handler——网关的流式接口"
-
-#: ../developer/public-path-table.md:89
-msgid ""
-"Three gateway prefixes are forwarded by route handlers instead of "
-"rewrites, because their responses stream:"
-msgstr "网关有三个前缀不用 rewrite 转发，而是用 route handler，因为它们的响应是流式的："
 
 #: ../developer/public-path-table.md
 msgid "Handler"
@@ -417,10 +404,6 @@ msgstr "认证路由"
 #: ../developer/public-path-table.md
 msgid "`/user/:path*`"
 msgstr ""
-
-#: ../developer/public-path-table.md
-msgid "the user dashboard API"
-msgstr "用户仪表盘 API"
 
 #: ../developer/public-path-table.md
 msgid "`/admin/:path*`"
@@ -814,3 +797,67 @@ msgstr ""
 #~ "Every destination below is "
 #~ "`${BACKEND_INTERNAL_URL}` plus the same path."
 #~ msgstr "下面每一条的目标都是 `${BACKEND_INTERNAL_URL}` 加上同样的路径。"
+
+#: ../developer/public-path-table.md:204
+msgid ""
+"**Keep the app's cookies to the app.** It shares the console's origin, so"
+" a cookie it sets on `/` reaches every console and API request, and one "
+"named like the console's replaces it. `scopeProxiedSetCookie()` drops the"
+" second kind and confines the first to `/pgadmin`, without a `Domain`."
+msgstr ""
+"**把应用的 cookie 留在应用里**。它与控制台同源，所以它在 `/` 上设置的 cookie 会随每个控制台请求和 API "
+"请求发送，而与控制台 cookie 同名的 cookie 会把后者替换掉。`scopeProxiedSetCookie()` "
+"丢弃后一种，并把前一种限定在 `/pgadmin` 下，且不带 `Domain`。"
+
+#: ../developer/public-path-table.md:88
+msgid ""
+"Hop-by-hop headers are removed, and redirects that name either internal "
+"agent service are folded back through its public prefix. The agent's own "
+"cookies pass in both directions; the console's session cookie is never "
+"forwarded to it. A cookie the agent sets under one of the console's names"
+" is dropped, and the rest are confined to `/agents` (a `__Host-` cookie "
+"keeps the `Path=/` browsers require of it)."
+msgstr ""
+"逐跳（hop-by-hop）头会去掉；如果重定向指向任一 agent 内部服务，会改写回对应的公开前缀下。agent 自己的 cookie "
+"双向传递；控制台的会话 cookie 永远不会转发给它。agent 以控制台的某个 cookie 名称设置的 cookie "
+"会被丢弃，其余的则被限定在 `/agents` 下（`__Host-` cookie 保留浏览器对它要求的 `Path=/`）。"
+
+#: ../developer/public-path-table.md:32
+msgid ""
+"One path is the console's own and reaches nothing behind it: `/healthz`, "
+"the container health check (`src/app/healthz/route.ts`), which answers "
+"`200 ok` without asking the gateway. `/health` is the gateway's check, "
+"forwarded."
+msgstr ""
+"有一个路径属于控制台自己，不会访问它后面的任何服务：`/healthz`，即容器健康检查（`src/app/healthz/route.ts`），它不询问网关就直接回复"
+" `200 ok`。`/health` 则是网关的检查，会被转发。"
+
+#: ../developer/public-path-table.md:97
+msgid ""
+"Three gateway prefixes are forwarded by route handlers instead of "
+"rewrites, because their responses stream. A fourth, `/user/batch-files`, "
+"is too, because its uploads are larger than a rewrite forwards: Next "
+"copies every rewritten request body into memory and stops at "
+"`middlewareClientMaxBodySize` (32 MiB, the gateway's default body limit),"
+" while a batch upload may reach `BATCH_MAX_BODY_MB`."
+msgstr ""
+"网关有三个前缀不用 rewrite 转发，而是用 route handler，因为它们的响应是流式的。第四个前缀 `/user/batch-"
+"files` 也是如此，因为它的上传超过了 rewrite 能转发的大小：Next 会把每个经 rewrite 的请求体复制到内存中，并在 "
+"`middlewareClientMaxBodySize`（32 MiB，即网关默认的请求体上限）处截止，而一次批处理上传可能达到 "
+"`BATCH_MAX_BODY_MB`。"
+
+#: ../developer/public-path-table.md
+msgid "`/user/batch-files/:path*`"
+msgstr "`/user/batch-files/:path*`"
+
+#: ../developer/public-path-table.md
+msgid "`src/app/user/batch-files/[[...path]]/route.ts`"
+msgstr "`src/app/user/batch-files/[[...path]]/route.ts`"
+
+#: ../developer/public-path-table.md
+msgid "batch input file uploads and downloads"
+msgstr "批处理输入文件的上传与下载"
+
+#: ../developer/public-path-table.md
+msgid "the user dashboard API (except `/user/batch-files`, above)"
+msgstr "用户仪表盘 API（上面的 `/user/batch-files` 除外）"

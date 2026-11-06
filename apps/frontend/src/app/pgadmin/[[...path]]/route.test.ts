@@ -184,6 +184,27 @@ describe('pgAdmin proxy — forwarding', () => {
     expect(response.headers.get('content-type')).toBe('text/html');
   });
 
+  it('keeps pgAdmin’s cookies under /pgadmin and never relays the console’s', async () => {
+    // pgAdmin shares the console's origin: a cookie it sets on `/` reaches the
+    // console and the API, and one named like the console's replaces it.
+    const upstreamHeaders = new Headers({ 'content-type': 'text/html' });
+    upstreamHeaders.append('set-cookie', 'pga4_session=abc; Path=/; HttpOnly');
+    upstreamHeaders.append('set-cookie', 'refresh_token=planted; Path=/; HttpOnly');
+    upstreamHeaders.append('set-cookie', 'hi_locale=xx; Domain=freeinference.org; Path=/');
+    upstreamHeaders.append('set-cookie', 'PGADMIN_LANGUAGE=en; Domain=freeinference.org');
+    stubFetch({
+      verify: () => new Response(null, { status: 200 }),
+      upstream: () => new Response('ok', { status: 200, headers: upstreamHeaders }),
+    });
+
+    const response = await GET(request('/pgadmin/', admin));
+
+    expect(response.headers.getSetCookie()).toEqual([
+      'pga4_session=abc; Path=/pgadmin; HttpOnly',
+      'PGADMIN_LANGUAGE=en; Path=/pgadmin',
+    ]);
+  });
+
   it('folds a redirect aimed at the container back to a path', async () => {
     // The container name resolves nowhere in a browser, so an absolute
     // redirect built from the Host pgAdmin saw would strand the client.

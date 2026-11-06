@@ -19,10 +19,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
-from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.storage import daily_activity_rollup, user_usage_rollup
 from serving.storage.postgres_log import PostgresLogStore
-from tests.fixtures import postgres
+from tests.fixtures import migrations as mig, postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -103,7 +102,7 @@ async def db():
     )
     try:
         async with pool.acquire() as conn:
-            await ensure_api_logs_schema(conn)
+            await mig.ensure_api_logs_tables(conn)
             settled = await conn.fetchval(f"SELECT {user_usage_rollup.SETTLED_DAY_SQL}")
             today = await conn.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
         yield pool, PostgresLogStore(pool, fence_secret=_FENCE_SECRET), settled, today

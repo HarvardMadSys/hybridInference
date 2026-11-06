@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import Response, StreamingResponse
 from httpx import ASGITransport, AsyncClient
 
+from serving.servers.middleware.body_limit import RequestBodyLimitMiddleware
 from serving.servers.middleware.error import FallbackErrorMiddleware
 from serving.servers.middleware.request_id import RequestIdMiddleware
 from serving.servers.middleware.request_log import RequestLogMiddleware
@@ -22,6 +23,7 @@ _CHUNK_DELAY_S = 0.02
 
 def _build_app() -> FastAPI:
     app = FastAPI()
+    app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
     app.add_middleware(FallbackErrorMiddleware)
