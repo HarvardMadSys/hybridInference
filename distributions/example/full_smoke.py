@@ -606,7 +606,13 @@ def _check_current_admin(
 def _active_key(
     base_url: str, access_token: str, password: str, data: Any
 ) -> tuple[str, str] | None:
-    """The account's active key in full; the listing masks it, the password reveals it."""
+    """The account's active key in full; the listing masks it, the password reveals it.
+
+    A release from before keys were masked lists the key in full and has no
+    ``revealable`` field. The restore drill runs this smoke against that previous
+    image, so a full key without the field is used as listed; a full key next to
+    the field means this release leaked it.
+    """
     if not isinstance(data, dict) or not isinstance(data.get("keys"), list):
         raise SmokeError("API key listing returned an invalid response")
     active = [item for item in data["keys"] if item.get("status") == "active"]
@@ -615,8 +621,13 @@ def _active_key(
     prefix = active[0].get("key_prefix")
     if not isinstance(prefix, str) or not prefix:
         raise SmokeError("the active API key has no prefix")
-    if active[0].get("api_key") is not None:
-        raise SmokeError("the API key listing returned a full key")
+    listed_key = active[0].get("api_key")
+    if listed_key is not None:
+        if "revealable" in active[0]:
+            raise SmokeError("the API key listing returned a full key")
+        if not isinstance(listed_key, str) or not listed_key:
+            raise SmokeError("the active API key could not be decrypted")
+        return listed_key, prefix
     _, revealed = _request_json(
         base_url,
         f"/user/api-keys/{prefix}/reveal",
