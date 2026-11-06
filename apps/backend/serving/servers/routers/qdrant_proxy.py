@@ -7,7 +7,10 @@ gateway API key and never see the Qdrant credentials.
 Security measures:
 - Anonymous requests are rejected even when USER_AUTH_ENABLED=0.
 - Endpoint allowlist: only collections and points operations are proxied.
-- Tenant isolation: collection names are prefixed with a user-scoped namespace.
+- Tenant isolation: collection names are prefixed with a user-scoped namespace,
+  in the path and in the body fields that name another collection
+  (``lookup_from`` on recommend, ``init_from`` on create); a body whose
+  reference cannot be scoped is refused.
 - One path: the path is normalized once, and that string is what the allowlist
   checks, the scoping rewrites and Qdrant receives; a path the two could read
   differently (a leading slash, an empty or dot segment, an encoded slash) is
@@ -128,6 +131,58 @@ def _scope_collection(name: str, user_id: str) -> str:
     return f"{_NAMESPACE_PREFIX}_{ns}_{name}"
 
 
+# Body fields that name another collection, by the allowlisted endpoint that
+# takes them: recommend's ``lookup_from`` reads the positive and negative
+# examples' vectors from that collection, and creating a collection with
+# ``init_from`` copies that one's points. No other allowlisted endpoint takes a
+# collection in its body -- search, scroll, count, delete, retrieving or
+# upserting points, payload and index changes do not -- and discover and the
+# query API, which also take ``lookup_from``, are not allowlisted.
+_BODY_COLLECTION_FIELDS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"^collections/[^/]+/points/recommend$"), ("lookup_from",)),
+    (re.compile(r"^collections/[^/]+$"), ("init_from",)),
+)
+
+
+def _is_collection_name(name: object) -> bool:
+    """Whether *name* is a collection name a body may give, to be scoped like the path's."""
+    return (
+        isinstance(name, str)
+        and name not in ("", ".", "..")
+        and not any(char in name for char in "/\\\x00")
+    )
+
+
+def _scope_body(body: bytes, path: str, user_id: str) -> bytes | None:
+    """Return *body* with every collection it names scoped, or ``None`` if it cannot be.
+
+    For an endpoint that takes no collection in its body, or an empty body,
+    *body* itself. Otherwise the body is parsed and written out again, so
+    Qdrant reads exactly what was checked: one value per key, whatever the
+    original repeated or escaped. ``None`` -- a refusal -- for a body that is
+    not a JSON object, or a reference that is not an object with a collection
+    name.
+    """
+    fields = next((names for pattern, names in _BODY_COLLECTION_FIELDS if pattern.match(path)), ())
+    if not fields or not body.strip():
+        return body
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for field in fields:
+        reference = data.get(field)
+        if reference is None:
+            # Absent or null: the request reads only its own collection.
+            continue
+        if not isinstance(reference, dict) or not _is_collection_name(reference.get("collection")):
+            return None
+        reference["collection"] = _scope_collection(reference["collection"], user_id)
+    return json.dumps(data, separators=(",", ":")).encode()
+
+
 def _unscope_collection(scoped_name: str, user_id: str) -> str | None:
     """Strip the tenant namespace prefix, returning None if it doesn't belong to this user."""
     prefix = f"{_NAMESPACE_PREFIX}_{_user_namespace(user_id)}_"
@@ -246,6 +301,20 @@ async def qdrant_proxy(
 
     body = await request.body()
     body_bytes = len(body)
+    scoped_body = _scope_body(body, normalized, user_id)
+    if scoped_body is None:
+        logger.warning(
+            "qdrant_proxy body_blocked",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": path,
+                "user_id": user_id,
+            },
+        )
+        raise HTTPException(
+            403, "Qdrant request names a collection that cannot be scoped to your namespace"
+        )
     headers: dict[str, str] = {}
     if settings.qdrant_api_key:
         headers["api-key"] = settings.qdrant_api_key
@@ -260,7 +329,7 @@ async def qdrant_proxy(
         status, resp_body, resp_content_type = await client.request(
             method=request.method,
             url=upstream_url,
-            data=body if body else None,
+            data=scoped_body if scoped_body else None,
             headers=headers,
             timeout=timeout,
         )

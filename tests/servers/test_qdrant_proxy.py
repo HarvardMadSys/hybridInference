@@ -588,3 +588,153 @@ class TestStructuredLogging:
             mock_logger.warning.assert_called_once()
             args, _ = mock_logger.warning.call_args
             assert args[0] == "qdrant_proxy endpoint_blocked"
+
+
+# ============================================================================
+# Category 7 — Collections named in the body
+# ============================================================================
+
+
+class TestBodyCollectionScoping:
+    """A body that names another collection reaches only the caller's own."""
+
+    @staticmethod
+    def _forwarded(mock_upstream) -> dict:
+        assert mock_upstream.last_request is not None
+        return json.loads(mock_upstream.last_request["data"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "named",
+        [
+            "victim_docs",
+            # Another tenant's full scoped name, as Qdrant knows it.
+            _scope_collection("secret", OTHER_USER_ID),
+        ],
+    )
+    async def test_recommend_lookup_from_is_scoped_to_the_caller(
+        self, client: AsyncClient, mock_upstream, named: str
+    ):
+        mock_upstream.set_response(200, b'{"result":[]}')
+        body = {
+            "positive": [1],
+            "limit": 3,
+            "lookup_from": {"collection": named, "vector": "text"},
+        }
+
+        resp = await client.post("/v1/qdrant/collections/mine/points/recommend", json=body)
+
+        assert resp.status_code == status.HTTP_200_OK
+        forwarded = self._forwarded(mock_upstream)
+        assert forwarded["lookup_from"] == {"collection": _scoped(named), "vector": "text"}
+        assert forwarded["lookup_from"]["collection"] != named
+        assert {k: v for k, v in forwarded.items() if k != "lookup_from"} == {
+            "positive": [1],
+            "limit": 3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_create_from_another_collection_copies_only_the_callers_own(
+        self, client: AsyncClient, mock_upstream
+    ):
+        mock_upstream.set_response(200, b'{"result":true}')
+        victim = _scope_collection("secret", OTHER_USER_ID)
+        body = {"vectors": {"size": 4, "distance": "Cosine"}, "init_from": {"collection": victim}}
+
+        resp = await client.put("/v1/qdrant/collections/copy", json=body)
+
+        assert resp.status_code == status.HTTP_200_OK
+        assert mock_upstream.last_request["url"] == (
+            f"http://qdrant:6333/collections/{_scoped('copy')}"
+        )
+        assert self._forwarded(mock_upstream)["init_from"] == {"collection": _scoped(victim)}
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_key_is_forwarded_once_as_checked(
+        self, client: AsyncClient, mock_upstream
+    ):
+        """Qdrant must read the reference that was scoped, not another copy of it."""
+        mock_upstream.set_response(200, b'{"result":[]}')
+        raw = (
+            b'{"positive":[1],"lookup_from":{"collection":"mine"},'
+            b'"lookup\\u005ffrom":{"collection":"victim_docs"}}'
+        )
+
+        resp = await client.post(
+            "/v1/qdrant/collections/mine/points/recommend",
+            content=raw,
+            headers={"content-type": "application/json"},
+        )
+
+        assert resp.status_code == status.HTTP_200_OK
+        forwarded_raw = mock_upstream.last_request["data"]
+        assert forwarded_raw.count(b"lookup_from") == 1
+        assert json.loads(forwarded_raw)["lookup_from"] == {"collection": _scoped("victim_docs")}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"positive": [1]},
+            {"positive": [1], "lookup_from": None},
+        ],
+    )
+    async def test_a_recommend_without_a_reference_reads_its_own_collection(
+        self, client: AsyncClient, mock_upstream, body: dict
+    ):
+        mock_upstream.set_response(200, b'{"result":[]}')
+
+        resp = await client.post("/v1/qdrant/collections/mine/points/recommend", json=body)
+
+        assert resp.status_code == status.HTTP_200_OK
+        assert self._forwarded(mock_upstream) == body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("url", "raw"),
+        [
+            ("collections/mine/points/recommend", b'{"lookup_from":"victim_docs"}'),
+            ("collections/mine/points/recommend", b'{"lookup_from":{"vector":"text"}}'),
+            ("collections/mine/points/recommend", b'{"lookup_from":{"collection":7}}'),
+            ("collections/mine/points/recommend", b'{"lookup_from":{"collection":["a"]}}'),
+            ("collections/mine/points/recommend", b'{"lookup_from":{"collection":""}}'),
+            ("collections/mine/points/recommend", b'{"lookup_from":{"collection":".."}}'),
+            ("collections/mine/points/recommend", b'{"lookup_from":{"collection":"a/b"}}'),
+            ("collections/mine/points/recommend", b"[1, 2]"),
+            ("collections/mine/points/recommend", b"not json"),
+            ("collections/copy", b'{"init_from":{"collection":null}}'),
+            ("collections/copy", b'{"init_from":["victim"]}'),
+        ],
+    )
+    async def test_a_reference_that_cannot_be_scoped_is_refused(
+        self, client: AsyncClient, mock_upstream, url: str, raw: bytes
+    ):
+        method = "PUT" if url == "collections/copy" else "POST"
+
+        with patch("serving.servers.routers.qdrant_proxy.logger") as mock_logger:
+            resp = await client.request(
+                method,
+                f"/v1/qdrant/{url}",
+                content=raw,
+                headers={"content-type": "application/json"},
+            )
+
+        assert resp.status_code == status.HTTP_403_FORBIDDEN
+        assert mock_upstream.last_request is None
+        assert mock_logger.warning.call_args.args[0] == "qdrant_proxy body_blocked"
+
+    @pytest.mark.asyncio
+    async def test_a_body_that_names_no_collection_is_forwarded_untouched(
+        self, client: AsyncClient, mock_upstream
+    ):
+        """Search takes no collection in its body: its bytes pass through unparsed."""
+        mock_upstream.set_response(200, b'{"result":[]}')
+        raw = b'{"vector": [0.1, 0.25], "limit": 5, "filter": {"must": []}}'
+
+        await client.post(
+            "/v1/qdrant/collections/mine/points/search",
+            content=raw,
+            headers={"content-type": "application/json"},
+        )
+
+        assert mock_upstream.last_request["data"] == raw
