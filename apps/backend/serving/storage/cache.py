@@ -12,7 +12,7 @@ import glob
 import math
 from typing import TYPE_CHECKING, Any
 
-from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from .base import CostIncrement, OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from .cache_backend import (
     CacheBackend,
     InMemoryCache as InMemoryCache,
@@ -1528,11 +1528,21 @@ class CachedOperationalStore(OperationalStore):
         *,
         day: str | None = None,
         api_key_id: int | None = None,
+        requests: int = 1,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.increment_user_cost(
-            user_id, cost_usd, day=day, api_key_id=api_key_id
+            user_id, cost_usd, day=day, api_key_id=api_key_id, requests=requests
         )
+
+    @property
+    def atomic_cost_increments(self) -> bool:  # type: ignore[override]
+        """Whatever the wrapped store applies its batches as."""
+        return getattr(self._store, "atomic_cost_increments", False) is True
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Delegate to wrapped store."""
+        await self._store.increment_user_costs(increments)
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Delegate to wrapped store."""

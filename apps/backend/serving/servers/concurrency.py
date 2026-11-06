@@ -198,9 +198,10 @@ from fastapi import Depends, HTTPException, Request
 from starlette.requests import ClientDisconnect
 
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
+from serving.spend_ledger import Reservation, spend_check_of
 from serving.surfaces.context import InteractiveAdmission
 
-from .auth import verify_api_key
+from .auth import _quota_exceeded, verify_api_key
 from .deps import (
     get_embedding_adapters,
     get_model_concurrency_resolver,
@@ -210,6 +211,31 @@ from .deps import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
+
+
+def _admit_spend(request: Request, user: dict[str, Any]) -> Reservation | None:
+    """Reserve the request's estimated cost against the check its gate made.
+
+    ``verify_api_key`` refused a caller already over a limit, counting the
+    requests then in flight; others may have been admitted since. Checking
+    again and reserving in one step (:meth:`~serving.spend_ledger.SpendCheck.admit`)
+    is what keeps concurrent requests from all fitting into the same remaining
+    budget. Raises the same 429 the gate does when the request no longer fits.
+    ``None`` for a caller with no check (auth disabled, or a gate that a test
+    replaced): nothing to reserve against.
+    """
+    check = spend_check_of(user)
+    if check is None:
+        return None
+    reservation, refusal = check.admit()
+    if refusal is not None:
+        raise _quota_exceeded(
+            request,
+            user_id=check.user_id,
+            role=user.get("role") or "free",
+            refusal=refusal,
+        )
+    return reservation
 
 
 @contextmanager
@@ -381,7 +407,10 @@ async def enforce_user_concurrency(
     response (including streaming body) is fully sent, on exception, or
     on client disconnect. For as long as the slot is held, the request is also
     counted as interactive load on its model (:data:`INTERACTIVE_LOAD`), which
-    batch work on the model yields to.
+    batch work on the model yields to, and its estimated cost is reserved
+    against the caller's quotas and key budgets (:func:`_admit_spend`). The
+    request's real cost is recorded before the response ends, so releasing
+    the reservation here leaves no moment in which it counts nowhere.
 
     Yields the request's :class:`~serving.surfaces.context.InteractiveAdmission`,
     through which the route's execution moves that count to the concrete model
@@ -412,10 +441,16 @@ async def enforce_user_concurrency(
     if limiter is None:
         # If the limiter isn't configured (e.g., misconfigured deployment),
         # fail open for per-user admission. Interactive load is independent and
-        # remains visible to the batch worker, including a later auto retarget.
+        # remains visible to the batch worker, including a later auto retarget;
+        # so is the cost reservation.
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        with _track_interactive_request(canonical) as tracker:
-            yield InteractiveAdmission(tracker)
+        reservation = _admit_spend(request, user)
+        try:
+            with _track_interactive_request(canonical) as tracker:
+                yield InteractiveAdmission(tracker)
+        finally:
+            if reservation is not None:
+                reservation.release()
         return
 
     user_id = user["user_id"]
@@ -472,7 +507,9 @@ async def enforce_user_concurrency(
             headers={"Retry-After": "1"},
         )
 
+    reservation: Reservation | None = None
     try:
+        reservation = _admit_spend(request, user)
         if not parse_before_acquire:
             model, canonical = await _request_model(
                 request, router=router, embedding_adapters=embedding_adapters
@@ -480,6 +517,8 @@ async def enforce_user_concurrency(
         with _track_interactive_request(canonical) as tracker:
             yield InteractiveAdmission(tracker)
     finally:
+        if reservation is not None:
+            reservation.release()
         try:
             limiter.release(slot_key)
         except Exception:

@@ -11,6 +11,7 @@ a row any process wrote within a minute.
 from __future__ import annotations
 
 import asyncio
+import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -37,8 +38,9 @@ class _Clock:
 
 @pytest.fixture
 def clock(monkeypatch) -> _Clock:
+    """The auth module's clock only: the event loop keeps the real one."""
     clock = _Clock()
-    monkeypatch.setattr(auth.time, "monotonic", clock)
+    monkeypatch.setattr(auth, "time", types.SimpleNamespace(monotonic=clock))
     return clock
 
 

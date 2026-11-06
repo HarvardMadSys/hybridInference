@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
@@ -55,6 +55,35 @@ class ProviderDefinitionRow:
 
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
+
+
+class CostIncrement(NamedTuple):
+    """One addition to the cost counters (``user_daily_cost``, ``api_key_daily_cost``).
+
+    *cost_usd* and *requests* are added to the user's counter for *day*, and
+    to the key's when *api_key_id* is set. *requests* counts the requests the
+    cost sums, so coalescing several into one increment keeps the counts.
+    """
+
+    user_id: str
+    day: str
+    api_key_id: int | None
+    cost_usd: Decimal | float
+    requests: int = 1
+
+
+class CostWriteOutcomeUnknown(Exception):
+    """A write of cost increments may or may not have been applied.
+
+    Raised when the connection failed after the transaction's COMMIT was sent
+    and the database could not then say how that transaction ended. Retrying
+    could count the costs twice; the caller decides.
+    """
+
+    def __init__(self, xid: int) -> None:
+        """Record the transaction id whose outcome is unknown."""
+        super().__init__(f"outcome of cost counter transaction {xid} is unknown")
+        self.xid = xid
 
 
 # ---------------------------------------------------------------------------
@@ -1118,18 +1147,21 @@ class OperationalStore(ABC):
         *,
         day: str | None = None,
         api_key_id: int | None = None,
+        requests: int = 1,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
 
         Uses upsert: inserts a new row if none exists for (user_id, day),
-        otherwise adds *cost_usd* to the existing total and increments
+        otherwise adds *cost_usd* to the existing total and *requests* to
         the request count.
 
-        The key's own daily counter is a report, not a quota input: a
-        failure to write it never fails the account's increment.
+        The key's counter is written with the account's, both or neither:
+        the key's budgets read it, so it is a quota input too.
 
         Only call this for billed requests (successful responses where
-        cost > 0), not for auth failures or 4xx errors.
+        cost > 0), not for auth failures or 4xx errors. Request handlers do
+        not call it: they record costs in :mod:`serving.spend_ledger`, which
+        writes them.
 
         Args:
             user_id: The user whose cost to increment.
@@ -1138,7 +1170,30 @@ class OperationalStore(ABC):
             api_key_id: The key the request was made with, whose own daily
                 counter (``api_key_daily_cost``) is bumped as well; None for a
                 request made without one of the account's keys.
+            requests: How many requests *cost_usd* is the cost of.
         """
+
+    #: Whether :meth:`increment_user_costs` applies a whole batch in one
+    #: transaction, exactly once. The spend ledger writes a store without it
+    #: one increment at a time.
+    atomic_cost_increments: bool = False
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Add every increment to its counters.
+
+        A store with :attr:`atomic_cost_increments` applies the batch in one
+        transaction, exactly once, and raises :class:`CostWriteOutcomeUnknown`
+        when it cannot tell whether that transaction committed. This default
+        applies the increments one after another.
+        """
+        for increment in increments:
+            await self.increment_user_cost(
+                increment.user_id,
+                float(increment.cost_usd),
+                day=increment.day,
+                api_key_id=increment.api_key_id,
+                requests=increment.requests,
+            )
 
     @abstractmethod
     async def get_user_cost_today(self, user_id: str) -> float:

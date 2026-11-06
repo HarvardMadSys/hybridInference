@@ -136,6 +136,35 @@ with a shared payload builder (`apps/backend/serving/quota.py`) whichever door
 the request came through. A separate `enforce_user_concurrency` dependency holds a
 per-user in-flight slot for the duration of the request.
 
+The spend the gate reads comes from the counter tables (`user_daily_cost`,
+`api_key_daily_cost`), and the spend ledger (`apps/backend/serving/spend_ledger.py`)
+adds what those tables do not show yet:
+
+- **Requests in flight.** `enforce_user_concurrency` (and the batch worker, for
+  each item) checks the quotas and the key's budgets again and reserves the
+  request's estimated cost (`ESTIMATED_REQUEST_COST_USD`) in one step, then
+  releases the reservation when the request ends, however it ends. Requests
+  admitted at the same time therefore cannot all fit into the same remaining
+  budget.
+- **Costs not yet written.** A finished request's cost is recorded in the
+  ledger and written to the counters by one writer per store: costs recorded
+  while a write is in flight are coalesced per user, key and UTC day into the
+  next, which goes out as one statement, account and key counters together.
+  The ledger keeps counting a cost until its write is confirmed (and for a
+  while after, for a gate whose read began before it landed), so the delay
+  never lets a request past a limit. A failed write is retried; shutdown
+  writes what is left and logs anything it could not.
+
+The ledger is per process. With several worker processes each sees only its
+own requests in flight and costs not yet written, so the limits are protected
+within each process, not across them; production runs one worker.
+
+A streamed response the client closes early, or that the gateway's request
+timeout cuts off, is billed for what the upstream already did: the usage it
+reported, or else an estimate of the prompt and of the output so far
+(`metadata.usage_estimated` marks the estimate). A request the upstream fails
+is not billed.
+
 Read-only endpoints such as `/v1/models` use `optional_verify_api_key` instead:
 a missing or invalid key is anonymous rather than rejected, and the key only
 decides which models are visible.

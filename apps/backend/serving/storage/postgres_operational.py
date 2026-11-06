@@ -7,6 +7,7 @@ user_routes.py, internal.py, and user_stats.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from datetime import UTC
@@ -26,7 +27,14 @@ from serving.storage.audit_schema import (
     SELECT_COLUMNS as AUDIT_SELECT_COLUMNS,
     insert_audit_row,
 )
-from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from serving.storage.base import (
+    CostIncrement,
+    CostWriteOutcomeUnknown,
+    OperationalStore,
+    ProviderDefinitionRow,
+    ProviderKeyRow,
+    Row,
+)
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.utils.logging import get_logger
 
@@ -40,6 +48,47 @@ if TYPE_CHECKING:
     from serving.audit import AuditActor
 
 logger = get_logger(__name__)
+
+# Adds a batch of cost increments to the account counters and the key counters
+# in one statement, so both are written or neither, and returns the
+# transaction id that ``increment_user_costs`` asks about when the COMMIT's
+# answer is lost. Each target row is updated once: the batch is summed per
+# (user, day) and per (key, day) first, as ON CONFLICT DO UPDATE requires.
+# The sums keep each increment's rounding (``spend_ledger.counted_amount``), so
+# a coalesced batch adds exactly what the separate increments would have.
+COST_INCREMENTS_SQL = """
+WITH batch AS (
+    SELECT *
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
+        AS b(user_id, day, key_id, cost_usd, requests)
+),
+account_rows AS (
+    INSERT INTO user_daily_cost AS c (user_id, day, cost_usd, requests, last_request_at)
+    SELECT user_id, day, SUM(cost_usd), SUM(requests), NOW()
+    FROM batch
+    GROUP BY user_id, day
+    ON CONFLICT (user_id, day) DO UPDATE SET
+        cost_usd = c.cost_usd + EXCLUDED.cost_usd,
+        requests = c.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+),
+key_rows AS (
+    INSERT INTO api_key_daily_cost AS k (key_id, day, user_id, cost_usd, requests, last_request_at)
+    SELECT key_id, day, MIN(user_id), SUM(cost_usd), SUM(requests), NOW()
+    FROM batch
+    WHERE key_id IS NOT NULL
+    GROUP BY key_id, day
+    ON CONFLICT (key_id, day) DO UPDATE SET
+        cost_usd = k.cost_usd + EXCLUDED.cost_usd,
+        requests = k.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+)
+SELECT txid_current()
+"""
+
+# How long to keep asking how a cost transaction ended after its COMMIT's
+# answer was lost: the delays before each try.
+_COMMIT_STATUS_RETRY_DELAYS = (0.0, 0.2, 1.0, 3.0)
 
 # Distinct ``api_logs.provider`` values with a row in the last $1 days; see
 # ``PostgresOperationalStore.list_user_activity_providers``.
@@ -3571,51 +3620,73 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         *,
         day: str | None = None,
         api_key_id: int | None = None,
+        requests: int = 1,
     ) -> None:
-        """Atomically increment the daily cost counter via upsert.
+        """Atomically increment the daily cost counters via upsert.
 
         With ``api_key_id`` the key's own counter (``api_key_daily_cost``) is
-        bumped too, after the account's and apart from it: what the quota reads
-        never depends on the per-key write, whose failure is logged and
-        otherwise ignored.
+        bumped in the same statement: the key's budgets read it, so a write
+        that left it behind would let the key spend past them.
         """
         from datetime import datetime
 
         if day is None:
             day = datetime.now(UTC).strftime("%Y-%m-%d")
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
-                "VALUES ($1, $2, $3, 1, NOW()) "
-                "ON CONFLICT (user_id, day) DO UPDATE SET "
-                "cost_usd = user_daily_cost.cost_usd + $3, "
-                "requests = user_daily_cost.requests + 1, "
-                "last_request_at = NOW()",
-                user_id,
-                day,
-                cost_usd,
-            )
-            if api_key_id is None:
-                return
+        await self.increment_user_costs(
+            [CostIncrement(user_id, day, api_key_id, cost_usd, requests)]
+        )
+
+    atomic_cost_increments = True
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Add a batch of increments to the counters in one transaction, exactly once.
+
+        A failure before the COMMIT was sent applied nothing and is raised as
+        it is, so the caller may write the batch again. When the COMMIT was
+        sent and its answer lost (the connection dropped), the database is
+        asked how the transaction ended (``txid_status``): committed returns
+        normally, aborted raises the original error, and an answer that cannot
+        be had raises :class:`CostWriteOutcomeUnknown` -- retrying then could
+        count the batch twice.
+        """
+        if not increments:
+            return
+        args = (
+            [increment.user_id for increment in increments],
+            [increment.day for increment in increments],
+            [increment.api_key_id for increment in increments],
+            [increment.cost_usd for increment in increments],
+            [increment.requests for increment in increments],
+        )
+        xid: int | None = None
+        try:
+            async with self._pool.acquire() as conn, conn.transaction():
+                xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+            return
+        except Exception as exc:
+            if xid is None:
+                raise
+            failure = exc
+        status = await self._transaction_status(xid)
+        if status == "committed":
+            return
+        if status == "aborted":
+            raise failure
+        raise CostWriteOutcomeUnknown(xid) from failure
+
+    async def _transaction_status(self, xid: int) -> str | None:
+        """How transaction *xid* ended: ``committed``, ``aborted``, or None when untold."""
+        for delay in _COMMIT_STATUS_RETRY_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
             try:
-                await conn.execute(
-                    "INSERT INTO api_key_daily_cost "
-                    "(key_id, day, user_id, cost_usd, requests, last_request_at) "
-                    "VALUES ($1, $2, $3, $4, 1, NOW()) "
-                    "ON CONFLICT (key_id, day) DO UPDATE SET "
-                    "cost_usd = api_key_daily_cost.cost_usd + $4, "
-                    "requests = api_key_daily_cost.requests + 1, "
-                    "last_request_at = NOW()",
-                    api_key_id,
-                    day,
-                    user_id,
-                    cost_usd,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Per-key cost counter write failed",
-                    extra={"api_key_id": api_key_id, "error": type(exc).__name__},
-                )
+                async with self._pool.acquire() as conn:
+                    status = await conn.fetchval("SELECT txid_status($1)", xid)
+            except Exception:
+                continue
+            if status in ("committed", "aborted"):
+                return status
+        return None
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return today's cost from the counter table."""

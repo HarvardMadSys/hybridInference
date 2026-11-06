@@ -25,6 +25,7 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
+from serving import spend_ledger
 from serving.auto_mode import AutoMode, load_auto_mode
 from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config, live as live_config
@@ -617,6 +618,9 @@ async def _load_app_config() -> None:
 
 #: The share of the shutdown the live configuration groups may take.
 _LIVE_CONFIG_STOP_SECONDS = 10.0
+
+#: How long shutdown waits for the spend ledger's last cost-counter writes.
+_COST_COUNTER_FLUSH_SECONDS = 10.0
 
 
 def _start_live_config(pool: Any) -> None:
@@ -1948,6 +1952,13 @@ async def shutdown(services: AppServices) -> None:
             await services.completions_logger.stop()
         except Exception as exc:
             logger.error(f"Completions logger shutdown failed: {exc}")
+
+    # Cost counters — write the costs the spend ledger still holds while the
+    # operational store can take them; what cannot be written is logged.
+    try:
+        await spend_ledger.flush_all(timeout=_COST_COUNTER_FLUSH_SECONDS)
+    except Exception as exc:
+        logger.error(f"Cost counter flush failed: {exc}")
 
     # Log store
     if services.log_store:

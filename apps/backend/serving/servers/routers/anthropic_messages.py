@@ -63,7 +63,6 @@ from serving.exceptions import (
 from serving.grant_auth import ledger_attribution
 from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.observability.rejection_log import RejectionSource, log_rejection_from
-from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, require_source_pricing
 from serving.servers.auth import (
     _next_utc_midnight,
@@ -83,6 +82,7 @@ from serving.servers.deps import (
 )
 from serving.servers.model_availability import model_not_found_detail
 from serving.servers.surface_http import client_origin, timeout_probe
+from serving.spend_ledger import ledger_for
 from serving.storage.bounded_log import bound_rejected_log_payload
 from serving.storage.utils import calculate_cost
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
@@ -1003,8 +1003,8 @@ def _count_non_object_tool_inputs(body: dict[str, Any]) -> int:
 # --- DB logging (fire-and-forget) ------------------------------------------
 
 
-# Retains in-flight cost-increment tasks so the event loop's garbage collector
-# can't cancel a fire-and-forget increment before it commits.
+# Retains the cost-counter writes carrying this surface's increments, for
+# callers that wait on them (tests); the spend ledger owns the writes.
 _cost_increment_tasks: set[asyncio.Task[Any]] = set()
 
 
@@ -1016,12 +1016,12 @@ def _schedule_messages_cost_increment(
     *,
     api_key_id: int | None = None,
 ) -> None:
-    """Fire-and-forget the daily quota cost increment for a billed request.
+    """Record the daily quota cost of a billed request in the spend ledger.
 
     The ``/v1/messages`` surface logs ``api_logs.cost_usd`` but that column is
     not what ``verify_api_key`` reads for quota enforcement -- the per-user
-    daily counter in ``user_daily_cost`` (bumped here via
-    ``increment_user_cost``) is. Without this, Anthropic-surface traffic
+    daily counter in ``user_daily_cost`` (written from the spend ledger via
+    ``increment_user_costs``) is. Without this, Anthropic-surface traffic
     (e.g. Claude Code) bypasses the per-user daily cost cap entirely, the same
     way the chat and embedding paths would if they omitted their own
     increments (``CostTracker.schedule_increment`` /
@@ -1037,21 +1037,10 @@ def _schedule_messages_cost_increment(
     cost = calculate_cost(usage, pricing)
     if not cost or cost <= 0:
         return
-
-    async def _increment() -> None:
-        try:
-            await op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
-        except Exception as exc:
-            logger.warning(f"Failed to increment messages cost counter for {user_id}: {exc}")
-            raise  # let tracked_task record the failure
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = tracked_task(_increment(), name="messages_cost_increment")
-    _cost_increment_tasks.add(task)
-    task.add_done_callback(_cost_increment_tasks.discard)
+    task = ledger_for(op_store).record(user_id, cost, api_key_id=api_key_id)
+    if task is not None:
+        _cost_increment_tasks.add(task)
+        task.add_done_callback(_cost_increment_tasks.discard)
 
 
 def _schedule_log_store_task(
