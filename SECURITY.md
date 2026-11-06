@@ -32,8 +32,15 @@ of this software rather than the software itself.
   stores every setting there in plaintext, provider keys included, so anyone
   who can read the database — a dump, a backup, pgAdmin — can use those keys,
   decrypt users' stored API keys and sign administrator tokens. Protect
-  database access and backups accordingly. The admin API never returns a
-  secret's value. Without a database the secrets come from the environment,
+  database access and backups accordingly. The admin API shows whether a
+  secret is set, not its value, with one exception: an administrator signed in
+  to the console can download a configuration backup with secret values after
+  giving the account's password again; the admin token cannot. The default
+  backup names each secret without its value. A backup file is not signed, so
+  restoring one changes a secret, the security, network or sign-up settings,
+  or where requests, mail and users are sent only after the administrator
+  confirms each change and gives the password; check what a file changes
+  before you confirm it. Without a database the secrets come from the environment,
   and empty or whitespace-only ones stop the gateway before it opens stores or
   starts background tasks whenever user authentication is enabled; only a
   gateway with both `DB_ENABLED=false` and `USER_AUTH_ENABLED=false` can start

@@ -90,3 +90,22 @@ async def request_connection(pool: Any, *, timeout: float | None = None) -> Asyn
                 f"no request-path database connection within {timeout:g}s"
             ) from exc
         yield conn
+
+
+class SingleConnectionPool:
+    """One connection behind a pool's ``acquire()``, for stores that share a transaction.
+
+    Every ``acquire()`` yields the same connection and releases nothing, so a
+    store built on it runs each call on that connection, inside whatever
+    transaction its owner holds open; a method's own ``conn.transaction()``
+    becomes a savepoint there. The owner opens, commits and closes the
+    connection. Calls must not overlap: a connection runs one query at a time.
+    """
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    @contextlib.asynccontextmanager
+    async def acquire(self, *, timeout: float | None = None) -> AsyncIterator[Any]:
+        """Yield the one connection; *timeout* is accepted for the pool's signature."""
+        yield self._connection

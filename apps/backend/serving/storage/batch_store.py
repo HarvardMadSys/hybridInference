@@ -80,6 +80,7 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
+from serving.storage.pools import SingleConnectionPool
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -651,6 +652,14 @@ class BatchStore:
     def pool(self) -> Any:
         """Return the asyncpg pool this store and the file and webhook stores share."""
         return self._pool
+
+    def on_connection(self, connection: Any) -> BatchStore:
+        """This store on one connection, for writes that share the caller's transaction.
+
+        A configuration restore writes the per-model caps inside the
+        ``app_config`` transaction; the caller owns the connection.
+        """
+        return BatchStore(SingleConnectionPool(connection))
 
     # -- admission ---------------------------------------------------------------
 

@@ -204,7 +204,13 @@ async def test_an_export_restore_roundtrip_keeps_a_reset_marker(config_env) -> N
     store = FakeAppConfigStore([_retired_reset(), row("SITE_NAME", "Before")])
     await _boot(store)
     exported = await app_config.export_rows()
-    assert {"key": RETIRED, "value": "", "secret": True, "source": RESET_SOURCE} in exported
+    assert {
+        "key": RETIRED,
+        "value": "",
+        "secret": True,
+        "source": RESET_SOURCE,
+        "is_set": False,
+    } in exported
 
     await app_config.restore_rows(exported, updated_by="admin")
 

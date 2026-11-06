@@ -178,6 +178,14 @@ class CachedOperationalStore(OperationalStore):
         """Expose underlying store's connection pool, if available (PostgreSQL only)."""
         return getattr(self._store, "_pool", None)
 
+    def on_connection(self, connection: Any) -> OperationalStore:
+        """The wrapped store on one connection, uncached, for writes in the caller's transaction.
+
+        Nothing it returns reads or fills this cache. Every method a
+        configuration restore calls passes straight through it anyway.
+        """
+        return self._store.on_connection(connection)  # type: ignore[attr-defined]
+
     # -- lifecycle (delegated, not cached) -----------------------------------
 
     async def initialize(self) -> None:

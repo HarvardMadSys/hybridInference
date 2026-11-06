@@ -36,7 +36,7 @@ from serving.storage.base import (
     Row,
 )
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
-from serving.storage.pools import request_connection
+from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -385,6 +385,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     def _request_connection(self) -> AbstractAsyncContextManager[Any]:
         """A connection for a request-path lookup: the request pool, a bounded wait."""
         return request_connection(self._request_pool)
+
+    def on_connection(self, connection: Any) -> PostgresOperationalStore:
+        """This store on one connection: every call runs on *connection*, in its transaction.
+
+        For writes that must commit or roll back with the caller's own, such as
+        a configuration restore, which writes these tables inside the
+        ``app_config`` transaction. The caller owns the connection and its
+        transaction; request-path lookups use it as well.
+        """
+        pool = SingleConnectionPool(connection)
+        return PostgresOperationalStore(pool, request_pool=pool)
 
     # -- lifecycle -----------------------------------------------------------
 

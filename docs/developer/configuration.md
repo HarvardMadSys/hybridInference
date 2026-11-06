@@ -594,6 +594,35 @@ environment, such as `DB_PASSWORD` or `MODELS_CONFIG_PATH`, cannot be set here.
 Behind the tab are `GET` and `PATCH /admin/config` and
 `DELETE /admin/config/{key}`.
 
+### Backup and restore
+
+**Backup** (`GET /admin/config/backup`) downloads every setting an administrator
+can change as one JSON file: the stored settings, the runtime and model
+settings, custom providers and their keys, routes and their overrides, the
+batch caps and the signup allowlist. It names each secret without its value: a
+stored setting has `value: null` and `is_set`, and a provider key keeps its id,
+provider and label. **Backup with secrets** (`POST /admin/config/backup` with
+`include_secrets: true`) puts the values in, in plain text, once the signed-in
+administrator gives the account's password again. The admin token cannot ask
+for them, and an account without a password, made by phone, sets one first.
+Store that file as you would the secrets themselves.
+
+**Restore** (`POST /admin/config/restore`) replaces all of it in one database
+transaction, so a failure anywhere leaves the deployment as it was. A secret
+the file withholds keeps the value this deployment has; one the deployment has
+no value for stays unset, and the response names it under
+`secrets_not_restored`. A backup file is not signed, so a restore that changes
+anything security-relevant needs a confirmation and the password: any secret,
+the Security and Network settings, every `*_URL` setting and every variable a
+configuration file references, mail delivery, the identity issuer, keys and
+redirects, user authentication, the sign-up switches and allowlist, full
+request logging, private batch webhook targets, and where a custom provider or
+a route sends requests and keys. The console lists those changes before it
+restores, from `POST /admin/config/restore/preview`; a script sends that list
+back as `confirm_security_changes`, with `password`, and a restore whose changes
+differ from the confirmed list is refused with 409. The admin token can restore
+only a file that changes none of them.
+
 ### When a change applies
 
 Most settings apply as soon as they are saved: at once in the backend process
@@ -705,9 +734,9 @@ two can differ, and the status shows it. Going back to a build that does not
 know the group is a deployment, not a configuration change.
 
 A configuration backup does not include this status. Restoring a backup
-applies its `app_config` rows to live groups like any other save; the other
-tables in the backup are written separately, so a failure there can leave them
-partly restored. After restoring a whole database, run
+applies its `app_config` rows to live groups like any other save, and writes
+the other tables in the same transaction, so a failure anywhere restores none
+of them. After restoring a whole database, run
 `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`:
 it starts a new version history and makes every process register again.
 

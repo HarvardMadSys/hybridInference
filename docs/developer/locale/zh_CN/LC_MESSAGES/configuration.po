@@ -1709,6 +1709,22 @@ msgstr ""
 "`MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH /admin/config`，以及 "
 "`DELETE /admin/config/{key}`。"
 
+#: ../developer/configuration.md:520
+msgid "Backup and restore"
+msgstr "备份与恢复"
+
+#: ../developer/configuration.md:520
+msgid ""
+"**Backup** (`GET /admin/config/backup`) downloads every setting an administrator can change as one JSON file: the stored settings, the runtime and model settings, custom providers and their keys, routes and their overrides, the batch caps and the signup allowlist. It names each secret without its value: a stored setting has `value: null` and `is_set`, and a provider key keeps its id, provider and label. **Backup with secrets** (`POST /admin/config/backup` with `include_secrets: true`) puts the values in, in plain text, once the signed-in administrator gives the account's password again. The admin token cannot ask for them, and an account without a password, made by phone, sets one first. Store that file as you would the secrets themselves."
+msgstr ""
+"**Backup**（`GET /admin/config/backup`）把管理员能修改的全部设置下载为一个 JSON 文件：存储的设置、运行时与模型设置、自定义 provider 及其 key、路由及其覆盖、批处理上限和注册白名单。每个密钥只写名字、不写值：存储的设置是 `value: null` 加 `is_set`，provider key 保留它的 id、provider 和标签。**Backup with secrets**（`POST /admin/config/backup`，带 `include_secrets: true`）会把这些值以明文写进文件，前提是已登录的管理员再输入一次账号密码。admin token 不能请求这些值；没有密码的账号（用手机注册的）要先设置一个。保管这个文件要像保管密钥本身一样小心。"
+
+#: ../developer/configuration.md:520
+msgid ""
+"**Restore** (`POST /admin/config/restore`) replaces all of it in one database transaction, so a failure anywhere leaves the deployment as it was. A secret the file withholds keeps the value this deployment has; one the deployment has no value for stays unset, and the response names it under `secrets_not_restored`. A backup file is not signed, so a restore that changes anything security-relevant needs a confirmation and the password: any secret, the Security and Network settings, every `*_URL` setting and every variable a configuration file references, mail delivery, the identity issuer, keys and redirects, user authentication, the sign-up switches and allowlist, full request logging, private batch webhook targets, and where a custom provider or a route sends requests and keys. The console lists those changes before it restores, from `POST /admin/config/restore/preview`; a script sends that list back as `confirm_security_changes`, with `password`, and a restore whose changes differ from the confirmed list is refused with 409. The admin token can restore only a file that changes none of them."
+msgstr ""
+"**Restore**（`POST /admin/config/restore`）在一个数据库事务里替换上述全部内容，所以任何一处出错，部署都保持原样。文件里没有给出值的密钥保留本部署现有的值；本部署也没有值的，则保持未设置，并在响应的 `secrets_not_restored` 中列出。备份文件没有签名，所以凡是涉及安全的改动都需要确认并输入密码：任何密钥、Security 和 Network 分类的设置、所有 `*_URL` 设置和配置文件引用的每个变量、邮件投递、身份签发方及其密钥和重定向地址、用户认证、注册开关和白名单、完整请求日志、批处理 webhook 的内网目标，以及自定义 provider 或路由把请求和 key 发往何处。控制台在恢复之前会列出这些改动，来源是 `POST /admin/config/restore/preview`；脚本则要把这份列表作为 `confirm_security_changes` 连同 `password` 一起发回，改动与确认的列表不一致的恢复会被以 409 拒绝。admin token 只能恢复不涉及这些改动的文件。"
+
 #: ../developer/configuration.md:533
 msgid "When a change applies"
 msgstr "改动何时生效"
@@ -1929,15 +1945,9 @@ msgstr ""
 
 #: ../developer/configuration.md:637
 msgid ""
-"A configuration backup does not include this status. Restoring a backup "
-"applies its `app_config` rows to live groups like any other save; the "
-"other tables in the backup are written separately, so a failure there can"
-" leave them partly restored. After restoring a whole database, run "
-"`python -m serving.config.manage live reset-epoch --expect "
-"<epoch>:<revision>`: it starts a new version history and makes every "
-"process register again."
+"A configuration backup does not include this status. Restoring a backup applies its `app_config` rows to live groups like any other save, and writes the other tables in the same transaction, so a failure anywhere restores none of them. After restoring a whole database, run `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`: it starts a new version history and makes every process register again."
 msgstr ""
-"配置备份不包含这些状态。恢复备份时，备份中的 `app_config` 行会像任何一次保存一样应用到实时配置组；备份里的其他表是分开写入的，所以那里出错可能使它们只恢复了一部分。恢复整个数据库之后，运行 `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`：它会开始新的版本历史，并让每个进程重新登记。"
+"配置备份不包含这些状态。恢复备份时，备份中的 `app_config` 行会像任何一次保存一样应用到实时配置组，其他表也在同一个事务里写入，所以任何一处出错，就什么都不会恢复。恢复整个数据库之后，运行 `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`：它会开始新的版本历史，并让每个进程重新登记。"
 
 #: ../developer/configuration.md:644
 msgid "Without the console"
