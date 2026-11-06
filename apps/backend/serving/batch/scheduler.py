@@ -31,10 +31,11 @@ slot of the owner's batch quota -- ``BATCH_ROLE_CONCURRENCY_<ROLE>``, counted in
 this process by a limiter of the worker's own, apart from the interactive
 per-user limiter, so batch work and the owner's own requests never compete for
 one budget -- its attempt is marked as dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
-on its target. A failure that may pass (a timeout, a 429, a 5xx) is retried
-with exponential backoff, a bounded number of times, and only such failures
-count toward cooling a model down; a caller error (any other 4xx) fails the
-item at once.
+on its target. A failure that may pass (a timeout, a 408/425/429, a 5xx) is
+retried with exponential backoff for as long as its batch's window is open:
+it fails with its last error once the next try would start after the window
+closes. Only such failures count toward cooling a model down; a caller error
+(any other 4xx) fails the item at once.
 
 The same loop also does the background work batches need besides inference,
 each in at most one task per process at a time: validating uploaded input
@@ -65,6 +66,7 @@ from serving.batch.dispatch import dispatch_item
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoad
 from serving.batch.validation import validate_file_batch
 from serving.batch.webhooks import deliver_due_events
+from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
     StoredKeyRejected,
@@ -83,6 +85,12 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+#: "Model queued" answers for a model at most this far apart are one wait for
+#: capacity; the scheduler asks again every couple of minutes while it has work.
+QUEUED_GAP_SECONDS = 3600.0
+#: The long-wait alert repeats at most daily while the wait goes on.
+QUEUED_ALERT_COOLDOWN_SECONDS = 86400
+
 
 @dataclass(frozen=True)
 class SchedulerTimings:
@@ -99,8 +107,11 @@ class SchedulerTimings:
     lease_seconds: int = 300
     #: How often the leases of this process's running items are extended.
     heartbeat_seconds: float = 60.0
-    #: Attempts an item gets; a retryable failure on the last one is final.
-    max_attempts: int = 8
+    #: A runaway guard on the attempts an item gets. A retryable failure is
+    #: retried until its batch's window closes (see ``_settle``), which this
+    #: does not reach in a window of a week at the backoff cap; it also bounds
+    #: an item whose attempts never report back (a worker that keeps dying).
+    max_attempts: int = 2000
     #: Delay before a retry: doubles with every attempt, up to the cap, and
     #: is jittered down by up to half.
     backoff_base_seconds: float = 5.0
@@ -120,6 +131,10 @@ class SchedulerTimings:
     #: How long the batches of an owner whose role no longer qualifies stay
     #: paused before the role is checked again.
     role_pause_seconds: float = 300.0
+    #: At most how long batches paused on a spent key budget or a spent monthly
+    #: quota wait before the limit is checked again: a budget or quota can be
+    #: raised any time, and a monthly one renews only at the start of the month.
+    budget_recheck_seconds: float = 3600.0
     #: How long one attempt may run before it is abandoned as a timeout. The
     #: adapters bound each upstream call already; this bounds an attempt that
     #: never returns, which would otherwise hold its slot, and with the
@@ -143,6 +158,10 @@ class _InFlight:
     item_id: int
     model_id: str
     attempt: int
+    # When the item's batch stops starting requests: no retry is scheduled
+    # after it. None when the claim did not say (retries are then bounded by
+    # ``max_attempts`` alone).
+    expires_at: datetime | None = None
     task: asyncio.Task[None] | None = None
     # The item has been handed back to the store (finished, scheduled for
     # retry or released), so it is no longer this process's to release.
@@ -233,6 +252,12 @@ class BatchScheduler:
         self._running: Counter[str] = Counter()
         self._failure_streak: Counter[str] = Counter()
         self._cooldown_until: dict[str, float] = {}
+        # A model's current wait for capacity upstream: since when, the latest
+        # "queued" answer, and whether its alert has been sent.
+        self._queued_since: dict[str, float] = {}
+        self._queued_last: dict[str, float] = {}
+        self._queued_alerted: set[str] = set()
+        self._alerts: set[asyncio.Task[Any]] = set()
         self._next_sweep = 0.0
         self._next_heartbeat = 0.0
         self._next_webhooks = 0.0
@@ -636,6 +661,7 @@ class BatchScheduler:
             item_id=int(item["id"]),
             model_id=item["model_id"],
             attempt=int(item.get("attempt_seq") or item["attempts"]),
+            expires_at=item.get("expires_at"),
         )
         self._in_flight[entry.item_id] = entry
         self._running[entry.model_id] += 1
@@ -670,8 +696,78 @@ class BatchScheduler:
             },
         )
 
+    def _hold_model(self, model_id: str, seconds: float) -> None:
+        """Give the model no new claims for ``seconds``: its upstream queued it."""
+        until = self._clock() + seconds
+        if until <= self._cooldown_until.get(model_id, 0.0):
+            return
+        self._cooldown_until[model_id] = until
+        logger.info(
+            "batch: model %s is queued for capacity upstream; no new claims for %.0fs",
+            model_id,
+            seconds,
+            extra={"event": "batch_model_queued", "model": model_id, "hold_sec": seconds},
+        )
+
     def _model_succeeded(self, model_id: str) -> None:
         self._failure_streak.pop(model_id, None)
+        self._queued_since.pop(model_id, None)
+        self._queued_last.pop(model_id, None)
+        if model_id in self._queued_alerted:
+            self._queued_alerted.discard(model_id)
+            self._send_queued_alert(model_id, breached=False, waited=0.0)
+
+    def _note_queued(self, model_id: str, alert_hours: int) -> None:
+        """Count the model's wait for capacity; alert once if it outlasts ``alert_hours``.
+
+        A wait for a GPU job is normal and says nothing is broken, so each
+        "queued" answer alerts nothing. Only a wait longer than an operator
+        would expect -- the job cannot be scheduled -- is worth one alert, and
+        it resolves when the model serves again. Answers less than
+        ``QUEUED_GAP_SECONDS`` apart are one wait; a longer silence (no batch
+        work for the model) starts the count again.
+        """
+        now = self._clock()
+        last = self._queued_last.get(model_id)
+        if last is None or now - last > QUEUED_GAP_SECONDS:
+            self._queued_since[model_id] = now
+        self._queued_last[model_id] = now
+        waited = now - self._queued_since[model_id]
+        if alert_hours <= 0 or waited < alert_hours * 3600 or model_id in self._queued_alerted:
+            return
+        self._queued_alerted.add(model_id)
+        self._send_queued_alert(model_id, breached=True, waited=waited)
+
+    def _send_queued_alert(self, model_id: str, *, breached: bool, waited: float) -> None:
+        if self._stopping:
+            return
+        context = {
+            "model": model_id,
+            "waiting_hours": round(waited / 3600, 1),
+            "detail": "Its upstream has answered 'model queued' (GPU job waiting for a "
+            "node) since then; its batch requests are held, not failed, until the "
+            "batch window closes.",
+        }
+
+        async def send() -> None:
+            try:
+                await alert_on_transition(
+                    key=f"batch_model_queued:{model_id}",
+                    breached=breached,
+                    severity=AlertSeverity.WARN,
+                    title="Batch model waiting for capacity",
+                    context=lambda: context,
+                    cooldown_sec=QUEUED_ALERT_COOLDOWN_SECONDS,
+                    kind="state",
+                )
+            except Exception:
+                logger.exception("batch: queued-model alert for %s failed", model_id)
+
+        task = asyncio.create_task(
+            send(), name=f"batch_queued_alert:{model_id}", context=contextvars.Context()
+        )
+        self._alerts.add(task)
+        task.add_done_callback(self._alerts.discard)
 
     def _backoff(self, attempt: int) -> float:
         ceiling = min(
@@ -727,7 +823,31 @@ class BatchScheduler:
             return
         except StoredKeyQuotaExceeded as exc:
             await self._release(entry, delay=self._timings.owner_retry_seconds)
-            await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
+            if exc.scope == "account" and exc.window == "day":
+                await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
+                return
+            # A key budget or the monthly quota: checked again within the
+            # recheck interval, so one raised mid-window takes effect.
+            until = min(
+                exc.reset_at,
+                datetime.now(UTC) + timedelta(seconds=self._timings.budget_recheck_seconds),
+            )
+            if exc.scope == "account":
+                await self._pause_owner(
+                    owner, until, "monthly cost quota spent", kind="monthly_quota"
+                )
+                return
+            # Only this key's batches: the account's other keys still have
+            # budget, and their batches keep running.
+            await self._pause_owner(
+                owner,
+                until,
+                "API key daily budget spent"
+                if exc.window == "day"
+                else "API key monthly budget spent",
+                kind="key_budget",
+                key_hash=item.get("key_hash"),
+            )
             return
         except Exception:
             logger.warning(
@@ -849,14 +969,34 @@ class BatchScheduler:
                 usage=result.usage,
                 cost_status=result.cost_status,
                 max_result_bytes=cfg.max_result_bytes,
+                cached_tokens=result.cached_tokens,
             )
             return
-        if result.retryable:
+        requeue = result.requeue_after
+        if requeue is not None:
+            # The model is queued for capacity on its upstream: not a failure of
+            # the model or of the item. The item goes back without spending its
+            # attempt, and the model gets no new claims until it may be ready,
+            # rather than every slot of its cap asking again at once. As with a
+            # retry, once the next try would start after the window closes the
+            # item fails now with this answer instead.
+            self._hold_model(entry.model_id, requeue)
+            self._note_queued(entry.model_id, cfg.queued_alert_hours)
+            retry_at = datetime.now(UTC) + timedelta(seconds=requeue)
+            if entry.expires_at is None or retry_at < entry.expires_at:
+                await self._release(entry, delay=requeue)
+                return
+        elif result.retryable:
             # Only a failure that may pass says anything about the model; a
             # caller's own error (4xx) is no reason to slow it down for others.
             self._model_failed(entry.model_id)
-            if attempts < self._timings.max_attempts:
-                delay = self._backoff(attempts)
+            delay = self._backoff(attempts)
+            next_attempt_at = datetime.now(UTC) + timedelta(seconds=delay)
+            # Retried while the window is open; once the next try would start
+            # after it closes, the item fails now with this error rather than
+            # waiting to expire as though it had never run.
+            in_window = entry.expires_at is None or next_attempt_at < entry.expires_at
+            if attempts < self._timings.max_attempts and in_window:
                 logger.debug(
                     "batch item %s: attempt %d failed (%s); retrying in %.1fs",
                     entry.item_id,
@@ -868,7 +1008,7 @@ class BatchScheduler:
                     item_id=entry.item_id,
                     worker_id=self._worker_id,
                     attempt=entry.attempt,
-                    next_attempt_at=datetime.now(UTC) + timedelta(seconds=delay),
+                    next_attempt_at=next_attempt_at,
                     error=result.error,
                     cost_usd=result.cost_usd,
                     cost_status=result.cost_status,
@@ -888,6 +1028,7 @@ class BatchScheduler:
             request_id=result.request_id,
             usage=result.usage,
             cost_status=result.cost_status,
+            cached_tokens=result.cached_tokens,
         )
 
     # -- store transitions ------------------------------------------------------
@@ -906,6 +1047,7 @@ class BatchScheduler:
         usage: dict[str, Any] | None = None,
         cost_status: str | None = None,
         max_result_bytes: int | None = None,
+        cached_tokens: int | None = None,
     ) -> None:
         """Record the item's final outcome.
 
@@ -930,6 +1072,7 @@ class BatchScheduler:
                     usage=usage,
                     cost_status=cost_status,
                     max_result_bytes=max_result_bytes,
+                    cached_tokens=cached_tokens,
                 )
             except Exception:
                 if delay is None:
@@ -983,8 +1126,20 @@ class BatchScheduler:
                 extra={"event": "batch_owner_unauthorized", "reason": reason},
             )
 
-    async def _pause_owner(self, user_id: str, until: datetime, reason: str, *, kind: str) -> None:
-        paused = await self._store.pause_user_batches(user_id, until, kind)
+    async def _pause_owner(
+        self,
+        user_id: str,
+        until: datetime,
+        reason: str,
+        *,
+        kind: str,
+        key_hash: str | None = None,
+    ) -> None:
+        paused = (
+            await self._store.pause_user_batches(user_id, until, kind, key_hash=key_hash)
+            if key_hash is not None
+            else await self._store.pause_user_batches(user_id, until, kind)
+        )
         logger.info(
             "batch: paused %d batch(es) of user %s until %s: %s",
             paused,

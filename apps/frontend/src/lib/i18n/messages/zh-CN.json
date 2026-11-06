@@ -1031,10 +1031,6 @@
     "source": "More actions for {name}",
     "text": "任务 {name} 的更多操作"
   },
-  "batches.back": {
-    "source": "Dashboard",
-    "text": "控制台"
-  },
   "batches.category.cancelled": {
     "source": "Cancelled",
     "text": "已取消"
@@ -1103,6 +1099,14 @@
     "source": "Checking every line…",
     "text": "正在检查每一行…"
   },
+  "batches.create.choose_another": {
+    "source": "Choose another file",
+    "text": "选择其他文件"
+  },
+  "batches.create.choose_file": {
+    "source": "Choose file",
+    "text": "选择文件"
+  },
   "batches.create.choose_type": {
     "source": "Which type are these requests?",
     "text": "这些请求属于哪种类型？"
@@ -1131,13 +1135,13 @@
     "source": "This file differs from the one the original batch used.",
     "text": "这个文件与原任务使用的文件内容不同。"
   },
-  "batches.create.drop": {
-    "source": "Drop a .jsonl file here, or choose one",
-    "text": "将 .jsonl 文件拖到这里，或点击选择"
-  },
   "batches.create.drop_hint": {
     "source": "The file is read by the gateway, not by your browser. Nothing runs until you confirm in step 3.",
     "text": "文件由网关读取，浏览器不解析内容。在第 3 步确认之前，不会执行任何请求。"
+  },
+  "batches.create.drop_title": {
+    "source": "Drop a .jsonl file here",
+    "text": "将 .jsonl 文件拖到这里"
   },
   "batches.create.errors.count": {
     "source": "{count} problem(s): nothing can be submitted until every one is fixed.",
@@ -1167,6 +1171,46 @@
     "source": "Showing {shown} of {total}; the downloads list {listed}.",
     "text": "显示 {shown} / {total} 条；下载的清单包含 {listed} 条。"
   },
+  "batches.create.example.chat": {
+    "source": "Text generation",
+    "text": "文本生成"
+  },
+  "batches.create.example.copied": {
+    "source": "Example copied",
+    "text": "示例已复制"
+  },
+  "batches.create.example.copy": {
+    "source": "Copy",
+    "text": "复制"
+  },
+  "batches.create.example.copy_failed": {
+    "source": "Could not copy: select the example and copy it yourself.",
+    "text": "无法复制：请选中示例后手动复制。"
+  },
+  "batches.create.example.copy_label": {
+    "source": "Copy example",
+    "text": "复制示例"
+  },
+  "batches.create.example.download": {
+    "source": "Download",
+    "text": "下载"
+  },
+  "batches.create.example.download_label": {
+    "source": "Download {file}",
+    "text": "下载 {file}"
+  },
+  "batches.create.example.embeddings": {
+    "source": "Embeddings",
+    "text": "文本向量化"
+  },
+  "batches.create.example.lines": {
+    "source": "Example file: {type}",
+    "text": "示例文件：{type}"
+  },
+  "batches.create.example.type": {
+    "source": "Example type",
+    "text": "示例类型"
+  },
   "batches.create.files_hide": {
     "source": "Hide uploaded files",
     "text": "隐藏已上传文件"
@@ -1175,21 +1219,17 @@
     "source": "Uploaded files…",
     "text": "已上传文件…"
   },
-  "batches.create.format.lines": {
-    "source": "One JSON object per line: custom_id (unique, 1–512 characters), url (optional: /v1/chat/completions or /v1/embeddings), method (optional: POST) and body (the request).",
-    "text": "每行一个 JSON 对象：custom_id（唯一，1–512 个字符）、url（可选：/v1/chat/completions 或 /v1/embeddings）、method（可选：POST）和 body（请求内容）。"
+  "batches.create.format.label": {
+    "source": "File format:",
+    "text": "文件格式："
   },
-  "batches.create.format.strict": {
-    "source": "Fields the gateway would not forward (for example max_completion_tokens or user) are reported as errors rather than dropped. Save the file as UTF-8 without a byte-order mark.",
-    "text": "网关不会转发的字段（例如 max_completion_tokens 或 user）会作为错误报告，而不是被悄悄丢弃。请将文件保存为不带 BOM 的 UTF-8。"
+  "batches.create.format.model": {
+    "source": "If any line has no model, you choose one model for every request in step 2.",
+    "text": "只要有一行没有写 model，就需要在第 2 步为所有请求选择同一个模型。"
   },
-  "batches.create.format.title": {
-    "source": "File format",
-    "text": "文件格式"
-  },
-  "batches.create.format.type": {
-    "source": "The type is recognised from each line’s url, or from the body when url is left out (messages: text generation; input: embeddings). One file holds one type and, in the end, one model.",
-    "text": "类型根据每行的 url 识别；省略 url 时根据请求体识别（messages 为文本生成，input 为文本向量化）。一个文件只能有一种类型，最终也只能使用一个模型。"
+  "batches.create.format.summary": {
+    "source": "one JSON request per line, each with a unique custom_id (1–512 characters) and the request in body.",
+    "text": "每行一个 JSON 请求，各带唯一的 custom_id（1–512 个字符），请求内容放在 body 中。"
   },
   "batches.create.identifying": {
     "source": "Reading the file…",
@@ -1319,9 +1359,17 @@
     "source": "Your API key changed after you confirmed (it was regenerated, revoked or replaced). Check the submission again.",
     "text": "确认之后你的 API 密钥发生了变化（被重新生成、撤销或替换）。请重新校验并确认。"
   },
+  "batches.create.refused.key_budget": {
+    "source": "The API key this batch runs under has spent its budget. Raise it on the key's page, or submit after it renews; uploading and checking stay free.",
+    "text": "这个批次所用的 API key 已用完预算。请在该 key 的页面调高预算，或等预算重置后再提交；上传和校验仍然免费。"
+  },
   "batches.create.refused.model_changed": {
     "source": "The chosen model now resolves to a different model than the one you confirmed. Check the submission again.",
     "text": "所选模型现在解析到的模型与你确认时不同。请重新校验并确认。"
+  },
+  "batches.create.refused.monthly_quota": {
+    "source": "Your monthly quota is spent. Submit after it renews on the 1st (UTC) or once it is raised; uploading and checking stay free.",
+    "text": "你本月的额度已用完。请在每月 1 日（UTC）额度重置或调整后再提交；上传和校验仍然免费。"
   },
   "batches.create.refused.no_key": {
     "source": "A batch runs under your active API key, and you have none. Create one on the dashboard, then submit again.",
@@ -1342,14 +1390,6 @@
   "batches.create.same_as_original": {
     "source": "Same content as the original file.",
     "text": "与原文件内容一致。"
-  },
-  "batches.create.sample.chat": {
-    "source": "Download sample: text generation",
-    "text": "下载示例：文本生成"
-  },
-  "batches.create.sample.embeddings": {
-    "source": "Download sample: embeddings",
-    "text": "下载示例：文本向量化"
   },
   "batches.create.set_all": {
     "source": "Set for every request to",
@@ -1795,6 +1835,14 @@
     "source": "Created in the console",
     "text": "在控制台创建"
   },
+  "batches.paused.key_budget": {
+    "source": "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
+    "text": "已暂停：这个批次所用的 API key 已用完预算。将在 {until} 之后再次检查；在该 key 的页面调高预算可以更早恢复。"
+  },
+  "batches.paused.monthly_quota": {
+    "source": "Paused: your monthly quota is spent. It is checked again after {until}; it resumes once your quota is raised, or when it renews on the 1st (UTC).",
+    "text": "已暂停：本月额度已用完。将在 {until} 之后再次检查；额度调高后，或每月 1 日（UTC）额度重置后恢复。"
+  },
   "batches.paused.other": {
     "source": "Paused until {until}.",
     "text": "已暂停，直到 {until}。"
@@ -2163,10 +2211,6 @@
     "source": "Log out",
     "text": "退出登录"
   },
-  "chrome.account_menu.log_out_all": {
-    "source": "Log out of all accounts",
-    "text": "退出所有账户"
-  },
   "chrome.account_menu.settings": {
     "source": "My settings",
     "text": "我的设置"
@@ -2319,6 +2363,46 @@
     "source": " (opens in a new tab)",
     "text": "（在新标签页打开）"
   },
+  "console.nav.admin": {
+    "source": "Admin Console",
+    "text": "管理后台"
+  },
+  "console.nav.admin_group": {
+    "source": "Admin",
+    "text": "管理"
+  },
+  "console.nav.batches": {
+    "source": "Batches",
+    "text": "批次"
+  },
+  "console.nav.chat": {
+    "source": "Chat",
+    "text": "对话"
+  },
+  "console.nav.home": {
+    "source": "Home",
+    "text": "首页"
+  },
+  "console.nav.keys": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "console.nav.label": {
+    "source": "Console",
+    "text": "控制台"
+  },
+  "console.nav.models": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "console.nav.requests": {
+    "source": "Requests",
+    "text": "请求记录"
+  },
+  "console.nav.settings": {
+    "source": "Settings",
+    "text": "设置"
+  },
   "dashboard.account.email": {
     "source": "Email:",
     "text": "邮箱："
@@ -2359,13 +2443,133 @@
     "source": "Admin Console",
     "text": "管理后台"
   },
-  "dashboard.internal.batches": {
-    "source": "Batches",
-    "text": "批次"
+  "dashboard.key_detail.account_quota_hint": {
+    "source": "Your account's daily quota of {amount} also applies.",
+    "text": "账户的每日额度 {amount} 同时生效。"
   },
-  "dashboard.internal.playground": {
-    "source": "API Playground",
-    "text": "API 调试台"
+  "dashboard.key_detail.all_models": {
+    "source": "All models",
+    "text": "全部模型"
+  },
+  "dashboard.key_detail.back": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "dashboard.key_detail.budget_invalid": {
+    "source": "Enter an amount in USD, such as 5 or 12.50, or leave it blank.",
+    "text": "请输入美元金额，例如 5 或 12.50；留空表示不限。"
+  },
+  "dashboard.key_detail.created": {
+    "source": "Created {date}",
+    "text": "创建于 {date}"
+  },
+  "dashboard.key_detail.daily_budget": {
+    "source": "Daily budget (USD)",
+    "text": "每日预算（美元）"
+  },
+  "dashboard.key_detail.last_used": {
+    "source": "Last used {date}",
+    "text": "最近使用 {date}"
+  },
+  "dashboard.key_detail.limits_intro": {
+    "source": "Limit what this key can spend and which models it can call. Requests over a limit are refused; your other keys are not affected.",
+    "text": "限制这个 key 能花多少钱、能调用哪些模型。超出限制的请求会被拒绝，你的其他 key 不受影响。"
+  },
+  "dashboard.key_detail.limits_title": {
+    "source": "Limits",
+    "text": "限制"
+  },
+  "dashboard.key_detail.models_hint": {
+    "source": "Other models answer this key as if they did not exist, and its model list shows only these.",
+    "text": "其他模型对这个 key 来说就像不存在一样，用它获取的模型列表也只包含这些模型。"
+  },
+  "dashboard.key_detail.models_title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "dashboard.key_detail.monthly_budget": {
+    "source": "Monthly budget (USD)",
+    "text": "每月预算（美元）"
+  },
+  "dashboard.key_detail.no_limit": {
+    "source": "No limit",
+    "text": "不限"
+  },
+  "dashboard.key_detail.not_found": {
+    "source": "This key does not exist or was regenerated under a new prefix. Find it in the list of your keys.",
+    "text": "这个 key 不存在，或者已经重新生成、换了新的前缀。请在 key 列表中查找。"
+  },
+  "dashboard.key_detail.not_found_title": {
+    "source": "API key not found",
+    "text": "找不到这个 API key"
+  },
+  "dashboard.key_detail.pick_a_model": {
+    "source": "Pick at least one model, or allow all models. To stop the key, revoke it or set a budget of 0.",
+    "text": "请至少选择一个模型，或者允许全部模型。要停用这个 key，可以吊销它或把预算设为 0。"
+  },
+  "dashboard.key_detail.save": {
+    "source": "Save limits",
+    "text": "保存限制"
+  },
+  "dashboard.key_detail.saved_toast": {
+    "source": "Limits saved.",
+    "text": "限制已保存。"
+  },
+  "dashboard.key_detail.some_models": {
+    "source": "Only the models selected below",
+    "text": "仅限下面选中的模型"
+  },
+  "dashboard.key_detail.spend_note": {
+    "source": "Counted since usage was first attributed to keys. Regenerating the key keeps its spend.",
+    "text": "从开始按 key 统计用量时算起。重新生成 key 不会清零花费。"
+  },
+  "dashboard.key_detail.spend_title": {
+    "source": "Spend (UTC)",
+    "text": "花费（UTC）"
+  },
+  "dashboard.key_detail.spent_of": {
+    "source": "{spent} of {budget}",
+    "text": "{spent} / {budget}"
+  },
+  "dashboard.key_detail.this_month": {
+    "source": "This month",
+    "text": "本月"
+  },
+  "dashboard.key_detail.today": {
+    "source": "Today",
+    "text": "今天"
+  },
+  "dashboard.key_detail.unavailable": {
+    "source": "no longer available",
+    "text": "已不可用"
+  },
+  "dashboard.key_detail.zero_hint": {
+    "source": "A budget of 0 pauses the key.",
+    "text": "预算设为 0 会暂停这个 key。"
+  },
+  "dashboard.keys.limit_daily": {
+    "source": "{amount}/day",
+    "text": "{amount}/天"
+  },
+  "dashboard.keys.limit_models_one": {
+    "source": "1 model",
+    "text": "1 个模型"
+  },
+  "dashboard.keys.limit_models_other": {
+    "source": "{count} models",
+    "text": "{count} 个模型"
+  },
+  "dashboard.keys.limit_monthly": {
+    "source": "{amount}/month",
+    "text": "{amount}/月"
+  },
+  "dashboard.keys.limits": {
+    "source": "Limits",
+    "text": "限制"
+  },
+  "dashboard.keys.more_actions": {
+    "source": "Actions for {name}",
+    "text": "{name} 的操作"
   },
   "dashboard.keys.col_actions": {
     "source": "Actions",
@@ -2383,25 +2587,25 @@
     "source": "Last Used",
     "text": "最近使用"
   },
+  "dashboard.keys.col_spend": {
+    "source": "Spend (UTC)",
+    "text": "花费（UTC）"
+  },
   "dashboard.keys.col_status": {
     "source": "Status",
     "text": "状态"
   },
-  "dashboard.keys.confirm_create": {
-    "source": "Create a new API Key?",
-    "text": "确定要创建新的 API key 吗？"
-  },
-  "dashboard.keys.confirm_delete": {
-    "source": "Delete this API Key? It will stop working immediately.",
-    "text": "确定要删除这个 API key 吗？删除后它会立即停止工作。"
-  },
   "dashboard.keys.confirm_regenerate": {
-    "source": "Regenerate API Key? The old key will be immediately invalidated.",
-    "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。"
+    "source": "Regenerate API Key? The old key will be immediately invalidated. The key keeps its name, limits and spend.",
+    "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。这个 key 的名称、限制和花费都会保留。"
   },
   "dashboard.keys.confirm_remove": {
     "source": "Remove this revoked API Key from the dashboard?",
     "text": "要把这个已吊销的 API key 从列表中移除吗？"
+  },
+  "dashboard.keys.confirm_revoke": {
+    "source": "This key will stop working immediately. Its usage history will remain available.",
+    "text": "这个 key 将立即失效，无法再调用 API。历史用量记录会保留。"
   },
   "dashboard.keys.copied_toast": {
     "source": "API key copied to clipboard",
@@ -2423,14 +2627,6 @@
     "source": "API Key created successfully! Please save it now.",
     "text": "API key 已创建，请立即保存。"
   },
-  "dashboard.keys.delete": {
-    "source": "Delete",
-    "text": "删除"
-  },
-  "dashboard.keys.deleted_toast": {
-    "source": "API Key deleted successfully.",
-    "text": "API key 已删除。"
-  },
   "dashboard.keys.empty": {
     "source": "No API keys yet. Create one to start using the API.",
     "text": "还没有 API key。创建一个就可以开始调用 API 了。"
@@ -2451,6 +2647,14 @@
     "source": "Failed to load API keys. Please try again later.",
     "text": "API key 加载失败，请稍后再试。"
   },
+  "dashboard.keys.name_label": {
+    "source": "Name (optional)",
+    "text": "名称（可选）"
+  },
+  "dashboard.keys.name_prompt": {
+    "source": "Name this key (optional), for example \"laptop\" or \"CI\". All of your keys share your account's quota; each can also have limits of its own.",
+    "text": "给这个 key 起个名字（可选），例如“laptop”或“CI”。你的所有 key 共用账户的额度，每个 key 还可以设置自己的限制。"
+  },
   "dashboard.keys.never": {
     "source": "Never",
     "text": "从未使用"
@@ -2458,6 +2662,10 @@
   "dashboard.keys.no_actions": {
     "source": "No actions",
     "text": "无可用操作"
+  },
+  "dashboard.keys.no_limits": {
+    "source": "No limits",
+    "text": "无限制"
   },
   "dashboard.keys.regenerate": {
     "source": "Regenerate",
@@ -2475,13 +2683,49 @@
     "source": "API Key removed.",
     "text": "API key 已移除。"
   },
+  "dashboard.keys.rename": {
+    "source": "Rename",
+    "text": "重命名"
+  },
+  "dashboard.keys.rename_prompt": {
+    "source": "Rename this key. Leave it blank to remove the name.",
+    "text": "重命名这个 key。留空则去掉名字。"
+  },
+  "dashboard.keys.renamed_toast": {
+    "source": "API key renamed.",
+    "text": "API key 已重命名。"
+  },
+  "dashboard.keys.revoke": {
+    "source": "Revoke",
+    "text": "吊销"
+  },
+  "dashboard.keys.revoked_hint": {
+    "source": "Revoked keys can no longer call the API. They are kept here so you can review their usage history.",
+    "text": "已吊销的 key 无法再调用 API。保留这些记录是为了方便查看历史用量。"
+  },
+  "dashboard.keys.revoked_toast": {
+    "source": "API key revoked. It can no longer be used.",
+    "text": "API key 已吊销，无法继续使用。"
+  },
   "dashboard.keys.save_now": {
-    "source": "Save this key now. It will only be shown once.",
-    "text": "请现在就保存这个 key，它只会显示这一次。"
+    "source": "Save this key securely.",
+    "text": "请妥善保存这个 key。"
   },
   "dashboard.keys.show": {
     "source": "Show key",
     "text": "显示 key"
+  },
+  "dashboard.keys.spend_inline": {
+    "source": "Spend: ",
+    "text": "花费："
+  },
+  "dashboard.keys.spent_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
+  },
+  "dashboard.keys.spent_today": {
+    "source": "{amount} today",
+    "text": "今天 {amount}"
   },
   "dashboard.keys.status_active": {
     "source": "active",
@@ -2498,6 +2742,10 @@
   "dashboard.keys.title": {
     "source": "API Keys",
     "text": "API key"
+  },
+  "dashboard.keys.unnamed": {
+    "source": "Unnamed key",
+    "text": "未命名"
   },
   "dashboard.models.col_limits": {
     "source": "Ctx / out",
@@ -2559,6 +2807,14 @@
     "source": "Models",
     "text": "模型"
   },
+  "dashboard.requests.all_keys": {
+    "source": "All keys",
+    "text": "全部 key"
+  },
+  "dashboard.requests.api_key": {
+    "source": "API Key",
+    "text": "API key"
+  },
   "dashboard.requests.badge_embedding": {
     "source": "embedding",
     "text": "embedding"
@@ -2610,6 +2866,10 @@
   "dashboard.requests.error": {
     "source": "Request Error",
     "text": "请求出错"
+  },
+  "dashboard.requests.filter_by_key": {
+    "source": "Filter by API key",
+    "text": "按 API key 筛选"
   },
   "dashboard.requests.go": {
     "source": "Go",
@@ -2707,17 +2967,21 @@
     "source": "Total Tokens",
     "text": "总 token"
   },
-  "dashboard.settings_link": {
-    "source": "Settings",
-    "text": "设置"
-  },
   "dashboard.title": {
     "source": "Dashboard",
     "text": "控制台"
   },
-  "dashboard.tools.title": {
-    "source": "Tools",
-    "text": "工具"
+  "dashboard.usage.cache_help": {
+    "source": "Cache reads are input tokens served from the prompt cache, usually billed at a lower rate; cache writes are input tokens stored into it. Both are part of Input Tokens.",
+    "text": "缓存命中指直接从提示词缓存读取的输入 token，通常按更低的价格计费；缓存写入指被存进缓存的输入 token。两者都已包含在输入 token 里。"
+  },
+  "dashboard.usage.cache_reads_label": {
+    "source": "Cache reads",
+    "text": "缓存命中"
+  },
+  "dashboard.usage.cache_writes_label": {
+    "source": "Cache writes",
+    "text": "缓存写入"
   },
   "dashboard.usage.cost": {
     "source": "Estimated cost",
@@ -2730,6 +2994,10 @@
   "dashboard.usage.footnote": {
     "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.",
     "text": "所有提示词和回复都会被记录，匿名化处理后可能会开源。套餐额度内免费；这里的金额只是根据日志做的成本归属，不是账单。"
+  },
+  "dashboard.usage.help_label": {
+    "source": "About {label}",
+    "text": "{label}说明"
   },
   "dashboard.usage.input_tokens": {
     "source": "Input Tokens",
@@ -2786,6 +3054,14 @@
   "dashboard.usage.quota_remaining": {
     "source": "Daily quota remaining",
     "text": "今日剩余额度"
+  },
+  "dashboard.usage.reasoning_help": {
+    "source": "Reasoning tokens are spent by the model thinking before it answers. Depending on the provider, they may already be counted in Output Tokens.",
+    "text": "推理 token 是模型在回答之前用来思考的 token。不同提供商的统计口径不同，这部分可能已经算进输出 token 里了。"
+  },
+  "dashboard.usage.reasoning_label": {
+    "source": "Reasoning tokens",
+    "text": "推理 token"
   },
   "dashboard.usage.requests": {
     "source": "Requests",
@@ -3138,10 +3414,6 @@
   "meta.team.title": {
     "source": "Team",
     "text": "团队"
-  },
-  "settings.back": {
-    "source": "← Back",
-    "text": "← 返回"
   },
   "settings.danger.description": {
     "source": "Irreversible actions that permanently affect your account.",

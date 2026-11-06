@@ -1009,6 +1009,8 @@ def _schedule_messages_cost_increment(
     user_id: str | None,
     usage: dict[str, int],
     pricing: dict[str, str] | None,
+    *,
+    api_key_id: int | None = None,
 ) -> None:
     """Fire-and-forget the daily quota cost increment for a billed request.
 
@@ -1034,7 +1036,7 @@ def _schedule_messages_cost_increment(
 
     async def _increment() -> None:
         try:
-            await op_store.increment_user_cost(user_id, cost)
+            await op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
         except Exception as exc:
             logger.warning(f"Failed to increment messages cost counter for {user_id}: {exc}")
             raise  # let tracked_task record the failure
@@ -1159,7 +1161,9 @@ def _schedule_log_store_task(
     # verify_api_key enforces; error rows (status != 200) are logged but never
     # billed, matching the chat/embedding paths.
     if status_code == 200:
-        _schedule_messages_cost_increment(op_store, user_id, usage_for_cost, pricing)
+        _schedule_messages_cost_increment(
+            op_store, user_id, usage_for_cost, pricing, api_key_id=metadata.get("api_key_id")
+        )
         # What this request is charged, for a batch attempt watching it; the
         # same inputs as the increment above. Unpriced reads as unknown.
         observe_billing(
@@ -2218,6 +2222,9 @@ async def execute_messages(
     # spend unattributed — and the per-job budget reads this same ledger.
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
+    # The key the usage is attributed to, for its owner's per-key views.
+    if user_ctx.get("api_key_id") is not None:
+        metadata["api_key_id"] = user_ctx["api_key_id"]
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
     metadata.update(ctx.batch_log_metadata())
     # The usage window query needs the grant itself and the real start time;

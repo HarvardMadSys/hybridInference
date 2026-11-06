@@ -2905,3 +2905,12 @@ async def test_request_log_queue_saturation_cooldown_suppresses_a_storm(monkeypa
 
     assert len(posted) == 1, posted
     assert "Request-log queue saturated" in json.dumps(posted[0])
+
+
+def test_is_failed_request_leaves_out_model_queued_503s():
+    """An on-demand model waiting for capacity is not a failed request."""
+    from serving.observability.alert_rules import _is_failed_request
+
+    assert _is_failed_request({"status": 503, "client_error_kind": "model_queued"}) is False
+    # Any other 503 still counts.
+    assert _is_failed_request({"status": 503, "provider": "cluster-ondemand"}) is True

@@ -7839,6 +7839,291 @@ async def test_route_capability_override_survives_a_target_edit_and_its_reset(ad
     assert cleared.json()["capabilities"] == DEFAULT_CAPABILITIES
 
 
+# -- Saving capabilities with a route's target edit ---------------------------
+
+FEATHERLESS_V2_TARGET = {
+    "upstream_provider": "featherless",
+    "base_url": "https://api.featherless.ai/v2",
+}
+
+
+def _audited_actions() -> list[str]:
+    return [call.kwargs["action"] for call in provider_routes.log_admin_action.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_saves_its_capabilities_in_the_same_request(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["base_url"] == "https://api.featherless.ai/v2"
+    assert body["capabilities"] == RUNTIME_CAPABILITIES
+    assert body["capabilities_baseline"] == DEFAULT_CAPABILITIES
+    assert body["capabilities_overridden"] is True
+    verify_mock.assert_awaited_once()
+    op_store.upsert_provider_route_config.assert_awaited_once()
+    assert json.loads(op_store.capability_rows[("minimax-fast", FEATHERLESS)]["capabilities"]) == (
+        RUNTIME_CAPABILITIES
+    )
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    assert adapter.config.base_url == "https://api.featherless.ai/v2"
+    _assert_capabilities_values(adapter, RUNTIME_CAPABILITIES)
+    _assert_capabilities_values(_route_adapter(route_executor, CHUTES), DEFAULT_CAPABILITIES)
+    # Each change keeps the audit entry it has on its own.
+    assert _audited_actions() == [
+        "routing.provider_routes.update",
+        "routing.provider_routes.capabilities.update",
+    ]
+    details = provider_routes.log_admin_action.await_args.kwargs["details"]
+    assert details["old_capabilities"] == DEFAULT_CAPABILITIES
+    assert details["capabilities"] == RUNTIME_CAPABILITIES
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_can_return_its_capabilities_to_the_baseline(admin_client):
+    """A reset in the edit clears the override, so the route follows models.yaml again."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=NARROW_CAPABILITIES,
+        headers=AUTH,
+    )
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={**FEATHERLESS_V2_TARGET, "reset_capabilities": True},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["capabilities"] == DEFAULT_CAPABILITIES
+    assert body["capabilities_overridden"] is False
+    assert op_store.capability_rows == {}
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    _assert_capabilities_values(adapter, DEFAULT_CAPABILITIES)
+    assert provider_routes._CAPABILITY_BASELINE not in adapter.config.route_metadata
+    assert _audited_actions() == [
+        "routing.provider_routes.update",
+        "routing.provider_routes.capabilities.reset",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_without_capabilities_leaves_them(admin_client):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=NARROW_CAPABILITIES,
+        headers=AUTH,
+    )
+    op_store.upsert_route_capability_override.reset_mock()
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json=FEATHERLESS_V2_TARGET,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"] == NARROW_CAPABILITIES
+    op_store.upsert_route_capability_override.assert_not_awaited()
+    op_store.delete_route_capability_override.assert_not_awaited()
+    assert _audited_actions() == ["routing.provider_routes.update"]
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_failure_restores_target_and_capabilities(admin_client):
+    """A route that cannot be installed keeps both its target and its override."""
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=NARROW_CAPABILITIES,
+        headers=AUTH,
+    )
+    before_rows = dict(op_store.capability_rows)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    provider_routes.log_admin_action.reset_mock()
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await client.put(
+            f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+            json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+            headers=AUTH,
+        )
+
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    assert adapter.config.base_url == "https://api.featherless.ai/v1"
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+    assert json.loads(op_store.capability_rows[("minimax-fast", FEATHERLESS)]["capabilities"]) == (
+        json.loads(before_rows[("minimax-fast", FEATHERLESS)]["capabilities"])
+    )
+    # The override row the edit wrote was put back, and the target row removed.
+    op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", FEATHERLESS)
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_failure_removes_an_override_it_added(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await client.put(
+            f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+            json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+            headers=AUTH,
+        )
+
+    assert op_store.capability_rows == {}
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    _assert_capabilities_values(adapter, DEFAULT_CAPABILITIES)
+    assert provider_routes._CAPABILITY_BASELINE not in adapter.config.route_metadata
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_capability_store_failure_saves_nothing(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    fake_routewise.refresh_route_table.reset_mock()
+    provider_routes.log_admin_action.reset_mock()
+    op_store.upsert_route_capability_override.side_effect = ConnectionError("database down")
+
+    with pytest.raises(ConnectionError, match="database down"):
+        await client.put(
+            f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+            json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+            headers=AUTH,
+        )
+
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    _assert_capabilities_values(_route_adapter(route_executor, FEATHERLESS), DEFAULT_CAPABILITIES)
+    op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", FEATHERLESS)
+    fake_routewise.refresh_route_table.assert_not_called()
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_route_edit_refuses_setting_and_resetting_capabilities_at_once(admin_client):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={
+            **FEATHERLESS_V2_TARGET,
+            "capabilities": RUNTIME_CAPABILITIES,
+            "reset_capabilities": True,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    assert op_store.capability_rows == {}
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_saves_its_capabilities_in_the_same_request(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await _patch_candidate(
+        client,
+        MINIMAX_ROUTE_ID,
+        {**OPENROUTER_PARASAIL_TARGET, "capabilities": NARROW_CAPABILITIES},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["capabilities"] == NARROW_CAPABILITIES
+    assert body["capabilities_baseline"] == RUNTIME_CAPABILITIES
+    assert body["capabilities_overridden"] is True
+    # The row keeps the route's declaration; the override has its own row.
+    assert json.loads(table.row("minimax-fast", MINIMAX_ROUTE_ID)["capabilities"]) == (
+        RUNTIME_CAPABILITIES
+    )
+    assert set(op_store.capability_rows) == {("minimax-fast", MINIMAX_ROUTE_ID)}
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    assert adapter.config.base_url == "https://openrouter.ai/api/v1"
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+    assert _audited_actions() == [
+        "routing.provider_routes.candidate.update",
+        "routing.provider_routes.capabilities.update",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_limit_edit_saves_its_capabilities(admin_client):
+    """An edit that rebuilds nothing still serves the new values from the next request."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+
+    response = await _patch_candidate(
+        client, MINIMAX_ROUTE_ID, {"capabilities": NARROW_CAPABILITIES}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"] == NARROW_CAPABILITIES
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    assert adapter is before
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+
+    reset = await _patch_candidate(client, MINIMAX_ROUTE_ID, {"reset_capabilities": True})
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert reset.json()["capabilities_overridden"] is False
+    assert op_store.capability_rows == {}
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_failure_restores_target_and_capabilities(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    path = f"/admin/routing/provider-route-capabilities/minimax-fast/{MINIMAX_ROUTE_ID}"
+    assert (await client.put(path, json=NARROW_CAPABILITIES, headers=AUTH)).status_code == 200
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    provider_routes.log_admin_action.reset_mock()
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await _patch_candidate(
+            client,
+            MINIMAX_ROUTE_ID,
+            {**OPENROUTER_PARASAIL_TARGET, "reset_capabilities": True},
+        )
+
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    restored_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    for field in ("provider", "base_url", "api_key_id", "provider_model_id", "endpoint_id"):
+        assert restored_row[field] == before_row[field], field
+    # The override the edit cleared is stored and served again.
+    assert json.loads(
+        op_store.capability_rows[("minimax-fast", MINIMAX_ROUTE_ID)]["capabilities"]
+    ) == (NARROW_CAPABILITIES)
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_boot_sync_applies_stored_overrides_and_skips_invalid_rows(admin_client, caplog):
     client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client

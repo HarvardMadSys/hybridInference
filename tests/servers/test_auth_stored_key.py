@@ -95,6 +95,8 @@ async def test_context_is_the_one_verify_api_key_returns_for_the_same_row():
     assert stored["max_concurrent_requests"] == 7
     assert stored["spent_today_usd"] == pytest.approx(12.5)
     assert stored["auth_key_hash"] == hash_api_key(KEY)
+    # Work stored under a key (a batch) is charged to that key.
+    assert stored["api_key_id"] == 11
     store.get_auth_context_with_spend.assert_awaited_once_with(hash_api_key(KEY))
     # Not a request: nothing written, and no role published on the caller's context.
     store.update_key_last_used.assert_not_awaited()

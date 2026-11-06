@@ -18,6 +18,9 @@ CLIENT_ERROR_KIND = "client_error_kind"
 # Value: the gateway could not find/authorize the requested model (a 404 we raised
 # ourselves, not an upstream provider 404).
 MODEL_NOT_FOUND = "model_not_found"
+# Value: an on-demand upstream answered that the model is queued for capacity
+# (``serving.exceptions.UpstreamModelQueued``), a 503 that is no fault.
+MODEL_QUEUED = "model_queued"
 
 # req_ctx key holding the authenticated caller's role, published by the API-key
 # auth dependency. Read by the multi-key pool to skip upstream provider keys
@@ -225,9 +228,20 @@ def mark_model_not_found() -> None:
     update({CLIENT_ERROR_KIND: MODEL_NOT_FOUND})
 
 
+def mark_model_queued() -> None:
+    """Tag the current request as answered "model queued" by its upstream.
+
+    The model's on-demand deployment is waiting for capacity, so the request got
+    a 503 with nothing wrong anywhere. Surfaced onto the request log record so
+    the failed-request-rate alert leaves it out, as the DB-query alerter does.
+    """
+    update({CLIENT_ERROR_KIND: MODEL_QUEUED})
+
+
 __all__ = [
     "CLIENT_ERROR_KIND",
     "MODEL_NOT_FOUND",
+    "MODEL_QUEUED",
     "PRICING_SNAPSHOT",
     "PRICING_TIME",
     "PROVIDER",
@@ -236,6 +250,7 @@ __all__ = [
     "USER_ROLE",
     "get",
     "mark_model_not_found",
+    "mark_model_queued",
     "publish_upstream_provider",
     "push",
     "reset_request_scope",

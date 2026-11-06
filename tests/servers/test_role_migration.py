@@ -2,7 +2,7 @@
 
 This simulates a real upgrade path: a database that already has the old
 ``users_role_check`` constraint allowing ``('free','internal_group','developer','admin')``
-and rows with those old role values.  After ``_create_tables()`` runs, all rows
+and rows with those old role values.  After the baseline's logging-store step runs, all rows
 must have been migrated to the new 3-role set and the new constraint must be in place.
 
 Requires a running PostgreSQL test database (see TEST_DB_* env vars).
@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 from ulid import ULID
 
+from migrations.baseline import logging_store
 from serving.storage.database import DatabaseLogger
 from tests.fixtures.auth_factories import create_test_user
 
@@ -21,11 +22,17 @@ pytest_plugins = ["tests.servers.conftest_auth"]
 pytestmark = pytest.mark.dbtest
 
 
+async def _run_baseline_step(db) -> None:
+    """Run the step of ``0001_baseline`` that DatabaseLogger used to run at startup."""
+    async with db.pool.acquire() as conn:
+        await logging_store.create_tables(conn)
+
+
 @pytest_asyncio.fixture
 async def migration_db(auth_db_logger: DatabaseLogger):
     """Prepare a DB with old 4-role constraint and sample users.
 
-    The auth_db_logger fixture already calls _create_tables() once (which
+    The auth_db_logger fixture already calls the baseline step once (which
     installs the *new* constraint).  We revert to the old constraint and
     insert rows with legacy role values so we can test the upgrade path.
     """
@@ -75,7 +82,7 @@ class TestRoleMigration:
 
     @pytest.mark.asyncio
     async def test_create_tables_migrates_old_roles(self, migration_db: DatabaseLogger) -> None:
-        """_create_tables() should migrate internal_group/developer → internal."""
+        """the baseline step should migrate internal_group/developer → internal."""
         pool = migration_db.pool
         assert pool is not None
 
@@ -86,7 +93,7 @@ class TestRoleMigration:
         assert "developer" in old_roles
 
         # Run migration (same as service restart)
-        await migration_db._create_tables()
+        await _run_baseline_step(migration_db)
 
         async with pool.acquire() as conn:
             # All old roles must be gone
@@ -105,7 +112,7 @@ class TestRoleMigration:
     @pytest.mark.asyncio
     async def test_new_constraint_rejects_old_roles(self, migration_db: DatabaseLogger) -> None:
         """After migration, inserting old role values should be rejected."""
-        await migration_db._create_tables()
+        await _run_baseline_step(migration_db)
 
         pool = migration_db.pool
         assert pool is not None
@@ -133,12 +140,12 @@ class TestRoleMigration:
 
         On a DB that has already gone through the full migration (constraint
         includes 'pro' and rows exist with role='pro'), a subsequent restart
-        re-runs _create_tables() and must not crash. Previously the first
+        re-runs the baseline step and must not crash. Previously the first
         rebuild block re-added the constraint with ('free','internal','admin')
         only, which rejected existing 'pro' rows and broke startup.
         """
         # First migration: legacy 4-role -> new set with 'pro'.
-        await migration_db._create_tables()
+        await _run_baseline_step(migration_db)
 
         pool = migration_db.pool
         assert pool is not None
@@ -150,7 +157,7 @@ class TestRoleMigration:
             )
 
         # Restart should re-run migration cleanly without rejecting the pro row.
-        await migration_db._create_tables()
+        await _run_baseline_step(migration_db)
 
         async with pool.acquire() as conn:
             roles = {r["role"] for r in await conn.fetch("SELECT DISTINCT role FROM users")}
@@ -181,9 +188,9 @@ class TestRoleMigration:
 
     @pytest.mark.asyncio
     async def test_migration_is_idempotent(self, migration_db: DatabaseLogger) -> None:
-        """Running _create_tables() twice should not fail or corrupt data."""
-        await migration_db._create_tables()
-        await migration_db._create_tables()  # second run — must be safe
+        """Running the baseline step twice should not fail or corrupt data."""
+        await _run_baseline_step(migration_db)
+        await _run_baseline_step(migration_db)  # second run — must be safe
 
         pool = migration_db.pool
         assert pool is not None
