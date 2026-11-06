@@ -102,6 +102,13 @@ _USER_USAGE_SUMS = (
     "reasoning_tokens",
 )
 
+# Summed over the rows that carry them, never coalesced: a NULL
+# ``reasoning_tokens`` means the upstream reported no count (a native Anthropic
+# upstream never does; thinking is inside its output), so a window whose rows
+# all lack one sums to "unknown", not to 0, and the rows that do carry one are
+# counted so a partial sum is labelled as such.
+_USER_USAGE_KNOWN_SUMS = ("reasoning_tokens",)
+
 # One pass over the user's rows instead of one query per window; the
 # all-time window scans every row anyway.
 _USER_USAGE_SQL = "SELECT {} FROM api_logs WHERE user_id = $1".format(
@@ -111,7 +118,12 @@ _USER_USAGE_SQL = "SELECT {} FROM api_logs WHERE user_id = $1".format(
             for window, cond in _USER_USAGE_WINDOWS.items()
         ]
         + [
-            f"COALESCE(SUM({col}) FILTER (WHERE {cond}), 0) AS {window}__{col}"
+            (
+                f"SUM({col}) FILTER (WHERE {cond}) AS {window}__{col}, "
+                f"COUNT({col}) FILTER (WHERE {cond}) AS {window}__{col}_known"
+            )
+            if col in _USER_USAGE_KNOWN_SUMS
+            else f"COALESCE(SUM({col}) FILTER (WHERE {cond}), 0) AS {window}__{col}"
             for window, cond in _USER_USAGE_WINDOWS.items()
             for col in _USER_USAGE_SUMS
         ]
@@ -609,6 +621,12 @@ class PostgresLogStore(LogStore):
                 "requests": int(row[f"{window}__requests"]) if row else 0,
             }
             for col in _USER_USAGE_SUMS:
+                if col in _USER_USAGE_KNOWN_SUMS:
+                    known = int(row[f"{window}__{col}_known"] or 0) if row else 0
+                    value = row[f"{window}__{col}"] if row and known else None
+                    stats[col] = None if value is None else int(value)
+                    stats[f"{col}_known_requests"] = known
+                    continue
                 value = row[f"{window}__{col}"] if row else 0
                 stats[col] = float(value) if col == "cost_usd" else int(value)
             return stats

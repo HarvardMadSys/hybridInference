@@ -106,8 +106,13 @@ export interface UsageStats {
     cache_read_tokens?: number;
     /** Input tokens written to the prompt cache; part of `prompt_tokens`. */
     cache_write_tokens?: number;
-    /** Reasoning tokens; some providers already count them in `completion_tokens`. */
-    reasoning_tokens?: number;
+    /**
+     * Reasoning tokens; some providers already count them in `completion_tokens`.
+     * Summed over the requests whose upstream reported a count; null when none did.
+     */
+    reasoning_tokens?: number | null;
+    /** How many of `requests` reported a reasoning count; fewer means a partial sum. */
+    reasoning_tokens_known_requests?: number;
     cost_usd: number;
   };
 }

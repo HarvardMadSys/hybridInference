@@ -15,7 +15,13 @@ import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from serving.utils.token_utils import extract_cache_tokens, usage_count
+from serving.storage.utils import billable_output_tokens
+from serving.utils.token_utils import (
+    extract_cache_tokens,
+    extract_reasoning_tokens,
+    optional_token_count,
+    usage_count,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -582,6 +588,61 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+#: ``usage_sink`` key under which a translated request hands the router the
+#: upstream's own OpenAI-shaped counts. Anthropic usage has no reasoning field
+#: and no total, so these never reach the client; the router logs and bills
+#: from them instead of from the Anthropic shape.
+OPENAI_USAGE_SINK_KEY = "openai_usage"
+
+
+def openai_usage_record(usage: dict[str, Any]) -> dict[str, int | None]:
+    """The upstream's OpenAI-shaped counts, kept for logging and billing.
+
+    Every count is the one the upstream reported; nothing is derived from
+    content. ``reasoning_tokens`` and ``total_tokens`` stay ``None`` when the
+    upstream did not report them: a missing reasoning count is unknown, not 0,
+    and a reported total is the evidence of whether ``completion_tokens``
+    already includes reasoning (see ``billable_output_tokens``), so none is
+    made up here. Cache counts are present only when reported.
+    """
+    record: dict[str, int | None] = {
+        "prompt_tokens": usage_count(usage.get("prompt_tokens"), field="prompt_tokens"),
+        "completion_tokens": usage_count(usage.get("completion_tokens"), field="completion_tokens"),
+        "total_tokens": optional_token_count(usage.get("total_tokens")),
+        "reasoning_tokens": optional_token_count(extract_reasoning_tokens(usage)),
+    }
+    cache_read, cache_write = extract_cache_tokens(usage)
+    if cache_read is not None:
+        record["cache_read_tokens"] = cache_read
+    if cache_write is not None:
+        record["cache_write_tokens"] = cache_write
+    return record
+
+
+def anthropic_output_tokens(record: dict[str, int | None]) -> int:
+    """Anthropic ``output_tokens`` for an OpenAI usage record.
+
+    Anthropic counts thinking inside ``output_tokens``. OpenAI-compatible
+    upstreams differ: DeepSeek and OpenAI already include reasoning in
+    ``completion_tokens``, Gemini does not. This is the number the chat surface
+    bills at the completion price for the same usage, so the client and the
+    billed output agree; the log row keeps the upstream's own
+    ``completion_tokens`` and ``reasoning_tokens`` beside it.
+
+    With no reported total there is no evidence either way, and like chat this
+    bills completion plus reasoning, even for a count nested in
+    ``completion_tokens_details`` that OpenAI semantics would already include.
+    """
+    return int(
+        billable_output_tokens(
+            prompt_tokens=record.get("prompt_tokens") or 0,
+            completion_tokens=record.get("completion_tokens") or 0,
+            reasoning_tokens=record.get("reasoning_tokens") or 0,
+            total_tokens=record.get("total_tokens"),
+        )
+    )
+
+
 def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[str, Any]:
     """Translate an OpenAI ChatCompletion response to Anthropic Messages format."""
     choice = (resp.get("choices") or [{}])[0]
@@ -638,7 +699,7 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
     input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
     anthropic_usage: dict[str, int] = {
         "input_tokens": input_tokens,
-        "output_tokens": int(usage_in.get("completion_tokens", 0) or 0),
+        "output_tokens": anthropic_output_tokens(openai_usage_record(usage_in)),
     }
     if cache_read is not None:
         anthropic_usage["cache_read_input_tokens"] = cache_read
@@ -872,12 +933,27 @@ class OpenAIToAnthropicStreamTranslator:
             "input_tokens": max(0, int(input_tokens_estimate)),
             "output_tokens": 0,
         }
+        # Every usage field the upstream has reported in this stream, merged in
+        # arrival order. None until a chunk carries usage, so an estimate is
+        # never mistaken for a reported count.
+        self._upstream_usage: dict[str, Any] | None = None
         self._buffer = b""
 
     @property
     def usage(self) -> dict[str, int]:
         """Return a copy of current usage counters."""
         return dict(self._usage)
+
+    @property
+    def openai_usage(self) -> dict[str, int | None] | None:
+        """The upstream's reported OpenAI-shaped counts, or None if it reported none.
+
+        Internal accounting only (see :func:`openai_usage_record`); the
+        Anthropic events this translator emits never carry it.
+        """
+        if self._upstream_usage is None:
+            return None
+        return openai_usage_record(self._upstream_usage)
 
     def feed(self, chunk: bytes) -> Iterator[bytes]:
         """Consume one OpenAI SSE chunk and yield zero or more Anthropic SSE frames.
@@ -972,7 +1048,8 @@ class OpenAIToAnthropicStreamTranslator:
 
     def _handle_chunk(self, obj: dict[str, Any]) -> Iterator[bytes]:
         usage = obj.get("usage")
-        if usage:
+        if isinstance(usage, dict) and usage:
+            self._upstream_usage = {**(self._upstream_usage or {}), **usage}
             cache_read, cache_write = extract_cache_tokens(usage)
             prompt_tokens = usage_count(usage.get("prompt_tokens"), field="prompt_tokens")
             # OpenAI prompt_tokens is cache-inclusive; Anthropic input_tokens
@@ -981,9 +1058,12 @@ class OpenAIToAnthropicStreamTranslator:
             input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
             if "prompt_tokens" in usage:
                 self._usage["input_tokens"] = input_tokens
-            if usage.get("completion_tokens") is not None:
-                self._usage["output_tokens"] = usage_count(
-                    usage["completion_tokens"], field="completion_tokens"
+            if self._upstream_usage.get("completion_tokens") is not None:
+                # Includes reasoning the upstream counted outside completion
+                # (Gemini), as Anthropic output_tokens does, whichever chunk
+                # carried each count.
+                self._usage["output_tokens"] = anthropic_output_tokens(
+                    openai_usage_record(self._upstream_usage)
                 )
             if cache_read is not None:
                 self._usage["cache_read_input_tokens"] = cache_read
