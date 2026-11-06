@@ -691,3 +691,135 @@ def test_non_latin1_model_names_are_omitted_from_headers():
         provider="zai",
         endpoint_publishable=True,
     ) == {"X-FI-Served-Provider": "zai"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_keepalive_commit_omits_served_identity_until_first_content(chat_app, monkeypatch):
+    """A role-chunk timeout commit must not name the primary if a fallback later serves.
+
+    Deterministic repro: patch the keepalive interval to 0.05s, primary fails
+    slowly (after the commit), fallback serves. Headers must omit served
+    provider/endpoint (only requested model) because the commit happened
+    before first content.
+    """
+    import asyncio as _asyncio
+
+    import serving.servers.routers.completions_stream as stream_mod
+
+    monkeypatch.setattr(stream_mod, "_KEEPALIVE_INTERVAL", 0.05)
+
+    class _SlowFailingStreamAdapter(BaseAdapter):
+        async def chat_completion(self, messages, **params):
+            raise RuntimeError("primary failed")
+
+        async def stream_chat_completion(self, messages, **params):
+            await _asyncio.sleep(0.2)
+            raise RuntimeError("slow primary failed")
+            if False:  # pragma: no cover
+                yield ""
+
+    primary_cfg = _chat_cfg(CHAT_MODEL)
+    primary_cfg.provider = "zai"
+    primary_cfg.base_url = "https://example-zai.test"
+    primary_cfg.endpoint_id = f"{CHAT_MODEL}:zai-api"
+    primary_cfg.endpoint_identity_publishable = True
+    fallback_cfg = _chat_cfg(CHAT_MODEL)
+    fallback_cfg.provider = "sglang"
+    fallback_cfg.base_url = "https://example-sglang.test"
+    fallback_cfg.endpoint_id = f"{CHAT_MODEL}:deepseek-api"
+    fallback_cfg.endpoint_identity_publishable = True
+    chat_app.state.services.router.register_route(
+        CHAT_MODEL,
+        [(_SlowFailingStreamAdapter(primary_cfg), 0.9), (DummyAdapter(fallback_cfg), 0.1)],
+    )
+    _enable_trusted_probe(chat_app)
+    transport = ASGITransport(app=chat_app)
+    from httpx import AsyncClient as _AC
+
+    async with _AC(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/v1/chat/completions",
+            json={"model": CHAT_MODEL, "messages": [{"role": "user", "content": "Hi"}], "stream": True},
+            headers={"x-probe": "synthetic"},
+        )
+    assert r.status_code == 200
+    # Fallback served, but the commit predated content: served identity omitted.
+    assert r.headers["x-fi-requested-model"] == CHAT_MODEL
+    assert "x-fi-served-model" not in r.headers
+    assert "x-fi-served-provider" not in r.headers
+    assert "x-fi-served-endpoint" not in r.headers
+
+
+@pytest.mark.asyncio
+async def test_streaming_fallback_before_first_content_names_fallback(chat_app):
+    """Fallback that wins before any content still names the fallback, not the primary.
+
+    No keepalive timeout: the primary fails immediately, the fallback's
+    routing chunk is processed before the first forwarded chunk, so headers
+    computed at commit describe the route that served.
+    """
+    class _FailingStreamAdapter(BaseAdapter):
+        async def chat_completion(self, messages, **params):
+            raise RuntimeError("primary failed")
+        async def stream_chat_completion(self, messages, **params):
+            raise RuntimeError("primary stream failed")
+            if False:
+                yield ""
+    primary_cfg = _chat_cfg(CHAT_MODEL)
+    primary_cfg.provider = "zai"
+    primary_cfg.base_url = "https://example-zai.test"
+    primary_cfg.endpoint_id = f"{CHAT_MODEL}:zai-api"
+    primary_cfg.endpoint_identity_publishable = True
+    fallback_cfg = _chat_cfg(CHAT_MODEL)
+    fallback_cfg.provider = "sglang"
+    fallback_cfg.base_url = "https://example-sglang.test"
+    fallback_cfg.endpoint_id = f"{CHAT_MODEL}:deepseek-api"
+    fallback_cfg.endpoint_identity_publishable = True
+    chat_app.state.services.router.register_route(
+        CHAT_MODEL,
+        [(_FailingStreamAdapter(primary_cfg), 0.9), (DummyAdapter(fallback_cfg), 0.1)],
+    )
+    _enable_trusted_probe(chat_app)
+    transport = ASGITransport(app=chat_app)
+    from httpx import AsyncClient as _AC
+    async with _AC(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/v1/chat/completions",
+            json={"model": CHAT_MODEL, "messages": [{"role": "user", "content": "Hi"}], "stream": True},
+            headers={"x-probe": "synthetic"},
+        )
+    assert r.status_code == 200
+    assert r.headers["x-fi-served-provider"] == "sglang"
+    assert r.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:deepseek-api"
+
+
+@pytest.mark.asyncio
+async def test_streaming_failure_after_commit_keeps_committed_headers(chat_app):
+    """After headers are committed, a late failure cannot rewrite served identity.
+
+    The adapter yields one content chunk then raises (no fallback after
+    chunks_yielded); headers must name the single serving route and the body
+    ends with an in-band error frame, not a silent truncation.
+    """
+    class _LateFailAdapter(DummyAdapter):
+        async def stream_chat_completion(self, messages, **params):
+            yield self.format_stream_chunk(model=self.config.id, content="partial ")
+            raise RuntimeError("late failure")
+            if False:
+                yield ""
+    cfg = _chat_cfg(CHAT_MODEL)
+    chat_app.state.services.router.register_route(CHAT_MODEL, [(_LateFailAdapter(cfg), 1.0)])
+    _enable_trusted_probe(chat_app)
+    transport = ASGITransport(app=chat_app)
+    from httpx import AsyncClient as _AC
+    async with _AC(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/v1/chat/completions",
+            json={"model": CHAT_MODEL, "messages": [{"role": "user", "content": "Hi"}], "stream": True},
+            headers={"x-probe": "synthetic"},
+        )
+    assert r.status_code == 200
+    assert r.headers["x-fi-served-provider"] == "zai"
+    assert r.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
+    assert "partial" in r.text
+    assert '"error"' in r.text

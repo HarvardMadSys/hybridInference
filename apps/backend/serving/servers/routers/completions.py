@@ -1319,6 +1319,16 @@ async def execute_chat(
         )
 
         def identity_headers_for_response() -> dict[str, str]:
+            # A role-chunk commit on a keepalive timeout happens before any
+            # upstream content: the serving route is not yet known and a
+            # fallback can still win, so served identity must be omitted
+            # (only the requested model is safe) until first content is seen.
+            if not session.seen_first_content:
+                if not include_identity_headers:
+                    return {}
+                if auto_selection is not None:
+                    return served_identity_headers(requested_model=requested_model)
+                return served_identity_headers(requested_model=requested_model)
             return build_served_identity_headers(session.routing_info)
 
         logger.debug(f"Creating StreamingResponse for model: {model}")
