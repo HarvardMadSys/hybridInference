@@ -108,6 +108,17 @@ class EmbeddingsPathConfigError(ValueError):
 
 
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
+_GENERIC_ENDPOINT_ID_KINDS = frozenset(("openai_compat", "staging", "vllm", "sglang", "kimi"))
+
+
+def _endpoint_identity_publishable(kind: str) -> bool:
+    """Whether registry-origin metadata allows publishing this route's location.
+
+    Generic adapter IDs may be minted from an arbitrary DNS name or LAN
+    address, so their generated ``*-api`` suffix is not public identity.
+    Dedicated provider kinds use the configured provider label instead.
+    """
+    return kind not in _GENERIC_ENDPOINT_ID_KINDS
 
 
 def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
@@ -786,6 +797,9 @@ def register_from_models_yaml(
                 adapter_cfg["provider"] = provider_label
                 # Generate unique endpoint_id for availability tracking and circuit breaker
                 adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
+                # Keep the route-origin decision on the registered adapter.
+                # The derived endpoint_id alone cannot prove publishability.
+                adapter_cfg["endpoint_identity_publishable"] = _endpoint_identity_publishable(kind)
 
                 route_provider_model_id = r.get("provider_model_id")
                 if route_provider_model_id is not None:
