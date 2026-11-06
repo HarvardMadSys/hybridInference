@@ -21,6 +21,7 @@ from serving.exceptions import (
     APIKeyLimitReachedError,
     HardDeleteStateChanged,
     PreferencesTooLargeError,
+    ProjectNotFoundError,
     SelfDeleteRefused,
 )
 from serving.storage import user_usage_rollup
@@ -1822,14 +1823,25 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     monthly = current["quota_monthly_cost_usd"]
             from serving.storage.project_backfill import (
                 default_project_id,
+                ensure_personal_org,
                 personal_org_id,
             )
 
             target_project = project_id or default_project_id(user_id)
-            project_row = await conn.fetchrow(
-                "SELECT org_id FROM projects WHERE id = $1", target_project
+            project_query = (
+                "SELECT org_id FROM projects WHERE id = $1 AND org_id = $2 AND status = 'active'"
             )
-            org = project_row["org_id"] if project_row else personal_org_id(user_id)
+            project_row = await conn.fetchrow(
+                project_query, target_project, personal_org_id(user_id)
+            )
+            if project_row is None and project_id is None:
+                await ensure_personal_org(conn, user_id=user_id, user_name=user_name)
+                project_row = await conn.fetchrow(
+                    project_query, target_project, personal_org_id(user_id)
+                )
+            if project_row is None:
+                raise ProjectNotFoundError("Project not found")
+            org = project_row["org_id"]
             row = await conn.fetchrow(
                 f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}) VALUES ({_KEY_INSERT_VALUES}) "
                 "RETURNING id, created_at",
@@ -1944,14 +1956,24 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return [self._project_row(row) for row in rows]
 
     async def get_default_project(self, user_id: str) -> Row | None:
-        """Return the account's active Default project."""
-        from serving.storage.project_backfill import personal_org_id
+        """Return Default, provisioning it if startup backfill has not reached this account."""
+        from serving.storage.project_backfill import ensure_personal_org, personal_org_id
 
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             row = await conn.fetchrow(
                 "SELECT * FROM projects WHERE org_id = $1 AND is_default AND status = 'active'",
                 personal_org_id(user_id),
             )
+            if row is None:
+                user = await conn.fetchrow("SELECT user_name FROM users WHERE id = $1", user_id)
+                if user is None:
+                    return None
+                await ensure_personal_org(conn, user_id=user_id, user_name=user["user_name"])
+                row = await conn.fetchrow(
+                    "SELECT * FROM projects WHERE org_id = $1 AND is_default AND status = 'active'",
+                    personal_org_id(user_id),
+                )
         return self._project_row(row) if row else None
 
     async def get_project(self, user_id: str, project_id: str) -> Row | None:

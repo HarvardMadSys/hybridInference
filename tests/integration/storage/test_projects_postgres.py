@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 
+from serving.exceptions import ProjectNotFoundError
 from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.storage.project_backfill import (
     default_project_id,
@@ -197,6 +198,7 @@ async def test_a_suspended_organization_reaches_the_auth_context(store):
     identity = await store.get_auth_context_with_spend("h-projects-suspend")
     assert identity is not None
     assert identity["org_status"] == "suspended"
+    assert await store.get_quota_context_for_user(_USER) == []
 
     await store.update_org(personal_org_id(_USER), {"status": "active"})
 
@@ -254,3 +256,46 @@ async def test_grant_context_uses_default_project_even_with_a_named_project_key(
     assert float(context["project_budget_daily_usd"]) == 2
     key = await store.get_auth_context_with_spend("h-projects-grant")
     assert key["project_id"] == "proj_auth_test"
+
+
+async def test_default_is_provisioned_before_startup_backfill(store):
+    async with store._pool.acquire() as conn:
+        await conn.execute("DELETE FROM organizations WHERE id = $1", personal_org_id(_USER))
+    project = await store.get_default_project(_USER)
+    assert project["id"] == default_project_id(_USER)
+    await store.create_key(key_hash="h-projects-lazy", key_prefix="hyi-lazy", user_id=_USER)
+    key = await store.get_auth_context_with_spend("h-projects-lazy")
+    assert key["project_id"] == project["id"]
+    assert await store.get_default_project(_USER) == project
+
+
+@pytest.mark.parametrize("state", ["foreign", "archived", "missing"])
+async def test_key_insertion_revalidates_project_ownership_and_status(store, state):
+    project_id = "proj_auth_test"
+    if state != "missing":
+        await store.create_project(project_id=project_id, user_id=_USER, name="Bound")
+        async with store._pool.acquire() as conn:
+            if state == "archived":
+                await conn.execute(
+                    "UPDATE projects SET status = 'archived' WHERE id = $1", project_id
+                )
+            else:
+                await conn.execute(
+                    "INSERT INTO organizations (id, name, kind) VALUES ('org_foreign_test', 'Foreign', 'personal')"
+                )
+                await conn.execute(
+                    "UPDATE projects SET org_id = 'org_foreign_test' WHERE id = $1", project_id
+                )
+    try:
+        with pytest.raises(ProjectNotFoundError):
+            await store.create_key(
+                key_hash="h-projects-invalid",
+                key_prefix="hyi-invalid",
+                user_id=_USER,
+                project_id=project_id,
+            )
+        assert await store.count_active_keys(_USER) == 0
+    finally:
+        if state == "foreign":
+            async with store._pool.acquire() as conn:
+                await conn.execute("DELETE FROM organizations WHERE id = 'org_foreign_test'")

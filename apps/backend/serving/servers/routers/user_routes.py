@@ -21,6 +21,7 @@ from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
     PreferencesTooLargeError,
+    ProjectNotFoundError,
     UserNotFoundError,
     generic_message_for_status,
     user_safe_error_for_log,
@@ -619,6 +620,8 @@ async def create_api_key(
             max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT,
             project_id=project_id,
         )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
     except APIKeyLimitReachedError as exc:
         raise HTTPException(
             status_code=409,

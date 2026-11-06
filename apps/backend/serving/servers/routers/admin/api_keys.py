@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.audit import AuditActor, AuditTarget
+from serving.exceptions import ProjectNotFoundError
 from serving.quota import resolve_quota
 from serving.schemas_admin import (
     APIKeyDetailResponse,
@@ -104,18 +105,21 @@ async def create_api_key(
     key_hash = hash_api_key(plaintext_key)
     key_prefix = plaintext_key[:12]
 
-    row = await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=payload.user_id,
-        user_name=payload.user_name,
-        quota_daily_cost_usd=payload.quota_daily_cost_usd,
-        quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
-        expires_at=payload.expires_at,
-        notes=payload.notes,
-        metadata=payload.metadata,
-        project_id=project_id,
-    )
+    try:
+        row = await op_store.create_key(
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=payload.user_id,
+            user_name=payload.user_name,
+            quota_daily_cost_usd=payload.quota_daily_cost_usd,
+            quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+            expires_at=payload.expires_at,
+            notes=payload.notes,
+            metadata=payload.metadata,
+            project_id=project_id,
+        )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
 
     await log_admin_action(
         op_store,
