@@ -22,11 +22,13 @@ def _store(conn: AsyncMock) -> PostgresOperationalStore:
 
 async def test_a_failed_key_counter_write_leaves_the_account_increment_standing():
     conn = AsyncMock()
-    conn.execute = AsyncMock(side_effect=[None, RuntimeError("relation does not exist")])
+    conn.execute = AsyncMock(
+        side_effect=[None, RuntimeError("relation does not exist"), None, None]
+    )
 
     await _store(conn).increment_user_cost("u1", 0.5, day="2026-11-02", api_key_id=7)
 
-    first, second = (call.args[0] for call in conn.execute.await_args_list)
+    first, second = (call.args[0] for call in conn.execute.await_args_list[:2])
     assert first.startswith("INSERT INTO user_daily_cost")
     assert second.startswith("INSERT INTO api_key_daily_cost")
 

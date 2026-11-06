@@ -120,3 +120,42 @@ def test_the_accounts_monthly_body_has_the_daily_fields_and_renews_next_month():
     assert monthly["reset_at"] == quota.next_utc_month_start().isoformat()
     assert "ops@example.test" in monthly["message"]
     assert headers.keys() == daily_headers.keys()
+
+
+@pytest.mark.parametrize(
+    ("spent_today", "spent_month", "expected"),
+    [
+        (4.99, 49.99, None),
+        (5, 0, ("project", "day")),
+        (1, 50, ("project", "month")),
+    ],
+)
+def test_a_project_budget_is_checked_after_the_key_and_before_the_account(
+    spent_today, spent_month, expected
+):
+    refusal = quota.first_refusal(
+        account_quota_usd=100,
+        account_spent_usd=1,
+        project_budget_daily_usd=5,
+        project_budget_monthly_usd=50,
+        project_spent_today_usd=spent_today,
+        project_spent_month_usd=spent_month,
+    )
+
+    assert (None if refusal is None else (refusal.scope, refusal.window)) == expected
+
+
+def test_a_project_refusal_names_the_project():
+    body, _ = quota.refusal_payload(
+        quota.BudgetRefusal("project", "month", 50, 50.12, scope_name="eval-pipeline")
+    )
+
+    assert (body["code"], body["scope"], body["window"]) == (
+        "budget_exceeded",
+        "project",
+        "month",
+    )
+    assert body["message"].startswith(
+        "Project 'eval-pipeline' reached its monthly budget of $50.00"
+    )
+    assert body["project"] == "eval-pipeline"

@@ -81,7 +81,14 @@ def _schedule_cost_increment(
 
     async def _increment() -> None:
         try:
-            await op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
+            context = req_ctx.get() or {}
+            await op_store.increment_user_cost(
+                user_id,
+                cost,
+                api_key_id=api_key_id,
+                org_id=context.get(req_ctx.ORG_ID) or None,
+                project_id=context.get(req_ctx.PROJECT_ID) or None,
+            )
         except Exception as exc:
             logger.warning(f"Failed to increment embedding cost counter for {user_id}: {exc}")
             raise  # let tracked_task record the failure
@@ -294,6 +301,8 @@ async def execute_embeddings(
     # The key the usage is attributed to, for its owner's per-key views.
     if user_ctx.get("api_key_id") is not None:
         metadata["api_key_id"] = user_ctx["api_key_id"]
+    if user_ctx.get("project_id"):
+        metadata["project_id"] = user_ctx["project_id"]
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
     metadata.update(ctx.batch_log_metadata())

@@ -21,7 +21,11 @@ from serving.grant_auth import (
     AgentQuotaExceeded,
     authenticate_grant_model_call,
 )
-from serving.model_access import KEY_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
+from serving.model_access import (
+    KEY_ALLOWED_MODELS_KEY,
+    PROJECT_ALLOWED_MODELS_KEY,
+    get_disabled_models_from_preferences,
+)
 from serving.observability.rejection_log import (
     bounded_enrichment,
     capture_rejected_prompt,
@@ -359,9 +363,12 @@ async def _budget_refusal(
     the default and it has no monthly quota, as before.
     """
     daily = monthly = None
+    project_daily = project_monthly = None
     if api_key_id is not None:
         daily = _optional_usd(identity.get("budget_daily_usd"))
         monthly = _optional_usd(identity.get("budget_monthly_usd"))
+        project_daily = _optional_usd(identity.get("project_budget_daily_usd"))
+        project_monthly = _optional_usd(identity.get("project_budget_monthly_usd"))
     key_today = key_month = 0.0
     if daily is not None or monthly is not None:
         if identity.get("key_spent_today_usd") is not None:
@@ -387,6 +394,11 @@ async def _budget_refusal(
         key_spent_month_usd=key_month,
         key_prefix=identity.get("key_prefix"),
         key_label=_key_label(identity),
+        project_budget_daily_usd=project_daily,
+        project_budget_monthly_usd=project_monthly,
+        project_spent_today_usd=float(identity.get("project_spent_today_usd") or 0.0),
+        project_spent_month_usd=float(identity.get("project_spent_month_usd") or 0.0),
+        project_name=identity.get("project_name"),
     )
 
 
@@ -445,10 +457,30 @@ def _user_context(
         # stays the presented key even when acting on behalf of another user.
         "auth_key_hash": key_hash,
         "api_key_id": api_key_id,
+        "key_prefix": identity.get("key_prefix"),
+        "budget_daily_usd": identity.get("budget_daily_usd"),
+        "budget_monthly_usd": identity.get("budget_monthly_usd"),
+        "key_spent_today_usd": identity.get("key_spent_today_usd"),
+        "key_spent_month_usd": identity.get("key_spent_month_usd"),
+        "project_id": identity.get("project_id"),
+        "project_name": identity.get("project_name"),
+        "project_max_concurrent_requests": identity.get("project_max_concurrent_requests"),
+        "org_max_concurrent_requests": identity.get("org_max_concurrent_requests"),
+        "key_max_concurrent_requests": identity.get("key_max_concurrent_requests"),
+        "org_id": identity.get("org_id"),
+        "project_budget_daily_usd": identity.get("project_budget_daily_usd"),
+        "project_budget_monthly_usd": identity.get("project_budget_monthly_usd"),
+        "project_spent_today_usd": identity.get("project_spent_today_usd"),
+        "project_spent_month_usd": identity.get("project_spent_month_usd"),
+        "quota_monthly_cost_usd": identity.get("quota_monthly_cost_usd"),
+        "account_spent_month_usd": identity.get("account_spent_month_usd"),
     }
     allowed = identity.get("allowed_models")
     if api_key_id is not None and allowed is not None:
         context[KEY_ALLOWED_MODELS_KEY] = list(allowed)
+    project_allowed = identity.get("project_allowed_models")
+    if api_key_id is not None and project_allowed is not None:
+        context[PROJECT_ALLOWED_MODELS_KEY] = list(project_allowed)
     return context
 
 
@@ -655,6 +687,16 @@ async def _authenticate_by_api_key(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",
         )
+    if user.get("org_status") == "suspended":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "type": "organization_suspended",
+                    "message": "This organization has been suspended by the operator.",
+                }
+            },
+        )
 
     return user, key_hash, spend_today
 
@@ -782,7 +824,13 @@ def publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
     through here too. Returns *user_ctx* unchanged so call sites can wrap their
     ``return``.
     """
-    req_ctx.update({req_ctx.USER_ROLE: user_ctx.get("role") or "free"})
+    req_ctx.update(
+        {
+            req_ctx.USER_ROLE: user_ctx.get("role") or "free",
+            req_ctx.PROJECT_ID: user_ctx.get("project_id") or "",
+            req_ctx.ORG_ID: user_ctx.get("org_id") or "",
+        }
+    )
     return user_ctx
 
 
@@ -869,7 +917,7 @@ async def verify_api_key(
             # Same body and headers as the direct path's 429, from the same
             # builder: a caller must not be able to tell which door it used.
             body, headers = quota.refusal_payload(
-                quota.BudgetRefusal("account", exc.window, exc.quota_usd, exc.spent_usd),
+                exc.refusal,
                 contact_email=_quota_contact(),
             )
             raise HTTPException(status_code=429, detail=body, headers=headers) from exc
@@ -1000,6 +1048,16 @@ async def authenticate_stored_key(
         )
     if await _verification_pending(user):
         raise StoredKeyRejected("the account's email or phone is not verified")
+    if user.get("org_status") == "suspended":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "type": "organization_suspended",
+                    "message": "This organization has been suspended by the operator.",
+                }
+            },
+        )
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
@@ -1132,18 +1190,19 @@ async def verify_api_key_for_balance(
     if not is_user_auth_enabled():
         return {"user_id": "anonymous", "authenticated": False}
 
-    user, _key_hash, cost_spent = await _authenticate_by_api_key(
+    user, key_hash, cost_spent = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=True
     )
 
     quota_daily_cost_usd = _daily_quota_usd(user)
 
-    return {
-        "user_id": user["user_id"],
-        "authenticated": True,
-        "quota_daily_cost_usd": quota_daily_cost_usd,
-        "spent_today_usd": cost_spent,
-    }
+    return _user_context(
+        user,
+        key_hash=key_hash,
+        api_key_id=user.get("id"),
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
+    )
 
 
 async def optional_verify_api_key(

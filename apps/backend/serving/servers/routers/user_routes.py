@@ -20,6 +20,7 @@ from serving.audit import AuditTarget
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
+    ProjectNotFoundError,
     UserNotFoundError,
     generic_message_for_status,
     user_safe_error_for_log,
@@ -496,6 +497,14 @@ async def create_api_key(
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
     name = _clean_key_name(payload.name if payload else None)
+    project_id = payload.project_id if payload else None
+    if project_id:
+        project = await op_store.get_project(current_user["user_id"], project_id)
+    else:
+        project = await op_store.get_default_project(current_user["user_id"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_id = project["id"]
 
     # Generate new API key
     api_key = generate_api_key()
@@ -518,7 +527,10 @@ async def create_api_key(
             inherit_account_quota=True,
             name=name,
             max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT,
+            project_id=project_id,
         )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
     except APIKeyLimitReachedError as exc:
         raise HTTPException(
             status_code=409,
@@ -547,6 +559,8 @@ async def create_api_key(
         api_key=api_key,
         key_prefix=key_prefix,
         name=name,
+        project_id=project_id,
+        project_name=project["name"],
         warning="Save this API key now. It will not be shown again.",
         created_at=created_at or datetime.now(UTC),
     )
@@ -579,6 +593,8 @@ async def get_api_key_info(
         created_at=key_row["created_at"],
         last_used_at=key_row["last_used_at"],
         status=key_row["status"],
+        project_id=key_row.get("project_id"),
+        project_name=key_row.get("project_name"),
     )
 
 
@@ -618,6 +634,8 @@ async def list_api_keys(
                 status=row["status"],
                 spent_today_usd=float(row.get("spent_today_usd") or 0),
                 spent_month_usd=float(row.get("spent_month_usd") or 0),
+                project_id=row.get("project_id"),
+                project_name=row.get("project_name"),
                 **_key_limits(row),
             )
         )

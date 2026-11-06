@@ -127,7 +127,7 @@ async def test_inflight_request_keeps_its_price(
         if tracker._background_tasks:
             await asyncio.gather(*tracker._background_tasks)
         store.increment_user_cost.assert_awaited_once_with(
-            "test-user", pytest.approx(0.0002), api_key_id=None
+            "test-user", pytest.approx(0.0002), api_key_id=None, org_id=None, project_id=None
         )
         log = mock_log_store.log_request.call_args.kwargs
         assert log["pricing"] == {"prompt": "2", "completion": "0"}

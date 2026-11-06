@@ -907,6 +907,8 @@ async def execute_chat(
     # The key the usage is attributed to, for its owner's per-key views.
     if user_ctx.get("api_key_id") is not None:
         metadata["api_key_id"] = user_ctx["api_key_id"]
+    if user_ctx.get("project_id"):
+        metadata["project_id"] = user_ctx["project_id"]
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True
     if declared_session is not None:

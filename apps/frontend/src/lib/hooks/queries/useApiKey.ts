@@ -21,7 +21,8 @@ export function useCreateApiKey() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (name?: string | null) => createApiKey(name),
+    mutationFn: (args?: { name?: string | null; projectId?: string | null }) =>
+      createApiKey(args?.name ?? null, args?.projectId ?? null),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });

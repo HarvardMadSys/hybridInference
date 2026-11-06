@@ -8,10 +8,10 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from migrations.baseline import operational_store
 from serving.audit import AuditActor, AuditTarget
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -31,7 +31,7 @@ async def store(monkeypatch):
             min_size=1, max_size=2, server_settings={"search_path": schema}
         )
         async with pool.acquire() as conn:
-            await operational_store.create_tables(conn)  # the baseline's, in this schema
+            await prepare_current_schema(conn)
         op_store = PostgresOperationalStore(pool)
         yield op_store, pool
     finally:
