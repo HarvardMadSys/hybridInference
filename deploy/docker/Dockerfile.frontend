@@ -175,7 +175,11 @@ COPY --from=builder /app/.next/standalone ./
 
 EXPOSE 3001
 
+# The console's own liveness route, which answers without the gateway: see
+# apps/frontend/src/app/healthz/route.ts. `/` renders a page from the gateway's
+# site configuration, so checking it every 15s cost a render each time and
+# marked the console unhealthy whenever the gateway was down.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -q -O /dev/null http://127.0.0.1:3001/ || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1:3001/healthz || exit 1
 
 CMD ["node", "server.js"]

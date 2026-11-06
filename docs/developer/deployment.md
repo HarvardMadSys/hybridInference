@@ -113,7 +113,7 @@ none of them, and nothing warns you:
 | Protection | What a proxy in front typically does |
 |---|---|
 | Next.js Server Action guard | Refuse requests carrying a `Next-Action` header (`if ($http_next_action) { return 403; }`), so console server actions cannot be invoked from outside the console |
-| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`). The gateway enforces no size limit of its own |
+| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`), so oversized ones never cross your network. The gateway refuses bodies over `REQUEST_MAX_BODY_MB` (32 MiB) itself, and the console streams `/v1/` bodies to it without holding them |
 | `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy inserted reach the gateway |
 
 The gateway reads forwarded headers only from the proxies you authorize (see
