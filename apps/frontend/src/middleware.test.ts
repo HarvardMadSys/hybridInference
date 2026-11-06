@@ -7,7 +7,10 @@
 import { NextRequest } from 'next/server';
 import { describe, expect, it } from 'vitest';
 
-import { middleware } from './middleware';
+import { config, middleware } from './middleware';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- the function Next's build compiles matchers with.
+const { getMiddlewareMatchers } = require('next/dist/build/analysis/get-page-static-info');
 
 function get(path: string) {
   return middleware(new NextRequest(`https://freeinference.org${path}`));
@@ -48,5 +51,65 @@ describe('trailing-slash middleware', () => {
   it('leaves paths that already have no trailing slash alone', () => {
     expect(get('/login').headers.get('location')).toBeNull();
     expect(get('/').headers.get('location')).toBeNull();
+  });
+});
+
+describe('which requests reach the middleware', () => {
+  // Compiled by the same function `next build` uses, so this is Next's routing
+  // rather than a reading of the pattern.
+  const compiled: RegExp[] = getMiddlewareMatchers(config.matcher, {}).map(
+    (matcher: { regexp: string }) => new RegExp(matcher.regexp),
+  );
+  const reaches = (path: string) => compiled.some((matcher) => matcher.test(path));
+
+  it('takes in every console page', () => {
+    for (const path of [
+      '/',
+      '/login',
+      '/login/',
+      '/dashboard/admin/users',
+      '/authorize',
+      '/stats/',
+      '/verify-email',
+    ]) {
+      expect(reaches(path), path).toBe(true);
+    }
+  });
+
+  // Next copies the body of every request a middleware sees and holds the copy
+  // in memory, so the API's requests must not be among them.
+  it('leaves the gateway and the proxied apps alone, so their bodies are never copied', () => {
+    for (const path of [
+      '/v1',
+      '/v1/chat/completions',
+      '/anthropic/v1/messages',
+      '/auth/login',
+      '/user/batch-files',
+      '/admin/config',
+      '/internal/playground/v1/chat/completions',
+      '/internal/verify-admin',
+      '/health',
+      '/site-config',
+      '/site-updates',
+      '/public-stats',
+      '/site-assets/logo.svg',
+      '/pgadmin',
+      '/pgadmin/browser/',
+      '/agents',
+      '/agents/api/v1/jobs/',
+      '/_next/static/chunks/main.js',
+      '/favicon.ico',
+    ]) {
+      expect(reaches(path), path).toBe(false);
+    }
+  });
+
+  // Left to the gateway, `/v1/models/` would be redirected to the address the
+  // gateway knows itself by, which no client can reach.
+  it('still redirects a gateway path that ends in a slash', () => {
+    for (const path of ['/v1/', '/v1/models/', '/auth/login/', '/health/']) {
+      expect(reaches(path), path).toBe(true);
+      expect(get(path).status, path).toBe(308);
+    }
   });
 });

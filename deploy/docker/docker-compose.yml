@@ -182,6 +182,14 @@ services:
         # beforeFiles rewrites that outrank the runtime route handler below.
     container_name: hybridinference-frontend
     restart: unless-stopped
+    # A ceiling on what this container can take from the host. The console
+    # fronts the whole API, and request bodies pass through its memory -- the
+    # rewrites' up to 32MiB each (middlewareClientMaxBodySize in
+    # apps/frontend/next.config.js). Past the ceiling the kernel ends this
+    # container, which `restart` brings back, instead of starving the backend
+    # and the database on the same host. FRONTEND_MEM_LIMIT raises it for a
+    # deployment that needs more.
+    mem_limit: ${FRONTEND_MEM_LIMIT:-1g}
     environment:
       NODE_ENV: production
       PORT: "3001"

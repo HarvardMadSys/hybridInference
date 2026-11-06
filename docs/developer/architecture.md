@@ -110,6 +110,11 @@ order from the outside in is:
    `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when
    `Content-Length` declares more, otherwise as soon as the bytes received pass
    the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`.
+   Behind the console, `/v1`, `/anthropic`, `/internal/playground` and
+   `/user/batch-files` stream through route handlers and are bounded only
+   here. The console's other paths are Next.js rewrites, which copy a body in
+   memory up to 32 MiB (`middlewareClientMaxBodySize`), this limit's default:
+   raising `REQUEST_MAX_BODY_MB` past it does not reach them.
 
 Middleware order matters: streaming responses are `StreamingResponse`
 objects that must not be buffered. Any new middleware that reads a response body

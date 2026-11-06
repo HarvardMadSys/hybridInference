@@ -88,16 +88,27 @@ const nextConfig = {
   // (REQUEST_TIMEOUT_SECONDS, 120s by default) with a proper 504, and streams
   // send a keepalive every 15s, so this is never the limit that fires.
   //
-  // And how much of a request body Next keeps. With a middleware in the app
-  // (src/middleware.ts matches every path), Next copies each body for it and
-  // keeps only the first 10MB by default -- and the rewrite then forwards that
-  // copy, cut short, under the caller's original Content-Length. The gateway
-  // waits for bytes that never come, so every API call over 10MB (an image or
-  // two in base64) failed after the proxy timeout. 100MB is what Cloudflare
-  // accepts on its standard plans, so the edge stays the only limit.
+  // And how much of a request body Next copies. Next makes a copy of the body
+  // of every request a middleware sees, and of every request it forwards
+  // through a rewrite below, keeps the copy in memory until the request ends,
+  // and stops copying at this size -- forwarding what it has under the caller's
+  // original Content-Length, so the gateway waits for bytes that never come.
+  // That once failed every API call over the 10MB default (an image or two in
+  // base64), when the middleware matched every path, and the answer then was
+  // to raise this to 100MB: memory any anonymous caller could fill, per
+  // request, before the gateway checked anything.
+  //
+  // The API does not depend on it any more. `/v1`, `/anthropic`,
+  // `/internal/playground`, `/user/batch-files`, `/pgadmin` and `/agents` are
+  // route handlers the middleware does not match (src/middleware.ts), so Next
+  // never copies their bodies: they stream to their upstream whatever their
+  // size. What is left are the rewrites, which carry the console's own JSON.
+  // For them this equals the gateway's default body limit (REQUEST_MAX_BODY_MB,
+  // 32MiB): a body it would accept arrives whole, and a larger one is refused
+  // with 413 on its declared length before the missing bytes could matter.
   experimental: {
     proxyTimeout: 60 * 60 * 1000,
-    middlewareClientMaxBodySize: 100 * 1024 * 1024,
+    middlewareClientMaxBodySize: 32 * 1024 * 1024,
   },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
@@ -138,7 +149,9 @@ const nextConfig = {
       // but through route handlers (src/app/<prefix>/[[...path]]/route.ts),
       // not rewrites: their responses stream, and the rewrite proxy neither
       // reports a gateway that goes away mid-response nor tolerates 30s of
-      // silence. See src/lib/server/gatewayProxy.ts.
+      // silence. See src/lib/server/gatewayProxy.ts. So does
+      // `/user/batch-files`, ahead of `/user/:path*` here, because its uploads
+      // are larger than a rewrite forwards (`middlewareClientMaxBodySize`).
       afterFiles: [
         { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
         { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
