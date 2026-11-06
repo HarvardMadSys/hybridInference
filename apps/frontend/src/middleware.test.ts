@@ -104,12 +104,12 @@ describe('which requests reach the middleware', () => {
     }
   });
 
-  // Left to the gateway, `/v1/models/` would be redirected to the address the
-  // gateway knows itself by, which no client can reach.
-  it('still redirects a gateway path that ends in a slash', () => {
+  // A path matched only before Next strips its slash is answered with an
+  // empty 200, so these get their redirect from next.config.js instead.
+  it('leaves a gateway path that ends in a slash to next.config.js redirects', () => {
     for (const path of ['/v1/', '/v1/models/', '/auth/login/', '/health/']) {
-      expect(reaches(path), path).toBe(true);
-      expect(get(path).status, path).toBe(308);
+      expect(reaches(path), path).toBe(false);
+      expect(reaches(path.replace(/\/$/, '')), path).toBe(false);
     }
   });
 });

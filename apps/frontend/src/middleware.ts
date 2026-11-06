@@ -16,10 +16,11 @@
  * `/anthropic`, `/auth`, `/user`, `/admin`, `/internal`, `/health`, the public
  * site documents, `/pgadmin`, `/agents`) are not routed through it, so their
  * bodies stream to the gateway as they arrive -- before any key is checked --
- * instead of being held in this container's memory. Its one job on those paths
- * is the redirect, so an API path ending in a slash still reaches it: this is
- * the only place that answers `/v1/models/` with a redirect a client can follow.
- * Left to the gateway, the redirect would name the gateway's internal address.
+ * instead of being held in this container's memory. A gateway path that ends in
+ * a slash gets its redirect from next.config.js `redirects()` instead: a
+ * matcher cannot single those out, because Next checks the matcher a second
+ * time with the trailing slash removed, and a request matched only the first
+ * time is answered with an empty 200.
  *
  * It also gives each page its Content-Security-Policy, whose script nonce has to
  * be new for every response: see src/lib/security/contentSecurityPolicy.ts.
@@ -64,16 +65,13 @@ export function middleware(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  // Literal strings, because Next reads this object at build time without
-  // running the module: a constant or a template with a placeholder fails the
-  // build. The gateway's first segments therefore appear twice -- keep the two
-  // lists the same. Each segment matches whole: `/authorize` and `/stats` are
-  // console pages. src/middleware.test.ts checks the compiled matchers.
+  // The console's pages: everything except Next's own build output, its static
+  // assets, the gateway's paths and the proxied apps. Each segment matches
+  // whole: `/authorize` and `/stats` are console pages. A literal string,
+  // because Next reads this object at build time without running the module;
+  // the gateway's segments are listed again in next.config.js `redirects()`.
+  // src/middleware.test.ts checks the compiled matcher.
   matcher: [
-    // The console's pages: everything except Next's own build output, its
-    // static assets, the gateway's paths and the proxied apps.
     '/((?!(?:_next/static|_next/image|favicon\\.ico|v1|anthropic|internal|auth|user|admin|health|site-config|site-updates|public-stats|site-assets|pgadmin|agents)(?:/|$)).*)',
-    // A gateway path that ends in a slash, for the redirect alone.
-    '/((?:v1|anthropic|internal|auth|user|admin|health|site-config|site-updates|public-stats|site-assets)(?:/.*)?/)',
   ],
 };

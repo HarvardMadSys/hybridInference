@@ -117,6 +117,21 @@ const nextConfig = {
   //
   // Not under /pgadmin or /agents: those are other applications' pages, which
   // set their own. pgAdmin, for one, frames its own panels.
+  // A gateway path that ends in a slash goes to the same path without it, as
+  // every path did before `skipTrailingSlashRedirect`. The console's pages get
+  // theirs from src/middleware.ts, which the gateway's paths do not pass
+  // through (it would copy their bodies). Left to the gateway, `/v1/models/`
+  // would be redirected to the gateway's own internal address.
+  async redirects() {
+    return [
+      {
+        source:
+          '/:prefix(v1|anthropic|internal|auth|user|admin|health|site-config|site-updates|public-stats|site-assets)/:path*/',
+        destination: '/:prefix/:path*',
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {
