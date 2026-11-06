@@ -50,6 +50,11 @@ from serving.utils.token_utils import (
     optional_token_count,
     sanitize_usage,
 )
+from serving.utils.tokens import (
+    INLINE_ESTIMATE_MAX_CHARS,
+    estimate_prompt_tokens_bounded,
+    estimate_texts_tokens_bounded,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -717,7 +722,8 @@ class StreamSession:
             # land here — both are ``BaseException`` subclasses, so the
             # ``except Exception`` above never runs. Previously these skipped
             # finalization entirely: no ``api_logs`` row was written, so under
-            # load every timed-out request vanished. Persist the row before
+            # load every timed-out request vanished. Persist the row (and bill
+            # what the upstream already did, see ``_finalize_cancelled``) before
             # re-propagating so aborted requests stay visible — but through
             # ``_finalize_cancelled``, not ``_finalize_failure``: an abort is
             # not a provider failure, so it must not be logged as a 500 or
@@ -731,12 +737,13 @@ class StreamSession:
             # ``GeneratorExit`` is in flight is illegal.
             #
             # ``_finalize_cancelled`` must stay synchronous (no suspending
-            # ``await``): it only *schedules* the DB write, so it runs to
-            # completion here even while this task is being cancelled. The write
-            # itself is a separate task retained beyond this request by
-            # ``tracked_task``'s module-level ``_TRACKED_TASKS`` set (and the
-            # shared ``CompletionsLogger._background_tasks`` set), so it survives
-            # the cancellation. If async work is ever genuinely needed in
+            # ``await``): it only *schedules* the DB writes (the log row and the
+            # cost increment), so it runs to completion here even while this
+            # task is being cancelled. The writes themselves are separate tasks
+            # retained beyond this request by ``tracked_task``'s module-level
+            # ``_TRACKED_TASKS`` set (and the shared
+            # ``CompletionsLogger._background_tasks`` set), so they survive the
+            # cancellation. If async work is ever genuinely needed in
             # finalization, schedule it as its own background task rather than
             # awaiting it here, or a cancellation could abort it mid-flight.
             with suppress(Exception):
@@ -1090,8 +1097,76 @@ class StreamSession:
 
         return
 
+    def _cancelled_usage(self) -> tuple[dict[str, Any], bool]:
+        """Return ``(usage, estimated)`` for a stream cut off before its end.
+
+        Usage the upstream already reported is used as reported. Without it
+        the counts are estimated, as ``/v1/messages`` estimates them for the
+        same case (``_resolve_stream_usage``): the prompt from the request
+        (messages, plus the tool definitions sent with them), the output from
+        what the stream produced before it stopped (content, reasoning and
+        tool calls). Both use the bounded estimators, so the cost stays a few
+        milliseconds whatever the size of the conversation.
+        """
+        if self._usage_data:
+            normalized = normalize_usage(self._usage_data)
+            return (normalized if normalized is not None else dict(self._usage_data)), False
+        tool_texts: tuple[str, ...] = ()
+        tools = self._params.get("tools")
+        if isinstance(tools, list) and tools:
+            with suppress(TypeError, ValueError):
+                tool_texts = (json.dumps(tools),)
+        prompt_tokens = estimate_prompt_tokens_bounded(self._messages, extra_texts=tool_texts)
+        output_texts = [self._final_text, self._final_reasoning]
+        for tool_call in self._tool_calls.to_list():
+            function = tool_call.get("function") or {}
+            output_texts.append(function.get("name") or "")
+            output_texts.append(function.get("arguments") or "")
+        completion_tokens = estimate_texts_tokens_bounded(
+            output_texts, max_chars=INLINE_ESTIMATE_MAX_CHARS
+        )
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }, True
+
+    def _bill_cancelled(self) -> tuple[dict[str, Any] | None, bool]:
+        """Charge a cut-off stream for what it used; return ``(usage, estimated)``.
+
+        Billed only once the router chose the endpoint and began the attempt
+        -- the same condition the success path bills on (``_adapter_routing``,
+        which carries the price). Before that the upstream was never asked,
+        and there is no price to charge at. Never raises: billing must not
+        cost the request its log row.
+        """
+        if not self._adapter_routing:
+            return None, False
+        try:
+            usage, estimated = self._cancelled_usage()
+            self._routing = self._cost_tracker.charge(
+                user_id=self._user_id,
+                api_key_id=self._metadata.get("api_key_id"),
+                routing=self._routing,
+                prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+                total_tokens=(
+                    int(usage["total_tokens"]) if usage.get("total_tokens") is not None else None
+                ),
+                cache_read_tokens=usage.get("cache_read_tokens"),
+                cache_write_tokens=usage.get("cache_write_tokens"),
+                reasoning_tokens=int(usage.get("reasoning_tokens", 0) or 0),
+            )
+        except Exception:
+            logger.exception(
+                f"Billing a cancelled stream failed: model={self._model}, "
+                f"request_id={self._request_id}"
+            )
+            return None, False
+        return usage, estimated
+
     def _finalize_cancelled(self) -> None:
-        """Schedule the api_logs row for a stream aborted by cancellation.
+        """Bill and schedule the api_logs row for a stream aborted by cancellation.
 
         Covers client disconnects and TimeoutMiddleware deadline expiry.
         Unlike ``_finalize_failure`` this deliberately:
@@ -1099,10 +1174,17 @@ class StreamSession:
         - classifies the row as 499 (client closed request, nginx
           convention) or 504 (gateway timeout) instead of the generic 500 —
           an abort is not a provider error and must not inflate 5xx metrics;
-        - persists the partial response and any usage the upstream already
-          delivered instead of dropping them (billing intentionally stays
-          untouched: no pricing, no cost increment — the same product-policy
-          boundary as the ``empty_completion`` handling);
+        - bills what the upstream already did: the usage it reported, or else
+          an estimate of the prompt and of the output produced so far
+          (``metadata.usage_estimated`` marks the estimate), as the success
+          path and ``/v1/messages`` bill it. A stream the client closes early
+          is otherwise free, and its quota never moves. A gateway timeout is
+          billed the same way: ``/v1/messages`` cannot tell the two apart and
+          bills both, and in both the upstream did the work. (A mid-stream
+          upstream *failure* goes to ``_finalize_failure`` and stays
+          unbilled, as on ``/v1/messages``.);
+        - persists the partial response and that usage instead of dropping
+          them;
         - records NO routing observation: client behavior must not count as
           a ``success=False`` sample against the serving endpoint's health
           or RouteWise profiles.
@@ -1129,21 +1211,33 @@ class StreamSession:
             f"chunks={self._chunk_count}, request_id={self._request_id}"
         )
 
+        # Before the logging gate: the probe flag and a missing log store
+        # affect noise, never money (see ``_finalize_success``).
+        billed_usage, usage_estimated = self._bill_cancelled()
+
         if not self._log_store or self._suppress_synthetic_logging:
             return
 
         provider = self._provider_from_ctx or self._routing.provider or "router"
         metadata_for_log: dict[str, Any] = dict(self._metadata)
+        pricing: dict[str, str] | None = None
         if self._adapter_routing:
             metadata_for_log.update(
                 json_safe(
                     {k: v for k, v in self._adapter_routing.items() if k != "upstream_cost_usd"}
                 )
             )
+            # The price billed above, so the row's cost_usd matches the charge.
+            if billed_usage is not None:
+                pricing = self._pricing_lookup.raw_dict_for_routing(self._routing)
         metadata_for_log["terminal_state"] = terminal_state
+        if usage_estimated:
+            metadata_for_log["usage_estimated"] = True
 
         response_for_db = self._build_response_for_db()
-        usage_for_log = response_for_db.get("usage")
+        usage_for_log = billed_usage
+        if usage_for_log is None:
+            usage_for_log = response_for_db.get("usage")
         if usage_for_log is None:
             usage_for_log = self._usage_data
         self._completions_logger.schedule_log(
@@ -1161,7 +1255,8 @@ class StreamSession:
                 "params": self._params,
                 "metadata": metadata_for_log,
                 "ttft_ms": self._ttft.ttft_ms,
-                "pricing": None,
+                "pricing": pricing,
+                "upstream_cost_usd": self._routing.upstream_cost_usd,
                 "request_payload": self._request_payload,
             },
         )

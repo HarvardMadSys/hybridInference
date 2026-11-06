@@ -254,6 +254,39 @@ class CostTracker:
     ) -> RoutingInfo:
         """Compute cost, schedule the DB increment, return enriched routing.
 
+        The awaitable form of :meth:`charge`, which does the work: nothing here
+        suspends.
+        """
+        return self.charge(
+            user_id=user_id,
+            routing=routing,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+            api_key_id=api_key_id,
+        )
+
+    def charge(
+        self,
+        *,
+        user_id: str,
+        routing: RoutingInfo,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int | None = None,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
+        reasoning_tokens: int = 0,
+        api_key_id: int | None = None,
+    ) -> RoutingInfo:
+        """Compute cost, schedule the DB increment, return enriched routing.
+
+        Synchronous, so a caller that must not suspend -- a stream being torn
+        down by a cancellation -- can still bill.
+
         ``api_key_id`` is the key the request was made with (the log row's
         ``metadata["api_key_id"]``), whose own counter is bumped as well.
 

@@ -610,7 +610,8 @@ async def release_unstarted_chat_streams() -> AsyncIterator[list[ChatStream]]:
     status, so its session and upstream are running; a client already gone when
     the response starts can leave Starlette never iterating the body (an ASGI
     server reporting spec 2.4+ fails the first send). Closed here, the session
-    ends as a client disconnect (499, no charge) and the upstream stream, its
+    ends as a client disconnect (499, charged for what the upstream had done by
+    then, as any disconnect is) and the upstream stream, its
     reader task and the router's claim are released at the end of the request,
     instead of whenever the abandoned generator is collected -- which an
     exception traceback kept alive can postpone indefinitely. A stream whose
