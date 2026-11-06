@@ -547,6 +547,28 @@ async def test_a_chat_file_is_identified_checked_and_run_from_its_own_bytes(gate
     assert lines[0]["url"] == "/v1/chat/completions" and lines[0]["method"] == "POST"
 
 
+async def test_with_no_window_a_console_batch_never_expires_and_still_runs(gateway):
+    gw, alice = gateway, gateway.users["alice"]
+    assert (await context(gw, alice))["limits"]["completion_window_hours"] == 24
+    gw.settings["BATCH_COMPLETION_WINDOW_HOURS"] = "0"
+    try:
+        assert (await context(gw, alice))["limits"]["completion_window_hours"] is None
+        source = await upload(
+            gw, alice, jsonl([chat_row(f"q-{i}", gw.chat.config.id) for i in range(2)])
+        )
+        report = (await preflight(gw, alice, source["id"])).json()
+        assert report["valid"] is True, report["errors"]
+        created = await submit(gw, alice, await submission(gw, alice, source, report))
+        assert created.status_code == 200, created.text
+        assert created.json()["expires_at"] is None
+
+        done = await finished(gw, alice, created.json()["id"])
+        assert done["request_counts"] == {"total": 2, "completed": 2, "failed": 0}
+        assert done["expires_at"] is None
+    finally:
+        del gw.settings["BATCH_COMPLETION_WINDOW_HOURS"]
+
+
 async def test_a_file_without_urls_is_identified_from_its_shape(gateway):
     gw, alice = gateway, gateway.users["alice"]
     source = await upload(

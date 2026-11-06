@@ -34,7 +34,10 @@ one budget -- its attempt is marked as dispatched, and it runs through :func:`~s
 on its target. A failure that may pass (a timeout, a 408/425/429, a 5xx) is
 retried with exponential backoff for as long as its batch's window is open:
 it fails with its last error once the next try would start after the window
-closes. Only such failures count toward cooling a model down; a caller error
+closes. A batch with no window (``BATCH_COMPLETION_WINDOW_HOURS`` 0, a null
+``expires_at``) never closes, so only ``max_attempts`` bounds its retries; an
+answer that the model is queued for capacity spends no attempt and is waited
+out however long it lasts. Only such failures count toward cooling a model down; a caller error
 (any other 4xx) fails the item at once.
 
 The same loop also does the background work batches need besides inference,
@@ -111,6 +114,9 @@ class SchedulerTimings:
     #: retried until its batch's window closes (see ``_settle``), which this
     #: does not reach in a window of a week at the backoff cap; it also bounds
     #: an item whose attempts never report back (a worker that keeps dying).
+    #: In a batch with no window it is the only bound on retryable failures
+    #: (some two weeks of them at the jittered backoff cap). A "model queued" answer
+    #: spends no attempt, so waiting for capacity never reaches it.
     max_attempts: int = 2000
     #: Delay before a retry: doubles with every attempt, up to the cap, and
     #: is jittered down by up to half.
@@ -746,7 +752,7 @@ class BatchScheduler:
             "waiting_hours": round(waited / 3600, 1),
             "detail": "Its upstream has answered 'model queued' (GPU job waiting for a "
             "node) since then; its batch requests are held, not failed, until the "
-            "batch window closes.",
+            "batch window closes (or indefinitely, for a batch with no window).",
         }
 
         async def send() -> None:

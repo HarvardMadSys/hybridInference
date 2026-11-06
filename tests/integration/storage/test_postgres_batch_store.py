@@ -143,7 +143,7 @@ async def _create(
     items: list[dict[str, Any]],
     *,
     user: str = "alice",
-    window: int = 3600,
+    window: int | None = 3600,
     metadata: dict[str, Any] | None = None,
     key_hash: str | None = "key-hash",
     model_ids: list[str] | None = None,
@@ -1326,9 +1326,11 @@ async def test_pausing_by_key_holds_back_only_that_keys_batches(store):
 async def test_sweep_expires_overdue_batches(pool, store):
     model = _model()
     overdue = await _create(store, _items(model, 3))
-    on_time = await _create(store, _items(model, 1), user="bob")
     (running,) = await _claim(store, model, limit=1)
     assert running["batch_id"] == overdue["id"]
+    # Created after the claim: claims share a model fairly across owners, so
+    # with both waiting the single claim above may take bob's item instead.
+    on_time = await _create(store, _items(model, 1), user="bob")
     await _execute(
         pool,
         "UPDATE batch_jobs SET expires_at = now() - interval '1 second' WHERE id = $1",
@@ -1350,6 +1352,38 @@ async def test_sweep_expires_overdue_batches(pool, store):
     after = await store.get_batch(overdue["id"])
     assert after["status"] == "expired"
     assert (after["completed_count"], after["failed_count"]) == (1, 2)
+    assert await store.sweep(retention_days=7) == {"expired": 0, "finalized": 0, "purged": 0}
+
+
+async def test_a_batch_with_no_window_is_claimed_run_and_never_expired(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 3), window=None)
+    assert created["expires_at"] is None
+    # Weeks old: any window it could have had is long over.
+    await _execute(
+        pool,
+        "UPDATE batch_jobs SET created_at = now() - interval '30 days' WHERE id = $1",
+        created["id"],
+    )
+
+    assert model in await store.active_models()
+    first, second, third = await _claim(store, model)
+    assert {item["batch_id"] for item in (first, second, third)} == {created["id"]}
+    assert first["expires_at"] is None
+    assert await _complete(store, first)
+    assert await _retry(store, second)
+    assert await store.sweep(retention_days=7) == {"expired": 0, "finalized": 0, "purged": 0}
+    assert (await store.get_batch(created["id"]))["status"] == "in_progress"
+
+    # The retried item is claimed again; the batch finishes like any other.
+    (again,) = await _claim(store, model)
+    assert again["id"] == second["id"]
+    assert await _complete(store, again)
+    assert await _complete(store, third)
+    done = await store.get_batch(created["id"])
+    assert done["status"] == "completed"
+    assert done["expires_at"] is None
+    assert (done["completed_count"], done["failed_count"], done["expired_count"]) == (3, 0, 0)
     assert await store.sweep(retention_days=7) == {"expired": 0, "finalized": 0, "purged": 0}
 
 

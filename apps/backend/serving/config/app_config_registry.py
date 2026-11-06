@@ -1050,10 +1050,12 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "BATCH_COMPLETION_WINDOW_HOURS",
         "batch",
         "Hours a new batch has to finish, at most a week. Requests not started by then "
-        "expire; those already running finish.",
+        "expire; those already running finish. 0 means no limit: new batches, inline "
+        "and from a file, never expire and run until every request is done, however "
+        "long upstream capacity takes. A change applies to batches created afterwards.",
         type="int",
         default="24",
-        minimum=1,
+        minimum=0,
         maximum=168,
     ),
     ConfigEntry(

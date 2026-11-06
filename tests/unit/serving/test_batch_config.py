@@ -30,6 +30,8 @@ def test_defaults_restrict_batches_to_internal_users(stored):
     assert config.role_concurrency == {"free": 8, "pro": 16, "internal": 64, "admin": 64}
     assert config.max_body_bytes == 32 * 1024 * 1024
     assert config.completion_window_seconds == 24 * 3600
+    assert config.file_window_seconds == 24 * 3600
+    assert config.unlimited_window is False
 
 
 def test_stored_values_apply_on_the_next_read(stored):
@@ -63,6 +65,26 @@ def test_stored_values_apply_on_the_next_read(stored):
     assert config.role_concurrency == {"free": 8, "pro": 16, "internal": 12, "admin": 0}
 
 
+def test_a_window_of_zero_hours_means_no_limit_for_every_new_batch(stored):
+    stored["BATCH_COMPLETION_WINDOW_HOURS"] = "0"
+
+    config = batch_config()
+
+    assert config.completion_window_hours == 0
+    assert config.unlimited_window is True
+    assert config.completion_window_seconds is None
+    assert config.file_window_seconds is None
+
+
+def test_a_window_keeps_file_batches_at_the_protocol_s_24_hours(stored):
+    stored["BATCH_COMPLETION_WINDOW_HOURS"] = "48"
+
+    config = batch_config()
+
+    assert config.completion_window_seconds == 48 * 3600
+    assert config.file_window_seconds == 24 * 3600
+
+
 @pytest.mark.parametrize("raw", ["0", "false", "1", ""])
 def test_the_retired_expansion_flag_changes_nothing(stored, raw):
     """Every batch kind is available while BATCH_ENABLED is on, whatever an old value says."""
@@ -80,6 +102,7 @@ def test_the_retired_expansion_flag_changes_nothing(stored, raw):
         ("BATCH_MAX_REQUESTS", "lots", "max_requests", 50_000),
         ("BATCH_MAX_REQUESTS", "0", "max_requests", 50_000),
         ("BATCH_COMPLETION_WINDOW_HOURS", "169", "completion_window_hours", 24),
+        ("BATCH_COMPLETION_WINDOW_HOURS", "-1", "completion_window_hours", 24),
         ("BATCH_ENABLED", "", "enabled", True),
     ],
 )

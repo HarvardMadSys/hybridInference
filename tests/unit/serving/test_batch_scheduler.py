@@ -827,6 +827,37 @@ async def test_a_retry_that_would_start_after_the_window_fails_now_with_its_erro
     assert len(dispatch.calls) == 1
 
 
+async def test_a_batch_with_no_window_retries_however_long_the_backoff(worker, dispatch):
+    # No window (BATCH_COMPLETION_WINDOW_HOURS 0): a retry two minutes away is
+    # still scheduled, where a closing window would fail the item now.
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=None)
+    timings = _fast_retries(backoff_base_seconds=120.0, backoff_cap_seconds=120.0)
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.calls["retry_item"] == 1)
+
+    assert store.status(1) == "queued"
+    assert store.items[1]["next_attempt_at"] > datetime.now(UTC) + timedelta(seconds=30)
+    assert len(dispatch.calls) == 1
+
+
+async def test_a_batch_with_no_window_still_stops_at_the_attempt_guard(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=None)
+    scheduler = worker(store, timings=_fast_retries(max_attempts=4))
+
+    scheduler.start()
+    await until(lambda: store.status(1) == "failed")
+
+    assert store.items[1]["attempts"] == 4
+    assert store.items[1]["error"] == UNAVAILABLE.error
+    assert store.calls["retry_item"] == 3
+
+
 def test_the_attempt_guard_outlasts_a_week_long_window_at_the_backoff_cap():
     timings = SchedulerTimings()
     week = 168 * 3600
@@ -1087,6 +1118,22 @@ async def test_a_model_queued_answer_fails_once_the_window_would_close(worker, d
 
     assert store.items[1]["error"]["code"] == "model_queued"
     assert store.calls["release_item"] == 0
+    assert store.calls["retry_item"] == 0
+
+
+async def test_a_model_queued_answer_waits_however_long_with_no_window(worker, dispatch):
+    # A batch with no window waits out an hour-long (or longer) queue for a
+    # node rather than failing.
+    dispatch.results["m1"] = _queued(3600)
+    store = FakeStore()
+    store.add(1, expires_at=None)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 1)
+
+    assert store.status(1) == "queued"
+    assert store.items[1]["error"] is None
     assert store.calls["retry_item"] == 0
 
 

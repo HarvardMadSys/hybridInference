@@ -52,7 +52,8 @@ MAX_BODY_MB_KEY = "BATCH_MAX_BODY_MB"
 MAX_ACTIVE_KEY = "BATCH_MAX_ACTIVE_PER_USER"
 #: Unfinished requests one user may have, across every batch.
 MAX_QUEUED_KEY = "BATCH_MAX_QUEUED_REQUESTS_PER_USER"
-#: Hours an inline batch has to finish before its unstarted requests expire.
+#: Hours a new batch has to start its requests before the unstarted ones
+#: expire; 0 means no limit, for inline and file batches alike.
 WINDOW_HOURS_KEY = "BATCH_COMPLETION_WINDOW_HOURS"
 #: Days a finished batch, with its results, is kept before it is purged.
 RETENTION_DAYS_KEY = "BATCH_RETENTION_DAYS"
@@ -104,7 +105,8 @@ DEFAULT_QUEUED_ALERT_HOURS = 6
 KNOWN_ANTHROPIC_VERSIONS: tuple[str, ...] = ("2023-06-01", "2026-10-21")
 DEFAULT_ANTHROPIC_VERSIONS = ",".join(KNOWN_ANTHROPIC_VERSIONS)
 
-#: The window of file batches: the protocol fixes it at 24 hours.
+#: The window of file batches: the protocol fixes it at 24 hours, unless
+#: ``BATCH_COMPLETION_WINDOW_HOURS`` is 0 (no limit for any batch).
 PROTOCOL_WINDOW_SECONDS = 24 * 3600
 
 
@@ -135,9 +137,23 @@ class BatchConfig:
     queued_alert_hours: int = DEFAULT_QUEUED_ALERT_HOURS
 
     @property
-    def completion_window_seconds(self) -> int:
-        """The completion window of an inline batch, in seconds."""
-        return self.completion_window_hours * 3600
+    def unlimited_window(self) -> bool:
+        """Whether new batches never expire (``BATCH_COMPLETION_WINDOW_HOURS`` is 0)."""
+        return self.completion_window_hours == 0
+
+    @property
+    def completion_window_seconds(self) -> int | None:
+        """The completion window of a new inline batch, in seconds; None for no limit."""
+        return None if self.unlimited_window else self.completion_window_hours * 3600
+
+    @property
+    def file_window_seconds(self) -> int | None:
+        """The completion window of a new file batch, in seconds; None for no limit.
+
+        The protocol's 24 hours, unless the operator lifted the limit for every
+        batch.
+        """
+        return None if self.unlimited_window else PROTOCOL_WINDOW_SECONDS
 
     @property
     def retention_seconds(self) -> int:
@@ -186,7 +202,7 @@ def batch_config() -> BatchConfig:
         max_active_per_user=_int(MAX_ACTIVE_KEY, DEFAULT_MAX_ACTIVE_PER_USER, minimum=1),
         max_queued_per_user=_int(MAX_QUEUED_KEY, DEFAULT_MAX_QUEUED_PER_USER, minimum=1),
         completion_window_hours=_int(
-            WINDOW_HOURS_KEY, DEFAULT_WINDOW_HOURS, minimum=1, maximum=MAX_WINDOW_HOURS
+            WINDOW_HOURS_KEY, DEFAULT_WINDOW_HOURS, minimum=0, maximum=MAX_WINDOW_HOURS
         ),
         retention_days=_int(RETENTION_DAYS_KEY, DEFAULT_RETENTION_DAYS, minimum=1),
         max_line_bytes=_int(MAX_LINE_KB_KEY, DEFAULT_MAX_LINE_KB, minimum=1) * 1024,
