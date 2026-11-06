@@ -290,7 +290,7 @@ def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) 
 # that has to be switched on per deployment is a detector that is off everywhere
 # it is needed.
 #
-# Why 180s. Measured single-stream on the H200 sglang replicas (h200b, TP=2,
+# Why 180s. Measured single-stream on an H200 SGLang replica (TP=2,
 # DeepSeek-V4-Flash, `/flush_cache` before every point), inter-token latency is
 # 2.25-3.98 ms at 3.1-4.7 tokens per SSE chunk across 4K-1M input -- so a healthy
 # stream's frame-to-frame gap is single-digit milliseconds, and ~100 ms per

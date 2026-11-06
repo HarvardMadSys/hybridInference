@@ -122,7 +122,7 @@ jobs:
         # ENOENT while uv hardlinks into the venv — before tests start.
         #
         # RUNNER_TEMP is the whole isolation: it belongs to one runner process
-        # (.../actions-runners/spark2_5/_work/_temp), and a runner runs one job
+        # (.../actions-runners/<runner>/_work/_temp), and a runner runs one job
         # at a time. Nothing run-specific may go in this path — see the note on
         # `enable-cache` below.
         run: |
