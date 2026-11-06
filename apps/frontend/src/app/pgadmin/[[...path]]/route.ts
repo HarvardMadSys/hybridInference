@@ -555,7 +555,17 @@ async function handle(request: NextRequest): Promise<Response> {
       // response stream that has already been handed back to us.
       lease?.release();
     }
-  } catch {
+  } catch (error) {
+    // The console runs as an unprivileged user (uid 1000). mTLS files mounted
+    // for root alone are the one failure here an operator has to fix on the
+    // host, so name it; the path and the material stay out of the log.
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      console.error(
+        'pgAdmin mTLS credentials are not readable by the console user (uid 1000); ' +
+          'make PGADMIN_MTLS_* files readable by it.',
+      );
+    }
     // pgAdmin runs behind the `admin` Compose profile, so the usual cause is
     // a deployment that did not start it. Say so rather than leaking a stack.
     return new NextResponse('pgAdmin is not reachable.', {

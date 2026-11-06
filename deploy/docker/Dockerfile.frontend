@@ -173,6 +173,15 @@ LABEL org.opencontainers.image.source="$OCI_SOURCE" \
 # module's packaged assets and the module record beside the server.
 COPY --from=builder /app/.next/standalone ./
 
+# The server runs as the image's unprivileged `node` user (uid 1000), named by
+# number so a cluster that requires a non-root user can verify it. The
+# application files stay root's, so the server cannot rewrite its own code;
+# Next's runtime cache directory is the one place it writes. Whatever a
+# deployment mounts for it to read -- the SITE_ASSETS_DIR directory, pgAdmin's
+# mTLS files -- must be readable by uid 1000.
+RUN mkdir -p .next/cache && chown 1000:1000 .next/cache
+USER 1000:1000
+
 EXPOSE 3001
 
 # The console's own liveness route, which answers without the gateway: see

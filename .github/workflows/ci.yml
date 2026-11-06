@@ -362,8 +362,9 @@ jobs:
 
           # Without it the packaged file answers, through the route: its bytes,
           # its SVG sandbox and its cache policy, none of which Next's static
-          # handler would send.
-          docker exec "${SITE_UI_RUN}-example" rm /srv/site-assets/example/mark.svg
+          # handler would send. As root: `docker cp` wrote the file as root,
+          # and the image runs as an unprivileged user that may only read it.
+          docker exec -u 0 "${SITE_UI_RUN}-example" rm /srv/site-assets/example/mark.svg
           curl -fsS -D "${RUNNER_TEMP}/packaged.headers" -o "${RUNNER_TEMP}/packaged.svg" "${url}"
           cmp "${RUNNER_TEMP}/packaged.svg" "${packaged}"
           tr -d '\r' <"${RUNNER_TEMP}/packaged.headers" | tee "${RUNNER_TEMP}/packaged.txt"

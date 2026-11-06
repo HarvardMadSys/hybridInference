@@ -53,6 +53,10 @@ The URL hostname must match the gateway server certificate. The CA file verifies
 that server; the client certificate and key authenticate the frontend to the
 gateway. Supply the files through a read-only secret mount accessible to the
 frontend process, and restrict who may read or mount the client private key.
+The console runs as uid 1000, not root, so the files must be readable by that
+user: for example group 1000 with mode `0440`, or a Kubernetes `fsGroup: 1000`
+with `defaultMode: 0440`. A file only root can read makes `/pgadmin/` answer
+502, and the console logs that the credentials are not readable by its user.
 These are file paths inside the frontend container, not certificate contents.
 The upstream gateway must enforce mTLS itself and restrict access to pgAdmin;
 the console's administrator check does not protect a separately exposed backend.
@@ -728,6 +732,11 @@ One thing to get right: whether pgAdmin *also* asks for its own login is set by
 falls back to `False`, which serves pgAdmin with no login at all; `.env.example`
 suggests `True`, which turns pgAdmin's own login on behind the console's gate.
 `True` is the safer of the two.
+
+pgAdmin is on a network of its own, `pgadmin`, shared only with the console and
+the database. The backend and any other service on `hybridinference` cannot
+reach it. The first `make up` after this change recreates the `postgres`
+container to attach it to that network, a restart of a few seconds.
 
 The Compose service runs an exact pgAdmin release (`dpage/pgadmin4:9.19`).
 Moving from the earlier `dpage/pgadmin4:8` upgrades pgAdmin's settings

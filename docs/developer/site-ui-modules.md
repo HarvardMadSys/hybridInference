@@ -353,6 +353,9 @@ and fonts load from the console's own origin, and its images load from
 change to the policy.
 
 The override works file by file, and `SITE_ASSETS_DIR` must be an absolute path.
+The console runs as uid 1000, so the mounted directory and its files must be
+readable by that user; world-readable (`0755` directories, `0644` files) is
+enough. A file it cannot read is answered as missing.
 The build copies a relative symlink as the link it is, with its target
 unchanged, so a link that stays inside the module keeps working in the image.
 The route does not serve a link whose target is outside its directory.
