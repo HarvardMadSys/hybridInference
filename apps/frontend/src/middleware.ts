@@ -20,8 +20,14 @@
  * is the redirect, so an API path ending in a slash still reaches it: this is
  * the only place that answers `/v1/models/` with a redirect a client can follow.
  * Left to the gateway, the redirect would name the gateway's internal address.
+ *
+ * It also gives each page its Content-Security-Policy, whose script nonce has to
+ * be new for every response: see src/lib/security/contentSecurityPolicy.ts.
  */
 import { NextResponse, type NextRequest } from 'next/server';
+
+import { config as env } from '@/config/env';
+import { consolePagePolicy, makeNonce } from '@/lib/security/contentSecurityPolicy';
 
 const PROXIED_PREFIXES = ['/agents', '/pgadmin'] as const;
 
@@ -42,7 +48,19 @@ export function middleware(request: NextRequest): NextResponse {
     return NextResponse.redirect(url, 308);
   }
 
-  return NextResponse.next();
+  // A page. Next reads the nonce out of the policy on the request and writes
+  // it onto every script it renders; the layout reads `x-nonce` for its own.
+  const nonce = makeNonce();
+  const policy = consolePagePolicy(nonce, {
+    apiBase: env.apiBase,
+    development: env.isDevelopment,
+  });
+  const headers = new Headers(request.headers);
+  headers.set('x-nonce', nonce);
+  headers.set('content-security-policy', policy);
+  const response = NextResponse.next({ request: { headers } });
+  response.headers.set('content-security-policy', policy);
+  return response;
 }
 
 export const config = {

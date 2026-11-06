@@ -345,6 +345,13 @@ At runtime, `SITE_ASSETS_DIR` is read first and the image's own copy second. A
 deployment that mounts its branding directory keeps overriding the module's
 files, and one that mounts nothing still serves a complete site.
 
+Every page is served with a `Content-Security-Policy`
+(`apps/frontend/src/lib/security/contentSecurityPolicy.ts`). A module's markup
+runs no inline `<script>` and no script from another host, its stylesheets
+and fonts load from the console's own origin, and its images load from
+`/site-assets` or over HTTPS. A module that needs more than that needs a
+change to the policy.
+
 The override works file by file, and `SITE_ASSETS_DIR` must be an absolute path.
 The build copies a relative symlink as the link it is, with its target
 unchanged, so a link that stays inside the module keeps working in the image.

@@ -110,6 +110,25 @@ const nextConfig = {
     proxyTimeout: 60 * 60 * 1000,
     middlewareClientMaxBodySize: 32 * 1024 * 1024,
   },
+  // Headers for every response this server sends of its own or relays from the
+  // gateway: no MIME sniffing, no framing, and no full URL -- a reset token,
+  // say -- in the Referer sent to another origin. Pages also get a
+  // Content-Security-Policy, per response, from src/middleware.ts.
+  //
+  // Not under /pgadmin or /agents: those are other applications' pages, which
+  // set their own. pgAdmin, for one, frames its own panels.
+  async headers() {
+    return [
+      {
+        source: '/:path((?!pgadmin(?:/|$)|agents(?:/|$)).*)',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     // **`beforeFiles`, and it has to be.** A rewrite returned in a flat array
     // is `afterFiles`, which Next checks *after* filesystem routes. This app's

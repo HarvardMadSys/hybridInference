@@ -17,7 +17,7 @@
 import { LOCALE_COOKIE } from '@/lib/i18n/choice';
 
 /** Session cookies issued by FastAPI: the default name and the deployment's. */
-function consoleSessionCookieNames(): Set<string> {
+export function consoleSessionCookieNames(): Set<string> {
   return new Set(['refresh_token', process.env.REFRESH_TOKEN_COOKIE_NAME || 'refresh_token']);
 }
 

@@ -113,3 +113,46 @@ describe('which requests reach the middleware', () => {
     }
   });
 });
+
+describe('the content security policy', () => {
+  function policyOf(response: Response): string {
+    return response.headers.get('content-security-policy') ?? '';
+  }
+
+  // Next reads the policy, and the layout the nonce, from the request headers
+  // the middleware hands on; NextResponse carries them as override headers.
+  function forwarded(response: Response, name: string): string | null {
+    return response.headers.get(`x-middleware-request-${name}`);
+  }
+
+  it('gives a page a policy whose script nonce reaches the renderer', () => {
+    const response = get('/dashboard');
+    const nonce = forwarded(response, 'x-nonce');
+
+    expect(nonce).toBeTruthy();
+    expect(policyOf(response)).toContain(`'nonce-${nonce}'`);
+    expect(forwarded(response, 'content-security-policy')).toBe(policyOf(response));
+  });
+
+  it('makes a new nonce for every response', () => {
+    const first = forwarded(get('/login'), 'x-nonce');
+    const second = forwarded(get('/login'), 'x-nonce');
+
+    expect(first).not.toBe(second);
+  });
+
+  it('replaces a nonce the caller sent', () => {
+    const response = middleware(
+      new NextRequest('https://freeinference.org/', { headers: { 'x-nonce': 'chosen' } }),
+    );
+
+    expect(forwarded(response, 'x-nonce')).not.toBe('chosen');
+    expect(policyOf(response)).not.toContain('chosen');
+  });
+
+  it('leaves the proxied applications to set their own', () => {
+    for (const path of ['/pgadmin/browser/', '/agents/jobs']) {
+      expect(get(path).headers.get('content-security-policy'), path).toBeNull();
+    }
+  });
+});
