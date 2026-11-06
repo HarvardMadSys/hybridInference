@@ -36,10 +36,12 @@ from serving.storage.base import (
     Row,
 )
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
+from serving.storage.pools import request_connection
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from contextlib import AbstractAsyncContextManager
     from datetime import datetime
     from decimal import Decimal
 
@@ -338,10 +340,31 @@ def _coerce_user_row(row: Any) -> Row | None:
     return d
 
 
+#: The lookups a request makes before it is served -- authentication, spend and
+#: quota, session liveness, and the per-model and runtime settings read on the
+#: way -- which use the request pool (:mod:`serving.storage.pools`). Each is a
+#: cheap primary-key or index lookup; nothing slow may join them.
+REQUEST_PATH_READS = (
+    "get_user_by_id",
+    "get_auth_context_by_key_hash",
+    "get_auth_context_with_spend",
+    "get_auth_context_lightweight",
+    "get_key_spend",
+    "session_is_live",
+    "get_quota_context_for_user",
+    "get_agent_grant",
+    "get_setting",
+    "get_model_visibility_override",
+    "get_model_concurrency_exemption",
+    "get_user_cost_today",
+    "get_user_cost_period",
+)
+
+
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, request_pool: asyncpg.Pool | None = None) -> None:
         """Initialize with a shared asyncpg pool.
 
         The LogStore owns the erasure-fence schema and tombstone checks; this
@@ -349,8 +372,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         Args:
             pool: Shared asyncpg pool.
+            request_pool: The pool reserved for the lookups a request makes
+                before it is served (:data:`REQUEST_PATH_READS`); *pool* when
+                not given. Those lookups wait at most
+                :data:`~serving.storage.pools.REQUEST_ACQUIRE_TIMEOUT_SEC` for a
+                connection, from whichever pool, and then raise
+                :class:`~serving.storage.pools.DatabaseBusyError`.
         """
         self._pool = pool
+        self._request_pool = request_pool if request_pool is not None else pool
+
+    def _request_connection(self) -> AbstractAsyncContextManager[Any]:
+        """A connection for a request-path lookup: the request pool, a bounded wait."""
+        return request_connection(self._request_pool)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -392,7 +426,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_user_by_id(self, user_id: str) -> Row | None:
         """Fetch a single user row by primary key."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 f"SELECT {_USER_SELECT} FROM users WHERE id = $1",
                 user_id,
@@ -1378,7 +1412,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Returns full projection in a single round-trip.
         """
         identity = _JOINED_USER_IDENTITY
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 f"k.quota_monthly_cost_usd, {_AUTH_KEY_COLUMNS}, "
@@ -1411,7 +1445,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         one round-trip.
         """
         identity = _JOINED_USER_IDENTITY
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 "k.quota_monthly_cost_usd, am.account_spent_month_usd, "
@@ -1439,7 +1473,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Carries the key's model allowlist, which the model listings apply.
         """
         identity = _JOINED_USER_IDENTITY
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
                 "u.max_concurrent_requests, k.allowed_models "
@@ -1502,7 +1536,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:
         """What key *key_id* spent on the current UTC day and month, from its counter."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(cost_usd) FILTER ("
                 "         WHERE day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
@@ -1975,7 +2009,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Found through ``idx_auth_sessions_user`` (user_id, expires_at): ``sid``
         has no index of its own, and an account holds few sessions.
         """
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             return bool(
                 await conn.fetchval(
                     "SELECT EXISTS (SELECT 1 FROM auth_sessions "
@@ -2442,7 +2476,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         quota (see :func:`_sync_account_quota`), so any one of them answers;
         the oldest is taken so repeated lookups read the same row.
         """
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             rows = await conn.fetch(
                 "SELECT k.id, k.user_id, k.quota_daily_cost_usd, k.quota_monthly_cost_usd, u.role "
                 "FROM api_keys k "
@@ -2509,7 +2543,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_agent_grant(self, grant_id: str) -> Row | None:
         """Fetch a grant row by id, live or not."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT grant_id, user_id, external_job_id, external_attempt_id, "
                 "       allowed_models, created_at, expires_at, revoked_at "
@@ -2797,7 +2831,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_setting(self, key: str) -> Row | None:
         """Fetch a single site_settings row by key."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT key, value, value_type, updated_at, updated_by "
                 "FROM site_settings WHERE key = $1",
@@ -2873,7 +2907,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_model_visibility_override(self, model_id: str) -> Row | None:
         """Fetch a single model_visibility_overrides row by model_id."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT model_id, required_role, updated_at, updated_by "
                 "FROM model_visibility_overrides WHERE model_id = $1",
@@ -2953,7 +2987,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
         """Fetch a single model_concurrency_exemptions row by model_id."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT model_id, updated_at, updated_by "
                 "FROM model_concurrency_exemptions WHERE model_id = $1",
@@ -3690,7 +3724,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return today's cost from the counter table."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT cost_usd FROM user_daily_cost "
                 "WHERE user_id = $1 AND day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
@@ -3832,7 +3866,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if period == "today":
             return await self.get_user_cost_today(user_id)
         # month: sum all days in current UTC month
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(cost_usd), 0) as total FROM user_daily_cost "
                 "WHERE user_id = $1 "

@@ -14,11 +14,17 @@ from typing import Any
 import asyncpg
 
 from serving.storage.erasure_fence import (
-    ErasureFenceUnavailable,
     protect_api_logs_insert,
     validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
+from serving.storage.pools import (
+    COMMAND_TIMEOUT_SEC,
+    GENERAL_POOL_MAX_SIZE,
+    GENERAL_POOL_MIN_SIZE,
+    REQUEST_POOL_MAX_SIZE,
+    REQUEST_POOL_MIN_SIZE,
+)
 from serving.storage.utils import (
     calculate_cost,
     conversation_shape,
@@ -48,7 +54,12 @@ def _parse_command_tag_count(command_tag: str) -> int:
 
 
 class DatabaseLogger:
-    """Asynchronous PostgreSQL logger using a pooled connection."""
+    """Asynchronous PostgreSQL logger, and the owner of the gateway's two pools.
+
+    ``pool`` is the general pool everything uses; ``request_pool`` is reserved
+    for the lookups a request makes before it is served (see
+    :mod:`serving.storage.pools`).
+    """
 
     def __init__(
         self,
@@ -71,25 +82,37 @@ class DatabaseLogger:
         self.fence_secret = fence_secret
         # Use Any to avoid mypy issues when asyncpg types are unavailable.
         self.pool: Any | None = None
+        self.request_pool: Any | None = None
 
     async def initialize(self) -> None:
-        """Create the connection pool and check the erasure-fence secret.
+        """Create the connection pools and check the erasure-fence secret.
 
         The tables come from the schema migrations. With a fence secret, its
         fingerprint is checked against the pinned one (pinned on first use)
         before anything can write a log row.
         """
         self.pool = await asyncpg.create_pool(
-            **self.db_config, min_size=2, max_size=10, command_timeout=60
+            **self.db_config,
+            min_size=GENERAL_POOL_MIN_SIZE,
+            max_size=GENERAL_POOL_MAX_SIZE,
+            command_timeout=COMMAND_TIMEOUT_SEC,
         )
         try:
+            self.request_pool = await asyncpg.create_pool(
+                **self.db_config,
+                min_size=REQUEST_POOL_MIN_SIZE,
+                max_size=REQUEST_POOL_MAX_SIZE,
+                command_timeout=COMMAND_TIMEOUT_SEC,
+            )
             if self.fence_secret:
                 async with self.pool.acquire() as conn:
                     await validate_or_init_fingerprint(conn, secret=self.fence_secret)
-        except ErasureFenceUnavailable:
-            # A fingerprint mismatch is a durable privacy boundary, not a
-            # transient database startup error. Do not let bootstrap retry and
-            # eventually disable logging while retaining an open pool.
+        except Exception:
+            # Closed whatever went wrong. A fingerprint mismatch is a durable
+            # privacy boundary, not a transient database startup error, and
+            # bootstrap must not retry it while retaining an open pool; any
+            # other failure is retried by bootstrap with a fresh call, which
+            # would otherwise leave this one's pools open behind it.
             await self.cleanup()
             raise
 
@@ -432,9 +455,12 @@ class DatabaseLogger:
         return [dict(r) for r in rows]
 
     async def cleanup(self) -> None:
-        """Close the connection pool if initialized."""
-        if self.pool:
-            try:
-                await self.pool.close()  # type: ignore[attr-defined]
-            finally:
-                self.pool = None
+        """Close the connection pools that were opened."""
+        pool, request_pool = self.pool, self.request_pool
+        self.pool = self.request_pool = None
+        try:
+            if request_pool:
+                await request_pool.close()
+        finally:
+            if pool:
+                await pool.close()

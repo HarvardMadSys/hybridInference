@@ -48,6 +48,17 @@ under **Privacy** on the admin console's **Configuration** tab:
 | `ERASURE_FENCE_SECRET` | *(empty)* | Secret for the records that keep deleted accounts deleted. It cannot be changed once set; see [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
 | `ERASURE_FENCE_PROTOCOL_READY` | `false` | Turns on permanent account deletion. See [Secrets for deleting accounts](#secrets-for-deleting-accounts). |
 
+Each gateway process opens two connection pools to it (sizes and reasons in
+`apps/backend/serving/storage/pools.py`): a general pool of up to 10
+connections for everything, and a request pool of up to 4 reserved for the
+lookups a request makes before it is served — API-key authentication and spend,
+session checks, quotas, and the runtime settings read on the way. Slow work on
+the general pool (reports, exports, rollups) cannot hold those up, and a request
+that cannot get a request-pool connection within 3 seconds is answered with a
+503 and `Retry-After` instead of waiting. With the alert-history pool's 4, a
+process holds at most 18 connections; size `max_connections` for that times
+the number of gateway processes, plus the tools you run beside them.
+
 The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`,
 initialised with `-E UTF8 --locale=C.UTF-8`, and publishes it on
 `127.0.0.1:${DB_PORT:-5432}` — loopback only. Reach it from another machine with

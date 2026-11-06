@@ -1249,7 +1249,12 @@ async def initialize() -> AppServices:
 
         fence_secret = resolve_fence_secret(settings.erasure_fence_secret)
 
-        pg_operational = PostgresOperationalStore(db_logger.pool)
+        # The lookups a request makes before it is served read through the
+        # logger's request pool, which nothing else uses, so slow work on the
+        # general pool cannot hold up authentication (serving.storage.pools).
+        pg_operational = PostgresOperationalStore(
+            db_logger.pool, request_pool=getattr(db_logger, "request_pool", None)
+        )
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(

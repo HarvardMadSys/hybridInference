@@ -40,6 +40,7 @@ from serving.servers.deps import (
 )
 from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.storage.base import OperationalStore
+from serving.storage.pools import DatabaseBusyError
 from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
@@ -1284,6 +1285,9 @@ async def optional_verify_api_key(
 
     try:
         row = await op_store.get_auth_context_lightweight(key_hash)
+    except DatabaseBusyError:
+        # The app's 503 with Retry-After: busy, not broken.
+        raise
     except Exception as exc:
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc
