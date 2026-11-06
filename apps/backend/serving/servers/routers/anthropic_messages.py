@@ -93,7 +93,6 @@ from serving.utils.session_identity import consume_session_fields, session_ident
 from serving.utils.synthetic_probe import probe_marker_in
 from serving.utils.token_utils import optional_token_count, usage_count
 from serving.utils.tokens import (
-    estimate_prompt_tokens,
     estimate_prompt_tokens_bounded,
     estimate_text_tokens,
     run_tokenization,
@@ -1375,6 +1374,11 @@ def _estimate_request_input_tokens(request_payload: dict[str, Any] | None) -> in
     it separate from ``messages``) and adds a coarse estimate for tool schemas,
     since coding agents send large tool definitions. Used only as a fallback
     when the upstream never reported usage (see :func:`_resolve_stream_usage`).
+
+    Runs on the event loop as the stream is torn down -- a client leaving
+    mid-prefill is an ordinary turn of a coding agent -- so it tokenizes at most
+    :data:`~serving.utils.tokens.INLINE_ESTIMATE_MAX_CHARS` characters: exact
+    for a prompt within that, sampled within a few percent beyond it.
     """
     if not isinstance(request_payload, dict):
         return 0
@@ -1385,14 +1389,14 @@ def _estimate_request_input_tokens(request_payload: dict[str, Any] | None) -> in
         # ``system`` is a string or a list of content blocks; both shapes are
         # handled by the content estimator via a synthetic system message.
         est_messages = [{"role": "system", "content": system}, *est_messages]
-    # estimate_prompt_tokens is multimodal-safe (it flat-counts image/audio
-    # blocks rather than tokenizing base64 payloads), so it is used as-is.
-    total = estimate_prompt_tokens(est_messages)
+    tool_texts: tuple[str, ...] = ()
     tools = request_payload.get("tools")
     if isinstance(tools, list) and tools:
         with contextlib.suppress(TypeError, ValueError):
-            total += _bounded_text_tokens(json.dumps(tools))
-    return total
+            tool_texts = (json.dumps(tools),)
+    # Multimodal-safe: image/audio blocks are flat-counted, never tokenized as
+    # base64 text.
+    return estimate_prompt_tokens_bounded(est_messages, extra_texts=tool_texts)
 
 
 def _accumulated_output_text(response_acc: dict | None) -> str:
@@ -2008,6 +2012,9 @@ async def execute_messages(
         # keeps the raw detail server-side either way.
         return _messages_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
+    # The request's one snapshot, what the client sent: logged as the body, and
+    # the source of the logged messages further down. An auto request took it
+    # before selection rewrote the body.
     request_payload_for_log = client_request if client_request is not None else copy.deepcopy(body)
 
     # Which session this request belongs to. This is the surface Claude Code
@@ -2092,9 +2099,13 @@ async def execute_messages(
         # above gives, which this surface renders as overloaded_error.
         return _messages_error(503, f"No provider is currently available for model '{model_id}'")
 
-    # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
-    # (strips cache_control blocks). The log must preserve the original client payload.
-    messages_for_log = copy.deepcopy(body.get("messages"))
+    # The messages the client sent, for the log. Dispatch rewrites the body's in
+    # place from here on (_sanitize_for_openai_backend strips cache_control
+    # blocks, strip_foreign_thinking drops thinking), so the log reads them from
+    # the one snapshot taken above: nothing between it and here touches
+    # ``messages``, and a second deep copy of the conversation cost as much as
+    # the first. Both are read-only from here on.
+    messages_for_log = request_payload_for_log.get("messages")
 
     # After the log snapshot, which keeps what the client sent, and after the
     # reroute, so it is the serving adapter's format that decides.
