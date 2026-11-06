@@ -591,7 +591,8 @@ async def logout(
 
     Other accounts signed in on the browser stay signed in, with none of them
     active; the cookie goes with the last one. Access tokens already issued
-    expire on their own (15 minutes).
+    for the session are refused from the next request on
+    (:func:`serving.servers.deps.require_live_session`).
 
     A cookie that names no browser is cleared. Unlike deleting an account,
     which takes it off every browser first, logout cannot tell which browser

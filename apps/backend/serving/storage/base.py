@@ -746,6 +746,15 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Whether *user_id*'s auth session *sid* may still authorize a request.
+
+        *sid* is the ``sid`` claim of an access token. False once the session
+        is revoked (signing out, a password change or reset, signing out the
+        other devices), deleted, expired, or when it never existed.
+        """
+
+    @abstractmethod
     async def rotate_session(
         self,
         session_id: str,

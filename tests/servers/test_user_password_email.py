@@ -30,7 +30,7 @@ async def test_change_password_success(test_app, test_client, mock_operational_s
         patch("serving.utils.jwt.verify_access_token") as mock_verify,
         patch("serving.utils.password.verify_password", return_value=True),
     ):
-        mock_verify.return_value = {"sub": "user123", "email": "test@example.com"}
+        mock_verify.return_value = {"sub": "user123", "email": "test@example.com", "sid": "sess"}
 
         mock_operational_store.get_user_by_id.return_value = _mock_authenticated_user(
             "test@example.com"
@@ -55,7 +55,7 @@ async def test_change_password_wrong_old_password(test_app, test_client, mock_op
         patch("serving.utils.jwt.verify_access_token") as mock_verify,
         patch("serving.utils.password.verify_password", return_value=False),
     ):
-        mock_verify.return_value = {"sub": "user123", "email": "test@example.com"}
+        mock_verify.return_value = {"sub": "user123", "email": "test@example.com", "sid": "sess"}
 
         mock_operational_store.get_user_by_id.return_value = _mock_authenticated_user(
             "test@example.com"
@@ -78,7 +78,7 @@ async def test_change_password_same_as_old(test_app, test_client, mock_operation
         patch("serving.utils.jwt.verify_access_token") as mock_verify,
         patch("serving.utils.password.verify_password", side_effect=[True, True]),
     ):
-        mock_verify.return_value = {"sub": "user123", "email": "test@example.com"}
+        mock_verify.return_value = {"sub": "user123", "email": "test@example.com", "sid": "sess"}
 
         mock_operational_store.get_user_by_id.return_value = _mock_authenticated_user(
             "test@example.com"
@@ -98,7 +98,7 @@ async def test_change_password_same_as_old(test_app, test_client, mock_operation
 async def test_change_password_weak_new_password(test_app, test_client, mock_operational_store):
     """Test password change with weak new password."""
     with patch("serving.utils.jwt.verify_access_token") as mock_verify:
-        mock_verify.return_value = {"sub": "user123", "email": "test@example.com"}
+        mock_verify.return_value = {"sub": "user123", "email": "test@example.com", "sid": "sess"}
 
         mock_operational_store.get_user_by_id.return_value = _mock_authenticated_user(
             "test@example.com"

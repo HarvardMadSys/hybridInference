@@ -1910,6 +1910,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return dict(row) if row else None
 
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Whether *user_id*'s session *sid* exists, unrevoked and unexpired.
+
+        Found through ``idx_auth_sessions_user`` (user_id, expires_at): ``sid``
+        has no index of its own, and an account holds few sessions.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM auth_sessions "
+                    "WHERE user_id = $1 AND expires_at > NOW() AND sid = $2 "
+                    "AND revoked IS NOT TRUE)",
+                    user_id,
+                    sid,
+                )
+            )
+
     async def rotate_session(
         self,
         session_id: str,
