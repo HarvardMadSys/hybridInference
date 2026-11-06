@@ -2,8 +2,9 @@
 
 The implementations were split into focused modules, but ``routing.backends`` is
 what the composition root, both routers and the tests import. These assertions
-pin that entry point: every exported name is the same object its defining module
-owns, so reorganizing internal modules does not break callers.
+pin only that public entry point, so folding the internal modules back
+together later does not break this test: nothing here imports a private
+implementation module.
 """
 
 from __future__ import annotations
@@ -11,35 +12,31 @@ from __future__ import annotations
 import pytest
 
 from routing import backends
-from routing.backends_contract import RoutingBackend, RoutingBackendBase
-from routing.backends_domains import CloudBackend, FixedCloudBackend, LocalBackend
-from routing.backends_leaf import LeafBackend
-from routing.backends_routewise import RouteWiseCloudBackend
-from routing.backends_tree import TreeBackend
 
-_DEFINING_MODULE = {
-    "RoutingBackend": RoutingBackend,
-    "RoutingBackendBase": RoutingBackendBase,
-    "LeafBackend": LeafBackend,
-    "TreeBackend": TreeBackend,
-    "LocalBackend": LocalBackend,
-    "CloudBackend": CloudBackend,
-    "FixedCloudBackend": FixedCloudBackend,
-    "RouteWiseCloudBackend": RouteWiseCloudBackend,
+_EXPECTED_EXPORTS = {
+    "CloudBackend",
+    "FixedCloudBackend",
+    "LeafBackend",
+    "LocalBackend",
+    "RouteWiseCloudBackend",
+    "RoutingBackend",
+    "RoutingBackendBase",
+    "TreeBackend",
 }
 
 
 @pytest.mark.unit
 def test_the_public_module_exports_exactly_the_backend_contract() -> None:
-    assert sorted(backends.__all__) == sorted(_DEFINING_MODULE)
+    assert set(backends.__all__) == _EXPECTED_EXPORTS
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("name", sorted(_DEFINING_MODULE))
-def test_every_export_is_the_object_its_module_defines(name: str) -> None:
+@pytest.mark.parametrize("name", sorted(_EXPECTED_EXPORTS))
+def test_every_export_is_importable_from_the_public_entry_point(name: str) -> None:
     exported = getattr(backends, name)
 
-    assert exported is _DEFINING_MODULE[name]
+    assert exported is not None
+    assert name in backends.__all__
 
 
 @pytest.mark.unit
@@ -72,4 +69,4 @@ def test_the_execution_domain_contract_stays_runtime_checkable() -> None:
         def is_cloud(self):
             return False
 
-    assert isinstance(_MinimalBackend(), RoutingBackend)
+    assert isinstance(_MinimalBackend(), backends.RoutingBackend)

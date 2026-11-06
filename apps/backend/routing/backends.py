@@ -34,9 +34,14 @@ Architecture status is deliberate:
 
 - ``RoutingBackend``, ``LeafBackend`` and ``TreeBackend`` are the intended
   execution-boundary contract (leaf versus routing subtree).
-- ``LocalBackend``, ``CloudBackend`` and ``FixedCloudBackend`` are intended
-  deployment-role implementations of that tree boundary, not temporary
-  compatibility shims.
+- ``LocalBackend``, ``CloudBackend`` and ``FixedCloudBackend`` are a
+  transitional home for the current ``hybrid_composition`` compatibility
+  wiring, not the target abstraction for deployment ownership. The accepted
+  composable-routing design
+  (``docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md``)
+  keeps local/cloud ownership independent from Leaf/Tree structure and does
+  not require a ``CloudBackend`` inheritance layer; avoid extending this
+  wrapper layer without updating those records.
 - ``RouteWiseCloudBackend`` is the optional scoped compatibility wrapper for
   the concrete hybrid composition. It is not RouteWise's architectural home;
   a ``router: routewise`` model retains its peer router and full candidate pool.

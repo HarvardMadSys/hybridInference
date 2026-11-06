@@ -6,7 +6,7 @@ no reservation, no health record, no failed-attempt sample, no routing metadata
 and no connection lifecycle, because every one of those already belongs to the
 router that chose this endpoint -- a second copy here would double-count them.
 
-The call signatures are the adapter own, not the router. A leaf stands in for one
+The call signatures are the adapter's own, not the router's. A leaf stands in for one
 adapter wherever an adapter is executed, so the router that wrapped it keeps
 doing the deciding, the admission, the accounting and the metadata.
 """

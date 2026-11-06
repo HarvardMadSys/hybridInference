@@ -2151,8 +2151,8 @@ msgid "Execution"
 msgstr "执行"
 
 #: ../developer/routing.md:884
-msgid "`backends.py` (public re-exports), `backends_leaf.py`, `backends_tree.py`, `backends_domains.py`, `backends_routewise.py` + `dispatch.py`"
-msgstr "`backends.py`（公共重导出）、`backends_leaf.py`、`backends_tree.py`、`backends_domains.py`、`backends_routewise.py` + `dispatch.py`"
+msgid "`backends.py` (public re-exports), `backends_contract.py`, `backends_leaf.py`, `backends_tree.py`, `backends_domains.py`, `backends_routewise.py` + `dispatch.py`"
+msgstr "`backends.py`（公共重导出）、`backends_contract.py`、`backends_leaf.py`、`backends_tree.py`、`backends_domains.py`、`backends_routewise.py` + `dispatch.py`"
 
 #: ../developer/routing.md:661
 msgid ""
