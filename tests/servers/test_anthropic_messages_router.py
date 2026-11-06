@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,15 @@ NATIVE_MODEL = "claude-opus-4.7"
 OPENAI_MODEL = "glm-4.7"
 ANTHROPIC_UPSTREAM = "https://api.anthropic.com/v1/messages"
 ZAI_UPSTREAM = "https://example-zai.test/chat/completions"
+
+
+async def _collect_response(response) -> bytes:
+    collected = b""
+    async for chunk in response.aiter_bytes():
+        if not collected and chunk == b": keepalive\n\n":
+            raise AssertionError("stream produced a leading keepalive")
+        collected += chunk
+    return collected
 
 
 def _auth():
@@ -1858,6 +1868,106 @@ async def test_streaming_aborts_after_max_idle(anthropic_test_client, monkeypatc
     assert captured.get("error") is not None
     assert captured["usage"]["input_tokens"] == 0  # failed stream -> not billed
     assert captured["usage"]["output_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_streaming_upstream_cancellation_terminates_without_manual_close(
+    anthropic_test_client, monkeypatch
+):
+    """An upstream cancellation must end the SSE generator, not heartbeat forever."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.02)
+    monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 10)
+    monkeypatch.setattr(amod, "_MAX_FIRST_FRAME_IDLE", 0.05)
+    monkeypatch.setattr(amod, "_schedule_log_store_task", lambda log_store, **kw: None)
+
+    provider_gone = asyncio.Event()
+    provider_task = asyncio.create_task(provider_gone.wait())
+
+    async def _iter():
+        yield (
+            b"event: message_start\n"
+            b'data: {"type":"message_start","message":{"id":"msg_cancel",'
+            b'"model":"claude-opus-4-7","role":"assistant","content":[],'
+            b'"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+        )
+        await provider_task
+        yield b""
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    collected = b""
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        consume = asyncio.create_task(_collect_response(r))
+        await asyncio.sleep(0.04)
+        provider_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await provider_task
+        collected = await asyncio.wait_for(consume, timeout=1.0)
+
+    assert b"event: error" in collected
+    assert b": keepalive" not in collected or b"event: message_start" in collected
+
+
+@pytest.mark.asyncio
+async def test_streaming_reader_exit_without_sentinel_terminates_keepalive(
+    anthropic_test_client, monkeypatch
+):
+    """A reader that exits empty without its sentinel cannot heartbeat forever.
+
+    This is the semantic #1647/#1560 composition: Python 3.11 makes the builtin
+    ``TimeoutError`` the awaited timeout, and that branch must still check the
+    reader's terminal state. With the check, the stream ends without a
+    heartbeat; without it, the branch emits an immediate keepalive.
+    """
+    from serving.servers.routers import anthropic_messages as amod
+
+    monkeypatch.setattr(amod, "_KEEPALIVE_INTERVAL", 0.01)
+    monkeypatch.setattr(amod, "_MAX_STREAM_IDLE", 10)
+    monkeypatch.setattr(amod, "_MAX_FIRST_FRAME_IDLE", 0.05)
+    monkeypatch.setattr(amod, "_schedule_log_store_task", lambda log_store, **kw: None)
+
+    class _VanishingReader:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise asyncio.CancelledError
+
+    # The adapter itself terminates without yielding a sentinel. Bypass the
+    # HTTP client so the reader is the only moving upstream part.
+    app = anthropic_test_client._transport.app
+    router = app.state.services.router
+    adapter, _weight = router.routes[NATIVE_MODEL].adapters[0]
+    monkeypatch.setattr(adapter, "stream_messages", lambda *args, **kwargs: _VanishingReader())
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        consume = asyncio.create_task(_collect_response(r))
+        collected = await asyncio.wait_for(consume, timeout=0.5)
+        # The reader's CancelledError was external, so the wrapper turns it
+        # into a terminal error. No keepalive may be emitted first.
+        assert collected == b""
 
 
 def test_mid_stream_ceiling_is_desynchronised_from_the_proxy_read_timeout():
