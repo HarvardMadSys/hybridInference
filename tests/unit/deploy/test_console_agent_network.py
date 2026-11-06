@@ -64,6 +64,19 @@ def test_the_base_stack_never_mentions_it() -> None:
     assert base["services"]["frontend"]["networks"] == ["hybridinference"]
 
 
+def test_the_overlay_only_extends_services_the_base_defines() -> None:
+    """An overlay entry for a service the base lacks is a whole service.
+
+    It has no image and no build context, so Compose rejects the project and
+    `CLOUD_AGENT_NETWORK=1` fails every command. The Codex On-Call relay left
+    exactly that behind when #1367 removed it from the base file.
+    """
+    base = yaml.safe_load(BASE.read_text())
+    overlay = yaml.safe_load(OVERLAY.read_text())
+
+    assert set(overlay["services"]) <= set(base["services"])
+
+
 def test_the_makefile_adds_the_overlay_only_when_asked() -> None:
     makefile = MAKEFILE.read_text()
 
