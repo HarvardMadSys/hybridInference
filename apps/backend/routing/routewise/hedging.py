@@ -15,7 +15,11 @@ if TYPE_CHECKING:
 from llm_routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
 from routing.endpoints import endpoint_id_for_adapter
-from routing.streaming import has_non_empty_content
+from routing.streaming import (
+    PRE_CONTENT_BUFFER_MAX_BYTES,
+    chunk_buffer_size,
+    has_non_empty_content,
+)
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.adapters.base import BaseAdapter
 from serving.utils import context as req_ctx
@@ -23,7 +27,7 @@ from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-_STREAM_RACE_BUFFER_MAX_BYTES = 1_000_000
+_STREAM_RACE_BUFFER_MAX_BYTES = PRE_CONTENT_BUFFER_MAX_BYTES
 _STREAM_RACE_DEADLINE_SECONDS = 60.0
 
 
@@ -756,12 +760,7 @@ async def _safe_aclose(gen: AsyncGenerator[Any, None]) -> None:
         pass
 
 
-def _chunk_buffer_size(chunk: Any) -> int:
-    if isinstance(chunk, bytes):
-        return len(chunk)
-    if isinstance(chunk, str):
-        return len(chunk)
-    return 0
+_chunk_buffer_size = chunk_buffer_size
 
 
 def _stream_race_buffer_cap_reached(buffer_bytes: int, *, leg: str) -> bool:

@@ -47,7 +47,11 @@ from routing.prefill_load import (
     prompt_anchor,
 )
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
-from routing.streaming import has_non_empty_content
+from routing.streaming import (
+    PRE_CONTENT_BUFFER_MAX_BYTES,
+    chunk_buffer_size,
+    has_non_empty_content,
+)
 from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
 from serving.adapters.upstream_limiter import EngineHold
 from serving.config.app_config import config_value, on_change
@@ -1269,12 +1273,20 @@ class FixedRouter:
         as a tool call it buffers whole, is the engine answering, and the wait
         for it to reach this loop has no deadline.
 
+        What is held is bounded, as the hedge race's buffer is
+        (``routing.streaming.PRE_CONTENT_BUFFER_MAX_BYTES``). Once the chunks
+        held reach that many bytes this stops holding and returns them, without
+        a first token: they go out, which commits the stream to this attempt,
+        and the wait ends -- an upstream that has streamed that much is
+        answering, and the caller records the first token when it comes.
+
         Raises:
             EngineWaitExpired: The watch's deadline passed first. The attempt's
                 stream has been unwound by then, which closes its connection and
                 aborts the request at the engine.
         """
         held: list[Any] = []
+        held_bytes = 0
         try:
             async with watch.deadline() as deadline:
                 watch.arm(deadline)
@@ -1285,6 +1297,18 @@ class FixedRouter:
                         break
                     held.append(chunk)
                     if has_non_empty_content(chunk):
+                        break
+                    held_bytes += chunk_buffer_size(chunk)
+                    if held_bytes >= PRE_CONTENT_BUFFER_MAX_BYTES:
+                        logger.warning(
+                            "first_token_hold_cap_reached",
+                            extra={
+                                "event": "first_token_hold_cap_reached",
+                                "endpoint_id": watch.endpoint_id,
+                                "held_bytes": held_bytes,
+                                "limit_bytes": PRE_CONTENT_BUFFER_MAX_BYTES,
+                            },
+                        )
                         break
         except TimeoutError:
             # Only the watch's own deadline becomes an offload: a TimeoutError the
