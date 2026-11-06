@@ -260,16 +260,11 @@ def extract_cache_tokens(
         # The producer asserts nothing was measured. Cache write accounting is
         # a separate measurement and is unaffected.
         cache_write = None
-        for field in ("cache_creation_input_tokens", "cache_write_tokens"):
-            val = usage.get(field)
-            if val is not None:
-                try:
-                    val = int(val)
-                    if val >= 0:
-                        cache_write = val
-                        break
-                except (TypeError, ValueError):
-                    pass
+        for field in _CACHE_WRITE_FIELDS:
+            count = optional_token_count(usage.get(field))
+            if count is not None:
+                cache_write = count
+                break
         return None, cache_write
 
     # --- cache read tokens ---

@@ -531,6 +531,18 @@ class TestExplicitCacheReportedFlag:
         assert read is None
         assert write == 12
 
+    @pytest.mark.parametrize("bad_write", [True, float("inf"), -1, "not-a-count"])
+    def test_flag_false_rejects_unreadable_cache_write_counts(self, bad_write):
+        """A boolean/infinite/negative write count is not a measurement."""
+        usage = {
+            "input_tokens": 100,
+            "cache_read_reported": False,
+            "cache_write_tokens": bad_write,
+        }
+        read, write = extract_cache_tokens(usage)
+        assert read is None
+        assert write is None
+
 
 class TestUnknownFlagDropsALeftoverFlatCounter:
     """A flat counter copied in from the source must not survive UNKNOWN.

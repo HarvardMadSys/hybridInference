@@ -398,11 +398,11 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized = normalize_usage(chat_usage) or {}
     completion_details = normalized.get("completion_tokens_details") or {}
     cached = normalized.get("cache_read_tokens")
-    # "cache_read_tokens" is present in the normalized dict only when a
-    # provider actually reported a count (extract_cache_tokens emits it for
-    # both a measured 0 and a measured positive). Its absence means the
-    # provider reported nothing, which must not be coerced into a miss.
-    cache_reported = "cache_read_tokens" in normalized
+    # A normalized count is a measurement only when it is a real count.
+    # Presence alone is not enough: ``normalize_usage`` keeps a None-valued
+    # ``cache_read_tokens`` key, and such a null means the provider reported
+    # nothing, which must not be coerced into a miss.
+    cache_reported = cached is not None
     reasoning = int(
         normalized.get("reasoning_tokens") or completion_details.get("reasoning_tokens") or 0
     )

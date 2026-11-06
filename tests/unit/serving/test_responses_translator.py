@@ -735,6 +735,24 @@ class TestCacheEvidenceStates:
         assert out["usage"]["input_tokens_details"]["cached_tokens"] == 0
         assert out["usage"]["cache_read_reported"] is False
 
+    def test_null_cache_count_is_unreported_not_a_miss(self):
+        """A None-valued cache key means nothing was reported, not a 0."""
+        out = chat_response_to_responses(
+            self._chat(
+                {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "cache_read_tokens": None,
+                }
+            ),
+            response_id="r1n",
+            created_at=1,
+            model="m",
+            request_body={},
+        )
+        assert out["usage"]["input_tokens_details"]["cached_tokens"] == 0
+        assert out["usage"]["cache_read_reported"] is False
+
     def test_measured_miss_is_reported_zero(self):
         """An explicit 0 stays 0, flagged as measured."""
         out = chat_response_to_responses(
