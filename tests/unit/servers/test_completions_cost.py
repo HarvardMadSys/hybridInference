@@ -375,6 +375,9 @@ async def test_cost_tracker_no_pricing_no_increment(op_store, empty_lookup):
 
 @pytest.mark.asyncio
 async def test_cost_tracker_uses_typed_routing_pricing_first(op_store, empty_lookup):
+    from serving.utils import context as req_ctx
+
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_admitted", req_ctx.ORG_ID: "org_admitted"})
     tracker = CostTracker(op_store=op_store, pricing=empty_lookup)
     pricing = Pricing(prompt_price=0.5, completion_price=1.5)
     routing = RoutingInfo(request_id="rid", model="gpt-4", pricing=pricing)
@@ -385,6 +388,7 @@ async def test_cost_tracker_uses_typed_routing_pricing_first(op_store, empty_loo
         completion_tokens=500,
         api_key_id=12,
     )
+    req_ctx.reset_request_scope()
     expected = calculate_cost(
         {"prompt_tokens": 1000, "completion_tokens": 500},
         {"prompt": "0.5", "completion": "1.5"},
@@ -396,7 +400,11 @@ async def test_cost_tracker_uses_typed_routing_pricing_first(op_store, empty_loo
     call_args = op_store.increment_user_cost.call_args
     assert call_args[0][0] == "u1"
     assert call_args[0][1] == pytest.approx(expected)
-    assert call_args.kwargs == {"api_key_id": 12, "org_id": None, "project_id": None}
+    assert call_args.kwargs == {
+        "api_key_id": 12,
+        "org_id": "org_admitted",
+        "project_id": "proj_admitted",
+    }
 
 
 @pytest.mark.asyncio

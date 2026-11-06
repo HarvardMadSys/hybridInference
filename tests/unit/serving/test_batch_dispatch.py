@@ -163,7 +163,9 @@ async def test_item_runs_through_the_handler_and_reports_its_response():
 async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
     app, services = _setup(_Upstream())
 
-    result = await _dispatch(app, services)
+    result = await _dispatch(
+        app, services, user_ctx={**_owner(), "project_id": "proj_batch", "org_id": "org_batch"}
+    )
 
     row = await _logged_row(services)
     # 100 prompt tokens at $1/M plus 50 completion tokens at $2/M.
@@ -175,6 +177,7 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
     assert row["metadata"]["user_id"] == "owner-1"
     # Charged to the key that created the batch, as a live request with it is.
     assert row["metadata"]["api_key_id"] == 41
+    assert row["metadata"]["project_id"] == "proj_batch"
     assert row["metadata"]["user_agent"] == BATCH_USER_AGENT
     assert row["status_code"] == 200
     for _ in range(100):
@@ -182,7 +185,7 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
             break
         await asyncio.sleep(0.001)
     services.operational_store.increment_user_cost.assert_awaited_once_with(
-        "owner-1", pytest.approx(0.0002), api_key_id=41, org_id=None, project_id=None
+        "owner-1", pytest.approx(0.0002), api_key_id=41, org_id="org_batch", project_id="proj_batch"
     )
 
 
