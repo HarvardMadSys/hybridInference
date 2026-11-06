@@ -131,9 +131,6 @@ class AppServices:
     # Batch input/output files and webhooks, over the batch store's pool.
     batch_file_store: BatchFileStore | None = None
     batch_webhook_store: BatchWebhookStore | None = None
-    # The batch store while its schema migration waits for a lock at boot:
-    # nothing is served from it, but the hard-delete purge still goes through it.
-    batch_store_pending: BatchStore | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
@@ -221,8 +218,8 @@ async def get_batch_webhook_store(
 async def get_batch_store_for_purge(
     services: AppServices = Depends(get_services),
 ) -> BatchStore | None:
-    """Dependency to obtain the batch store an erasure must purge, ready or not."""
-    return getattr(services, "batch_store", None) or getattr(services, "batch_store_pending", None)
+    """Dependency to obtain the batch store an erasure must purge, whatever ``BATCH_ENABLED`` says."""
+    return getattr(services, "batch_store", None)
 
 
 async def get_batch_model_limits(

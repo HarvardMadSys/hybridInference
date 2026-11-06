@@ -10,7 +10,24 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["flatten_text_content", "merge_leading_system_messages"]
+__all__ = ["flatten_text_content", "merge_leading_system_messages", "move_tool_media"]
+
+#: Content part types that carry media rather than text: the non-text keys of
+#: ``serving.schemas.CONTENT_BLOCK_MODALITY``. Not imported from there, since
+#: that module imports this one; a test keeps the two in step.
+MEDIA_PART_TYPES = frozenset(
+    {
+        "image_url",
+        "image",
+        "input_image",
+        "input_audio",
+        "audio",
+        "video_url",
+        "video",
+        "input_video",
+    }
+)
+_IMAGE_PART_TYPES = frozenset({"image_url", "image", "input_image"})
 
 
 def flatten_text_content(content: Any) -> str:
@@ -78,3 +95,80 @@ def merge_leading_system_messages(messages: list[dict[str, Any]]) -> list[dict[s
     leading = dict(systems[0])
     leading["content"] = merged_text
     return [leading, *others]
+
+
+def move_tool_media(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Move the media in ``role: "tool"`` messages to the user message after their run.
+
+    A tool message holds text only: OpenAI's Chat Completions refuses an image
+    part there, and the providers that follow it refuse it or drop it. But a
+    tool can return one -- Codex's ``view_image`` arrives through the Responses
+    surface as a ``function_call_output`` with an ``input_image`` part, and a
+    chat client can send one directly. So each such tool message keeps its
+    text and says its media follow, and the media go, introduced by the call
+    they came from, after the whole run of tool messages: the tool messages
+    answering one assistant turn must stay contiguous. They join the user
+    message that follows the run, ahead of its own content, or else a new
+    user message, so the conversation keeps one user message per turn. The
+    Anthropic surface places a ``tool_result``'s images the same way when it
+    translates (``anthropic_translator``).
+
+    Returns the argument itself (no copy) when no tool message carries media,
+    which is nearly all traffic.
+    """
+    if not any(_media_parts(m) for m in messages if m.get("role") == "tool"):
+        return messages
+    out: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") == "tool":
+            media = _media_parts(message)
+            if media:
+                message, label = _tool_text_only(message, media)
+                pending.extend([label, *media])
+            out.append(message)
+            continue
+        if pending:
+            if message.get("role") == "user":
+                message = {**message, "content": [*pending, *_as_parts(message.get("content"))]}
+            else:
+                out.append({"role": "user", "content": pending})
+            pending = []
+        out.append(message)
+    if pending:
+        out.append({"role": "user", "content": pending})
+    return out
+
+
+def _as_parts(content: Any) -> list[Any]:
+    if isinstance(content, list):
+        return content
+    if isinstance(content, dict):
+        return [content]
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}]
+    return []
+
+
+def _media_parts(message: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        part
+        for part in _as_parts(message.get("content"))
+        if isinstance(part, dict) and part.get("type") in MEDIA_PART_TYPES
+    ]
+
+
+def _tool_text_only(
+    message: dict[str, Any], media: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The tool message without its media, and the label introducing them."""
+    kept = [part for part in _as_parts(message.get("content")) if part not in media]
+    text = flatten_text_content(kept)
+    images = all(part.get("type") in _IMAGE_PART_TYPES for part in media)
+    noun, article = ("image", "an") if images else ("media part", "a")
+    counted = f"{article} {noun}" if len(media) == 1 else f"{len(media)} {noun}s"
+    note = f"[The tool returned {counted}; attached in the next user message.]"
+    stripped = {**message, "content": f"{text}\n{note}" if text else note}
+    call_id = message.get("tool_call_id", "")
+    title = "Image output" if images else "Output"
+    return stripped, {"type": "text", "text": f"{title} of tool call {call_id}:"}

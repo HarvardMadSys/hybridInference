@@ -46,6 +46,7 @@ from serving.schemas_admin import (
     ProviderRouteItem,
     ProviderRouteOption,
     RouteCapabilitiesItem,
+    RouteCapabilityEdit,
     RuntimeModelCapabilities,
     UpdateProviderRouteCandidateRequest,
     UpdateProviderRouteRequest,
@@ -4792,7 +4793,8 @@ async def update_provider_route_candidate(
     updated in place (compare-and-swap on ``updated_at``) and the live route
     swapped under the model's transition lock, and a failed swap restores the
     row, so the database and the serving route never disagree. A limit-only
-    edit changes the live route's limit in place and rebuilds nothing.
+    edit changes the live route's limit in place and rebuilds nothing. A
+    capability change in the body is saved with the edit and restored with it.
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -4851,6 +4853,13 @@ async def update_provider_route_candidate(
                 ),
             )
         pricing = candidate.adapter.config.pricing if _is_runtime_created_route(route) else None
+        capability_write = _route_capability_write(
+            payload,
+            model_id=model_id,
+            route_id=route_id,
+            route=current_route,
+            adapter=current_adapter,
+        )
 
         async def persist_and_install() -> None:
             updated_at = await op_store.update_provider_route_candidate(
@@ -4876,8 +4885,13 @@ async def update_provider_route_candidate(
                     detail="provider route candidate changed concurrently; reload and retry",
                 )
             try:
+                if capability_write is not None:
+                    await capability_write.persist(op_store, admin_id)
+                    capability_write.publish()
                 _install_route_candidate_edit(services, edit)
             except BaseException:
+                if capability_write is not None:
+                    await capability_write.undo(op_store)
                 try:
                     await op_store.update_provider_route_candidate(
                         model_id,
@@ -4937,6 +4951,8 @@ async def update_provider_route_candidate(
                     "verified": edit.target_changed,
                 },
             )
+            if capability_write is not None:
+                await capability_write.log(op_store, actor, candidate.adapter)
 
         await _finish_router_transition_on_cancellation(persist_and_install())
 
@@ -4950,6 +4966,157 @@ async def update_provider_route_candidate(
         yaml_weight=edit.old_weight,
         endpoint_id=candidate.endpoint_id,
         override_row=None,
+    )
+
+
+async def _log_capability_change(
+    op_store,
+    *,
+    actor: AuditActor,
+    model_id: str,
+    route_id: str,
+    reset: bool,
+    old_capabilities: dict[str, Any],
+    capabilities: dict[str, Any],
+) -> None:
+    await log_admin_action(
+        op_store,
+        action=(
+            "routing.provider_routes.capabilities.reset"
+            if reset
+            else "routing.provider_routes.capabilities.update"
+        ),
+        actor=actor,
+        target=AuditTarget.model(model_id),
+        details={
+            "model_id": model_id,
+            "route_id": route_id,
+            "old_capabilities": old_capabilities,
+            "capabilities": capabilities,
+        },
+    )
+
+
+@dataclass
+class RouteCapabilityWrite:
+    """One route's capability change, saved by the request that edits its target.
+
+    Used under the model's transition lock, around the target's own save:
+    ``persist`` stores the row, ``publish`` serves the values (before the
+    target is installed, so a rebuilt adapter is built with them), and
+    ``undo`` puts the row and the served values back when anything in the
+    edit fails. The target and the capabilities are then saved together or
+    not at all. As with the target's own restore, this is compensation, not
+    one database transaction: an ``undo`` that cannot reach the database is
+    logged and the original error is raised.
+    """
+
+    model_id: str
+    route_id: str
+    route: Any
+    # None clears the override, so the route follows its baseline again.
+    capabilities: dict[str, Any] | None
+    old_capabilities: dict[str, Any]
+    stored_snapshot: dict[str, Any] | None = None
+    snapshot_taken: bool = False
+    served_snapshot: dict[str, dict[str, Any]] | None = None
+    published: bool = False
+
+    @property
+    def reset(self) -> bool:
+        """Whether this change clears the override rather than setting one."""
+        return self.capabilities is None
+
+    def _entries(self) -> list[tuple[object, float, str]]:
+        return _raw_route_entries(self.route) + _removed_baseline_entries(self.route)
+
+    async def persist(self, op_store, admin_id: str) -> None:
+        """Store the change, keeping the row it replaces for ``undo``."""
+        rows = await op_store.list_route_capability_overrides_for_model(self.model_id)
+        self.stored_snapshot = next(
+            (row for row in rows if str(row["route_id"]) == self.route_id), None
+        )
+        self.snapshot_taken = True
+        if self.capabilities is None:
+            await op_store.delete_route_capability_override(self.model_id, self.route_id)
+        else:
+            await op_store.upsert_route_capability_override(
+                self.model_id, self.route_id, self.capabilities, admin_id
+            )
+
+    def publish(self) -> None:
+        """Serve the change from the next request on; no I/O, so nothing runs in between."""
+        current = getattr(self.route, CAPABILITY_OVERRIDES_ATTR, None) or {}
+        self.served_snapshot = dict(current)
+        overrides = dict(current)
+        if self.capabilities is None:
+            overrides.pop(self.route_id, None)
+        else:
+            overrides[self.route_id] = self.capabilities
+        setattr(self.route, CAPABILITY_OVERRIDES_ATTR, overrides)
+        self.published = True
+        _apply_capability_overrides(self.route, self._entries())
+
+    async def undo(self, op_store) -> None:
+        """Serve and store what the route had before; a failed restore is logged."""
+        if self.published:
+            setattr(self.route, CAPABILITY_OVERRIDES_ATTR, self.served_snapshot or {})
+            _apply_capability_overrides(self.route, self._entries())
+            self.published = False
+        if not self.snapshot_taken:
+            return
+        try:
+            if self.stored_snapshot is None:
+                await op_store.delete_route_capability_override(self.model_id, self.route_id)
+            else:
+                raw = self.stored_snapshot["capabilities"]
+                await op_store.upsert_route_capability_override(
+                    self.model_id,
+                    self.route_id,
+                    json.loads(raw) if isinstance(raw, str) else raw,
+                    self.stored_snapshot.get("updated_by"),
+                )
+        except Exception:
+            logger.error(
+                "Failed to restore route capability override after edit failure "
+                "model=%s route_id=%s",
+                self.model_id,
+                self.route_id,
+                exc_info=True,
+            )
+
+    async def log(self, op_store, actor: AuditActor, adapter) -> None:
+        """Audit the change as the capabilities endpoint does."""
+        await _log_capability_change(
+            op_store,
+            actor=actor,
+            model_id=self.model_id,
+            route_id=self.route_id,
+            reset=self.reset,
+            old_capabilities=self.old_capabilities,
+            capabilities=_config_capabilities(adapter.config),
+        )
+
+
+def _route_capability_write(
+    payload: RouteCapabilityEdit,
+    *,
+    model_id: str,
+    route_id: str,
+    route,
+    adapter,
+) -> RouteCapabilityWrite | None:
+    """Read an edit body's capability change for the live route, or None if it has none."""
+    if not payload.reset_capabilities and payload.capabilities is None:
+        return None
+    # Its override is kept, and applies again when the route is restored.
+    _refuse_removed_route(route, route_id)
+    return RouteCapabilityWrite(
+        model_id=model_id,
+        route_id=route_id,
+        route=route,
+        capabilities=None if payload.capabilities is None else payload.capabilities.model_dump(),
+        old_capabilities=_config_capabilities(adapter.config),
     )
 
 
@@ -4980,21 +5147,14 @@ async def _change_route_capabilities(
                     model_id, route_id, capabilities, admin_id
                 )
             await sync_route_capability_overrides(services, op_store, model_id)
-            await log_admin_action(
+            await _log_capability_change(
                 op_store,
-                action=(
-                    "routing.provider_routes.capabilities.reset"
-                    if capabilities is None
-                    else "routing.provider_routes.capabilities.update"
-                ),
                 actor=actor,
-                target=AuditTarget.model(model_id),
-                details={
-                    "model_id": model_id,
-                    "route_id": route_id,
-                    "old_capabilities": old_capabilities,
-                    "capabilities": _config_capabilities(adapter.config),
-                },
+                model_id=model_id,
+                route_id=route_id,
+                reset=capabilities is None,
+                old_capabilities=old_capabilities,
+                capabilities=_config_capabilities(adapter.config),
             )
 
         await _finish_router_transition_on_cancellation(persist_and_apply())
@@ -5078,7 +5238,11 @@ async def update_provider_route(
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
-    """Update the provider/base URL/key target for one route candidate."""
+    """Update the provider/base URL/key target for one route candidate.
+
+    A body with ``capabilities`` or ``reset_capabilities`` saves that change in
+    the same request: a failure in either restores both.
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
@@ -5126,6 +5290,13 @@ async def update_provider_route(
             == _canonical_base_url(str(current_adapter.config.base_url))
             else None
         )
+        capability_write = _route_capability_write(
+            payload,
+            model_id=model_id,
+            route_id=route_id,
+            route=current_route,
+            adapter=current_adapter,
+        )
 
         async def persist_and_install() -> None:
             try:
@@ -5146,8 +5317,13 @@ async def update_provider_route(
                         else stored_deployment_type
                     ),
                 )
+                if capability_write is not None:
+                    await capability_write.persist(op_store, admin_id)
+                    capability_write.publish()
                 _install_route_update(services, update)
             except BaseException:
+                if capability_write is not None:
+                    await capability_write.undo(op_store)
                 try:
                     await _restore_provider_route_config_snapshot(
                         op_store,
@@ -5186,6 +5362,8 @@ async def update_provider_route(
                     "deployment_type": update.adapter.config.deployment_type,
                 },
             )
+            if capability_write is not None:
+                await capability_write.log(op_store, actor, update.adapter)
 
         await _finish_router_transition_on_cancellation(persist_and_install())
 

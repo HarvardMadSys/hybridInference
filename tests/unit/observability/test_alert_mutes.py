@@ -355,7 +355,7 @@ async def test_alert_slack_itself_never_drops_a_resolution(store):
     with _slack() as mock_post:
         assert await alert_slack(
             AlertSeverity.INFO,
-            "Recovered: 5xx rate exceeded",
+            "5xx rate exceeded",
             {},
             dedupe_key="fivexx_rate",
             status="resolved",

@@ -32,7 +32,7 @@ from serving.observability.alerts import (
     reset_transition_state,
     sweep_stale_breaches,
 )
-from serving.storage.log_schema import fence_account_digest
+from serving.storage.erasure_fence import fence_account_digest
 from serving.utils import context as req_ctx
 
 FENCE = "synthetic-fence-secret-for-tests"

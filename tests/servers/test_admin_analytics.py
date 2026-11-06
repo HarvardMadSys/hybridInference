@@ -86,8 +86,14 @@ class TestAdminAnalyticsRoute:
                 "email": "alice@example.com",
                 "req_count": 120,
                 "token_count": 90000,
+                "prompt_token_count": 70000,
+                "cache_read_token_count": 30000,
+                "completion_token_count": 20000,
                 "model_req_count": 200,
                 "model_token_count": 150000,
+                "model_prompt_token_count": 115000,
+                "model_cache_read_token_count": 35000,
+                "model_completion_token_count": 35000,
             },
             {
                 "model_id": "claude-sonnet-4-6",
@@ -95,8 +101,14 @@ class TestAdminAnalyticsRoute:
                 "email": "bob@example.com",
                 "req_count": 80,
                 "token_count": 60000,
+                "prompt_token_count": 45000,
+                "cache_read_token_count": 5000,
+                "completion_token_count": 15000,
                 "model_req_count": 200,
                 "model_token_count": 150000,
+                "model_prompt_token_count": 115000,
+                "model_cache_read_token_count": 35000,
+                "model_completion_token_count": 35000,
             },
             {
                 "model_id": "gpt-4o",
@@ -104,8 +116,14 @@ class TestAdminAnalyticsRoute:
                 "email": "alice@example.com",
                 "req_count": 50,
                 "token_count": 30000,
+                "prompt_token_count": 25000,
+                "cache_read_token_count": 0,
+                "completion_token_count": 5000,
                 "model_req_count": 50,
                 "model_token_count": 30000,
+                "model_prompt_token_count": 25000,
+                "model_cache_read_token_count": 0,
+                "model_completion_token_count": 5000,
             },
         ]
         # conn.fetch call order in the endpoint: top_users, by_model, by_provider,
@@ -130,9 +148,15 @@ class TestAdminAnalyticsRoute:
         sonnet = by_model_top_users[0]
         assert sonnet["requests"] == 200
         assert sonnet["tokens"] == 150000
+        assert sonnet["prompt_tokens"] == 115000
+        assert sonnet["cache_read_tokens"] == 35000
+        assert sonnet["completion_tokens"] == 35000
         assert [u["email"] for u in sonnet["users"]] == ["alice@example.com", "bob@example.com"]
         assert sonnet["users"][0]["requests"] == 120
         assert sonnet["users"][0]["tokens"] == 90000
+        assert sonnet["users"][0]["prompt_tokens"] == 70000
+        assert sonnet["users"][0]["cache_read_tokens"] == 30000
+        assert sonnet["users"][0]["completion_tokens"] == 20000
 
         gpt = by_model_top_users[1]
         assert gpt["model"] == "gpt-4o"

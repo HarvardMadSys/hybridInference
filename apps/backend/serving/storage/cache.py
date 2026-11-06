@@ -402,6 +402,47 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_auth_caches()
         return old_prefix
 
+    async def rotate_key(
+        self,
+        account_id: str,
+        key_prefix: str | None,
+        *,
+        new_key_hash: str,
+        new_key_prefix: str,
+        api_key_encrypted: str | None,
+    ) -> Row | None:
+        """Delegate then invalidate auth caches: the old key must stop at once."""
+        rotated = await self._store.rotate_key(
+            account_id,
+            key_prefix,
+            new_key_hash=new_key_hash,
+            new_key_prefix=new_key_prefix,
+            api_key_encrypted=api_key_encrypted,
+        )
+        await self.invalidate_auth_caches()
+        return rotated
+
+    async def get_key_spend(self, key_id: int) -> tuple[float, float]:
+        """Delegate to wrapped store — never cached, a budget gate reads it."""
+        return await self._store.get_key_spend(key_id)
+
+    async def count_active_keys(self, user_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.count_active_keys(user_id)
+
+    async def list_account_keys(self, account_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_account_keys(account_id)
+
+    async def update_key_settings(
+        self, account_id: str, key_prefix: str, changes: dict[str, Any]
+    ) -> tuple[Row, Row] | None:
+        """Delegate then invalidate auth caches: the limits ride the cached contexts."""
+        changed = await self._store.update_key_settings(account_id, key_prefix, changes)
+        if changed is not None and set(changes) - {"name"}:
+            await self.invalidate_auth_caches()
+        return changed
+
     # -- role quotas (invalidate auth caches on bulk write) ------------------
 
     async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
@@ -566,9 +607,17 @@ class CachedOperationalStore(OperationalStore):
         api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
+        inherit_account_quota: bool = False,
+        name: str | None = None,
+        max_active_keys: int | None = None,
     ) -> Row:
-        """Delegate to wrapped store."""
-        return await self._store.create_key(
+        """Delegate, then invalidate auth caches when the account quota may have moved.
+
+        Without ``inherit_account_quota`` the given quota becomes the
+        account's and is written to the user's other live keys, whose cached
+        auth contexts would otherwise keep the old limit for their TTL.
+        """
+        row = await self._store.create_key(
             key_hash=key_hash,
             key_prefix=key_prefix,
             user_id=user_id,
@@ -580,7 +629,13 @@ class CachedOperationalStore(OperationalStore):
             api_key_encrypted=api_key_encrypted,
             metadata=metadata,
             account_id=account_id,
+            inherit_account_quota=inherit_account_quota,
+            name=name,
+            max_active_keys=max_active_keys,
         )
+        if not inherit_account_quota:
+            await self.invalidate_auth_caches()
+        return row
 
     async def check_active_key_exists(self, user_id: str) -> bool:
         """Delegate to wrapped store."""
@@ -709,10 +764,6 @@ class CachedOperationalStore(OperationalStore):
     async def revoke_browser_session(self, browser_session_id: str) -> None:
         """Delegate to wrapped store."""
         return await self._store.revoke_browser_session(browser_session_id)
-
-    async def require_phone_accounts(self) -> None:
-        """Delegate to wrapped store."""
-        await self._store.require_phone_accounts()
 
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
@@ -1408,10 +1459,17 @@ class CachedOperationalStore(OperationalStore):
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(
-        self, user_id: str, cost_usd: float, *, day: str | None = None
+        self,
+        user_id: str,
+        cost_usd: float,
+        *,
+        day: str | None = None,
+        api_key_id: int | None = None,
     ) -> None:
         """Delegate to wrapped store."""
-        return await self._store.increment_user_cost(user_id, cost_usd, day=day)
+        return await self._store.increment_user_cost(
+            user_id, cost_usd, day=day, api_key_id=api_key_id
+        )
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Delegate to wrapped store."""

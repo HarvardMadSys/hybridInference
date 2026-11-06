@@ -1015,12 +1015,18 @@ export interface AnalyticsModelUserEntry {
   user_id: string;
   requests: number;
   tokens: number; // prompt + completion tokens for this user + model
+  prompt_tokens: number; // prefill tokens, cached ones included
+  cache_read_tokens: number; // prefill tokens served from the prompt cache
+  completion_tokens: number; // output tokens, reasoning included
 }
 
 export interface AnalyticsModelUsers {
   model: string; // model_id
   requests: number; // total signed-in-user requests for this model
   tokens: number; // total signed-in-user tokens for this model
+  prompt_tokens: number;
+  cache_read_tokens: number;
+  completion_tokens: number;
   users: AnalyticsModelUserEntry[];
 }
 
@@ -2518,6 +2524,16 @@ export interface ListOpenRouterProviderOptionsResponse {
   providers: OpenRouterProviderOption[];
 }
 
+/**
+ * A route edit's capability change, saved in the same request as its other
+ * fields. Leave both out to keep the capabilities; `reset_capabilities` clears
+ * the values set in the console, so the route follows its defaults again.
+ */
+export type RouteCapabilityEdit =
+  | { capabilities?: undefined; reset_capabilities?: undefined }
+  | { capabilities: RuntimeModelCapabilities; reset_capabilities?: undefined }
+  | { capabilities?: undefined; reset_capabilities: true };
+
 export interface UpdateProviderRoutePayload {
   upstream_provider: string;
   openrouter_provider?: string | null;
@@ -2644,7 +2660,7 @@ export async function verifyProviderRouteModel(
 export async function updateProviderRoute(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRoutePayload,
+  payload: UpdateProviderRoutePayload & RouteCapabilityEdit,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -2662,6 +2678,8 @@ export async function updateProviderRoute(
         provider_model_id: payload.provider_model_id ?? null,
         quota_limit: payload.quota_limit ?? null,
         concurrency_limit: payload.concurrency_limit ?? null,
+        ...(payload.capabilities ? { capabilities: payload.capabilities } : {}),
+        ...(payload.reset_capabilities ? { reset_capabilities: true } : {}),
       }),
     },
   );
@@ -2714,7 +2732,7 @@ export async function createProviderRouteCandidate(
 export async function updateProviderRouteCandidate(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRouteCandidatePayload,
+  payload: UpdateProviderRouteCandidatePayload & RouteCapabilityEdit,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,

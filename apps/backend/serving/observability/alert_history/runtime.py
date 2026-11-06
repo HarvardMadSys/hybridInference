@@ -128,7 +128,6 @@ class AlertHistoryRuntime:
         self._pool = pool
         self._owns_pool = pool is None
         self._pool_lock = asyncio.Lock()
-        self._schema_ready = False
         self.read_slots = asyncio.Semaphore(2)
         self.ingest_slots = asyncio.Semaphore(2)
         self.queue = HistoryQueue(max_records=max_records, max_bytes=max_bytes)
@@ -177,21 +176,13 @@ class AlertHistoryRuntime:
 
     @contextlib.asynccontextmanager
     async def acquire(self) -> AsyncIterator[Any]:
-        """A connection from the history pool, with the schema checked once."""
+        """A connection from the history pool; the tables come from the migrations."""
         pool = await self._get_pool()
         try:
             conn = await pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT_SEC)
         except Exception as exc:
             raise HistoryUnavailable("database_unavailable") from exc
         try:
-            if not self._schema_ready:
-                from serving.storage import alert_history_store as store
-
-                if self.enabled:
-                    await store.ensure_schema(conn)
-                elif not await store.tables_present(conn):
-                    raise HistoryUnavailable("schema_missing")
-                self._schema_ready = True
             yield conn
         finally:
             await pool.release(conn)
@@ -361,6 +352,9 @@ def _producer_tasks() -> set[asyncio.Task[Any]]:
     from serving.observability import alerts
 
     tasks: set[asyncio.Task[Any]] = set(alerts.active_alert_tasks())
+    # A settle confirmation its timer has just started is not inside an alert
+    # call until its first step runs, so ``active_alert_tasks`` cannot see it.
+    tasks |= set(alerts._SETTLE_TASKS)
     # Background alert deliveries the producers detach so a request or a
     # health probe never waits on a webhook. Imported lazily: either module
     # may be absent from a partial process (a CLI, a unit test).

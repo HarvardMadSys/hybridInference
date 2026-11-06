@@ -68,6 +68,16 @@ function refusalText(error: BatchConsoleError, t: Translate): string {
         'batches.create.refused.quota',
         'Your daily quota is spent. Submit after it renews (00:00 UTC) or once it is raised; uploading and checking stay free.',
       );
+    case 'monthly_quota_exceeded':
+      return t(
+        'batches.create.refused.monthly_quota',
+        'Your monthly quota is spent. Submit after it renews on the 1st (UTC) or once it is raised; uploading and checking stay free.',
+      );
+    case 'key_budget_exceeded':
+      return t(
+        'batches.create.refused.key_budget',
+        "The API key this batch runs under has spent its budget. Raise it on the key's page, or submit after it renews; uploading and checking stay free.",
+      );
     default:
       return error.message;
   }
@@ -518,7 +528,7 @@ export function CreateBatchView({ copyFrom }: { copyFrom: string | null }) {
           'batches.create.blocked.no_key',
           'A batch runs under your active API key, and you have none. Uploading and checking work without one.',
         )}{' '}
-        <Link href="/dashboard" className="font-medium underline">
+        <Link href="/dashboard/keys" className="font-medium underline">
           {t('batches.create.blocked.create_key', 'Create an API key')}
         </Link>
       </>

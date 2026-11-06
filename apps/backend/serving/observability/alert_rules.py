@@ -21,7 +21,7 @@ from serving.observability.alerts import (
     alert_on_transition,
     sweep_stale_breaches,
 )
-from serving.utils.context import MODEL_NOT_FOUND
+from serving.utils.context import MODEL_NOT_FOUND, MODEL_QUEUED
 
 #: A breach is only genuinely stale once its rule's window can no longer hold a
 #: breaching sample. One extra window of slack, so an evaluation that lands late
@@ -106,7 +106,8 @@ def _is_failed_request(item: dict) -> bool:
 
     Excludes the client-driven statuses in ``_FAILED_REQUEST_IGNORED_STATUSES``
     (429), gateway model-not-found 404s (a request for an unknown or unauthorized
-    model — tagged via ``req_ctx.mark_model_not_found``), and gateway-issued 401
+    model — tagged via ``req_ctx.mark_model_not_found``), an on-demand upstream's
+    "model queued" 503s (``req_ctx.mark_model_queued``), and gateway-issued 401
     auth challenges. Genuine upstream 404s and 401s carry provider attribution /
     no model-not-found tag and still count. This mirrors the DB-query alerter,
     which excludes the model-not-found error strings (not all 404s) from
@@ -116,6 +117,10 @@ def _is_failed_request(item: dict) -> bool:
     if status < 400:
         return False
     if status in _FAILED_REQUEST_IGNORED_STATUSES:
+        return False
+    # An on-demand upstream's "model queued" 503: the model is waiting for
+    # capacity, nothing failed (``serving.exceptions.UpstreamModelQueued``).
+    if item.get("client_error_kind") == MODEL_QUEUED:
         return False
     if status == 401 and not item.get("provider"):
         return False

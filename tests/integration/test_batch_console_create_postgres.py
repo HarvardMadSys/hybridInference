@@ -150,7 +150,6 @@ class _Embed(BaseAdapter):
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=2, max_size=16)
-    await BatchStore(pool).initialize()
     try:
         yield pool
     finally:
@@ -445,6 +444,23 @@ async def file_row(gw, file_id: str) -> dict[str, Any] | None:
     async with gw.pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM batch_files WHERE id = $1", file_id)
     return dict(row) if row is not None else None
+
+
+async def file_state(gw, file_id: str) -> str:
+    """Where an upload stands: ``live``, ``deleted`` (hidden, row kept) or ``collected``.
+
+    The ``gateway`` workers sweep every ``_TIMINGS.sweep_seconds``, and a sweep
+    removes the row of a deleted upload as soon as nothing pins or leases it,
+    so a deletion read back once its pins are gone may find no row at all.
+    Only a deleted upload's row is collected (``collect_upload`` requires
+    ``deleted_at``), so for a ready file the caller saw stored, a missing row
+    means deleted and then collected; one never deleted still reads ``live``.
+    """
+    async with gw.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT deleted_at FROM batch_files WHERE id = $1", file_id)
+    if row is None:
+        return "collected"
+    return "live" if row["deleted_at"] is None else "deleted"
 
 
 async def derived_of(gw, file_id: str) -> list[dict[str, Any]]:
@@ -988,6 +1004,20 @@ async def test_zero_quota_still_uploads_and_checks_but_does_not_submit(gateway):
     assert await jobs_of(gw, alice) == []
 
 
+async def test_a_spent_monthly_quota_is_named_in_the_refusal(gateway):
+    gw, alice = gateway, gateway.users["alice"]
+    async with gw.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET quota_monthly_cost_usd = 0 WHERE user_id = $1", alice["user_id"]
+        )
+    source = await upload(gw, alice, jsonl([chat_row("mq-1", gw.chat.config.id)]))
+    report = (await preflight(gw, alice, source["id"])).json()
+    refused = await submit(gw, alice, await submission(gw, alice, source, report))
+    assert refused.status_code == 429 and code_of(refused) == "monthly_quota_exceeded"
+    assert refused.json()["error"]["window"] == "month"
+    assert await jobs_of(gw, alice) == []
+
+
 async def test_a_downgraded_role_keeps_managing_but_cannot_create(gateway):
     gw, alice = gateway, gateway.users["alice"]
     source = await upload(gw, alice, jsonl([chat_row("g-1", gw.chat.config.id)]))
@@ -1097,10 +1127,6 @@ async def test_the_create_lock_holds_off_a_deletion_that_key_share_would_not(gat
     """
     gw, alice = gateway, gateway.users["alice"]
 
-    async def deleted_at(file_id: str) -> Any:
-        async with gw.pool.acquire() as conn:
-            return await conn.fetchval("SELECT deleted_at FROM batch_files WHERE id = $1", file_id)
-
     async def blocked_by(holder_pid: int) -> bool:
         async with gw.pool.acquire() as probe:
             return bool(
@@ -1131,19 +1157,22 @@ async def test_the_create_lock_holds_off_a_deletion_that_key_share_would_not(gat
                             what="the deletion to wait on the source lock",
                         )
                         assert not delete.done()
-                        assert await deleted_at(file_id) is None
+                        assert await file_state(gw, file_id) == "live"
                     else:
                         # No conflict: the deletion completes while the pin is still held,
                         # however long the scheduler or the pool takes to run it.
                         assert await asyncio.wait_for(asyncio.shield(delete), timeout=30) is True
-                        assert await deleted_at(file_id) is not None
+                        # The held row lock keeps a sweep's collect_upload off it, so the
+                        # row must still be here, hidden.
+                        assert await file_state(gw, file_id) == "deleted"
                         assert not await blocked_by(holder_pid)
                 finally:
                     await tx.rollback()
             assert delete is not None
-            # Released: a waiting deletion goes through now.
+            # Released: a waiting deletion goes through now. Nothing holds the row
+            # any more, so a worker's sweep may already have collected it.
             assert await asyncio.wait_for(delete, timeout=30) is True
-            assert await deleted_at(file_id) is not None
+            assert await file_state(gw, file_id) in ("deleted", "collected")
         finally:
             if delete is not None:
                 if not delete.done():
@@ -1173,10 +1202,12 @@ async def test_a_batch_created_first_keeps_running_when_its_source_is_deleted(ga
             gw, alice, await submission(gw, alice, source, report, overrides={"temperature": 0.1})
         )
     ).json()
+    assert await file_state(gw, batch["input_file_id"]) == "live"
     deleted = await gw.client.delete(f"/user/batch-files/{source['id']}", headers=session(alice))
     assert deleted.status_code == 200
-    copy = await file_row(gw, batch["input_file_id"])
-    assert copy["deleted_at"] is not None  # hidden with its source: never reused ...
+    # Hidden with its source: never reused ... Only a validating batch pins its
+    # input, so once this one is past validation a sweep may collect the copy.
+    assert await file_state(gw, batch["input_file_id"]) in ("deleted", "collected")
     done = await finished(gw, alice, batch["id"])  # ... but the batch it belongs to runs
     assert done["request_counts"]["completed"] == 5
     detail = (await gw.client.get(f"/user/batches/{batch['id']}", headers=session(alice))).json()

@@ -184,7 +184,6 @@ class _NativeUpstream(AnthropicAdapter):
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=2, max_size=16)
-    await BatchStore(pool).initialize()
     try:
         yield pool
     finally:

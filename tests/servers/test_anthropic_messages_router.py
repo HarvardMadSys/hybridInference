@@ -2537,6 +2537,8 @@ async def test_successful_request_increments_quota_counter(
     assert call.args[0] == "test-user"
     # glm-4.7 pricing: (9 prompt * $0.6 + 3 completion * $2.2) / 1e6 = $1.2e-5.
     assert call.args[1] == pytest.approx(1.2e-5)
+    # Charged to the key the request was made with as well.
+    assert call.kwargs["api_key_id"] == 5
 
 
 @pytest.mark.asyncio

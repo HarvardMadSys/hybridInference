@@ -2,9 +2,8 @@
 
 Both insert paths (``PostgresLogStore`` and the boot-time ``DatabaseLogger``)
 write ``metadata["batch_job_id"]`` into its own column, exactly as they write
-``agent_job_id``; the shared schema adds the column (for fresh installs in the
-``CREATE TABLE``). Unlike ``agent_job_id`` it has no index: nothing reads
-``api_logs`` by batch, and building one at startup would block log writes.
+``agent_job_id``. Unlike ``agent_job_id`` the column has no index: nothing reads
+``api_logs`` by batch.
 
 ``conn.execute`` is called as ``(sql, $1, $2, ...)``, so placeholder ``$N`` is
 ``args[N]``: ``agent_job_id`` is ``$36`` and ``batch_job_id`` ``$37``, the last.
@@ -17,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from serving.storage.database import DatabaseLogger
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 
 AGENT_JOB_ARG = 36
@@ -84,27 +82,3 @@ async def test_ordinary_traffic_leaves_the_column_null(make_writer):
     await _log(writer, {"user_id": "u-1"})
 
     assert conn.execute.await_args.args[BATCH_JOB_ARG] is None
-
-
-@pytest.mark.asyncio
-async def test_the_schema_adds_the_column_without_an_index():
-    statements: list[str] = []
-
-    async def _execute(sql: str, *_args: object) -> str:
-        statements.append(sql)
-        return "OK"
-
-    conn = MagicMock()
-    conn.execute = AsyncMock(side_effect=_execute)
-    conn.fetch = AsyncMock(return_value=[])  # a database with nothing yet
-    conn.fetchval = AsyncMock(return_value=None)
-    conn.fetchrow = AsyncMock(return_value=None)
-
-    await ensure_api_logs_schema(conn)
-
-    create = next(s for s in statements if "CREATE TABLE IF NOT EXISTS api_logs" in s)
-    assert "batch_job_id TEXT" in create
-    assert any("ADD COLUMN IF NOT EXISTS batch_job_id" in s for s in statements)
-    # An index built by the schema initializer blocks every log write while it
-    # scans the table, and nothing reads api_logs by batch.
-    assert not any("INDEX" in s and "batch_job_id" in s for s in statements)

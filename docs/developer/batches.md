@@ -72,9 +72,25 @@ the same model and may slow down while that traffic is heavy (see
 [Running batch inference](#running-batch-inference)).
 
 Requests run in no particular order, and a request that fails for a reason
-that may pass — a timeout, a `429`, a `5xx` — is retried with backoff, up to
-eight attempts in all. A request the model rejects (any other `4xx`) fails at
-once.
+that may pass — a timeout, a `408`, `425` or `429`, a `5xx` — is retried with
+exponential backoff (5 seconds, doubling to at most 15 minutes, with jitter)
+for as long as the batch's window is open. Once the next try would start after
+the window closes, the request fails with the last error it got rather than
+expiring as though it never ran. A request the model rejects (any other `4xx`)
+fails at once.
+
+A model served on demand (a cluster job, say) may answer that it is queued:
+its deployment is waiting for a GPU. That answer (a `503` with the error code
+`model_queued`) is not a failure and uses up no attempt. The request goes back
+to the queue, the model takes no new batch requests for the deployment's
+`Retry-After` (two minutes without one), and the requests keep waiting like
+this until the model is up or the batch's completion window ends. The same
+answer reaches an interactive caller as a `503` with the deployment's message,
+and neither the circuit breaker nor the failed-request alerts count it.
+
+Only a wait longer than `BATCH_QUEUED_ALERT_HOURS` (six hours by default; `0`
+turns it off) is reported: one "Batch model waiting for capacity" alert for the
+model, resolved when the model next serves a batch request.
 
 Before each request runs, the gateway checks the API key that created the batch
 again:
@@ -83,6 +99,12 @@ again:
   deleted, the batch fails;
 - if your daily quota is used up, your batches pause until it renews at
   midnight UTC;
+- if your monthly quota is used up, your batches pause and are checked again
+  within the hour, so they resume when the quota is raised or renews on the
+  1st (UTC);
+- if the key has spent its own daily or monthly budget, the batches created
+  with that key pause, and are checked again within the hour, so raising the
+  key's budget lets them resume; batches of your other keys keep running;
 - if your role no longer allows batches, they pause until it does.
 
 So keep the key you created a batch with until the batch finishes.
@@ -588,7 +610,7 @@ on every redirect, and again on every connection.
 
 ## Batches in the console
 
-The **Batches** page of the console (from the dashboard) lists all your
+The **Batches** page of the console (in its side navigation) lists all your
 batches — each with its name, target, model and input method, status, requests
 by outcome, tokens and known cost — and lets you search them by name or ID,
 filter them by status, open one for its details, cancel, delete and download
@@ -612,7 +634,7 @@ answers still shows each batch in its group, by the same rule; filtering by a
 group then says it is not available for the moment rather than show every
 batch as filtered. Showing all batches keeps working.
 
-The dashboard's **Tools** link to it while `BATCH_ENABLED` is on and
+The console's side navigation links to it while `BATCH_ENABLED` is on and
 either your role reaches `BATCH_MIN_ROLE` or you have batches or a webhook of
 your own. With `BATCH_ENABLED` off there is no link, and the page says that
 Batch is not available. Quotas and API keys play no part in either.
@@ -663,7 +685,7 @@ included, are held to the same file size limit as an upload.
 A batch created in the console runs under your active API key, as a batch you
 submit with that key would. The page shows the key's prefix only and never
 creates a key: without one you can upload and check files, and the page links to
-the dashboard to create a key before you submit. Signing out or closing the
+the console's **API Keys** page to create a key before you submit. Signing out or closing the
 browser does not stop a submitted batch; revoking or regenerating the key fails
 its unfinished requests. If the key, or the model the choice resolves to, changes
 between the check and the submission, the submission is refused and you check
@@ -721,7 +743,7 @@ The operator may have changed any of them. A larger job is several batches.
 | `409` | The `Idempotency-Key` was already used with a different request |
 | `410` | The `Idempotency-Key`'s batch has been deleted |
 | `413` | The body is larger than the size limit |
-| `429` | You have the most unfinished batches allowed, the batch would take your unfinished requests over their limit, or your daily quota is used up |
+| `429` | You have the most unfinished batches allowed, the batch would take your unfinished requests over their limit, your daily or monthly quota is used up, or the key has spent its own budget |
 
 A file batch is counted against the limit on unfinished requests while its file
 is read, after the create call has answered: over the limit, the batch is
@@ -814,7 +836,24 @@ and its item and attempt in the row's metadata. Permanently deleting a user
 deletes their batches, files, idempotency records and webhook too.
 
 The admin console's **Batches** tab lists every user's batches, totals them per
-user and lets an administrator cancel one.
+user and lets an administrator cancel one. Its totals (`GET /admin/batch/summary`)
+split requests by outcome as a batch's own page does: succeeded, failed, expired
+unrun, cancelled and not finished. `failed` in the response includes the
+`expired` requests, as a batch's `request_counts` does. Known cost leaves out
+attempts whose cost is unknown, and shows how many there are. Each owner is
+shown by name (`user_name` and `email` in the response), and each batch's input
+tokens with the part its upstream served from a prompt cache (`cached_tokens`,
+`usage.cached_input_tokens` per batch). A batch stored before cached input was
+recorded has none (`null`), and the totals count such batches in
+`cache_unrecorded_batches` rather than as zero.
+
+A running batch shows when it should finish at its pace so far (from its
+`started_at` and the requests done since), and a warning when its window closes
+first. **Prompts** opens a batch's stored requests with their answers (`GET
+/admin/batch/jobs/{batch_id}/requests`), a page at a time. It is offered only
+where the gateway keeps prompts in its request log (`db_store_full_content`);
+elsewhere it answers `403`. Opening a batch's requests is audited as
+`batch.requests.read` against the batch's owner.
 
 ### Upgrading a deployment
 

@@ -1,5 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createApiKey, deleteApiKey, listApiKeys, regenerateApiKey } from '@/lib/api/user';
+import {
+  createApiKey,
+  deleteApiKey,
+  listApiKeys,
+  regenerateApiKey,
+  renameApiKey,
+  updateApiKey,
+  type ApiKeyUpdate,
+} from '@/lib/api/user';
 
 export function useApiKeys() {
   return useQuery({
@@ -13,10 +21,34 @@ export function useCreateApiKey() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: createApiKey,
+    mutationFn: (name?: string | null) => createApiKey(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
+    },
+  });
+}
+
+export function useRenameApiKey() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ keyPrefix, name }: { keyPrefix: string; name: string | null }) =>
+      renameApiKey(keyPrefix, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+    },
+  });
+}
+
+export function useUpdateApiKey() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ keyPrefix, changes }: { keyPrefix: string; changes: ApiKeyUpdate }) =>
+      updateApiKey(keyPrefix, changes),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
     },
   });
 }
@@ -37,7 +69,7 @@ export function useRegenerateApiKey() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: regenerateApiKey,
+    mutationFn: (keyPrefix: string) => regenerateApiKey(keyPrefix),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });
