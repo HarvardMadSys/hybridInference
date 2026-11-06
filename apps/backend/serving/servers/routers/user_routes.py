@@ -855,6 +855,9 @@ async def delete_api_key(
     response: APIKeyDeleteResponse | None = None
     audit_action: str | None = None
     audit_details: dict[str, Any] | None = None
+    # Whose cached auth the change evicts: the key's owner, which is the
+    # account it was found under.
+    key_owner: str = current_user["user_id"]
 
     async with db_logger.pool.acquire() as conn:
         revoked = await conn.fetchrow(
@@ -862,12 +865,13 @@ async def delete_api_key(
             UPDATE api_keys
             SET status = 'revoked'
             WHERE account_id = $1 AND key_prefix = $2 AND status = 'active'
-            RETURNING key_prefix, status
+            RETURNING key_prefix, status, user_id
             """,
             current_user["user_id"],
             key_prefix,
         )
         if revoked:
+            key_owner = revoked.get("user_id") or key_owner
             logger.info(
                 "API key revoked for user: %s key_prefix=%s",
                 current_user["user_id"],
@@ -895,11 +899,12 @@ async def delete_api_key(
                     """
                     DELETE FROM api_keys
                     WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
-                    RETURNING key_prefix
+                    RETURNING key_prefix, user_id
                     """,
                     current_user["user_id"],
                     key_prefix,
                 )
+                key_owner = deleted.get("user_id") or key_owner
                 logger.info(
                     "Revoked API key removed for user: %s key_prefix=%s",
                     current_user["user_id"],
@@ -926,9 +931,10 @@ async def delete_api_key(
         # by the store. Revoking, so the key cannot be used afterwards; and
         # deleting, because the audit lookup caches revoked rows the auth
         # lookups never did (see ``get_key_owner_for_audit``) and would go on
-        # naming the former owner of a key that no longer exists.
+        # naming the former owner of a key that no longer exists. Only the
+        # owner's entries: every one of them is tagged with the owner.
         if op_store:
-            await op_store.invalidate_auth_caches()
+            await op_store.invalidate_user_auth_caches(key_owner)
         return response
 
     if not existing:

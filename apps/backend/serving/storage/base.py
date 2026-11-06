@@ -528,6 +528,16 @@ class OperationalStore(ABC):
         immediately without waiting for TTL expiry.
         """
 
+    async def invalidate_user_auth_caches(self, user_id: str) -> None:
+        """Evict the cached auth-context entries of *user_id*'s keys.
+
+        For a write that changes one account. The base implementation evicts
+        what :meth:`invalidate_auth_caches` does, which is always enough;
+        ``CachedOperationalStore`` overrides it to evict that account's
+        entries alone.
+        """
+        await self.invalidate_auth_caches()
+
     @abstractmethod
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
         """Materialized auth lookup for ``verify_api_key``.

@@ -8,7 +8,6 @@ module keeps the store wrapper and re-exports the backend for compatibility.
 
 from __future__ import annotations
 
-import glob
 import math
 from typing import TYPE_CHECKING, Any
 
@@ -100,6 +99,18 @@ class CachedOperationalStore(OperationalStore):
         - approve_user / reject_user                → invalidate user + auth caches
         - every write that revokes or deletes sessions → invalidate session liveness
 
+    Invalidation is per account wherever the write names one. Each auth entry
+    is published with a tag naming the account its key belongs to (the row's
+    ``user_id``), and each session entry with its account's, so a write about
+    one account evicts that account's entries through the cache's tag index
+    -- no scan of every key, and no flush of every other account's cached
+    auth. Only a write that changes every account at once (a role's quota) or
+    names none (revoking one session by id) still clears a whole namespace.
+    An account-addressed key write (``rotate_key``, ``update_key_settings``)
+    evicts the tag of the account id it was given: every path that creates a
+    key sets ``account_id`` to the key's ``user_id``, and the baseline
+    backfilled older rows the same way.
+
     Everything else passes straight through.
     """
 
@@ -132,9 +143,26 @@ class CachedOperationalStore(OperationalStore):
         return f"session:{user_id}:{sid}"
 
     @staticmethod
-    def _user_sessions_pattern(user_id: str) -> str:
-        # delete_pattern matches with fnmatch, so the id is matched literally.
-        return f"session:{glob.escape(user_id)}:*"
+    def _user_auth_tag(user_id: str) -> str:
+        # Tags are an index beside the keys, matched exactly: an id containing
+        # glob characters names only itself.
+        return f"auth-user:{user_id}"
+
+    @staticmethod
+    def _user_sessions_tag(user_id: str) -> str:
+        return f"session-user:{user_id}"
+
+    @classmethod
+    def _auth_entry_tags(cls, row: Row) -> tuple[str, ...]:
+        """The tags an auth entry is published with: its key's account.
+
+        Empty for a row that names no account. Such a row is not cached at
+        all: no account's invalidation could reach it, so it would outlive
+        any change short of a flush of every account's entries. Every row the
+        stores return names one (``api_keys.user_id`` is NOT NULL).
+        """
+        user_id = row.get("user_id")
+        return (cls._user_auth_tag(str(user_id)),) if user_id else ()
 
     @staticmethod
     def _health_key() -> str:
@@ -206,14 +234,25 @@ class CachedOperationalStore(OperationalStore):
             return bool(cached)
         gen_before = self._cache.current_generation()
         live = await self._store.session_is_live(user_id, sid)
-        await self._cache.set_if_generation(ck, bool(live), _SESSION_TTL, generation=gen_before)
+        await self._cache.set_if_generation(
+            ck,
+            bool(live),
+            _SESSION_TTL,
+            generation=gen_before,
+            tags=(self._user_sessions_tag(user_id),),
+        )
         return live
 
     async def _forget_sessions(self, user_id: str | None = None) -> None:
-        """Drop cached session liveness: one account's, or every account's for None."""
-        await self._cache.delete_pattern(
-            "session:*" if user_id is None else self._user_sessions_pattern(user_id)
-        )
+        """Drop cached session liveness: one account's, or every account's for None.
+
+        One account's go through its tag, so a sign-in, which forgets the
+        account's earlier answers, costs only the entries it removes.
+        """
+        if user_id is None:
+            await self._cache.delete_pattern("session:*")
+        else:
+            await self._cache.delete_tag(self._user_sessions_tag(user_id))
 
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
         """Return cached auth context (30 s TTL), generation-fenced."""
@@ -223,9 +262,9 @@ class CachedOperationalStore(OperationalStore):
             return _snapshot(cached)
         gen_before = self._cache.current_generation()
         result = await self._store.get_auth_context_by_key_hash(key_hash)
-        if result is not None:
+        if result is not None and (tags := self._auth_entry_tags(result)):
             await self._cache.set_if_generation(
-                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before
+                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before, tags=tags
             )
         return result
 
@@ -247,9 +286,9 @@ class CachedOperationalStore(OperationalStore):
             return _snapshot(cached)
         gen_before = self._cache.current_generation()
         result = await self._store.get_auth_context_lightweight(key_hash)
-        if result is not None:
+        if result is not None and (tags := self._auth_entry_tags(result)):
             await self._cache.set_if_generation(
-                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before
+                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before, tags=tags
             )
         return result
 
@@ -278,11 +317,11 @@ class CachedOperationalStore(OperationalStore):
             return _snapshot(cached)
         gen_before = self._cache.current_generation()
         result = await self._store.get_key_owner_for_audit(key_hash)
-        if result is not None:
+        if result is not None and (tags := self._auth_entry_tags(result)):
             ttl = _audit_entry_ttl(result)
             if ttl > 0:
                 await self._cache.set_if_generation(
-                    ck, _snapshot(result), ttl, generation=gen_before
+                    ck, _snapshot(result), ttl, generation=gen_before, tags=tags
                 )
         return result
 
@@ -293,14 +332,14 @@ class CachedOperationalStore(OperationalStore):
         await self._store.update_user_fields(user_id, **fields)
         await self._cache.delete(self._user_key(user_id))
         if fields.keys() & {"role", "status"}:
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
 
     async def suspend_user(self, user_id: str, **fields: Any) -> None:
-        """Delegate then invalidate the user, its sessions and every auth entry."""
+        """Delegate then invalidate the user, its sessions and its keys' auth entries."""
         await self._store.suspend_user(user_id, **fields)
         await self._cache.delete(self._user_key(user_id))
         await self._forget_sessions(user_id)
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def update_user_last_login(self, user_id: str) -> None:
         """Delegate then invalidate user cache."""
@@ -331,20 +370,20 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete(self._user_key(user_id))
         await self._forget_sessions(user_id)
         # Also purge any auth entries referencing this user's keys
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def begin_hard_delete_user(self, user_id: str) -> str:
         """Claim a hard-delete in the wrapped store and invalidate caches."""
         claim_token = await self._store.begin_hard_delete_user(user_id)
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
         return claim_token
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Release a failed pre-fence claim and invalidate user caches."""
         await self._store.release_hard_delete_user_claim(user_id, claim_token)
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def resume_user(
         self,
@@ -366,7 +405,7 @@ class CachedOperationalStore(OperationalStore):
             actor=actor,
         )
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def hard_delete_user(
         self,
@@ -391,7 +430,7 @@ class CachedOperationalStore(OperationalStore):
         )
         await self._cache.delete(self._user_key(user_id))
         await self._forget_sessions(user_id)
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
         return counts
 
     async def approve_user(self, user_id: str, *, admin_id: str, note: str | None = None) -> None:
@@ -405,32 +444,45 @@ class CachedOperationalStore(OperationalStore):
         # true with ``get_key_owner_for_audit``, which caches a row whatever
         # state the account is in -- so without this a decision leaves rejection
         # rows labelled ``user_pending_approval`` for the rest of the TTL.
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
         """Delegate then invalidate user + auth caches."""
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
         await self._cache.delete(self._user_key(user_id))
         # Same reason as approve_user above.
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def invalidate_auth_caches(self) -> None:
-        """Evict all cached auth-context entries (cache-only, no DB write)."""
+        """Evict all cached auth-context entries (cache-only, no DB write).
+
+        For a change to every account at once; one account's change evicts its
+        own entries (:meth:`invalidate_user_auth_caches`).
+        """
         await self._cache.delete_pattern("auth:*")
         await self._cache.delete_pattern("auth_light:*")
+
+    async def invalidate_user_auth_caches(self, user_id: str) -> None:
+        """Evict the cached auth entries of *user_id*'s keys (cache-only, no DB write).
+
+        Every entry the auth lookups publish carries its key's account as a
+        tag, so this removes exactly those, through the cache's index, and
+        leaves every other account's cached auth in place.
+        """
+        await self._cache.delete_tag(self._user_auth_tag(user_id))
 
     # -- key writes (invalidate auth caches) ---------------------------------
 
     async def update_key(self, user_id: str, **fields: Any) -> None:
         """Delegate then invalidate auth caches."""
         await self._store.update_key(user_id, **fields)
-        # We don't know which key_hash maps to this user, so clear all auth entries.
-        await self.invalidate_auth_caches()
+        # Every cached auth entry of this user's keys carries the user's tag.
+        await self.invalidate_user_auth_caches(user_id)
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Delegate then invalidate auth caches."""
         await self._store.revoke_key(user_id, hard_delete=hard_delete)
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def regenerate_key(
         self,
@@ -443,7 +495,7 @@ class CachedOperationalStore(OperationalStore):
         old_prefix = await self._store.regenerate_key(
             user_id, new_key_hash=new_key_hash, new_key_prefix=new_key_prefix
         )
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
         return old_prefix
 
     async def rotate_key(
@@ -463,7 +515,7 @@ class CachedOperationalStore(OperationalStore):
             new_key_prefix=new_key_prefix,
             api_key_encrypted=api_key_encrypted,
         )
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(account_id)
         return rotated
 
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:
@@ -484,7 +536,7 @@ class CachedOperationalStore(OperationalStore):
         """Delegate then invalidate auth caches: the limits ride the cached contexts."""
         changed = await self._store.update_key_settings(account_id, key_prefix, changes)
         if changed is not None and set(changes) - {"name"}:
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(account_id)
         return changed
 
     # -- role quotas (invalidate auth caches on bulk write) ------------------
@@ -678,7 +730,7 @@ class CachedOperationalStore(OperationalStore):
             max_active_keys=max_active_keys,
         )
         if not inherit_account_quota:
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
         return row
 
     async def check_active_key_exists(self, user_id: str) -> bool:
@@ -831,7 +883,7 @@ class CachedOperationalStore(OperationalStore):
         bound = await self._store.bind_user_phone(user_id, phone)
         if bound:
             await self._cache.delete(self._user_key(user_id))
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
         return bound
 
     async def bind_user_email(self, user_id: str, email: str) -> bool:
@@ -841,7 +893,7 @@ class CachedOperationalStore(OperationalStore):
             # Nothing is cached by e-mail address; the user and auth entries
             # carry it.
             await self._cache.delete(self._user_key(user_id))
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
         return bound
 
     async def reserve_phone_code(self, **fields: Any) -> int:
@@ -941,9 +993,9 @@ class CachedOperationalStore(OperationalStore):
         """Delegate then invalidate user + auth caches so verification is visible immediately."""
         await self._store.mark_user_email_verified(user_id)
         await self._cache.delete(self._user_key(user_id))
-        # email_verified is carried in the cached auth contexts too, but we don't
-        # know which key_hash maps to this user, so clear all auth entries.
-        await self.invalidate_auth_caches()
+        # email_verified is carried in the cached auth contexts of this user's
+        # keys, every one of which carries the user's tag.
+        await self.invalidate_user_auth_caches(user_id)
 
     async def delete_user_verification_tokens(self, user_id: str) -> None:
         """Delegate to wrapped store."""
@@ -1091,9 +1143,10 @@ class CachedOperationalStore(OperationalStore):
 
     async def _invalidate_preferences(self, user_id: str) -> None:
         # The auth contexts carry preferences (disabled models), so every
-        # preference write drops them along with the user row.
+        # preference write drops this user's along with the user row -- and
+        # only this user's: saving a layout must not flush everyone's auth.
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
         """Delegate then invalidate user and auth caches."""
