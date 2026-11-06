@@ -218,6 +218,11 @@ always kept). To run anything else against that database,
 - Storage layer is Postgres (asyncpg), in `apps/backend/serving/storage/`.
   Cloudflare D1 support was removed in #460; `DB_BACKEND` and `DB_DUAL_WRITE`
   are read by no code. There is one SQL dialect — write Postgres.
+- The schema comes only from the migrations in `apps/backend/migrations/`; the
+  service issues no DDL, and a test enforces it. A schema change is a new
+  revision that leaves the previous release working, never an edit to the
+  frozen `baseline/` (its digest is pinned). See
+  [docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md](docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md).
 - Alerting has two permanent, independent paths (decision: issue #1103).
   Backend gateway alerts go through `alert_slack()`
   (`apps/backend/serving/observability/alerts.py`) to one configured Slack or

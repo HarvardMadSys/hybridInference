@@ -311,6 +311,11 @@ def _check_public_surface(base_url: str) -> None:
         "/login",
         "/signup",
         "/setup",
+        "/dashboard",
+        "/dashboard/keys",
+        "/dashboard/requests",
+        "/dashboard/models",
+        "/dashboard/settings",
         "/dashboard/admin",
         "/dashboard/playground",
     ):

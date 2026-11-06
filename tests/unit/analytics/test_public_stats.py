@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from migrations.baseline import public_stats as baseline_public_stats
 from serving.analytics import public_stats as ps
 from serving.analytics.public_stats import ClientRow
 
@@ -354,10 +355,10 @@ def test_payload_without_registrations_publishes_null():
 async def test_schema_is_idempotent_ddl_without_identifying_columns():
     conn = MagicMock()
     conn.execute = AsyncMock()
-    await ps.ensure_public_stats_schema(conn)
-    await ps.ensure_public_stats_schema(conn)
+    await baseline_public_stats.ensure_public_stats_schema(conn)
+    await baseline_public_stats.ensure_public_stats_schema(conn)
     statements = [call.args[0] for call in conn.execute.await_args_list]
-    assert len(statements) == 2 * len(ps._SCHEMA_STATEMENTS)
+    assert len(statements) == 2 * len(baseline_public_stats._SCHEMA_STATEMENTS)
     assert all("IF NOT EXISTS" in s for s in statements)
     joined = " ".join(statements).lower()
     for identifier in ("user_id", " ip ", "metadata", "prompt"):

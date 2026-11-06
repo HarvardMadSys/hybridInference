@@ -63,6 +63,7 @@ class FakeStore:
         self.batches: dict[str, dict[str, Any]] = {}
         self.paused: dict[str, datetime] = {}
         self.pause_reasons: dict[str, str | None] = {}
+        self.pause_key_hashes: dict[str, str | None] = {}
         self.claims: list[dict[str, Any]] = []
         self.calls: Counter[str] = Counter()
         self.heartbeats: list[list[int]] = []
@@ -222,9 +223,10 @@ class FakeStore:
                 item.update(status="failed", error={"code": "batch_failed", "message": "failed"})
         return True
 
-    async def pause_user_batches(self, user_id, until, reason=None):
+    async def pause_user_batches(self, user_id, until, reason=None, *, key_hash=None):
         self.paused[user_id] = until
         self.pause_reasons[user_id] = reason
+        self.pause_key_hashes[user_id] = key_hash
         return sum(1 for b in self.batches.values() if b["user_id"] == user_id)
 
     async def sweep(self, *, retention_days):
@@ -578,6 +580,63 @@ async def test_a_spent_quota_pauses_the_owners_batches_until_it_renews(worker, d
     assert dispatch.calls == []
 
 
+async def test_a_spent_monthly_quota_pauses_the_owners_batches_and_checks_again_hourly(
+    worker, dispatch, auth
+):
+    """Not until next month: an admin who raises the quota sees the batches resume."""
+    auth.outcome = StoredKeyQuotaExceeded(
+        quota_usd=30.0,
+        spent_usd=30.0,
+        reset_at=datetime.now(UTC) + timedelta(days=20),
+        scope="account",
+        window="month",
+    )
+    store = FakeStore()
+    store.add(2)
+    scheduler = worker(store)
+    before = datetime.now(UTC)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+    await settle()
+
+    assert store.pause_reasons[OWNER] == "monthly_quota"
+    # The whole account's batches, not one key's.
+    assert store.pause_key_hashes[OWNER] is None
+    assert before + timedelta(seconds=SLOW.budget_recheck_seconds) <= store.paused[OWNER]
+    assert store.paused[OWNER] <= datetime.now(UTC) + timedelta(seconds=SLOW.budget_recheck_seconds)
+    assert store.count("queued") == 2
+    assert dispatch.calls == []
+
+
+async def test_a_spent_key_budget_pauses_only_that_keys_batches(worker, dispatch, auth):
+    """The account's other keys still have budget; only this key's batches wait."""
+    auth.outcome = StoredKeyQuotaExceeded(
+        quota_usd=5.0,
+        spent_usd=5.0,
+        reset_at=datetime.now(UTC) + timedelta(days=20),
+        scope="key",
+        window="month",
+    )
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    before = datetime.now(UTC)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+    await settle()
+
+    assert store.pause_reasons[OWNER] == "key_budget"
+    assert store.pause_key_hashes[OWNER] == "owner-key-hash"
+    # Checked again within the hour rather than at the start of next month,
+    # so a budget the owner raises takes effect.
+    assert store.paused[OWNER] <= datetime.now(UTC) + timedelta(seconds=SLOW.budget_recheck_seconds)
+    assert store.paused[OWNER] >= before + timedelta(seconds=SLOW.budget_recheck_seconds)
+    assert store.status(1) == "queued"
+    assert dispatch.calls == []
+
+
 async def test_a_role_that_no_longer_qualifies_pauses_the_owner(worker, dispatch, auth):
     auth.outcome = _owner_ctx(role="pro")
     store = FakeStore()
@@ -715,6 +774,64 @@ async def test_a_retryable_failure_backs_off_then_becomes_final(worker, dispatch
     assert item["status_code"] == 503
     assert store.calls["retry_item"] == 2
     assert len(dispatch.calls) == 3
+
+
+def _fast_retries(**overrides) -> SchedulerTimings:
+    return SchedulerTimings(
+        **{
+            "poll_seconds": 0.005,
+            "idle_poll_seconds": 60,
+            "sweep_seconds": 3600,
+            "heartbeat_seconds": 3600,
+            "backoff_base_seconds": 0.001,
+            "backoff_cap_seconds": 0.002,
+            "cooldown_failures": 10_000,
+            "stop_grace_seconds": 0.05,
+            **overrides,
+        }
+    )
+
+
+async def test_a_retryable_failure_keeps_retrying_while_the_window_is_open(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(hours=24))
+    scheduler = worker(store, timings=_fast_retries())
+
+    scheduler.start()
+    # Well past the eight attempts a failure used to get, it is still retried.
+    await until(lambda: len(dispatch.calls) >= 12)
+    assert store.status(1) != "failed"
+    dispatch.results["m1"] = OK
+    await until(lambda: store.status(1) == "completed")
+
+    assert store.items[1]["attempts"] >= 13
+    assert store.calls["retry_item"] >= 12
+
+
+async def test_a_retry_that_would_start_after_the_window_fails_now_with_its_error(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(seconds=30))
+    # The first retry would wait 60-120 s: after the window closes.
+    timings = _fast_retries(backoff_base_seconds=120.0, backoff_cap_seconds=120.0)
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.status(1) == "failed")
+
+    # Failed with the error it got, not left to expire as though it never ran.
+    assert store.items[1]["error"] == UNAVAILABLE.error
+    assert store.items[1]["status_code"] == 503
+    assert store.calls["retry_item"] == 0
+    assert len(dispatch.calls) == 1
+
+
+def test_the_attempt_guard_outlasts_a_week_long_window_at_the_backoff_cap():
+    timings = SchedulerTimings()
+    week = 168 * 3600
+    # The shortest jittered delay at the cap is half of it.
+    assert timings.max_attempts > week / (timings.backoff_cap_seconds / 2)
 
 
 def test_backoff_doubles_with_jitter_up_to_the_cap():
@@ -897,3 +1014,146 @@ async def test_heartbeats_extend_the_leases_of_running_items(worker, dispatch):
     scheduler.start()
     await until(lambda: any(sorted(ids) == [1, 2] for ids in store.heartbeats))
     gate.set()
+
+
+def _queued(retry_after: float) -> DispatchResult:
+    return DispatchResult(
+        status_code=503,
+        error={"code": "model_queued", "message": "queued", "status": 503},
+        retryable=True,
+        requeue_after=retry_after,
+    )
+
+
+async def test_a_model_queued_answer_requeues_without_spending_attempts(worker, dispatch):
+    # An on-demand model waiting for a node answers "model queued" for as long
+    # as it waits: more answers than the item has attempts must not fail it.
+    dispatch.results["m1"] = _queued(0.01)
+    store = FakeStore()
+    store.add(1)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        max_attempts=2,
+        cooldown_failures=1,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) >= 4)
+    dispatch.results["m1"] = OK
+    await until(lambda: store.status(1) == "completed")
+
+    assert store.calls["retry_item"] == 0
+    assert store.calls["release_item"] >= 4
+    assert store.items[1]["error"] is None
+
+
+async def test_a_model_queued_answer_holds_the_model(worker, dispatch):
+    dispatch.results["m1"] = _queued(60)
+    store = FakeStore()
+    store.add(2)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, caps={"m1": 1}, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 1)
+    await asyncio.sleep(0.05)
+
+    # The model gets no new claims while it waits: the second item stays put.
+    assert len(dispatch.calls) == 1
+    assert store.count("queued") == 2
+
+
+async def test_a_model_queued_answer_fails_once_the_window_would_close(worker, dispatch):
+    # The next try would start after the batch stops starting requests: the
+    # item fails with the queued answer rather than expiring unexplained.
+    dispatch.results["m1"] = _queued(3600)
+    store = FakeStore()
+    store.add(1, expires_at=datetime.now(UTC) + timedelta(seconds=60))
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.status(1) == "failed")
+
+    assert store.items[1]["error"]["code"] == "model_queued"
+    assert store.calls["release_item"] == 0
+    assert store.calls["retry_item"] == 0
+
+
+@pytest.fixture
+def queued_alerts(monkeypatch):
+    sent: list[dict[str, Any]] = []
+
+    async def fake_alert(**kwargs):
+        sent.append({**kwargs, "context": kwargs["context"]()})
+        return True
+
+    monkeypatch.setattr(scheduler_module, "alert_on_transition", fake_alert)
+    return sent
+
+
+async def test_a_long_wait_for_capacity_alerts_once_and_resolves(worker, queued_alerts):
+    # Waiting for a GPU job is normal: no alert per answer, one only once the
+    # wait outlasts the setting, and its resolution when the model serves.
+    now = [0.0]
+    scheduler = worker(FakeStore())
+    scheduler._clock = lambda: now[0]
+
+    for _ in range(int(6 * 3600 / 120)):
+        scheduler._note_queued("m1", alert_hours=6)
+        now[0] += 120
+    await asyncio.sleep(0)
+    assert queued_alerts == []
+
+    scheduler._note_queued("m1", alert_hours=6)
+    scheduler._note_queued("m1", alert_hours=6)
+    await asyncio.sleep(0)
+    assert [a["breached"] for a in queued_alerts] == [True]
+    assert queued_alerts[0]["key"] == "batch_model_queued:m1"
+    assert queued_alerts[0]["context"]["waiting_hours"] == 6.0
+
+    scheduler._model_succeeded("m1")
+    scheduler._model_succeeded("m1")
+    await asyncio.sleep(0)
+    assert [a["breached"] for a in queued_alerts] == [True, False]
+
+
+async def test_a_gap_in_queued_answers_starts_a_new_wait(worker, queued_alerts):
+    now = [0.0]
+    scheduler = worker(FakeStore())
+    scheduler._clock = lambda: now[0]
+
+    scheduler._note_queued("m1", alert_hours=6)
+    now[0] += 5 * 3600  # no batch work for the model in between
+    scheduler._note_queued("m1", alert_hours=6)
+    now[0] += 3 * 3600
+    scheduler._note_queued("m1", alert_hours=6)  # 8h since the first, 3h of this wait
+    scheduler._note_queued("m1", alert_hours=0)  # 0: never
+    await asyncio.sleep(0)
+
+    assert queued_alerts == []
+
+
+async def test_a_queued_answer_counts_toward_the_wait(worker, dispatch, settings, queued_alerts):
+    settings["BATCH_QUEUED_ALERT_HOURS"] = "12"
+    dispatch.results["m1"] = _queued(60)
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    noted: list[tuple[str, int]] = []
+    scheduler._note_queued = lambda model, hours: noted.append((model, hours))
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 1)
+
+    assert noted == [("m1", 12)]

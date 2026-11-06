@@ -43,26 +43,6 @@ class HardDeleteStateChanged(Exception):
     pass
 
 
-class AccountSchemaPending(Exception):
-    """The database upgrade has not yet added the account columns a write needs.
-
-    An upgrade adds login names, phone numbers and accounts without an email
-    address to the ``users`` table. That migration waits for the table's lock,
-    which a long ``pg_dump`` can hold for hours, and lands from the background
-    once it is free; the gateway serves meanwhile on the table as it is. The
-    operational store raises this for a write that needs the new columns (the
-    first-run administrator, phone registration, sign-in and binding), and the
-    routes answer 503 with the message. Email sign-in, token refresh and API
-    keys do not need them.
-    """
-
-    MESSAGE = "The database upgrade is still in progress; try again shortly."
-
-    def __init__(self, message: str = MESSAGE) -> None:
-        """Carry the user-facing *message*; the default says the upgrade is under way."""
-        super().__init__(message)
-
-
 class UserFacingError(HybridInferenceError):
     """Marker base for exceptions whose message is safe to surface verbatim.
 
@@ -132,6 +112,21 @@ class DuplicateAPIKeyError(UserFacingError):
     pass
 
 
+class APIKeyLimitReachedError(UserFacingError):
+    """The account already holds as many active API keys as it may."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        super().__init__(f"An account may hold at most {limit} active API keys")
+
+
+class AmbiguousAPIKeyError(UserFacingError):
+    """The account holds several active API keys and the request named none."""
+
+    def __init__(self) -> None:
+        super().__init__("The account holds several active API keys; name one by its prefix")
+
+
 class APIKeyNotFoundError(UserFacingError):
     """API key not found."""
 
@@ -178,6 +173,55 @@ class QuotaExceededError(UserFacingError):
         self.quota = quota
         self.spent = spent
         super().__init__(f"Quota exceeded: ${spent:.2f} / ${quota:.2f}")
+
+
+#: The error ``code`` an on-demand deployment answers 503 with while the model
+#: it serves is waiting for capacity it does not have yet (a cluster job queued
+#: for a node). See :class:`UpstreamModelQueued`.
+MODEL_QUEUED_CODE = "model_queued"
+
+
+class UpstreamModelQueued(aiohttp.ClientResponseError):
+    """The upstream answered 503 ``model_queued``: the model is waiting for capacity.
+
+    An on-demand deployment (a cluster job, for instance) says this while the
+    model it serves is queued and nothing is wrong with it. It is not a failure
+    of the endpoint: the breaker does not count it, the failed-request alerts
+    leave it out, and a batch request answered with it goes back to the queue
+    without spending an attempt. The caller still gets the 503 and its message.
+
+    ``retry_after`` is the upstream's ``Retry-After`` in seconds, ``None`` when
+    it sent none or one this does not read (an HTTP date).
+    """
+
+    retry_after: float | None = None
+
+
+def is_model_queued_body(body: str | None) -> bool:
+    """Return whether an upstream error body is the ``model_queued`` answer."""
+    if not body:
+        return False
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    error = data.get("error") if isinstance(data, dict) else None
+    return isinstance(error, dict) and error.get("code") == MODEL_QUEUED_CODE
+
+
+def model_queued_cause(exc: BaseException | None) -> UpstreamModelQueued | None:
+    """Return the :class:`UpstreamModelQueued` behind ``exc``, if there is one.
+
+    Follows the ``__cause__`` / ``__context__`` chain: a route answers the
+    upstream's failure as an ``HTTPException`` raised from it.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, UpstreamModelQueued):
+            return exc
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
 
 
 # Upstream streaming faults

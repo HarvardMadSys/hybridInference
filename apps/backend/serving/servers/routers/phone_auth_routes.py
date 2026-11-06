@@ -10,7 +10,7 @@ from serving.audit import AuditActor, AuditTarget
 from serving.auth.browser_sessions import complete_sign_in, hash_refresh_token, prepare_sign_in
 from serving.auth.signup_policy import allowlist_is_empty, is_public_signup_enabled
 from serving.config.settings import get_signup_notify_emails, settings
-from serving.exceptions import AccountSchemaPending, AccountSuspendedError
+from serving.exceptions import AccountSuspendedError
 from serving.schemas_auth import (
     LoginResponse,
     PhoneCodeRequest,
@@ -54,20 +54,6 @@ def _require_enabled(op_store) -> None:
         raise HTTPException(503, "Phone authentication is currently unavailable.")
     if not op_store:
         raise HTTPException(503, "Database not available")
-
-
-async def _require_phone_accounts(op_store) -> None:
-    """Answer 503 until the database upgrade has added the phone columns.
-
-    An upgrade that met a long-held users table lock at startup (the nightly
-    ``pg_dump``) adds them from the background; sign-in by email works
-    meanwhile. Each route calls this after its own gates and before it
-    reserves, sends or consumes a code, so a refused request costs nothing.
-    """
-    try:
-        await op_store.require_phone_accounts()
-    except AccountSchemaPending as exc:
-        raise HTTPException(503, AccountSchemaPending.MESSAGE) from exc
 
 
 async def _require_signup() -> None:
@@ -123,7 +109,6 @@ async def send_phone_code(
     elif body.purpose == "bind" or body.purpose in OWNER_PURPOSES:
         current_user = await get_current_user(request.headers.get("authorization"), op_store)
         user_id = current_user["user_id"]
-    await _require_phone_accounts(op_store)
     client_ip = get_client_ip(request)
     if not await verify_turnstile_token(body.turnstile_token, client_ip):
         raise HTTPException(400, "Captcha verification failed")
@@ -198,7 +183,6 @@ async def phone_signup(
     """Create a verified phone identity while respecting registration approval policy."""
     _require_enabled(op_store)
     await _require_signup()
-    await _require_phone_accounts(op_store)
     client_ip = get_client_ip(request)
     allowed, reason = await check_and_record_signup(client_ip)
     if not allowed:
@@ -289,7 +273,6 @@ async def phone_login(
 ) -> LoginResponse:
     """Consume a login code and add the account to the browser's session."""
     _require_enabled(op_store)
-    await _require_phone_accounts(op_store)
     user = await op_store.get_user_by_phone(body.phone)
 
     async def record(outcome: str, reason: str | None):
@@ -407,7 +390,6 @@ async def bind_phone(
 ) -> dict[str, str]:
     """Bind a phone explicitly to the authenticated account without merging users."""
     _require_enabled(op_store)
-    await _require_phone_accounts(op_store)
     await verify_phone_code(request, body, "bind", op_store, current_user["user_id"])
     if not await op_store.bind_user_phone(current_user["user_id"], body.phone):
         raise HTTPException(409, "Phone number cannot be bound to this account.")

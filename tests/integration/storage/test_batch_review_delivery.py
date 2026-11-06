@@ -19,7 +19,6 @@ async def test_upload_download_does_not_silently_truncate_after_read_lease_expir
     pool = await postgres.create_pool(min_size=1, max_size=6)
     store, files = BatchStore(pool), BatchFileStore(pool)
     owner = f"review-delivery-{uuid.uuid4().hex}"
-    await store.initialize()
     file_id = None
     stream = None
     clock = [1000.0]
@@ -86,7 +85,6 @@ async def test_suspended_download_renews_lease_and_resource_horizon(monkeypatch)
     pool = await postgres.create_pool(min_size=1, max_size=6)
     store, files = BatchStore(pool), BatchFileStore(pool)
     owner = f"review-heartbeat-{uuid.uuid4().hex}"
-    await store.initialize()
     file_id = None
     stream = None
     monkeypatch.setattr(delivery, "_RENEW_EVERY", 0.01)

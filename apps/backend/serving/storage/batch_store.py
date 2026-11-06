@@ -67,13 +67,7 @@ items from here, so whatever coordinates the processes lives in SQL:
   order. No transaction reverses a shared lock order, so two transactions
   cannot wait on each other in a cycle.
 
-Schema creation follows :mod:`serving.storage.log_schema`: the catalog is read
-first, so a settled database takes no DDL lock at all, and whatever is missing
-is created in one transaction under the bounded lock wait. An advisory lock
-serializes the gateway processes that boot at once, since two concurrent
-``CREATE TABLE IF NOT EXISTS`` can still collide on the catalog's unique index.
-Columns added to the original two tables carry constant defaults, which
-PostgreSQL records in the catalog without rewriting or scanning the table.
+The tables come from the schema migrations (:mod:`migrations`).
 """
 
 from __future__ import annotations
@@ -86,7 +80,6 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
-from serving.storage.log_schema import bounded_ddl, execute_ddl, existing_columns
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -210,9 +203,6 @@ _CLAIM_LOCK_CLASS = 0x42415443  # ASCII "BATC"
 _USER_ADMISSION_LOCK_CLASS = 0x42415541  # "BAUA"
 _CLAIM_LOCK_SQL = "SELECT pg_advisory_xact_lock($1, hashtext($2))"
 
-# Serializes schema creation across processes booting at once.
-_SCHEMA_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('hybridinference:batch-schema'))"
-
 # Retention purges at most this many batches per sweep, one per statement: a
 # batch can hold tens of thousands of items, and the next sweep continues.
 _PURGE_LIMIT = 100
@@ -289,392 +279,6 @@ def _claimable_job_sql(alias: str) -> str:
     )
 
 
-_TABLES: tuple[tuple[str, str], ...] = (
-    (
-        "batch_jobs",
-        """
-        CREATE TABLE IF NOT EXISTS batch_jobs (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            key_hash TEXT,
-            endpoint TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'validating',
-            model_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
-            request_count INTEGER NOT NULL DEFAULT 0,
-            completed_count INTEGER NOT NULL DEFAULT 0,
-            failed_count INTEGER NOT NULL DEFAULT 0,
-            metadata JSONB,
-            error JSONB,
-            cost_usd NUMERIC(18, 8) NOT NULL DEFAULT 0,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            in_progress_at TIMESTAMPTZ,
-            completed_at TIMESTAMPTZ,
-            failed_at TIMESTAMPTZ,
-            expired_at TIMESTAMPTZ,
-            cancelling_at TIMESTAMPTZ,
-            cancelled_at TIMESTAMPTZ,
-            expires_at TIMESTAMPTZ NOT NULL,
-            paused_until TIMESTAMPTZ,
-            last_claimed_at TIMESTAMPTZ
-        )
-        """,
-    ),
-    (
-        "batch_items",
-        """
-        CREATE TABLE IF NOT EXISTS batch_items (
-            id BIGSERIAL PRIMARY KEY,
-            batch_id TEXT NOT NULL REFERENCES batch_jobs(id) ON DELETE CASCADE,
-            custom_id TEXT NOT NULL,
-            model_id TEXT NOT NULL,
-            request JSONB NOT NULL,
-            status TEXT NOT NULL DEFAULT 'queued',
-            attempts INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at TIMESTAMPTZ,
-            claimed_by TEXT,
-            lease_expires_at TIMESTAMPTZ,
-            response JSONB,
-            error JSONB,
-            status_code INTEGER,
-            prompt_tokens INTEGER,
-            completion_tokens INTEGER,
-            cost_usd NUMERIC(14, 8),
-            request_id TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            started_at TIMESTAMPTZ,
-            completed_at TIMESTAMPTZ,
-            CONSTRAINT batch_items_custom_id_key UNIQUE (batch_id, custom_id)
-        )
-        """,
-    ),
-    (
-        "batch_model_limits",
-        """
-        CREATE TABLE IF NOT EXISTS batch_model_limits (
-            model_id TEXT PRIMARY KEY,
-            max_concurrency INTEGER NOT NULL CHECK (max_concurrency >= 0),
-            updated_by TEXT,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """,
-    ),
-    (
-        # One row per attempt at an item: what it was billed and how it ended.
-        "batch_attempts",
-        """
-        CREATE TABLE IF NOT EXISTS batch_attempts (
-            item_id BIGINT NOT NULL REFERENCES batch_items(id) ON DELETE CASCADE,
-            attempt_no INTEGER NOT NULL,
-            batch_id TEXT NOT NULL,
-            worker_id TEXT NOT NULL,
-            started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            dispatched_at TIMESTAMPTZ,
-            finished_at TIMESTAMPTZ,
-            outcome TEXT,
-            status_code INTEGER,
-            request_id TEXT,
-            usage JSONB,
-            cost_usd NUMERIC(14, 8),
-            cost_status TEXT,
-            error JSONB,
-            PRIMARY KEY (item_id, attempt_no)
-        )
-        """,
-    ),
-    (
-        # Idempotency-Key records. Deliberately not a foreign key of
-        # batch_jobs: a deleted batch leaves its record as a tombstone.
-        "batch_idempotency",
-        """
-        CREATE TABLE IF NOT EXISTS batch_idempotency (
-            owner_id TEXT NOT NULL,
-            api_surface TEXT NOT NULL,
-            idem_key TEXT NOT NULL,
-            request_digest TEXT NOT NULL,
-            batch_id TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            deleted_at TIMESTAMPTZ,
-            expires_at TIMESTAMPTZ,
-            PRIMARY KEY (owner_id, api_surface, idem_key)
-        )
-        """,
-    ),
-    (
-        # Uploaded input files and the virtual output/error files of sealed
-        # batches. An upload belongs to its user, not to any batch.
-        "batch_files",
-        """
-        CREATE TABLE IF NOT EXISTS batch_files (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            purpose TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            filename TEXT NOT NULL,
-            status TEXT NOT NULL,
-            bytes BIGINT NOT NULL DEFAULT 0,
-            sha256 TEXT,
-            line_count INTEGER,
-            batch_id TEXT REFERENCES batch_jobs(id) ON DELETE CASCADE,
-            generation INTEGER,
-            renderer_version INTEGER,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            ready_at TIMESTAMPTZ,
-            deleted_at TIMESTAMPTZ,
-            expires_at TIMESTAMPTZ,
-            read_lease_until TIMESTAMPTZ
-        )
-        """,
-    ),
-    (
-        "batch_file_chunks",
-        """
-        CREATE TABLE IF NOT EXISTS batch_file_chunks (
-            file_id TEXT NOT NULL REFERENCES batch_files(id) ON DELETE CASCADE,
-            seq INTEGER NOT NULL,
-            data BYTEA NOT NULL,
-            PRIMARY KEY (file_id, seq)
-        )
-        """,
-    ),
-    (
-        # A download in progress: physical deletion of what it reads waits for
-        # its lease to lapse. No foreign keys, on purpose.
-        "batch_read_leases",
-        """
-        CREATE TABLE IF NOT EXISTS batch_read_leases (
-            lease_id TEXT PRIMARY KEY,
-            batch_id TEXT,
-            file_id TEXT,
-            expires_at TIMESTAMPTZ NOT NULL
-        )
-        """,
-    ),
-    (
-        # Per-user scheduling state: whose turn it is, and today's batch spend.
-        "batch_user_state",
-        """
-        CREATE TABLE IF NOT EXISTS batch_user_state (
-            user_id TEXT PRIMARY KEY,
-            last_claimed_at TIMESTAMPTZ,
-            claim_seq BIGINT
-        )
-        """,
-    ),
-    (
-        # Service order for fair claiming: a user (or batch) served later in
-        # one claim gets a later number, and the lowest number goes first.
-        "batch_claim_seq",
-        "CREATE SEQUENCE IF NOT EXISTS batch_claim_seq",
-    ),
-    (
-        # Interactive requests in flight per process and model: the shared view
-        # every worker yields to.
-        "batch_interactive_load",
-        """
-        CREATE TABLE IF NOT EXISTS batch_interactive_load (
-            process_id TEXT NOT NULL,
-            model_id TEXT NOT NULL,
-            in_flight INTEGER NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            PRIMARY KEY (process_id, model_id)
-        )
-        """,
-    ),
-    (
-        "batch_webhooks",
-        """
-        CREATE TABLE IF NOT EXISTS batch_webhooks (
-            user_id TEXT PRIMARY KEY,
-            url TEXT NOT NULL,
-            secret_encrypted TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-        """,
-    ),
-    (
-        # The webhook outbox, written in the transaction that seals a batch.
-        "batch_webhook_events",
-        """
-        CREATE TABLE IF NOT EXISTS batch_webhook_events (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            batch_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            payload JSONB NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            attempts INTEGER NOT NULL DEFAULT 0,
-            next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            last_error TEXT,
-            last_status_code INTEGER,
-            lease_owner TEXT,
-            lease_expires_at TIMESTAMPTZ,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            delivered_at TIMESTAMPTZ
-        )
-        """,
-    ),
-)
-
-# Columns this version adds to the two original tables. Every default is a
-# constant, so adding one is a catalog-only change.
-_COLUMN_MIGRATIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
-    (
-        "batch_jobs",
-        (
-            ("api_surface", "TEXT NOT NULL DEFAULT 'openai_inline'"),
-            ("target", "TEXT NOT NULL DEFAULT 'chat'"),
-            ("schema_version", "INTEGER NOT NULL DEFAULT 1"),
-            ("protocol_profile", "TEXT"),
-            ("phase", "TEXT NOT NULL DEFAULT 'runnable'"),
-            ("pending_terminal_status", "TEXT"),
-            ("validation_error", "JSONB"),
-            ("input_file_id", "TEXT"),
-            ("output_file_id", "TEXT"),
-            ("error_file_id", "TEXT"),
-            ("retention_seconds", "BIGINT"),
-            ("results_expires_at", "TIMESTAMPTZ"),
-            ("seal_generation", "INTEGER NOT NULL DEFAULT 0"),
-            ("work_owner", "TEXT"),
-            ("work_expires_at", "TIMESTAMPTZ"),
-            ("finalizing_at", "TIMESTAMPTZ"),
-            ("sealed_at", "TIMESTAMPTZ"),
-            ("cancelled_count", "INTEGER NOT NULL DEFAULT 0"),
-            ("expired_count", "INTEGER NOT NULL DEFAULT 0"),
-            ("prompt_tokens", "BIGINT NOT NULL DEFAULT 0"),
-            ("completion_tokens", "BIGINT NOT NULL DEFAULT 0"),
-            ("unknown_cost_count", "INTEGER NOT NULL DEFAULT 0"),
-            ("delete_requested_at", "TIMESTAMPTZ"),
-            ("idempotency_key", "TEXT"),
-            ("claim_seq", "BIGINT"),
-            ("read_lease_until", "TIMESTAMPTZ"),
-            # Batches created in the console (``created_via = 'console'``): the
-            # name and description the owner gave, and how it was configured
-            # (source file, overrides, confirmed model, credential revision,
-            # request digest). NULL for every batch the API created.
-            ("display_name", "TEXT"),
-            ("description", "TEXT"),
-            ("created_via", "TEXT"),
-            ("console_spec", "JSONB"),
-            # Why the batch is paused (``quota`` or ``role``); NULL from a
-            # worker of an earlier version, which only sets ``paused_until``.
-            ("paused_reason", "TEXT"),
-        ),
-    ),
-    (
-        # The stored-request copy a console batch makes of its source file
-        # (``derived_from_file_id``), owned by the batch that adopted it.
-        "batch_files",
-        (
-            ("derived_from_file_id", "TEXT"),
-            ("adopted_by_batch_id", "TEXT"),
-        ),
-    ),
-    (
-        "batch_items",
-        (
-            ("attempt_seq", "INTEGER NOT NULL DEFAULT 0"),
-            ("usage", "JSONB"),
-            ("cost_status", "TEXT"),
-            ("line_no", "INTEGER"),
-        ),
-    ),
-)
-
-# ``(name, ddl)`` per index, created after the tables. None of these indexes a
-# table that predates this version except ``batch_jobs`` (one row per batch,
-# small), so building them inside the migration transaction is brief.
-_INDEXES: tuple[tuple[str, str], ...] = (
-    (
-        # A user's batches, newest first (list, active count, pause, purge).
-        "idx_batch_jobs_user",
-        "CREATE INDEX IF NOT EXISTS idx_batch_jobs_user "
-        "ON batch_jobs (user_id, created_at DESC, id DESC)",
-    ),
-    (
-        # The few active batches among days of finished ones: what the worker
-        # claims from, expires and settles.
-        "idx_batch_jobs_active",
-        "CREATE INDEX IF NOT EXISTS idx_batch_jobs_active ON batch_jobs (expires_at) "
-        "WHERE status IN ('validating', 'in_progress', 'cancelling')",
-    ),
-    (
-        # Finished batches by the time they finished, for the retention purge.
-        # The expression must stay identical to the purge query's.
-        "idx_batch_jobs_finished",
-        "CREATE INDEX IF NOT EXISTS idx_batch_jobs_finished "
-        "ON batch_jobs ((COALESCE(completed_at, failed_at, expired_at, cancelled_at))) "
-        "WHERE status IN ('completed', 'failed', 'expired', 'cancelled')",
-    ),
-    (
-        # Batches a worker must validate or seal.
-        "idx_batch_jobs_work",
-        "CREATE INDEX IF NOT EXISTS idx_batch_jobs_work ON batch_jobs (work_expires_at) "
-        "WHERE phase IN ('validating', 'sealing')",
-    ),
-    (
-        # Results paging, in submission order.
-        "idx_batch_items_batch",
-        "CREATE INDEX IF NOT EXISTS idx_batch_items_batch ON batch_items (batch_id, id)",
-    ),
-    (
-        # Open items only: a batch's next items for one model in id order (the
-        # claim), and whether a batch has any left (settling). Finished items
-        # leave it, so it stays the size of the backlog.
-        "idx_batch_items_open",
-        "CREATE INDEX IF NOT EXISTS idx_batch_items_open "
-        "ON batch_items (batch_id, model_id, id) WHERE status IN ('queued', 'running')",
-    ),
-    (
-        # A model's running items, so counting its live leases never reads
-        # its queued backlog.
-        "idx_batch_items_running",
-        "CREATE INDEX IF NOT EXISTS idx_batch_items_running "
-        "ON batch_items (model_id, lease_expires_at) WHERE status = 'running'",
-    ),
-    (
-        "idx_batch_attempts_batch",
-        "CREATE INDEX IF NOT EXISTS idx_batch_attempts_batch ON batch_attempts (batch_id)",
-    ),
-    (
-        "idx_batch_idempotency_batch",
-        "CREATE INDEX IF NOT EXISTS idx_batch_idempotency_batch ON batch_idempotency (batch_id)",
-    ),
-    (
-        "idx_batch_idempotency_expiry",
-        "CREATE INDEX IF NOT EXISTS idx_batch_idempotency_expiry ON batch_idempotency (expires_at) "
-        "WHERE expires_at IS NOT NULL",
-    ),
-    (
-        "idx_batch_files_user",
-        "CREATE INDEX IF NOT EXISTS idx_batch_files_user "
-        "ON batch_files (user_id, created_at DESC, id DESC)",
-    ),
-    (
-        "idx_batch_files_batch",
-        "CREATE INDEX IF NOT EXISTS idx_batch_files_batch ON batch_files (batch_id)",
-    ),
-    (
-        "idx_batch_read_leases_batch",
-        "CREATE INDEX IF NOT EXISTS idx_batch_read_leases_batch ON batch_read_leases (batch_id)",
-    ),
-    (
-        "idx_batch_read_leases_file",
-        "CREATE INDEX IF NOT EXISTS idx_batch_read_leases_file ON batch_read_leases (file_id)",
-    ),
-    (
-        "idx_batch_webhook_events_due",
-        "CREATE INDEX IF NOT EXISTS idx_batch_webhook_events_due "
-        "ON batch_webhook_events (next_attempt_at) WHERE status = 'pending'",
-    ),
-    (
-        "idx_batch_webhook_events_user",
-        "CREATE INDEX IF NOT EXISTS idx_batch_webhook_events_user "
-        "ON batch_webhook_events (user_id, created_at DESC)",
-    ),
-)
-
 _BATCH_COLUMNS = (
     "id, user_id, key_hash, endpoint, status, model_ids, request_count, completed_count, "
     "failed_count, metadata, error, cost_usd, created_at, in_progress_at, completed_at, "
@@ -682,7 +286,8 @@ _BATCH_COLUMNS = (
     "api_surface, target, schema_version, protocol_profile, phase, pending_terminal_status, "
     "validation_error, input_file_id, output_file_id, error_file_id, results_expires_at, "
     "finalizing_at, sealed_at, cancelled_count, expired_count, prompt_tokens, "
-    "completion_tokens, unknown_cost_count, idempotency_key, display_name, description, "
+    "completion_tokens, cache_read_tokens, unknown_cost_count, idempotency_key, "
+    "display_name, description, "
     "created_via, console_spec, paused_reason"
 )
 _RESULT_COLUMNS = (
@@ -755,7 +360,8 @@ _CLAIM_CANDIDATES_SQL = f"""
 
 # Locks the candidates' batches in id order, keeping those still claimable.
 _CLAIM_LOCK_BATCHES_SQL = f"""
-    SELECT j.id, j.user_id, j.key_hash, j.api_surface, j.target, j.protocol_profile, j.endpoint
+    SELECT j.id, j.user_id, j.key_hash, j.api_surface, j.target, j.protocol_profile, j.endpoint,
+           j.expires_at
     FROM batch_jobs AS j
     WHERE j.id = ANY($1::text[])
       AND {_claimable_job_sql("j")}
@@ -1045,42 +651,6 @@ class BatchStore:
         """Return the asyncpg pool this store and the file and webhook stores share."""
         return self._pool
 
-    async def initialize(self) -> None:
-        """Create the batch tables, their new columns and indexes (idempotent).
-
-        Reads the catalog first, so a settled database takes no lock at all.
-        Whatever is missing is created in one transaction, under an advisory
-        lock that serializes the processes booting at once and under the
-        bounded lock wait of :mod:`serving.storage.log_schema`.
-
-        Raises:
-            SchemaLockUnavailable: An index on an existing table could not take
-                its lock in time; nothing changed, retry later.
-        """
-        async with self._pool.acquire() as conn:
-            if not await _missing_schema_objects(conn):
-                return
-            async with bounded_ddl(conn), conn.transaction():
-                await execute_ddl(conn, _SCHEMA_LOCK_SQL)
-                # Another process may have created everything while this one
-                # waited for the lock.
-                missing = await _missing_schema_objects(conn)
-                for name, ddl in _TABLES:
-                    if name in missing:
-                        await execute_ddl(conn, ddl)
-                for table, columns in _COLUMN_MIGRATIONS:
-                    present = await existing_columns(conn, table)
-                    for column, definition in columns:
-                        if column not in present:
-                            await execute_ddl(
-                                conn,
-                                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
-                                f"{column} {definition}",
-                            )
-                for name, ddl in _INDEXES:
-                    if name in missing:
-                        await execute_ddl(conn, ddl)
-
     # -- admission ---------------------------------------------------------------
 
     async def find_idempotent(
@@ -1303,11 +873,11 @@ class BatchStore:
                  metadata, expires_at, api_surface, target, schema_version,
                  protocol_profile, phase, status, input_file_id, retention_seconds,
                  idempotency_key, in_progress_at, display_name, description,
-                 created_via, console_spec)
+                 created_via, console_spec, cache_read_tokens)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
                     now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14,
                     $15, $16, $17, CASE WHEN $14 = 'in_progress' THEN now() END,
-                    $18, $19, $20, $21::jsonb)
+                    $18, $19, $20, $21::jsonb, 0)
             RETURNING {_BATCH_COLUMNS}
             """,
             batch_id,
@@ -1612,6 +1182,43 @@ class BatchStore:
             for row in rows
         ]
 
+    async def item_contents(
+        self, batch_id: str, *, after: int = 0, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """A page of a batch's items with what was sent and answered (administrators).
+
+        In submission order: ``id, custom_id, model_id, status, status_code,
+        attempts, request, response, error, prompt_tokens, completion_tokens,
+        completed_at``. ``response`` and ``error`` are None until the item
+        has an outcome.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, custom_id, model_id, status, status_code, attempts, request, "
+                "response, error, prompt_tokens, completion_tokens, completed_at "
+                "FROM batch_items WHERE batch_id = $1 AND id > $2 ORDER BY id LIMIT $3",
+                batch_id,
+                after,
+                limit,
+            )
+        return [
+            {
+                "id": row["id"],
+                "custom_id": row["custom_id"],
+                "model_id": row["model_id"],
+                "status": row["status"],
+                "status_code": row["status_code"],
+                "attempts": row["attempts"],
+                "request": _load_json(row["request"]),
+                "response": _load_json(row["response"]),
+                "error": _load_json(row["error"]),
+                "prompt_tokens": row["prompt_tokens"],
+                "completion_tokens": row["completion_tokens"],
+                "completed_at": row["completed_at"],
+            }
+            for row in rows
+        ]
+
     async def _pin_input(self, conn: Any, file_id: str, user_id: str) -> None:
         """Hold a file batch's input for the batch being created, or refuse it.
 
@@ -1846,29 +1453,45 @@ class BatchStore:
         return result
 
     async def batch_summary(self) -> list[dict[str, Any]]:
-        """Per-user totals across every batch still stored (administrators)."""
+        """Per-user totals across every batch still stored (administrators).
+
+        ``failed`` counts expired requests too, as each batch's
+        ``request_counts`` does; ``expired`` is that part of it, so the console
+        can show the two apart. ``cached_tokens`` is the part of
+        ``prompt_tokens`` served from a prompt cache, summed over the batches
+        that recorded it; ``cache_unrecorded_batches`` counts the ones stored
+        before it was recorded. ``user_name`` and ``email`` are the owner's
+        (the login name when the account has no display name), or None.
+        """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT user_id,
+                SELECT j.user_id,
                        count(*) AS batches,
                        count(*) FILTER (
-                           WHERE status IN ('validating', 'in_progress', 'cancelling')
-                              OR phase IN ('validating', 'sealing')
+                           WHERE j.status IN ('validating', 'in_progress', 'cancelling')
+                              OR j.phase IN ('validating', 'sealing')
                        ) AS active,
-                       COALESCE(sum(request_count), 0) AS requests,
-                       COALESCE(sum(completed_count), 0) AS completed,
-                       COALESCE(sum(failed_count), 0) AS failed,
-                       COALESCE(sum(cancelled_count), 0) AS cancelled,
-                       COALESCE(sum(cost_usd), 0) AS cost_usd,
-                       COALESCE(sum(prompt_tokens), 0) AS prompt_tokens,
-                       COALESCE(sum(completion_tokens), 0) AS completion_tokens,
-                       COALESCE(sum(unknown_cost_count), 0) AS unknown_cost_attempts,
-                       max(created_at) AS last_created_at
-                FROM batch_jobs
-                WHERE delete_requested_at IS NULL
-                GROUP BY user_id
-                ORDER BY max(created_at) DESC
+                       COALESCE(sum(j.request_count), 0) AS requests,
+                       COALESCE(sum(j.completed_count), 0) AS completed,
+                       COALESCE(sum(j.failed_count), 0) AS failed,
+                       COALESCE(sum(j.cancelled_count), 0) AS cancelled,
+                       COALESCE(sum(j.expired_count), 0) AS expired,
+                       COALESCE(sum(j.cost_usd), 0) AS cost_usd,
+                       COALESCE(sum(j.prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(sum(j.completion_tokens), 0) AS completion_tokens,
+                       COALESCE(sum(j.unknown_cost_count), 0) AS unknown_cost_attempts,
+                       COALESCE(sum(j.cache_read_tokens), 0) AS cached_tokens,
+                       count(*) FILTER (WHERE j.cache_read_tokens IS NULL)
+                           AS cache_unrecorded_batches,
+                       max(j.created_at) AS last_created_at,
+                       max(COALESCE(NULLIF(u.user_name, ''), u.login_name)) AS user_name,
+                       max(u.email) AS email
+                FROM batch_jobs AS j
+                LEFT JOIN users AS u ON u.id = j.user_id
+                WHERE j.delete_requested_at IS NULL
+                GROUP BY j.user_id
+                ORDER BY max(j.created_at) DESC
                 """
             )
         return [
@@ -1880,14 +1503,35 @@ class BatchStore:
                 "completed": int(row["completed"]),
                 "failed": int(row["failed"]),
                 "cancelled": int(row["cancelled"]),
+                "expired": int(row["expired"]),
                 "cost_usd": float(row["cost_usd"] or 0),
                 "prompt_tokens": int(row["prompt_tokens"]),
                 "completion_tokens": int(row["completion_tokens"]),
                 "unknown_cost_attempts": int(row["unknown_cost_attempts"]),
+                "cached_tokens": int(row["cached_tokens"]),
+                "cache_unrecorded_batches": int(row["cache_unrecorded_batches"]),
                 "last_created_at": row["last_created_at"],
+                "user_name": row["user_name"],
+                "email": row["email"],
             }
             for row in rows
         ]
+
+    async def user_labels(self, user_ids: list[str]) -> dict[str, dict[str, str | None]]:
+        """The display name and email of each of *user_ids* that has an account.
+
+        The name is the account's display name, else its login name; either
+        value may be None. Ids with no account are left out.
+        """
+        if not user_ids:
+            return {}
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, COALESCE(NULLIF(user_name, ''), login_name) AS user_name, email "
+                "FROM users WHERE id = ANY($1::text[])",
+                list(dict.fromkeys(user_ids)),
+            )
+        return {row["id"]: {"user_name": row["user_name"], "email": row["email"]} for row in rows}
 
     async def list_results(
         self, batch_id: str, *, after: int | None = None, limit: int = 100
@@ -2137,7 +1781,8 @@ class BatchStore:
             model_id, request, attempts`` (counting this one), ``attempt_seq``
             (the fencing token for this attempt), ``error`` (the previous
             attempt's, or None), and the batch's ``user_id``, ``key_hash``,
-            ``api_surface``, ``target``, ``protocol_profile`` and ``endpoint``.
+            ``api_surface``, ``target``, ``protocol_profile``, ``endpoint`` and
+            ``expires_at`` (when it stops starting requests).
         """
         if limit <= 0 or max_running <= 0:
             return []
@@ -2231,6 +1876,7 @@ class BatchStore:
                 "target": owners[row["batch_id"]]["target"],
                 "protocol_profile": owners[row["batch_id"]]["protocol_profile"],
                 "endpoint": owners[row["batch_id"]]["endpoint"],
+                "expires_at": owners[row["batch_id"]]["expires_at"],
             }
             for row in served
         ]
@@ -2346,6 +1992,7 @@ class BatchStore:
         usage: dict[str, Any] | None = None,
         cost_status: str | None = None,
         max_result_bytes: int | None = None,
+        cached_tokens: int | None = None,
     ) -> bool:
         """Record an item's final outcome: ``completed`` without *error*, else ``failed``.
 
@@ -2362,6 +2009,10 @@ class BatchStore:
             max_result_bytes: A response larger than this, serialized, is not
                 stored: the item fails with ``result_too_large`` instead (its
                 cost still counts).
+            cached_tokens: Of *prompt_tokens*, those the upstream served from
+                its prompt cache; None when it reported none. Added to the
+                batch's ``cache_read_tokens``, which stays NULL for a batch
+                stored before that column.
 
         Returns:
             False, changing nothing, when the item is no longer running under
@@ -2434,7 +2085,8 @@ class BatchStore:
                     cost_usd = cost_usd + $4,
                     prompt_tokens = prompt_tokens + $5,
                     completion_tokens = completion_tokens + $6,
-                    unknown_cost_count = unknown_cost_count + $7
+                    unknown_cost_count = unknown_cost_count + $7,
+                    cache_read_tokens = cache_read_tokens + $8
                 WHERE id = $1
                 """,
                 batch_id,
@@ -2444,6 +2096,7 @@ class BatchStore:
                 int(prompt_tokens or 0),
                 int(completion_tokens or 0),
                 int(cost_status == "unknown"),
+                int(cached_tokens or 0),
             )
             await self._settle(conn, batch_id, batch_status)
         return True
@@ -2603,11 +2256,17 @@ class BatchStore:
         return True
 
     async def pause_user_batches(
-        self, user_id: str, until: datetime, reason: str | None = None
+        self,
+        user_id: str,
+        until: datetime,
+        reason: str | None = None,
+        *,
+        key_hash: str | None = None,
     ) -> int:
         """Hold a user's validating and in-progress batches back from claims until *until*.
 
-        ``reason`` (``quota`` or ``role``) is what the console shows.
+        ``reason`` (``quota``, ``role`` or ``key_budget``) is what the console
+        shows. With ``key_hash``, only the batches created with that API key.
 
         Returns:
             The number of batches paused.
@@ -2619,6 +2278,7 @@ class BatchStore:
                 WHERE id IN (
                     SELECT id FROM batch_jobs
                     WHERE user_id = $1 AND status IN ('validating', 'in_progress')
+                      AND ($4::text IS NULL OR key_hash = $4)
                     ORDER BY id
                     FOR NO KEY UPDATE
                 )
@@ -2626,6 +2286,7 @@ class BatchStore:
                 user_id,
                 until,
                 reason,
+                key_hash,
             )
         return _rowcount(result)
 
@@ -3453,35 +3114,6 @@ def _utcnow() -> Any:
     return datetime.now(UTC)
 
 
-async def _missing_schema_objects(conn: Any) -> set[str]:
-    """Names of the batch tables, indexes and columns the database does not have yet.
-
-    One catalog query: a missing table or index by name, a missing column as
-    ``table.column`` (of a table that exists; a missing table brings its own).
-    """
-    names = [name for name, _ in (*_TABLES, *_INDEXES)]
-    tables = [table for table, columns in _COLUMN_MIGRATIONS for _ in columns]
-    columns = [column for _, cols in _COLUMN_MIGRATIONS for column, _ in cols]
-    rows = await conn.fetch(
-        """
-        SELECT name FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL
-        UNION ALL
-        SELECT t.tbl || '.' || t.col
-        FROM unnest($2::text[], $3::text[]) AS t(tbl, col)
-        WHERE to_regclass(t.tbl) IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM pg_attribute AS a
-              WHERE a.attrelid = to_regclass(t.tbl) AND a.attname = t.col
-                AND NOT a.attisdropped AND a.attnum > 0
-          )
-        """,
-        names,
-        tables,
-        columns,
-    )
-    return {row["name"] for row in rows}
-
-
 def _batch_row(row: Any) -> dict[str, Any]:
     """A ``batch_jobs`` row as the dict callers get, JSON decoded and cost a float."""
     return {
@@ -3523,6 +3155,10 @@ def _batch_row(row: Any) -> dict[str, Any]:
         "expired_count": row["expired_count"],
         "prompt_tokens": int(row["prompt_tokens"] or 0),
         "completion_tokens": int(row["completion_tokens"] or 0),
+        # None for a batch stored before cache hits were recorded.
+        "cache_read_tokens": (
+            int(row["cache_read_tokens"]) if row.get("cache_read_tokens") is not None else None
+        ),
         "unknown_cost_count": row["unknown_cost_count"],
         "idempotency_key": row["idempotency_key"],
         "display_name": row["display_name"],

@@ -18,6 +18,7 @@ import { fill } from '@/lib/utils/interpolate';
 import { consoleTypeLabel, formatBytes, formatTime } from './batchText';
 import type { CreateDraft } from './createDraft';
 import { errorReportFile, saveText } from './errorReport';
+import { FormatExample } from './FormatExample';
 
 export function StepCard({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -173,7 +174,6 @@ export function UploadStep({
   children?: ReactNode;
 }) {
   const t = useT();
-  const inputId = useId();
   const typeGroup = useId();
   const input = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -182,47 +182,68 @@ export function UploadStep({
   const target = detected?.type ?? (detected?.needs_type_choice ? draft.typeChoice : null);
   return (
     <StepCard title={t('batches.create.step.upload', 'Upload data')}>
-      <div className="flex flex-wrap items-center gap-3 text-sm">
-        <a
-          className="text-blue-700 hover:underline"
-          href="/samples/batch-chat-sample.jsonl"
-          download
+      <div
+        data-testid="drop-zone"
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(event) => {
+          // Moving onto the zone's own text or button is not leaving it.
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          const file = event.dataTransfer.files?.[0];
+          if (file) onFile(file);
+        }}
+        className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center text-sm transition-colors ${
+          dragging ? 'border-blue-400 bg-blue-50' : 'border-gray-300'
+        }`}
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.6}
+          className="h-8 w-8 text-gray-400"
         >
-          {t('batches.create.sample.chat', 'Download sample: text generation')}
-        </a>
-        <a
-          className="text-blue-700 hover:underline"
-          href="/samples/batch-embeddings-sample.jsonl"
-          download
+          <path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" />
+        </svg>
+        <p className="mt-2 text-base font-medium text-gray-900">
+          {t('batches.create.drop_title', 'Drop a .jsonl file here')}
+        </p>
+        <Button
+          className="mt-3"
+          variant={draft.source ? 'secondary' : 'primary'}
+          onClick={() => input.current?.click()}
         >
-          {t('batches.create.sample.embeddings', 'Download sample: embeddings')}
-        </a>
+          {draft.source
+            ? t('batches.create.choose_another', 'Choose another file')
+            : t('batches.create.choose_file', 'Choose file')}
+        </Button>
+        <p className="mt-3 text-xs text-gray-500">
+          {t(
+            'batches.create.drop_hint',
+            'The file is read by the gateway, not by your browser. Nothing runs until you confirm in step 3.',
+          )}
+        </p>
       </div>
-      <details className="rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
-        <summary className="cursor-pointer font-medium">
-          {t('batches.create.format.title', 'File format')}
-        </summary>
-        <div className="mt-2 space-y-2">
-          <p>
-            {t(
-              'batches.create.format.lines',
-              'One JSON object per line: custom_id (unique, 1–512 characters), url (optional: /v1/chat/completions or /v1/embeddings), method (optional: POST) and body (the request).',
-            )}
-          </p>
-          <p>
-            {t(
-              'batches.create.format.type',
-              'The type is recognised from each line’s url, or from the body when url is left out (messages: text generation; input: embeddings). One file holds one type and, in the end, one model.',
-            )}
-          </p>
-          <p>
-            {t(
-              'batches.create.format.strict',
-              'Fields the gateway would not forward (for example max_completion_tokens or user) are reported as errors rather than dropped. Save the file as UTF-8 without a byte-order mark.',
-            )}
-          </p>
-        </div>
-      </details>
+      <input
+        ref={input}
+        type="file"
+        accept=".jsonl,application/jsonl,application/x-ndjson"
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) onFile(file);
+          event.target.value = '';
+        }}
+      />
       {limits && context && (
         <p className="text-xs text-gray-500" data-testid="batch-limits">
           {fill(
@@ -243,45 +264,6 @@ export function UploadStep({
           )}
         </p>
       )}
-      <label
-        htmlFor={inputId}
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          const file = event.dataTransfer.files?.[0];
-          if (file) onFile(file);
-        }}
-        className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center text-sm transition-colors ${
-          dragging ? 'border-blue-400 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
-        }`}
-      >
-        <span className="font-medium text-gray-900">
-          {t('batches.create.drop', 'Drop a .jsonl file here, or choose one')}
-        </span>
-        <span className="mt-1 text-xs text-gray-500">
-          {t(
-            'batches.create.drop_hint',
-            'The file is read by the gateway, not by your browser. Nothing runs until you confirm in step 3.',
-          )}
-        </span>
-        <input
-          id={inputId}
-          ref={input}
-          type="file"
-          accept=".jsonl,application/jsonl,application/x-ndjson"
-          className="sr-only"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) onFile(file);
-            event.target.value = '';
-          }}
-        />
-      </label>
       {progress && (
         <div className="space-y-1">
           <div
@@ -374,7 +356,7 @@ export function UploadStep({
               ))}
             </fieldset>
           )}
-          {detected && detected.models.length > 0 && (
+          {detected && (detected.models.length > 0 || detected.model_unset_rows > 0) && (
             <ul className="space-y-0.5 text-xs text-gray-600">
               {detected.models.map((model) => (
                 <li key={model.name}>
@@ -416,6 +398,7 @@ export function UploadStep({
           )}
         </div>
       )}
+      <FormatExample />
       <div className="flex flex-wrap justify-between gap-2">
         {children}
         <Button onClick={onNext} disabled={!target || checking || Boolean(progress)}>

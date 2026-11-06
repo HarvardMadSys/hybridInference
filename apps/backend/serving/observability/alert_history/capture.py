@@ -272,7 +272,7 @@ class BackendCapture:
     def _digest(self, subject: str) -> str | None:
         if not self._fence_secret:
             return None
-        from serving.storage.log_schema import fence_account_digest
+        from serving.storage.erasure_fence import fence_account_digest
 
         return fence_account_digest(subject, self._fence_secret)
 

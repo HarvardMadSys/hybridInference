@@ -83,8 +83,8 @@ async def test_count_reruns_after_ttl_expiry():
     assert conn.fetchrow.await_count == 1
 
     # Age the cached entry past the TTL without sleeping.
-    cached_ts, cached_total = RECENT_REQUESTS_COUNT_CACHE[("user-1", None)]
-    RECENT_REQUESTS_COUNT_CACHE[("user-1", None)] = (
+    cached_ts, cached_total = RECENT_REQUESTS_COUNT_CACHE[("user-1", None, None)]
+    RECENT_REQUESTS_COUNT_CACHE[("user-1", None, None)] = (
         cached_ts - RECENT_REQUESTS_COUNT_TTL_SECONDS - 1.0,
         cached_total,
     )
@@ -178,16 +178,25 @@ async def test_cache_evicts_oldest_entries_at_capacity(monkeypatch):
 
     await get_cached_user_request_count(conn, "user-1", None)
     await get_cached_user_request_count(conn, "user-2", None)
-    assert set(RECENT_REQUESTS_COUNT_CACHE.keys()) == {("user-1", None), ("user-2", None)}
+    assert set(RECENT_REQUESTS_COUNT_CACHE.keys()) == {
+        ("user-1", None, None),
+        ("user-2", None, None),
+    }
 
     # Inserting a third distinct key evicts the least-recently-used entry.
     await get_cached_user_request_count(conn, "user-3", None)
-    assert set(RECENT_REQUESTS_COUNT_CACHE.keys()) == {("user-2", None), ("user-3", None)}
+    assert set(RECENT_REQUESTS_COUNT_CACHE.keys()) == {
+        ("user-2", None, None),
+        ("user-3", None, None),
+    }
 
     # Reading user-2 promotes it; user-3 is now LRU.
     await get_cached_user_request_count(conn, "user-2", None)
     await get_cached_user_request_count(conn, "user-4", None)
-    assert set(RECENT_REQUESTS_COUNT_CACHE.keys()) == {("user-2", None), ("user-4", None)}
+    assert set(RECENT_REQUESTS_COUNT_CACHE.keys()) == {
+        ("user-2", None, None),
+        ("user-4", None, None),
+    }
 
 
 def _row(**overrides):
@@ -211,6 +220,7 @@ def _row(**overrides):
         "routewise": {"primary_provider": "mid-b:zai-api"},
         "request_type": None,
         "is_auto": False,
+        "api_key_id": None,
         **overrides,
     }
 
@@ -238,7 +248,13 @@ async def test_a_request_for_an_auto_model_shows_the_auto_model_only():
     db_logger = SimpleNamespace(pool=SimpleNamespace(acquire=lambda: acquire))
 
     page = await user_routes.get_recent_requests(
-        limit=50, offset=0, model_id=None, current_user={"user_id": "user-1"}, db_logger=db_logger
+        limit=50,
+        offset=0,
+        model_id=None,
+        key_prefix=None,
+        current_user={"user_id": "user-1"},
+        db_logger=db_logger,
+        op_store=None,
     )
 
     sql = conn.fetch.call_args.args[0]
@@ -330,3 +346,84 @@ def test_presentation_coerces_cost_to_json_safe_numbers():
 
 def test_presentation_of_an_empty_page_is_empty():
     assert present_recent_requests([]) == []
+
+
+def _db_logger(conn):
+    acquire = MagicMock()
+    acquire.__aenter__ = AsyncMock(return_value=conn)
+    acquire.__aexit__ = AsyncMock(return_value=None)
+    return SimpleNamespace(pool=SimpleNamespace(acquire=lambda: acquire))
+
+
+def _keys_store(*keys: tuple[int, str]):
+    store = MagicMock()
+    store.list_account_keys = AsyncMock(
+        return_value=[{"id": key_id, "key_prefix": prefix} for key_id, prefix in keys]
+    )
+    return store
+
+
+@pytest.mark.asyncio
+async def test_requests_name_the_key_they_were_made_with():
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"total": 3})
+    conn.fetch = AsyncMock(
+        return_value=[
+            _row(request_id="by-laptop", api_key_id="7"),
+            _row(request_id="by-gone-key", api_key_id="99"),
+            _row(request_id="before-attribution"),
+        ]
+    )
+
+    page = await user_routes.get_recent_requests(
+        limit=50,
+        offset=0,
+        model_id=None,
+        key_prefix=None,
+        current_user={"user_id": "user-keys"},
+        db_logger=_db_logger(conn),
+        op_store=_keys_store((7, "hyi-laptop00")),
+    )
+
+    assert [r.key_prefix for r in page.requests] == ["hyi-laptop00", None, None]
+
+
+@pytest.mark.asyncio
+async def test_filtering_by_key_reads_that_keys_rows_of_the_account():
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"total": 1})
+    conn.fetch = AsyncMock(return_value=[_row(api_key_id="8")])
+
+    await user_routes.get_recent_requests(
+        limit=50,
+        offset=0,
+        model_id=None,
+        key_prefix="hyi-ci000000",
+        current_user={"user_id": "user-filter"},
+        db_logger=_db_logger(conn),
+        op_store=_keys_store((7, "hyi-laptop00"), (8, "hyi-ci000000")),
+    )
+
+    sql, *params = conn.fetch.call_args.args
+    assert "user_id = $1" in sql and "metadata->>'api_key_id' = $2" in sql
+    assert params[:2] == ["user-filter", "8"]
+
+
+@pytest.mark.asyncio
+async def test_filtering_by_a_key_the_account_does_not_hold_is_404():
+    from fastapi import HTTPException
+
+    conn = AsyncMock()
+    with pytest.raises(HTTPException) as refused:
+        await user_routes.get_recent_requests(
+            limit=50,
+            offset=0,
+            model_id=None,
+            key_prefix="hyi-someone00",
+            current_user={"user_id": "user-404"},
+            db_logger=_db_logger(conn),
+            op_store=_keys_store((7, "hyi-laptop00")),
+        )
+
+    assert refused.value.status_code == 404
+    conn.fetch.assert_not_awaited()

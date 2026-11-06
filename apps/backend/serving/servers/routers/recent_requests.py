@@ -50,7 +50,9 @@ __all__ = [
 # preferable to serializing all unrelated callers.
 RECENT_REQUESTS_COUNT_TTL_SECONDS: float = 60.0
 RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES: int = 4096
-RECENT_REQUESTS_COUNT_CACHE: OrderedDict[tuple[str, str | None], tuple[float, int]] = OrderedDict()
+RECENT_REQUESTS_COUNT_CACHE: OrderedDict[tuple[str, str | None, int | None], tuple[float, int]] = (
+    OrderedDict()
+)
 
 #: The model a request's row shows its user: the auto model it asked for, when
 #: an auto model served it (serving/auto_mode.py), and the logged model
@@ -64,34 +66,46 @@ def _escape_ilike_substring_term(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
-def build_user_recent_requests_filters(user_id: str, model_id: str | None) -> tuple[str, list[Any]]:
+def build_user_recent_requests_filters(
+    user_id: str, model_id: str | None, api_key_id: int | None = None
+) -> tuple[str, list[Any]]:
     """Build the shared WHERE clause + bind params for /user/recent-requests.
 
     Used by both the COUNT cache helper and the paginated SELECT so the two
     queries cannot drift if a future filter is added.
+
+    The key filter reads ``metadata->>'api_key_id'`` after ``user_id`` has
+    narrowed the scan to the account's rows (``idx_api_logs_user``): the key
+    is not a column of its own, so that a log write never depends on a
+    migration of ``api_logs``.
     """
     where_clauses = ["user_id = $1"]
     params: list[Any] = [user_id]
     if model_id:
         params.append(_escape_ilike_substring_term(model_id))
         where_clauses.append(f"{SHOWN_MODEL_SQL} ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
+    if api_key_id is not None:
+        params.append(str(api_key_id))
+        where_clauses.append(f"metadata->>'api_key_id' = ${len(params)}")
     return " AND ".join(where_clauses), params
 
 
-async def get_cached_user_request_count(conn: Any, user_id: str, model_id: str | None) -> int:
+async def get_cached_user_request_count(
+    conn: Any, user_id: str, model_id: str | None, api_key_id: int | None = None
+) -> int:
     """Return the cached or freshly-queried ``api_logs`` row count for *user_id*.
 
     Cached for ``RECENT_REQUESTS_COUNT_TTL_SECONDS`` to keep heavy-history users
     from paying a full COUNT(*) on every 60s dashboard poll.
     """
-    key = (user_id, model_id)
+    key = (user_id, model_id, api_key_id)
     now = time.monotonic()
     cached = RECENT_REQUESTS_COUNT_CACHE.get(key)
     if cached is not None and (now - cached[0]) < RECENT_REQUESTS_COUNT_TTL_SECONDS:
         RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
         return cached[1]
 
-    where_sql, params = build_user_recent_requests_filters(user_id, model_id)
+    where_sql, params = build_user_recent_requests_filters(user_id, model_id, api_key_id)
     count_row = await conn.fetchrow(
         f"""
         SELECT COUNT(*) as total
@@ -115,18 +129,19 @@ async def query_recent_requests(
     model_id: str | None,
     limit: int,
     offset: int,
+    api_key_id: int | None = None,
 ) -> tuple[list[Any], int]:
     """Return one page of the user's logged requests and the filtered total.
 
     The COUNT is cached; the page itself is always a fresh read. Both use the
     same filters, so a page and its total always describe the same result set.
     """
-    where_sql, params = build_user_recent_requests_filters(user_id, model_id)
+    where_sql, params = build_user_recent_requests_filters(user_id, model_id, api_key_id)
     limit_idx = len(params) + 1
     offset_idx = len(params) + 2
     page_params = [*params, limit, offset]
 
-    total = await get_cached_user_request_count(conn, user_id, model_id)
+    total = await get_cached_user_request_count(conn, user_id, model_id, api_key_id)
     rows = await conn.fetch(
         f"""
         SELECT
@@ -137,7 +152,8 @@ async def query_recent_requests(
             total_tokens, cost_usd, error,
             metadata->'routewise' AS routewise,
             metadata->>'request_type' AS request_type,
-            metadata->'auto'->>'requested' IS NOT NULL AS is_auto
+            metadata->'auto'->>'requested' IS NOT NULL AS is_auto,
+            metadata->>'api_key_id' AS api_key_id
         FROM api_logs
         WHERE {where_sql}
         ORDER BY timestamp DESC
@@ -148,7 +164,9 @@ async def query_recent_requests(
     return rows, total
 
 
-def present_recent_requests(rows: Iterable[Any]) -> list[RecentRequestItem]:
+def present_recent_requests(
+    rows: Iterable[Any], key_prefixes: dict[str, str] | None = None
+) -> list[RecentRequestItem]:
     """Map ``api_logs`` rows to the dashboard's response items.
 
     Auto-model rows are the privacy-sensitive case: they name the model the user
@@ -156,6 +174,7 @@ def present_recent_requests(rows: Iterable[Any]) -> list[RecentRequestItem]:
     replace the logged error with the status's generic message. Everything else
     passes the logged values through, with only the cost coerced for JSON.
     """
+    prefixes = key_prefixes or {}
     return [
         RecentRequestItem(
             request_id=row["request_id"],
@@ -180,6 +199,7 @@ def present_recent_requests(rows: Iterable[Any]) -> list[RecentRequestItem]:
             ),
             routewise=None if row["is_auto"] else coerce_json_object(row["routewise"]),
             request_type=row["request_type"],
+            key_prefix=prefixes.get(row.get("api_key_id")) if row.get("api_key_id") else None,
         )
         for row in rows
     ]

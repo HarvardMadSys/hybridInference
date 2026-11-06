@@ -19,7 +19,6 @@ async def test_webhook_dns_wait_cannot_write_settings_after_owner_erasure(monkey
     owner = f"review-webhook-{uuid.uuid4().hex}"
     entered, resume = asyncio.Event(), asyncio.Event()
     save = None
-    await batches.initialize()
 
     async def paused_dns(*args, **kwargs):
         entered.set()
