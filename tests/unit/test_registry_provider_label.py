@@ -296,6 +296,7 @@ def test_reserved_labels_cover_every_dispatchable_kind():
         "openrouter_pinned_provider",
         "chat_path",
         "include_usage_in_stream",
+        "vllm_structured_outputs",
     }
     kinds = quoted - non_kinds
     assert kinds <= RESERVED_PROVIDER_LABELS, sorted(kinds - RESERVED_PROVIDER_LABELS)

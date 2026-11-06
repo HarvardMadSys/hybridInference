@@ -309,8 +309,10 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "provider_profile": "kimi", "include_usage_in_stream": True}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
-    elif kind == "sglang" or kind == "vllm":
+    elif kind == "sglang":
         cfg = {**cfg, "include_usage_in_stream": True}
+    elif kind == "vllm":
+        cfg = {**cfg, "include_usage_in_stream": True, "vllm_structured_outputs": True}
 
     model_cfg = ModelConfig(**cfg)
 

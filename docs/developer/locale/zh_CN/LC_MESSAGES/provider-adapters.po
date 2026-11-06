@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-10 14:42-0400\n"
+"POT-Creation-Date: 2026-11-06 19:14+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -249,10 +249,49 @@ msgid "Handle the `response_format` parameter:"
 msgstr "处理 `response_format` 参数："
 
 #: ../developer/provider-adapters.md:431
+msgid ""
+"The gateway does not rely on the provider alone to honor "
+"`response_format`:"
+msgstr "网关不会只依赖 provider 自己来遵守 `response_format`："
+
+#: ../developer/provider-adapters.md:433
+msgid ""
+"When an endpoint cannot take the requested format, the OpenAI-compatible "
+"adapter describes it in the prompt instead. This covers a route without "
+"`supports_structured_output` and a provider that keeps only `json_object`"
+" of a schema."
+msgstr ""
+"当某个端点无法接受所请求的格式时，OpenAI 兼容的 adapter 会改为在 prompt 中描述该格式。这包括没有 "
+"`supports_structured_output` 的路由，以及对 schema 只保留 `json_object` 的 provider。"
+
+#: ../developer/provider-adapters.md:437
+msgid ""
+"A `kind: vllm` route also gets `structured_outputs` with "
+"`disable_any_whitespace`, so the model cannot loop on whitespace inside "
+"the JSON grammar."
+msgstr ""
+"`kind: vllm` 的路由还会收到带 `disable_any_whitespace` 的 "
+"`structured_outputs`，这样模型就不会在 JSON 语法内部反复输出空白。"
+
+#: ../developer/provider-adapters.md:440
+msgid ""
+"A non-streaming reply is checked against the request. JSON in a code "
+"fence or surrounded by prose is unwrapped. A reply that is not JSON or "
+"does not match the schema is asked again with the schema in the prompt, "
+"up to twice, unless it was cut off by `max_tokens`. If no attempt "
+"conforms, the last reply is returned unchanged rather than as an error. "
+"The request log's `metadata.structured_output` records the attempts and "
+"whether the reply conformed."
+msgstr ""
+"非流式的回复会按请求进行检查。包在代码块里或夹在文字中的 JSON 会被取出。不是 JSON 或不符合 schema 的回复，会在 prompt "
+"中附上 schema 后重新请求，最多两次；被 `max_tokens` 截断的回复除外。如果没有一次符合要求，就原样返回最后一次的回复，而不是返回错误。请求日志的 "
+"`metadata.structured_output` 会记录尝试次数以及回复是否符合要求。"
+
+#: ../developer/provider-adapters.md:448
 msgid "Limiting concurrent requests"
 msgstr "限制并发请求"
 
-#: ../developer/provider-adapters.md:433
+#: ../developer/provider-adapters.md:450
 msgid ""
 "An adapter does not need its own limiter. The gateway already caps how "
 "many requests it keeps open against each provider key, and lowers the cap"
@@ -266,11 +305,11 @@ msgstr ""
 "adapter 那样，把对上游的调用包在从 `apps/backend/serving/adapters/upstream_limiter.py`"
 " 获取的槽位里，就能纳入这套机制。"
 
-#: ../developer/provider-adapters.md:440
+#: ../developer/provider-adapters.md:457
 msgid "Examples"
 msgstr "示例"
 
-#: ../developer/provider-adapters.md:442
+#: ../developer/provider-adapters.md:459
 msgid ""
 "**OpenAI-compatible provider.** DeepSeek has no adapter file. "
 "`_make_adapter` in `apps/backend/serving/servers/registry.py` sets "
@@ -282,7 +321,7 @@ msgstr ""
 "`provider_profile = \"deepseek\"` 并返回 `OpenAICompatAdapter`；profile 本身在 "
 "`apps/backend/serving/adapters/profiles.py`。"
 
-#: ../developer/provider-adapters.md:446
+#: ../developer/provider-adapters.md:463
 msgid ""
 "**Custom API format.** See `apps/backend/serving/adapters/gemini.py` for "
 "message conversion against a non-OpenAI wire format."
@@ -290,7 +329,7 @@ msgstr ""
 "**自定义 API 格式**。按非 OpenAI 协议格式转换消息的做法，可以参考 "
 "`apps/backend/serving/adapters/gemini.py`。"
 
-#: ../developer/provider-adapters.md:448
+#: ../developer/provider-adapters.md:465
 msgid ""
 "**Local deployment.** vLLM and SGLang reuse "
 "`apps/backend/serving/adapters/openai_compat.py`. The `vllm` and `sglang`"
@@ -301,62 +340,62 @@ msgstr ""
 "`apps/backend/serving/adapters/openai_compat.py`。`vllm` 和 `sglang` 这两个 "
 "kind 分发到同一个类；本地与远程的行为差异来自 `base_url` 和路由层，而不是来自专门的 adapter。"
 
-#: ../developer/provider-adapters.md:453
+#: ../developer/provider-adapters.md:470
 msgid "Troubleshooting"
 msgstr "故障排查"
 
-#: ../developer/provider-adapters.md:455
+#: ../developer/provider-adapters.md:472
 msgid "Response format errors"
 msgstr "响应格式错误"
 
-#: ../developer/provider-adapters.md:457
+#: ../developer/provider-adapters.md:474
 msgid "Ensure `format_response()` returns the OpenAI-compatible structure."
 msgstr "确保 `format_response()` 返回 OpenAI 兼容的结构。"
 
-#: ../developer/provider-adapters.md:458
+#: ../developer/provider-adapters.md:475
 msgid "Validate that `UsageInfo` fields are integers."
 msgstr "校验 `UsageInfo` 的各字段都是整数。"
 
-#: ../developer/provider-adapters.md:459
+#: ../developer/provider-adapters.md:476
 msgid ""
 "Check `finish_reason` is one of `stop`, `length`, `content_filter`, "
 "`tool_calls`."
 msgstr "检查 `finish_reason` 是 `stop`、`length`、`content_filter`、`tool_calls` 之一。"
 
-#: ../developer/provider-adapters.md:461
+#: ../developer/provider-adapters.md:478
 msgid ""
 "For streaming, emit the first non-empty content chunk as soon as it is "
 "available so time-to-first-token is recorded accurately."
 msgstr "流式场景下，第一个非空内容分片一可用就立刻发出，这样首 token 时延（time-to-first-token）才会被准确记录。"
 
-#: ../developer/provider-adapters.md:464
+#: ../developer/provider-adapters.md:481
 msgid "Streaming issues"
 msgstr "流式问题"
 
-#: ../developer/provider-adapters.md:466
+#: ../developer/provider-adapters.md:483
 #, python-brace-format
 msgid "Ensure chunks are SSE-formatted: `data: {json}\\n\\n`."
 msgstr "确保分片是 SSE 格式：`data: {json}\\n\\n`。"
 
-#: ../developer/provider-adapters.md:467
+#: ../developer/provider-adapters.md:484
 msgid "Send the final usage chunk before `data: [DONE]`."
 msgstr "在 `data: [DONE]` 之前发送最后那个 usage 分片。"
 
-#: ../developer/provider-adapters.md:468
+#: ../developer/provider-adapters.md:485
 msgid "Handle JSON parsing errors gracefully."
 msgstr "妥善处理 JSON 解析错误。"
 
-#: ../developer/provider-adapters.md:470
+#: ../developer/provider-adapters.md:487
 msgid "Best practices"
 msgstr "最佳实践"
 
-#: ../developer/provider-adapters.md:472
+#: ../developer/provider-adapters.md:489
 msgid ""
 "**Error handling** — use `self.http.json_post_with_retry()` and surface "
 "provider faults with useful messages."
 msgstr "**错误处理**——使用 `self.http.json_post_with_retry()`；provider 出错时，要给出有用的错误信息。"
 
-#: ../developer/provider-adapters.md:474
+#: ../developer/provider-adapters.md:491
 msgid ""
 "**Usage accounting** — prefer provider-reported usage; fall back to "
 "`estimate_prompt_tokens()` / `estimate_text_tokens()`."
@@ -364,7 +403,7 @@ msgstr ""
 "**用量记账**——优先采用 provider 上报的 usage；拿不到再回退到 `estimate_prompt_tokens()` / "
 "`estimate_text_tokens()`。"
 
-#: ../developer/provider-adapters.md:476
+#: ../developer/provider-adapters.md:493
 msgid ""
 "**Streaming helpers** — use `format_stream_chunk()`, "
 "`make_final_usage_chunk()`, and `done_sentinel()` for consistent SSE."
@@ -372,25 +411,25 @@ msgstr ""
 "**流式辅助函数**——用 `format_stream_chunk()`、`make_final_usage_chunk()` 和 "
 "`done_sentinel()` 保证 SSE 输出一致。"
 
-#: ../developer/provider-adapters.md:478
+#: ../developer/provider-adapters.md:495
 msgid ""
 "**Type safety** — full type hints, and keep request/response shapes "
 "aligned with `apps/backend/serving/schemas.py`."
 msgstr "**类型安全**——写完整的类型标注，并让请求/响应的结构与 `apps/backend/serving/schemas.py` 保持一致。"
 
-#: ../developer/provider-adapters.md:480
+#: ../developer/provider-adapters.md:497
 msgid ""
 "**Testing** — exercise both streaming and non-streaming paths, and try "
 "large prompts to validate token clamping."
 msgstr "**测试**——流式和非流式两条路径都要测到，并用大 prompt 验证 token 数会被正确截断。"
 
-#: ../developer/provider-adapters.md:482
+#: ../developer/provider-adapters.md:499
 msgid ""
 "**Docs & style** — Google-style docstrings in English; keep provider-"
 "specific logic out of shared code."
 msgstr "**文档与风格**——用英文写 Google 风格的 docstring；不要把 provider 专属的逻辑塞进共享代码。"
 
-#: ../developer/provider-adapters.md:484
+#: ../developer/provider-adapters.md:501
 #, python-brace-format
 msgid ""
 "**Secrets** — use `${ENV_VAR}` in YAML rather than hardcoding keys or "
@@ -400,19 +439,19 @@ msgstr ""
 "**密钥**——在 YAML 里用 `${ENV_VAR}`，不要硬编码 key "
 "或端点；取值放在网关的设置项里（**Configuration** 标签页），没有数据库的网关则放在 `.env` 中。"
 
-#: ../developer/provider-adapters.md:488
+#: ../developer/provider-adapters.md:505
 msgid "See also"
 msgstr "另见"
 
-#: ../developer/provider-adapters.md:490
+#: ../developer/provider-adapters.md:507
 msgid "[Adding a New Model](adding-models.md) — every field a model entry accepts"
 msgstr "[添加新模型](adding-models.md)——模型条目接受的全部字段"
 
-#: ../developer/provider-adapters.md:491
+#: ../developer/provider-adapters.md:508
 msgid "[Architecture](architecture.md#adapters) — where adapters sit in a request"
 msgstr "[架构](architecture.md#adapters)——adapter 在一次请求中所处的位置"
 
-#: ../developer/provider-adapters.md:492
+#: ../developer/provider-adapters.md:509
 msgid ""
 "[Backend Extensions](backend-extensions.md) — registering an adapter from"
 " outside the source tree"

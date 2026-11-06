@@ -61,6 +61,7 @@ from serving.servers.routers.routing_info import (
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
+from serving.structured_output import conform_reply, requested_format
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
@@ -1299,6 +1300,15 @@ async def execute_chat(
             messages,
             **router_params,
         )
+        wanted_format = requested_format(params)
+        if wanted_format is not None:
+
+            async def _retry(retry_messages: list[dict[str, Any]]) -> Any:
+                return await active_router.chat_completion(model, retry_messages, **router_params)
+
+            response, metadata["structured_output"] = await conform_reply(
+                response, wanted_format, _retry, messages
+            )
         serializer_mode = resolve_mode(ctx.origin.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content
