@@ -93,21 +93,28 @@ other inference surfaces reuse its parts.
 
 ### 1. Middleware
 
-`create_app()` in `apps/backend/serving/servers/app.py` registers five
+`create_app()` in `apps/backend/serving/servers/app.py` registers seven
 middlewares. Starlette runs the last-registered outermost, so the effective
 order from the outside in is:
 
 1. `RequestIdMiddleware` — mints or adopts a request id used by every log line.
 2. `FallbackErrorMiddleware` — last-resort error shaping.
-3. `RequestLogMiddleware` — one structured log record per HTTP request.
-4. `TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for ordinary
+3. `KubernetesProxyTrustMiddleware` — discovers which proxies may report the
+   client address, when Kubernetes proxy discovery is configured.
+4. `RequestLogMiddleware` — one structured log record per HTTP request.
+5. `TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for ordinary
    requests, `STREAM_REQUEST_TIMEOUT_SECONDS` (default 3600s, `<=0` disables the
    cap) once a response has been marked as streaming.
-5. `CORSMiddleware`.
+6. `CORSMiddleware`.
+7. `RequestBodyLimitMiddleware` — answers `413` to a request body larger than
+   `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when
+   `Content-Length` declares more, otherwise as soon as the bytes received pass
+   the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`.
 
 Middleware order matters: streaming responses are `StreamingResponse`
 objects that must not be buffered. Any new middleware that reads a response body
-before forwarding it will break Server-Sent Events.
+before forwarding it will break Server-Sent Events. The body limit counts request
+bytes as they pass and holds none of them.
 
 ### 2. Authentication and quota
 

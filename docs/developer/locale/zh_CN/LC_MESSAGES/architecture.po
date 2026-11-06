@@ -159,12 +159,12 @@ msgstr "1\\. 中间件"
 
 #: ../developer/architecture.md:96
 msgid ""
-"`create_app()` in `apps/backend/serving/servers/app.py` registers five "
+"`create_app()` in `apps/backend/serving/servers/app.py` registers seven "
 "middlewares. Starlette runs the last-registered outermost, so the "
 "effective order from the outside in is:"
 msgstr ""
 "`apps/backend/serving/servers/app.py` 中的 `create_app()` "
-"注册了五个中间件。Starlette 把最后注册的跑在最外层，因此从外到内的实际顺序是："
+"注册了七个中间件。Starlette 把最后注册的跑在最外层，因此从外到内的实际顺序是："
 
 #: ../developer/architecture.md:100
 msgid ""
@@ -177,6 +177,14 @@ msgid "`FallbackErrorMiddleware` — last-resort error shaping."
 msgstr "`FallbackErrorMiddleware`——兜底，统一错误响应的格式。"
 
 #: ../developer/architecture.md:102
+msgid ""
+"`KubernetesProxyTrustMiddleware` — discovers which proxies may report the"
+" client address, when Kubernetes proxy discovery is configured."
+msgstr ""
+"`KubernetesProxyTrustMiddleware`——配置了 Kubernetes "
+"代理发现时，找出哪些代理可以报告客户端地址。"
+
+#: ../developer/architecture.md:104
 msgid "`RequestLogMiddleware` — one structured log record per HTTP request."
 msgstr "`RequestLogMiddleware`——每个 HTTP 请求一条结构化日志记录。"
 
@@ -190,18 +198,31 @@ msgstr ""
 "120s）；响应一旦被标记为流式，就改用 `STREAM_REQUEST_TIMEOUT_SECONDS`（默认 3600s，`<=0` "
 "表示取消该上限）。"
 
-#: ../developer/architecture.md:106
+#: ../developer/architecture.md:108
 msgid "`CORSMiddleware`."
 msgstr ""
 
-#: ../developer/architecture.md:108
+#: ../developer/architecture.md:109
+msgid ""
+"`RequestBodyLimitMiddleware` — answers `413` to a request body larger "
+"than `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when"
+" `Content-Length` declares more, otherwise as soon as the bytes received "
+"pass the limit. Batch input uploads keep their own limit, "
+"`BATCH_MAX_BODY_MB`."
+msgstr ""
+"`RequestBodyLimitMiddleware`——请求体超过 `REQUEST_MAX_BODY_MB`（默认 32 "
+"MiB）时回复 `413`：`Content-Length` 声明的长度已经超出时，一个字节都不读；否则在收到的字节数超过上限的那一刻回复。批处理输入文件的上传保留自己的上限 "
+"`BATCH_MAX_BODY_MB`。"
+
+#: ../developer/architecture.md:114
 msgid ""
 "Middleware order matters: streaming responses are `StreamingResponse` "
 "objects that must not be buffered. Any new middleware that reads a "
-"response body before forwarding it will break Server-Sent Events."
+"response body before forwarding it will break Server-Sent Events. The "
+"body limit counts request bytes as they pass and holds none of them."
 msgstr ""
 "中间件的顺序很重要：流式响应是 `StreamingResponse` 对象，不能缓冲。新加的中间件只要在转发前读取了响应体，就会破坏 "
-"Server-Sent Events。"
+"Server-Sent Events。请求体上限只在字节经过时计数，一个字节也不保留。"
 
 #: ../developer/architecture.md:112
 msgid "2. Authentication and quota"
