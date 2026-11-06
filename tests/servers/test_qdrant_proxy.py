@@ -20,6 +20,7 @@ from serving.servers.deps import AppServices
 from serving.servers.routers.qdrant_proxy import (
     _filter_collections_response,
     _is_allowed,
+    _normalize_path,
     _rewrite_path,
     _scope_collection,
     _unscope_collection,
@@ -173,9 +174,53 @@ class TestIsAllowed:
     def test_rejects_admin_paths(self, path: str):
         assert _is_allowed(path) is False
 
-    def test_strips_trailing_slashes(self):
+    def test_drops_a_trailing_slash_but_refuses_a_leading_one(self):
         assert _is_allowed("collections/") is True
-        assert _is_allowed("/collections") is True
+        # Stripped, "/collections/x" passed here while the rewrite, which saw
+        # the raw path, left it unscoped: Qdrant got //collections/x.
+        assert _is_allowed("/collections") is False
+        assert _is_allowed("/collections/victim") is False
+
+
+class TestNormalizePath:
+    """One normalized path is what the allowlist checks and the rewrite scopes."""
+
+    @pytest.mark.parametrize(
+        ("path", "normalized"),
+        [
+            ("", ""),
+            ("/", ""),
+            ("collections", "collections"),
+            ("collections/", "collections"),
+            ("collections/my_col/points/search", "collections/my_col/points/search"),
+            ("collections/my col", "collections/my col"),
+        ],
+    )
+    def test_accepts_one_form(self, path: str, normalized: str):
+        assert _normalize_path(path) == normalized
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/collections/victim",
+            "//collections/victim",
+            "collections//victim",
+            "collections/victim//",
+            "collections/./victim",
+            "collections/../victim",
+            "collections/x/../../collections/victim",
+            "collections/..",
+            "collections/x%2F..%2Fvictim",
+            "collections/x%2f..%2fvictim",
+            "collections/x%5Cvictim",
+            "collections/x\\victim",
+            "collections/x?y",
+            "collections/x#/points",
+        ],
+    )
+    def test_refuses_a_path_upstream_could_read_differently(self, path: str):
+        assert _normalize_path(path) is None
+        assert _is_allowed(path) is False
 
 
 class TestScopeUnscope:
@@ -341,6 +386,42 @@ class TestAllowlist:
     async def test_disallowed_endpoint_403(self, client: AsyncClient):
         resp = await client.get("/v1/qdrant/snapshots")
         assert resp.status_code == status.HTTP_403_FORBIDDEN
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # A leading slash, typed or encoded: the console's proxy passes
+            # %2F through, and the gateway decodes it into the path.
+            "/v1/qdrant//collections/victim",
+            "/v1/qdrant/%2Fcollections/victim",
+            "/v1/qdrant/%2Fcollections/victim/points/search",
+            # Encoded once more, a slash survives the gateway's decoding.
+            "/v1/qdrant/collections/x%252F..%252Fvictim",
+            "/v1/qdrant/collections//victim/points",
+        ],
+    )
+    async def test_a_path_that_would_skip_tenant_scoping_never_reaches_qdrant(
+        self, client: AsyncClient, mock_upstream, url: str
+    ):
+        mock_upstream.set_response(200, b'{"result":{"name":"victim"}}')
+
+        resp = await client.get(url)
+
+        assert resp.status_code == status.HTTP_403_FORBIDDEN
+        assert mock_upstream.last_request is None
+
+    @pytest.mark.asyncio
+    async def test_the_forwarded_path_is_the_checked_one(self, client: AsyncClient, mock_upstream):
+        mock_upstream.set_response(200, b'{"result":{}}')
+
+        resp = await client.get("/v1/qdrant/collections/my_col/")
+
+        assert resp.status_code == status.HTTP_200_OK
+        assert mock_upstream.last_request is not None
+        assert mock_upstream.last_request["url"] == (
+            f"http://qdrant:6333/collections/{_scoped('my_col')}"
+        )
 
 
 # ============================================================================

@@ -8,6 +8,10 @@ Security measures:
 - Anonymous requests are rejected even when USER_AUTH_ENABLED=0.
 - Endpoint allowlist: only collections and points operations are proxied.
 - Tenant isolation: collection names are prefixed with a user-scoped namespace.
+- One path: the path is normalized once, and that string is what the allowlist
+  checks, the scoping rewrites and Qdrant receives; a path the two could read
+  differently (a leading slash, an empty or dot segment, an encoded slash) is
+  refused.
 """
 
 from __future__ import annotations
@@ -85,6 +89,33 @@ _COLLECTION_RE = re.compile(r"^collections/([^/]+)(/.*)?$")
 
 _NAMESPACE_PREFIX = "fi"
 
+#: What may not be left in a path once the gateway has decoded it: an encoded
+#: slash or backslash that Qdrant would decode again, a backslash, and the
+#: ``?`` and ``#`` that would end the path in the URL forwarded upstream.
+_AMBIGUOUS_PATH_PARTS = ("%2f", "%5c", "\\", "?", "#")
+
+
+def _normalize_path(path: str) -> str | None:
+    """Return the one form of *path* the proxy checks, rewrites and forwards.
+
+    *path* is the part after ``/v1/qdrant/``, already percent-decoded once.
+    A trailing slash, which clients send, is dropped. ``None`` for a path the
+    upstream could read differently from the allowlist: a leading slash (sent
+    as ``//`` or ``%2F``, it passed the allowlist once stripped, skipped tenant
+    scoping and reached Qdrant as ``//collections/<anyone's>``), an empty,
+    ``.`` or ``..`` segment, and anything in :data:`_AMBIGUOUS_PATH_PARTS`.
+    """
+    if path.endswith("/"):
+        path = path[:-1]
+    if not path:
+        return ""
+    lowered = path.lower()
+    if path.startswith("/") or any(part in lowered for part in _AMBIGUOUS_PATH_PARTS):
+        return None
+    if any(segment in ("", ".", "..") for segment in path.split("/")):
+        return None
+    return path
+
 
 def _user_namespace(user_id: str) -> str:
     """Deterministic, short namespace derived from user_id."""
@@ -157,8 +188,10 @@ def _unscope_collection_info(body: bytes, user_id: str) -> bytes:
 
 
 def _is_allowed(path: str) -> bool:
-    """Check path against the endpoint allowlist."""
-    normalized = path.strip("/")
+    """Check the normalized form of *path* against the endpoint allowlist."""
+    normalized = _normalize_path(path)
+    if normalized is None:
+        return False
     return any(pattern.match(normalized) for pattern in _ALLOWED_PATTERNS)
 
 
@@ -184,8 +217,12 @@ async def qdrant_proxy(
 
     user_id: str = user_ctx["user_id"]
 
+    # One normalized path is checked, rewritten, forwarded and used to filter
+    # the response, so the allowlist and the tenant scoping see the same thing.
+    normalized = _normalize_path(path)
+
     # Endpoint allowlist
-    if not _is_allowed(path):
+    if normalized is None or not _is_allowed(normalized):
         logger.warning(
             "qdrant_proxy endpoint_blocked",
             extra={
@@ -200,7 +237,7 @@ async def qdrant_proxy(
     settings = get_settings()
 
     # Rewrite collection names for tenant isolation
-    rewritten_path = _rewrite_path(path, user_id)
+    rewritten_path = _rewrite_path(normalized, user_id)
 
     # Build upstream URL preserving query params
     upstream_url = f"{settings.qdrant_base_url.rstrip('/')}/{rewritten_path}"
@@ -252,11 +289,10 @@ async def qdrant_proxy(
             logger.info("qdrant_proxy ok", extra=log_extra)
 
         # Tenant isolation: rewrite collection names in responses
-        stripped = path.strip("/")
         if 200 <= status < 300:
-            if stripped == "collections" and request.method == "GET":
+            if normalized == "collections" and request.method == "GET":
                 resp_body = _filter_collections_response(resp_body, user_id)
-            elif _COLLECTION_RE.match(stripped) and request.method == "GET":
+            elif _COLLECTION_RE.match(normalized) and request.method == "GET":
                 resp_body = _unscope_collection_info(resp_body, user_id)
 
         return Response(
