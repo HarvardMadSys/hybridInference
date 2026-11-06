@@ -247,16 +247,20 @@ class CachedOperationalStore(OperationalStore):
 
     # -- user writes (invalidate user cache) ---------------------------------
 
-    async def update_user_fields(self, user_id: str, **fields: Any) -> None:
+    async def update_user_fields(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
         """Delegate then invalidate user cache (and auth caches if role/status changed)."""
-        await self._store.update_user_fields(user_id, **fields)
+        await self._store.update_user_fields(user_id, expected_status=expected_status, **fields)
         await self._cache.delete(self._user_key(user_id))
         if fields.keys() & {"role", "status"}:
             await self.invalidate_auth_caches()
 
-    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+    async def suspend_user(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
         """Delegate then invalidate the user and every auth entry (status and keys changed)."""
-        await self._store.suspend_user(user_id, **fields)
+        await self._store.suspend_user(user_id, expected_status=expected_status, **fields)
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_auth_caches()
 
@@ -296,6 +300,10 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_auth_caches()
         return claim_token
+
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Renew the hard-delete claim lease for a user."""
+        await self._store.renew_hard_delete_user_claim(user_id, claim_token)
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Release a failed pre-fence claim and invalidate user caches."""
@@ -350,9 +358,18 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_auth_caches()
         return counts
 
-    async def approve_user(self, user_id: str, *, admin_id: str, note: str | None = None) -> None:
+    async def approve_user(
+        self,
+        user_id: str,
+        *,
+        admin_id: str,
+        note: str | None = None,
+        expected_status: str | None = "pending_approval",
+    ) -> None:
         """Delegate then invalidate user + auth caches."""
-        await self._store.approve_user(user_id, admin_id=admin_id, note=note)
+        await self._store.approve_user(
+            user_id, admin_id=admin_id, note=note, expected_status=expected_status
+        )
         await self._cache.delete(self._user_key(user_id))
         # These two move ``users.status``, so they invalidate the auth
         # namespace like every other status write. It used to be enough to drop
@@ -363,9 +380,18 @@ class CachedOperationalStore(OperationalStore):
         # rows labelled ``user_pending_approval`` for the rest of the TTL.
         await self.invalidate_auth_caches()
 
-    async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
+    async def reject_user(
+        self,
+        user_id: str,
+        *,
+        admin_id: str,
+        reason: str,
+        expected_status: str | None = "pending_approval",
+    ) -> None:
         """Delegate then invalidate user + auth caches."""
-        await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
+        await self._store.reject_user(
+            user_id, admin_id=admin_id, reason=reason, expected_status=expected_status
+        )
         await self._cache.delete(self._user_key(user_id))
         # Same reason as approve_user above.
         await self.invalidate_auth_caches()

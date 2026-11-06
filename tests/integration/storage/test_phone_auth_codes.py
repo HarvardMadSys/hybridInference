@@ -9,9 +9,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
-from migrations.baseline import operational_store
 from serving.storage.postgres_operational import PostgresOperationalStore
-from tests.fixtures import postgres
+from tests.fixtures import migrations as mig, postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -30,24 +29,19 @@ LIMITS = {
 
 @pytest_asyncio.fixture
 async def phone_store():
-    """Use a disposable schema, never another test's or deployment's rows."""
-    admin = await postgres.connect(timeout=2)
-    schema = f"phone_auth_test_{uuid.uuid4().hex}"
-    pool = None
-    try:
-        await admin.execute(f'CREATE SCHEMA "{schema}"')
-        pool = await postgres.create_pool(
-            min_size=2, max_size=12, server_settings={"search_path": schema}
-        )
-        async with pool.acquire() as conn:
-            await operational_store.create_tables(conn)  # the baseline's, in this schema
-        store = PostgresOperationalStore(pool)
-        yield store
-    finally:
-        if pool is not None:
+    """Use a disposable database at head schema, never another test's rows.
+
+    The frozen baseline (0001) lacks the 0003 hard-delete claim-lease columns
+    that ``begin_hard_delete_user`` selects, so a baseline-only schema fails
+    with UndefinedColumnError. Run the real migrations to head instead.
+    """
+    async with mig.scratch_database() as database:
+        await mig.upgrade(database)
+        pool = await postgres.create_pool(database=database, min_size=2, max_size=12)
+        try:
+            yield PostgresOperationalStore(pool)
+        finally:
             await pool.close()
-        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await admin.close()
 
 
 async def _reserve(store, *, phone=PHONE, purpose="login", user_id=None, **overrides):

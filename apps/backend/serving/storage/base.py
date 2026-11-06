@@ -261,16 +261,24 @@ class OperationalStore(ABC):
     async def update_user_fields(
         self,
         user_id: str,
+        *,
+        expected_status: str | None = None,
         **fields: Any,
     ) -> None:
         """Update one or more columns on the users table for *user_id*.
 
         Accepted keyword arguments map directly to column names, e.g.
         ``update_user_fields(uid, role="admin", status="active")``.
+        When ``expected_status`` is given the update must be atomic with the
+        status comparison (row lock / compare-and-swap) and raise
+        ``HardDeleteStateChanged`` without writing if the status moved; a
+        pending hard-delete claim must also fail closed.
         """
 
     @abstractmethod
-    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+    async def suspend_user(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
         """Suspend *user_id*: status, *fields*, keys and sessions in one transaction.
 
         Sets ``status='suspended'`` together with any other users-table
@@ -279,6 +287,9 @@ class OperationalStore(ABC):
         suspension that committed its status but not the revocations could not
         be retried (suspended -> suspended is not a transition) and would leave
         the old sessions to come back on resume.
+        ``expected_status``, when given, is compared atomically under the row
+        lock; a mismatch or a pending hard-delete claim raises
+        ``HardDeleteStateChanged`` without writing.
         """
 
     @abstractmethod
@@ -320,6 +331,15 @@ class OperationalStore(ABC):
         fresh opaque token so a retry after a process failure can finish the
         purge without allowing an older attempt to release or complete it.
         The returned token must be supplied to release or finish the claim.
+        """
+
+    @abstractmethod
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Extend the claim lease, failing closed if superseded.
+
+        Must update the lease timestamp only while the account remains
+        soft-deleted and claimed by ``claim_token``; otherwise raise
+        ``HardDeleteStateChanged``.
         """
 
     @abstractmethod
@@ -464,8 +484,14 @@ class OperationalStore(ABC):
         *,
         admin_id: str,
         note: str | None = None,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='active', record reviewer and note."""
+        """Set status='active', record reviewer and note.
+
+        Must compare ``expected_status`` atomically under the row lock and
+        raise ``HardDeleteStateChanged`` without writing on a mismatch or a
+        pending hard-delete claim.
+        """
 
     @abstractmethod
     async def reject_user(
@@ -474,8 +500,12 @@ class OperationalStore(ABC):
         *,
         admin_id: str,
         reason: str,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='rejected', record reviewer and reason."""
+        """Set status='rejected', record reviewer and reason.
+
+        Same atomic ``expected_status`` / pending-claim guard as approve_user.
+        """
 
     @abstractmethod
     async def get_user_counts_by_status(self) -> dict[str, int]:

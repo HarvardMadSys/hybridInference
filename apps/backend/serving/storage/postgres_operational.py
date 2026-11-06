@@ -505,8 +505,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return True
 
-    async def update_user_fields(self, user_id: str, **fields: Any) -> None:
-        """Update one or more columns on the users table for *user_id*."""
+    async def update_user_fields(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
+        """Update one or more columns on the users table for *user_id*.
+
+        When ``expected_status`` is given, the update is a compare-and-swap:
+        it runs under the user row lock and raises
+        ``HardDeleteStateChanged`` (writing nothing) if the status has moved
+        since the caller read it. A pending hard-delete claim always fails
+        closed, so a status write can never strand a claim on a live account.
+        """
         if not fields:
             return
         from .base import USERS_MUTABLE_COLUMNS
@@ -521,11 +530,32 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             set_parts.append(f"{col} = ${idx}")
             params.append(val)
         sql = f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1"
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None:
+                if expected_status is not None:
+                    raise HardDeleteStateChanged(f"Account {user_id} no longer exists.")
+                return
+            if row["hard_delete_pending"]:
+                raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
+            if expected_status is not None and row["status"] != expected_status:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} status changed from {expected_status!r} "
+                    f"to {row['status']!r}."
+                )
             await conn.execute(sql, *params)
 
-    async def suspend_user(self, user_id: str, **fields: Any) -> None:
-        """Suspend *user_id* and revoke its keys and sessions atomically."""
+    async def suspend_user(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
+        """Suspend *user_id* and revoke its keys and sessions atomically.
+
+        ``expected_status`` is the compare-and-swap guard described on
+        :meth:`update_user_fields`; a pending hard-delete claim fails closed.
+        """
         from .base import USERS_MUTABLE_COLUMNS
 
         fields = {**fields, "status": "suspended"}
@@ -539,6 +569,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             params.append(val)
         async with self._pool.acquire() as conn, conn.transaction():
             await _lock_account_keys(conn, user_id)
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is not None:
+                if row["hard_delete_pending"]:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} has a hard-delete in progress."
+                    )
+                if expected_status is not None and row["status"] != expected_status:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} status changed from {expected_status!r} "
+                        f"to {row['status']!r}."
+                    )
             await conn.execute(f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1", *params)
             await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE user_id = $1", user_id)
             await conn.execute(
@@ -636,25 +680,67 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def begin_hard_delete_user(self, user_id: str) -> str:
         """Claim a soft-deleted user before purging rows in another store."""
         claim_token = secrets.token_urlsafe(32)
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT status FROM users WHERE id = $1 FOR UPDATE",
+        async with self._pool.acquire() as conn:
+            # NULL claimed_at is handled outside the claim transaction so the
+            # stamp commits even though this request is refused.
+            check = await conn.fetchrow(
+                "SELECT status, hard_delete_pending, hard_delete_claimed_at "
+                "FROM users WHERE id = $1",
                 user_id,
             )
-            if row is None or row["status"] != "deleted":
-                raise HardDeleteStateChanged(
-                    f"Account {user_id} is no longer eligible for hard-delete."
+            if (
+                check is not None
+                and check["hard_delete_pending"]
+                and check["hard_delete_claimed_at"] is None
+            ):
+                await conn.execute(
+                    "UPDATE users SET hard_delete_claimed_at = NOW() "
+                    "WHERE id = $1 AND hard_delete_pending = TRUE AND hard_delete_claimed_at IS NULL",
+                    user_id,
                 )
-            # A retry takes ownership with a fresh token. This prevents an
-            # older in-flight attempt from releasing or completing the claim
-            # after a newer attempt has taken over.
-            await conn.execute(
-                "UPDATE users SET hard_delete_pending = TRUE, "
-                "hard_delete_claim_token = $2 WHERE id = $1",
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} has a legacy claim; retry to continue."
+                )
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT status, hard_delete_pending, hard_delete_claim_token, "
+                    "hard_delete_claimed_at FROM users WHERE id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if row is None or row["status"] != "deleted":
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} is no longer eligible for hard-delete."
+                    )
+                # A retry takes ownership with a fresh token. This prevents an
+                # older in-flight attempt from releasing or completing the claim
+                # after a newer attempt has taken over.
+                await conn.execute(
+                    "UPDATE users SET hard_delete_pending = TRUE, "
+                    "hard_delete_claim_token = $2, hard_delete_claimed_at = NOW(), "
+                    "hard_delete_claim_recovered = FALSE WHERE id = $1",
+                    user_id,
+                    claim_token,
+                )
+        return claim_token
+
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Extend the claim lease, failing closed if superseded."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE users SET hard_delete_claimed_at = NOW()
+                WHERE id = $1 AND status = 'deleted'
+                  AND hard_delete_pending = TRUE
+                  AND hard_delete_claim_token = $2
+                RETURNING id
+                """,
                 user_id,
                 claim_token,
             )
-        return claim_token
+            if row is None:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} no longer belongs to hard-delete claim {claim_token}."
+                )
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Release a still-unfenced hard-delete claim for a deleted user."""
@@ -666,7 +752,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             await conn.execute(
                 """
                 UPDATE users
-                SET hard_delete_pending = FALSE, hard_delete_claim_token = NULL
+                SET hard_delete_pending = FALSE, hard_delete_claim_token = NULL,
+                    hard_delete_claimed_at = NULL, hard_delete_claim_recovered = FALSE
                 WHERE id = $1
                   AND status = 'deleted'
                   AND hard_delete_pending = TRUE
@@ -704,7 +791,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
                 user_id,
             )
-            if row is not None and row["hard_delete_pending"]:
+            if row is None or row["status"] != "deleted":
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} is no longer soft-deleted and cannot be resumed."
+                )
+            if row["hard_delete_pending"]:
                 raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
             await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
             await insert_audit_row(
@@ -1267,9 +1358,26 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         *,
         admin_id: str,
         note: str | None = None,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='active', record reviewer and note."""
-        async with self._pool.acquire() as conn:
+        """Set status='active', record reviewer and note.
+
+        Compare-and-swap: under the row lock the account must still be in
+        ``expected_status`` (default ``pending_approval``) with no pending
+        hard-delete claim, otherwise ``HardDeleteStateChanged`` and no write.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None or row["hard_delete_pending"]:
+                raise HardDeleteStateChanged(f"Account {user_id} changed during approval.")
+            if expected_status is not None and row["status"] != expected_status:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} status changed from {expected_status!r} "
+                    f"to {row['status']!r}."
+                )
             await conn.execute(
                 "UPDATE users SET status = 'active', approval_note = $1, "
                 "reviewed_at = NOW(), reviewed_by = $2 WHERE id = $3",
@@ -1284,9 +1392,25 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         *,
         admin_id: str,
         reason: str,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='rejected', record reviewer and reason."""
-        async with self._pool.acquire() as conn:
+        """Set status='rejected', record reviewer and reason.
+
+        Compare-and-swap on ``expected_status`` (default ``pending_approval``)
+        under the row lock; a pending hard-delete claim fails closed.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None or row["hard_delete_pending"]:
+                raise HardDeleteStateChanged(f"Account {user_id} changed during rejection.")
+            if expected_status is not None and row["status"] != expected_status:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} status changed from {expected_status!r} "
+                    f"to {row['status']!r}."
+                )
             await conn.execute(
                 "UPDATE users SET status = 'rejected', approval_note = $1, "
                 "reviewed_at = NOW(), reviewed_by = $2 WHERE id = $3",
