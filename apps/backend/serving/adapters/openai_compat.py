@@ -495,6 +495,9 @@ class OpenAICompatAdapter(BaseAdapter):
     - extra_headers / extra_query (dict[str,str])
     """
 
+    #: ``_apply_supported_passthrough_params`` forwards it.
+    forwards_reasoning_effort = True
+
     def __init__(self, config):
         super().__init__(config)
 

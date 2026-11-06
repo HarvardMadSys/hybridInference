@@ -257,6 +257,12 @@ class BaseAdapter(ABC):
     # messages()/stream_messages() to identity-passthrough; OpenAI-native ones
     # rely on the default impls below which translate Anthropic <-> OpenAI.
     native_format: str = "openai"
+    # Whether this adapter puts a request's ``reasoning_effort`` on the wire
+    # itself (for a route whose ``supported_params`` name it). The model
+    # listings publish an effort domain only for routes whose adapter does
+    # (``serving.model_effort_capabilities``); for any other the configuration
+    # does not say what reaches the provider.
+    forwards_reasoning_effort: bool = False
 
     def __init__(self, config: ModelConfig):
         self.config = config

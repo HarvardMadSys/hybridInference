@@ -1,0 +1,129 @@
+{
+  "data": [
+    {
+      "capabilities": {
+        "effort": {
+          "high": {
+            "supported": true
+          },
+          "low": {
+            "supported": false
+          },
+          "max": {
+            "supported": true
+          },
+          "medium": {
+            "supported": false
+          },
+          "supported": true,
+          "xhigh": {
+            "supported": false
+          }
+        }
+      },
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "deepseek-like-reasoner",
+      "id": "deepseek-like-reasoner",
+      "type": "model"
+    },
+    {
+      "capabilities": {
+        "effort": {
+          "high": {
+            "supported": false
+          },
+          "low": {
+            "supported": false
+          },
+          "max": {
+            "supported": false
+          },
+          "medium": {
+            "supported": false
+          },
+          "supported": false,
+          "xhigh": {
+            "supported": false
+          }
+        }
+      },
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "plain-chat",
+      "id": "plain-chat",
+      "type": "model"
+    },
+    {
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "undeclared-reasoner",
+      "id": "undeclared-reasoner",
+      "type": "model"
+    },
+    {
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "malformed-domain",
+      "id": "malformed-domain",
+      "type": "model"
+    },
+    {
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "native-anthropic",
+      "id": "native-anthropic",
+      "type": "model"
+    },
+    {
+      "capabilities": {
+        "effort": {
+          "high": {
+            "supported": true
+          },
+          "low": {
+            "supported": false
+          },
+          "max": {
+            "supported": true
+          },
+          "medium": {
+            "supported": false
+          },
+          "supported": true,
+          "xhigh": {
+            "supported": false
+          }
+        }
+      },
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "mixed-routes",
+      "id": "mixed-routes",
+      "type": "model"
+    },
+    {
+      "capabilities": {
+        "effort": {
+          "high": {
+            "supported": false
+          },
+          "low": {
+            "supported": false
+          },
+          "max": {
+            "supported": false
+          },
+          "medium": {
+            "supported": false
+          },
+          "supported": false,
+          "xhigh": {
+            "supported": false
+          }
+        }
+      },
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "minimal-only",
+      "id": "minimal-only",
+      "type": "model"
+    }
+  ],
+  "first_id": "deepseek-like-reasoner",
+  "has_more": false,
+  "last_id": "minimal-only"
+}
