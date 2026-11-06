@@ -74,7 +74,7 @@ async def scratch_database() -> AsyncIterator[str]:
 #: Revisions after the baseline that change the tables
 #: :func:`migrations.baseline.api_logs.ensure_api_logs_schema` builds, oldest
 #: first. Each exposes its statements as ``STATEMENTS``.
-API_LOGS_REVISIONS = ("0003_user_usage_sums",)
+API_LOGS_REVISIONS = ("0003_user_usage_sums", "0004_drop_request_id_index")
 
 
 async def ensure_api_logs_tables(conn: Any) -> None:
