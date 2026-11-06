@@ -538,8 +538,10 @@ other limits let through), and twenty per address in an hour
 account before, including the one you used for setup, holds a device cookie
 (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/auth`, kept on sign-out,
 valid for 180 days) and gets five attempts per 15 minutes of its own, so other
-people's guesses never lock it out. Changing `JWT_SECRET_KEY` invalidates
-every device cookie until that browser's next sign-in.
+people's guesses never lock it out. Together, the account's browsers that hold
+one get `LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget
+only requests carrying such a cookie count against. Changing `JWT_SECRET_KEY`
+invalidates every device cookie until that browser's next sign-in.
 
 Other browsers share the limits with their address, and behind the bundled
 Compose file's console proxy every browser has the same address unless

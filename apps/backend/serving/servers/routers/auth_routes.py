@@ -382,7 +382,8 @@ async def login(
     - 50 attempts per 15 minutes per email or login name from all addresses
     - 20 attempts per hour per IP
     A browser presenting a device cookie entry for the identifier, from an
-    earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead.
+    earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead,
+    and the account's recognized browsers to 50 per 15 minutes together.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
