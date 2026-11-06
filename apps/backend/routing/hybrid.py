@@ -67,7 +67,7 @@ from routing.hybrid_attempt_history import (
     tag_backend,
     tag_preference,
 )
-from routing.hybrid_stream_frames import is_client_visible, tag_backend_chunk
+from routing.hybrid_stream_frames import carries_routing, is_client_visible, tag_backend_chunk
 from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AllCircuitsOpenError,
@@ -670,9 +670,14 @@ class HybridRouter:
     def _remember_stream_dispatch(
         self, request_id: Any, attempt: _Attempt, model_id: str, chunk: Any
     ) -> None:
-        """Capture routing frames while forwarding the original stream unchanged."""
+        """Capture routing frames while forwarding the original stream unchanged.
+
+        A frame that cannot carry ``_routing`` (``carries_routing``) is not
+        parsed: it still records which backend is serving, which is all it
+        contributes.
+        """
         payload = chunk if isinstance(chunk, dict) else {}
-        if isinstance(chunk, str) and chunk.startswith("data: "):
+        if isinstance(chunk, str) and chunk.startswith("data: ") and carries_routing(chunk):
             try:
                 payload = json.loads(chunk[6:].strip())
             except ValueError:
@@ -842,9 +847,16 @@ async def _fallback_stream(
                     committed = committed or is_client_visible(held)
                     yield tag_backend_chunk(held, attempt.backend)
                 async for chunk in stream:
-                    router._remember_stream_dispatch(
-                        params.get("request_id"), attempt, model_id, chunk
-                    )
+                    # Once committed, the dispatch record already names this
+                    # backend and no other attempt can run, so only a frame
+                    # that can still add an endpoint to it is read: a late
+                    # routing frame may name an attempt (a hedge leg) that
+                    # no earlier frame did, and feedback for it is routed by
+                    # that name.
+                    if not committed or carries_routing(chunk):
+                        router._remember_stream_dispatch(
+                            params.get("request_id"), attempt, model_id, chunk
+                        )
                     committed = committed or is_client_visible(chunk)
                     yield tag_backend_chunk(chunk, attempt.backend)
                 return
