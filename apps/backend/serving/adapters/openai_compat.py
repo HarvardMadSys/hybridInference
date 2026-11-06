@@ -25,7 +25,7 @@ from serving.utils.messages import (
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .dispatch_watch import report_first_token
+from .dispatch_watch import report_first_token, report_queued
 from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted, ReleaseOutcome
 from .processors import get_processor
 from .profiles import (
@@ -42,7 +42,13 @@ from .profiles import (
     resolve_tool_choice_for_profile,
     supports_guided_json,
 )
-from .upstream_limiter import UpstreamSaturated, UpstreamSlot, acquire_upstream_slot
+from .remote_media import inline_remote_media
+from .upstream_limiter import (
+    UpstreamSaturated,
+    UpstreamSlot,
+    acquire_upstream_slot,
+    is_local_endpoint,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -715,6 +721,30 @@ class OpenAICompatAdapter(BaseAdapter):
         )
         return [self._clean_message(msg) for msg in messages]
 
+    async def _inline_remote_media(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return the messages to send, with remote media inlined for a self-hosted engine.
+
+        A self-hosted engine (vLLM, SGLang) fetches a media URL from this
+        deployment's own network, so on such a route the gateway fetches it
+        instead, through a client that reaches only public addresses, and sends
+        it on as a ``data:`` URL (:mod:`serving.adapters.remote_media`). A
+        provider API fetches from its own network, so other routes send the
+        messages as they are. "Self-hosted" is the classification outbound
+        admission uses: the route's ``deployment_type``, else its host.
+
+        Only the payload changes: the caller keeps ``messages`` -- the usage
+        estimate reads them, and a fallback to a cloud route sends their URLs.
+
+        Raises:
+            RemoteMediaRefused: A URL was refused or could not be fetched (400).
+        """
+        if not is_local_endpoint(self.config.base_url, deployment_type=self.config.deployment_type):
+            return messages
+        # The fetch is the gateway's time, not the engine's: pause a first-token
+        # watch as a wait for an outbound slot does. The slot this attempt takes
+        # next restarts it (``report_sent``).
+        return await inline_remote_media(messages, before_fetch=report_queued)
+
     def _normalize_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         """Normalize tool definitions for the active provider profile."""
         return normalize_tools_for_profile(self._usage_profile, tools)
@@ -1325,7 +1355,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # Build request payload
         payload = {
             **self.config.extra_body,
-            "messages": cleaned_messages,
+            "messages": await self._inline_remote_media(cleaned_messages),
             "model": self._get_model_identifier(),
             **validated,
         }
@@ -1384,7 +1414,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         payload = {
             **self.config.extra_body,
-            "messages": cleaned_messages,
+            "messages": await self._inline_remote_media(cleaned_messages),
             "model": self._get_model_identifier(),
             "stream": True,
             **validated,

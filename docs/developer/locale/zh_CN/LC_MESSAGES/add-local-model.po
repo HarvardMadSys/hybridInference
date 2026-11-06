@@ -553,6 +553,18 @@ msgstr ""
 "{\"cached_tokens\": 0}`。`/v1/messages` 则把它报成 `cache_read_input_tokens: "
 "0`。"
 
+#: ../developer/add-local-model.md:430
+msgid "Media URLs on a Self-Hosted Route"
+msgstr "自托管路由上的媒体 URL"
+
+#: ../developer/add-local-model.md:432
+msgid "vLLM and SGLang download any image, video or audio URL a request names, from the machine they run on. On a self-hosted route the gateway therefore fetches each such URL itself and sends the engine a `data:` URL instead, so a caller cannot make your model server read addresses on its own network. A route is self-hosted when it declares `deployment_type: self_hosted`, or under `auto` when its host is a loopback or Docker-host address. Declare it for an engine on a LAN address, which `auto` treats as a provider API."
+msgstr "vLLM 和 SGLang 会从自己所在的机器上下载请求里给出的任何图片、视频或音频 URL。因此在自托管路由上，网关会自己抓取每个这样的 URL，改为发给引擎一个 `data:` URL，这样调用方就无法让你的模型服务器访问它所在网络里的地址。路由声明了 `deployment_type: self_hosted`，或者在 `auto` 下主机是回环地址或 Docker 宿主机地址时，就是自托管路由。引擎在局域网地址上时要显式声明，因为 `auto` 会把它当作 provider API。"
+
+#: ../developer/add-local-model.md:440
+msgid "The gateway fetches only `http` and `https` URLs, connects only to public addresses, and accepts at most 20 MiB per file and 32 MiB per request within 30 seconds. Anything else is answered with a 400 naming the message and part. It needs outbound internet access for this and does not use an HTTP proxy. `data:` URLs pass through unchanged, and provider routes forward URLs as before."
+msgstr "网关只抓取 `http` 和 `https` URL，只连接公网地址，单个文件最多 20 MiB、每个请求合计最多 32 MiB，并且要在 30 秒内抓完。其他情况一律回复 400，并指明是哪条消息的哪个部分。为此网关需要能直接访问外网，它不会使用 HTTP 代理。`data:` URL 原样透传，provider 路由仍和以前一样转发 URL。"
+
 #: ../developer/add-local-model.md:409
 msgid "Troubleshooting"
 msgstr "故障排查"
