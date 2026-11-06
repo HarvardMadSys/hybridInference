@@ -612,6 +612,20 @@ def register_from_models_yaml(
                 # whole model via the model-level MissingEnvBackedKeyError catch.
                 route_optional = bool(r.get("optional", False))
 
+                # Validate the stream-usage capability before missing
+                # credentials can skip an optional route and hide a malformed
+                # declaration, the same reason embeddings_path validates early.
+                include_usage_declared = "include_usage_in_stream" in r
+                include_usage_value = (
+                    _require_yaml_bool(
+                        r["include_usage_in_stream"],
+                        field="include_usage_in_stream",
+                        where=(f"route {r.get('base_url')!r} on model {top_cfg.get('id')!r}"),
+                    )
+                    if include_usage_declared
+                    else False
+                )
+
                 # Validate this opt-in field before missing credentials can
                 # skip an optional route and hide a malformed declaration.
                 if "embeddings_path" in r:
@@ -873,12 +887,8 @@ def register_from_models_yaml(
                 # explicit `false` survives even on a kind that normally
                 # requests usage, and an explicit `true` opts in a kind that
                 # normally does not.
-                if "include_usage_in_stream" in r:
-                    adapter_cfg["include_usage_in_stream"] = _require_yaml_bool(
-                        r["include_usage_in_stream"],
-                        field="include_usage_in_stream",
-                        where=(f"route {r.get('base_url')!r} on model {top_cfg.get('id')!r}"),
-                    )
+                if include_usage_declared:
+                    adapter_cfg["include_usage_in_stream"] = include_usage_value
 
                 # Route-level input_modalities override (default: inherit the
                 # model-level declaration). Lets a narrower fallback (e.g. a

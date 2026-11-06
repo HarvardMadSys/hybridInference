@@ -217,6 +217,33 @@ def test_non_boolean_scalar_is_refused(tmp_path, scalar: str) -> None:
         _load(tmp_path, body)
 
 
+def test_bad_value_on_optional_route_is_refused_before_credential_skip(
+    tmp_path, monkeypatch
+) -> None:
+    """A malformed flag must surface at load, not hide behind a missing key."""
+    monkeypatch.delenv("UNSET_USAGE_KEY", raising=False)
+    body = """
+    models:
+      - id: usage-test
+        name: usage-test
+        provider: deepseek
+        base_url: https://api.deepseek.com
+        route:
+          - kind: deepseek
+            weight: 1.0
+            base_url: https://api.deepseek.com
+            api_key: ${UNSET_USAGE_KEY}
+            optional: true
+            include_usage_in_stream: "false"
+          - kind: ollama
+            weight: 1.0
+            base_url: http://ollama.local:11434/v1
+    """
+
+    with pytest.raises(ValueError, match="must be a YAML boolean"):
+        _load(tmp_path, body)
+
+
 # ---------------------------------------------------------------------------
 # Outbound request body: what actually reaches the upstream
 # ---------------------------------------------------------------------------

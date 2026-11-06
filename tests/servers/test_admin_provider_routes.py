@@ -2103,6 +2103,24 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     fake_routewise.refresh_route_table.assert_called_once_with()
 
 
+def test_stripped_usage_on_template_yields_kind_default_off():
+    """The harmful inheritance direction: a usage-on template (deepseek)
+    cloned for a usage-off kind (chutes) must not turn the new route on.
+    The clone strips the capability, so the target kind's default applies."""
+    config = ModelConfig(
+        id="usage-model",
+        name="Usage model",
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        include_usage_in_stream=True,
+    )
+    stripped = provider_routes._config_to_dict(config, strip_route_capabilities=True)
+    assert "include_usage_in_stream" not in stripped
+
+    adapter = _make_adapter("chutes", stripped)
+    assert adapter.config.include_usage_in_stream is False
+
+
 @pytest.mark.asyncio
 async def test_runtime_candidate_pricing_schedule_survives_restart(admin_client, caplog):
     """A runtime route on a scheduled YAML model prices the same before and after a restart.
