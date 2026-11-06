@@ -106,6 +106,9 @@ class ModelConfig:
     max_output_length: int = 4096
     supports_tools: bool = False
     supports_structured_output: bool = False
+    # The endpoint is a vLLM server, which takes ``structured_outputs`` beside
+    # ``response_format``. Set by the registry for ``kind: vllm`` routes.
+    vllm_structured_outputs: bool = False
     # Lazily loaded on shared GPUs (ops/local_deployment_proxy): started by the
     # first request, stopped when idle, and refused fast when no GPU is vacant.
     # Exposed through /v1/models so synthetic monitors can skip these models —
