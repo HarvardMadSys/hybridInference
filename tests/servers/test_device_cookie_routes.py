@@ -185,25 +185,34 @@ async def test_setup_sign_in_sets_a_device_cookie(app, op_store):
 
 async def test_a_recognized_browser_signs_in_while_its_shared_address_is_locked_out(app, op_store):
     op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
-    device = _device(await _login(app))  # the administrator, earlier, on this browser
+    shared_ip = "8.8.8.8"
+    device = _device(await _login(app, client_ip=shared_ip))  # earlier, on this browser
     assert device
 
     # A stranger behind the same proxy guesses until the address windows are
     # spent, and from ten addresses of their own, the account-wide one.
     for _ in range(25):
-        assert (await _login(app, "guess")).status_code in (401, 429)
+        assert (await _login(app, "guess", client_ip=shared_ip)).status_code in (401, 429)
     for n in range(10):
         for _ in range(5):
             await _login(app, "guess", client_ip=f"1.2.3.{n + 1}")
 
-    # Without the cookie the right password is refused here and anywhere else.
-    shared = await _login(app)
+    # A resolved address that reached its hourly limit stays blocked even when
+    # the request carries a cookie that was never issued to this account.
+    invalid_device = await _login(app, device="not-an-entry", client_ip=shared_ip)
+    assert (invalid_device.status_code, invalid_device.headers["Retry-After"]) == (
+        429,
+        "3600",
+    )
+
+    # Without a device cookie the right password is refused here and anywhere else.
+    shared = await _login(app, client_ip=shared_ip)
     assert (shared.status_code, shared.headers["Retry-After"]) == (429, "3600")
-    elsewhere = await _login(app, client_ip="5.6.7.8")
+    elsewhere = await _login(app, client_ip="8.8.4.4")
     assert (elsewhere.status_code, elsewhere.headers["Retry-After"]) == (429, "900")
 
     # With it, the administrator's browser signs in, and its entry is rotated.
-    resp = await _login(app, device=device)
+    resp = await _login(app, device=device, client_ip=shared_ip)
     assert resp.status_code == 200, resp.text
     rotated = _device(resp)
     assert rotated and rotated != device
@@ -211,8 +220,8 @@ async def test_a_recognized_browser_signs_in_while_its_shared_address_is_locked_
     # The browser's own window still applies: five wrong passwords, then even
     # the right one waits.
     for _ in range(5):
-        assert (await _login(app, "guess", device=rotated)).status_code == 401
-    blocked = await _login(app, device=rotated)
+        assert (await _login(app, "guess", device=rotated, client_ip=shared_ip)).status_code == 401
+    blocked = await _login(app, device=rotated, client_ip=shared_ip)
     assert (blocked.status_code, blocked.headers["Retry-After"]) == (429, "900")
 
 
@@ -227,12 +236,14 @@ async def test_no_exemption_without_a_valid_entry_for_the_account(app, op_store,
 
     for value in (_tampered(admin_device), ops_device, "not-an-entry"):
         resp = await _login(app, device=value)
-        assert (resp.status_code, resp.headers["Retry-After"]) == (429, "3600")
+        # Loopback has unresolved provenance, so its account/address refusal is
+        # the applicable 15-minute policy rather than a resolved-IP lockout.
+        assert (resp.status_code, resp.headers["Retry-After"]) == (429, "900")
 
     issued_at = device_cookie._now()
     monkeypatch.setattr(device_cookie, "_now", lambda: issued_at + LIFETIME_SECONDS + 1)
     expired = await _login(app, device=admin_device)
-    assert expired.status_code == 429
+    assert (expired.status_code, expired.headers["Retry-After"]) == (429, "900")
 
     monkeypatch.setattr(device_cookie, "_now", lambda: issued_at)
     assert (await _login(app, device=admin_device)).status_code == 200

@@ -448,6 +448,13 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     _setting(
+        "unresolved_login_rate_limit_per_hour",
+        "security",
+        "Sign-in attempts allowed per hour when no client address can be resolved.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
         "auth_failure_block_enabled",
         "security",
         "Block a client address after repeated API-key authentication failures.",
