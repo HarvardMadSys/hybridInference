@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from serving.http import AsyncHTTPClient
+from serving.http import AsyncHTTPClient, read_error_text
 from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -307,7 +307,7 @@ class AnthropicAdapter(BaseAdapter):
             ) as resp,
         ):
             if resp.status >= 400:
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
                 raise aiohttp.ClientResponseError(
                     request_info=resp.request_info,
                     history=resp.history,
@@ -459,7 +459,7 @@ class AnthropicAdapter(BaseAdapter):
             ) as resp,
         ):
             if resp.status >= 400:
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
                 raise aiohttp.ClientResponseError(
                     request_info=resp.request_info,
                     history=resp.history,

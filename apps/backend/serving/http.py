@@ -9,6 +9,8 @@ of each maintaining their own sessions.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import json as jsonlib
 import logging
 import re
 import sys
@@ -22,7 +24,7 @@ import aiohttp
 from aiohttp.helpers import sentinel as _aiohttp_sentinel
 
 from serving.exceptions import UpstreamModelQueued, is_model_queued_body
-from serving.servers.sse import SSEMessage, SSEParser
+from serving.servers.sse import MAX_FRAME_CHARS, SSEFrameTooLarge, SSEMessage, SSEParser
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.metadata_addresses import refuse_metadata_socket
@@ -91,6 +93,161 @@ def _retry_after_seconds(headers: Any) -> float | None:
     return seconds if seconds >= 0 else None
 
 
+# -- What an upstream response may make the gateway hold ----------------------
+
+#: Error responses are read for the provider's message only. This much holds
+#: any provider's; the rest of the body is not read.
+MAX_ERROR_BODY_BYTES = 64 * 1024
+
+#: The largest non-streaming response body read. Generous on purpose: the
+#: biggest legitimate answers -- an embeddings batch of large vectors encoded as
+#: JSON floats, a long completion with ``top_logprobs`` -- reach about a hundred
+#: MiB. What it bounds is an upstream that never stops sending, which the total
+#: timeout alone lets fill memory at line rate for as long as it runs.
+MAX_RESPONSE_BODY_BYTES = 256 * 1024 * 1024
+
+#: An NDJSON line may be as long as an SSE frame, for the same reasons.
+MAX_LINE_CHARS = MAX_FRAME_CHARS
+
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+class UpstreamPayloadTooLarge(aiohttp.ClientPayloadError):
+    """An upstream response body, or one frame of a stream, passed the size read.
+
+    A ``ClientPayloadError``, the type a truncated body raises, so every caller
+    already fails the attempt for it as for any other broken upstream payload:
+    the router records it against the endpoint and falls back, and a stream ends
+    with the usual upstream error.
+    """
+
+
+async def read_body(resp: Any, limit: int | None = None) -> bytes:
+    """Read a response body, refusing one longer than ``limit`` bytes.
+
+    ``limit`` defaults to :data:`MAX_RESPONSE_BODY_BYTES`. A ``Content-Length``
+    over it is refused before anything is read; otherwise the body is counted as
+    it arrives and refused the moment it passes the limit, so no more than
+    ``limit`` bytes are ever held.
+
+    Raises:
+        UpstreamPayloadTooLarge: The body is longer than ``limit``.
+    """
+    if limit is None:
+        limit = MAX_RESPONSE_BODY_BYTES
+    declared = resp.content_length
+    if declared is not None and declared > limit:
+        raise UpstreamPayloadTooLarge(
+            f"upstream response body of {declared} bytes exceeds the {limit}-byte limit"
+        )
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in resp.content.iter_chunked(_READ_CHUNK_BYTES):
+        size += len(chunk)
+        if size > limit:
+            raise UpstreamPayloadTooLarge(f"upstream response body exceeds the {limit}-byte limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def read_error_text(resp: Any, limit: int | None = None) -> str:
+    """Return the start of an error response's body as text: at most ``limit`` bytes.
+
+    ``limit`` defaults to :data:`MAX_ERROR_BODY_BYTES`. Only the provider's
+    message is wanted from the body, so the rest is left unread (the connection
+    is then closed rather than reused). Decoded with the response's charset,
+    UTF-8 by default; a malformed byte costs a replacement character, not the
+    message.
+    """
+    if limit is None:
+        limit = MAX_ERROR_BODY_BYTES
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in resp.content.iter_chunked(_READ_CHUNK_BYTES):
+        piece = chunk[: limit - size]
+        chunks.append(piece)
+        size += len(piece)
+        if size >= limit:
+            break
+    return b"".join(chunks).decode(_response_charset(resp), errors="replace")
+
+
+def _response_charset(resp: Any) -> str:
+    """The charset ``resp`` declares, when Python knows it; UTF-8 otherwise."""
+    charset = getattr(resp, "charset", None)
+    if charset:
+        try:
+            return codecs.lookup(charset).name
+        except LookupError:
+            pass
+    return "utf-8"
+
+
+# What ``ClientResponse.json`` accepts by default: application/json and any
+# ``+json`` type.
+_JSON_CONTENT_TYPE_RE = re.compile(r"^application/(?:[\w.+-]+?\+)?json")
+
+
+def _json_from_body(resp: Any, body: bytes) -> Any:
+    """Decode a body read with :func:`read_body` as ``resp.json()`` would have.
+
+    The same content-type check (an ``aiohttp.ContentTypeError`` for anything
+    but JSON), ``None`` for an empty body, and the declared charset.
+    """
+    content_type = str(resp.headers.get("Content-Type", "")).lower()
+    if not _JSON_CONTENT_TYPE_RE.match(content_type):
+        raise aiohttp.ContentTypeError(
+            resp.request_info,
+            resp.history,
+            status=resp.status,
+            message=f"Attempt to decode JSON with unexpected mimetype: {content_type}",
+            headers=resp.headers,
+        )
+    stripped = body.strip()
+    if not stripped:
+        return None
+    return jsonlib.loads(stripped.decode(_response_charset(resp)))
+
+
+class _LineSplitter:
+    """Split decoded text into lines without copying or rescanning what it holds.
+
+    The line still waiting for its newline is kept as the pieces it arrived in,
+    and only new text is searched: appending each read to one string and
+    searching all of it instead was quadratic in the length of a line.
+
+    Raises ``UpstreamPayloadTooLarge`` once a line passes ``max_chars``.
+    """
+
+    def __init__(self, max_chars: int | None = None) -> None:
+        self._pending: list[str] = []
+        self._pending_chars = 0
+        self._max_chars = MAX_LINE_CHARS if max_chars is None else max_chars
+
+    def feed(self, text: str) -> list[str]:
+        lines: list[str] = []
+        pos = 0
+        while (end := text.find("\n", pos)) >= 0:
+            lines.append(self.flush() + text[pos:end])
+            pos = end + 1
+        if pos < len(text):
+            rest = text[pos:]
+            self._pending.append(rest)
+            self._pending_chars += len(rest)
+            if self._pending_chars > self._max_chars:
+                raise UpstreamPayloadTooLarge(
+                    f"upstream NDJSON line exceeded {self._max_chars} characters without ending"
+                )
+        return lines
+
+    def flush(self) -> str:
+        """Return the unfinished line, and start a new one."""
+        text = "".join(self._pending)
+        self._pending = []
+        self._pending_chars = 0
+        return text
+
+
 class AsyncHTTPClient:
     """Shared async HTTP client with a single underlying session."""
 
@@ -141,6 +298,10 @@ class AsyncHTTPClient:
         forwarded verbatim: aiohttp treats an explicit ``None`` as *no timeout
         at all*, which would let a black-holed upstream hold the request (and
         its connection-pool slot) forever.
+
+        The body is read up to :data:`MAX_RESPONSE_BODY_BYTES` (a longer one
+        raises ``UpstreamPayloadTooLarge``), an error body up to
+        :data:`MAX_ERROR_BODY_BYTES`.
         """
         session = await self._ensure_session()
         async with session.post(
@@ -154,11 +315,11 @@ class AsyncHTTPClient:
 
                 error_body = ""
                 with suppress(Exception):
-                    error_body = await resp.text()
+                    error_body = await read_error_text(resp)
                 raise _upstream_status_error(resp, error_body)
             from typing import cast
 
-            return cast("dict[str, Any]", await resp.json())
+            return cast("dict[str, Any]", _json_from_body(resp, await read_body(resp)))
 
     async def json_post_with_retry(
         self,
@@ -314,7 +475,7 @@ class AsyncHTTPClient:
             from contextlib import suppress
 
             with suppress(Exception):
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
 
             raise _upstream_status_error(resp, error_body)
 
@@ -342,7 +503,7 @@ class AsyncHTTPClient:
             )
             logger.debug(f"Response headers: {dict(resp.headers)}")
 
-            parser = SSEParser()
+            parser = SSEParser(max_frame_chars=MAX_FRAME_CHARS)
             chunk_count = 0
             message_count = 0
 
@@ -364,7 +525,10 @@ class AsyncHTTPClient:
                         preview = raw[:200].decode("utf-8", errors="replace")
                         logger.debug(f"Chunk {chunk_count} preview: {preview}")
 
-                    messages = parser.feed(raw)
+                    try:
+                        messages = parser.feed(raw)
+                    except SSEFrameTooLarge as exc:
+                        raise UpstreamPayloadTooLarge(str(exc)) from exc
                     if messages and chunk_count <= 5:
                         logger.debug(
                             f"Chunk {chunk_count} parser produced {len(messages)} messages"
@@ -417,8 +581,6 @@ class AsyncHTTPClient:
             logger.info(f"Stream complete: chunks={chunk_count}, messages={message_count}")
         elif detected_mode == "ndjson":
             # Incremental UTF-8 decode + line buffering
-            import codecs
-
             # ``errors="replace"`` for the same reason as the SSE parser: the
             # strict decoder raises for a whole 4 KiB read, and the handler that
             # caught it dropped every line in that read. The comment it carried
@@ -428,18 +590,16 @@ class AsyncHTTPClient:
             # raising -- so the except branch only ever fired on genuinely
             # invalid bytes, and paid for one bad byte with the whole read.
             decoder = codecs.getincrementaldecoder("utf-8")("replace")
-            buffer = ""
+            lines = _LineSplitter()
             async for raw in resp.content.iter_chunked(4096):
                 text = decoder.decode(raw, final=False)
                 if text:
-                    buffer += text
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
+                    for line in lines.feed(text):
                         line = line.strip()
                         if line:
                             yield line
             # Flush tail
-            tail = buffer.strip()
+            tail = lines.flush().strip()
             if tail:
                 yield tail
         else:
@@ -460,6 +620,7 @@ class AsyncHTTPClient:
 
         Intended for proxy-style forwarding where we need the raw response.
         ``timeout=None`` falls back to the session default (see json_post).
+        The body is read up to :data:`MAX_RESPONSE_BODY_BYTES`.
         """
         session = await self._ensure_session()
         async with session.request(
@@ -469,7 +630,7 @@ class AsyncHTTPClient:
             headers=headers,
             timeout=timeout if timeout is not None else _aiohttp_sentinel,
         ) as resp:
-            body = await resp.read()
+            body = await read_body(resp)
             content_type = resp.headers.get("content-type", "application/json")
             return resp.status, body, content_type
 
