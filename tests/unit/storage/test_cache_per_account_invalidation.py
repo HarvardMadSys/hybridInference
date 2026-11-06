@@ -295,3 +295,29 @@ async def test_a_miss_sweeps_a_bounded_window(monkeypatch):
     # The default window is 256: the rest stay until read or swept later.
     assert len(cache._store) == 600 - 256
     assert set(cache._key_tags) == set(cache._store)
+
+
+@pytest.mark.parametrize(
+    ("write", "args"),
+    [("revoke_session", ("auth-session-1",)), ("revoke_browser_session", ("browser-1",))],
+)
+async def test_a_revocation_naming_no_account_forgets_sessions_without_a_scan(
+    cached, inner, cache, write, args
+):
+    """A sign-out names a session, not an account: every session entry goes, via the index."""
+    setattr(inner, write, AsyncMock())
+    await cached.session_is_live("u1", "s1")
+    await cached.session_is_live("u2", "s2")
+    await cached.get_auth_context_by_key_hash("h1")
+    scans = AsyncMock(wraps=cache.delete_pattern)
+    cache.delete_pattern = scans
+
+    await getattr(cached, write)(*args)
+
+    scans.assert_not_awaited()
+    await cached.session_is_live("u1", "s1")
+    await cached.session_is_live("u2", "s2")
+    assert inner.session_is_live.await_count == 4
+    # Auth entries are not sessions: they stay.
+    await cached.get_auth_context_by_key_hash("h1")
+    assert inner.get_auth_context_by_key_hash.await_count == 1

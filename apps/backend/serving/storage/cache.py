@@ -39,6 +39,9 @@ _HEALTH_TTL = 5
 # through this store clears the entries it affects at once; this bounds only
 # one made elsewhere (another worker, the password-reset command).
 _SESSION_TTL = 20
+# The tag every session-liveness entry carries besides its account's, so a
+# revocation that names no account clears them all without scanning the cache.
+_ALL_SESSIONS_TAG = "session-all"
 
 
 def _audit_entry_ttl(row: Row) -> int:
@@ -105,7 +108,9 @@ class CachedOperationalStore(OperationalStore):
     one account evicts that account's entries through the cache's tag index
     -- no scan of every key, and no flush of every other account's cached
     auth. Only a write that changes every account at once (a role's quota) or
-    names none (revoking one session by id) still clears a whole namespace.
+    names none (revoking one session by id) still clears a whole namespace;
+    the sessions' through a tag every session entry carries, the auth one's
+    with a pattern.
     An account-addressed key write (``rotate_key``, ``update_key_settings``)
     evicts the tag of the account id it was given: every path that creates a
     key sets ``account_id`` to the key's ``user_id``, and the baseline
@@ -239,20 +244,20 @@ class CachedOperationalStore(OperationalStore):
             bool(live),
             _SESSION_TTL,
             generation=gen_before,
-            tags=(self._user_sessions_tag(user_id),),
+            tags=(self._user_sessions_tag(user_id), _ALL_SESSIONS_TAG),
         )
         return live
 
     async def _forget_sessions(self, user_id: str | None = None) -> None:
         """Drop cached session liveness: one account's, or every account's for None.
 
-        One account's go through its tag, so a sign-in, which forgets the
-        account's earlier answers, costs only the entries it removes.
+        Both go through the cache's tag index, so a sign-in, which forgets the
+        account's earlier answers, or a sign-out, which names only a session,
+        costs only the entries it removes rather than a scan of every key.
         """
-        if user_id is None:
-            await self._cache.delete_pattern("session:*")
-        else:
-            await self._cache.delete_tag(self._user_sessions_tag(user_id))
+        await self._cache.delete_tag(
+            _ALL_SESSIONS_TAG if user_id is None else self._user_sessions_tag(user_id)
+        )
 
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
         """Return cached auth context (30 s TTL), generation-fenced."""
