@@ -128,7 +128,7 @@ async def test_messages_without_remote_media_come_back_untouched():
     ("part", "field"),
     [
         (_image("file:///etc/passwd"), "image_url"),
-        (_image("/home/user/secret.png"), "image_url"),  # SGLang opens this as a file
+        (_image("/home/dev/secret.png"), "image_url"),  # SGLang opens this as a file
         (_image("C:\\secret.png"), "image_url"),
         (_image("gopher://10.0.0.1:70/"), "image_url"),
         (_image("http://[::1"), "image_url"),  # malformed
