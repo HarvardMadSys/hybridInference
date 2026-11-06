@@ -279,8 +279,13 @@ services:
   # The `admin` profile means nothing starts this unless a profile is named:
   # `make up COMPOSE_PROFILES=admin`, or an env file the deploy reads (a
   # distribution's `deploy/compose.env`).
+  #
+  # An exact release, not a moving major tag: pgAdmin 8 is past its end of
+  # life, and a pull should never change the version under a running stack.
+  # pgAdmin upgrades its own settings database on the first start of a newer
+  # release; the volume then cannot go back to an older one.
   pgadmin:
-    image: dpage/pgadmin4:8
+    image: dpage/pgadmin4:9.19
     container_name: hybridinference-pgadmin
     restart: unless-stopped
     environment:

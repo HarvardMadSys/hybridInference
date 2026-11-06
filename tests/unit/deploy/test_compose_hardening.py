@@ -29,3 +29,18 @@ def test_the_console_has_a_memory_ceiling() -> None:
 
     assert frontend["mem_limit"] == "${FRONTEND_MEM_LIMIT:-1g}"
     assert frontend["restart"] == "unless-stopped"
+
+
+def test_pgadmin_is_pinned_to_an_exact_supported_release() -> None:
+    """A moving tag changes the database console under a running stack.
+
+    pgAdmin 8 is past its end of life; a bare major tag (``:9``) or ``latest``
+    would upgrade it on whatever pull happens next.
+    """
+    image = _services()["pgadmin"]["image"]
+    name, _, tag = image.partition(":")
+
+    assert name == "dpage/pgadmin4"
+    major, _, minor = tag.partition(".")
+    assert major.isdigit() and int(major) >= 9, image
+    assert minor.isdigit(), image

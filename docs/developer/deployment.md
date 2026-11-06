@@ -729,6 +729,23 @@ falls back to `False`, which serves pgAdmin with no login at all; `.env.example`
 suggests `True`, which turns pgAdmin's own login on behind the console's gate.
 `True` is the safer of the two.
 
+The Compose service runs an exact pgAdmin release (`dpage/pgadmin4:9.19`).
+Moving from the earlier `dpage/pgadmin4:8` upgrades pgAdmin's settings
+database in the `pgadmin_data` volume on the first start, which an 8.x image
+cannot read afterwards.
+
+```{note}
+pgAdmin and the agent web app (`/agents`) are served on the console's own
+origin. Any script either app serves runs with the authority of the console
+session open in that browser, because the session's access token and
+`/auth/refresh` are same-origin. The proxies keep each app's cookies under its
+own path and refuse any cookie named like one of the console's, which stops an
+app from replacing or clearing the console's session, but only a separate
+origin removes the shared authority. Serving each app from its own hostname
+behind the same admin gate needs DNS and tunnel routes per deployment and is
+tracked as follow-up work.
+```
+
 ## Troubleshooting
 
 ### A service will not start
