@@ -14,7 +14,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from serving import grants, quota
 from serving.audit import AuditActor, AuditTarget, audit_columns
 from serving.config.app_config import config_value
-from serving.config.settings import get_settings
+from serving.config.settings import get_settings, has_role
 from serving.config.site_identity import get_site_identity
 from serving.grant_auth import (
     AgentModelAuthError,
@@ -396,7 +396,8 @@ def _anonymous_context() -> dict[str, Any]:
     The admin role opens the API, but ``authenticated`` stays False on purpose:
     the synthetic-probe trust check (serving/utils/synthetic_probe.py) requires
     a *presented, resolved* key, so on an auth-disabled deployment no caller's
-    X-Probe marker is honoured.
+    X-Probe marker is honoured. Nor does the role open other owners' stored
+    work: see :func:`reads_every_owner`.
     """
     return {
         "user_id": "anonymous",
@@ -404,6 +405,20 @@ def _anonymous_context() -> dict[str, Any]:
         "authenticated": False,
         "is_admin": True,
     }
+
+
+def reads_every_owner(user_ctx: dict[str, Any]) -> bool:
+    """Whether a caller may reach stored work (batches, files) of every owner by id.
+
+    Only an administrator who authenticated as one. While user auth is
+    disabled every caller is the anonymous context, whose admin role opens the
+    API -- every model, the batch surface -- for whoever reaches it; it must not
+    also hand them the batches and files stored under real accounts (before
+    auth was turned off, say) to anyone who has an id. Those callers reach
+    what was stored as ``anonymous``, which is everything stored while auth is
+    off.
+    """
+    return bool(user_ctx.get("authenticated")) and has_role(user_ctx.get("role") or "free", "admin")
 
 
 def _user_context(
