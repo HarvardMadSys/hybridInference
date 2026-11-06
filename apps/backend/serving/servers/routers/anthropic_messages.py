@@ -1202,7 +1202,12 @@ def _is_non_empty_content_event(event_type: str, data: str) -> bool:
         payload = json.loads(data)
     except (json.JSONDecodeError, ValueError):
         return False
-    if not isinstance(payload, dict):
+    return _is_content_delta(event_type, payload)
+
+
+def _is_content_delta(event_type: str, payload: Any) -> bool:
+    """:func:`_is_non_empty_content_event` for an event's already-parsed ``data``."""
+    if event_type != "content_block_delta" or not isinstance(payload, dict):
         return False
     delta = payload.get("delta")
     if not isinstance(delta, dict):
@@ -1211,6 +1216,34 @@ def _is_non_empty_content_event(event_type: str, data: str) -> bool:
 
 
 # --- Anthropic SSE accumulator ---------------------------------------------
+
+
+class _Fragments(list):
+    """The pieces of one streamed string field of a block, joined when it finalizes.
+
+    A block's ``text``, ``thinking`` and ``_partial_json`` arrive one delta at a
+    time. Rebuilding the dict item's string per delta copied all of it on every
+    token -- quadratic in the block, seconds of event loop for a long answer.
+    The pieces are held here instead and joined once, by :func:`_finalize_block`.
+    A type of its own, so it is never mistaken for a value an upstream sent.
+    """
+
+
+def _append_fragment(block: dict, key: str, piece: Any) -> None:
+    """Append ``piece`` to the string ``block[key]`` builds, without copying it.
+
+    Raises ``TypeError`` for what adding it to the string raised before -- a
+    piece or a starting value that is not a string -- which drops the event.
+    """
+    if not isinstance(piece, str):
+        raise TypeError(f"{key} delta is {type(piece).__name__}, not str")
+    current = block.get(key, "")
+    if isinstance(current, _Fragments):
+        current.append(piece)
+    elif isinstance(current, str):
+        block[key] = _Fragments((current, piece))
+    else:
+        raise TypeError(f"{key} is {type(current).__name__}, not str")
 
 
 def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | None:
@@ -1224,6 +1257,17 @@ def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | Non
     try:
         payload = json.loads(data)
     except (json.JSONDecodeError, ValueError):
+        return acc
+    return _apply_sse_payload(acc, event_type, payload)
+
+
+def _apply_sse_payload(acc: dict | None, event_type: str, payload: Any) -> dict | None:
+    """:func:`_apply_sse_event` for an event's already-parsed ``data``.
+
+    String fields keep their pieces in :class:`_Fragments` until the block
+    finalizes; read the accumulator through :func:`_finalize_response_acc`.
+    """
+    if event_type in ("ping", "message_stop", "error", ""):
         return acc
     if not isinstance(payload, dict):
         return acc
@@ -1284,13 +1328,11 @@ def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | Non
                 block = content[idx]
                 dtype = delta.get("type")
                 if dtype == "text_delta":
-                    block["text"] = block.get("text", "") + (delta.get("text") or "")
+                    _append_fragment(block, "text", delta.get("text") or "")
                 elif dtype == "input_json_delta":
-                    block["_partial_json"] = block.get("_partial_json", "") + (
-                        delta.get("partial_json") or ""
-                    )
+                    _append_fragment(block, "_partial_json", delta.get("partial_json") or "")
                 elif dtype == "thinking_delta":
-                    block["thinking"] = block.get("thinking", "") + (delta.get("thinking") or "")
+                    _append_fragment(block, "thinking", delta.get("thinking") or "")
 
         elif event_type == "content_block_stop":
             idx = payload.get("index")
@@ -1322,7 +1364,11 @@ def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | Non
 
 
 def _finalize_block(block: dict) -> None:
-    """Resolve any partial-JSON buffer on a tool_use block; remove sentinel keys."""
+    """Join streamed fields, resolve a tool_use block's partial JSON, drop sentinel keys."""
+    for key in ("text", "thinking", "_partial_json"):
+        value = block.get(key)
+        if isinstance(value, _Fragments):
+            block[key] = "".join(value)
     if block.get("type") == "tool_use" and "_partial_json" in block:
         raw = block.pop("_partial_json")
         try:
@@ -2332,14 +2378,17 @@ async def execute_messages(
                     events, sse_buffer = _parse_sse_chunk(sse_buffer, raw)
                     well_formed = bool(events)
                     for event_type, data in events:
+                        # Parsed once, here, for all three uses: the
+                        # well-formedness verdict, the accumulator and the
+                        # content check. A malformed event is none of them --
+                        # each skipped it on its own before.
                         try:
-                            json.loads(data)
+                            payload = json.loads(data)
                         except (json.JSONDecodeError, ValueError):
                             well_formed = False
-                        response_acc = _apply_sse_event(response_acc, event_type, data)
-                        if not health_success_recorded and _is_non_empty_content_event(
-                            event_type, data
-                        ):
+                            continue
+                        response_acc = _apply_sse_payload(response_acc, event_type, payload)
+                        if not health_success_recorded and _is_content_delta(event_type, payload):
                             # Same success signal as
                             # FixedRouter.stream_chat_completion: the first
                             # delta that carries content, not the mere fact
