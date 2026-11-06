@@ -874,6 +874,12 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_verification_token(token)
 
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_live_verification_token(user_id, valid_until=valid_until)
+
     async def mark_verification_used(self, token: str) -> None:
         """Delegate to wrapped store."""
         return await self._store.mark_verification_used(token)
@@ -899,6 +905,10 @@ class CachedOperationalStore(OperationalStore):
     async def get_reset_token(self, token: str) -> Row | None:
         """Delegate to wrapped store."""
         return await self._store.get_reset_token(token)
+
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_live_reset_token(user_id, valid_until=valid_until)
 
     async def mark_reset_used(self, token: str) -> None:
         """Delegate to wrapped store."""

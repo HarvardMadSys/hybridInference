@@ -546,8 +546,11 @@ invalidates every device cookie until that browser's next sign-in.
 Other browsers share the limits with their address, and behind the bundled
 Compose file's console proxy every browser has the same address unless
 [trusted-proxy settings](trusted-proxies-and-client-ips.md) name the console;
-`admin` is the first username anyone tries. The counts are held in memory, so
-a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
+`admin` is the first username anyone tries. The pages that mail a link to an
+address anyone types, password reset and resending the verification email,
+are limited too: three of each kind an hour per address, whether or not an
+account has it, and ten an hour per client address. The counts are held
+in memory, so a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
 when set, still reaches the admin API, and the command-line tools work on the
 database directly.
 

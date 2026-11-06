@@ -83,6 +83,7 @@ from serving.utils.jwt import (
 )
 from serving.utils.logging import get_logger
 from serving.utils.login_rate_limit import check_and_record_login
+from serving.utils.mail_rate_limit import MailKind, check_and_record_mail_request
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
 from serving.utils.signup_rate_limit import check_and_record_signup
@@ -92,6 +93,10 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 router.include_router(phone_auth_router)
 logger = get_logger(__name__)
 
+# How long the link a reset request, or a verification resend, mails stays good.
+_RESET_LINK_LIFETIME = timedelta(hours=1)
+_VERIFICATION_LINK_LIFETIME = timedelta(hours=24)
+
 
 def get_base_url(request: Request) -> str:
     """Return the configured ``BASE_URL`` or fall back to the request scheme+host."""
@@ -99,6 +104,21 @@ def get_base_url(request: Request) -> str:
     if base_url:
         return base_url.rstrip("/")
     return f"{request.url.scheme}://{request.url.netloc}"
+
+
+async def _refuse_mail_flood(request: Request, kind: MailKind, email: str) -> None:
+    """Raise 429 when *email* or this client has asked for too much mail of *kind*.
+
+    One answer for either window, decided before any account is looked up, so
+    it says nothing about whether the address has one.
+    """
+    allowed, _reason = await check_and_record_mail_request(kind, email, get_client_ip(request))
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": "3600"},
+        )
 
 
 async def start_user_session(
@@ -959,10 +979,16 @@ async def forgot_password(
     """Request password reset email.
 
     Sends a password reset link to the user's email if the account exists.
-    Always returns success to prevent email enumeration.
+    Always returns success to prevent email enumeration. Rate limited per
+    address and per client (:mod:`serving.utils.mail_rate_limit`) before the
+    account is looked up, so a 429 does not depend on it either. A link that
+    is still good for at least half its lifetime is sent again rather than a
+    new one minted.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
+
+    await _refuse_mail_flood(request, "password_reset", body.email)
 
     user_row = await op_store.get_user_by_email(body.email)
 
@@ -973,12 +999,18 @@ async def forgot_password(
             message="If an account exists with this email, a password reset link has been sent."
         )
 
-    # Generate reset token
-    reset_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(hours=1)
-    await op_store.create_reset_token(
-        token=reset_token, user_id=user_row["id"], expires_at=expires_at
+    # Every request let through mails a link that works, the same one while it
+    # has most of its life left: repeated requests add no rows, and someone
+    # asking for another person's reset only sends that person working links.
+    now = datetime.now(UTC)
+    reset_token = await op_store.get_live_reset_token(
+        user_row["id"], valid_until=now + _RESET_LINK_LIFETIME / 2
     )
+    if reset_token is None:
+        reset_token = secrets.token_urlsafe(32)
+        await op_store.create_reset_token(
+            token=reset_token, user_id=user_row["id"], expires_at=now + _RESET_LINK_LIFETIME
+        )
 
     # Send reset email if SMTP is configured
     if is_email_enabled():
@@ -1053,10 +1085,15 @@ async def resend_verification(
 ) -> ResendVerificationResponse:
     """Resend email verification link.
 
-    Sends a new verification email if the user exists and is not verified.
+    Sends a verification email if the user exists and is not verified. Rate
+    limited and enumeration-safe like ``POST /auth/forgot-password``, and
+    likewise sends a link that still has half its lifetime again rather than
+    minting another.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
+
+    await _refuse_mail_flood(request, "verification", body.email)
 
     generic_response = ResendVerificationResponse(
         message="If this email requires verification, a verification email has been sent."
@@ -1070,12 +1107,17 @@ async def resend_verification(
     if user_row["email_verified"]:
         return generic_response
 
-    # Generate new verification token
-    verification_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(hours=24)
-    await op_store.create_verification_token(
-        token=verification_token, user_id=user_row["id"], expires_at=expires_at
+    now = datetime.now(UTC)
+    verification_token = await op_store.get_live_verification_token(
+        user_row["id"], valid_until=now + _VERIFICATION_LINK_LIFETIME / 2
     )
+    if verification_token is None:
+        verification_token = secrets.token_urlsafe(32)
+        await op_store.create_verification_token(
+            token=verification_token,
+            user_id=user_row["id"],
+            expires_at=now + _VERIFICATION_LINK_LIFETIME,
+        )
 
     # Send email in background so the request returns even if SMTP is slow
     if is_email_enabled():

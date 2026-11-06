@@ -2230,6 +2230,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return dict(row) if row else None
 
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Return the newest unused signup verification token valid past *valid_until*."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT token FROM email_verification_tokens "
+                "WHERE user_id = $1 AND used_at IS NULL AND pending_email IS NULL "
+                "AND expires_at > $2 ORDER BY expires_at DESC LIMIT 1",
+                user_id,
+                valid_until,
+            )
+
     async def mark_verification_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
         async with self._pool.acquire() as conn:
@@ -2276,6 +2289,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 token,
             )
         return dict(row) if row else None
+
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Return the newest unused password reset token valid past *valid_until*."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT token FROM password_reset_tokens "
+                "WHERE user_id = $1 AND used_at IS NULL AND expires_at > $2 "
+                "ORDER BY expires_at DESC LIMIT 1",
+                user_id,
+                valid_until,
+            )
 
     async def mark_reset_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""

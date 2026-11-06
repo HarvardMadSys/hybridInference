@@ -900,6 +900,16 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Return *user_id*'s newest unused signup verification token valid past *valid_until*.
+
+        A token that proves a new address (``pending_email``) is never
+        returned. None when the account holds no such token.
+        """
+
+    @abstractmethod
     async def mark_verification_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
 
@@ -928,6 +938,13 @@ class OperationalStore(ABC):
         """Fetch reset token row.
 
         Returns: ``token, user_id, created_at, expires_at, used_at``.
+        """
+
+    @abstractmethod
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Return *user_id*'s newest unused password reset token valid past *valid_until*.
+
+        None when the account holds no such token.
         """
 
     @abstractmethod
