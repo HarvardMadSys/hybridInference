@@ -302,6 +302,7 @@ class CachedOperationalStore(OperationalStore):
         return claim_token
 
     async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Renew the hard-delete claim lease for a user."""
         await self._store.renew_hard_delete_user_claim(user_id, claim_token)
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
