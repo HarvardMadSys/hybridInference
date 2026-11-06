@@ -14,8 +14,10 @@ Two things live here that neither domain can do for the other:
     so when the preferred backend fails before producing any output, this layer
     asks the policy which other backend to try. The preserved contract is the
     one the single ``FixedRouter`` used to provide: try the remaining candidates
-    in policy order, re-raise the *preferred* attempt's error when everything
-    fails, and merge every attempt into the routing metadata and the feedback.
+    in policy order, stopping once two routes have refused the request itself as
+    malformed (``request_refusals_end_fallback``), re-raise the *preferred*
+    attempt's error when everything fails, and merge every attempt into the
+    routing metadata and the feedback.
 
 ``Feedback attribution``
     A request can now be served by more than one backend: attempt 1 on local,
@@ -70,6 +72,7 @@ from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AllCircuitsOpenError,
     TargetUnavailableError,
+    request_refusals_end_fallback,
     select_surfaced_error,
 )
 
@@ -384,6 +387,8 @@ class HybridRouter:
                 attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
                 _remember_dispatched(dispatched, attempt, exc)
+                if _refusals_end_plan(model_id, attempts, errors):
+                    break
                 continue
             self._remember_backend_decision(
                 params.get("request_id"),
@@ -875,6 +880,8 @@ async def _fallback_stream(
             attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
             errors.append(exc)
             _remember_dispatched(dispatched, attempt, exc)
+            if _refusals_end_plan(model_id, attempts, errors):
+                break
         finally:
             if callable(aclose):
                 await aclose()
@@ -1018,6 +1025,27 @@ def _remember_dispatched(
         observed = attempt.endpoint_id
     if observed is not None:
         dispatched.add(observed)
+
+
+def _refusals_end_plan(
+    model_id: str,
+    attempts: Sequence[dict[str, Any]],
+    errors: Sequence[BaseException],
+) -> bool:
+    """Return whether the plan stops because enough routes refused the request itself.
+
+    The single router's bound (``request_refusals_end_fallback``) applied to the
+    plan this layer walks, so a composed model sends a malformed request to no
+    more routes than the shared router would. ``attempts`` and ``errors`` are
+    appended together, one record per failed attempt.
+    """
+    return request_refusals_end_fallback(
+        model_id,
+        [
+            (record.get("endpoint_id"), error)
+            for record, error in zip(attempts, errors, strict=False)
+        ],
+    )
 
 
 def _raise_after_attempts(

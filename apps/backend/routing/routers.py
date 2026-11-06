@@ -659,6 +659,63 @@ def _skips_for_context_window(
     return True
 
 
+# How many routes may refuse one request as malformed before fallback stops.
+#
+# A request-describing failure (``_REQUEST_DESCRIBING_STATUSES``) is usually the
+# answering server's own verdict -- one SGLang build rejects a tool schema
+# another accepts -- which is why the walk goes on after the first one. Once a
+# second route has refused the same request, the rest are very likely to refuse
+# it too, and walking on sent every malformed request to every weighted route: a
+# fallback weighted at 1%, a canary, another gateway, each received all of the
+# model's malformed traffic, and paid a full upload and tokenization for each.
+# Two independent verdicts end the walk, and the request is reported with the
+# error ``_select_surfaced_error`` picks, as before.
+#
+# A context-window refusal does not count: ``_skips_for_context_window`` already
+# passes over every route whose window could not fit the prompt, and keeps the
+# wider ones, which can.
+_REQUEST_REFUSAL_LIMIT = 2
+
+
+def _counts_as_request_refusal(exc: BaseException) -> bool:
+    """Return whether ``exc`` refuses the request as malformed, its length aside."""
+    return _describes_request(exc) and not exceeds_context_window(exc)
+
+
+def request_refusals_end_fallback(
+    model_id: str, failures: Sequence[tuple[str | None, BaseException]]
+) -> bool:
+    """Return whether enough routes refused the request as malformed to stop trying others.
+
+    ``failures`` pairs each failed attempt's endpoint id with its error, in
+    dispatch order. Logs ``request_refusal_fallback_stopped`` when it returns
+    True. Public because every router that walks candidates after a failure
+    needs the same bound; see ``_REQUEST_REFUSAL_LIMIT`` for the policy.
+    """
+    refused = [endpoint_id for endpoint_id, error in failures if _counts_as_request_refusal(error)]
+    if len(refused) < _REQUEST_REFUSAL_LIMIT:
+        return False
+    logger.info(
+        "Stopping fallback for %s: %d routes refused the request as malformed",
+        model_id,
+        len(refused),
+        extra={
+            "event": "request_refusal_fallback_stopped",
+            "model_id": model_id,
+            "endpoint_ids": refused,
+        },
+    )
+    return True
+
+
+def _stops_after_request_refusals(model_id: str, attempts: Sequence[_RouteAttempt]) -> bool:
+    """Return whether FixedRouter's fallback walk ends after ``attempts``."""
+    return request_refusals_end_fallback(
+        model_id,
+        [(endpoint_id_for_adapter(attempt.adapter), attempt.error) for attempt in attempts],
+    )
+
+
 class _PrimaryOffload(NamedTuple):
     """How one request's primary attempt relates to its model's offload route.
 
@@ -2629,6 +2686,8 @@ class FixedRouter:
                     )
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
+                    if _stops_after_request_refusals(model_id, attempts):
+                        break
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
@@ -3000,6 +3059,8 @@ class FixedRouter:
                         raise
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
+                    if _stops_after_request_refusals(model_id, attempts):
+                        break
                     continue
                 finally:
                     # Covers the attempt that never reached a first token.
