@@ -1326,9 +1326,11 @@ async def test_pausing_by_key_holds_back_only_that_keys_batches(store):
 async def test_sweep_expires_overdue_batches(pool, store):
     model = _model()
     overdue = await _create(store, _items(model, 3))
-    on_time = await _create(store, _items(model, 1), user="bob")
     (running,) = await _claim(store, model, limit=1)
     assert running["batch_id"] == overdue["id"]
+    # Created after the claim: claims share a model fairly across owners, so
+    # with both waiting the single claim above may take bob's item instead.
+    on_time = await _create(store, _items(model, 1), user="bob")
     await _execute(
         pool,
         "UPDATE batch_jobs SET expires_at = now() - interval '1 second' WHERE id = $1",
