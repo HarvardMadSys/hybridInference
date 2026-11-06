@@ -22,8 +22,8 @@ and are counted live by this one. Adding a column with a constant default is a
 catalog-only change in PostgreSQL: it takes the table lock briefly and
 rewrites nothing.
 
-Revision ID: 0003_user_usage_sums
-Revises: 0002_api_key_limits
+Revision ID: 0004_user_usage_sums
+Revises: 0003_batch_no_expiry
 Create Date: 2026-11-06
 """
 
@@ -31,8 +31,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0003_user_usage_sums"
-down_revision = "0002_api_key_limits"
+revision = "0004_user_usage_sums"
+down_revision = "0003_batch_no_expiry"
 branch_labels = None
 depends_on = None
 compatibility = "expand"

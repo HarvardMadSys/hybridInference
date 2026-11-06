@@ -1,4 +1,4 @@
-"""``0003_user_usage_sums``: the dashboard's sums on ``user_usage_daily``.
+"""``0004_user_usage_sums``: the dashboard's sums on ``user_usage_daily``.
 
 Seven defaulted columns on the rows and a ``usage_definition`` on the coverage.
 The previous release, which names only its own columns, must keep filling days,
@@ -46,7 +46,7 @@ async def scratch():
 
 
 async def test_stored_days_gain_zero_sums_and_no_usage_fingerprint(scratch):
-    await mig.upgrade(scratch, "0002_api_key_limits")
+    await mig.upgrade(scratch, "0003_batch_no_expiry")
     async with mig.connected(scratch) as conn:
         await conn.execute(_PREVIOUS_FILL, "u-old", date(2026, 10, 1))
         await conn.execute(_PREVIOUS_MARK, date(2026, 10, 1), user_usage_rollup.DEFINITION)
@@ -97,7 +97,7 @@ async def test_the_previous_release_still_fills_days(scratch):
 async def test_its_statements_can_run_again(scratch):
     """Going back up after a downgrade, which keeps the columns, still works."""
     await mig.upgrade(scratch)
-    revision = importlib.import_module("migrations.versions.0003_user_usage_sums")
+    revision = importlib.import_module("migrations.versions.0004_user_usage_sums")
     async with mig.connected(scratch) as conn:
         for statement in revision.STATEMENTS:
             await conn.execute(statement)

@@ -22,8 +22,8 @@ read, and the next run finishes it.
 The index is dropped only where the unique index is there and valid, so a
 database whose ``request_id`` is not unique keeps the one index it has on it.
 
-Revision ID: 0004_drop_request_id_index
-Revises: 0003_user_usage_sums
+Revision ID: 0005_drop_request_id_index
+Revises: 0004_user_usage_sums
 Create Date: 2026-11-06
 """
 
@@ -34,8 +34,8 @@ import logging
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0004_drop_request_id_index"
-down_revision = "0003_user_usage_sums"
+revision = "0005_drop_request_id_index"
+down_revision = "0004_user_usage_sums"
 branch_labels = None
 depends_on = None
 compatibility = "expand"

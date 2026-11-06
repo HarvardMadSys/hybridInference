@@ -1,4 +1,4 @@
-"""``0004_drop_request_id_index``: drop the copy of the unique index on ``api_logs.request_id``.
+"""``0005_drop_request_id_index``: drop the copy of the unique index on ``api_logs.request_id``.
 
 The drop is concurrent: log writes go on while it waits, a long transaction on
 the table stops it after the bounded wait, and the next run finishes it. A
@@ -18,8 +18,8 @@ from tests.fixtures import migrations as mig, postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
-PREVIOUS = "0003_user_usage_sums"
-REVISION = "0004_drop_request_id_index"
+PREVIOUS = "0004_user_usage_sums"
+REVISION = "0005_drop_request_id_index"
 
 _INDEXES = """
     SELECT c.relname, i.indisunique, i.indisvalid

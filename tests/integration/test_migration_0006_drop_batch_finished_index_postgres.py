@@ -1,4 +1,4 @@
-"""``0005_drop_batch_finished_index``: drop the batch index no query can use."""
+"""``0006_drop_batch_finished_index``: drop the batch index no query can use."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from tests.fixtures import migrations as mig
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
-PREVIOUS = "0004_drop_request_id_index"
-REVISION = "0005_drop_batch_finished_index"
+PREVIOUS = "0005_drop_request_id_index"
+REVISION = "0006_drop_batch_finished_index"
 
 _INDEX = "SELECT to_regclass('idx_batch_jobs_finished') IS NOT NULL"
 

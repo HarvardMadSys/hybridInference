@@ -10,13 +10,13 @@ batch's status or end. The purge now finds a sweep's batches in one read of the
 table instead of one read per batch (``serving.storage.batch_store``).
 
 Nothing the previous release runs uses it either, so dropping it is an expand
-revision. Like ``0004_drop_request_id_index`` it is dropped concurrently, outside
+revision. Like ``0005_drop_request_id_index`` it is dropped concurrently, outside
 the revision's transaction, so the batch worker's claims and updates are never
 queued behind an ACCESS EXCLUSIVE lock; each wait is bounded by the run's lock
 timeout, and an interrupted drop is finished by the next run.
 
-Revision ID: 0005_drop_batch_finished_index
-Revises: 0004_drop_request_id_index
+Revision ID: 0006_drop_batch_finished_index
+Revises: 0005_drop_request_id_index
 Create Date: 2026-11-06
 """
 
@@ -24,8 +24,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0005_drop_batch_finished_index"
-down_revision = "0004_drop_request_id_index"
+revision = "0006_drop_batch_finished_index"
+down_revision = "0005_drop_request_id_index"
 branch_labels = None
 depends_on = None
 compatibility = "expand"
