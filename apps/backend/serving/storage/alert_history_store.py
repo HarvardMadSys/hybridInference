@@ -410,11 +410,6 @@ async def purge_subject(conn: Any, digest: str) -> int:
         return 0
 
 
-def subject_digest(user_id: str, fence_secret: str) -> str:
-    """The digest a record about ``user_id`` carries."""
-    return fence_account_digest(user_id, fence_secret)
-
-
 # -- reading ------------------------------------------------------------------
 
 MAX_PAGE = 200

@@ -363,13 +363,6 @@ def extract_tool_calls_for_profile(
     return None
 
 
-def function_call_delta_to_tool_calls(
-    profile: ProviderProfile, function_call: dict[str, Any] | None
-) -> list[dict[str, Any]] | None:
-    """Convert a streaming function_call delta to tool_calls when needed."""
-    return None
-
-
 def normalize_usage_default(
     usage_data: dict[str, Any], *, null_cache_details_means_miss: bool = False
 ) -> UsageInfo:
