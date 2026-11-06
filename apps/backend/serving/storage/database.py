@@ -14,7 +14,8 @@ from typing import Any
 import asyncpg
 
 from serving.storage.erasure_fence import (
-    protect_api_logs_insert,
+    api_logs_fence_keys,
+    insert_api_logs_row,
     validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
@@ -36,6 +37,36 @@ from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
+
+
+# What :meth:`DatabaseLogger.log_request` writes to ``api_logs``: the columns,
+# and their values over the statement's parameters, in the same order.
+_LOG_COLUMNS = """
+    request_id, model_id, provider,
+    temperature, top_p, max_tokens, seed, stream,
+    ttft_ms, latency_ms,
+    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+    cache_read_tokens, cache_write_tokens, cost_usd,
+    prompt, response, request_payload,
+    status_code, error, user_id, session_id, metadata,
+    tools, upstream_cost_usd,
+    num_turns, num_user_turns, num_tool_calls,
+    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
+    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
+"""
+_LOG_VALUES = """
+    $1, $2, $3,
+    $4, $5, $6, $7, $8,
+    $9, $10,
+    $11, $12, $13, $14,
+    $15, $16, $17,
+    $18, $19, $20::jsonb,
+    $21, $22, $23, $24, $25::jsonb,
+    $26::jsonb, $27,
+    $28, $29, $30,
+    $31, $32, $33,
+    $34, $35, $36, $37
+"""
 
 
 def _string_or_none(value: object) -> str | None:
@@ -254,103 +285,71 @@ class DatabaseLogger:
         # so both must be checked against the erasure fence (issue #1421).
         _row_user_id = (sanitized_metadata or {}).get("user_id")
         _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
+        fence_keys = api_logs_fence_keys(
+            fence_secret=self.fence_secret,
+            user_id=_row_user_id,
+            credential_owner_id=_row_credential_owner,
+        )
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            # Erasure fence check (issue #1421): if any account this row would
-            # identify has been hard-deleted, do not create an identifying row.
-            _row_user_id = (sanitized_metadata or {}).get("user_id")
-            _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
-            if await protect_api_logs_insert(
+        async with self.pool.acquire() as conn:
+            fenced = await insert_api_logs_row(
                 conn,
-                fence_secret=self.fence_secret,
-                user_id=_row_user_id,
-                credential_owner_id=_row_credential_owner,
-            ):
-                logger.info(
-                    "log_request suppressed: erasure fence hit for request %s",
+                columns=_LOG_COLUMNS,
+                values=_LOG_VALUES,
+                fence_keys=fence_keys,
+                args=(
                     request_id,
-                )
-                return
-
-            await conn.execute(
-                """
-                INSERT INTO api_logs (
-                    request_id, model_id, provider,
-                    temperature, top_p, max_tokens, seed, stream,
-                    ttft_ms, latency_ms,
-                    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
-                    cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, request_payload,
-                    status_code, error, user_id, session_id, metadata,
-                    tools, upstream_cost_usd,
-                    num_turns, num_user_turns, num_tool_calls,
-                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
-                )
-                VALUES (
-                    $1, $2, $3,
-                    $4, $5, $6, $7, $8,
-                    $9, $10,
-                    $11, $12, $13, $14,
-                    $15, $16, $17,
-                    $18, $19, $20::jsonb,
-                    $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb, $27,
-                    $28, $29, $30,
-                    $31, $32, $33,
-                    $34, $35, $36, $37
-                )
-                ON CONFLICT (request_id) DO NOTHING
-                """,
-                request_id,
-                model_id,
-                provider,
-                # Request parameters
-                (params or {}).get("temperature"),
-                (params or {}).get("top_p"),
-                (params or {}).get("max_tokens"),
-                (params or {}).get("seed"),
-                (params or {}).get("stream"),
-                # Performance metrics
-                ttft_ms,
-                latency_ms,
-                # Token usage
-                (usage or {}).get("prompt_tokens"),
-                (usage or {}).get("completion_tokens"),
-                (usage or {}).get("reasoning_tokens"),
-                (usage or {}).get("total_tokens"),
-                # Cache and cost
-                (usage or {}).get("cache_read_tokens"),
-                (usage or {}).get("cache_write_tokens"),
-                cost_usd,
-                # Content
-                prompt_str,
-                response_str,
-                request_payload_str,
-                # Metadata
-                status_code,
-                sanitized_error,
-                (sanitized_metadata or {}).get("user_id"),
-                (sanitized_metadata or {}).get("session_id"),
-                json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
-                json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
-                upstream_cost_usd,
-                # Conversation shape
-                num_turns,
-                num_user_turns,
-                num_tool_calls,
-                # Newest user message fingerprint
-                last_user_msg_chars,
-                last_user_msg_entropy,
-                last_user_msg_hash,
-                # Served model/endpoint (queryable routing identity)
-                served_model,
-                served_endpoint,
-                # Cloud agent sandbox job attribution (issue #1041)
-                (sanitized_metadata or {}).get("agent_job_id"),
-                # Batch inference attribution (/v1/batches)
-                (sanitized_metadata or {}).get("batch_job_id"),
+                    model_id,
+                    provider,
+                    # Request parameters
+                    (params or {}).get("temperature"),
+                    (params or {}).get("top_p"),
+                    (params or {}).get("max_tokens"),
+                    (params or {}).get("seed"),
+                    (params or {}).get("stream"),
+                    # Performance metrics
+                    ttft_ms,
+                    latency_ms,
+                    # Token usage
+                    (usage or {}).get("prompt_tokens"),
+                    (usage or {}).get("completion_tokens"),
+                    (usage or {}).get("reasoning_tokens"),
+                    (usage or {}).get("total_tokens"),
+                    # Cache and cost
+                    (usage or {}).get("cache_read_tokens"),
+                    (usage or {}).get("cache_write_tokens"),
+                    cost_usd,
+                    # Content
+                    prompt_str,
+                    response_str,
+                    request_payload_str,
+                    # Metadata
+                    status_code,
+                    sanitized_error,
+                    (sanitized_metadata or {}).get("user_id"),
+                    (sanitized_metadata or {}).get("session_id"),
+                    json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
+                    json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
+                    upstream_cost_usd,
+                    # Conversation shape
+                    num_turns,
+                    num_user_turns,
+                    num_tool_calls,
+                    # Newest user message fingerprint
+                    last_user_msg_chars,
+                    last_user_msg_entropy,
+                    last_user_msg_hash,
+                    # Served model/endpoint (queryable routing identity)
+                    served_model,
+                    served_endpoint,
+                    # Cloud agent sandbox job attribution (issue #1041)
+                    (sanitized_metadata or {}).get("agent_job_id"),
+                    # Batch inference attribution (/v1/batches)
+                    (sanitized_metadata or {}).get("batch_job_id"),
+                ),
             )
+        if fenced:
+            logger.info("log_request suppressed: erasure fence hit for request %s", request_id)
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
         """Aggregate recent real-user traffic per (model_id, provider).

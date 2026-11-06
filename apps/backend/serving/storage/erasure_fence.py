@@ -9,9 +9,12 @@ schema migrations.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import functools
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
 
 
@@ -36,14 +39,29 @@ if TYPE_CHECKING:
 #
 #   LOG WRITE (one api_logs INSERT) — uses a SHARED lock so concurrent
 #   writers for the same account do not serialize behind one another:
-#       1. Compute fence_key = HMAC(secret, user_id || credential_owner_id).
+#       1. Compute fence_key = HMAC(secret, account) for the user_id and the
+#          credential_owner_id the row carries (one key when they are equal).
 #       2. BEGIN.
-#       3. SELECT pg_advisory_xact_lock_shared(hashtext(fence_key)).
-#          Concurrent shared-lock holders coexist; an exclusive hard-delete
-#          blocks until they all COMMIT.
-#       4. SELECT ... FROM erasure_fence WHERE account_digest = fence_key.
-#       5. If a row is found: ROLLBACK (the identifying row must not exist).
-#       6. Otherwise: INSERT INTO api_logs ...; COMMIT.
+#       3. One statement takes pg_advisory_xact_lock_shared(<fence_key's
+#          64-bit key>) on every key, in sorted order. Concurrent shared-lock
+#          holders coexist; an exclusive hard-delete blocks until they all
+#          COMMIT.
+#       4. The next statement reads erasure_fence for those keys and, only if
+#          none of them has a row, inserts the api_logs row (it reports which).
+#       5. COMMIT. A row that names no account takes no lock and checks no
+#          fence: it is a single INSERT, in no transaction of its own.
+#
+#   The fence is read in the statement *after* the one that took the locks,
+#   never in the same one: under READ COMMITTED a statement's snapshot is
+#   taken when it starts, so a statement that waited for a hard-delete's
+#   exclusive lock would read the fence as it was before that hard-delete
+#   committed, miss its tombstone, and write the row it purged. A statement
+#   started after the lock was granted sees the tombstone: a transaction is
+#   visible as committed before its locks are released. Reading the fence
+#   and inserting in that one statement is the same as reading it in a
+#   statement of its own first, as the protocol once did: no tombstone for
+#   these keys can commit in between, since that takes the exclusive lock
+#   this transaction holds shared until it commits.
 #
 #   HARD DELETE — uses an EXCLUSIVE lock so it waits for all in-flight
 #   writers and prevents new ones from crossing the fence:
@@ -92,8 +110,9 @@ if TYPE_CHECKING:
 #       trigger logic;
 #   (b) it lets the log write ABORT cleanly (no "trigger raised exception"
 #       error path that the fire-and-forget caller would have to swallow); and
-#   (c) the same helper is used by both PostgresLogStore.log_request and
-#       DatabaseLogger.log_request, so the two writers cannot drift.
+#   (c) the same helper (:func:`insert_api_logs_row`) is used by both
+#       PostgresLogStore.log_request and DatabaseLogger.log_request, so the
+#       two writers cannot drift.
 # ---------------------------------------------------------------------------
 
 #: Name of the erasure fence table.
@@ -188,9 +207,7 @@ async def check_erasure_fence(
     # locks coexist with other shared locks (concurrent writers for the
     # same account proceed in parallel) but block behind an exclusive
     # hard-delete lock and are waited on by subsequent exclusive lockers.
-    for key in fence_keys:
-        _adv_key = fence_account_advisory_key(key)
-        await conn.execute("SELECT pg_advisory_xact_lock_shared($1)", _adv_key)
+    await lock_fence_keys_shared(conn, fence_keys)
     row = await conn.fetchrow(
         f"""
         SELECT 1
@@ -225,17 +242,131 @@ async def protect_api_logs_insert(
         credential_owner_id: the ``metadata->>'credential_owner_id'`` that
             will be stored in the row (or None).
     """
-    # A row may belong to both the authenticated user and the credential
-    # owner. Every distinct identity must participate in the erasure fence;
-    # fencing either identity suppresses the write.
-    if not fence_secret or not (user_id or credential_owner_id):
-        return False
-    fence_keys = []
-    if user_id:
-        fence_keys.append(fence_account_digest(user_id, fence_secret))
-    if credential_owner_id and credential_owner_id != user_id:
-        fence_keys.append(fence_account_digest(credential_owner_id, fence_secret))
+    fence_keys = api_logs_fence_keys(
+        fence_secret=fence_secret, user_id=user_id, credential_owner_id=credential_owner_id
+    )
     return await check_erasure_fence(conn, fence_keys=fence_keys)
+
+
+def api_logs_fence_keys(
+    *,
+    fence_secret: str | None,
+    user_id: str | None,
+    credential_owner_id: str | None,
+) -> list[str]:
+    """Return the fence digests an ``api_logs`` row is checked against, sorted.
+
+    A row may belong to both the authenticated user and the credential owner.
+    Every distinct identity participates in the erasure fence; fencing either
+    one suppresses the write. Empty when the row names no account, or when no
+    fence secret is configured.
+
+    The order is the order the shared locks are taken in, the same for every
+    writer, so writers checking overlapping keys cannot deadlock.
+    """
+    if not fence_secret or not (user_id or credential_owner_id):
+        return []
+    fence_keys = set()
+    if user_id:
+        fence_keys.add(fence_account_digest(user_id, fence_secret))
+    if credential_owner_id and credential_owner_id != user_id:
+        fence_keys.add(fence_account_digest(credential_owner_id, fence_secret))
+    return sorted(fence_keys)
+
+
+# The shared locks of one row in a single statement. A function scan WITH
+# ORDINALITY returns its rows in ordinality order -- the planner relies on that
+# to satisfy the ORDER BY without a sort -- and the select list is evaluated
+# row by row as they come, so the locks are taken in the order of the array.
+_LOCK_SHARED_SQL = """
+SELECT pg_advisory_xact_lock_shared(key)
+FROM unnest($1::bigint[]) WITH ORDINALITY AS keys(key, position)
+ORDER BY position
+"""
+
+
+async def lock_fence_keys_shared(conn: asyncpg.Connection, fence_keys: list[str]) -> None:
+    """Take the transaction-level SHARED advisory lock on each key, in order, in one statement.
+
+    Args:
+        conn: an asyncpg connection already inside a transaction.
+        fence_keys: HMAC digests, in the order to lock them (sorted, for
+            every writer alike).
+    """
+    await conn.execute(_LOCK_SHARED_SQL, [fence_account_advisory_key(key) for key in fence_keys])
+
+
+# An api_logs INSERT and its fence check in one statement: the row is written
+# only when no tombstone covers the keys (the last parameter), and the statement
+# answers whether one did. ``fence`` is computed once, under the statement's
+# snapshot, which is also the one the INSERT runs under.
+_FENCED_INSERT_SQL = """
+WITH fence AS (
+    SELECT EXISTS (
+        SELECT 1 FROM {table} WHERE account_digest = ANY(${keys}::text[])
+    ) AS hit
+),
+inserted AS (
+    INSERT INTO api_logs ({columns})
+    SELECT {values}
+    FROM fence
+    WHERE NOT fence.hit
+    ON CONFLICT (request_id) DO NOTHING
+)
+SELECT hit FROM fence
+"""
+
+_PLAIN_INSERT_SQL = """
+INSERT INTO api_logs ({columns})
+VALUES ({values})
+ON CONFLICT (request_id) DO NOTHING
+"""
+
+
+@functools.cache
+def _api_logs_insert_sql(columns: str, values: str, arg_count: int) -> tuple[str, str]:
+    """The plain and the fenced statement for one writer's column and value lists."""
+    plain = _PLAIN_INSERT_SQL.format(columns=columns, values=values)
+    fenced = _FENCED_INSERT_SQL.format(
+        table=ERASURE_FENCE_TABLE, keys=arg_count + 1, columns=columns, values=values
+    )
+    return plain, fenced
+
+
+async def insert_api_logs_row(
+    conn: asyncpg.Connection,
+    *,
+    columns: str,
+    values: str,
+    args: Sequence[Any],
+    fence_keys: Sequence[str],
+) -> bool:
+    """Insert one ``api_logs`` row, unless the erasure fence covers an account it names.
+
+    The write protocol in the comment at the top of this module, in as few
+    round trips as it allows: BEGIN, the shared locks in one statement, the
+    fence check and the INSERT in the next, COMMIT. A row that names no account
+    (*fence_keys* empty) is one INSERT, in no transaction of its own. A
+    ``request_id`` already logged is left as it is (``ON CONFLICT DO NOTHING``).
+
+    Args:
+        conn: an asyncpg connection. Inside a transaction already, the locks
+            are held until that one ends.
+        columns: the ``api_logs`` columns written, comma separated.
+        values: their values, as SQL over the parameters ``$1`` ... ``$n``.
+        args: the *n* parameters.
+        fence_keys: from :func:`api_logs_fence_keys`.
+
+    Returns:
+        True when a tombstone suppressed the row.
+    """
+    plain, fenced = _api_logs_insert_sql(columns, values, len(args))
+    if not fence_keys:
+        await conn.execute(plain, *args)
+        return False
+    async with conn.transaction():
+        await lock_fence_keys_shared(conn, list(fence_keys))
+        return bool(await conn.fetchval(fenced, *args, list(fence_keys)))
 
 
 class ErasureFenceUnavailable(RuntimeError):
