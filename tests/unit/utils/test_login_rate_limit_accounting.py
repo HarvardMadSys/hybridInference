@@ -548,7 +548,7 @@ async def test_saturation_at_defaults_does_not_lock_out_fresh_ips():
     cap = limiter._MAX_ACTIVE_BUCKETS
     # Flood with distinct accounts from one /48 (IPv6 bucketed to /64).
     for i in range(cap):
-        ip = f"2001:db8:{i >> 8:04x}:{i & 0xff:04x}::1"
+        ip = f"2001:db8:{i >> 8:04x}:{i & 0xFF:04x}::1"
         allowed, _ = await limiter.check_and_record_login(f"flood-{i}@example.com", ip)
         assert allowed, f"flood insert {i} refused unexpectedly"
     # Victims: 1000 fresh IPs/accounts outside the flooded /48.
