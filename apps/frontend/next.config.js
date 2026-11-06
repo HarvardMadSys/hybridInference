@@ -105,7 +105,8 @@ const nextConfig = {
   // size. What is left are the rewrites, which carry the console's own JSON.
   // For them this equals the gateway's default body limit (REQUEST_MAX_BODY_MB,
   // 32MiB): a body it would accept arrives whole, and a larger one is refused
-  // with 413 on its declared length before the missing bytes could matter.
+  // with 413 on its declared length before the missing bytes could matter
+  // (one sent without a length arrives cut short and fails to parse).
   experimental: {
     proxyTimeout: 60 * 60 * 1000,
     middlewareClientMaxBodySize: 32 * 1024 * 1024,
