@@ -33,7 +33,6 @@ from .profiles import (
     extract_tool_calls_for_profile,
     filter_response_format,
     filter_sampling_params,
-    function_call_delta_to_tool_calls,
     get_stream_first_byte_timeout_seconds,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
@@ -1412,39 +1411,6 @@ class OpenAICompatAdapter(BaseAdapter):
             )
             if isinstance(reasoning, str) and reasoning:
                 total_content += reasoning
-
-            legacy_tool_calls = function_call_delta_to_tool_calls(
-                self._usage_profile, delta.get("function_call")
-            )
-            if legacy_tool_calls:
-                saw_tool_calls = True
-                # Accumulate tool-call text so the fallback usage estimate can
-                # count tool tokens when the provider omits a usage chunk.
-                # Skip malformed entries (non-dict entry or `function` value)
-                # rather than crashing the stream.
-                for entry in legacy_tool_calls:
-                    fn = entry.get("function") if isinstance(entry, dict) else None
-                    if not isinstance(fn, dict):
-                        continue
-                    name = fn.get("name") or ""
-                    args = fn.get("arguments") or ""
-                    if isinstance(name, str):
-                        total_tool_text += name
-                    if isinstance(args, str):
-                        total_tool_text += args
-                chunk_copy = dict(processed_chunk)
-                chunk_copy["model"] = self.config.id
-                new_choices = list(chunk_copy.get("choices") or [])
-                if new_choices:
-                    new_choice = dict(new_choices[0])
-                    new_delta = dict(new_choice.get("delta") or {})
-                    new_delta.pop("role", None)
-                    new_delta.pop("function_call", None)
-                    new_delta["tool_calls"] = legacy_tool_calls
-                    new_choice["delta"] = new_delta
-                    new_choices[0] = new_choice
-                    chunk_copy["choices"] = new_choices
-                return f"data: {json.dumps(chunk_copy)}\n\n"
 
             has_reasoning = (
                 bool(delta.get("reasoning_content"))

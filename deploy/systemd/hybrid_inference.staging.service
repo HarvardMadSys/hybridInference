@@ -6,14 +6,14 @@ After=network-online.target docker.service
 [Service]
 User=__USER__
 # Group defaults to the user's primary group.  Override if needed
-# (e.g. Group=cache-PG0 on CloudLab PG0 experiments).
+# (e.g. a shared project group on a cluster host).
 Type=simple
 WorkingDirectory=__REPO_ROOT__
 
 EnvironmentFile=__REPO_ROOT__/.env
 Environment=PYTHONPATH=__REPO_ROOT__
 
-# Runs on port 8000, bound to all interfaces so it's reachable on the CloudLab public IP.
+# Runs on port 8000, bound to all interfaces so it's reachable on the host's public IP.
 # Change --host to 127.0.0.1 if a reverse proxy is added later.
 # --no-proxy-headers: uvicorn defaults it ON (trusting 127.0.0.1). Forwarded
 # headers are interpreted only by the application's TRUST_PROXY_HEADERS gate

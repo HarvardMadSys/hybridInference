@@ -552,8 +552,8 @@ database directly.
 **Without the browser.** `ops/admin/create_admin.py` writes the account
 directly: it creates it with `role='admin'`, `status='active'`,
 `email_verified=TRUE`, or promotes an existing account with the same address.
-Run it from the repository root once the backend has started at least once
-(the backend creates the schema):
+Run it from the repository root once the schema migrations have run
+(`make migrate`; `make up` runs them):
 
 ```bash
 python ops/admin/create_admin.py --email you@example.com

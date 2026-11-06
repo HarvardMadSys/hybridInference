@@ -38,13 +38,10 @@ concurrency:
 jobs:
   build:
     name: Build and push candidates
-    # Self-hosted, by billing reality (2026-08-18): the original design ran
-    # this on GitHub-hosted runners so publishing would not depend on the
-    # FreeInference fleet, but the org's hosted minutes are billing-blocked
-    # — the same constraint that moved CI onto the fleet. arm64-docker is
-    # native for arm64 diagnostics, so that choice skips QEMU entirely. An
-    # operator may still request an amd64 diagnostic; canonical deployable
-    # candidates are built natively per architecture in ci.yml.
+    # Self-hosted: arm64-docker builds arm64 diagnostics natively, so this
+    # job skips QEMU entirely. An operator may still request an amd64
+    # diagnostic; canonical deployable candidates are built natively per
+    # architecture in ci.yml.
     runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 45
     steps:

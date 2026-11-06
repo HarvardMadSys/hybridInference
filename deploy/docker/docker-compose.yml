@@ -24,9 +24,8 @@ services:
       dockerfile: deploy/docker/Dockerfile.backend
     container_name: hybridinference-backend
     restart: unless-stopped
-    # Source-revision stamp on the running container. The classic deploy
-    # scripts already export BUILD_SHA before composing; the digest deploy
-    # sets it to the image's revision label. The digest path's last-known-good
+    # Source-revision stamp on the running container. A digest deploy sets
+    # BUILD_SHA to the image's revision label. The digest path's last-known-good
     # restore reads this label back from the container it is about to replace
     # — image and revision from the same object — and fails closed when the
     # label is absent rather than guessing from the checkout HEAD.
@@ -108,7 +107,7 @@ services:
       # and OpenRouter attribution. The defaults below name no deployment, so
       # `docker compose up` on a fresh clone brings up *your* gateway, not
       # someone else's. A deployment supplies its own values through an env
-      # file (see distributions/*/deploy/backend.env and ops/deploy/*.sh);
+      # file (see distributions/*/deploy/backend.env);
       # the server's own .env still overrides each one.
       SITE_NAME: ${SITE_NAME-HybridInference}
       SITE_PUBLIC_BASE_URL: ${SITE_PUBLIC_BASE_URL-}
