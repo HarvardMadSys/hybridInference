@@ -776,6 +776,47 @@ def adapter_in_endpoint_scope(adapter: BaseAdapter, scope: frozenset[str] | None
     )
 
 
+def _schedules_by_priority(adapter: BaseAdapter) -> bool:
+    """Return whether ``adapter`` sends the scheduling priority this router publishes.
+
+    Only a route declared to run sglang priority scheduling
+    (``ModelConfig.priority_scheduling``) puts it on the upstream request
+    (``OpenAICompatAdapter._apply_upstream_priority``). For any other endpoint
+    the priority, and the prompt anchor that exists only to compute it, are work
+    nobody reads.
+    """
+    return bool(getattr(getattr(adapter, "config", None), "priority_scheduling", False))
+
+
+class _PromptAnchor:
+    """One request's prompt anchor, computed the first time an attempt needs it.
+
+    The anchor is stored with the prefix hint so that a later turn can prove it
+    contains this prompt, and the only reader of that proof is the priority of
+    a dispatch to the same endpoint (``FixedRouter._dispatch_priority``). It
+    costs a pass over the whole prompt -- about 10 ms for a 3 MB history -- so a
+    request whose attempts reach no priority-scheduling endpoint never computes
+    it, and its hints carry none: the strict check then refuses to discount
+    against them, the direction that forgoes a discount rather than grants one.
+    """
+
+    __slots__ = ("_anchor", "_computed", "_messages")
+
+    def __init__(self, messages: Sequence[dict[str, Any]] | None) -> None:
+        self._messages = messages
+        self._anchor: tuple[int, str] | None = None
+        self._computed = False
+
+    def for_endpoint(self, adapter: BaseAdapter) -> tuple[int, str] | None:
+        """Return the anchor to store with a lease on ``adapter``'s endpoint, or None."""
+        if not _schedules_by_priority(adapter):
+            return None
+        if not self._computed:
+            self._anchor = prompt_anchor(self._messages)
+            self._computed = True
+        return self._anchor
+
+
 class FixedRouter:
     """Weighted random routing with automatic fallback.
 
@@ -2357,13 +2398,18 @@ class FixedRouter:
 
     def _dispatch_priority(
         self,
+        execution: BaseAdapter,
         endpoint_id: str,
         prefill_tokens: int,
         affinity_key: str | None,
         fingerprint: str | None = None,
         messages: Sequence[dict[str, Any]] | None = None,
-    ) -> int:
+    ) -> int | None:
         """Scheduling priority for one dispatch, ranked on *this* endpoint's work.
+
+        ``None`` when ``execution`` does not schedule by priority
+        (``_schedules_by_priority``): its adapter never sends the value, and
+        computing it walks the prompt against the stored anchor for nothing.
 
         Deliberately the un-cached estimate rather than the prompt size: the
         fleet runs above 90% prefix-cache hit, so ranking on the total would
@@ -2387,6 +2433,8 @@ class FixedRouter:
         never seen this conversation, and that fallback really is facing the
         cold prefill.
         """
+        if not _schedules_by_priority(execution):
+            return None
         return priority_for_prefill(
             self._prefill_load.uncached_estimate(
                 endpoint_id,
@@ -2443,8 +2491,9 @@ class FixedRouter:
             tools=params.get("tools"),
             response_format=params.get("response_format"),
         )
-        # Proof, for the next turn, that it really contains this prompt.
-        anchor = prompt_anchor(messages)
+        # Proof, for the next turn, that it really contains this prompt -- for
+        # the attempts whose endpoint reads it (see _PromptAnchor).
+        anchors = _PromptAnchor(messages)
         primary = None
         primary_claim = None
         lease = None
@@ -2466,7 +2515,6 @@ class FixedRouter:
                         prefill_tokens,
                         affinity_key=affinity_key,
                         fingerprint=fingerprint,
-                        anchor=anchor,
                     )
         except BaseException:
             if primary_claim is not None:
@@ -2488,6 +2536,10 @@ class FixedRouter:
             self._prefill_load.release(lease)
             raise
         execution = leaf.adapter
+        # Read only where the hint is written, at release; set here, outside the
+        # routing transaction every request's selection waits on, because it is
+        # a pass over the whole prompt.
+        lease.anchor = anchors.for_endpoint(execution)
         primary_plan = self._primary_offload(
             model_id,
             primary,
@@ -2506,7 +2558,7 @@ class FixedRouter:
                 provider=execution.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                        execution, endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     # A response that arrives whole has no first token to watch,
@@ -2634,7 +2686,12 @@ class FixedRouter:
                         provider=execution.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                                endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                                execution,
+                                endpoint_id,
+                                prefill_tokens,
+                                affinity_key,
+                                fingerprint,
+                                messages,
                             ),
                             # The offload attempt queues normally: there is
                             # nowhere left to send it.
@@ -2652,13 +2709,15 @@ class FixedRouter:
                         },
                     ):
                         self._ensure_health(endpoint_id)
+                        # Before the transaction: a pass over the whole prompt.
+                        fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
                             lease = self._prefill_load.acquire(
                                 endpoint_id,
                                 prefill_tokens,
                                 affinity_key=affinity_key,
                                 fingerprint=fingerprint,
-                                anchor=anchor,
+                                anchor=fallback_anchor,
                             )
                         try:
                             resp = await leaf.chat_completion(messages, **params)
@@ -2755,8 +2814,9 @@ class FixedRouter:
             tools=params.get("tools"),
             response_format=params.get("response_format"),
         )
-        # Proof, for the next turn, that it really contains this prompt.
-        anchor = prompt_anchor(messages)
+        # Proof, for the next turn, that it really contains this prompt -- for
+        # the attempts whose endpoint reads it (see _PromptAnchor).
+        anchors = _PromptAnchor(messages)
         primary = None
         primary_claim = None
         lease = None
@@ -2778,7 +2838,6 @@ class FixedRouter:
                         prefill_tokens,
                         affinity_key=affinity_key,
                         fingerprint=fingerprint,
-                        anchor=anchor,
                     )
         except BaseException:
             if primary_claim is not None:
@@ -2796,6 +2855,8 @@ class FixedRouter:
             self._prefill_load.release(lease)
             raise
         execution = leaf.adapter
+        # As in chat_completion: outside the routing transaction.
+        lease.anchor = anchors.for_endpoint(execution)
         primary_plan = self._primary_offload(
             model_id,
             primary,
@@ -2818,7 +2879,12 @@ class FixedRouter:
                 provider=execution.config.provider,
                 **{
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
-                        primary_endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
+                        execution,
+                        primary_endpoint_id,
+                        prefill_tokens,
+                        affinity_key,
+                        fingerprint,
+                        messages,
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     req_ctx.UPSTREAM_DISPATCH_WATCH: primary_watch,
@@ -2985,6 +3051,7 @@ class FixedRouter:
                         provider=execution.config.provider,
                         **{
                             req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
+                                execution,
                                 adapter_endpoint_id,
                                 prefill_tokens,
                                 affinity_key,
@@ -3008,13 +3075,15 @@ class FixedRouter:
                             offload_endpoint_id=earlier_offload_endpoint,
                         )
                         first = True
+                        # Before the transaction: a pass over the whole prompt.
+                        fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
                             lease = self._prefill_load.acquire(
                                 adapter_endpoint_id,
                                 prefill_tokens,
                                 affinity_key=affinity_key,
                                 fingerprint=fingerprint,
-                                anchor=anchor,
+                                anchor=fallback_anchor,
                             )
                         stream = aiter(leaf.stream_chat_completion(messages, **params))
                         if fallback_watch is not None:

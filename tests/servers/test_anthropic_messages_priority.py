@@ -415,3 +415,53 @@ async def test_a_failure_that_cannot_lose_the_cache_keeps_the_hints(
     assert forgotten == []
     assert tracker.backlog(endpoint_id) == 0
     await asyncio.sleep(0)
+
+
+def _count_anchors(monkeypatch) -> list[int]:
+    """Count the prompt anchors this surface computes, still computing them."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    calls: list[int] = []
+    real_anchor = amod.prompt_anchor
+
+    def counting(messages):
+        calls.append(1)
+        return real_anchor(messages)
+
+    monkeypatch.setattr(amod, "prompt_anchor", counting)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_route_without_the_flag_computes_no_anchor(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, no_log_store
+):
+    """The anchor's one reader is the priority, which this route never sends.
+
+    It is a pass over the whole prompt -- the Claude Code histories this
+    surface carries run to megabytes -- so it is not computed for a route that
+    does not run priority scheduling.
+    """
+    _capture_upstream(monkeypatch)
+    calls = _count_anchors(monkeypatch)
+
+    r = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+
+    assert r.status_code == 200
+    assert calls == []
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_route_with_the_flag_still_anchors_the_prompt(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, no_log_store, priority_route
+):
+    sent = _capture_upstream(monkeypatch)
+    calls = _count_anchors(monkeypatch)
+
+    r = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+
+    assert r.status_code == 200
+    assert calls == [1]
+    assert sent["priority"] == PRIORITY_INTERACTIVE
+    await asyncio.sleep(0)

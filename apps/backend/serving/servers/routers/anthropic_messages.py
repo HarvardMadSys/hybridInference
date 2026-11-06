@@ -2187,7 +2187,11 @@ async def execute_messages(
     prefill_messages, prefill_tools = _prefill_inputs(body)
     prefill_tokens = estimate_prefill_tokens(prefill_messages, tools=prefill_tools)
     prefill_fingerprint = conversation_fingerprint(prefill_messages, tools=prefill_tools)
-    prefill_anchor = prompt_anchor(prefill_messages)
+    # The priority, and the anchor whose only reader is a later turn's priority,
+    # reach the upstream only on a route that runs priority scheduling; anywhere
+    # else they are a pass over the whole prompt for nothing (as in FixedRouter).
+    schedules_by_priority = bool(getattr(adapter.config, "priority_scheduling", False))
+    prefill_anchor = prompt_anchor(prefill_messages) if schedules_by_priority else None
     prefill_load = router_exec.prefill_load
     prefill_affinity = affinity_key
 
@@ -2220,19 +2224,20 @@ async def execute_messages(
         until the process restarts. Selection would then steer traffic away
         from a replica that is idle, which is worse than not accounting at all.
         """
-        req_ctx.update(
-            {
-                req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
-                    prefill_load.uncached_estimate(
-                        dispatch_endpoint_id,
-                        prefill_tokens,
-                        prefill_affinity,
-                        fingerprint=prefill_fingerprint,
-                        messages=prefill_messages,
+        if schedules_by_priority:
+            req_ctx.update(
+                {
+                    req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
+                        prefill_load.uncached_estimate(
+                            dispatch_endpoint_id,
+                            prefill_tokens,
+                            prefill_affinity,
+                            fingerprint=prefill_fingerprint,
+                            messages=prefill_messages,
+                        )
                     )
-                )
-            }
-        )
+                }
+            )
         return prefill_load.acquire(
             dispatch_endpoint_id,
             prefill_tokens,

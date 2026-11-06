@@ -841,9 +841,13 @@ class _PriorityCapturingAdapter(BaseAdapter):
     An adapter is the only place that observation is meaningful: ``req_ctx.push``
     unwinds when the router leaves the block, so reading it afterwards proves
     nothing about what the upstream request would have carried.
+
+    It stands for a route that runs priority scheduling, the only kind the
+    router computes and publishes a priority for.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, *, priority_scheduling: bool = True) -> None:
+        config.priority_scheduling = priority_scheduling
         super().__init__(config)
         self.seen: list[Any] = []
 
