@@ -15,6 +15,7 @@ from serving.config.app_config import config_value, on_change
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
 from serving.stream import done_sentinel
+from serving.structured_output import requested_format, with_instruction
 from serving.utils.logging import get_logger
 from serving.utils.messages import (
     flatten_text_content,
@@ -81,6 +82,15 @@ class UpstreamStreamError(aiohttp.ClientError):
     def __init__(self, message: str, status: int) -> None:
         super().__init__(message)
         self.status = status
+
+
+# vLLM ends a request it aborted -- its engine shutting down under it, say --
+# with ``finish_reason: "abort"`` and whatever it had generated so far, inside
+# an ordinary 200. That is a failed generation, not a finished one: raised as
+# an upstream error, the router falls back and a batch item is retried instead
+# of the caller receiving a truncated or empty reply as the model's answer.
+_ABORTED_FINISH_REASON = "abort"
+_ABORTED_ERROR = "Upstream aborted the generation before it finished"
 
 
 # Used when an error frame names no usable HTTP status. Not a client error, so
@@ -1240,6 +1250,52 @@ class OpenAICompatAdapter(BaseAdapter):
         if isinstance(priority, int) and not isinstance(priority, bool):
             payload["priority"] = priority
 
+    def _apply_response_format(
+        self, payload: dict[str, Any], params: dict[str, Any], *, stream: bool
+    ) -> None:
+        """Forward the request's ``response_format`` as far as this endpoint takes it.
+
+        What the endpoint cannot take is described in the prompt instead: a
+        route without ``supports_structured_output``, or a provider that keeps
+        only ``json_object`` of a schema, would otherwise answer free text with
+        the model never having been told the shape it was asked for.
+
+        A vLLM route also gets ``structured_outputs`` with
+        ``disable_any_whitespace``: vLLM's JSON grammar otherwise admits any
+        amount of whitespace between tokens, and a model can loop on newlines
+        until ``max_tokens`` without ever writing a key. vLLM merges the schema
+        from ``response_format`` into it, and a server too old to know the
+        field ignores it.
+        """
+        wanted = requested_format(params)
+        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
+        if filtered_rf and self.config.supports_structured_output:
+            payload["response_format"] = filtered_rf
+            if self.config.vllm_structured_outputs and wanted is not None:
+                if wanted.schema is not None:
+                    payload["structured_outputs"] = {
+                        "json": wanted.schema,
+                        "disable_any_whitespace": True,
+                    }
+                elif wanted.kind == "json_object":
+                    payload["structured_outputs"] = {
+                        "json_object": True,
+                        "disable_any_whitespace": True,
+                    }
+            elif (
+                stream
+                and supports_guided_json(self._usage_profile)
+                and (schema := params.get("response_format", {}).get("schema"))
+            ):
+                payload["guided_json"] = schema
+        if wanted is None:
+            return
+        forwarded = payload.get("response_format")
+        if forwarded is None or (
+            wanted.schema is not None and forwarded.get("type") != "json_schema"
+        ):
+            payload["messages"] = with_instruction(payload["messages"], wanted)
+
     def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
         """Subclass extension point for provider-specific payload mutation.
 
@@ -1282,9 +1338,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         self._apply_supported_passthrough_params(payload, params)
 
-        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
-        if filtered_rf and self.config.supports_structured_output:
-            payload["response_format"] = filtered_rf
+        self._apply_response_format(payload, params, stream=False)
         self._apply_upstream_priority(payload)
         payload = self._augment_payload(payload, stream=False)
 
@@ -1344,13 +1398,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         self._apply_supported_passthrough_params(payload, params)
 
-        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
-        if filtered_rf and self.config.supports_structured_output:
-            payload["response_format"] = filtered_rf
-            if supports_guided_json(self._usage_profile) and (
-                schema := params.get("response_format", {}).get("schema")
-            ):
-                payload["guided_json"] = schema
+        self._apply_response_format(payload, params, stream=True)
         if getattr(self.config, "include_usage_in_stream", False):
             existing_options = payload.get("stream_options") or {}
             payload["stream_options"] = {**existing_options, "include_usage": True}
@@ -1535,13 +1583,22 @@ class OpenAICompatAdapter(BaseAdapter):
                         # marks them ``finish_reason: "error"``: a failure, never
                         # a finish, with or without the error object beside it.
                         errored = isinstance(raw_choices, list) and any(
-                            isinstance(choice, dict) and choice.get("finish_reason") == "error"
+                            isinstance(choice, dict)
+                            and choice.get("finish_reason") in ("error", _ABORTED_FINISH_REASON)
                             for choice in raw_choices
                         )
                         if isinstance(data, dict) and (
                             (data.get("error") and not raw_choices) or errored
                         ):
-                            error = data.get("error")
+                            error = data.get("error") or (
+                                _ABORTED_ERROR
+                                if any(
+                                    isinstance(choice, dict)
+                                    and choice.get("finish_reason") == _ABORTED_FINISH_REASON
+                                    for choice in raw_choices or ()
+                                )
+                                else None
+                            )
                             raise UpstreamStreamError(
                                 _stream_error_message(error),
                                 _stream_error_status(error),
@@ -1723,6 +1780,8 @@ class OpenAICompatAdapter(BaseAdapter):
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""
         choice, message = unpack_first_choice(response, self.config.provider)
+        if choice.get("finish_reason") == _ABORTED_FINISH_REASON:
+            raise UpstreamStreamError(_ABORTED_ERROR, _UNCLASSIFIED_STREAM_ERROR_STATUS)
         tool_calls = extract_tool_calls_for_profile(self._usage_profile, message)
 
         usage = self._parse_usage(response.get("usage", {}))
