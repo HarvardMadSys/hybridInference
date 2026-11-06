@@ -326,7 +326,9 @@ def test_alternating_notice_alternatives_do_not_backtrack():
 
     adversarial = "The model is starting up" + (" try again shortly" * 20) + " x"
     start = time.perf_counter()
-    outcome = classify_completion_outcome(content=adversarial, usage=None, http_status=200, terminal=True)
+    outcome = classify_completion_outcome(
+        content=adversarial, usage=None, http_status=200, terminal=True
+    )
     elapsed = time.perf_counter() - start
     assert outcome is CompletionOutcome.PROGRESS
     assert elapsed < 0.1, f"classification took {elapsed:.3f}s"
@@ -334,13 +336,21 @@ def test_alternating_notice_alternatives_do_not_backtrack():
 
 def test_whitespace_stream_prefix_stays_bounded():
     """2000 whitespace chunks must classify quickly without recording success."""
+    import json as _json
     import time
 
     from routing.completion_outcome import classify_stream_prefix
     from routing.response_text import accumulate_stream_prefix
 
-    import json as _json
-    ws = _json.dumps({"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m", "choices": [{"index": 0, "delta": {"content": " "}, "finish_reason": None}]})
+    ws = _json.dumps(
+        {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "m",
+            "choices": [{"index": 0, "delta": {"content": " "}, "finish_reason": None}],
+        }
+    )
     whitespace_chunk = "data: " + ws + "\n\n"
     chunks = [whitespace_chunk for _ in range(2000)]
     start = time.perf_counter()

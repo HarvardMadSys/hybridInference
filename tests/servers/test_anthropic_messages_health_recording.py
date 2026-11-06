@@ -974,7 +974,9 @@ async def test_streaming_warmup_delta_does_not_close_circuit(
 
     monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
 
-    async with anthropic_test_client.stream("POST", "/v1/messages", json=_body(stream=True), headers=_auth()) as r:
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=_body(stream=True), headers=_auth()
+    ) as r:
         assert r.status_code == 200
         async for _ in r.aiter_bytes():
             pass

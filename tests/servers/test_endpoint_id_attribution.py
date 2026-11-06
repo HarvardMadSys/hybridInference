@@ -243,7 +243,7 @@ async def test_messages_endpoint_id_matches_the_health_registry_key(
     recorded: list[str] = []
     outcomes: list[CompletionOutcome | None] = []
 
-    def record_success(eid: str, *, outcome: CompletionOutcome | None = None) -> None:
+    def record_success(eid: str, *, outcome: CompletionOutcome) -> None:
         recorded.append(eid)
         outcomes.append(outcome)
 

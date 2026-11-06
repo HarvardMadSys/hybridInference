@@ -98,9 +98,11 @@ class StreamPrefixAccumulator:
 
     @property
     def saturated(self) -> bool:
+        """Return whether the bounded prefix has reached its cap."""
         return self._total >= self.max_chars
 
     def observe(self, chunk: Any) -> None:
+        """Fold one stream chunk's text into the bounded prefix."""
         if self.saturated:
             return
         text = chunk_text(chunk)
@@ -111,6 +113,7 @@ class StreamPrefixAccumulator:
         self._total += min(len(text), room)
 
     def prefix(self) -> str | None:
+        """Return the accumulated prefix, or None before any content."""
         if not self._parts:
             return None
         return "".join(self._parts)

@@ -18,7 +18,7 @@ class _FakeRegistry(EndpointHealthRegistry):
         super().__init__()
         self.success_outcomes: list[Any] = []
 
-    def record_success(self, endpoint_id: str, *, outcome: Any = None) -> None:
+    def record_success(self, endpoint_id: str, *, outcome: Any) -> None:
         self.success_outcomes.append(outcome)
         super().record_success(endpoint_id, outcome=outcome)
 
