@@ -59,6 +59,9 @@ _CAPACITY_SWEEP_INTERVAL_SECONDS = 60
 # hashed overflow windows rather than being admitted without accounting.
 # Live entries are never evicted from the attacker-populated maps.
 _MAX_ACTIVE_BUCKETS = 20_000
+# Refusal pressure is one small scalar per IP, not a full admission queue;
+# it can retain far more identities before overflowing without memory risk.
+_MAX_REFUSAL_BUCKETS = 200_000
 _MAX_DEVICES_PER_ACCOUNT = 64
 _OVERFLOW_BUCKET_COUNT = 4096
 _MAX_CAPACITY_PRESSURE_COUNT = 2**31 - 1
@@ -288,15 +291,10 @@ def _active_refusal_count(ip_key: str, now: float) -> int:
         pressure = None
     if pressure is not None:
         return pressure.count
-
-    overflow_slot = _overflow_slot("refusal", ip_key)[1]
-    pressure = _ip_refusal_overflow.get(overflow_slot)
-    if pressure is None:
-        return 0
-    if now - pressure.started_at >= _HOUR_SECONDS:
-        del _ip_refusal_overflow[overflow_slot]
-        return 0
-    return pressure.count
+    # Never read the shared overflow slot for a key that was never routed
+    # there: an attacker's slot pressure would otherwise lock out unrelated
+    # legitimate IPs sharing the slot. Overflow pressure fails open here.
+    return 0
 
 
 def _record_ip_refusal_pressure(ip_key: str, now: float, per_ip: int) -> None:
@@ -308,23 +306,23 @@ def _record_ip_refusal_pressure(ip_key: str, now: float, per_ip: int) -> None:
         del _ip_refusal_overflow[overflow_slot]
         overflow_pressure = None
     if pressure is None:
-        if overflow_pressure is not None:
+        if False:  # overflow pressure is never consulted for reads
             pressure = overflow_pressure
         else:
-            if len(_ip_refusal_pressure) >= _MAX_ACTIVE_BUCKETS:
+            if len(_ip_refusal_pressure) >= _MAX_REFUSAL_BUCKETS:
                 last_sweep = _last_capacity_sweep.get("refusal", float("-inf"))
                 if now - last_sweep >= _CAPACITY_SWEEP_INTERVAL_SECONDS:
                     _sweep_expired_refusals(now)
                     _last_capacity_sweep["refusal"] = now
-            if len(_ip_refusal_pressure) < _MAX_ACTIVE_BUCKETS:
+            if len(_ip_refusal_pressure) < _MAX_REFUSAL_BUCKETS:
                 pressure = _RefusalPressure(started_at=now)
                 _ip_refusal_pressure[ip_key] = pressure
             else:
+                # Refusal map is enlarged (200k scalars); if even that is full,
+                # fail open rather than sharing a slot that would lock out
+                # unrelated IPs. The admission windows still apply.
                 _note_capacity_pressure("refusal", now)
-                pressure = _ip_refusal_overflow.setdefault(
-                    overflow_slot,
-                    _RefusalPressure(started_at=now),
-                )
+                return
 
     pressure.count = min(pressure.count + 1, per_ip)
 
@@ -506,16 +504,21 @@ async def check_and_record_login(
             else False
         )
 
-        overflow_account = (
-            _prune_overflow_bucket("account", account_key, account_cutoff)
-            if spill_account
-            else None
-        )
-        overflow_ip = _prune_overflow_bucket("ip", ip_key, ip_cutoff) if spill_ip else None
-        if overflow_account is not None and len(overflow_account) >= per_account:
-            return False, "account"
-        if overflow_ip is not None and len(overflow_ip) >= per_ip:
-            return False, "ip"
+        # Saturated overflow fails open only at the IP scope: the shared slot
+        # can be filled by a distributed attacker, and refusing every newcomer
+        # hashing there is a lockout (999/1000 victims 429 on the IP scope).
+        # The per-address and account-wide windows still apply. The account
+        # scope keeps overflow enforcement so a repeated identity under
+        # saturation is still bounded.
+        bypass_ip = False
+        if spill_account:
+            overflow_account = _prune_overflow_bucket("account", account_key, account_cutoff)
+            if overflow_account is not None and len(overflow_account) >= per_account:
+                return False, "account"
+        if spill_ip:
+            overflow_ip = _prune_overflow_bucket("ip", ip_key, ip_cutoff)
+            if overflow_ip is not None and len(overflow_ip) >= per_ip:
+                bypass_ip = True
 
         if not bypass_address:
             _account_address_attempts.setdefault(address_key, deque()).append(now)
@@ -524,9 +527,9 @@ async def check_and_record_login(
         else:
             _account_attempts.setdefault(account_key, deque()).append(now)
         if resolved:
-            if spill_ip:
+            if spill_ip and not bypass_ip:
                 _record_overflow_attempt("ip", ip_key, now)
-            else:
+            elif not spill_ip:
                 _ip_attempts.setdefault(ip_key, deque()).append(now)
         else:
             _unresolved_attempts.append(now)

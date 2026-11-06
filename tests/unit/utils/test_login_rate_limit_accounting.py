@@ -252,7 +252,7 @@ async def test_refusal_pressure_map_is_bounded(monkeypatch):
     for index, ip in enumerate(ips):
         assert await limiter.check_and_record_login(f"user{index}", ip) == (True, None)
 
-    monkeypatch.setattr(limiter, "_MAX_ACTIVE_BUCKETS", 2)
+    monkeypatch.setattr(limiter, "_MAX_REFUSAL_BUCKETS", 2)
 
     # These attempts are against existing account/address keys, but begin a
     # separate refusal record for each source IP. The third IP uses bounded
@@ -531,3 +531,28 @@ async def test_full_pair_map_does_not_create_refusal_slot_lockout(monkeypatch):
     assert await limiter.check_and_record_login("third", "198.51.100.3") == (True, None)
     assert limiter.get_login_rate_limit_capacity_pressure_counts()["account_address"] > 0
     assert not limiter._ip_refusal_overflow
+
+
+@pytest.mark.asyncio
+async def test_saturation_at_defaults_does_not_lock_out_fresh_ips():
+    """At default caps, a 40k-key flood must not 429 unrelated fresh IPs.
+
+    Deterministic saturation: fill the account/IP maps to _MAX_ACTIVE_BUCKETS
+    from one /48, then 1000 distinct victims must still admit (IP scope fails
+    open; overflow slots are never read for unrouted keys). Fresh clients
+    include IPv4 /24s and IPv6 /64s mixed.
+    """
+    from serving.utils import login_rate_limit as limiter
+
+    limiter.reset_login_rate_limit_state()
+    cap = limiter._MAX_ACTIVE_BUCKETS
+    # Flood with distinct accounts from one /48 (IPv6 bucketed to /64).
+    for i in range(cap):
+        ip = f"2001:db8:{i >> 8:04x}:{i & 0xff:04x}::1"
+        allowed, _ = await limiter.check_and_record_login(f"flood-{i}@example.com", ip)
+        assert allowed, f"flood insert {i} refused unexpectedly"
+    # Victims: 1000 fresh IPs/accounts outside the flooded /48.
+    for i in range(1000):
+        ip = f"198.51.{i // 256}.{i % 256}" if i % 2 == 0 else f"2001:db8:ffff:{i:04x}::1"
+        allowed, reason = await limiter.check_and_record_login(f"victim-{i}@example.com", ip)
+        assert allowed, f"victim {i} locked out: {reason}"
