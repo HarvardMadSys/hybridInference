@@ -715,18 +715,25 @@ class TestUsageStatistics:
         assert data["usage"]["cache_read_tokens"] >= 90
         assert data["usage"]["cache_write_tokens"] >= 40
         assert data["usage"]["reasoning_tokens"] >= 15
+        assert data["usage"]["reasoning_tokens_known_requests"] >= 2
 
     @pytest.mark.asyncio
-    async def test_get_usage_defaults_new_token_fields_to_zero(
+    async def test_get_usage_defaults_new_token_fields(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
     ):
-        """A user with no logged cache or reasoning usage reads zeros, not nulls."""
+        """No logged usage: cache counts read 0, and reasoning reads unknown, not 0.
+
+        A reasoning sum over rows that reported none is not a measured 0; the
+        dashboard shows it as not reported.
+        """
         response = await auth_app_client.get("/user/usage?period=today", headers=auth_headers)
 
         assert response.status_code == 200
         usage = response.json()["usage"]
-        for field in ("cache_read_tokens", "cache_write_tokens", "reasoning_tokens"):
+        for field in ("cache_read_tokens", "cache_write_tokens"):
             assert usage[field] == 0
+        assert usage["reasoning_tokens"] is None
+        assert usage["reasoning_tokens_known_requests"] == 0
 
 
 class TestRecentRequests:

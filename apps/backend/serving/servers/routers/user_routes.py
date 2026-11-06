@@ -74,6 +74,7 @@ from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
+from serving.utils.token_utils import optional_token_count
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
@@ -1057,7 +1058,10 @@ async def get_usage(
             completion_tokens=int(period_data.get("completion_tokens") or 0),
             cache_read_tokens=int(period_data.get("cache_read_tokens") or 0),
             cache_write_tokens=int(period_data.get("cache_write_tokens") or 0),
-            reasoning_tokens=int(period_data.get("reasoning_tokens") or 0),
+            reasoning_tokens=optional_token_count(period_data.get("reasoning_tokens")),
+            reasoning_tokens_known_requests=int(
+                period_data.get("reasoning_tokens_known_requests") or 0
+            ),
             cost_usd=float(period_data.get("cost_usd") or 0),
         ),
     )

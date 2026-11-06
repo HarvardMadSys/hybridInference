@@ -3063,6 +3063,20 @@
     "source": "Reasoning tokens",
     "text": "推理 token"
   },
+  "dashboard.usage.reasoning_partial": [
+    {
+      "source": "reported by only 1 request",
+      "text": "仅 1 个请求上报"
+    },
+    {
+      "source": "reported by only {known} requests",
+      "text": "仅 {known} 个请求上报"
+    }
+  ],
+  "dashboard.usage.reasoning_unreported": {
+    "source": "Not reported",
+    "text": "未上报"
+  },
   "dashboard.usage.requests": {
     "source": "Requests",
     "text": "请求数"

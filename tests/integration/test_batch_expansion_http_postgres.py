@@ -159,7 +159,7 @@ class _NativeUpstream(AnthropicAdapter):
         """Wait until the real handler has handed the upstream a call with *text*."""
         await asyncio.wait_for(self.entered.setdefault(text, asyncio.Event()).wait(), timeout=10)
 
-    async def messages(self, body, *, request_id, extra_headers=None):
+    async def messages(self, body, *, request_id, usage_sink=None, extra_headers=None):
         text = body["messages"][-1]["content"]
         self.calls.append((self._api_version(), json.loads(json.dumps(body))))
         if isinstance(text, str) and text in self.entered:

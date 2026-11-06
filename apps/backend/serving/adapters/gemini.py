@@ -471,6 +471,7 @@ class GeminiAdapter(BaseAdapter):
                 reasoning_tokens=int(reasoning_tokens),
                 cache_read_tokens=int(cached_tokens),  # Gemini: cached tokens are read from cache
                 cache_read_reported="cachedContentTokenCount" in usage_meta,
+                reasoning_reported="thoughtsTokenCount" in usage_meta,
             )
         else:
             prompt_tokens = estimate_prompt_tokens(messages)
@@ -536,6 +537,7 @@ class GeminiAdapter(BaseAdapter):
         total_content = ""
         prompt_tokens = 0
         reasoning_tokens = 0
+        reasoning_reported = False
         cached_tokens = 0
         cache_read_reported = False
         completion_tokens_upstream = 0
@@ -683,6 +685,9 @@ class GeminiAdapter(BaseAdapter):
                         usage_meta = data["usageMetadata"]
                         prompt_tokens = usage_meta.get("promptTokenCount", prompt_tokens)
                         reasoning_tokens = usage_meta.get("thoughtsTokenCount", reasoning_tokens)
+                        reasoning_reported = (
+                            reasoning_reported or "thoughtsTokenCount" in usage_meta
+                        )
                         cached_tokens = usage_meta.get("cachedContentTokenCount", cached_tokens)
                         cache_read_reported = (
                             cache_read_reported or "cachedContentTokenCount" in usage_meta
@@ -763,7 +768,7 @@ class GeminiAdapter(BaseAdapter):
         }
 
         # Add optional fields for OpenAI compatibility
-        if reasoning_tokens > 0:
+        if reasoning_reported or reasoning_tokens > 0:
             usage_chunk["usage"]["reasoning_tokens"] = int(reasoning_tokens)
         if cache_read_reported or cached_tokens > 0:
             usage_chunk["usage"]["cache_read_tokens"] = int(cached_tokens)

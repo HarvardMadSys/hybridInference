@@ -37,7 +37,7 @@ from routing.prefill_load import (
     prompt_anchor,
 )
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
-from serving.adapters.anthropic_translator import normalize_inline_system
+from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
@@ -1003,7 +1003,7 @@ _cost_increment_tasks: set[asyncio.Task[Any]] = set()
 def _schedule_messages_cost_increment(
     op_store: Any,
     user_id: str | None,
-    usage: dict[str, int],
+    usage: dict[str, Any],
     pricing: dict[str, str] | None,
     *,
     api_key_id: int | None = None,
@@ -1052,7 +1052,7 @@ def _schedule_log_store_task(
     request_id: str,
     model_id: str,
     provider: str,
-    usage: dict[str, int],
+    usage: dict[str, Any],
     latency_ms: int,
     status_code: int,
     pricing: dict[str, str],
@@ -1082,7 +1082,11 @@ def _schedule_log_store_task(
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
-    ``cache_creation_input_tokens``). To match OpenAI semantics used by the
+    ``cache_creation_input_tokens``). A translated request also carries the
+    upstream's own OpenAI-shaped counts under ``OPENAI_USAGE_SINK_KEY``; those
+    are logged and billed as reported, exactly as the chat surface would log
+    and bill the same upstream usage, so the reasoning count and the reported
+    total reach ``api_logs``. To match OpenAI semantics used by the
     rest of the system (admin dashboard, completions logger, downstream
     metrics), ``prompt_tokens`` here is the *total* input including the
     cached subset (input_tokens + cache_read + cache_write). The cached
@@ -1111,7 +1115,7 @@ def _schedule_log_store_task(
     # counter increment below so the logged cost_usd and the billed amount agree.
     # Cache keys are omitted entirely when the provider did not report them, so
     # the columns are stored NULL (unknown) rather than 0 (measured miss).
-    usage_for_cost = {
+    usage_for_cost: dict[str, int | None] = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": output_tokens,
         "total_tokens": total_tokens,
@@ -1120,6 +1124,18 @@ def _schedule_log_store_task(
         usage_for_cost["cache_read_tokens"] = cache_read
     if cache_write is not None:
         usage_for_cost["cache_write_tokens"] = cache_write
+    openai_usage = usage.get(OPENAI_USAGE_SINK_KEY)
+    if isinstance(openai_usage, dict):
+        # The translated path: the upstream's own counts. Its total is kept as
+        # reported (None stays None) because billing reads it as the evidence of
+        # whether completion_tokens already includes reasoning; a total made up
+        # here would decide that instead. A reasoning count the upstream did not
+        # report is left out, so the column stays NULL (unknown), not 0.
+        usage_for_cost = {
+            key: value
+            for key, value in openai_usage.items()
+            if value is not None or key == "total_tokens"
+        }
 
     log_payload = {
         "request_id": request_id,
@@ -1401,7 +1417,7 @@ def _resolve_stream_usage(
     request_usage: dict[str, Any],
     response_acc: dict | None,
     request_payload: dict[str, Any] | None,
-) -> tuple[dict[str, int], bool]:
+) -> tuple[dict[str, Any], bool]:
     """Resolve the usage to log for a streaming request, recovering lost counts.
 
     When the upstream stream is cut short before the adapter flushes
@@ -1426,7 +1442,7 @@ def _resolve_stream_usage(
     Returns ``(usage, estimated)`` where ``usage`` is the Anthropic-shaped dict
     and ``estimated`` is True when any field was filled by estimation.
     """
-    base: dict[str, int] = {
+    base: dict[str, Any] = {
         "input_tokens": int(request_usage.get("input_tokens", 0) or 0),
         "output_tokens": int(request_usage.get("output_tokens", 0) or 0),
     }
@@ -1434,6 +1450,11 @@ def _resolve_stream_usage(
         value = optional_token_count(request_usage.get(key))
         if value is not None:
             base[key] = value
+    openai_usage = request_usage.get(OPENAI_USAGE_SINK_KEY)
+    if isinstance(openai_usage, dict):
+        # Reported by the upstream, so the adapter flushed it: never estimated.
+        base[OPENAI_USAGE_SINK_KEY] = dict(openai_usage)
+        return base, False
     # Adapter flushed real usage (normal completion) -> trust it as-is.
     if base["input_tokens"] or base["output_tokens"]:
         return base, False
@@ -2235,7 +2256,7 @@ async def execute_messages(
             gen_started = True
             # Bound to this generator's execution: see _begin_prefill.
             prefill_lease = _begin_prefill()
-            request_usage = {
+            request_usage: dict[str, Any] = {
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
@@ -2626,8 +2647,16 @@ async def execute_messages(
         )
 
     prefill_lease = _begin_prefill()
+    # This request's own sink: the adapter's OpenAI-shaped counts for the log,
+    # kept out of the response the client receives.
+    request_usage: dict[str, Any] = {}
     try:
-        resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
+        resp = await adapter.messages(
+            body,
+            request_id=request_id,
+            usage_sink=request_usage,
+            extra_headers=forwarded_headers,
+        )
         prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         # Not str(exc.detail): unlike the router's own HTTPExceptions (static
@@ -2847,6 +2876,8 @@ async def execute_messages(
         cache_count = optional_token_count(usage.get(key))
         if cache_count is not None:
             usage_for_log[key] = cache_count
+    if isinstance(request_usage.get(OPENAI_USAGE_SINK_KEY), dict):
+        usage_for_log[OPENAI_USAGE_SINK_KEY] = request_usage[OPENAI_USAGE_SINK_KEY]
     latency_ms = int((time.time() - start) * 1000)
     provider = adapter.config.provider
     if log_store:

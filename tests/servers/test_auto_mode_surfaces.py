@@ -91,7 +91,9 @@ class _NativeRecorder(_Recorder):
 
     native_format = "anthropic"
 
-    async def messages(self, body, *, request_id, extra_headers=None) -> dict[str, Any]:
+    async def messages(
+        self, body, *, request_id, usage_sink=None, extra_headers=None
+    ) -> dict[str, Any]:
         self._record(copy.deepcopy(body["messages"]), {})
         return {
             "id": "msg_1",
