@@ -195,6 +195,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, HTTPException, Request
+from starlette.requests import ClientDisconnect
 
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
 from serving.surfaces.context import InteractiveAdmission
@@ -273,11 +274,23 @@ async def _request_model(
     router: Any,
     embedding_adapters: dict[str, Any] | None,
 ) -> tuple[str | None, str | None]:
-    """Read and canonicalize a POST body's model without breaking admission."""
+    """Read and canonicalize a POST body's model without breaking admission.
+
+    A body that never arrives ends the request here with the 400 the route
+    would answer, instead of admitting it: the client went away, or the request
+    body limit refused the body (it answers 413 itself and reports a
+    disconnect), and either way there is nothing to hold a slot for.
+    """
     if router is None or request.method != "POST":
         return None, None
     try:
         body = await request.json()
+    except ClientDisconnect:
+        raise HTTPException(status_code=400, detail="There was an error parsing the body") from None
+    except Exception:
+        logger.debug("user_concurrency: exemption check skipped", exc_info=True)
+        return None, None
+    try:
         model = body.get("model") if isinstance(body, dict) else None
         canonical = canonical_model_id(model, router=router, embedding_adapters=embedding_adapters)
         return model, canonical
@@ -377,6 +390,17 @@ async def enforce_user_concurrency(
     # An exemption resolver needs the model before admission to choose its slot.
     # Without one, acquire the normal slot first so a slow POST body is counted.
     # FastAPI caches the parsed body for the handler later.
+    #
+    # Reading first is bounded: RequestBodyLimitMiddleware refuses a body over
+    # REQUEST_MAX_BODY_MB as its bytes arrive, before anything here parses it,
+    # and verify_api_key has already authenticated the caller. So a request
+    # costs at most one capped parse before admission -- no more than an
+    # admitted one may cost, with the exempt budget admitting 64 at once.
+    # Acquiring first would mean choosing the budget before the model is known:
+    # taking the normal slot would refuse an exempt-model request whenever the
+    # normal budget is full, which the exemption exists to allow, and taking
+    # an exempt slot would hold one for every request that turns out to be
+    # normal. Either changes who is admitted, so the order stays.
     parse_before_acquire = limiter is None or concurrency_resolver is not None
     model: str | None = None
     canonical: str | None = None
