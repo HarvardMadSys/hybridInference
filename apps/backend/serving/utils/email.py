@@ -373,6 +373,10 @@ def send_rejection_email(to_email: str, reason: str) -> bool:
     """
     site_name = get_site_identity().name
     subject = f"Your {site_name} registration update"
+    # Free text an admin typed, shown as text: a reason that mentions an
+    # address in angle brackets must not vanish into an unknown tag. The
+    # template transport escapes its own variables, so it gets the raw reason.
+    safe_reason = html_lib.escape(reason)
 
     html_body = f"""
     <html>
@@ -382,7 +386,7 @@ def send_rejection_email(to_email: str, reason: str) -> bool:
             <p>Unfortunately, your {site_name} registration was not approved at this time.</p>
             <div style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px;
                         margin: 20px 0; border-radius: 4px;">
-                <strong>Reason:</strong> {reason}
+                <strong>Reason:</strong> {safe_reason}
             </div>
             <p>If you believe this was a mistake, please contact the administrator.</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
@@ -586,7 +590,13 @@ def send_new_registration_admin_email(
     admin_url = f"{settings.frontend_url}/dashboard/admin"
     display_name = user_name or "(not provided)"
     use_case_text = (use_case or "").strip() or "(not provided)"
-    # HTML-escape the user-supplied use case and preserve line breaks.
+    # Every field below comes from an anonymous signup form, and this mail goes
+    # out from the deployment's own domain to its admins: escaped, a display
+    # name like ``<a href=...>`` reads as text instead of planting a link or a
+    # tracking pixel. The use case also keeps its line breaks.
+    safe_email = html_lib.escape(user_email)
+    safe_name = html_lib.escape(display_name)
+    safe_user_id = html_lib.escape(user_id)
     use_case_html = html_lib.escape(use_case_text).replace("\r\n", "\n").replace("\n", "<br>")
 
     site_name = get_site_identity().name
@@ -601,15 +611,15 @@ def send_new_registration_admin_email(
             <table style="border-collapse: collapse; margin: 20px 0;">
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold;">Email:</td>
-                    <td style="padding: 6px 0;">{user_email}</td>
+                    <td style="padding: 6px 0;">{safe_email}</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold;">Name:</td>
-                    <td style="padding: 6px 0;">{display_name}</td>
+                    <td style="padding: 6px 0;">{safe_name}</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold;">User ID:</td>
-                    <td style="padding: 6px 0; font-family: monospace; font-size: 13px;">{user_id}</td>
+                    <td style="padding: 6px 0; font-family: monospace; font-size: 13px;">{safe_user_id}</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold; vertical-align: top;">Use case:</td>
