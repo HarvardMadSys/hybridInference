@@ -20,6 +20,7 @@ import pydantic
 import pytest
 
 from routing import endpoint_health
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
 from serving.observability import alerts, state_alert_policy
 from serving.observability.alert_config import CircuitOpenStateChange
@@ -113,14 +114,14 @@ async def test_a_flapping_endpoint_posts_one_page_and_one_recovery():
         await _trip(registry)
         for _ in range(15):
             # Any success closes the circuit -- routing is unchanged ...
-            registry.record_success(ENDPOINT)
+            registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
             await _drain()
             assert _state(registry) == _CircuitState.CLOSED
             # ... and with availability under the floor one failure reopens it.
             registry.record_failure(ENDPOINT, reason="upstream_500")
             await _drain()
             assert _state(registry) == _CircuitState.OPEN
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain()
         # Closed, but the incident is still settling: nothing posted yet.
         assert _headings(mock_post) == [OPENED]
@@ -138,7 +139,7 @@ async def test_a_reopen_whose_page_the_policy_holds_still_cancels_the_recovery(m
     registry = EndpointHealthRegistry()
     with _slack() as mock_post:
         await _trip(registry)
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain()
         assert _STATE_TRANSITIONS.settling_since(KEY) is not None
 
@@ -157,7 +158,7 @@ async def test_a_reopen_whose_page_the_policy_holds_still_cancels_the_recovery(m
 
         # The next close settles afresh rather than closing on the old edge.
         _set_policy(monkeypatch, enabled=True)
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain()
         assert _headings(mock_post) == [OPENED]
         assert _STATE_TRANSITIONS.is_firing(KEY)
@@ -180,7 +181,7 @@ async def test_a_held_back_reopen_before_the_close_is_reported_cannot_start_a_se
     with _slack() as mock_post:
         await _trip(registry)
         _set_policy(monkeypatch, enabled=False)
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         registry.record_failure(ENDPOINT, reason="upstream_500")
         assert _state(registry) == _CircuitState.OPEN
         await _drain()
@@ -218,7 +219,7 @@ async def test_a_reopen_while_the_page_is_still_sending_settles_the_next_close_a
         for _ in range(3):
             registry.record_failure(ENDPOINT, reason="upstream_500")
         await page_posting.wait()
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         for _ in range(5):
             await asyncio.sleep(0)
         first_edge = _STATE_TRANSITIONS.settling_since(KEY)
@@ -231,7 +232,7 @@ async def test_a_reopen_while_the_page_is_still_sending_settles_the_next_close_a
         _set_policy(monkeypatch, enabled=False)
         registry.record_failure(ENDPOINT, reason="upstream_500")
         _set_policy(monkeypatch, enabled=True)
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         for _ in range(5):
             await asyncio.sleep(0)
 
@@ -251,7 +252,7 @@ async def test_a_shutdown_flush_does_not_announce_a_circuit_open_again(monkeypat
     registry = EndpointHealthRegistry()
     with _slack() as mock_post:
         await _trip(registry)
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain()
         # Reopened by a path that reported nothing: only the fence can tell.
         registry._circuits[ENDPOINT].state = _CircuitState.OPEN
@@ -266,7 +267,7 @@ async def test_the_settle_timer_itself_announces_the_close(monkeypatch):
     registry = EndpointHealthRegistry()
     with _slack() as mock_post:
         await _trip(registry)
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain()
         await asyncio.sleep(0.25)
         await _drain()
@@ -279,7 +280,7 @@ async def test_zero_settle_restores_closing_on_the_first_success(monkeypatch):
     registry = EndpointHealthRegistry()
     with _slack() as mock_post:
         await _trip(registry)
-        registry.record_success(ENDPOINT)
+        registry.record_success(ENDPOINT, outcome=CompletionOutcome.PROGRESS)
         await _drain()
 
     assert _headings(mock_post) == [OPENED, RECOVERED]
