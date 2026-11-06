@@ -168,12 +168,14 @@ For the full diagram (network layer, observability, storage), see
   [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))
   is applied by `RoutingManager` in
   [apps/backend/routing/manager.py](apps/backend/routing/manager.py) from
-  `config/routing.yaml` (`default_router:`, formerly `routing_strategy:`).
+  the distribution's `config/routing.yaml` (`default_router:`, formerly
+  `routing_strategy:`).
   Per-model router selection (`fixed` / `routewise`) lives in the
   [apps/backend/routing/strategies/](apps/backend/routing/strategies/) package
   and is dispatched by
   [apps/backend/routing/model_router_registry.py](apps/backend/routing/model_router_registry.py)
-  from each model's `router:` field in `config/models.yaml`.
+  from each model's `router:` field in the distribution's `config/models.yaml`
+  (see 6.3).
 - **Circuit breaker / EWMA health** — provider health tracking in
   [apps/backend/routing/](apps/backend/routing/).
 
