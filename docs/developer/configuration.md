@@ -66,6 +66,14 @@ producer warns on the first drop, every 100th drop, and at least once per
 is still observable. The rule uses the alert engine's existing cooldown, so a
 sustained loss episode does not page once per warning.
 
+Every record-driven rule keeps at most 250,000 samples in its window. At
+traffic that would exceed that, the oldest samples leave early: the window then
+covers less than `window_sec`, and a rate alert says
+`only the latest 250000 samples are kept`. The `top_paths` line of
+`failed_request_rate` tracks at most 256 distinct paths per window. Failures on
+any other path still count toward the rate, and the line says how many it left
+out.
+
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded

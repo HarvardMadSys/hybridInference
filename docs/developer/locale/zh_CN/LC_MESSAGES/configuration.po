@@ -2407,3 +2407,7 @@ msgstr "内置的 `rules.request_log_queue_saturation` 规则会在有界请求�
 #: ../developer/configuration.md
 msgid "`threshold_count` counts the producer's loss warnings, not dropped rows. The producer warns on the first drop, every 100th drop, and at least once per 60 seconds while drops continue, so a second small burst after a quiet period is still observable. The rule uses the alert engine's existing cooldown, so a sustained loss episode does not page once per warning."
 msgstr "`threshold_count` 统计生产端发出的丢弃警告次数，而不是丢弃行数。生产端在首次丢弃、每累计丢弃 100 行时发出警告；持续丢弃期间还会按 60 秒间隔刷新警告，因此静默一段时间后再次出现的小批量丢弃仍可被观测。该规则复用告警引擎现有的冷却机制，不会在持续丢弃期间每收到一次警告就发送一次通知。"
+
+#: ../developer/configuration.md
+msgid "Every record-driven rule keeps at most 250,000 samples in its window. At traffic that would exceed that, the oldest samples leave early: the window then covers less than `window_sec`, and a rate alert says `only the latest 250000 samples are kept`. The `top_paths` line of `failed_request_rate` tracks at most 256 distinct paths per window. Failures on any other path still count toward the rate, and the line says how many it left out."
+msgstr "每条由日志记录驱动的规则，其窗口内最多保留 250,000 个样本。流量高到会超出这一数量时，最早的样本会提前移出：此时窗口覆盖的时长短于 `window_sec`，比率类告警会注明 `only the latest 250000 samples are kept`。`failed_request_rate` 告警中的 `top_paths` 一行在每个窗口内最多跟踪 256 个不同路径。其他路径上的失败仍计入失败率，该行会注明有多少未列出。"
