@@ -694,7 +694,9 @@ def test_non_latin1_model_names_are_omitted_from_headers():
 
 
 @pytest.mark.asyncio
-async def test_streaming_keepalive_commit_omits_served_identity_until_first_content(chat_app, monkeypatch):
+async def test_streaming_keepalive_commit_omits_served_identity_until_first_content(
+    chat_app, monkeypatch
+):
     """A role-chunk timeout commit must not name the primary if a fallback later serves.
 
     Deterministic repro: patch the keepalive interval to 0.05s, primary fails
@@ -739,7 +741,11 @@ async def test_streaming_keepalive_commit_omits_served_identity_until_first_cont
     async with _AC(transport=transport, base_url="http://test") as client:
         r = await client.post(
             "/v1/chat/completions",
-            json={"model": CHAT_MODEL, "messages": [{"role": "user", "content": "Hi"}], "stream": True},
+            json={
+                "model": CHAT_MODEL,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
             headers={"x-probe": "synthetic"},
         )
     assert r.status_code == 200
@@ -758,13 +764,16 @@ async def test_streaming_fallback_before_first_content_names_fallback(chat_app):
     routing chunk is processed before the first forwarded chunk, so headers
     computed at commit describe the route that served.
     """
+
     class _FailingStreamAdapter(BaseAdapter):
         async def chat_completion(self, messages, **params):
             raise RuntimeError("primary failed")
+
         async def stream_chat_completion(self, messages, **params):
             raise RuntimeError("primary stream failed")
             if False:
                 yield ""
+
     primary_cfg = _chat_cfg(CHAT_MODEL)
     primary_cfg.provider = "zai"
     primary_cfg.base_url = "https://example-zai.test"
@@ -782,10 +791,15 @@ async def test_streaming_fallback_before_first_content_names_fallback(chat_app):
     _enable_trusted_probe(chat_app)
     transport = ASGITransport(app=chat_app)
     from httpx import AsyncClient as _AC
+
     async with _AC(transport=transport, base_url="http://test") as client:
         r = await client.post(
             "/v1/chat/completions",
-            json={"model": CHAT_MODEL, "messages": [{"role": "user", "content": "Hi"}], "stream": True},
+            json={
+                "model": CHAT_MODEL,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
             headers={"x-probe": "synthetic"},
         )
     assert r.status_code == 200
@@ -801,21 +815,28 @@ async def test_streaming_failure_after_commit_keeps_committed_headers(chat_app):
     chunks_yielded); headers must name the single serving route and the body
     ends with an in-band error frame, not a silent truncation.
     """
+
     class _LateFailAdapter(DummyAdapter):
         async def stream_chat_completion(self, messages, **params):
             yield self.format_stream_chunk(model=self.config.id, content="partial ")
             raise RuntimeError("late failure")
             if False:
                 yield ""
+
     cfg = _chat_cfg(CHAT_MODEL)
     chat_app.state.services.router.register_route(CHAT_MODEL, [(_LateFailAdapter(cfg), 1.0)])
     _enable_trusted_probe(chat_app)
     transport = ASGITransport(app=chat_app)
     from httpx import AsyncClient as _AC
+
     async with _AC(transport=transport, base_url="http://test") as client:
         r = await client.post(
             "/v1/chat/completions",
-            json={"model": CHAT_MODEL, "messages": [{"role": "user", "content": "Hi"}], "stream": True},
+            json={
+                "model": CHAT_MODEL,
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
             headers={"x-probe": "synthetic"},
         )
     assert r.status_code == 200

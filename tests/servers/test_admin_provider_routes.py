@@ -9208,6 +9208,7 @@ async def test_a_route_marked_deleted_but_still_listed_cannot_be_toggled(admin_c
 def test_config_to_dict_does_not_clone_endpoint_identity_publishability():
     """Cloning a dedicated-kind config must not carry publishability to an admin route."""
     from serving.adapters.base import ModelConfig
+
     config = ModelConfig(
         id="glm-4.7",
         name="glm-4.7",
@@ -9224,11 +9225,11 @@ def test_config_to_dict_does_not_clone_endpoint_identity_publishability():
 
 def test_apply_target_adapter_defaults_sets_publishability_from_kind():
     """Admin routes derive publishability from the new target kind, not the template."""
+    from serving.servers.registry import _make_provider_id
     from serving.servers.routers.admin.provider_routes import (
         _apply_target_adapter_defaults,
         _finalize_admin_endpoint_publishability,
     )
-    from serving.servers.registry import _make_provider_id
 
     generic_target = provider_routes.ProviderTarget(
         provider="openai_compat",
@@ -9238,7 +9239,7 @@ def test_apply_target_adapter_defaults_sets_publishability_from_kind():
         default_base_url="https://example.test/v1",
         chat_path="/chat/completions",
     )
-    cfg = {"endpoint_identity_publishable": True, "endpoint_id": "glm-4.7:gpu7-api"}
+    cfg = {"endpoint_identity_publishable": True, "endpoint_id": "glm-4.7:example-api"}
     _apply_target_adapter_defaults(cfg, generic_target)
     assert cfg["endpoint_identity_publishable"] is False
 
@@ -9261,6 +9262,10 @@ def test_apply_target_adapter_defaults_sets_publishability_from_kind():
     )
     assert cfg2["endpoint_identity_publishable"] is True
     _finalize_admin_endpoint_publishability(
-        cfg2, model_id="glm-4.7", target=dedicated_target, base_url=base_url, endpoint_id="custom-route-id"
+        cfg2,
+        model_id="glm-4.7",
+        target=dedicated_target,
+        base_url=base_url,
+        endpoint_id="custom-route-id",
     )
     assert cfg2["endpoint_identity_publishable"] is False
