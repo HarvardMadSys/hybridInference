@@ -127,6 +127,11 @@ function shortSessionId(sessionId: string): string {
   return sessionId.length > 10 ? `${sessionId.slice(0, 8)}…` : sessionId;
 }
 
+/** A batch id that fits a table cell, `batch_52b9…fd51`: its start and end, the whole on hover. */
+export function shortBatchId(batchId: string): string {
+  return batchId.length > 20 ? `${batchId.slice(0, 10)}…${batchId.slice(-4)}` : batchId;
+}
+
 // A row can name the account behind the key a caller presented without that
 // key being usable — an `ip_blocked` rejection is refused ahead of the key
 // check, so the caller behind it is typically a monitor or service account
@@ -835,11 +840,8 @@ export function RequestsTab({
         {isBatch && reqBatchFilter ? (
           <span className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 py-1 pl-2 pr-1 text-[13px] text-gray-600">
             <span className="text-gray-500">Batch</span>
-            <span
-              className="max-w-[220px] truncate font-mono text-[12px] text-gray-800"
-              title={reqBatchFilter}
-            >
-              {reqBatchFilter}
+            <span className="font-mono text-[12px] text-gray-800" title={reqBatchFilter}>
+              {shortBatchId(reqBatchFilter)}
             </span>
             <button
               onClick={() => {
@@ -1244,7 +1246,7 @@ export function RequestsTab({
                                   className="inline-flex max-w-[220px] truncate rounded bg-indigo-50 px-1.5 py-0.5 font-mono text-[11px] text-indigo-700 ring-1 ring-inset ring-indigo-600/20 transition hover:bg-indigo-100"
                                   title={`batch ${batchId} — click to show only this batch`}
                                 >
-                                  {batchId}
+                                  {shortBatchId(batchId)}
                                 </button>
                               );
                             }

@@ -831,6 +831,8 @@ describe('RequestsTab sources', () => {
     render(<RequestsTab source="batch" />);
 
     const chip = await screen.findByTitle(/^batch batch_0123456789abcdef/);
+    // Shortened to fit the column; the whole id is in the title.
+    expect(chip).toHaveTextContent('batch_0123…cdef');
     expect(sourceFilterOfLastList()).toEqual({ source: 'batch', batchId: undefined });
     fireEvent.click(chip);
 
@@ -841,6 +843,7 @@ describe('RequestsTab sources', () => {
       }),
     );
     expect(screen.getByRole('button', { name: 'Clear batch filter' })).toBeInTheDocument();
+    expect(screen.getByTitle('batch_0123456789abcdef')).toHaveTextContent('batch_0123…cdef');
     expect(getRecentRequestContent).not.toHaveBeenCalled();
   });
 
