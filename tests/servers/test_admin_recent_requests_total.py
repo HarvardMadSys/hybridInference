@@ -232,7 +232,7 @@ async def test_clearing_errors_forgets_cached_totals_and_stored_hours():
     # The volume cards' stored hours under the delete are dropped by the delete
     # itself, in its transaction, so the two commit or fail together.
     log_store.delete_recent_error_requests.assert_awaited_once_with(
-        hours=3, on_deleted=request_volume.invalidate_hours
+        hours=3, on_deleted=request_volume.invalidate_hours, batch=None
     )
     assert not [query for query, _ in db.executed if "request_volume" in query]
 

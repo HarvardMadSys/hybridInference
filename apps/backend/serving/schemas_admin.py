@@ -921,6 +921,9 @@ class AdminRecentRequestItem(BaseModel):
     num_turns: int | None = None
     num_user_turns: int | None = None
     num_tool_calls: int | None = None
+    # The batch whose worker ran this request (``api_logs.batch_job_id``); None
+    # for every request a caller made directly.
+    batch_job_id: str | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):

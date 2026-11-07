@@ -51,7 +51,9 @@ from serving.servers.routers.admin._common import (
     _build_histogram,
     _escape_ilike_substring_term,
     _round_or_none,
+    request_source_is_batch,
     resolve_request_outcome_filter,
+    resolve_request_source_filter,
 )
 from serving.servers.routers.admin._refreshing_cache import RefreshingResult
 from serving.storage import admin_view_results, perf_metrics_index
@@ -235,8 +237,10 @@ _PERF_BREAKDOWN_CACHE_TTL_SECONDS = 20.0
 # Bound on distinct filter tuples kept. A session of filter edits walks through
 # many keys, and each entry holds only a small summary.
 _PERF_BREAKDOWN_CACHE_MAX_ENTRIES = 32
-# (pool id, days, user_id, session_id, model_id, request_type)
-_PerfBreakdownKey = tuple[int, int, str | None, str | None, str | None, str | None]
+# (pool id, days, user_id, session_id, model_id, request_type, source, batch_id)
+_PerfBreakdownKey = tuple[
+    int, int, str | None, str | None, str | None, str | None, str | None, str | None
+]
 _PERF_BREAKDOWN_CACHE: dict[_PerfBreakdownKey, tuple[float, AdminRequestPerfBreakdownResponse]] = {}
 _PERF_BREAKDOWN_LOCK: asyncio.Lock | None = None
 _PERF_BREAKDOWN_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
@@ -244,10 +248,19 @@ _PERF_BREAKDOWN_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 # The trend view scans the same rows as the breakdown, bucketed, so it gets the
 # same treatment: its own keyed cache, sharing the TTL, entry cap and lock (one
 # heavy scan at a time across both views is exactly the bound that matters).
-# (pool id, days, user_id, session_id, model_id, request_type, served_model,
-# served_endpoint)
+# (pool id, days, user_id, session_id, model_id, request_type, source, batch_id,
+# served_model, served_endpoint)
 _PerfTrendKey = tuple[
-    int, int, str | None, str | None, str | None, str | None, str | None, str | None
+    int,
+    int,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
+    str | None,
 ]
 _PERF_TREND_CACHE: dict[_PerfTrendKey, tuple[float, AdminRequestPerfTrendResponse]] = {}
 
@@ -827,6 +840,8 @@ def _build_recent_requests_filters(
     errors_only: bool = False,
     outcome: str | None = None,
     request_type: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
 ) -> tuple[list[str], list[Any], bool]:
     """Build the WHERE clauses + bind params shared by the Recent Requests views.
 
@@ -904,6 +919,18 @@ def _build_recent_requests_filters(
     elif request_type == "chat":
         clauses.append("(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'")
 
+    # Interactive traffic or the batch worker's (see REQUEST_SOURCE_FILTERS): the
+    # Recent Requests tab leaves the batch requests to the Batches tab, where a
+    # single batch can put thousands of rows in an hour. Constant predicate.
+    source_sql = resolve_request_source_filter(source)
+    if source_sql:
+        clauses.append(source_sql)
+
+    if batch_id:
+        # Exact, like the session: a batch id is an identifier one has or not.
+        params.append(batch_id)
+        clauses.append(f"l.batch_job_id = ${len(params)}")
+
     return clauses, params, needs_user_join
 
 
@@ -938,6 +965,8 @@ async def admin_list_recent_requests(
     errors_only: bool = False,
     outcome: str | None = None,
     request_type: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
     refresh: bool = False,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -966,6 +995,10 @@ async def admin_list_recent_requests(
       value is a 422 rather than a silently unfiltered page
     - request_type: ``"embedding"`` to show only embedding requests, ``"chat"``
       to exclude them; any other value (or omission) applies no type filter
+    - source: ``"interactive"`` for the requests callers made directly,
+      ``"batch"`` for those the batch worker ran, ``"all"`` (or omission) for
+      both; any other value is a 422
+    - batch_id: Filter to one batch's requests (exact match)
     - refresh: Count again rather than reuse a total counted moments ago for
       the same filters (the tab's Refresh)
 
@@ -987,6 +1020,8 @@ async def admin_list_recent_requests(
         errors_only=errors_only,
         outcome=outcome,
         request_type=request_type,
+        source=source,
+        batch_id=batch_id,
     )
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
@@ -1043,7 +1078,8 @@ async def admin_list_recent_requests(
                 -- client disconnect from an upstream that answered 499.
                 l.metadata->>'terminal_state' AS terminal_state,
                 l.metadata->'routewise' AS routewise,
-                l.num_turns, l.num_user_turns, l.num_tool_calls
+                l.num_turns, l.num_user_turns, l.num_tool_calls,
+                l.batch_job_id
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
@@ -1114,6 +1150,7 @@ async def admin_list_recent_requests(
             num_turns=row.get("num_turns"),
             num_user_turns=row.get("num_user_turns"),
             num_tool_calls=row.get("num_tool_calls"),
+            batch_job_id=row.get("batch_job_id"),
         )
         for row in rows
     ]
@@ -1136,6 +1173,8 @@ async def _load_request_perf_breakdown(
     session_id: str | None,
     model_id: str | None,
     request_type: str | None,
+    source: str | None = None,
+    batch_id: str | None = None,
 ) -> AdminRequestPerfBreakdownResponse:
     """Aggregate TTFT and decode throughput per served (model, endpoint) pair.
 
@@ -1158,6 +1197,8 @@ async def _load_request_perf_breakdown(
         session_id=session_id,
         model_id=model_id,
         request_type=request_type,
+        source=source,
+        batch_id=batch_id,
     )
     where_clauses.append("l.status_code BETWEEN 200 AND 399")
     where_clauses.append("l.stream = TRUE")
@@ -1240,6 +1281,8 @@ async def _get_cached_request_perf_breakdown(
     session_id: str | None,
     model_id: str | None,
     request_type: str | None,
+    source: str | None = None,
+    batch_id: str | None = None,
     refresh: bool = False,
 ) -> AdminRequestPerfBreakdownResponse:
     """Load the per-route breakdown, reusing a recent result for these filters."""
@@ -1250,6 +1293,8 @@ async def _get_cached_request_perf_breakdown(
         session_id or None,
         model_id or None,
         request_type or None,
+        source or None,
+        batch_id or None,
     )
     if not refresh:
         cached = _perf_cache_get(_PERF_BREAKDOWN_CACHE, key)
@@ -1271,6 +1316,8 @@ async def _get_cached_request_perf_breakdown(
             session_id=session_id,
             model_id=model_id,
             request_type=request_type,
+            source=source,
+            batch_id=batch_id,
         )
         _perf_cache_put(_PERF_BREAKDOWN_CACHE, key, response)
         return response
@@ -1286,6 +1333,8 @@ async def admin_recent_requests_performance(
     session_id: str | None = None,
     model_id: str | None = None,
     request_type: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
     refresh: bool = False,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -1302,6 +1351,8 @@ async def admin_recent_requests_performance(
     - session_id: Filter to one session, as on ``/recent-requests``
     - model_id: Filter by requested model ID (substring match)
     - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
+    - source / batch_id: Interactive or batch requests, or one batch's, as on
+      ``/recent-requests``
     - refresh: Bypass the short-lived per-filter cache (the panel's Refresh)
 
     ``errors_only``, ``outcome`` and ``status_code`` are deliberately not
@@ -1319,6 +1370,8 @@ async def admin_recent_requests_performance(
         session_id=session_id,
         model_id=model_id,
         request_type=request_type,
+        source=source,
+        batch_id=batch_id,
         refresh=refresh,
     )
 
@@ -1331,6 +1384,8 @@ async def _load_request_offloads(
     session_id: str | None,
     model_id: str | None,
     request_type: str | None,
+    source: str | None = None,
+    batch_id: str | None = None,
 ) -> AdminRequestOffloadsResponse:
     """Count the requests sent to an offload route, per (model, offload route).
 
@@ -1361,6 +1416,8 @@ async def _load_request_offloads(
         session_id=session_id,
         model_id=model_id,
         request_type=request_type,
+        source=source,
+        batch_id=batch_id,
     )
     where_sql = "WHERE " + " AND ".join(where_clauses)
     join_sql = "LEFT JOIN users u ON u.id = l.user_id " if needs_user_join else ""
@@ -1438,6 +1495,8 @@ async def _get_cached_request_offloads(
     session_id: str | None,
     model_id: str | None,
     request_type: str | None,
+    source: str | None = None,
+    batch_id: str | None = None,
     refresh: bool = False,
 ) -> AdminRequestOffloadsResponse:
     """Load the offload summary, reusing a recent result for these filters."""
@@ -1448,6 +1507,8 @@ async def _get_cached_request_offloads(
         session_id or None,
         model_id or None,
         request_type or None,
+        source or None,
+        batch_id or None,
     )
     if not refresh:
         cached = _perf_cache_get(_OFFLOAD_SUMMARY_CACHE, key)
@@ -1469,6 +1530,8 @@ async def _get_cached_request_offloads(
             session_id=session_id,
             model_id=model_id,
             request_type=request_type,
+            source=source,
+            batch_id=batch_id,
         )
         _perf_cache_put(_OFFLOAD_SUMMARY_CACHE, key, response)
         return response
@@ -1484,6 +1547,8 @@ async def admin_recent_requests_offloads(
     session_id: str | None = None,
     model_id: str | None = None,
     request_type: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
     refresh: bool = False,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -1499,6 +1564,8 @@ async def admin_recent_requests_offloads(
     - session_id: Filter to one session, as on ``/recent-requests``
     - model_id: Filter by requested model ID (substring match)
     - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
+    - source / batch_id: Interactive or batch requests, or one batch's, as on
+      ``/recent-requests``
     - refresh: Bypass the short-lived per-filter cache (the tab's Refresh)
 
     ``errors_only``, ``outcome`` and ``status_code`` are not accepted: every
@@ -1516,6 +1583,8 @@ async def admin_recent_requests_offloads(
         session_id=session_id,
         model_id=model_id,
         request_type=request_type,
+        source=source,
+        batch_id=batch_id,
         refresh=refresh,
     )
 
@@ -1550,6 +1619,8 @@ async def _load_request_perf_trend(
     request_type: str | None,
     served_model: str | None = None,
     served_endpoint: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
 ) -> AdminRequestPerfTrendResponse:
     """Bucket TTFT and decode throughput over time, per served (model, endpoint).
 
@@ -1577,6 +1648,8 @@ async def _load_request_perf_trend(
         session_id=session_id,
         model_id=model_id,
         request_type=request_type,
+        source=source,
+        batch_id=batch_id,
     )
     where_clauses.append("l.status_code BETWEEN 200 AND 399")
     where_clauses.append("l.stream = TRUE")
@@ -1719,6 +1792,8 @@ async def _get_cached_request_perf_trend(
     request_type: str | None,
     served_model: str | None = None,
     served_endpoint: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
     refresh: bool = False,
 ) -> AdminRequestPerfTrendResponse:
     """Load the per-route trend, reusing a recent result for these filters."""
@@ -1729,6 +1804,8 @@ async def _get_cached_request_perf_trend(
         session_id or None,
         model_id or None,
         request_type or None,
+        source or None,
+        batch_id or None,
         served_model or None,
         served_endpoint or None,
     )
@@ -1752,6 +1829,8 @@ async def _get_cached_request_perf_trend(
             request_type=request_type,
             served_model=served_model,
             served_endpoint=served_endpoint,
+            source=source,
+            batch_id=batch_id,
         )
         _perf_cache_put(_PERF_TREND_CACHE, key, response)
         return response
@@ -1769,6 +1848,8 @@ async def admin_recent_requests_performance_trend(
     request_type: str | None = None,
     served_model: str | None = None,
     served_endpoint: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
     refresh: bool = False,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -1787,6 +1868,8 @@ async def admin_recent_requests_performance_trend(
     - request_type: ``"embedding"`` / ``"chat"``, as on ``/recent-requests``
     - served_model / served_endpoint: exact served route to return, so a route
       outside the busiest ``_PERF_TREND_MAX_SERIES`` can still be charted
+    - source / batch_id: Interactive or batch requests, or one batch's, as on
+      ``/recent-requests``
     - refresh: Bypass the short-lived per-filter cache
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
@@ -1803,6 +1886,8 @@ async def admin_recent_requests_performance_trend(
         request_type=request_type,
         served_model=served_model,
         served_endpoint=served_endpoint,
+        source=source,
+        batch_id=batch_id,
         refresh=refresh,
     )
 
@@ -1846,6 +1931,7 @@ async def admin_get_recent_request_content(
 @router.post("/recent-requests/clear-errors", response_model=AdminClearErrorRequestsResponse)
 async def admin_clear_error_requests(
     hours: int = 1,
+    source: str | None = None,
     actor: AuditActor = Depends(get_admin_audit_actor),
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
@@ -1856,7 +1942,10 @@ async def admin_clear_error_requests(
     filter (``error`` set, or a missing / non-2xx-3xx status code), which
     includes client disconnects — narrowing it to the ``errors`` an admin sees
     under a different outcome would silently change what this button deletes.
-    Defaults to the past hour. The action is recorded in the admin audit log.
+    Defaults to the past hour. ``source`` narrows it as it narrows the list
+    (``"interactive"``: what the Recent Requests tab shows, leaving the batch
+    worker's rows alone); omitted, every source's errors go. The action is
+    recorded in the admin audit log.
 
     The Request volume cards' stored hours and the Users table's stored days
     that the deleted rows were in are dropped in the delete's own transaction,
@@ -1870,15 +1959,16 @@ async def admin_clear_error_requests(
         raise HTTPException(500, "Database not configured")
 
     hours = max(1, min(hours, 24))
+    batch = request_source_is_batch(source)
     deleted_count = await log_store.delete_recent_error_requests(
-        hours=hours, on_deleted=request_volume.invalidate_hours
+        hours=hours, on_deleted=request_volume.invalidate_hours, batch=batch
     )
 
     if op_store is not None:
         await log_admin_action(
             op_store,
             action="clear_error_requests",
-            details={"hours": hours, "deleted_count": deleted_count},
+            details={"hours": hours, "source": source, "deleted_count": deleted_count},
             actor=actor,
         )
 
