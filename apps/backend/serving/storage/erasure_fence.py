@@ -219,35 +219,6 @@ async def check_erasure_fence(
     return row is not None
 
 
-async def protect_api_logs_insert(
-    conn: asyncpg.Connection,
-    *,
-    fence_secret: str,
-    user_id: str | None,
-    credential_owner_id: str | None,
-) -> bool:
-    """Check the erasure fence before inserting an api_logs row.
-
-    Determines the account identifiers this row could carry, takes a shared
-    advisory lock on each, and checks for an active erasure tombstone. Returns
-    True if the insert should be suppressed (fenced), False if it's safe to
-    proceed.
-
-    Call this inside the same transaction as the INSERT.
-
-    Args:
-        conn: an asyncpg connection already inside a transaction.
-        fence_secret: the server's erasure-fence derivation secret.
-        user_id: the ``user_id`` that will be stored in the row (or None).
-        credential_owner_id: the ``metadata->>'credential_owner_id'`` that
-            will be stored in the row (or None).
-    """
-    fence_keys = api_logs_fence_keys(
-        fence_secret=fence_secret, user_id=user_id, credential_owner_id=credential_owner_id
-    )
-    return await check_erasure_fence(conn, fence_keys=fence_keys)
-
-
 def api_logs_fence_keys(
     *,
     fence_secret: str | None,

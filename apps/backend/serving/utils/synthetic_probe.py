@@ -8,7 +8,7 @@ response header to tell which backend answered.
 It is still just a request header, which anyone can send. Every consumer must
 therefore split two questions the original implementation conflated:
 
-* *was the marker sent?* — :func:`probe_header_present`; and
+* *was the marker sent?* — :func:`probe_marker_in`; and
 * *is this caller allowed to mean it?* — :func:`is_trusted_probe_caller`.
 
 A trusted probe caller is an **authenticated** internal/admin key that is not
@@ -46,11 +46,6 @@ if TYPE_CHECKING:
 
 PROBE_HEADER = "x-probe"
 PROBE_HEADER_VALUE = "synthetic"
-
-
-def probe_header_present(request: Request) -> bool:
-    """Return whether the request carries the synthetic-probe marker at all."""
-    return probe_marker_in(request.headers)
 
 
 def probe_marker_in(headers: Mapping[str, str]) -> bool:

@@ -135,14 +135,6 @@ async def _stream(adapter: OpenAICompatAdapter, **params: Any) -> list[str]:
     return [c async for c in adapter.stream_chat_completion(USER, **params)]
 
 
-def _data(chunks: list[str]) -> list[dict[str, Any]]:
-    return [
-        json.loads(c[len("data: ") :])
-        for c in chunks
-        if c.startswith("data: ") and "[DONE]" not in c
-    ]
-
-
 # --- where the request goes, and how it authenticates --------------------------------
 
 

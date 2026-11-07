@@ -174,10 +174,6 @@ class ItemRejected(Exception):
         self.status = status
         self.param = param
 
-    def as_error(self) -> dict[str, Any]:
-        """The stored error object (``{"code", "message", "status"}``)."""
-        return {"code": self.code, "message": self.message, "status": self.status}
-
 
 @dataclass
 class AdmissionContext:
@@ -445,10 +441,6 @@ class ItemProblem:
     message: str
     status: int
     param: str | None
-
-    def as_error(self) -> dict[str, Any]:
-        """The stored error object (``{"code", "message", "status"}``)."""
-        return {"code": self.code, "message": self.message, "status": self.status}
 
 
 async def check_item(
