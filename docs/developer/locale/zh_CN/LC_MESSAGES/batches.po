@@ -2045,6 +2045,21 @@ msgstr ""
 "仅当网关在请求日志中保存提示词时（`db_store_full_content`）才提供，否则返回 `403`。"
 "打开批次的请求会以 `batch.requests.read` 记入审计日志，目标为批次的所有者。"
 
+#: ../developer/batches.md:869
+msgid ""
+"The tab's **Requests** page lists the requests the batch worker ran, newest "
+"first: one row per attempt, from the request log, with the batch it belongs "
+"to. A batch's **Requests** link opens the page on that batch. The **Recent "
+"Requests** tab leaves these requests out, so a large batch does not bury the "
+"requests callers made directly. Both pages read the request log's admin "
+"endpoints with `source=batch` or `source=interactive`, and `batch_id` for one "
+"batch."
+msgstr ""
+"该标签页的 **Requests** 页面按时间倒序列出批处理 worker 运行过的请求：每次尝试一行，取自请求日志，并标明其所属批次。"
+"批次的 **Requests** 链接会打开该批次的页面。**Recent Requests** 标签页不列出这些请求，"
+"因此大批次不会淹没调用方直接发出的请求。两个页面都通过请求日志的管理端点读取数据，分别带 `source=batch` 或 "
+"`source=interactive`，查看单个批次时再加 `batch_id`。"
+
 #: ../developer/batches.md:801
 msgid "Upgrading a deployment"
 msgstr "升级部署"

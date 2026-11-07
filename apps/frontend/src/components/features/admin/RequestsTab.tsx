@@ -11,11 +11,13 @@ import {
   useRef,
   useState,
 } from 'react';
+import Link from 'next/link';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
   type RequestOutcome,
+  type RequestSource,
   clearErrorRequests,
   exportRequests,
   getRecentRequestContent,
@@ -28,6 +30,7 @@ import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { Select } from '@/components/ui/Select';
 import { useConfirmAction } from './confirm/useConfirmAction';
 import { FoldedText } from './requestContent';
+import { BATCH_REQUESTS_PATH } from './batchRoutes';
 import { OffloadedRequestsPanel } from './OffloadedRequestsPanel';
 import { RequestPerformancePanel } from './RequestPerformancePanel';
 
@@ -122,6 +125,11 @@ export function parseClientTool(ua: string | null | undefined): string | null {
 // and in the expanded row.
 function shortSessionId(sessionId: string): string {
   return sessionId.length > 10 ? `${sessionId.slice(0, 8)}…` : sessionId;
+}
+
+/** A batch id that fits a table cell, `batch_52b9…fd51`: its start and end, the whole on hover. */
+export function shortBatchId(batchId: string): string {
+  return batchId.length > 20 ? `${batchId.slice(0, 10)}…${batchId.slice(-4)}` : batchId;
 }
 
 // A row can name the account behind the key a caller presented without that
@@ -467,7 +475,25 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
   );
 }
 
-export function RequestsTab() {
+/**
+ * The request log, newest first, with its filters, export and summaries.
+ *
+ * `source` says whose requests: `interactive` (the Recent Requests tab) lists
+ * every request a caller made directly and leaves the batch worker's out, so a
+ * large batch cannot bury them; `batch` (Batches → Requests) lists only the
+ * batch worker's, one row per attempt, narrowed to one batch by
+ * `initialBatchId` or by clicking a row's batch. The batch list leaves out
+ * what describes interactive traffic: the volume cards (every request, batch
+ * included), the per-endpoint streaming summaries and Clear errors.
+ */
+export function RequestsTab({
+  source = 'interactive',
+  initialBatchId = '',
+}: {
+  source?: RequestSource;
+  initialBatchId?: string;
+} = {}) {
+  const isBatch = source === 'batch';
   const toast = useAccountToast();
   // Requests state
   const [reqEntries, setReqEntries] = useState<AdminRecentRequestItem[]>([]);
@@ -483,6 +509,9 @@ export function RequestsTab() {
   // Set by clicking a session on a row rather than typed, so it needs no
   // debounce: one click, one fetch. Empty means "every session".
   const [reqSessionFilter, setReqSessionFilter] = useState('');
+  // One batch, exact, on the batch list: from the address (a batch's Requests
+  // link on the Batches tab) or a click on a row's batch. Empty: every batch.
+  const [reqBatchFilter, setReqBatchFilter] = useState(initialBatchId);
   // Debounced copies of the text filters drive the fetch, so typing doesn't fire
   // a request per keystroke. The raw values above stay synchronous for the
   // inputs and for actions (Refresh/Export) that must read the current filters.
@@ -531,6 +560,12 @@ export function RequestsTab() {
   const requestClearConfirmation = clearConfirmation.request;
   const clearingErrors = clearConfirmation.busy;
 
+  // Follow the address when it names another batch (back/forward, a new link).
+  useEffect(() => {
+    setReqBatchFilter(initialBatchId);
+    setReqOffset(0);
+  }, [initialBatchId]);
+
   // Monotonic id for list fetches so an out-of-order response (e.g. a slow
   // request issued under an older filter) can't overwrite a newer one.
   const reqSeqRef = useRef(0);
@@ -554,6 +589,7 @@ export function RequestsTab() {
           reqDays,
           reqSessionFilter || undefined,
           refresh,
+          { source, batchId: (isBatch && reqBatchFilter) || undefined },
         );
         if (seq !== reqSeqRef.current) return;
         setReqEntries(d.requests);
@@ -567,7 +603,17 @@ export function RequestsTab() {
         if (seq === reqSeqRef.current) setReqLoading(false);
       }
     },
-    [reqOffset, reqOutcome, reqType, reqDays, reqSessionFilter, toast],
+    [
+      reqOffset,
+      reqOutcome,
+      reqType,
+      reqDays,
+      reqSessionFilter,
+      source,
+      isBatch,
+      reqBatchFilter,
+      toast,
+    ],
   );
 
   // Debounce text-filter changes into the values that drive the fetch. Offset
@@ -607,12 +653,13 @@ export function RequestsTab() {
       tone: 'danger',
       body: (
         <p>
-          Every request that ended in an error during the past hour is permanently removed from the
-          request log and its metrics. This cannot be undone.
+          Every request listed here that ended in an error during the past hour is permanently
+          removed from the request log and its metrics. Batch requests are kept. This cannot be
+          undone.
         </p>
       ),
       run: async () => {
-        const result = await clearErrorRequests(1);
+        const result = await clearErrorRequests(1, source);
         toast.success(result.message);
         loadRequests(reqUserFilter, reqModelFilter);
         loadRequestMetrics();
@@ -626,6 +673,7 @@ export function RequestsTab() {
     reqUserFilter,
     reqModelFilter,
     loadRequestMetrics,
+    source,
   ]);
 
   useEffect(() => {
@@ -633,8 +681,18 @@ export function RequestsTab() {
   }, [loadRequests, debouncedUserFilter, debouncedModelFilter]);
 
   useEffect(() => {
-    loadRequestMetrics();
-  }, [loadRequestMetrics]);
+    // The volume cards count every request; the batch list shows none of them.
+    if (!isBatch) loadRequestMetrics();
+  }, [isBatch, loadRequestMetrics]);
+
+  const handleRefresh = () => {
+    if (!isBatch) loadRequestMetrics();
+    loadRequests(reqUserFilter, reqModelFilter, true);
+    // Flush the debounce first so the performance panel refetches with
+    // whatever the filter inputs currently show, like the list.
+    flushFilterSearch();
+    if (!isBatch) setPerfRefreshKey((key) => key + 1);
+  };
 
   const handleToggleRequestRow = useCallback(
     (requestId: string) => {
@@ -686,50 +744,60 @@ export function RequestsTab() {
     [reqExpandedId, reqContentCache],
   );
 
+  const refreshButton = (
+    <div className="flex items-center gap-2">
+      {(reqMetricsLoading || reqLoading) && (
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+      )}
+      <button
+        type="button"
+        onClick={handleRefresh}
+        disabled={reqMetricsLoading || reqLoading}
+        className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+      >
+        Refresh
+      </button>
+    </div>
+  );
+
   return (
-    <div className="mt-6">
-      {/* Request metrics */}
-      <div className="mb-6">
-        <div className="mb-3 flex items-center justify-between">
+    <div className={isBatch ? undefined : 'mt-6'}>
+      {isBatch ? (
+        <div className="mb-4 flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-[15px] font-semibold text-gray-900">Request volume</h2>
+            <h2 className="text-[15px] font-semibold text-gray-900">Batch requests</h2>
             <p className="text-[12px] text-gray-400">
-              Traffic trends across short and long lookback windows.
+              Every request the batch worker ran, newest first: one row per attempt, with the batch
+              it belongs to. Recent Requests leaves these out.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            {(reqMetricsLoading || reqLoading) && (
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                loadRequestMetrics();
-                loadRequests(reqUserFilter, reqModelFilter, true);
-                // Flush the debounce first so the performance panel refetches
-                // with whatever the filter inputs currently show, like the list.
-                flushFilterSearch();
-                setPerfRefreshKey((key) => key + 1);
-              }}
-              disabled={reqMetricsLoading || reqLoading}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-            >
-              Refresh
-            </button>
-          </div>
+          {refreshButton}
         </div>
-        {reqMetrics.length > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {reqMetrics.map((metric) => (
-              <RequestMetricsCard key={metric.key} metric={metric} />
-            ))}
+      ) : (
+        /* Request metrics */
+        <div className="mb-6">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <h2 className="text-[15px] font-semibold text-gray-900">Request volume</h2>
+              <p className="text-[12px] text-gray-400">
+                Traffic trends across short and long lookback windows, batch requests included.
+              </p>
+            </div>
+            {refreshButton}
           </div>
-        ) : !reqMetricsLoading ? (
-          <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
-            <p className="text-[13px] text-gray-400">No request metrics available.</p>
-          </div>
-        ) : null}
-      </div>
+          {reqMetrics.length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {reqMetrics.map((metric) => (
+                <RequestMetricsCard key={metric.key} metric={metric} />
+              ))}
+            </div>
+          ) : !reqMetricsLoading ? (
+            <div className="rounded-xl border border-dashed border-gray-200 py-8 text-center">
+              <p className="text-[13px] text-gray-400">No request metrics available.</p>
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
@@ -763,6 +831,24 @@ export function RequestsTab() {
                 setReqOffset(0);
               }}
               aria-label="Clear session filter"
+              className="rounded px-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700"
+            >
+              ×
+            </button>
+          </span>
+        ) : null}
+        {isBatch && reqBatchFilter ? (
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 py-1 pl-2 pr-1 text-[13px] text-gray-600">
+            <span className="text-gray-500">Batch</span>
+            <span className="font-mono text-[12px] text-gray-800" title={reqBatchFilter}>
+              {shortBatchId(reqBatchFilter)}
+            </span>
+            <button
+              onClick={() => {
+                setReqBatchFilter('');
+                setReqOffset(0);
+              }}
+              aria-label="Clear batch filter"
               className="rounded px-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700"
             >
               ×
@@ -834,23 +920,39 @@ export function RequestsTab() {
           {reqTotal.toLocaleString()}
           {reqTotalExact ? '' : '+'} entries
         </span>
-        <button
-          type="button"
-          onClick={handleClearErrors}
-          disabled={clearingErrors}
-          className="ml-auto rounded-lg border border-red-200 bg-white px-3 py-2 text-[13px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-        >
-          {clearingErrors ? 'Clearing…' : 'Clear last hour errors'}
-        </button>
+        {isBatch ? null : (
+          <button
+            type="button"
+            onClick={handleClearErrors}
+            disabled={clearingErrors}
+            className="ml-auto rounded-lg border border-red-200 bg-white px-3 py-2 text-[13px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+          >
+            {clearingErrors ? 'Clearing…' : 'Clear last hour errors'}
+          </button>
+        )}
         {clearConfirmation.dialog}
         <button
           type="button"
           onClick={() => setShowExportPanel((v) => !v)}
-          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
+          className={`${isBatch ? 'ml-auto ' : ''}rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-600 transition-colors hover:bg-gray-50`}
         >
           Export JSONL
         </button>
       </div>
+
+      {isBatch ? null : (
+        <p className="mt-2 px-1 text-[12px] text-gray-400">
+          Requests the batch worker ran are not listed here; see{' '}
+          <Link
+            href={BATCH_REQUESTS_PATH}
+            prefetch={false}
+            className="text-gray-600 underline decoration-gray-300 underline-offset-2 hover:text-gray-900"
+          >
+            Batches → Requests
+          </Link>
+          .
+        </p>
+      )}
 
       {showExportPanel && (
         <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
@@ -916,6 +1018,8 @@ export function RequestsTab() {
                       modelId: reqModelFilter || undefined,
                       outcome: reqOutcome === 'all' ? undefined : reqOutcome,
                       requestType: reqType === 'all' ? undefined : reqType,
+                      source,
+                      batchId: (isBatch && reqBatchFilter) || undefined,
                       includeContent: exportIncludeContent || undefined,
                     });
                     setShowExportPanel(false);
@@ -939,25 +1043,31 @@ export function RequestsTab() {
       {/* Per-endpoint latency/throughput summary. Takes the filters below it but
           not the lookback: it measures its own fixed 24h window, since TTFT and
           decode throughput average away over a week. */}
-      <RequestPerformancePanel
-        userFilter={debouncedUserFilter}
-        sessionFilter={reqSessionFilter}
-        modelFilter={debouncedModelFilter}
-        requestType={reqType}
-        outcome={reqOutcome}
-        refreshKey={perfRefreshKey}
-      />
+      {isBatch ? null : (
+        <RequestPerformancePanel
+          userFilter={debouncedUserFilter}
+          sessionFilter={reqSessionFilter}
+          modelFilter={debouncedModelFilter}
+          requestType={reqType}
+          outcome={reqOutcome}
+          refreshKey={perfRefreshKey}
+          source={source}
+        />
+      )}
 
       {/* Requests sent to a model's offload route, over the same fixed 24h and
           under the same filters as the performance summary above. */}
-      <OffloadedRequestsPanel
-        userFilter={debouncedUserFilter}
-        sessionFilter={reqSessionFilter}
-        modelFilter={debouncedModelFilter}
-        requestType={reqType}
-        outcome={reqOutcome}
-        refreshKey={perfRefreshKey}
-      />
+      {isBatch ? null : (
+        <OffloadedRequestsPanel
+          userFilter={debouncedUserFilter}
+          sessionFilter={reqSessionFilter}
+          modelFilter={debouncedModelFilter}
+          requestType={reqType}
+          outcome={reqOutcome}
+          refreshKey={perfRefreshKey}
+          source={source}
+        />
+      )}
 
       {/* Table */}
       <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
@@ -984,7 +1094,9 @@ export function RequestsTab() {
                 />
               </svg>
             </div>
-            <p className="text-[13px] font-medium text-gray-600">No requests found</p>
+            <p className="text-[13px] font-medium text-gray-600">
+              {isBatch ? 'No batch requests found' : 'No requests found'}
+            </p>
             <p className="text-[12px] text-gray-400">
               Try adjusting your filters or the lookback window.
             </p>
@@ -1120,6 +1232,24 @@ export function RequestsTab() {
                         </td>
                         <td className="px-3 py-2.5 text-[12px] text-gray-600">
                           {(() => {
+                            // A batch request's client is always the batch
+                            // worker: name its batch instead, as a filter.
+                            if (isBatch && req.batch_job_id) {
+                              const batchId = req.batch_job_id;
+                              return (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setReqBatchFilter(batchId);
+                                    setReqOffset(0);
+                                  }}
+                                  className="inline-flex max-w-[220px] truncate rounded bg-indigo-50 px-1.5 py-0.5 font-mono text-[11px] text-indigo-700 ring-1 ring-inset ring-indigo-600/20 transition hover:bg-indigo-100"
+                                  title={`batch ${batchId} — click to show only this batch`}
+                                >
+                                  {shortBatchId(batchId)}
+                                </button>
+                              );
+                            }
                             // Prefer the agent's self-declared identity from the
                             // system prompt; fall back to User-Agent parsing.
                             const tool = req.agent || parseClientTool(req.user_agent);
@@ -1333,6 +1463,14 @@ export function RequestsTab() {
                                   {req.user_ip ?? '—'}
                                 </span>
                               </div>
+                              {req.batch_job_id ? (
+                                <div className="col-span-full">
+                                  <span className="text-gray-500">Batch:</span>{' '}
+                                  <span className="text-gray-700 font-mono break-all">
+                                    {req.batch_job_id}
+                                  </span>
+                                </div>
+                              ) : null}
                               <div className="col-span-full">
                                 <span className="text-gray-500">Session:</span>{' '}
                                 {req.session_id ? (
