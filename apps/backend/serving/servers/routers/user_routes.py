@@ -77,7 +77,9 @@ from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
+from serving.utils.login_rate_limit import refusal_worth_recording
 from serving.utils.phone_auth import phone_identity_unverified
+from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import optional_token_count
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
@@ -663,7 +665,10 @@ async def reveal_api_key(
     as :func:`confirm_account_owner` checks it for every sensitive change,
     each attempt counting against the sign-in limits. An account without a
     password (one made by phone) is refused: it can set one, or regenerate the
-    key, which shows the new value once. Every reveal is audited.
+    key, which shows the new value once. Every reveal is audited, and so is
+    every one refused for a wrong password -- what a stolen session trying
+    its luck looks like; refusals past the sign-in limit, which come as fast
+    as they are sent, once a minute per address.
 
     Raises:
         HTTPException: 400 without the right password, or for an account
@@ -696,14 +701,26 @@ async def reveal_api_key(
     if row is None or row["status"] not in _REVEALABLE_STATUSES or not row["api_key_encrypted"]:
         raise HTTPException(status_code=404, detail="API key not found")
 
-    await confirm_account_owner(
-        request,
-        op_store,
-        user_row,
-        password=body.password,
-        phone_code=None,
-        purpose="reveal_api_key",
-    )
+    try:
+        await confirm_account_owner(
+            request,
+            op_store,
+            user_row,
+            password=body.password,
+            phone_code=None,
+            purpose="reveal_api_key",
+        )
+    except HTTPException as exc:
+        limited = exc.status_code == 429
+        if not limited or refusal_worth_recording(get_client_ip(request), "reveal_key"):
+            await _audit_refused_reveal(
+                request,
+                current_user,
+                db_logger,
+                key_prefix,
+                "rate_limited" if limited else "wrong_password",
+            )
+        raise
 
     try:
         api_key = decrypt_api_key(row["api_key_encrypted"])
@@ -723,6 +740,27 @@ async def reveal_api_key(
     )
     response.headers["Cache-Control"] = "no-store"
     return APIKeyRevealResponse(key_prefix=key_prefix, api_key=api_key)
+
+
+async def _audit_refused_reveal(
+    request: Request,
+    current_user: dict[str, Any],
+    db_logger: Any,
+    key_prefix: str,
+    reason: str,
+) -> None:
+    """Audit a reveal refused at the owner check; a failed write never hides the refusal."""
+    try:
+        await log_admin_action(
+            db_logger,
+            action="reveal_key",
+            details={"actor": "user", "key_prefix": key_prefix, "refused": reason},
+            success=False,
+            actor=user_audit_actor(request, current_user),
+            target=AuditTarget.user(current_user["user_id"]),
+        )
+    except Exception:
+        logger.exception("reveal_key_refusal_audit_failed key_prefix=%s", key_prefix)
 
 
 def _key_limits(row: dict[str, Any]) -> dict[str, Any]:
