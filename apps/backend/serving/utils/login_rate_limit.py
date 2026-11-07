@@ -27,10 +27,11 @@ the device cookie that sign-in gave it (:mod:`serving.utils.device_cookie`)
 and is counted in the last two buckets alone:
 
 * Per device: its own ``settings.login_rate_limit_per_15min`` attempts per
-  15 minutes, keyed by the cookie entry's nonce. Such an attempt neither
-  counts in nor is refused by the other three, so no one else's attempts,
-  from any address, lock that browser out.
-* Per account, every recognized browser together:
+  15 minutes, keyed by the cookie entry's nonce. While the shared window
+  below has room, such an attempt neither counts in nor is refused by the
+  other three, so no one else's attempts, from any address, lock that
+  browser out.
+* Per account and password, every browser recognized under it together:
   ``settings.login_account_rate_limit_per_15min`` attempts per 15 minutes.
   Every successful sign-in issues a fresh entry, and with it a fresh device
   window, so the per-device bucket alone let an account's owner sign in
@@ -39,7 +40,12 @@ and is counted in the last two buckets alone:
   entry for the account count here -- an entry is issued only to a browser
   that gave the password -- so no one without one can use it up; and like
   the account-wide bucket above it counts only the attempts a device's own
-  window lets through, so one browser adds at most its own allowance.
+  window lets through, so one browser adds at most its own allowance. It is
+  kept per password epoch (the entry carries it): entries issued before the
+  password was last changed or reset, which whoever knew the old password
+  may still hold, share a window apart from the browsers that signed in
+  with the new one. An attempt this window cannot take is limited like any
+  other client's instead of refused, so filling it locks no browser out.
 
 First-run setup counts wrong setup codes per IP (``SETUP_ATTEMPTS_PER_15MIN``
 per 15 minutes). Only failures are recorded and a correct code is never
@@ -57,10 +63,13 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from serving.config.settings import settings
 from serving.utils.request_ip import normalize_ip_bucket
+
+if TYPE_CHECKING:
+    from serving.utils.device_cookie import RecognizedDevice
 
 _FIFTEEN_MIN_SECONDS = 15 * 60
 _HOUR_SECONDS = 3600
@@ -70,11 +79,11 @@ _SWEEP_EVERY = 1024
 # further wrong ones are answered 429.
 SETUP_ATTEMPTS_PER_15MIN = 10
 
-# Login attempts keyed by device-cookie nonce, by identifier for the attempts
-# that carried a device entry, by (identifier, address bucket), by identifier
-# alone, and by address bucket alone.
+# Login attempts keyed by device-cookie nonce, by (identifier, password epoch)
+# for the attempts that carried a device entry, by (identifier, address
+# bucket), by identifier alone, and by address bucket alone.
 _device_attempts: dict[str, deque[float]] = {}
-_account_device_attempts: dict[str, deque[float]] = {}
+_account_device_attempts: dict[tuple[str, str], deque[float]] = {}
 _account_address_attempts: dict[tuple[str, str], deque[float]] = {}
 _account_attempts: dict[str, deque[float]] = {}
 _ip_attempts: dict[str, deque[float]] = {}
@@ -108,21 +117,22 @@ def _window(buckets: dict[_Key, deque[float]], key: _Key, cutoff: float) -> dequ
 
 
 async def check_and_record_login(
-    email: str, ip: str, *, device: str | None = None
+    email: str, ip: str, *, device: RecognizedDevice | str | None = None
 ) -> tuple[bool, str | None]:
     """Record a login attempt and return whether it should be allowed.
 
     *email* is the identifier the client signed in with: an email address or
     a login name (which never contains ``@``, so the two cannot share a
-    bucket). *device* is the key of a valid device-cookie entry for that
+    bucket). *device* is the request's valid device-cookie entry for that
     identifier (:func:`serving.utils.device_cookie.recognized_device`), when
-    the request carries one; the attempt is then counted in that device's
-    window and the account's window for recognized browsers alone. Returns
+    it carries one; the attempt is then counted in that device's window and
+    the window its account's browsers share under one password alone (a bare
+    key string stands for an entry with no epoch). When that shared window
+    is full the attempt is counted like one without an entry instead. Returns
     (True, None) if every window has capacity, or (False, reason) naming the
-    bucket that tripped: ``"device"`` (this browser), ``"devices"`` (this
-    account's recognized browsers together), ``"ip"`` (this address, any
-    account), ``"email"`` (this account from this address) or ``"account"``
-    (this account from every address together).
+    bucket that tripped: ``"device"`` (this browser), ``"ip"`` (this address,
+    any account), ``"email"`` (this account from this address) or
+    ``"account"`` (this account from every address together).
 
     Recording happens on entry, in the same critical section as the check,
     so probing with varied payloads or concurrent requests cannot bypass the
@@ -160,9 +170,10 @@ async def check_and_record_login(
             _sweep_inactive(_ip_attempts, ip_cutoff)
 
         if device is not None:
+            device_key, epoch = (device, "") if isinstance(device, str) else device
             # Only the backend issues device entries, so these keys are as
             # many as the browsers that signed in, not as an attacker likes.
-            device_bucket = _window(_device_attempts, device, window_cutoff)
+            device_bucket = _window(_device_attempts, device_key, window_cutoff)
             device_count = len(device_bucket)
             device_bucket.append(now)
             if device_count >= per_account_address:
@@ -170,11 +181,12 @@ async def check_and_record_login(
             # Each sign-in issues a new entry, and a new device window with
             # it; this one is what bounds an account that presents its newest
             # entry every time. Only attempts its devices let through reach it.
-            devices_bucket = _window(_account_device_attempts, account_key, window_cutoff)
-            if len(devices_bucket) >= per_account:
-                return False, "devices"
-            devices_bucket.append(now)
-            return True, None
+            devices_bucket = _window(_account_device_attempts, (account_key, epoch), window_cutoff)
+            if len(devices_bucket) < per_account:
+                devices_bucket.append(now)
+                return True, None
+            # Full: entries this password's other holders kept may be what
+            # filled it. Limited like any other client's attempt, not refused.
 
         address_bucket = _window(_account_address_attempts, (account_key, ip_key), window_cutoff)
         ip_bucket = _window(_ip_attempts, ip_key, ip_cutoff)

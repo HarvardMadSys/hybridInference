@@ -544,8 +544,11 @@ account before, including the one you used for setup, holds a device cookie
 valid for 180 days) and gets five attempts per 15 minutes of its own, so other
 people's guesses never lock it out. Together, the account's browsers that hold
 one get `LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget
-only requests carrying such a cookie count against. Changing `JWT_SECRET_KEY`
-invalidates every device cookie until that browser's next sign-in.
+only requests carrying such a cookie count against, and once it is spent they
+are limited like any other browser. Each password has its own budget: cookies
+from before a password change or reset cannot spend the one your browsers share
+after it. Changing `JWT_SECRET_KEY` invalidates every device cookie until that
+browser's next sign-in.
 
 Other browsers share the limits with their address, and behind the bundled
 Compose file's console every browser has the same address unless the gateway

@@ -221,12 +221,14 @@ async def test_presenting_each_new_entry_in_turn_is_still_limited(app, op_store)
 
     Replaying the newest entry each time used to sign the account in without
     limit, each sign-in running Argon2id on the only worker and writing a
-    session. The account's recognized browsers share its account-wide budget.
+    session. The account's recognized browsers share its account-wide budget;
+    past it they are limited like any other browser, here by the address's
+    own window.
     """
     op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
     device = _device(await _login(app, client_ip="5.6.7.8"))
 
-    for _ in range(50):
+    for _ in range(50 + 5):
         resp = await _login(app, device=device)
         assert resp.status_code == 200, resp.text
         device = _device(resp)
@@ -294,3 +296,38 @@ async def test_signing_out_keeps_the_device_cookie(app, op_store):
     assert _set_cookie(resp, "refresh_token") is not None  # the session cookie goes
     assert _set_cookie(resp, device_cookie_name()) is None  # the device cookie stays
     assert _recognized(device, "admin")
+
+
+async def test_entries_kept_from_before_a_password_reset_cannot_lock_out_the_owner(app, op_store):
+    """The reported case: a former holder of the password keeps ten browsers' entries.
+
+    Entries outlive a reset by up to 180 days, and their failed guesses used
+    to fill the account's one window for recognized browsers, so the owner's
+    own browser was refused. Entries now carry the password they were issued
+    under; the owner's browser, recognized under the new one, shares nothing
+    with them.
+    """
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    stale = [_device(await _login(app, client_ip=f"1.2.3.{n + 1}")) for n in range(10)]
+    # The owner's other browser, also signed in before the reset.
+    kept = _device(await _login(app, client_ip="9.9.9.9"))
+    assert all(stale) and kept
+
+    # The owner resets the password, then signs in on their own browser.
+    op_store.users[ADMIN_ID]["password_hash"] = "a-new-hash"
+    mine = _device(await _login(app, client_ip="5.6.7.8"))
+    assert mine
+
+    # Every kept entry guesses until its own window is spent.
+    for entry in stale:
+        for _ in range(5):
+            assert (await _login(app, "guess", device=entry)).status_code == 401
+        assert (await _login(app, "guess", device=entry)).status_code == 429
+
+    resp = await _login(app, device=mine)
+    assert resp.status_code == 200, resp.text
+    # A browser still holding an entry from before the reset shares the full
+    # window, so it is limited like any browser, by its own address's
+    # windows: signed in, not refused.
+    resp = await _login(app, device=kept, client_ip="9.9.9.9")
+    assert resp.status_code == 200, resp.text
