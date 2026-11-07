@@ -1687,9 +1687,17 @@ _CATALOGUE = [
 ]
 
 
+@pytest.fixture
+def one_sample_phase(monkeypatch):
+    """Sample a long prompt's windows at one phase, so two estimates of it agree."""
+    from serving.utils import tokens
+
+    monkeypatch.setattr(tokens, "_SAMPLE_PHASE", SimpleNamespace(random=lambda: 0.5))
+
+
 @pytest.mark.asyncio
 async def test_a_translated_stream_cut_after_message_start_bills_the_tool_definitions(
-    anthropic_test_client, monkeypatch
+    anthropic_test_client, monkeypatch, one_sample_phase
 ):
     """The translator's message_start seed is a guess; the cut stream bills the request.
 
@@ -1766,7 +1774,7 @@ async def test_a_translated_stream_cut_after_message_start_bills_the_tool_defini
     assert captured["metadata"].get("usage_estimated") is True
 
 
-def test_a_count_the_upstream_reported_before_message_start_is_not_a_seed():
+def test_a_count_the_upstream_reported_before_message_start_is_not_a_seed(one_sample_phase):
     """A translated stream whose first chunk carried usage shows a real count."""
     seeded = {"input_tokens": 0, "output_tokens": 0, anthropic_messages.INPUT_SEED_SINK_KEY: 30}
     payload = {"messages": [{"role": "user", "content": "hi"}], "tools": _CATALOGUE}
