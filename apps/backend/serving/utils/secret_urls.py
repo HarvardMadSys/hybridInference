@@ -134,23 +134,6 @@ def url_redaction(url: str) -> UrlRedaction:
     return UrlRedaction(url=url, fingerprint=fingerprint, display=display, variants=tuple(variants))
 
 
-def scrub(text: str, url: str | UrlRedaction) -> str:
-    """Replace every occurrence of ``url``, or of its secret parts, in ``text``.
-
-    The path and query string are replaced separately as well as together,
-    because a transport error may quote only the request target. That matters
-    for WeCom, whose credential travels in ``?key=…`` rather than in the path.
-    The replacement still names the sink by fingerprint, never by secret.
-
-    Takes the already-derived :class:`UrlRedaction` where a sender has one, so a
-    failure path does not re-derive the same hashes for every log line.
-    """
-    if not text or not url:
-        return text
-    redaction = url if isinstance(url, UrlRedaction) else url_redaction(url)
-    return redaction.scrub(text)
-
-
 def _scrub_arg(arg: object, redaction: UrlRedaction) -> object:
     """Scrub one ``%``-format argument, leaving non-text values untouched."""
     if isinstance(arg, str):

@@ -73,17 +73,6 @@ def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _parse_command_tag_count(command_tag: str) -> int:
-    """Extract the affected row count from an asyncpg command tag."""
-    parts = command_tag.split()
-    if not parts:
-        return 0
-    try:
-        return int(parts[-1])
-    except ValueError:
-        return 0
-
-
 class DatabaseLogger:
     """Asynchronous PostgreSQL logger, and the owner of the gateway's two pools.
 

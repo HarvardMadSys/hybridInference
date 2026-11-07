@@ -16,10 +16,10 @@ from routing.endpoint_health import (
     _MIN_ALERT_GAP_SEC,
     _CircuitBreaker,
     _CircuitState,
-    set_usage_limit_paging,
 )
 from serving.observability import state_alert_policy
 from serving.observability.alert_config import CircuitOpenStateChange
+from serving.observability.state_alert_policy import set_usage_limit_paging
 
 
 def _set_usage_limit_paging(monkeypatch, enabled: bool) -> None:

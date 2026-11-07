@@ -77,29 +77,3 @@ export function filterStateToUrl(state: FilterState): string {
   if (state.view) out.set('view', state.view);
   return out.toString();
 }
-
-/**
- * Serialise FilterState to backend query params for /admin/users.
- * Always sets sort_by/limit/offset (defaults preserved). The `view` field
- * is purely client-side and is NOT sent to the backend.
- */
-export function filterStateToParams(
-  state: FilterState,
-  pagination: { limit?: number; offset?: number } = {},
-): URLSearchParams {
-  const params = new URLSearchParams();
-  if (state.status) params.set('status', state.status);
-  if (state.search) params.set('search', state.search);
-  params.set('sort_by', state.sortBy);
-  if (state.minCostToday !== null) params.set('min_cost_today', String(state.minCostToday));
-  if (state.minCostMonth !== null) params.set('min_cost_month', String(state.minCostMonth));
-  if (state.quotaState) params.set('quota_state', state.quotaState);
-  if (state.provider) params.set('provider', state.provider);
-  if (state.activeWithinHours !== null) {
-    params.set('active_within_hours', String(state.activeWithinHours));
-  }
-  if (state.anomaly !== null) params.set('anomaly', String(state.anomaly));
-  params.set('limit', String(pagination.limit ?? 100));
-  params.set('offset', String(pagination.offset ?? 0));
-  return params;
-}

@@ -5,7 +5,6 @@ import type { ConfigEntry } from '@/lib/api/config';
 import {
   buildPatch,
   canMarkSecret,
-  countDirty,
   draftError,
   errorForKey,
   groupEntries,
@@ -124,7 +123,6 @@ describe('the PATCH body', () => {
       kind: 'value',
       value: false,
     });
-    expect(countDirty([port, flag], { PORT: { kind: 'value', value: '26' } })).toBe(1);
   });
 
   it('accepts no edit to an immutable setting that is already set', () => {

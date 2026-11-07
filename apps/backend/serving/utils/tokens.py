@@ -347,28 +347,12 @@ async def run_tokenization(func: Callable[..., T], *args: Any) -> T:
     return await loop.run_in_executor(_TOKENIZER_POOL, functools.partial(context.run, func, *args))
 
 
-def estimate_total_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
-    """Estimate total request tokens (prompt + completion budget).
-
-    Args:
-      messages: Chat messages in OpenAI format.
-      max_tokens: Optional completion budget; defaults to 500 if None.
-
-    Returns:
-      Estimated total tokens for the request.
-    """
-    prompt_tokens = estimate_prompt_tokens(messages)
-    completion_budget = max_tokens if max_tokens is not None else 500
-    return prompt_tokens + int(completion_budget)
-
-
 __all__ = [
     "INLINE_ESTIMATE_MAX_CHARS",
     "estimate_prompt_tokens",
     "estimate_prompt_tokens_bounded",
     "estimate_text_tokens",
     "estimate_texts_tokens_bounded",
-    "estimate_total_tokens",
     "run_tokenization",
     "tokenize_text",
 ]

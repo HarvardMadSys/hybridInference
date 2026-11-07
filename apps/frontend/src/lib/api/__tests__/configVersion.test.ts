@@ -5,7 +5,6 @@ import {
   ConfigVersionConflictError,
   getConfig,
   getLiveConfigStatus,
-  markConfigSecret,
   patchConfig,
   resetConfigKey,
   type ConfigResponse,
@@ -70,10 +69,6 @@ describe('conditional configuration writes', () => {
     fetchMock.mockResolvedValueOnce(json(config(44)));
     await resetConfigKey('SITE_NAME', { expectedVersion: { epoch: 'e1', revision: 43 } });
     expect(ifMatchOf(1)).toBe('"e1:43"');
-
-    fetchMock.mockResolvedValueOnce(json(config(45)));
-    await markConfigSecret('CUSTOM_TOKEN', { expectedVersion: { epoch: 'e1', revision: 44 } });
-    expect(ifMatchOf(2)).toBe('"e1:44"');
   });
 
   it('never takes a version from an unrelated read', async () => {

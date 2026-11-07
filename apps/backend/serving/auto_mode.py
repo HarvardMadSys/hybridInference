@@ -322,9 +322,6 @@ class AutoMode:
         )
 
 
-_CAPABILITY_REASONS = (DropReason.CONTEXT, DropReason.MODALITY, DropReason.TOOLS)
-
-
 def _unavailable(
     requested: str,
     candidates: Sequence[Candidate],

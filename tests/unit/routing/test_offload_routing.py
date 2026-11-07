@@ -104,7 +104,7 @@ class _SlotAdapter(BaseAdapter):
 
 
 class _Policies:
-    """Minimal ``OffloadPolicySource``."""
+    """Minimal offload policy source: ``get_offload_policy`` from a dict."""
 
     def __init__(self, policies: dict[str, OffloadPolicy] | None = None) -> None:
         self.policies = dict(policies or {})

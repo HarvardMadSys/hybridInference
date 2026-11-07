@@ -71,7 +71,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from routing.engine_wait import EngineWaitExpired
 from serving.adapters.upstream_limiter import UpstreamQueueWaitExpired, UpstreamSaturated
@@ -87,7 +87,6 @@ __all__ = [
     "OFFLOAD_QUEUE_WAIT",
     "FallbackOrder",
     "OffloadPolicy",
-    "OffloadPolicySource",
     "abandoned_for_offload",
     "ended_in_gateway_queue",
     "offload_reason_for",
@@ -151,15 +150,6 @@ class OffloadPolicy:
         True up to and including the max input, and always when there is none.
         """
         return self.max_input_tokens is None or prompt_tokens <= self.max_input_tokens
-
-
-@runtime_checkable
-class OffloadPolicySource(Protocol):
-    """Synchronous read of the offload policy in force for a canonical model."""
-
-    def get_offload_policy(self, model_id: str) -> OffloadPolicy | None:
-        """Return the model's offload policy, or None when it has none."""
-        ...
 
 
 def ended_in_gateway_queue(exc: BaseException) -> bool:

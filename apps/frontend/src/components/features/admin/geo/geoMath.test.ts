@@ -6,7 +6,6 @@ import {
   buildColumnIndex,
   buildContinentSeries,
   buildOriginSeries,
-  buildCountryContinentMap,
   deriveGeoMetricModel,
   hourOriginSummary,
   landPoints,
@@ -54,7 +53,6 @@ describe('geo column contract', () => {
 
     expect(buildColumnIndex(data.bucket_cols)).toEqual({ c: 0, cont: 1, n: 2, tout: 3 });
     expect(buildContinentSeries(data, 'n').get('AS')).toEqual([7]);
-    expect(buildCountryContinentMap(data)).toEqual(new Map([['SGP', 'AS']]));
   });
 });
 

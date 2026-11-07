@@ -18,10 +18,7 @@ from serving.config.app_config import config_value
 from serving.exceptions import UpstreamModelQueued, operator_safe_error
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition, interrupt_settle
-from serving.observability.state_alert_policy import (
-    circuit_open_policy,
-    set_usage_limit_paging as _set_usage_limit_paging,
-)
+from serving.observability.state_alert_policy import circuit_open_policy
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -141,15 +138,6 @@ _AUTH_ALERT_TITLE = "Upstream rejected gateway credential"
 # above. Deliberately far shorter than that cooldown so a page dropped by an
 # unreachable sink is retried in seconds rather than after five minutes.
 _AUTH_ALERT_SCHEDULE_INTERVAL_SEC = 5.0
-
-
-def set_usage_limit_paging(enabled: bool) -> None:
-    """Set whether subscription usage-limit trips page.
-
-    Re-exported from ``serving.observability.state_alert_policy`` so the
-    breaker's callers keep one import site for the knob they already used.
-    """
-    _set_usage_limit_paging(enabled)
 
 
 def _auth_alert_key(endpoint_id: str) -> str:
