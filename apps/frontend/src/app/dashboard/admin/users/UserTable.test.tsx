@@ -2,11 +2,13 @@
 import { chooseOption } from '@/test-utils/select';
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import toast from 'react-hot-toast';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UserTable } from './UserTable';
 import type { UserRow } from './types';
 
+vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/api/admin', () => ({
   getUserDetail: vi.fn(),
   listModelVisibility: vi.fn(),
@@ -95,7 +97,7 @@ function clickInDialog(name: string | RegExp) {
 
 async function expand(label = 'user@example.com') {
   fireEvent.click(screen.getByText(label));
-  await screen.findByRole('button', { name: 'Edit admin note' });
+  await screen.findByRole('textbox', { name: 'Admin note' });
 }
 
 describe('UserTable disabled models editing', () => {
@@ -190,37 +192,33 @@ describe('UserTable disabled models editing', () => {
 
     fireEvent.click(screen.getByText('user@example.com'));
 
-    // Read-only until Edit: the denylist reads as text, with no checkboxes.
-    expect(await screen.findByLabelText('Disabled models')).toHaveTextContent(
-      'Disabled: claude-3-5-sonnet',
-    );
-    expect(screen.queryByTestId('disabled-models-panel')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit account settings' }));
+    // Editable in place: the checkboxes show the saved denylist, with no Edit
+    // step and no save bar until something changes.
+    const modelAccess = await screen.findByTestId('disabled-models-panel');
     expect(screen.getByText('Model access')).toBeInTheDocument();
-    const modelAccess = screen.getByTestId('disabled-models-panel');
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
     expect(within(modelAccess).getByLabelText('Enable claude-3-5-sonnet')).not.toBeChecked();
     expect(within(modelAccess).getByLabelText('Disable gpt-4o-mini')).toBeChecked();
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
 
     fireEvent.click(within(modelAccess).getByLabelText('Disable gpt-4o-mini'));
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    expect(onUpdate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
 
-    expect(dialog()).toHaveAccessibleName(
-      'Save 1 change to account settings for user@example.com?',
+    // Save writes at once: no confirmation.
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull(),
     );
-    expect(dialog()).toHaveTextContent('Model access: gpt-4o-miniEnabled → Disabled');
-    expect(onUpdate).not.toHaveBeenCalled();
-    clickInDialog('Confirm save');
-
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith('user-1', {
       disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
     });
-    // The panel shows the refetched, saved values read-only again.
-    expect(screen.getByLabelText('Disabled models')).toHaveTextContent(
-      'Disabled: claude-3-5-sonnet, gpt-4o-mini',
-    );
+    // The panel shows the refetched, saved values, with no drafts left.
+    expect(within(modelAccess).getByLabelText('Enable claude-3-5-sonnet')).not.toBeChecked();
+    expect(within(modelAccess).getByLabelText('Enable gpt-4o-mini')).not.toBeChecked();
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
     // The table writes only through onUpdate, never a second direct PATCH.
     expect(apiUpdateUser).not.toHaveBeenCalled();
   });
@@ -276,9 +274,8 @@ describe('UserTable disabled models editing', () => {
 
     fireEvent.click(screen.getByText('user@example.com'));
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit account settings' }));
+    const modelAccess = await screen.findByTestId('disabled-models-panel');
     expect(screen.getByText('Model access')).toBeInTheDocument();
-    const modelAccess = screen.getByTestId('disabled-models-panel');
 
     // Role-locked model: disabled checkbox, requires-internal badge.
     const lockedCheckbox = within(modelAccess).getByLabelText(
@@ -292,17 +289,15 @@ describe('UserTable disabled models editing', () => {
     expect(within(modelAccess).getByLabelText('Disable gpt-4o-mini')).toBeChecked();
 
     // Clicking the locked checkbox is a no-op: it must not add the model to the
-    // denylist. With no other change there is nothing to save at all.
+    // denylist. With no other change there is nothing to save, so no save bar.
     fireEvent.click(lockedCheckbox);
-    expect(screen.getByText('No changes yet')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to account settings' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
 
     // Toggle a reachable model afterward to force a save call we can inspect,
     // proving the locked model never entered the denylist.
     fireEvent.click(within(modelAccess).getByLabelText('Disable gpt-4o-mini'));
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
-    expect(dialog()).not.toHaveTextContent('deepseek-v4-flash');
-    clickInDialog('Confirm save');
 
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalled();
@@ -449,31 +444,51 @@ describe('UserTable admin note', () => {
     renderTable(baseUser, { onUpdate });
 
     await expand();
-    // Read-only until Edit.
-    expect(screen.getByLabelText('Admin note').tagName).toBe('OUTPUT');
-    fireEvent.click(screen.getByRole('button', { name: 'Edit admin note' }));
-
+    // Editable in place, with no Edit step.
     const textarea = screen.getByLabelText('Admin note');
     expect(textarea.tagName).toBe('TEXTAREA');
-    // Save is disabled until the note actually changes.
-    const saveBtn = screen.getByRole('button', { name: 'Save changes to admin note' });
-    expect(saveBtn).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Edit admin note' })).toBeNull();
+    // No save bar until the note actually changes.
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
 
     fireEvent.change(textarea, { target: { value: '  VIP customer  ' } });
-    expect(saveBtn).not.toBeDisabled();
-    fireEvent.click(saveBtn);
-    expect(dialog()).toHaveTextContent('Admin note(none) → VIP customer');
+    const saveBtn = screen.getByRole('button', { name: 'Save changes to admin note' });
+    expect(saveBtn).toBeEnabled();
     expect(onUpdate).not.toHaveBeenCalled();
-    clickInDialog('Confirm save');
+    fireEvent.click(saveBtn);
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: 'VIP customer' });
     });
     expect(onUpdate).toHaveBeenCalledTimes(1);
-    // Detail is refetched so the panel reflects the persisted value.
+    // Detail is refetched so the panel reflects the persisted (trimmed) value.
     expect(getUserDetail).toHaveBeenCalledTimes(2);
-    expect(await screen.findByText('VIP customer')).toBeInTheDocument();
-    expect(screen.getByLabelText('Admin note').tagName).toBe('OUTPUT');
+    await waitFor(() => expect(screen.getByLabelText('Admin note')).toHaveValue('VIP customer'));
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+  });
+
+  it('shows the save bar only while the trimmed note differs, and Discard restores it', async () => {
+    vi.mocked(getUserDetail).mockResolvedValueOnce(detailFixture({ admin_note: 'old note' }));
+    const onUpdate = vi.fn(async () => undefined);
+
+    renderTable(baseUser, { onUpdate });
+
+    await expand();
+    const textarea = screen.getByLabelText('Admin note');
+    expect(textarea).toHaveValue('old note');
+
+    // Surrounding whitespace is trimmed away on save, so it is no change.
+    fireEvent.change(textarea, { target: { value: '  old note ' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+
+    fireEvent.change(textarea, { target: { value: 'new note' } });
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to admin note' }));
+    expect(textarea).toHaveValue('old note');
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
   });
 
   it('clears an existing note by saving an empty value', async () => {
@@ -485,19 +500,16 @@ describe('UserTable admin note', () => {
     renderTable(baseUser, { onUpdate });
 
     await expand();
-    expect(screen.getByLabelText('Admin note')).toHaveTextContent('old note');
-    fireEvent.click(screen.getByRole('button', { name: 'Edit admin note' }));
     const textarea = screen.getByLabelText('Admin note');
     expect(textarea).toHaveValue('old note');
 
     fireEvent.change(textarea, { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to admin note' }));
-    expect(dialog()).toHaveTextContent('Admin noteold note → (none)');
-    clickInDialog('Confirm save');
 
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: null });
     });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
   it('shows a note indicator in the table row when a user has an admin note', () => {
@@ -535,18 +547,24 @@ describe('UserTable admin note', () => {
     await screen.findByText('Usage insights');
 
     for (const value of ['200', '300', '400']) {
-      fireEvent.click(screen.getByRole('button', { name: 'Edit account settings' }));
-      // The quota field is the first number input in the edit row.
+      // The quota field is the first number input in the settings row.
       const quotaInput = screen.getAllByRole('spinbutton')[0];
       fireEvent.change(quotaInput, { target: { value } });
       fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
-      clickInDialog('Confirm save');
       await waitFor(() => {
         expect(onUpdate).toHaveBeenCalledWith('user-1', {
           quota_daily_cost_usd: Number(value),
         });
       });
-      expect(await screen.findByLabelText('Daily quota (USD)')).toHaveTextContent(value);
+      // The refetched value shows once the save is done and its draft is gone.
+      await waitFor(() =>
+        expect(
+          screen.queryByRole('button', { name: 'Save changes to account settings' }),
+        ).toBeNull(),
+      );
+      expect(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' })).toHaveValue(
+        Number(value),
+      );
     }
     expect(onUpdate).toHaveBeenCalledTimes(3);
 
@@ -570,10 +588,8 @@ describe('UserTable admin note', () => {
     renderTable(suspendedUser, { onUpdate });
 
     await expand();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit admin note' }));
     fireEvent.change(screen.getByLabelText('Admin note'), { target: { value: 'spam risk' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to admin note' }));
-    clickInDialog('Confirm save');
 
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: 'spam risk' });
@@ -720,7 +736,7 @@ describe('UserTable column visibility', () => {
   });
 });
 
-describe('UserTable account settings: read-only, Edit, review, confirm', () => {
+describe('UserTable account settings: in place, written by Save', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
@@ -733,14 +749,13 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
     cleanup();
   });
 
-  async function openAccountEditor(
+  async function renderAccountSettings(
     onUpdate: (userId: string, patch: UpdateUserData) => Promise<void> = vi.fn(
       async () => undefined,
     ),
   ) {
     renderTable(baseUser, { onUpdate });
     await expand();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit account settings' }));
     return onUpdate;
   }
 
@@ -748,47 +763,46 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
   }
 
-  it('refuses an emptied daily quota instead of reviewing it as 0', async () => {
-    const onUpdate = await openAccountEditor();
+  it('refuses an emptied daily quota instead of saving it as 0', async () => {
+    const onUpdate = await renderAccountSettings();
     const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
     fireEvent.change(quota, { target: { value: '' } });
 
-    // The change is visible and explained, but no review opens and nothing is sent.
+    // The change is visible and explained, but Save sends nothing.
     expect(screen.getByText('Enter a daily quota in USD. Use 0 to allow no spend.')).toBeVisible();
     expect(quota).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByText('1 unsaved change')).toBeVisible();
     saveAccount();
-    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByRole('alert')).toHaveTextContent('Correct the daily quota before saving');
     expect(quota).toHaveValue(null);
     expect(onUpdate).not.toHaveBeenCalled();
 
-    // Fixing it clears the error and reviews the real value.
+    // Fixing it clears the error, and Save sends the real value.
     fireEvent.change(quota, { target: { value: '25' } });
     expect(screen.queryByRole('alert')).toBeNull();
     saveAccount();
-    expect(screen.getByRole('dialog')).toHaveTextContent('Daily quota (USD)100 → 25');
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledExactlyOnceWith('user-1', { quota_daily_cost_usd: 25 }),
+    );
   });
 
   it('refuses a negative daily quota', async () => {
-    const onUpdate = await openAccountEditor();
+    const onUpdate = await renderAccountSettings();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' }), {
       target: { value: '-5' },
     });
     expect(screen.getByText('Enter a daily quota of 0 or more.')).toBeVisible();
     saveAccount();
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent('Correct the daily quota before saving');
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
   it('still allows a deliberate zero quota', async () => {
-    const onUpdate = await openAccountEditor();
+    const onUpdate = await renderAccountSettings();
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' }), {
       target: { value: '0' },
     });
     saveAccount();
-    expect(screen.getByRole('dialog')).toHaveTextContent('Daily quota (USD)100 → 0');
-    clickInDialog('Confirm save');
     await waitFor(() =>
       expect(onUpdate).toHaveBeenCalledWith('user-1', { quota_daily_cost_usd: 0 }),
     );
@@ -799,90 +813,105 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
     vi.mocked(getUserDetail).mockResolvedValue(
       detailFixture({ role: 'free', quota_daily_usd: null, max_concurrent_requests: null }),
     );
-    const onUpdate = await openAccountEditor();
+    const onUpdate = await renderAccountSettings();
     chooseOption('Role', 'pro');
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
     saveAccount();
-    const dialog = screen.getByRole('dialog', {
-      name: 'Save 1 change to account settings for user@example.com?',
-    });
-    expect(dialog).not.toHaveTextContent('Daily quota');
-    clickInDialog('Confirm save');
-    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('user-1', { role: 'pro' }));
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledExactlyOnceWith('user-1', { role: 'pro' }),
+    );
   });
 
-  it('shows role, quota and concurrency as text until Edit', async () => {
-    renderTable(baseUser);
-    await expand();
+  it('edits role, quota and concurrency in place, writing nothing until Save', async () => {
+    const onUpdate = await renderAccountSettings();
 
-    expect(screen.getByLabelText('Role')).toHaveTextContent('free');
-    expect(screen.getByLabelText('Role').tagName).toBe('OUTPUT');
-    expect(screen.getByLabelText('Daily quota (USD)')).toHaveTextContent('100');
-    expect(screen.getByLabelText('Max concurrent')).toHaveTextContent('Role default');
-    expect(screen.queryByRole('spinbutton')).toBeNull();
-    expect(screen.queryByRole('combobox')).toBeNull();
+    // No Edit step, and no save bar until something changes.
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('free');
+    expect(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' })).toHaveValue(100);
+    const maxConcurrent = screen.getByRole('spinbutton', { name: 'Max concurrent' });
+    expect(maxConcurrent).toHaveValue(null);
+    expect(maxConcurrent).toHaveAttribute('placeholder', 'Role default');
     expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Edit account settings' }));
-    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('free');
-    expect(screen.getByText('No changes yet')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to account settings' })).toBeDisabled();
+    chooseOption('Role', 'pro');
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Save changes to account settings' })).toBeEnabled();
+    expect(onUpdate).not.toHaveBeenCalled();
   });
 
-  it('Cancel discards the drafts and writes nothing', async () => {
-    const onUpdate = await openAccountEditor();
+  it('Discard drops the drafts and writes nothing', async () => {
+    const onUpdate = await renderAccountSettings();
     chooseOption('Role', 'pro');
     expect(screen.getByText('1 unsaved change')).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing account settings' }));
-    expect(screen.getByLabelText('Role')).toHaveTextContent('free');
-    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to account settings' }));
+    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('free');
+    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
     expect(onUpdate).not.toHaveBeenCalled();
   });
 
   it('treats a value typed back to its saved value as no change', async () => {
-    await openAccountEditor();
+    await renderAccountSettings();
     const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
     fireEvent.change(quota, { target: { value: '250' } });
     expect(screen.getByText('1 unsaved change')).toBeVisible();
     fireEvent.change(quota, { target: { value: '100' } });
-    expect(screen.getByText('No changes yet')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to account settings' })).toBeDisabled();
+    expect(screen.queryByText('1 unsaved change')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
   });
 
-  it('lists old -> new, keeps drafts on Back, and writes one patch on Confirm', async () => {
-    const onUpdate = await openAccountEditor();
+  it('lets a refresh show through a note typed back to its saved text', async () => {
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture({ role: 'free', admin_note: null }))
+      .mockResolvedValueOnce(detailFixture({ role: 'pro', admin_note: 'Set elsewhere' }));
+    await renderAccountSettings();
+    const note = screen.getByLabelText('Admin note');
+    fireEvent.change(note, { target: { value: 'draft' } });
+    fireEvent.change(note, { target: { value: '' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+
+    chooseOption('Role', 'pro');
+    saveAccount();
+    await waitFor(() => expect(getUserDetail).toHaveBeenCalledTimes(2));
+
+    await waitFor(() => expect(screen.getByLabelText('Admin note')).toHaveValue('Set elsewhere'));
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+  });
+
+  it('writes every changed field in one patch on Save, with no confirmation', async () => {
+    const onUpdate = await renderAccountSettings();
     chooseOption('Role', 'pro');
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max concurrent' }), {
       target: { value: '4' },
     });
-    saveAccount();
-
-    expect(dialog()).toHaveAccessibleName(
-      'Save 2 changes to account settings for user@example.com?',
-    );
-    expect(dialog()).toHaveTextContent('Rolefree → pro');
-    expect(dialog()).toHaveTextContent('Max concurrentRole default → 4');
-    expect(onUpdate).not.toHaveBeenCalled();
-
-    clickInDialog('Back to editing');
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('pro');
-    expect(screen.getByRole('spinbutton', { name: 'Max concurrent' })).toHaveValue(4);
+    expect(screen.getByText('2 unsaved changes')).toBeVisible();
     expect(onUpdate).not.toHaveBeenCalled();
 
     vi.mocked(getUserDetail).mockResolvedValueOnce(
       detailFixture({ role: 'pro', max_concurrent_requests: 4 }),
     );
     saveAccount();
-    clickInDialog('Confirm save');
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull());
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith('user-1', { role: 'pro', max_concurrent_requests: 4 });
-    expect(screen.getByLabelText('Role')).toHaveTextContent('pro');
-    expect(screen.getByLabelText('Max concurrent')).toHaveTextContent('4');
+    expect(screen.getByRole('combobox', { name: 'Role' })).toHaveTextContent('pro');
+    expect(screen.getByRole('spinbutton', { name: 'Max concurrent' })).toHaveValue(4);
   });
 
-  it('blocks a second Confirm and closing while the save is in flight', async () => {
+  it('keeps the open user while its save runs, and opens another one only after', async () => {
+    const other: UserRow = {
+      ...baseUser,
+      id: 'user-2',
+      email: 'other@example.com',
+      user_name: 'Other',
+    };
+    vi.mocked(getUserDetail).mockImplementation(async (userId: string) =>
+      userId === 'user-2'
+        ? detailFixture({ id: 'user-2', email: 'other@example.com', role: 'pro' })
+        : detailFixture({ role: 'free', quota_daily_usd: 100, max_concurrent_requests: null }),
+    );
     let finish!: () => void;
     const onUpdate = vi.fn(
       () =>
@@ -890,43 +919,81 @@ describe('UserTable account settings: read-only, Edit, review, confirm', () => {
           finish = resolve;
         }),
     );
-    await openAccountEditor(onUpdate);
+    renderTable(baseUser, { onUpdate, users: [baseUser, other] });
+    await expand();
     chooseOption('Role', 'pro');
     saveAccount();
-    clickInDialog('Confirm save');
+    expect(onUpdate).toHaveBeenCalledWith('user-1', { role: 'pro' });
 
-    expect(within(dialog()).getByRole('button', { name: 'Saving…' })).toBeDisabled();
-    expect(within(dialog()).getByRole('button', { name: 'Back to editing' })).toBeDisabled();
-    expect(screen.getByRole('combobox', { name: 'Role' })).toBeDisabled();
-    fireEvent.click(within(dialog()).getByRole('button', { name: 'Saving…' }));
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(onUpdate).toHaveBeenCalledTimes(1);
+    // The save belongs to the open user: another row waits until it ends, so
+    // the saved values never land on a different user's panel.
+    fireEvent.click(screen.getByText('other@example.com'));
+    expect(getUserDetail).not.toHaveBeenCalledWith('user-2');
+    expect(
+      screen.getByRole('button', { name: 'Save changes to account settings' }),
+    ).toHaveTextContent('Saving…');
 
     finish();
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull(),
+    );
+    fireEvent.click(screen.getByText('other@example.com'));
+    await waitFor(() => expect(getUserDetail).toHaveBeenCalledWith('user-2'));
     expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the dialog and drafts after a failure, and retries from the dialog', async () => {
+  it('holds the fields, Save and Discard while the save is in flight, and writes once', async () => {
+    let finish!: () => void;
+    const onUpdate = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderAccountSettings(onUpdate);
+    chooseOption('Role', 'pro');
+    saveAccount();
+
+    const saving = screen.getByRole('button', { name: 'Save changes to account settings' });
+    expect(saving).toHaveTextContent('Saving…');
+    expect(saving).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Discard changes to account settings' }),
+    ).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Role' })).toBeDisabled();
+    // The write flow is shared, but the untouched note does not show a save bar.
+    expect(screen.getByRole('textbox', { name: 'Admin note' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+    fireEvent.click(saving);
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    finish();
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull(),
+    );
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a failed save beside its bar, keeps the drafts, and saves them again', async () => {
     const onUpdate = vi
       .fn<(userId: string, patch: UpdateUserData) => Promise<void>>()
       .mockRejectedValueOnce(new Error('quota must be positive'))
       .mockResolvedValueOnce(undefined);
-    await openAccountEditor(onUpdate);
+    await renderAccountSettings(onUpdate);
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' }), {
       target: { value: '250' },
     });
     saveAccount();
-    clickInDialog('Confirm save');
 
-    expect(await within(dialog()).findByRole('alert')).toHaveTextContent('quota must be positive');
+    expect(await screen.findByRole('alert')).toHaveTextContent('quota must be positive');
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByRole('spinbutton', { name: 'Daily quota (USD)' })).toHaveValue(250);
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
 
-    clickInDialog('Confirm save');
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(onUpdate).toHaveBeenCalledTimes(2);
+    saveAccount();
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
     expect(onUpdate).toHaveBeenLastCalledWith('user-1', { quota_daily_cost_usd: 250 });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
 });
 
@@ -940,7 +1007,7 @@ describe('UserTable suspension message', () => {
     cleanup();
   });
 
-  it('edits the message only after Edit and saves it on Confirm', async () => {
+  it('edits the message in place and saves it on Save', async () => {
     vi.mocked(getUserDetail)
       .mockResolvedValueOnce(detailFixture({ status: 'suspended', suspension_message: 'Spam' }))
       .mockResolvedValueOnce(
@@ -950,21 +1017,65 @@ describe('UserTable suspension message', () => {
     renderTable({ ...baseUser, status: 'suspended' }, { onUpdate });
     await expand();
 
-    expect(screen.getByLabelText('Suspension message')).toHaveTextContent('Spam');
-    expect(screen.getByLabelText('Suspension message').tagName).toBe('OUTPUT');
-    fireEvent.click(screen.getByRole('button', { name: 'Edit suspension message' }));
-    fireEvent.change(screen.getByLabelText('Suspension message'), {
-      target: { value: ' Contact support ' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Save changes to suspension message' }));
-    expect(dialog()).toHaveTextContent('Suspension messageSpam → Contact support');
+    const message = screen.getByRole('textbox', { name: 'Suspension message' });
+    expect(message).toHaveValue('Spam');
+    expect(screen.queryByRole('button', { name: 'Edit suspension message' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save changes to suspension message' })).toBeNull();
+    fireEvent.change(message, { target: { value: ' Contact support ' } });
     expect(onUpdate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to suspension message' }));
 
-    clickInDialog('Confirm save');
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(message).toHaveValue('Contact support'));
     expect(onUpdate).toHaveBeenCalledTimes(1);
     expect(onUpdate).toHaveBeenCalledWith('user-1', { suspension_message: 'Contact support' });
-    expect(screen.getByLabelText('Suspension message')).toHaveTextContent('Contact support');
+    expect(message).toHaveValue('Contact support');
+    expect(screen.queryByRole('button', { name: 'Save changes to suspension message' })).toBeNull();
+  });
+
+  it('says what an emptied message means, and clears it on Save', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(
+      detailFixture({ status: 'suspended', suspension_message: 'Spam' }),
+    );
+    const onUpdate = vi.fn(async () => undefined);
+    renderTable({ ...baseUser, status: 'suspended' }, { onUpdate });
+    await expand();
+
+    expect(screen.queryByText(/default suspension notice/)).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Suspension message' }), {
+      target: { value: '   ' },
+    });
+    expect(screen.getByText(/default suspension notice/)).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to suspension message' }));
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledWith('user-1', { suspension_message: null }),
+    );
+  });
+
+  it('shows a failed message save beside its bar, keeps the draft, and saves it again', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(
+      detailFixture({ status: 'suspended', suspension_message: 'Spam' }),
+    );
+    const onUpdate = vi
+      .fn<(userId: string, patch: UpdateUserData) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('backend unavailable'))
+      .mockResolvedValueOnce(undefined);
+    renderTable({ ...baseUser, status: 'suspended' }, { onUpdate });
+    await expand();
+
+    const message = screen.getByRole('textbox', { name: 'Suspension message' });
+    fireEvent.change(message, { target: { value: 'Contact support' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to suspension message' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('backend unavailable');
+    expect(message).toHaveValue('Contact support');
+    // Only the bar that saved shows the failure.
+    expect(screen.queryByRole('button', { name: 'Save changes to admin note' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to suspension message' }));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    expect(onUpdate).toHaveBeenLastCalledWith('user-1', { suspension_message: 'Contact support' });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
 });
 
@@ -978,23 +1089,54 @@ describe('UserTable account actions', () => {
     cleanup();
   });
 
-  it('approves a pending user only after the confirmation names them', async () => {
+  it('approves a pending user on the click, without expanding the row', async () => {
     const onApprove = vi.fn(async () => undefined);
     renderTable({ ...baseUser, status: 'pending_approval' }, { onApprove });
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    expect(dialog()).toHaveAccessibleName('Approve user@example.com?');
-    clickInDialog('Cancel');
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(onApprove).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    clickInDialog('Approve');
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(onApprove).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
     expect(onApprove).toHaveBeenCalledWith('user-1');
     // Approving from the row does not expand it.
     expect(getUserDetail).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('holds Approve and Reject while an approval runs', async () => {
+    let finish!: () => void;
+    const onApprove = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderTable({ ...baseUser, status: 'pending_approval' }, { onApprove });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeDisabled();
+    expect(onApprove).toHaveBeenCalledTimes(1);
+
+    finish();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeEnabled();
+    expect(onApprove).toHaveBeenCalledTimes(1);
+  });
+
+  it('toasts a failed approval, and approves on the next click', async () => {
+    const onApprove = vi
+      .fn<(userId: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('User is not pending approval'))
+      .mockResolvedValueOnce(undefined);
+    renderTable({ ...baseUser, status: 'pending_approval' }, { onApprove });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('User is not pending approval'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(2));
+    expect(toast.error).toHaveBeenCalledTimes(1);
   });
 
   it('rejects only with a reason', async () => {
@@ -1042,7 +1184,7 @@ describe('UserTable account actions', () => {
     expect(onSuspend).toHaveBeenCalledTimes(1);
     expect(onSuspend).toHaveBeenCalledWith('user-1', 'Policy violation');
     // The panel collapses after a status change.
-    expect(screen.queryByRole('button', { name: 'Edit admin note' })).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull();
   });
 
   it('sends a null suspension message when none is typed', async () => {
@@ -1055,34 +1197,46 @@ describe('UserTable account actions', () => {
     await waitFor(() => expect(onSuspend).toHaveBeenCalledWith('user-1', null));
   });
 
-  it('reactivates a suspended user through one status update', async () => {
+  it('reactivates a suspended user on the click, through one status update', async () => {
     vi.mocked(getUserDetail).mockResolvedValue(detailFixture({ status: 'suspended' }));
     const onUpdate = vi.fn(async () => undefined);
     renderTable({ ...baseUser, status: 'suspended' }, { onUpdate });
     await expand();
 
     fireEvent.click(screen.getByRole('button', { name: 'Reactivate' }));
-    expect(dialog()).toHaveAccessibleName('Reactivate user@example.com?');
-    expect(onUpdate).not.toHaveBeenCalled();
-    clickInDialog('Reactivate');
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
     expect(onUpdate).toHaveBeenCalledWith('user-1', { status: 'active' });
+    // The panel collapses after a status change.
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull());
   });
 
-  it('resumes a deleted user after confirming', async () => {
+  it('resumes a deleted user on the click, and says beforehand that keys stay revoked', async () => {
     vi.mocked(getUserDetail).mockResolvedValue(detailFixture({ status: 'deleted' }));
     const onResume = vi.fn(async () => undefined);
     renderTable({ ...baseUser, status: 'deleted' }, { onResume });
     await expand();
 
+    expect(screen.getByText(/its API keys stay revoked/)).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
-    expect(dialog()).toHaveAccessibleName('Resume user@example.com?');
-    expect(dialog()).toHaveTextContent('API keys stay revoked');
-    clickInDialog('Resume');
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(onResume).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(onResume).toHaveBeenCalledTimes(1));
     expect(onResume).toHaveBeenCalledWith('user-1');
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull());
+  });
+
+  it('keeps the panel open and toasts a failed reactivation', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture({ status: 'suspended' }));
+    const onUpdate = vi
+      .fn<(userId: string, patch: UpdateUserData) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('backend unavailable'));
+    renderTable({ ...baseUser, status: 'suspended' }, { onUpdate });
+    await expand();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reactivate' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('backend unavailable'));
+    expect(screen.getByRole('textbox', { name: 'Admin note' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reactivate' })).toBeEnabled();
   });
 
   it('deletes only with a reason, keeps the dialog on failure, and retries', async () => {
@@ -1150,17 +1304,105 @@ describe('UserTable account actions', () => {
   });
 
   it('refuses to act on a user who has left the list while the dialog was open', async () => {
-    const onApprove = vi.fn(async () => undefined);
+    const onReject = vi.fn(async () => undefined);
     const pending: UserRow = { ...baseUser, status: 'pending_approval' };
-    const { rerender } = render(<UserTable {...tableProps(pending, { onApprove })} />);
+    const { rerender } = render(<UserTable {...tableProps(pending, { onReject })} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
-    rerender(<UserTable {...tableProps(pending, { onApprove, users: [] })} />);
-    clickInDialog('Approve');
+    fireEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    fireEvent.change(screen.getByLabelText('Reason for rejection (required)'), {
+      target: { value: 'not a student' },
+    });
+    rerender(<UserTable {...tableProps(pending, { onReject, users: [] })} />);
+    clickInDialog('Reject');
 
     expect(await within(dialog()).findByRole('alert')).toHaveTextContent(
       'user@example.com is no longer in the list.',
     );
-    expect(onApprove).not.toHaveBeenCalled();
+    expect(onReject).not.toHaveBeenCalled();
+  });
+});
+
+describe('UserTable reverted drafts', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+  it('follows a refreshed quota after the edit was reverted by hand', async () => {
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture())
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 250, admin_note: 'saved note' }));
+    renderTable();
+    await expand();
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
+    fireEvent.change(quota, { target: { value: '200' } });
+    fireEvent.change(quota, { target: { value: '100' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Admin note'), { target: { value: 'saved note' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to admin note' }));
+    await waitFor(() => expect(quota).toHaveValue(250));
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+  });
+});
+
+describe('UserTable reverted text drafts', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+  it.each([
+    ['Admin note', 'admin note', 'Suspension message', 'suspension message'],
+    ['Suspension message', 'suspension message', 'Admin note', 'admin note'],
+  ])(
+    'refreshes %s after its trimmed draft is reverted',
+    async (label, target, otherLabel, otherTarget) => {
+      vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+      vi.mocked(getUserDetail)
+        .mockResolvedValueOnce(
+          detailFixture({ status: 'suspended', admin_note: 'old', suspension_message: 'old' }),
+        )
+        .mockResolvedValueOnce(
+          detailFixture({
+            status: 'suspended',
+            admin_note: 'updated',
+            suspension_message: 'updated',
+          }),
+        );
+      renderTable({ ...baseUser, status: 'suspended' });
+      await expand();
+      const field = screen.getByLabelText(label);
+      fireEvent.change(field, { target: { value: 'draft' } });
+      fireEvent.change(field, { target: { value: ' old ' } });
+      expect(field).toHaveValue(' old ');
+      expect(screen.queryByRole('button', { name: `Save changes to ${target}` })).toBeNull();
+      fireEvent.change(screen.getByLabelText(otherLabel), { target: { value: 'updated' } });
+      fireEvent.click(screen.getByRole('button', { name: `Save changes to ${otherTarget}` }));
+      await waitFor(() => expect(field).toHaveValue('updated'));
+      expect(screen.queryByRole('button', { name: `Save changes to ${target}` })).toBeNull();
+    },
+  );
+});
+
+describe('UserTable independent account drafts', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+  it('keeps other unsaved fields when a quota edit is reverted', async () => {
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture());
+    const onUpdate = vi.fn(async () => undefined);
+    renderTable(baseUser, { onUpdate });
+    await expand();
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (USD)' });
+    fireEvent.change(quota, { target: { value: '200' } });
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Max concurrent' }), {
+      target: { value: '4' },
+    });
+    fireEvent.change(quota, { target: { value: '100' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledExactlyOnceWith('user-1', { max_concurrent_requests: 4 }),
+    );
   });
 });

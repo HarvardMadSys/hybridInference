@@ -186,8 +186,9 @@ overrode it — and complete the browser flow:
    setting the gateway keeps in its database, the example's own values among
    them; see
    [Settings stored in the database](configuration.md#settings-stored-in-the-database).
-3. On the dashboard, create an API key, then reveal and copy it for the API
-   call below.
+3. On the dashboard, create an API key and copy it for the API call below.
+   To see a saved key again later, select **Show key** and enter your
+   password.
 4. Open **API Playground**, select `example-chat`, and send a message. The reply
    is `RUNNABLE_EXAMPLE_OK`.
 5. Open **Admin Console** again. This account is an administrator because
@@ -275,7 +276,7 @@ your own `BACKEND_PORT` here too if you overrode it).
 
 Once Stage 2 has started, exporting `EXAMPLE_UPSTREAM_*` in your shell does not
 change the route: a stored setting wins over the environment, and the
-Configuration tab marks such a variable **Environment ignored**. To return to
+Settings tab marks such a variable **Environment ignored**. To return to
 the bundled provider, select **Reset** on the three settings and restart the
 backend again.
 
@@ -396,7 +397,7 @@ and 3. The links the site generates follow the same ports:
 the example's database. Keep the same three ports on every later `make demo`
 or `make demo-smoke`, because both commands can recreate containers. A
 different `FRONTEND_PORT` later does not reach the stored addresses; change
-them on the Configuration tab, or reset the example and start again.
+them on the Settings tab, or reset the example and start again.
 
 ### The setup page rejects the code
 

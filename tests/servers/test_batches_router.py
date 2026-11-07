@@ -1,4 +1,4 @@
-"""Tests for the batch inference router (``/v1/batches``).
+"""Tests for the batch API router (``/v1/batches``), every target and input.
 
 The store is an in-memory stand-in for ``serving.storage.batch_store`` that keeps
 the half of its contract the router uses; the settings are answered by a dict in
@@ -8,6 +8,7 @@ job and is not exercised here.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 from datetime import UTC, datetime, timedelta
@@ -20,8 +21,8 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
-from serving.batch import config as batch_config_module
-from serving.servers.auth import verify_api_key
+from serving.batch import admission, config as batch_config_module, targets
+from serving.servers.auth import verify_api_key, verify_batch_management_identity
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import batches
@@ -73,6 +74,8 @@ def _adapter(model_id: str) -> _Adapter:
             name=model_id,
             provider="test",
             base_url="http://test",
+            # The gateway's own server, so batch work may use it.
+            deployment_type="self_hosted",
             context_length=8192,
             max_output_length=4096,
             pricing={"prompt": "0", "completion": "0"},
@@ -100,8 +103,10 @@ class FakeBatchStore:
         model_ids: list[str],
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
+        **options: Any,
     ) -> dict[str, Any]:
+        self.options = options
         self.created.append(
             {
                 "batch_id": batch_id,
@@ -135,8 +140,17 @@ class FakeBatchStore:
             "expired_at": None,
             "cancelling_at": None,
             "cancelled_at": None,
-            "expires_at": now + timedelta(seconds=completion_window_seconds),
+            "expires_at": (
+                None
+                if completion_window_seconds is None
+                else now + timedelta(seconds=completion_window_seconds)
+            ),
             "paused_until": None,
+            "api_surface": options.get("api_surface", "openai_inline"),
+            "target": options.get("target", "chat"),
+            "schema_version": 2,
+            "phase": options.get("phase", "runnable"),
+            "protocol_profile": options.get("protocol_profile"),
         }
         self.batches[batch_id] = row
         self.items[batch_id] = [
@@ -165,6 +179,9 @@ class FakeBatchStore:
             for row in self.batches.values()
             if row["user_id"] == user_id and row["status"] in ACTIVE
         )
+
+    async def find_idempotent(self, *, owner_id: str, api_surface: str, key: str) -> None:
+        return None
 
     async def get_batch(self, batch_id: str, *, user_id: str | None = None) -> dict | None:
         row = self.batches.get(batch_id)
@@ -267,6 +284,8 @@ def scheduler() -> FakeScheduler:
 def services(store, scheduler) -> AppServices:
     router = FixedRouter()
     router.register_route(MODEL, [(_adapter(MODEL), 1.0)])
+    # Embedding admission reads its own access gate, not the chat route above.
+    router.register_embedding_route(MODEL, [(_adapter(MODEL), 1.0)], required_role="free")
     router.register_route(ADMIN_MODEL, [(_adapter(ADMIN_MODEL), 1.0)], required_role="admin")
     router.register_route(
         CANONICAL_MODEL, [(_adapter(CANONICAL_MODEL), 1.0)], aliases=[ALIAS_MODEL]
@@ -286,6 +305,8 @@ def app(services, users, settings) -> FastAPI:
         return {"authenticated": True, **users[key]}
 
     app.dependency_overrides[verify_api_key] = fake_verify
+    # Every batch route authenticates without the daily quota gate.
+    app.dependency_overrides[verify_batch_management_identity] = fake_verify
     install_error_handlers(app)
     app.include_router(batches.router)
     return app
@@ -672,7 +693,7 @@ async def test_a_duplicate_custom_id_is_400(client, store):
     assert store.created == []
 
 
-async def test_only_the_chat_completions_url_is_accepted(client, store):
+async def test_every_request_must_name_the_batchs_one_url(client, store):
     body = {"requests": [_request("a"), _request("b", url="/v1/embeddings")]}
 
     response = await client.post("/v1/batches", json=body, headers=_auth())
@@ -680,6 +701,16 @@ async def test_only_the_chat_completions_url_is_accepted(client, store):
     assert response.status_code == 400
     assert "custom_id 'b'" in _message(response)
     assert "/v1/chat/completions" in _message(response)
+
+
+async def test_an_unknown_url_lists_every_target(client, store):
+    body = {"requests": [_request("a", url="/v1/completions")]}
+
+    response = await client.post("/v1/batches", json=body, headers=_auth())
+
+    assert response.status_code == 400
+    for url in ("/v1/chat/completions", "/v1/embeddings", "/v1/messages", "/v1/responses"):
+        assert url in _message(response)
 
 
 async def test_method_and_url_default_to_a_chat_completion(client, store):
@@ -776,13 +807,14 @@ async def test_an_auto_name_served_by_auto_mode_is_refused_even_if_registered(
     async def served_by_auto(model, _services):
         return object()
 
-    monkeypatch.setattr(batches, "auto_mode_for", served_by_auto)
+    # Model admission (auto models included) lives with the targets now.
+    monkeypatch.setattr(targets, "auto_mode_for", served_by_auto)
     refused = await client.post("/v1/batches", json=body, headers=_auth())
 
     async def not_served_by_auto(model, _services):
         return None
 
-    monkeypatch.setattr(batches, "auto_mode_for", not_served_by_auto)
+    monkeypatch.setattr(targets, "auto_mode_for", not_served_by_auto)
     accepted = await client.post("/v1/batches", json=body, headers=_auth())
 
     assert refused.status_code == 400
@@ -876,6 +908,41 @@ async def test_the_batch_object_is_openai_shaped(client, settings):
     assert batch["error"] is None
 
 
+async def test_a_window_of_zero_hours_creates_a_batch_that_never_expires(client, store, settings):
+    settings["BATCH_COMPLETION_WINDOW_HOURS"] = "0"
+
+    batch = await _create(client, body=_body(2))
+
+    (created,) = store.created
+    assert created["completion_window_seconds"] is None
+    assert batch["expires_at"] is None
+    assert batch["completion_window"] == "none"
+
+    fetched = await client.get(f"/v1/batches/{batch['id']}", headers=_auth())
+    assert fetched.status_code == 200
+    assert fetched.json()["expires_at"] is None
+    listed = await client.get("/v1/batches", headers=_auth())
+    assert listed.status_code == 200
+    assert [b["expires_at"] for b in listed.json()["data"]] == [None]
+
+
+def test_a_file_batch_with_no_window_still_reports_the_protocol_s_window():
+    created = datetime(2026, 11, 6, tzinfo=UTC)
+    config = batch_config_module.BatchConfig(completion_window_hours=0)
+    row = {"id": "batch_x", "created_at": created, "expires_at": None, "status": "in_progress"}
+
+    file_batch = batches.batch_object({**row, "api_surface": "openai_file"}, config)
+    inline = batches.batch_object({**row, "api_surface": "openai_inline"}, config)
+
+    assert (file_batch.completion_window, file_batch.expires_at) == ("24h", None)
+    assert (inline.completion_window, inline.expires_at) == ("none", None)
+    windowed = batches.batch_object(
+        {**row, "api_surface": "openai_inline", "expires_at": created + timedelta(hours=48)},
+        config,
+    )
+    assert windowed.completion_window == "48h"
+
+
 async def test_the_key_hash_is_stored_but_never_returned(client, store):
     batch = await _create(client)
     path = f"/v1/batches/{batch['id']}"
@@ -955,6 +1022,391 @@ async def test_a_worker_that_cannot_be_woken_does_not_fail_the_create(client, sc
     assert len(store.created) == 1
 
 
+# --- every target is a standard batch target -------------------------------------
+
+_TARGET_BODIES = {
+    "/v1/chat/completions": _chat(),
+    "/v1/embeddings": {"model": MODEL, "input": "hello"},
+    "/v1/responses": {"model": MODEL, "input": "hello"},
+}
+
+
+@pytest.mark.parametrize("retired_flag", [None, "0", "false", "1"])
+@pytest.mark.parametrize("url", sorted(_TARGET_BODIES))
+async def test_every_target_is_accepted_without_any_opt_in(
+    client, services, settings, store, url, retired_flag
+):
+    """BATCH_EXPANSION_ENABLED is retired: a value left behind, off or on, changes nothing."""
+    services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    # An embedding model is admitted only with the access gate the registry records.
+    services.router.register_embedding_route(MODEL, [(services.embedding_adapters[MODEL], 1.0)])
+    if retired_flag is not None:
+        settings["BATCH_EXPANSION_ENABLED"] = retired_flag
+    body = {"requests": [_request("only", _TARGET_BODIES[url], url=url)]}
+
+    batch = await _create(client, body=body)
+
+    assert batch["endpoint"] == url
+    assert store.created[-1]["endpoint"] == url
+
+
+@pytest.mark.parametrize("url", sorted(_TARGET_BODIES))
+async def test_turning_batches_off_still_refuses_every_target(client, services, settings, url):
+    services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    settings["BATCH_ENABLED"] = "0"
+    body = {"requests": [_request("only", _TARGET_BODIES[url], url=url)]}
+
+    response = await client.post("/v1/batches", json=body, headers=_auth())
+
+    assert response.status_code == 404
+
+
+async def test_the_min_role_still_applies_to_every_target(client, services, store):
+    services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    for url, request_body in _TARGET_BODIES.items():
+        body = {"requests": [_request("only", request_body, url=url)]}
+        response = await client.post("/v1/batches", json=body, headers=_auth("key-carol"))
+        assert response.status_code == 403, url
+    assert store.created == []
+
+
+# --- the Messages target -----------------------------------------------------------
+
+
+def _messages(model: str = MODEL, **extra: Any) -> dict[str, Any]:
+    return {
+        "model": model,
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hello"}],
+        **extra,
+    }
+
+
+def _messages_batch(*bodies: dict[str, Any], **envelope: Any) -> dict[str, Any]:
+    requests = [
+        _request(f"m-{i}", body, url="/v1/messages")
+        for i, body in enumerate(bodies or [_messages()])
+    ]
+    return {"requests": requests, **envelope}
+
+
+def _versioned(version: str, key: str = "key-alice") -> dict[str, str]:
+    """The headers of a Messages create: the version travels in ``anthropic-version``."""
+    return {**_auth(key), "anthropic-version": version}
+
+
+@pytest.mark.parametrize("version", ["2023-06-01", "2026-10-21"])
+async def test_a_messages_batch_is_created_on_v1_batches_with_its_version(client, store, version):
+    response = await client.post("/v1/batches", json=_messages_batch(), headers=_versioned(version))
+    assert response.status_code == 200, response.text
+    batch = response.json()
+
+    assert batch["object"] == "batch" and batch["endpoint"] == "/v1/messages"
+    assert batch["anthropic_version"] == version
+    assert batch["id"].startswith("batch_")
+    assert store.options["target"] == "messages"
+    assert store.options["api_surface"] == "openai_inline"
+    assert store.options["protocol_profile"] == version
+    # The body is stored as sent: never converted to a chat request.
+    assert store.created[0]["items"][0]["request"] == _messages()
+
+
+async def test_the_version_header_is_read_without_surrounding_whitespace(client, store):
+    response = await client.post(
+        "/v1/batches", json=_messages_batch(), headers=_versioned("  2026-10-21 ")
+    )
+
+    assert response.status_code == 200, response.text
+    assert store.options["protocol_profile"] == "2026-10-21"
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ({}, "needs this header"),
+        ({"anthropic-version": "   "}, "needs this header"),
+        ({"anthropic-version": "2099-01-01"}, "'2099-01-01' is not supported"),
+    ],
+)
+async def test_a_messages_batch_needs_a_known_version_header(client, store, headers, expected):
+    response = await client.post(
+        "/v1/batches", json=_messages_batch(), headers={**_auth(), **headers}
+    )
+
+    assert response.status_code == 400
+    assert expected in _message(response)
+    assert store.created == []
+
+
+@pytest.mark.parametrize("value", ["2023-06-01", None, ""])
+async def test_the_obsolete_body_version_field_is_refused_never_ignored(client, store, value):
+    """Even beside a valid header, and even null: the envelope would otherwise drop it."""
+    response = await client.post(
+        "/v1/batches",
+        json=_messages_batch(anthropic_version=value),
+        headers=_versioned("2023-06-01"),
+    )
+
+    assert response.status_code == 400
+    assert "not accepted in the body" in _message(response)
+    assert "anthropic-version header" in _message(response)
+    assert store.created == []
+
+
+async def test_a_known_version_the_setting_does_not_allow_cannot_create(client, settings, store):
+    settings["BATCH_ANTHROPIC_VERSIONS"] = "2023-06-01"
+
+    response = await client.post(
+        "/v1/batches", json=_messages_batch(), headers=_versioned("2026-10-21")
+    )
+
+    assert response.status_code == 400
+    assert "use one of 2023-06-01" in _message(response)
+    assert store.created == []
+
+
+@pytest.mark.parametrize("url", sorted(_TARGET_BODIES))
+async def test_only_a_messages_batch_takes_a_version(client, services, store, url):
+    services.embedding_adapters = {MODEL: _adapter(MODEL)}
+    services.router.register_embedding_route(MODEL, [(services.embedding_adapters[MODEL], 1.0)])
+    body = {"requests": [_request("only", _TARGET_BODIES[url], url=url)]}
+
+    in_header = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
+    in_body = await client.post(
+        "/v1/batches", json={**body, "anthropic_version": "2023-06-01"}, headers=_auth()
+    )
+
+    assert in_header.status_code == 400
+    assert "only a /v1/messages batch takes one" in _message(in_header)
+    assert in_body.status_code == 400 and "not accepted in the body" in _message(in_body)
+    assert store.created == []
+    # A blank header is no header.
+    blank = await client.post(
+        "/v1/batches", json=body, headers={**_auth(), "anthropic-version": " "}
+    )
+    assert blank.status_code == 200, blank.text
+
+
+async def test_a_file_batch_follows_the_same_version_rules_before_the_file_is_read(client, store):
+    file_batch = {"input_file_id": "file-x", "completion_window": "24h"}
+    missing = await client.post(
+        "/v1/batches", json={**file_batch, "endpoint": "/v1/messages"}, headers=_auth()
+    )
+    on_chat = await client.post(
+        "/v1/batches",
+        json={**file_batch, "endpoint": "/v1/chat/completions"},
+        headers=_versioned("2023-06-01"),
+    )
+    in_body = await client.post(
+        "/v1/batches",
+        json={**file_batch, "endpoint": "/v1/messages", "anthropic_version": "2023-06-01"},
+        headers=_versioned("2023-06-01"),
+    )
+
+    assert missing.status_code == 400 and "needs this header" in _message(missing)
+    assert on_chat.status_code == 400 and "only a /v1/messages" in _message(on_chat)
+    assert in_body.status_code == 400 and "not accepted in the body" in _message(in_body)
+    assert store.created == []
+
+
+async def test_betas_are_refused_whatever_the_version(client, store):
+    headers = {**_versioned("2023-06-01"), "anthropic-beta": "files-api-2025-04-14"}
+
+    beta = await client.post("/v1/batches", json=_messages_batch(), headers=headers)
+
+    assert beta.status_code == 400 and "anthropic-beta" in _message(beta)
+    assert store.created == []
+
+
+async def test_management_needs_no_version_header(client, store):
+    created = await client.post(
+        "/v1/batches", json=_messages_batch(), headers=_versioned("2023-06-01")
+    )
+    batch_id = created.json()["id"]
+
+    for method, path in (
+        ("GET", "/v1/batches"),
+        ("GET", f"/v1/batches/{batch_id}"),
+        ("GET", f"/v1/batches/{batch_id}/results"),
+        ("POST", f"/v1/batches/{batch_id}/cancel"),
+        ("DELETE", f"/v1/batches/{batch_id}"),
+    ):
+        response = await client.request(method, path, headers=_auth())
+        assert response.status_code == 200, (method, path, response.text)
+
+
+async def test_each_version_applies_its_own_rules_to_every_request(client, store):
+    sampled = _messages(temperature=0.5)
+
+    old = await client.post(
+        "/v1/batches", json=_messages_batch(sampled), headers=_versioned("2023-06-01")
+    )
+    new = await client.post(
+        "/v1/batches",
+        json=_messages_batch(_messages(), sampled),
+        headers=_versioned("2026-10-21"),
+    )
+
+    assert old.status_code == 200, old.text
+    assert new.status_code == 400
+    assert "custom_id 'm-1'" in _message(new) and "temperature" in _message(new)
+    assert len(store.created) == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"tools": [{"type": "web_search_20250305", "name": "web_search"}]},
+        {"mcp_servers": [{"url": "https://mcp.example"}]},
+        {"stream": True},
+        {"betas": ["x"]},
+        {"anthropic_version": "2023-06-01"},
+        # A native-only feature on a route only an OpenAI-compatible adapter serves.
+        {"thinking": {"type": "enabled", "budget_tokens": 1024}},
+    ],
+)
+async def test_an_unsupported_messages_capability_refuses_the_whole_batch(client, store, extra):
+    body = _messages_batch(_messages(), _messages(**extra))
+
+    response = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
+
+    assert response.status_code == 400
+    assert "custom_id 'm-1'" in _message(response)
+    assert store.created == []
+
+
+async def test_a_messages_model_the_caller_may_not_use_reads_as_unknown(client, store):
+    body = _messages_batch(_messages(ADMIN_MODEL))
+
+    response = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
+
+    assert response.status_code == 400
+    assert ADMIN_MODEL in _message(response) and "not found" in _message(response)
+    assert store.created == []
+
+
+async def test_messages_and_another_target_cannot_share_a_batch(client, store):
+    body = {
+        "requests": [
+            _request("m", _messages(), url="/v1/messages"),
+            _request("c", _chat(), url="/v1/chat/completions"),
+        ]
+    }
+
+    response = await client.post("/v1/batches", json=body, headers=_versioned("2023-06-01"))
+
+    assert response.status_code == 400
+    assert "same url" in _message(response)
+
+
+def _digest_of(store: FakeBatchStore) -> str:
+    return store.options["idempotency"]["digest"]
+
+
+async def test_the_version_is_part_of_the_idempotency_digest(client, store):
+    headers = {**_auth(), "Idempotency-Key": "k"}
+    for version in ("2023-06-01", "2026-10-21"):
+        response = await client.post(
+            "/v1/batches",
+            json=_messages_batch(),
+            headers={**headers, "anthropic-version": version},
+        )
+        assert response.status_code == 200, response.text
+    first, second = (entry for entry in store.created)
+    assert first["items"] == second["items"]
+    # Same requests, different version: different digests, so a replay of one
+    # is never answered with the other.
+    digests = [
+        admission.request_digest(
+            "openai_inline",
+            requests=[
+                {"custom_id": "m-0", "method": "POST", "url": "/v1/messages", "body": _messages()}
+            ],
+            metadata=None,
+            anthropic_version=version,
+        )
+        for version in ("2023-06-01", "2026-10-21")
+    ]
+    assert digests[0] != digests[1]
+    assert _digest_of(store) == digests[1]
+
+
+async def test_a_non_messages_digest_is_unchanged_by_versions(client, store):
+    """Records written before versions existed must still replay after the upgrade."""
+    await client.post("/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "k"})
+
+    request = {
+        "custom_id": "req-0",
+        "method": "POST",
+        "url": "/v1/chat/completions",
+        "body": _chat(),
+    }
+    before = json.dumps(
+        {"surface": "openai_inline", "requests": [request], "metadata": None},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    assert _digest_of(store) == hashlib.sha256(before.encode()).hexdigest()
+
+
+def _legacy_message_batch(store: FakeBatchStore, owner: str = "alice") -> str:
+    """A batch the retired Message Batches API stored, as it sits in the database."""
+    batch_id = "msgbatch_legacy0001"
+    created = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
+    store.batches[batch_id] = {
+        "id": batch_id,
+        "user_id": owner,
+        "key_hash": f"hash-{owner}",
+        "endpoint": "/v1/messages",
+        "status": "completed",
+        "model_ids": [MODEL],
+        "request_count": 3,
+        "completed_count": 2,
+        "failed_count": 1,
+        "metadata": None,
+        "error": None,
+        "cost_usd": 0.25,
+        "created_at": created,
+        "in_progress_at": created,
+        "completed_at": created + timedelta(minutes=3),
+        "failed_at": None,
+        "expired_at": None,
+        "cancelling_at": None,
+        "cancelled_at": None,
+        "expires_at": created + timedelta(hours=24),
+        "paused_until": None,
+        "api_surface": "anthropic",
+        "target": "messages",
+        "schema_version": 2,
+        "phase": "sealed",
+        "protocol_profile": "2023-06-01",
+    }
+    store.items[batch_id] = []
+    return batch_id
+
+
+async def test_a_legacy_message_batch_is_read_listed_and_deleted_through_v1_batches(client, store):
+    batch_id = _legacy_message_batch(store)
+
+    got = (await client.get(f"/v1/batches/{batch_id}", headers=_auth())).json()
+    listed = (await client.get("/v1/batches", headers=_auth())).json()["data"]
+    other = await client.get(f"/v1/batches/{batch_id}", headers=_auth("key-bob"))
+
+    assert got["object"] == "batch" and got["status"] == "completed"
+    assert got["endpoint"] == "/v1/messages" and got["anthropic_version"] == "2023-06-01"
+    assert got["request_counts"] == {"total": 3, "completed": 2, "failed": 1}
+    assert [row["id"] for row in listed] == [batch_id]
+    assert other.status_code == 404
+    deleted = await client.delete(f"/v1/batches/{batch_id}", headers=_auth())
+    assert deleted.json() == {"id": batch_id, "object": "batch.deleted", "deleted": True}
+
+
+async def test_a_non_messages_batch_shows_no_version(client):
+    batch = await _create(client)
+    assert batch["anthropic_version"] is None
+
+
 # --- ownership --------------------------------------------------------------------
 
 
@@ -992,6 +1444,29 @@ async def test_an_admin_may_read_cancel_and_delete_any_batch(client, store):
     assert listed.json()["data"] == []
     assert deleted.status_code == 200
     assert batch["id"] not in store.batches
+
+
+async def test_the_anonymous_caller_of_an_auth_disabled_gateway_reaches_only_its_own(
+    client, users, store
+):
+    """Its admin role opens the API, not the batches stored under real accounts."""
+    users["anon"] = {"user_id": "anonymous", "role": "admin", "authenticated": False}
+    theirs = await _create(client, "key-alice")
+    own = await _create(client, "anon")
+    path = f"/v1/batches/{theirs['id']}"
+
+    responses = [
+        await client.get(path, headers=_auth("anon")),
+        await client.get(f"{path}/results", headers=_auth("anon")),
+        await client.get(f"{path}/output.jsonl", headers=_auth("anon")),
+        await client.post(f"{path}/cancel", headers=_auth("anon")),
+        await client.delete(path, headers=_auth("anon")),
+    ]
+
+    assert [r.status_code for r in responses] == [404] * 5
+    assert store.batches[theirs["id"]]["status"] == "validating"
+    read = await client.get(f"/v1/batches/{own['id']}", headers=_auth("anon"))
+    assert read.json()["id"] == own["id"]
 
 
 async def test_an_unknown_batch_is_404(client):
@@ -1176,7 +1651,7 @@ async def test_delete_is_409_while_an_upstream_request_lease_is_live(client, sto
     batch = await _create(client)
     path = f"/v1/batches/{batch['id']}"
 
-    async def delete_in_progress(batch_id, *, user_id=None):
+    async def delete_in_progress(batch_id, *, user_id=None, **scope):
         raise BatchDeleteInProgress(batch_id)
 
     monkeypatch.setattr(store, "delete_batch", delete_in_progress)

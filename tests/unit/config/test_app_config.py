@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import textwrap
 
@@ -229,7 +230,6 @@ async def test_boot_imports_environment_values_without_overwriting_rows(
     assert store.rows["SMTP_PASSWORD"].secret
     assert "SITE_DOCS_URL" not in store.rows
     assert store.rows["FRONTEND_URL"].value == "https://db.example"
-    assert store.schema_calls == 1
 
 
 @pytest.mark.asyncio
@@ -582,19 +582,25 @@ async def test_a_stale_refresh_never_replaces_a_newer_apply(config_env) -> None:
     await _boot(store)
 
     class _SlowStore(FakeAppConfigStore):
-        intercepted = False
+        writer: asyncio.Task | None = None
 
         async def fetch_all(self, **options):
             snapshot = await super().fetch_all(**options)
-            if not self.intercepted:
-                self.intercepted = True
-                # An administrator's write lands while this read is in flight.
-                await app_config.update({"SITE_NAME": "new"}, updated_by="admin")
+            if self.writer is None:
+                # An administrator's write, served by another request, lands
+                # while this read is in flight.
+                self.writer = asyncio.create_task(
+                    app_config.update({"SITE_NAME": "new"}, updated_by="admin")
+                )
+                for _ in range(5):
+                    await asyncio.sleep(0)
             return snapshot
 
     slow = _SlowStore(store.rows.values())
     app_config.attach(slow)
-    await app_config.refresh()
+    await asyncio.wait_for(app_config.refresh(), timeout=5)
+    assert slow.writer is not None
+    await asyncio.wait_for(slow.writer, timeout=5)
 
     assert app_config.config_value("SITE_NAME") == "new"
 
@@ -815,6 +821,9 @@ async def test_describe_types_values_and_names_their_source(config_env, monkeypa
     assert entries["SITE_DOCS_URL"]["source"] == "default"
     assert entries["CORS_ALLOWED_ORIGINS"]["value"].startswith("http://localhost:3000,")
     assert entries["SMTP_PASSWORD"]["setup"] is True
+    assert entries["COOKIE_SECURE"]["one_time"] is True
+    assert entries["SMTP_PORT"]["one_time"] is True  # by its category
+    assert entries["ROUTING_AFFINITY_ENABLED"]["one_time"] is False
 
 
 @pytest.mark.asyncio
@@ -840,6 +849,58 @@ async def test_describe_compares_the_environment_as_a_typed_value(config_env, mo
     entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
     assert entries["COOKIE_SECURE"]["environment_ignored"] is False
     assert entries["SMTP_PORT"]["environment_ignored"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_console_listing_leaves_out_settings_with_nothing_to_choose(
+    config_env, extension_registry
+) -> None:
+    # No extension registers a delivery provider: email has SMTP alone, and the
+    # phone settings can do nothing without an SMS provider.
+    await _boot(FakeAppConfigStore())
+
+    offered = {entry["key"] for entry in app_config.describe(offered_only=True)["entries"]}
+    assert "EMAIL_PROVIDER" not in offered
+    assert not {"SMS_PROVIDER", "SMS_AUTH_ENABLED", "SMS_OTP_MAX_ATTEMPTS"} & offered
+    assert {"SMTP_HOST", "LOG_LEVEL", "BATCH_MIN_ROLE"} <= offered
+    # The full description, which the command line lists, keeps them.
+    described = {entry["key"] for entry in app_config.describe()["entries"]}
+    assert {"EMAIL_PROVIDER", "SMS_PROVIDER", "SMS_AUTH_ENABLED"} <= described
+
+
+@pytest.mark.asyncio
+async def test_the_console_lists_delivery_settings_once_an_extension_offers_a_choice(
+    config_env, sample_delivery
+) -> None:
+    await _boot(FakeAppConfigStore())
+
+    offered = {entry["key"] for entry in app_config.describe(offered_only=True)["entries"]}
+    assert {"EMAIL_PROVIDER", "SMS_PROVIDER", "SMS_AUTH_ENABLED", "SAMPLE_SMS_REGION"} <= offered
+
+
+@pytest.mark.asyncio
+async def test_the_console_lists_a_setting_it_does_not_offer_while_it_needs_attention(
+    config_env, extension_registry
+) -> None:
+    _write_models(
+        config_env,
+        """
+        models:
+          - id: chat
+            base_url: https://api.example/v1
+            api_key: ${SMS_DEFAULT_COUNTRY_CODE}
+        """,
+    )
+    store = FakeAppConfigStore(
+        [row("EMAIL_PROVIDER", "unloaded_email"), row("SMS_OTP_MAX_ATTEMPTS", "99")]
+    )
+    await _boot(store)
+
+    entries = {entry["key"]: entry for entry in app_config.describe(offered_only=True)["entries"]}
+    assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp"
+    assert entries["SMS_OTP_MAX_ATTEMPTS"]["invalid"] == "must be at most 10"
+    assert entries["SMS_DEFAULT_COUNTRY_CODE"]["missing"] is True
+    assert "SMS_AUTH_ENABLED" not in entries
 
 
 # --- writes ------------------------------------------------------------------
@@ -1543,7 +1604,7 @@ def test_the_fence_secret_is_not_locked_while_nothing_stands_in(config_env, monk
 def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, caplog) -> None:
     """The fence pins API_KEY_SECRET on the first start; setting one later fails startup."""
     from serving.config.settings import Settings
-    from serving.storage import log_schema
+    from serving.storage import erasure_fence
 
     # Settings reads the process environment too, and CI's database job sets one.
     monkeypatch.delenv("ERASURE_FENCE_SECRET", raising=False)
@@ -1552,7 +1613,7 @@ def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, ca
         lambda: Settings(api_key_secret="fallback-secret"),
     )
     with caplog.at_level("WARNING"):
-        assert log_schema.resolve_fence_secret(None) == "fallback-secret"
+        assert erasure_fence.resolve_fence_secret(None) == "fallback-secret"
 
     assert "set erasure_fence_secret" not in caplog.text.lower()
     assert "keep API_KEY_SECRET unchanged and ERASURE_FENCE_SECRET empty" in caplog.text

@@ -219,7 +219,7 @@ def test_function_tools_become_claude_tools_and_others_are_dropped():
         ("auto", None, True),
         ("required", {"type": "any"}, True),
         ("any", {"type": "any"}, True),
-        ("none", None, False),  # Claude has no "none": the tools are withheld
+        ("none", {"type": "none"}, True),
         ({"type": "function", "function": {"name": "f"}}, {"type": "tool", "name": "f"}, True),
         ({"type": "function", "function": {}}, None, True),
     ],

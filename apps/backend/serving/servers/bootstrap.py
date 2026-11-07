@@ -19,15 +19,18 @@ from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
+from migrations.compat import SchemaNotReady, require_schema
 from routing.dependencies import RouterBuildDependencies
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
+from serving import spend_ledger
 from serving.auto_mode import AutoMode, load_auto_mode, load_auto_mode_from_text
 from serving.batch.model_limits import BatchModelLimits
-from serving.config import app_config
+from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
+from serving.config.batch_routes import BatchRouteResolver
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
@@ -45,6 +48,9 @@ from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
+from serving.observability import alert_runtime
+from serving.observability.alert_history import runtime as alert_history_runtime
+from serving.observability.alerts import flush_settling
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
     RouteWiseRouter,
@@ -52,15 +58,14 @@ from serving.servers.routewise_compat import (
     apply_routewise_settings_to_router,
 )
 from serving.setup_state import init_setup_state
+from serving.storage.batch_file_store import BatchFileStore
 from serving.storage.batch_store import BatchStore
+from serving.storage.batch_webhook_store import BatchWebhookStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
-from serving.storage.log_schema import ErasureFenceUnavailable, SchemaLockUnavailable
+from serving.storage.erasure_fence import ErasureFenceUnavailable
 from serving.storage.postgres_log import PostgresLogStore
-from serving.storage.postgres_operational import (
-    PostgresOperationalStore,
-    RequiredOperationalSchemaUnavailable,
-)
+from serving.storage.postgres_operational import PostgresOperationalStore
 from serving.storage.responses_store import ResponseStore
 from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
@@ -89,18 +94,13 @@ logger = get_logger(__name__)
 # garbage collector can cancel mid-flight tasks.
 _BACKGROUND_TASKS: set = set()
 
-# Backoff for a schema migration that could not get its table lock at startup.
-# The ceiling is generous on purpose: the usual lock holder is the nightly
-# ``pg_dump``, which takes hours over ``api_logs``, and there is no value in
-# polling hard while it runs. The attempt cap bounds the task at roughly a
-# working day rather than leaving it alive for the process's lifetime.
-_SCHEMA_RETRY_INITIAL_DELAY = 30  # seconds
-_SCHEMA_RETRY_MAX_DELAY = 600  # seconds
-_SCHEMA_RETRY_MAX_ATTEMPTS = 60
-
 # The boot-time configuration load retries like the database logger does.
 _CONFIG_LOAD_ATTEMPTS = 3
 _CONFIG_LOAD_RETRY_DELAY = 2  # seconds
+
+# How long shutdown waits to announce circuits still settling their recovery:
+# one webhook post each, sent concurrently, under the sink's own 5 s timeout.
+_SETTLE_FLUSH_BUDGET_SEC = 10.0
 
 
 def _describe_exc(exc: BaseException) -> str:
@@ -111,164 +111,6 @@ def _describe_exc(exc: BaseException) -> str:
     ``initialization failed: .`` and hid the cause of a production outage.
     """
     return repr(exc)
-
-
-def _schedule_deferred_schema_migration(
-    ensure_schema: Callable[[], Awaitable[None]], subject: str
-) -> asyncio.Task[None]:
-    """Finish a lock-blocked schema migration in the background.
-
-    Startup must not block on it. The lock holder is typically a long-running
-    reader rather than anything broken, and waiting is what turns a backup
-    window into a failed deploy: the container misses its healthcheck, so
-    compose never starts the services gated on it.
-
-    ``ensure_schema`` must be idempotent (both schema passes are catalog-gated,
-    so a retry re-issues only what is still missing); ``subject`` names the
-    schema in log lines so concurrent deferrals stay distinguishable. Returns
-    the retry task, which an owner may cancel.
-    """
-
-    async def _retry() -> None:
-        delay = _SCHEMA_RETRY_INITIAL_DELAY
-        for attempt in range(1, _SCHEMA_RETRY_MAX_ATTEMPTS + 1):
-            await asyncio.sleep(delay)
-            try:
-                await ensure_schema()
-            except SchemaLockUnavailable:
-                delay = min(delay * 2, _SCHEMA_RETRY_MAX_DELAY)
-                logger.info(
-                    f"Deferred {subject} migration still lock-blocked "
-                    f"(attempt {attempt}/{_SCHEMA_RETRY_MAX_ATTEMPTS}); "
-                    f"retrying in {delay}s"
-                )
-            except Exception as exc:
-                logger.error(f"Deferred {subject} migration failed: {_describe_exc(exc)}")
-                return
-            else:
-                logger.info(f"Deferred {subject} migration completed after {attempt} attempt(s)")
-                return
-        logger.error(
-            f"Deferred {subject} migration gave up after {_SCHEMA_RETRY_MAX_ATTEMPTS} attempts; "
-            f"the {subject} is still missing changes and writes depending on them may fail"
-        )
-
-    task = asyncio.create_task(_retry())
-    _BACKGROUND_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_TASKS.discard)
-    return task
-
-
-async def _initialize_operational_store(pg_operational: PostgresOperationalStore) -> None:
-    """Run the operational store's DDL, deferring a lock-blocked migration.
-
-    Same doctrine as the logging schema pass in ``lifespan``: on any deployment
-    where a lock conflict is possible at all, the operational tables already
-    exist (the conflicting holder — the nightly ``pg_dump`` — is a reader of
-    those tables), so only a pending migration can be blocked. The store keeps
-    serving on the existing schema while the DDL lands in the background;
-    ``initialize`` is catalog-gated and idempotent, so the retry re-issues only
-    what is still missing.
-
-    That includes the account columns an upgrade adds to ``users`` (login
-    names, phone numbers): the store reads which of them exist and queries
-    only those, so sign-in by email and API keys keep working while first-run
-    setup and phone sign-in answer 503 until the retry lands them. Only the
-    hard-delete claim columns are required up front.
-
-    Anything other than a lock timeout still propagates — startup must not
-    mask a genuinely broken schema.
-    """
-    try:
-        await pg_operational.initialize()
-    except RequiredOperationalSchemaUnavailable:
-        logger.error(
-            "Operational store cannot start until the required users columns "
-            "(hard-delete claim) are installed; refusing to serve against an "
-            "unsafe schema."
-        )
-        raise
-    except SchemaLockUnavailable as lock_exc:
-        logger.warning(
-            f"Operational schema migration deferred: {_describe_exc(lock_exc)}. "
-            "Operational store stays enabled on the existing schema; retrying "
-            "the migration in the background."
-        )
-        _schedule_deferred_schema_migration(pg_operational.initialize, "operational schema")
-
-
-async def _initialize_batch_store(store: BatchStore) -> bool:
-    """Run the batch store's DDL; return whether the store is ready to serve.
-
-    A migration that cannot get its lock (another process holding the batch
-    schema lock, or a long reader on a table it indexes) does not fail startup:
-    the caller finishes it in the background (:func:`_defer_batch_store`).
-    Unlike the operational store, nothing is served from a batch schema that is
-    still missing changes, so batch inference stays unavailable until then.
-
-    Anything other than a lock timeout propagates.
-    """
-    try:
-        await store.initialize()
-    except SchemaLockUnavailable as lock_exc:
-        logger.warning(
-            f"Batch schema migration deferred: {_describe_exc(lock_exc)}. "
-            "Batch inference stays unavailable until it lands; retrying in the background."
-        )
-        return False
-    return True
-
-
-class _DeferredBatchWorker:
-    """Holds the batch worker's place while the batch schema migration is deferred.
-
-    It answers the two calls the gateway makes on a worker: ``notify`` (nothing
-    to wake) and ``stop``, which cancels the deferred migration so no worker
-    starts after shutdown. The app lifespan leaves its app here, for the worker
-    the migration starts once it lands.
-    """
-
-    def __init__(self) -> None:
-        self.app: Any | None = None
-        self.retry: asyncio.Task[None] | None = None
-
-    def notify(self) -> None:
-        """Do nothing: there is no worker to wake yet."""
-
-    async def stop(self) -> None:
-        """Cancel the deferred migration."""
-        if self.retry is not None:
-            self.retry.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.retry
-
-
-def _defer_batch_store(services: AppServices, store: BatchStore) -> None:
-    """Finish a lock-blocked batch schema migration, then make batch inference available.
-
-    Until the DDL lands the services carry no batch store and no caps, so every
-    batch route answers 404, and a placeholder stands where the worker goes; the
-    store is reachable only as ``batch_store_pending``, for the hard-delete purge,
-    since batches stored before this boot are still there. Once it lands, the
-    store and its caps are published together, and the worker starts if the app
-    has asked for one by then.
-    """
-    placeholder = _DeferredBatchWorker()
-    services.batch_scheduler = placeholder
-    services.batch_store_pending = store
-
-    async def finish() -> None:
-        await store.initialize()  # SchemaLockUnavailable: retried by the caller
-        services.batch_model_limits = BatchModelLimits(store)
-        services.batch_store = store
-        services.batch_store_pending = None
-        logger.info("Batch store initialized (Postgres) after a deferred migration")
-        if services.batch_scheduler is placeholder:
-            services.batch_scheduler = None
-            if placeholder.app is not None:
-                start_batch_scheduler(placeholder.app, services)
-
-    placeholder.retry = _schedule_deferred_schema_migration(finish, "batch schema")
 
 
 class _RouteWiseRouterTypeError(TypeError):
@@ -496,6 +338,43 @@ async def _apply_route_removals_after_boot(services: AppServices) -> None:
     for model_id in sorted({model_id for model_id, _route_id in resolver.removed_routes()}):
         async with model_router_transition_lock(services, model_id):
             apply_persisted_provider_route_removals(services, model_ids={model_id})
+
+
+async def _refresh_batch_route_snapshots(
+    resolver: BatchRouteResolver,
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Periodically reload the per-route batch choices so workers converge after admin edits.
+
+    No RouteWise rebuild follows a change: a batch request's routes are worked
+    out from the snapshot when it is dispatched.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await resolver.load_all()
+        except Exception:
+            logger.warning("Batch route snapshot refresh failed", exc_info=True)
+
+
+async def _attach_batch_routes(router: Any, store: Any) -> BatchRouteResolver:
+    """Attach the per-route batch choices to the shared router, loaded if they can be.
+
+    Attached even when the first load fails: until the refresh loop's read
+    lands, every route follows its locality, and the admin batch endpoint
+    refuses to write (``ready``).
+    """
+    resolver = BatchRouteResolver(store)
+    try:
+        await resolver.load_all()
+    except Exception:
+        logger.warning(
+            "Batch route snapshot load failed; retrying in the background",
+            exc_info=True,
+        )
+    router.batch_route_resolver = resolver
+    return resolver
 
 
 async def _refresh_offload_route_snapshots(
@@ -759,15 +638,27 @@ async def _load_app_config() -> None:
         try:
             conn = await connect_app_config(settings)
             try:
-                # Import before settings load so discovery scans the stored
-                # documents. A row that already exists is left as it is.
-                install_route_catalog(await import_route_catalog(conn, seed_texts()))
+                # Before anything reads a table: a database the migrations
+                # have not brought to this code's schema stops startup here.
+                await require_schema(conn)
+                try:
+                    # Import before settings load so discovery scans the stored
+                    # documents. A row that already exists is left as it is.
+                    # A failed import must not abandon the stored settings.
+                    install_route_catalog(await import_route_catalog(conn, seed_texts()))
+                except Exception:
+                    logger.error(
+                        "Route catalog import failed; registering models and "
+                        "routing from the files",
+                        exc_info=True,
+                    )
+                    reset_route_catalog()
                 await app_config.load(AppConfigStore(conn))
             finally:
                 await conn.close()
             logger.info("Configuration loaded from the database")
             return
-        except app_config.ConfigBootstrapError:
+        except (app_config.ConfigBootstrapError, SchemaNotReady):
             raise
         except Exception as exc:
             if attempt < max_retries - 1:
@@ -782,6 +673,44 @@ async def _load_app_config() -> None:
                     f"{_describe_exc(exc)}. Continuing on environment values."
                 )
     app_config.use_environment(database_enabled=True)
+
+
+#: The share of the shutdown the live configuration groups may take.
+_LIVE_CONFIG_STOP_SECONDS = 10.0
+
+#: How long shutdown waits for the spend ledger's last cost-counter writes.
+_COST_COUNTER_FLUSH_SECONDS = 10.0
+
+
+def _start_live_config(pool: Any) -> None:
+    """Publish every live group's boot baseline, register this process, and apply.
+
+    The baseline is the configuration the process booted with, so a group
+    whose contract is not active behaves exactly as before. With a database,
+    this process registers in ``config_instances`` and the snapshot the boot
+    read is applied at once; later snapshots come from ``app_config``'s
+    refresh. A group that fails to apply never stops the gateway: alerting is
+    degradable, and its failure is reported as the group's state.
+    """
+    live_config.COORDINATOR.install_baselines()
+    if pool is None:
+        return
+    from serving.config import instances
+    from serving.servers import restart
+
+    reporter = instances.InstanceReporter(
+        pool=pool,
+        instance_id=restart.INSTANCE_ID,
+        started_at=dt.datetime.now(dt.UTC),
+        capabilities={
+            **live_config.COORDINATOR.capabilities(),
+            "details": instances.default_details(),
+        },
+    )
+    live_config.COORDINATOR.start(reporter)
+    snapshot = app_config.last_snapshot()
+    if snapshot is not None:
+        live_config.COORDINATOR.submit(snapshot)
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -815,7 +744,7 @@ def _init_db_logger() -> DatabaseLogger | None:
             f"{db_config['user']}@{db_config['host']}:{db_config['port']}/{db_config['database']}"
         )
         logger.info(f"Database privacy: store_full_content={settings.db_store_full_content}")
-        from serving.storage.log_schema import resolve_fence_secret
+        from serving.storage.erasure_fence import resolve_fence_secret
 
         return DatabaseLogger(
             db_config,
@@ -1052,6 +981,30 @@ def _apply_routing_manager(router: FixedRouter) -> RoutingManager | None:
     return None
 
 
+def _alert_history_db_config() -> dict[str, Any] | None:
+    """The database alert history writes to: the gateway's own, or none."""
+    if not database_enabled():
+        return None
+    settings = get_settings()
+    return {
+        "host": settings.db_host,
+        "port": settings.db_port,
+        "database": settings.db_name,
+        "user": settings.db_user,
+        "password": settings.db_password,
+    }
+
+
+def _alert_history_fence_secret() -> str | None:
+    """The erasure-fence secret, or ``None``: history then keeps no subject digests."""
+    from serving.storage.erasure_fence import resolve_fence_secret
+
+    try:
+        return resolve_fence_secret(get_settings().erasure_fence_secret)
+    except ErasureFenceUnavailable:
+        return None
+
+
 async def initialize() -> AppServices:
     """Initialize application services.
 
@@ -1093,12 +1046,20 @@ async def initialize() -> AppServices:
             ) from exc
         raise
 
+    # Alert history goes in before anything that can raise an alert, so the
+    # first breach of this process is recorded. On whenever there is a database,
+    # unless ALERT_HISTORY_ENABLED turns it off; it never stops startup, and a
+    # database that is down only delays its writes.
+    alert_history_runtime.start_runtime(
+        db_config=_alert_history_db_config(),
+        fence_secret=_alert_history_fence_secret(),
+    )
+
     endpoint_health_registry = EndpointHealthRegistry()
-    router = FixedRouter(health_registry=endpoint_health_registry)
     router_dependencies = RouterBuildDependencies(
         health_registry=endpoint_health_registry,
-        prefill_load=router.prefill_load,
     )
+    router = FixedRouter(health_registry=endpoint_health_registry)
 
     settings = get_settings()
     db_logger = _init_db_logger()
@@ -1107,23 +1068,11 @@ async def initialize() -> AppServices:
         retry_delay = 2  # seconds
         for attempt in range(max_retries):
             try:
-                try:
-                    await db_logger.initialize()
-                    logger.info("Database logger initialized successfully")
-                except SchemaLockUnavailable as lock_exc:
-                    # The pool is up and usable — only a migration could not get
-                    # its table lock. Discarding a working database over that is
-                    # what previously left the gateway permanently unhealthy and
-                    # took the whole deploy down, so keep it and land the DDL in
-                    # the background. Writes touching a not-yet-added column
-                    # fail until then, and request logging already treats a
-                    # failed insert as non-fatal.
-                    logger.warning(
-                        f"Schema migration deferred: {_describe_exc(lock_exc)}. "
-                        "Database logging stays enabled; retrying the migration "
-                        "in the background."
-                    )
-                    _schedule_deferred_schema_migration(db_logger.ensure_schema, "logging schema")
+                await db_logger.initialize()
+                # Checked again on the pool everything else uses: the
+                # configuration load may have run without the database.
+                await require_schema(db_logger.pool)
+                logger.info("Database logger initialized successfully")
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
                 if db_logger.pool:
@@ -1145,6 +1094,9 @@ async def initialize() -> AppServices:
                             register_rollup_job as register_request_volume_job,
                         )
                         from serving.storage import daily_activity_rollup, user_usage_rollup
+                        from serving.storage.responses_store import (
+                            register_retention_job as register_responses_retention_job,
+                        )
 
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
@@ -1153,22 +1105,24 @@ async def initialize() -> AppServices:
                             register_request_volume_job(sched, db_logger.pool)
                             user_usage_rollup.register_rollup_job(sched, db_logger.pool)
                             daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
+                            # Stored Responses past their retention, hourly.
+                            register_responses_retention_job(sched, db_logger.pool)
 
-                            # Failed-request alerter (no-op unless
-                            # SLACK_WEBHOOK_URL or WECOM_ALERTS_WEBHOOK_URL
-                            # is set).
+                            # Failed-request alerter: one job, paused while
+                            # neither SLACK_WEBHOOK_URL nor
+                            # WECOM_ALERTS_WEBHOOK_URL is set.
                             from serving.admin.failed_request_alerter import (
                                 register_alerter_job,
                             )
 
-                            register_alerter_job(db_logger.pool, settings)
-                        elif (
-                            settings.slack_webhook_url.strip()
-                            or settings.wecom_alerts_webhook_url.strip()
-                        ):
-                            logger.warning(
-                                "Failed-request alerter not registered: APScheduler did not start"
-                            )
+                            register_alerter_job(db_logger.pool)
+                        else:
+                            if alert_runtime.current().detector_enabled:
+                                logger.warning(
+                                    "Failed-request alerter not registered: "
+                                    "APScheduler did not start"
+                                )
+                            alert_runtime.set_detector_state("unavailable")
 
                         # Roll up the hours of the last 30 days that
                         # provider_hourly_stats has not covered -- every hour on a
@@ -1210,9 +1164,10 @@ async def initialize() -> AppServices:
 
                         # Store the completed hours the admin Request volume
                         # cards read and the table lacks: a month of them on the
-                        # first start with the table, otherwise those that ended
-                        # while the server was down. Counting them here keeps
-                        # that work out of an admin's page load.
+                        # first start with the table or after what an hour
+                        # counts changes, otherwise those that ended while the
+                        # server was down. Counting them here keeps that work
+                        # out of an admin's page load.
                         async def _run_request_volume_backfill(pool=db_logger.pool):
                             try:
                                 await backfill_request_volume(pool)
@@ -1277,10 +1232,12 @@ async def initialize() -> AppServices:
                                 f"{stop_exc}"
                             )
                 break
-            except ErasureFenceUnavailable:
-                # A pinned secret mismatch is a privacy-boundary violation,
-                # not a transient migration failure. Propagate it instead
-                # of retrying and eventually starting without a logger.
+            except (ErasureFenceUnavailable, SchemaNotReady):
+                # A pinned secret mismatch is a privacy-boundary violation, and
+                # a schema this code cannot run on needs the migrations: neither
+                # is transient. Propagate instead of retrying and eventually
+                # starting without a logger.
+                await db_logger.cleanup()
                 raise
             except Exception as exc:
                 if attempt < max_retries - 1:
@@ -1299,6 +1256,7 @@ async def initialize() -> AppServices:
     # Administrator writes and the refresh loop use the logger's pool.
     if db_logger and db_logger.pool:
         app_config.attach(AppConfigStore(db_logger.pool))
+    _start_live_config(db_logger.pool if db_logger else None)
 
     # Models into router
     embedding_adapters, model_infos = await _init_router_and_models(router)
@@ -1404,19 +1362,23 @@ async def initialize() -> AppServices:
     responses_store = None
     batch_store = None
     batch_model_limits = None
-    deferred_batch_store = None
 
     if db_logger and db_logger.pool:
         # Resolve the erasure-fence derivation secret. Fail closed: if no
         # secret is available, the hard-delete endpoint cannot guarantee
         # the #1421 invariant, so we raise at startup rather than silently
         # degrading to the pre-#1421 racy behavior.
-        from serving.storage.log_schema import resolve_fence_secret
+        from serving.storage.erasure_fence import resolve_fence_secret
 
         fence_secret = resolve_fence_secret(settings.erasure_fence_secret)
 
-        pg_operational = PostgresOperationalStore(db_logger.pool)
-        await _initialize_operational_store(pg_operational)
+        # The lookups a request makes before it is served read through the
+        # logger's request pool, which nothing else uses, so slow work on the
+        # general pool cannot hold up authentication (serving.storage.pools).
+        pg_operational = PostgresOperationalStore(
+            db_logger.pool, request_pool=getattr(db_logger, "request_pool", None)
+        )
+        await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(
             db_logger.pool,
@@ -1434,7 +1396,6 @@ async def initialize() -> AppServices:
         responses_store = ResponseStore(
             db_logger.pool, persist_enabled=settings.db_store_full_content
         )
-        await responses_store.initialize()
         logger.info(
             "Responses store initialized (Postgres; persist_enabled=%s)",
             settings.db_store_full_content,
@@ -1444,11 +1405,8 @@ async def initialize() -> AppServices:
         # hard-delete purge reaches stored batches. The per-model caps an
         # administrator sets are read through a short-lived cache in front of it.
         batch_store = BatchStore(db_logger.pool)
-        if await _initialize_batch_store(batch_store):
-            batch_model_limits = BatchModelLimits(batch_store)
-            logger.info("Batch store initialized (Postgres)")
-        else:
-            deferred_batch_store, batch_store = batch_store, None
+        batch_model_limits = BatchModelLimits(batch_store)
+        logger.info("Batch store initialized (Postgres)")
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
 
@@ -1471,32 +1429,40 @@ async def initialize() -> AppServices:
     # ``state_changes`` would be ignored by exactly the deployments still being
     # paged. Best-effort: a deployment with no alerts.yaml keeps the defaults
     # (page once per outage, 300s apart).
+    from serving.observability.alert_config import AlertConfig as _AlertConfig
+
+    _rules_in_force = _AlertConfig()
     try:
         from serving.observability.alert_config import load_alert_config as _load_alert_config
         from serving.observability.state_alert_policy import apply_state_change_policy
 
-        apply_state_change_policy(
-            _load_alert_config(str(resolve_config_path("alerts").path)).state_changes
-        )
+        _rules_in_force = _load_alert_config(str(resolve_config_path("alerts").path))
+        apply_state_change_policy(_rules_in_force.state_changes)
     except Exception:
         logger.debug("state-change alert policy unavailable; keeping defaults", exc_info=True)
+    # Alert history stamps every record with the hash of the rules in force
+    # (thresholds and switches only; the file holds no credentials).
+    _history_runtime = alert_history_runtime.get_runtime()
+    if _history_runtime is not None:
+        with contextlib.suppress(Exception):
+            _history_runtime.set_rules(_rules_in_force.model_dump(mode="json"))
 
     # In-process alerting framework. Defaults to disabled. Operators flip the
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
     alert_engine = None
     if settings.alerts_enabled:
+        alert_handler = None
         try:
-            import logging as _stdlogging
-
             from serving.observability.alert_config import load_alert_config
             from serving.observability.alert_rules import AlertEngine
-            from serving.observability.log_handler import AlertingLogHandler
+            from serving.observability.log_handler import (
+                AlertingLogHandler,
+                install_alert_log_handler,
+                uninstall_alert_log_handler,
+            )
 
             alert_handler = AlertingLogHandler(maxsize=10_000)
-            _req_log = _stdlogging.getLogger("serving.servers.middleware.request_log")
-            _req_log.addHandler(alert_handler)
-            _req_log.propagate = False
-            _stdlogging.getLogger().addHandler(alert_handler)
+            install_alert_log_handler(alert_handler)
 
             alert_cfg = load_alert_config(str(resolve_config_path("alerts").path))
             alert_engine = AlertEngine(
@@ -1511,6 +1477,9 @@ async def initialize() -> AppServices:
         except Exception:
             logger.exception("Alert engine startup failed")
             alert_engine = None
+            if alert_handler is not None:
+                # Nothing will drain it.
+                uninstall_alert_log_handler(alert_handler)
     else:
         logger.info("alerts disabled (ALERTS_ENABLED=false)")
 
@@ -1708,6 +1677,7 @@ async def initialize() -> AppServices:
     disabled_provider_refresh_task = None
     route_state_refresh_task = None
     offload_route_resolver = None
+    batch_route_resolver: BatchRouteResolver | None = None
     offload_route_refresh_task = None
     if operational_store is not None:
         try:
@@ -1827,6 +1797,14 @@ async def initialize() -> AppServices:
         offload_route_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
         logger.info("Offload route resolver initialized")
 
+        # Which routes batch work may use (serving/config/batch_routes.py).
+        batch_route_resolver = await _attach_batch_routes(router, operational_store)
+        batch_route_refresh_task = asyncio.create_task(
+            _refresh_batch_route_snapshots(batch_route_resolver)
+        )
+        _BACKGROUND_TASKS.add(batch_route_refresh_task)
+        batch_route_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
     # Say which routes the operational store just took out of service. Both
     # resolvers are attached by now, so this is the first moment the effective
     # weight table exists — and a boot log that does not name the difference is
@@ -1939,6 +1917,8 @@ async def initialize() -> AppServices:
     # Every worker re-reads the stored configuration and the runtime settings,
     # so a write made through one of them reaches the others.
     app_config.start_refresh()
+    if live_config.COORDINATOR.reporter is not None:
+        live_config.COORDINATOR.reporter.set_lifecycle("running")
     if pricing_sync is not None:
         pricing_sync.start()
     if runtime_settings is not None:
@@ -1961,6 +1941,7 @@ async def initialize() -> AppServices:
         disabled_provider_resolver=disabled_provider_resolver,
         route_state_resolver=route_state_resolver,
         offload_route_resolver=offload_route_resolver,
+        batch_route_resolver=batch_route_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
@@ -1972,14 +1953,16 @@ async def initialize() -> AppServices:
         auto_mode=auto_mode,
         batch_store=batch_store,
         batch_model_limits=batch_model_limits,
+        batch_file_store=BatchFileStore(batch_store.pool) if batch_store is not None else None,
+        batch_webhook_store=(
+            BatchWebhookStore(batch_store.pool) if batch_store is not None else None
+        ),
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
         route_state_refresh_task=route_state_refresh_task,
         offload_route_refresh_task=offload_route_refresh_task,
     )
-    if deferred_batch_store is not None:
-        _defer_batch_store(services, deferred_batch_store)
     return services
 
 
@@ -1987,8 +1970,8 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
     """Start the in-process batch worker when there is a batch store.
 
     Called from the app lifespan once ``app.state.services`` is set: the worker
-    runs each batch request through the chat-completions handler with a
-    synthetic request whose scope carries the live app. It starts whether or not
+    runs each batch request through the protocol execution of its target, which
+    reads services off the live app as the routes do. It starts whether or not
     ``BATCH_ENABLED`` is on, reads the setting every round and claims nothing
     while it is off, so turning batches on needs no restart.
 
@@ -2000,11 +1983,6 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
         services: The services container returned by :func:`initialize`.
     """
     current = getattr(services, "batch_scheduler", None)
-    if isinstance(current, _DeferredBatchWorker):
-        # The batch schema migration is still waiting for its lock; it starts
-        # the worker once it lands.
-        current.app = app
-        return
     store = getattr(services, "batch_store", None)
     if store is None or current is not None:
         return
@@ -2013,6 +1991,7 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
         # imports the chat-completions handler, and this module stays
         # importable without the HTTP layer.
         from serving.batch.scheduler import BatchScheduler
+        from serving.servers.auth import decrypt_api_key
 
         if services.batch_model_limits is None:
             services.batch_model_limits = BatchModelLimits(store)
@@ -2021,6 +2000,12 @@ def start_batch_scheduler(app: Any, services: AppServices) -> None:
             services=services,
             store=store,
             limits=services.batch_model_limits,
+            # Every process publishes its interactive load and yields to all of
+            # them (serving/batch/interactive_load.py).
+            share_interactive_load=True,
+            file_store=getattr(services, "batch_file_store", None),
+            webhook_store=getattr(services, "batch_webhook_store", None),
+            decrypt_secret=decrypt_api_key,
         )
         scheduler.start()
     except Exception:
@@ -2065,6 +2050,14 @@ async def shutdown(services: AppServices) -> None:
             await services.routewise_settings_refresh_task
 
     await app_config.stop_refresh()
+    # No snapshot arrives any more: stop applying, retire what was replaced
+    # and report this process stopped. The state in use stays published for
+    # whatever still runs below.
+    try:
+        await live_config.COORDINATOR.stop(timeout=_LIVE_CONFIG_STOP_SECONDS)
+    except Exception as exc:
+        # The class only: a component's exception text can quote a credential.
+        logger.error("Live configuration shutdown failed (%s)", type(exc).__name__)
     if services.runtime_settings is not None:
         with contextlib.suppress(Exception):
             await services.runtime_settings.stop_refresh()
@@ -2080,16 +2073,30 @@ async def shutdown(services: AppServices) -> None:
             logger.exception("Alert engine shutdown failed")
         handler = getattr(services.alert_engine, "_handler", None)
         if handler is not None:
-            import logging as _stdlogging
+            from serving.observability.log_handler import uninstall_alert_log_handler
 
-            _stdlogging.getLogger("serving.servers.middleware.request_log").removeHandler(handler)
-            _stdlogging.getLogger().removeHandler(handler)
+            uninstall_alert_log_handler(handler)
 
     # Broadcast email scheduler
     try:
         email_scheduler.stop_scheduler()
     except Exception as exc:
         logger.error(f"Email scheduler shutdown failed: {exc}")
+
+    # CompletionsLogger — drain queued request-log rows while the log store
+    # can still write them (issue #133: billing rows must survive shutdown).
+    if services.completions_logger is not None:
+        try:
+            await services.completions_logger.stop()
+        except Exception as exc:
+            logger.error(f"Completions logger shutdown failed: {exc}")
+
+    # Cost counters — write the costs the spend ledger still holds while the
+    # operational store can take them; what cannot be written is logged.
+    try:
+        await spend_ledger.flush_all(timeout=_COST_COUNTER_FLUSH_SECONDS)
+    except Exception as exc:
+        logger.error(f"Cost counter flush failed: {exc}")
 
     # Log store
     if services.log_store:
@@ -2145,6 +2152,21 @@ async def shutdown(services: AppServices) -> None:
         services.offload_route_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.offload_route_refresh_task
+
+    # A circuit that closed within its settle period is waiting on a timer that
+    # dies with this process, and the next process knows nothing of the
+    # incident. Announce those closes now, while the channel and alert history
+    # are still up; each one still checks that its circuit is closed. Bounded,
+    # so a sink that hangs cannot hold up the rest of the shutdown.
+    try:
+        await asyncio.wait_for(flush_settling(), timeout=_SETTLE_FLUSH_BUDGET_SEC)
+    except Exception as exc:
+        logger.warning(f"Settling circuit recoveries were not all announced: {exc!r}")
+
+    # Alert history last among the alert producers' dependents: every producer
+    # above has stopped, so it waits for sends still in flight, writes its open
+    # buckets and drains within its budget. Its pool is its own.
+    await alert_history_runtime.stop_runtime()
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

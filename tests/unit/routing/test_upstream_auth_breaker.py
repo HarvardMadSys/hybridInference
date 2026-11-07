@@ -416,7 +416,8 @@ async def test_an_accepted_request_closes_the_auth_incident(monkeypatch, caplog)
 
         resolutions = _auth_resolutions(mock_alert, _LOCAL_ENDPOINT)
         assert len(resolutions) == 1
-        assert resolutions[0].args[1] == "Recovered: Upstream rejected gateway credential"
+        assert resolutions[0].args[1] == "Upstream rejected gateway credential"
+        assert resolutions[0].kwargs["status"] == "resolved"
         # Delivered, so the tracker must have let the incident go.
         assert _STATE_TRANSITIONS.is_firing(key) is False
 
@@ -514,13 +515,18 @@ async def test_a_statusless_failure_never_opens_an_auth_incident(monkeypatch, ca
     """The inverse hazard: pool exhaustion on its own is not a credential fault.
 
     It carries no status, so it must not be classified as an auth rejection, page,
-    or degrade /health/deep — the breaker's own availability and circuit signals
-    cover it.
+    or degrade /health/deep — and it is not counted against the breaker either
+    (issue #1440); the skip is observable as the ``key_pool_exhausted_skip_breaker``
+    log event, not as auth state.
     """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
     registry = EndpointHealthRegistry()
+    # Selection always ensures the endpoint before dispatch; the snapshot row
+    # below needs that registration because a skipped failure no longer
+    # creates one (issue #1440).
+    registry.ensure(_LOCAL_ENDPOINT)
 
     with (
         patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert,

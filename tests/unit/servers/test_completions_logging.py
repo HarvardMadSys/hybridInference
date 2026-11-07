@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -59,9 +58,7 @@ async def test_schedule_log_forwards_log_data_to_log_store(cl_logger, log_store)
     }
 
     cl_logger.schedule_log("rid-1", log_data)
-    # Allow the background task to run.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    await cl_logger.stop()
 
     log_store.log_request.assert_awaited_once()
     _, kwargs = log_store.log_request.call_args
@@ -72,9 +69,8 @@ async def test_schedule_log_forwards_log_data_to_log_store(cl_logger, log_store)
 async def test_schedule_log_ignores_log_store_exceptions(cl_logger, log_store):
     log_store.log_request.side_effect = RuntimeError("DB down")
     cl_logger.schedule_log("rid", {"request_id": "rid"})
-    # Wait for the background task to finish; should not raise.
-    for _ in range(5):
-        await asyncio.sleep(0)
+    # Wait for the background worker to process the row; should not raise.
+    await cl_logger.stop()
     log_store.log_request.assert_awaited_once()
 
 
@@ -322,6 +318,41 @@ def test_record_routing_observation_records_legacy_failed_attempts(cl_logger):
     final_obs = active_router.record_observation.call_args_list[1][0][0]
     assert final_obs.endpoint_id == "openai-prod"
     assert final_obs.success is True
+
+
+def test_a_terminal_failure_reports_its_final_attempt_once(cl_logger):
+    """The router lists the final attempt in ``failed_attempts`` and as the endpoint.
+
+    Reported as a failed attempt and again as the terminal failure, it gave
+    RouteWise two error samples -- two 60 s penalties -- for one dispatch.
+    """
+    exc_routing = {
+        "provider": "zai",
+        "endpoint_id": "m:a",
+        "failed_attempts": [
+            {"provider": "zai", "endpoint_id": "m:b", "error_type": "TimeoutError", "error": "t"},
+            {"provider": "zai", "endpoint_id": "m:a", "error_type": "HTTPError", "error": "502"},
+        ],
+    }
+    active_router = MagicMock()
+
+    cl_logger.record_routing_observation(
+        active_router,
+        "m",
+        exc_routing,
+        request_id="rid",
+        ttft_ms=None,
+        total_latency_ms=0.0,
+        prompt_tokens=20,
+        completion_tokens=0,
+        success=False,
+    )
+
+    observed = [
+        (call.args[0].endpoint_id, call.args[0].success, call.args[0].terminal)
+        for call in active_router.record_observation.call_args_list
+    ]
+    assert observed == [("m:b", False, False), ("m:a", False, True)]
 
 
 def test_record_routing_observation_no_strategy_metadata(cl_logger):

@@ -4,6 +4,28 @@ from __future__ import annotations
 
 from typing import Any
 
+#: Most a router holds of one stream before that stream's first content.
+#:
+#: A router that has not yet decided whether a stream is the one it will serve
+#: holds what arrives before its first content -- a role delta, keep-alives,
+#: empty frames -- because once a frame reaches the client the stream is
+#: committed. The hedge race (``routing.routewise.hedging``) and FixedRouter's
+#: first-token wait (``FixedRouter._await_first_token``) both stop holding at
+#: this many bytes and release what they hold, as if content had arrived: an
+#: upstream that streams that much before saying anything is answering, and a
+#: buffer without a bound is one an upstream can grow without limit.
+PRE_CONTENT_BUFFER_MAX_BYTES = 1_000_000
+
+
+def chunk_buffer_size(chunk: Any) -> int:
+    """Return how much one held stream chunk counts against the pre-content bound.
+
+    The length of a text or bytes chunk; anything else counts as nothing.
+    """
+    if isinstance(chunk, (bytes, str)):
+        return len(chunk)
+    return 0
+
 
 def has_non_empty_content(chunk: Any) -> bool:
     r"""Return True if the SSE ``chunk`` carries a non-empty delta.

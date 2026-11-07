@@ -93,21 +93,33 @@ other inference surfaces reuse its parts.
 
 ### 1. Middleware
 
-`create_app()` in `apps/backend/serving/servers/app.py` registers five
+`create_app()` in `apps/backend/serving/servers/app.py` registers seven
 middlewares. Starlette runs the last-registered outermost, so the effective
 order from the outside in is:
 
 1. `RequestIdMiddleware` — mints or adopts a request id used by every log line.
 2. `FallbackErrorMiddleware` — last-resort error shaping.
-3. `RequestLogMiddleware` — one structured log record per HTTP request.
-4. `TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for ordinary
+3. `KubernetesProxyTrustMiddleware` — discovers which proxies may report the
+   client address, when Kubernetes proxy discovery is configured.
+4. `RequestLogMiddleware` — one structured log record per HTTP request.
+5. `TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for ordinary
    requests, `STREAM_REQUEST_TIMEOUT_SECONDS` (default 3600s, `<=0` disables the
    cap) once a response has been marked as streaming.
-5. `CORSMiddleware`.
+6. `CORSMiddleware`.
+7. `RequestBodyLimitMiddleware` — answers `413` to a request body larger than
+   `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when
+   `Content-Length` declares more, otherwise as soon as the bytes received pass
+   the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`.
+   Behind the console, `/v1`, `/anthropic`, `/internal/playground` and
+   `/user/batch-files` stream through route handlers and are bounded only
+   here. The console's other paths are Next.js rewrites, which copy a body in
+   memory up to 32 MiB (`middlewareClientMaxBodySize`), this limit's default:
+   raising `REQUEST_MAX_BODY_MB` past it does not reach them.
 
 Middleware order matters: streaming responses are `StreamingResponse`
 objects that must not be buffered. Any new middleware that reads a response body
-before forwarding it will break Server-Sent Events.
+before forwarding it will break Server-Sent Events. The body limit counts request
+bytes as they pass and holds none of them.
 
 ### 2. Authentication and quota
 
@@ -128,6 +140,35 @@ The same dependency enforces the caller's daily spend quota and returns `429`
 with a shared payload builder (`apps/backend/serving/quota.py`) whichever door
 the request came through. A separate `enforce_user_concurrency` dependency holds a
 per-user in-flight slot for the duration of the request.
+
+The spend the gate reads comes from the counter tables (`user_daily_cost`,
+`api_key_daily_cost`), and the spend ledger (`apps/backend/serving/spend_ledger.py`)
+adds what those tables do not show yet:
+
+- **Requests in flight.** `enforce_user_concurrency` (and the batch worker, for
+  each item) checks the quotas and the key's budgets again and reserves the
+  request's estimated cost (`ESTIMATED_REQUEST_COST_USD`) in one step, then
+  releases the reservation when the request ends, however it ends. Requests
+  admitted at the same time therefore cannot all fit into the same remaining
+  budget.
+- **Costs not yet written.** A finished request's cost is recorded in the
+  ledger and written to the counters by one writer per store: costs recorded
+  while a write is in flight are coalesced per user, key and UTC day into the
+  next, which goes out as one statement, account and key counters together.
+  The ledger keeps counting a cost until its write is confirmed (and for a
+  while after, for a gate whose read began before it landed), so the delay
+  never lets a request past a limit. A failed write is retried; shutdown
+  writes what is left and logs anything it could not.
+
+The ledger is per process. With several worker processes each sees only its
+own requests in flight and costs not yet written, so the limits are protected
+within each process, not across them; production runs one worker.
+
+A streamed response the client closes early, or that the gateway's request
+timeout cuts off, is billed for what the upstream already did: the usage it
+reported, or else an estimate of the prompt and of the output so far
+(`metadata.usage_estimated` marks the estimate). A request the upstream fails
+is not billed.
 
 Read-only endpoints such as `/v1/models` use `optional_verify_api_key` instead:
 a missing or invalid key is anonymous rather than rejected, and the key only
@@ -422,16 +463,17 @@ Postgres implements both (`postgres_operational.py`, `postgres_log.py`).
 `CachedOperationalStore` wraps the operational store with an in-process cache,
 because auth resolves against it on every single request.
 
-The request log table `api_logs` and its hourly rollup are defined in exactly
-one place, `apps/backend/serving/storage/log_schema.py`, applied by both code paths that create
-tables. Columns worth knowing: `request_id`, `model_id`, `provider`,
+The schema, the request log table `api_logs` and its rollups included, comes
+from the versioned migrations in `apps/backend/migrations/`; the backend creates
+no tables of its own. Columns of `api_logs` worth knowing: `request_id`, `model_id`, `provider`,
 `served_model_id` / `served_endpoint_id` (which endpoint actually answered, as
 opposed to what the client asked for), `ttft_ms` and `latency_ms`, the token
 counts, `cost_usd` (what the caller is billed, from the model's own pricing) and
 `upstream_cost_usd` (what the upstream reported, when it reports one).
 
-Schema migrations read the catalog first and issue only the DDL that is actually
-missing, under a bounded lock wait — an `ALTER TABLE` that queues behind a long
+A deploy applies the migrations before it restarts the backend, and the backend
+refuses to start on a database they have not reached. Each migration statement
+waits for a table lock only briefly: an `ALTER TABLE` that queued behind a long
 query would block every reader behind it. See [Database](database.md).
 
 The gateway starts without a database. `/health` then reports
@@ -450,7 +492,9 @@ The gateway reports through these; it has no Prometheus exporter:
   admin dashboards and usage reporting.
 - **Health endpoints.** `/health` is a liveness check that returns 200 with
   `status: "degraded"` when a configured store is down but traffic can still be
-  served, and 503 only when every configured store is unreachable.
+  served, and 503 only when every configured store is unreachable. It answers
+  from one shared store probe for two seconds, and concurrent callers wait for
+  the probe in flight, so polling it does not cost a database query per call.
   `/health/ready` is the strict variant: 503 unless everything configured is up.
   `/health/deep` adds per-endpoint availability and circuit state, and reports
   `degraded` when any endpoint is.
@@ -463,6 +507,12 @@ The gateway reports through these; it has no Prometheus exporter:
   on `circuit_open` transitions and on upstream-credential rejections, with
   per-endpoint cooldowns so a persistent fault re-pages on a fixed cadence
   instead of flooding.
+- **Alert history** (on with a database; `ALERT_HISTORY_ENABLED=false` turns
+  it off). The same alert path records what it did
+  — breaches, recoveries, suppression decisions, deliveries and their results —
+  into PostgreSQL through a bounded buffer and one writer per process
+  (`serving/observability/alert_history/`). It never changes what is sent. See
+  [Alert history](alert-history.md).
 
 ## HTTP surface
 
@@ -472,21 +522,29 @@ Client-facing groups, all served by the same app:
 | --- | --- | --- |
 | OpenAI-compatible inference | `POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, `POST /v1/embeddings`, `POST /v1/responses` | API key |
 | Anthropic-compatible inference | `POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens` | API key |
-| [Batch inference](batches.md) | `POST /v1/batches`, `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results` | API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default |
+| [Batch inference](batches.md) | `POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl` (JSONL export); chat, embeddings, Responses and Messages targets, as direct requests or a JSONL file | API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default |
+| [Batch files](batches.md#batches-from-a-file) | `POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | API key; uploading a file needs `BATCH_MIN_ROLE` |
+| [Batch webhooks](batches.md#webhooks) | `GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events` | API key; setting up or changing a webhook needs `BATCH_MIN_ROLE` |
 | Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
-| Health | `GET /health`, `/health/ready`, `/health/deep` | None |
-| Public routing disclosure | `GET /routing` | None |
+| Health | `GET /health`, `/health/ready`, `/health/deep` | None; upstream addresses only for an admin |
+| Public routing disclosure | `GET /routing` | None; upstream addresses only for an admin |
 | Admin | `GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*` | Admin |
 | Accounts and console APIs | `/auth/*`, `/user/*`, `/site-config` | Mixed |
 
-```{warning}
+`BATCH_ENABLED` controls all batch, file and webhook routes together; when it
+is off, even management and result routes answer `404`, and no queued request
+starts. With it on, all batch kinds are available. `BATCH_MIN_ROLE` controls
+creating batches, uploading files and setting up or changing a webhook. An
+owner whose role is lowered can still manage existing batches and files, read
+or delete their webhook, and receive its deliveries.
+
 `GET /routing` requires no authentication and returns each published route's
-provider label, **upstream base URL**, and traffic weight. If your gateway is
-reachable from the internet, block this path at your reverse proxy unless you
-intend to publish your upstream topology. `GET /admin/routing` additionally
-includes unpublished routes and routing-manager status, but requires an
-administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header.
-```
+provider label and traffic weight. Its upstream base URL, and the routing
+file's probe results, which are keyed by endpoint URL, are shown only to a
+caller that sends an administrator's JWT or `ADMIN_TOKEN` in the
+`Authorization: Bearer ...` header, and `/health/deep` leaves the base URL out
+of its `route_exclusions` on the same terms. `GET /admin/routing` requires
+those credentials and additionally includes unpublished routes.
 
 `/v1/models` shape-shifts by client: an Anthropic-family client calling it
 receives the Anthropic list response, while `/models` and `/openrouter/models`
@@ -496,8 +554,8 @@ always return the OpenAI/OpenRouter shape.
 
 The repository ships Dockerfiles and Compose files under `deploy/docker/`:
 `Dockerfile.backend` (the gateway), `Dockerfile.frontend` (the Next.js console
-in `apps/frontend/`), `Dockerfile.rocm` (an AMD GPU variant), and
-`docker-compose.yml`. Systemd units live in `deploy/systemd/`.
+in `apps/frontend/`), and `docker-compose.yml`. Systemd units live in
+`deploy/systemd/`.
 
 The console and the API share one origin: the Next.js rewrites in
 `apps/frontend/next.config.js` proxy `/v1`, `/anthropic`, `/auth`, `/user`,

@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from routing.endpoint_health import http_status_of
 from routing.endpoints import endpoint_id_for_adapter
+from serving.pricing import effective_pricing
 
 if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
@@ -14,27 +16,47 @@ if TYPE_CHECKING:
 def failed_attempt(
     adapter: BaseAdapter | None,
     exc: BaseException,
-) -> dict[str, str]:
-    """Return fallback-attempt telemetry."""
+) -> dict[str, Any]:
+    """Return fallback-attempt telemetry.
+
+    ``status_code`` is present when the failure carried an upstream HTTP status,
+    so whoever reads the attempt later -- a learning router's feedback, the
+    request log -- can tell a refused request from an endpoint fault.
+    """
     if adapter is None:
         provider = "unknown-backup"
         endpoint_id = "unknown-backup"
     else:
         provider = str(adapter.config.provider)
         endpoint_id = str(endpoint_id_for_adapter(adapter))
-    return {
+    attempt: dict[str, Any] = {
         "provider": provider,
         "endpoint_id": endpoint_id,
         "error_type": exc.__class__.__name__,
         "error": str(exc),
     }
+    status = http_status_of(exc)
+    if status is not None:
+        attempt["status_code"] = status
+    return attempt
+
+
+def adapter_pricing_snapshot(adapter: BaseAdapter) -> dict[str, str]:
+    """Copy the executing adapter's price instead of re-reading the live route.
+
+    Runtime edits replace adapters, while in-flight calls retain their original
+    object. Carry its price through settlement, including an empty dict for an
+    unpriced attempt so a later route edit cannot supply a different price.
+    Scheduled pricing uses the request's existing pricing instant and snapshot.
+    """
+    return dict(effective_pricing(adapter.config) or {})
 
 
 def routing_chunk(
     adapter: BaseAdapter,
     *,
     fallback: bool = False,
-    failed_attempts: list[dict[str, str]] | None = None,
+    failed_attempts: list[dict[str, Any]] | None = None,
     offload: str | None = None,
     offload_endpoint_id: str | None = None,
 ) -> str:
@@ -63,6 +85,7 @@ def routing_chunk(
         "provider": adapter.config.provider,
         "base_url": adapter.config.base_url,
         "endpoint_id": getattr(adapter.config, "endpoint_id", None),
+        "pricing": adapter_pricing_snapshot(adapter),
     }
     if fallback:
         routing["fallback"] = True

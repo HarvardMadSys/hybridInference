@@ -39,3 +39,35 @@ async def test_handler_drops_oldest_on_overflow():
         assert handler.dropped_count == 3
     finally:
         logger.removeHandler(handler)
+
+
+async def test_the_installed_handler_leaves_the_request_log_on_the_console():
+    """The access log reaches stdout and LOG_FILE only through the root logger's handlers."""
+    from serving.observability.log_handler import (
+        install_alert_log_handler,
+        uninstall_alert_log_handler,
+    )
+
+    console: list[logging.LogRecord] = []
+
+    class _Console(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            console.append(record)
+
+    root = logging.getLogger()
+    sink = _Console(level=logging.INFO)
+    handler = AlertingLogHandler(maxsize=10)
+    request_log = logging.getLogger("serving.servers.middleware.request_log")
+    previous_level = request_log.level
+    root.addHandler(sink)
+    request_log.setLevel(logging.INFO)
+    install_alert_log_handler(handler)
+    try:
+        request_log.info("http_request")
+
+        assert [record.getMessage() for record in console] == ["http_request"]
+        assert handler.queue.qsize() == 1
+    finally:
+        uninstall_alert_log_handler(handler)
+        root.removeHandler(sink)
+        request_log.setLevel(previous_level)

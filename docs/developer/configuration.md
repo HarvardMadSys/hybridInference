@@ -11,7 +11,7 @@ For distribution manifests, branding, UI modules and backend extensions, see
 
 ## Email and SMS delivery providers
 
-`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
+`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Without a provider beyond the built-in one, it does not list `EMAIL_PROVIDER` or `SMS_PROVIDER` either, which would have only one value to choose, and without an SMS provider it lists none of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
 
 Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
 
@@ -45,6 +45,34 @@ Only the model registry is required to serve traffic. Without it the gateway
 starts, serves `/health`, and answers `GET /v1/models` with an empty list.
 Without a routing file each route keeps the weight the registry gives it, and
 without an alerts file the built-in thresholds apply.
+
+The built-in `rules.request_log_queue_saturation` rule pages when the bounded
+request-log queue drops `api_logs` report rows. It is on by default but still
+only runs when alerting is otherwise enabled (`ALERTS_ENABLED` and a configured
+channel). Tune or disable it in `alerts.yaml`:
+
+```yaml
+rules:
+  request_log_queue_saturation:
+    enabled: true       # default
+    window_sec: 600     # default
+    threshold_count: 1  # warning events in the window; default = first loss
+    cooldown_sec: 1800  # default
+```
+
+`threshold_count` counts the producer's loss warnings, not dropped rows. The
+producer warns on the first drop, every 100th drop, and at least once per
+60 seconds while drops continue, so a second small burst after a quiet period
+is still observable. The rule uses the alert engine's existing cooldown, so a
+sustained loss episode does not page once per warning.
+
+Every record-driven rule keeps at most 250,000 samples in its window. At
+traffic that would exceed that, the oldest samples leave early: the window then
+covers less than `window_sec`, and a rate alert says
+`only the latest 250000 samples are kept`. The `top_paths` line of
+`failed_request_rate` tracks at most 256 distinct paths per window. Failures on
+any other path still count toward the rate, and the line says how many it left
+out.
 
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
@@ -256,8 +284,10 @@ probe is a `GET` to the endpoint's origin root plus `/health`.
 
 **The probe only reports; it never changes routing.** An endpoint that fails
 every probe keeps its weight and keeps receiving traffic. Each change of state
-is logged at `WARNING`, and `GET /routing` shows the latest results under
-`manager_status.endpoint_health`, next to `endpoint_health_enforced: false`.
+is logged at `WARNING`, and `GET /routing` shows the latest results to an
+administrator under `manager_status.endpoint_health`, next to
+`endpoint_health_enforced: false`. The map is keyed by endpoint URL, so an
+anonymous caller is shown `endpoint_health_enforced` without it.
 The [circuit breaker](routing.md#endpoint-health-and-circuit-breaking) is what
 takes a failing endpoint out of rotation.
 
@@ -282,7 +312,7 @@ the routing file's weight split, nothing on a gateway with a database.
 | Setting | Where | What happens |
 |---|---|---|
 | `local_deployment` / `remote_deployment` weight split | routing file | Applied only on a gateway without a database; see [The routing file](#the-routing-file) |
-| `health_check` probe results | routing file | Logged and reported on `GET /routing`, never used for routing |
+| `health_check` probe results | routing file | Logged, and shown to administrators on `GET /routing`; never used for routing |
 | `router_params.local_fraction` | model registry, `router: fixed` | Accepted and validated, not read |
 | `features.routers` | distribution manifest | Published in `/site-config`, does not select or restrict a router |
 | `paths.mcp` | distribution manifest | Accepted, not read by any component |
@@ -345,7 +375,7 @@ backend.
 | Create a model that is not in the registry | **Create model** | `POST /admin/routing/provider-route-models`; `POST /admin/routing/provider-route-model-verifications` tries the route without registering it | `provider_route_candidates`, plus a strategy and required-role marker in `site_settings` |
 | Add a route to an existing model | **Add provider route** | `POST /admin/routing/provider-route-candidates/{model_id}`; `.../provider-route-candidate-verifications/{model_id}` to check first; `PATCH` / `DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}` edits it in place or deletes it | `provider_route_candidates` |
 | Point a registry route somewhere else | **Edit** | `PUT /admin/routing/provider-routes/{model_id}/{route_id}`; `.../provider-route-verifications/{model_id}/{route_id}` to check first (it checks a runtime route's edit too); `DELETE` removes the override and restores the YAML route (**Reset config**) | `provider_route_configs` |
-| Change what a route accepts: context window, max output, image input, tool calling | **Capabilities** on each route | `PUT /admin/routing/provider-route-capabilities/{model_id}/{route_id}`; `DELETE` returns the route to the values it has from the registry or its creation | `provider_route_capabilities` |
+| Change what a route accepts: context window, max output, image input, tool calling | **Edit** on each route | `PUT /admin/routing/provider-route-capabilities/{model_id}/{route_id}`; `DELETE` returns the route to the values it has from the registry or its creation | `provider_route_capabilities` |
 | Disable or enable a route of either source | **Disable** / **Enable** | `PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` with `{"disabled": true}`; the route keeps its configuration and weights, and nothing (selection, retry, fallback, offload) picks it until it is enabled | `provider_route_states` |
 | Delete a registry route from this deployment | **Delete**, then **Restore** | `POST /admin/routing/provider-route-removals/{model_id}/{route_id}`; `DELETE` on the same path restores it with its edits and weights. models.yaml is not changed | `provider_route_states` |
 | Change a route's weight | the weight field on each route | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}`; `GET` shows the YAML, override and effective values | `provider_weight_overrides` |
@@ -385,18 +415,27 @@ be declared keeps the defaults it was given: `context_length` 8192,
 as `reasoning_effort`, structured output and aliases still take `ModelConfig`'s
 defaults; when a model needs any of those, put it in the registry.
 
-Any route's four can be changed after the fact with **Capabilities**, registry
-and runtime routes alike, with the same validation. The console's form has a
-field for image input only: it keeps a route's `audio` and `video` input as they
-are, and an added route starts with the first route's. The values the route has
-from the registry or from its creation stay as its baseline: the change is
-stored as an override, the next request through the route follows it, a restart
-restores it, and retargeting the route keeps it. Deleting a registry route
-keeps it too, so **Restore** brings the route back with it. Resetting deletes
-the override and returns the route to its baseline. Route listings report `capabilities` (as
-served), `capabilities_baseline` and `capabilities_overridden`. A change applies
-in the gateway process that handles the admin request; a deployment running
-several gateway processes sees it in the others after their next restart.
+Any route's four can be changed after the fact in its **Edit** form, registry
+and runtime routes alike, with the same validation. They change what the
+gateway does with requests through the route, not what the upstream model can
+do. The console's form has a field for image input only: it keeps a route's
+`audio` and `video` input as they are, and an added route starts with the first
+route's. The values the route has from the registry or from its creation stay
+as its baseline: the change is stored as an override, the next request through
+the route follows it, a restart restores it, and retargeting the route keeps it.
+Deleting a registry route keeps it too, so **Restore** brings the route back
+with it. **Restore defaults** fills the form with the baseline; saving it, or
+any values equal to the baseline, deletes the override, so the route goes on
+following its registry or creation values. An edit that also changes the
+route's target is saved in one request: `PUT .../provider-routes/...` and
+`PATCH .../provider-route-candidates/...` accept `capabilities`, or
+`reset_capabilities: true`, and when either part cannot be saved the gateway
+puts both back. That is a restore of the earlier rows and live route, not one
+database transaction; a restore that fails is logged. Route listings report
+`capabilities` (as served), `capabilities_baseline` and
+`capabilities_overridden`. A change applies in the gateway process that handles
+the admin request; a deployment running several gateway processes sees it in
+the others after their next restart.
 
 ### Settings tab
 
@@ -404,7 +443,7 @@ several gateway processes sees it in the others after their next restart.
 |---|---|---|---|
 | Change who can see a model | **Model Visibility** | `PATCH /admin/models/{model_id}/visibility` sets or clears a `required_role` override; `GET /admin/models/visibility` lists baseline, override and effective values | `model_visibility_overrides` |
 | Exempt a model from the per-user concurrency limit | **Model Concurrency Limit** | `PATCH /admin/models/{model_id}/concurrency` | `model_concurrency_exemptions` |
-| Cap how many batch requests a model runs at once | **Batch Concurrency** | `PATCH /admin/batch/models/{model_id}` sets or clears a model's cap; `GET /admin/batch/models` lists the caps with each model's running and queued batch requests | `batch_model_limits` |
+| Cap how many batch requests a model runs at once | **Batch Concurrency** | `PATCH /admin/batch/models/{model_id}` sets or clears a model's cap; `GET /admin/batch/models` lists the caps with each model's running and queued batch requests. The other batch settings are in [Running batch inference](batches.md#running-batch-inference) | `batch_model_limits` |
 
 ### How the two layers combine
 
@@ -441,7 +480,7 @@ connection or container wiring is a *setting*: provider keys, SMTP, Slack
 webhooks, proxy trust, browser origins, logging, routing and timeout tuning,
 the cloud-agent contract, and the secrets that sign sessions and protect API
 keys. A gateway with a database keeps them in its `app_config` table, and an
-administrator edits them on the admin console's **Configuration** tab. A
+administrator edits them on the admin console's **Settings** tab. A
 gateway with `DB_ENABLED=false` has no stored settings and reads the
 environment and the built-in defaults only.
 
@@ -485,7 +524,7 @@ its default applies, the next start does not copy it in, and the log says so
 with a warning. With `TRUST_X_REAL_IP=1` in the environment and
 `TRUST_PROXY_HEADERS` stored as off, for example, the gateway runs with
 `TRUST_X_REAL_IP` off; to turn both on, change them together on the
-Configuration tab or with `python -m serving.config.manage set`. Only a rule
+Settings tab or with `python -m serving.config.manage set`. Only a rule
 the environment breaks on its own, with no stored value involved, stops the
 backend, which names the rule.
 
@@ -497,10 +536,35 @@ them; see [Database](database.md#secrets-for-deleting-accounts). The backend
 refuses to start rather than generate `API_KEY_SECRET` for a database that
 already holds API keys, since a new secret would invalidate every one of them.
 
-### The Configuration tab
+### Analytics sections
 
-The tab groups the settings by category, describes each one and shows where
-its value comes from. Besides every setting the gateway reads itself, it lists:
+In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, **Users
+and Requests**, **Performance Metrics** and **Growth Rate** independently, then
+select **Save changes**. These database-backed settings apply to
+**Analytics → Overview** for all administrators. Token Usage, Users and Requests
+and Performance Metrics default to on; Growth Rate defaults to off. Reopen
+Analytics after saving; no backend restart is needed. A disabled section is
+hidden and does not request its data. Data collection continues, so re-enabling
+a section can show existing history.
+
+The runtime keys are `analytics_token_usage_enabled`,
+`analytics_users_and_requests_enabled`, `analytics_performance_metrics_enabled`
+and `analytics_growth_rate_enabled`. The overview's Hour / Day / Week / Month
+control applies to Token Usage and Users and Requests. Performance Metrics keeps
+its existing windows, and Growth Rate has its own 30, 60 or 90-day range.
+
+### On the Settings tab
+
+The tab opens on **Common**, with the switches and limits changed most often:
+sign-up, per-user concurrency and the daily quotas among them. The rest is
+grouped by category, and each category is listed on the sub-tab of its topic:
+**Access** holds the sign-up settings and the signup allowlist, for instance.
+**Setup**, near the end, holds the categories usually set once, when the
+gateway is deployed: its addresses and name, email, network, privacy and
+integrations. Within any category, the settings usually set once come last,
+under **Usually set once**. The tab describes each setting and shows where its
+value comes from. A search, or **Missing only**, looks through every sub-tab at
+once. Besides every setting the gateway reads itself, it lists:
 
 - every `${VAR}` the active model registry and routing file name, under
   **Providers**, with the models that use it, and those of the alert rules
@@ -511,6 +575,13 @@ its value comes from. Besides every setting the gateway reads itself, it lists:
   not end the list, and a key entered twice counts once;
 - variables added with **Add variable**, for a `${VAR}` reference the gateway
   cannot see yet, such as one in a registry you are about to switch to.
+
+It leaves out the settings that offer nothing to choose: one with a single
+accepted value, such as `EMAIL_PROVIDER` while SMTP is the only transport, and
+the phone settings while no SMS provider is registered, since they do nothing
+without one. Such a setting still appears while it needs attention — required
+and empty, stored with a value that cannot apply, or waiting for a restart —
+and `python -m serving.config.manage list` always shows it.
 
 Secrets are write-only: the tab shows whether one is set, never its value, and
 the admin audit log records only that it changed. Besides the settings the
@@ -536,6 +607,35 @@ environment, such as `DB_PASSWORD` or `MODELS_CONFIG_PATH`, cannot be set here.
 Behind the tab are `GET` and `PATCH /admin/config` and
 `DELETE /admin/config/{key}`.
 
+### Backup and restore
+
+**Backup** (`GET /admin/config/backup`) downloads every setting an administrator
+can change as one JSON file: the stored settings, the runtime and model
+settings, custom providers and their keys, routes and their overrides, the
+batch caps and the signup allowlist. It names each secret without its value: a
+stored setting has `value: null` and `is_set`, and a provider key keeps its id,
+provider and label. **Backup with secrets** (`POST /admin/config/backup` with
+`include_secrets: true`) puts the values in, in plain text, once the signed-in
+administrator gives the account's password again. The admin token cannot ask
+for them, and an account without a password, made by phone, sets one first.
+Store that file as you would the secrets themselves.
+
+**Restore** (`POST /admin/config/restore`) replaces all of it in one database
+transaction, so a failure anywhere leaves the deployment as it was. A secret
+the file withholds keeps the value this deployment has; one the deployment has
+no value for stays unset, and the response names it under
+`secrets_not_restored`. A backup file is not signed, so a restore that changes
+anything security-relevant needs a confirmation and the password: any secret,
+the Security and Network settings, every `*_URL` setting and every variable a
+configuration file references, mail delivery, the identity issuer, keys and
+redirects, user authentication, the sign-up switches and allowlist, full
+request logging, private batch webhook targets, and where a custom provider or
+a route sends requests and keys. The console lists those changes before it
+restores, from `POST /admin/config/restore/preview`; a script sends that list
+back as `confirm_security_changes`, with `password`, and a restore whose changes
+differ from the confirmed list is refused with 409. The admin token can restore
+only a file that changes none of them.
+
 ### When a change applies
 
 Most settings apply as soon as they are saved: at once in the backend process
@@ -543,7 +643,9 @@ that served the save, and within ten seconds in every other one. A setting
 marked **Restart required** is read only at startup, and the process keeps the
 value it started with until it restarts. Provider credentials and every
 variable the registry names are among them, as are the circuit-breaker and
-outbound-concurrency tuning, alerting and `DB_STORE_FULL_CONTENT`.
+outbound-concurrency tuning, `ALERTS_ENABLED` and `DB_STORE_FULL_CONTENT`. The
+alert channels and the failed-request alert thresholds are too, until an
+operator activates their [live group](#settings-that-apply-without-a-restart).
 
 While such a change is waiting, the tab shows a **Restart pending** notice with
 a **Restart backend** button. The button (`POST /admin/system/restart`) makes
@@ -561,6 +663,95 @@ shows a command to run yourself instead, such as
 flight, streams included. The console knows the restart is over once `/health`
 names a different process in its `instance` field, however quickly the backend
 came back.
+
+### Settings that apply without a restart
+
+A live group is a set of settings the backend applies together, without a
+restart, once an operator has activated it. The first one, `alerts.runtime`,
+holds the alert channel and the failed-request alert:
+
+| Settings | What they choose |
+|---|---|
+| `SLACK_ALERTS_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `WECOM_ALERTS_WEBHOOK_URL` | The one channel alerts go to |
+| `FAILED_REQUEST_ALERT_THRESHOLD`, `FAILED_REQUEST_ALERT_WINDOW_MINUTES`, `FAILED_REQUEST_ALERT_COOLDOWN_MINUTES`, `FAILED_REQUEST_ALERT_RATE`, `FAILED_REQUEST_ALERT_RATE_MIN_COUNT` | When the failed-request alert pages |
+
+Once the group is active, a save reaches every backend process within about
+ten seconds. Each process checks the whole group first: a pair of channels
+that conflict, or a value out of range, keeps the values it already uses and
+reports the group as invalid, while the saved values stay for you to correct.
+To move from Slack to WeCom, clear the Slack webhooks and fill in the WeCom
+one in the same save. Clearing every webhook pauses alert delivery and the
+failed-request alert on purpose; it is not a failure. The failed-request alert
+runs while `SLACK_WEBHOOK_URL` or `WECOM_ALERTS_WEBHOOK_URL` is set, as before;
+`SLACK_ALERTS_WEBHOOK_URL` alone does not start it.
+
+The Alerts category shows where the saved configuration stands. **Applied in
+each backend process** names the saved version — for example
+`app_config / epoch 3f1c… / revision 42` — and, for every process that has
+registered, whether it has applied that revision, is still applying it, failed
+or has not reported. A process whose heartbeat stopped more than a minute ago
+counts as unknown, never as applied. A backend running an older build does not
+register at all, so the panel cannot prove that every process is covered:
+compare its list with your deployment's own list of processes. **Applied**
+means the process uses the saved channel and thresholds; it says nothing about
+whether a message reached the channel, which **Send test** checks. **Send
+test** uses the saved webhook (or the address you typed), not necessarily the
+one a process is using.
+
+After a channel change, alerts already under way finish on the old channel,
+and the recovery message of an incident opened earlier goes to the new one.
+The failed-request alert keeps its cooldown and its open incident across the
+change. It still checks once a minute, so a new threshold takes effect at the
+next check after the change has applied.
+
+The console saves conditionally: if someone else saved the configuration after
+you started editing a category, your save is refused, nothing is stored, and
+the tab reloads the latest values and keeps your unsaved changes for you to
+review and save again. A reload, or a save in another category, never moves
+unsaved changes onto values you have not seen.
+
+`ALERTS_ENABLED`, the alert rules file and the alert engine still apply only
+after a restart. Other settings join live groups later, one group at a time.
+
+#### Activating a live group
+
+A group stays inactive until an operator activates it, and a backend upgrade
+never activates one by itself. Until then its settings behave as **Restart
+required**. Activate it once every backend process runs a build that supports
+it:
+
+1. Deploy the build everywhere and check that each process registered:
+   `python -m serving.config.manage live status`.
+2. Preview what activation applies. It shows each setting's saved value (a
+   secret only as set or not set) and the processes whose value in use differs
+   — values saved while a restart was pending apply as soon as you activate,
+   which can change where alerts go:
+   `python -m serving.config.manage live preview alerts.runtime`.
+3. Activate with the version the preview printed, and the number of backend
+   processes your deployment runs:
+   `python -m serving.config.manage live activate alerts.runtime --expect <epoch>:<revision> --expect-instances <N>`.
+   It refuses when the configuration changed after the preview, when a running
+   process does not support the group, or when the count differs.
+4. Check `live status`, or the Alerts category, until every process has
+   applied the latest revision.
+
+If a process cannot apply the group when it is activated — a saved value is
+invalid, say — the group stays active and the process keeps the values it was
+using. Correct the setting and save it again: it applies without a restart.
+
+`live deactivate alerts.runtime --expect <epoch>:<revision>` turns the group
+off. A running process then keeps the values it last applied until it
+restarts, instead of returning to the ones it started with, and a process that
+starts afterwards uses the saved values. Until every process has restarted the
+two can differ, and the status shows it. Going back to a build that does not
+know the group is a deployment, not a configuration change.
+
+A configuration backup does not include this status. Restoring a backup
+applies its `app_config` rows to live groups like any other save, and writes
+the other tables in the same transaction, so a failure anywhere restores none
+of them. After restoring a whole database, run
+`python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`:
+it starts a new version history and makes every process register again.
 
 ### Without the console
 
@@ -597,7 +788,7 @@ Some settings are required: the two generated secrets, every variable a model
 route needs to load (unless the route is `optional: true`), and `SMTP_USER`
 and `SMTP_PASSWORD` while public signup requires email verification. When one
 of them has no value, the console shows a banner to signed-in users.
-Administrators get a link to the Configuration tab, where **Missing only**
+Administrators get a link to the Settings tab, where **Missing only**
 lists what to fill in; everyone else is told that some features may not work
 and to contact the administrator. A model whose credential is missing is not
 loaded, and a request for it is answered with a `404`. When an administrator
@@ -661,20 +852,19 @@ the registry file that was used; `[distribution dark mode] ...` lines show what
 a manifest would change once activated; `Skipping model '<id>' ... after env
 expansion` names each model whose credentials were unset.
 
-```{warning}
 `GET /routing` requires no credentials and returns, for every published route,
-the upstream `base_url`, its provider label and its weight — that is, your
-complete upstream topology including any host and port embedded in a base URL.
-Block `/routing` at your reverse proxy on any gateway reachable from the
-internet unless you intend to publish this topology. `GET /admin/routing`
-additionally reports unpublished routes and requires an administrator's JWT
-or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header. Treat both endpoints'
-output as sensitive.
-```
+its provider label and its weight. Each route's upstream `base_url`, and the
+routing file's probe results, which are keyed by endpoint URL, are shown only
+to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the
+`Authorization: Bearer ...` header; any other caller, or a credential that does
+not check out, gets the anonymous answer with the same status code.
+`GET /admin/routing` requires those credentials and additionally reports
+unpublished routes. Treat their output as sensitive: it is your upstream
+topology, including any host and port embedded in a base URL.
 
 ## Optional phone authentication
 
-Phone signup, login and binding are disabled by default. Install a distribution-owned SMS provider, configure its delivery settings, then enable `SMS_AUTH_ENABLED` and select that registered provider through `SMS_PROVIDER` in **Admin > Configuration**. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work.
+Phone signup, login and binding are disabled by default. Install a distribution-owned SMS provider, configure its delivery settings, then enable `SMS_AUTH_ENABLED` and select that registered provider through `SMS_PROVIDER` in **Admin > Configuration**, where the phone settings appear once a provider is registered. The gateway advertises `features.phone_auth` through `/site-config`; the shared forms show the phone option only when it is available. Existing email and first-run administrator logins continue to work.
 
 Account identifiers use international format, such as `+12025550123`. `SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local input; leave it empty to require international input. `SMS_ALLOWED_PREFIXES` optionally restricts destinations using comma-separated prefixes. The distribution chooses a number policy supported by its delivery provider; account storage and verification-code policy remain shared.
 

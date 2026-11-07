@@ -22,6 +22,7 @@ from serving.servers.auth import (
     hash_api_key,
     verify_api_key,
 )
+from serving.spend_ledger import SPEND_CHECK_KEY
 from serving.storage.base import OperationalStore
 from serving.utils import context as req_ctx
 
@@ -88,13 +89,20 @@ async def test_context_is_the_one_verify_api_key_returns_for_the_same_row():
     stored = await authenticate_stored_key(hash_api_key(KEY), store)
     await _settle()
 
+    # Each carries the spend check its own read made, for its admission to
+    # reserve against; everything else is the same context.
+    stored_check, live_check = stored.pop(SPEND_CHECK_KEY), live.pop(SPEND_CHECK_KEY)
     assert stored == live
+    assert (stored_check.user_id, stored_check.key_id) == (live_check.user_id, live_check.key_id)
+    assert stored_check.account_spent_usd == live_check.account_spent_usd == pytest.approx(12.5)
     assert stored["user_id"] == "owner-1"
     assert stored["role"] == "internal"
     assert stored["disabled_models"] == ["model-x"]
     assert stored["max_concurrent_requests"] == 7
     assert stored["spent_today_usd"] == pytest.approx(12.5)
     assert stored["auth_key_hash"] == hash_api_key(KEY)
+    # Work stored under a key (a batch) is charged to that key.
+    assert stored["api_key_id"] == 11
     store.get_auth_context_with_spend.assert_awaited_once_with(hash_api_key(KEY))
     # Not a request: nothing written, and no role published on the caller's context.
     store.update_key_last_used.assert_not_awaited()

@@ -3,28 +3,34 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI
 
 from ..config.settings import get_settings
 from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap, restart
+from .middleware.body_limit import RequestBodyLimitMiddleware
 from .middleware.cors import SettingsCORSMiddleware
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
+from .middleware.proxy_trust import KubernetesProxyTrustMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
 from .middleware.timeout import TimeoutMiddleware
 from .routers import (
     admin,
     agent_grants,
+    alert_history_ingest,
     anthropic_messages,
     auth_routes,
+    batch_console,
+    batch_console_create,
     batches,
     compat,
     completions,
     embeddings,
+    files,
     health,
     identity,
     internal,
@@ -35,6 +41,7 @@ from .routers import (
     qdrant_proxy,
     rag,
     responses,
+    retired_message_batches,
     setup,
     site_config,
     site_updates,
@@ -54,9 +61,17 @@ async def lifespan(app: FastAPI):
 
     # Loads dotenv and the database-backed configuration, then refuses to start
     # without the authentication secrets, before it opens stores or starts tasks.
-    services: AppServices = await bootstrap.initialize()
+    try:
+        services: AppServices = await bootstrap.initialize()
+    except BaseException:
+        # Alert history starts before the producers; a startup that fails
+        # after that point must not leave its writer running.
+        from ..observability.alert_history.runtime import stop_runtime
+
+        await stop_runtime()
+        raise
     app.state.services = services  # type: ignore[attr-defined]
-    # The batch worker runs each request through this app's handlers, so it
+    # The batch worker reads services off this app (as the routes do), so it
     # starts only once the services are reachable from the app.
     bootstrap.start_batch_scheduler(app, services)
 
@@ -78,6 +93,18 @@ async def lifespan(app: FastAPI):
                 restart.exit_for_restart()
 
 
+#: CORS options besides the origins. ``ETag`` is exposed because a console
+#: served from another origin reads it to tell a configuration version conflict
+#: (409 with the version now stored) from any other 409; a browser hides every
+#: response header CORS does not expose.
+CORS_OPTIONS: dict[str, Any] = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+    "expose_headers": ["ETag"],
+}
+
+
 def create_app() -> FastAPI:
     """Create and configure a FastAPI app instance with modular routers."""
     app = FastAPI(
@@ -87,18 +114,21 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Request body limit (REQUEST_MAX_BODY_MB): registered first, so it is the
+    # innermost middleware. Its 413 then passes out through CORS, which a
+    # browser needs to read it, and through the request-id and request-log
+    # middlewares like any other response. It never buffers a body or touches a
+    # response it did not write, so streams are unaffected.
+    app.add_middleware(RequestBodyLimitMiddleware)
+
     # CORS: use specific origins when credentials are enabled. The origins are
     # read per request (CORS_ALLOWED_ORIGINS is database-backed).
-    app.add_middleware(
-        SettingsCORSMiddleware,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    app.add_middleware(SettingsCORSMiddleware, **CORS_OPTIONS)
 
     # Request ID, timeout, and request log middlewares
     app.add_middleware(TimeoutMiddleware)
     app.add_middleware(RequestLogMiddleware)
+    app.add_middleware(KubernetesProxyTrustMiddleware)
     app.add_middleware(FallbackErrorMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
@@ -114,6 +144,10 @@ def create_app() -> FastAPI:
     app.include_router(completions.router)
     app.include_router(embeddings.router)
     app.include_router(batches.router)
+    app.include_router(retired_message_batches.router)
+    app.include_router(files.router)
+    app.include_router(batch_console.router)
+    app.include_router(batch_console_create.router)
     app.include_router(rag.router)
     app.include_router(responses.router)
     app.include_router(anthropic_messages.router)
@@ -131,6 +165,7 @@ def create_app() -> FastAPI:
     app.include_router(identity.router)
     app.include_router(agent_grants.router)
     app.include_router(internal_lookups.router)
+    app.include_router(alert_history_ingest.router)
 
     # Override HTTPException handler to emit Anthropic-format errors on
     # /v1/messages and /anthropic/... paths (must register after install_error_handlers).
@@ -152,19 +187,6 @@ def create_app() -> FastAPI:
         _HTTPException,
         anthropic_messages.anthropic_aware_http_exception_handler,
     )
-
-    # A write that needs account columns an upgrade has not added yet (the
-    # migration waits for the users table's lock). Routes that expect it answer
-    # the same 503 themselves; this covers every other one with an identical
-    # body, rather than a 500.
-    from serving.exceptions import AccountSchemaPending as _AccountSchemaPending
-
-    async def _account_schema_pending(request, exc):
-        return await anthropic_messages.anthropic_aware_http_exception_handler(
-            request, _HTTPException(status_code=503, detail=_AccountSchemaPending.MESSAGE)
-        )
-
-    app.add_exception_handler(_AccountSchemaPending, _account_schema_pending)
 
     # Override FastAPI's own RequestValidationError handler, which it installs
     # in FastAPI.__init__ and which answers a schema mismatch with

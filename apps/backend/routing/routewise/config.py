@@ -6,7 +6,6 @@ unified effective cost plus a cost-budgeted mean-TTFT LP.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -35,9 +34,6 @@ class RouteWiseConfig:
             used as a cold-start prior when the live profile window is empty.
         latency_max_samples_per_profile: Maximum request outcomes retained per
             provider latency profile.
-        latency_min_samples: Legacy minimum sample count exposed for runtime
-            tuning; RouteWise provider selection uses the layered latency prior
-            instead of gating cold endpoints out of the LP.
         budget_alpha: Interpolation factor for the LP cost budget:
             ``c_min + alpha * (c_max - c_min)``.
         db_bootstrap_enabled: Whether to warm RouteWise in-memory state from
@@ -95,7 +91,6 @@ class RouteWiseConfig:
     latency_window_sec: float = 900.0  # 15 min profile window
     latency_history_prior_window_sec: float = 86_400.0
     latency_max_samples_per_profile: int = 5000
-    latency_min_samples: int = 10  # retained for runtime compatibility/diagnostics
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: LatencyHedgeMode = "disabled"
 
@@ -136,19 +131,6 @@ class RouteWiseConfig:
     # available in the cache scope.
     prefix_cache_cost_adjustment_enabled: bool = False
 
-    # Prefill-load-aware routing. When enabled, RouteWise reads the existing
-    # PrefillLoadTracker (per-endpoint outstanding uncached prefill tokens) and
-    # adds a bounded soft TTFT penalty to loaded endpoints in the LP. This is a
-    # soft signal only: it never makes an endpoint infeasible. Default off.
-    prefill_load_routing_enabled: bool = False
-    # Scale factor converting outstanding prefill tokens to an additive TTFT
-    # penalty in ms. 1.0 = 1ms per 1000 tokens. Calibrated so that a 200K
-    # backlog adds ~200ms of adjusted TTFT — meaningful but not dominant.
-    prefill_load_scale_ms_per_1k: float = 1.0
-    # Cap on the prefill-load TTFT penalty in ms. Prevents extreme backlogs
-    # from completely dominating the LP objective. 5000ms = 5s.
-    prefill_load_max_penalty_ms: float = 5000.0
-
     def __post_init__(self) -> None:
         if self.latency_hedge_mode not in VALID_LATENCY_HEDGE_MODES:
             allowed = ", ".join(sorted(VALID_LATENCY_HEDGE_MODES))
@@ -160,16 +142,4 @@ class RouteWiseConfig:
             allowed = ", ".join(sorted(VALID_FALLBACK_MODES))
             raise ValueError(
                 f"Unsupported fallback_mode {self.fallback_mode!r}; expected one of: {allowed}"
-            )
-        if self.prefill_load_scale_ms_per_1k < 0 or not math.isfinite(
-            self.prefill_load_scale_ms_per_1k
-        ):
-            raise ValueError(
-                f"prefill_load_scale_ms_per_1k must be finite and >= 0, got {self.prefill_load_scale_ms_per_1k}"
-            )
-        if self.prefill_load_max_penalty_ms < 0 or not math.isfinite(
-            self.prefill_load_max_penalty_ms
-        ):
-            raise ValueError(
-                f"prefill_load_max_penalty_ms must be finite and >= 0, got {self.prefill_load_max_penalty_ms}"
             )

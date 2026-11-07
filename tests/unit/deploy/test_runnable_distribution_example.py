@@ -688,14 +688,17 @@ def test_demo_make_contract_uses_the_third_layer_without_down_or_forced_build(
         for line in output.splitlines()
         if line.startswith("env COMPOSE_PROFILES= docker compose")
     ]
-    assert len(commands) == 3
+    assert len(commands) == 4
     assert all("-f distributions/example/deploy/docker-compose.demo.yml" in cmd for cmd in commands)
     # Regression: promotion must never recreate an already-running provider or
     # frontend. Compose's own divergence check recreated an unchanged provider
     # in CI after an uncached image build, so the keep is pinned explicitly.
     assert commands[0].endswith("up -d --no-recreate --wait example-provider postgres")
-    assert commands[1].endswith("up -d --no-deps --force-recreate --wait backend")
-    assert commands[2].endswith("up -d --no-deps --no-recreate --wait frontend")
+    # The backend now gets a database, so its schema migrations run first, in a
+    # one-off container of the backend's own image, never as a dependency.
+    assert commands[1].endswith("run --rm --no-deps backend python -m migrations upgrade")
+    assert commands[2].endswith("up -d --no-deps --force-recreate --wait backend")
+    assert commands[3].endswith("up -d --no-deps --no-recreate --wait frontend")
     assert " down" not in output
     assert "--build" not in output
     assert (
@@ -1293,6 +1296,7 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
     )
     used_keys: list[str] = []
     paths: list[str] = []
+    reveals: list[tuple[object, object]] = []
 
     monkeypatch.setattr(full_smoke, "_wait_for_public_surface", lambda *args: None)
 
@@ -1302,11 +1306,15 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
             return 200, {"access_token": "refreshed-jwt"}
         if path == "/auth/setup/status":
             return 200, {"setup_required": False}
+        if path == f"/user/api-keys/{state.key_prefix}/reveal":
+            # The listing masks the key; the account's password reveals it.
+            reveals.append((kwargs.get("bearer"), kwargs.get("payload")))
+            return 200, {"key_prefix": state.key_prefix, "api_key": state.api_key}
         return 200, {
             "keys": [
                 {
                     "status": "active",
-                    "api_key": state.api_key,
+                    "api_key": None,
                     "key_prefix": state.key_prefix,
                 }
             ]
@@ -1333,6 +1341,7 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
     )
 
     assert used_keys == [state.api_key]
+    assert reveals == [("original-jwt", {"password": "not-printed"})]
     # The recreated backend found the setup marker in the database.
     assert paths[0] == "/auth/setup/status"
 
@@ -1829,3 +1838,46 @@ def test_router_tutorial_is_reachable_in_the_developer_toctree() -> None:
     index = REPO / "docs" / "developer" / "index.rst"
     entries = [line.strip() for line in index.read_text().splitlines()]
     assert slug in entries, f"{index} does not list {slug}"
+
+
+def _listing(**key: object) -> dict[str, object]:
+    return {"keys": [{"status": "active", "key_prefix": "kp1", **key}]}
+
+
+def test_the_full_smoke_reveals_a_masked_key_with_the_password(monkeypatch) -> None:
+    smoke = _load_module("example_full_smoke_reveal", FULL_SMOKE)
+    calls: list[tuple[str, object]] = []
+
+    def fake_request(base_url, path, *, method="GET", payload=None, **_kwargs):
+        calls.append((path, payload))
+        return 200, {"api_key": "revealed-1"}
+
+    monkeypatch.setattr(smoke, "_request_json", fake_request)
+
+    key = smoke._active_key(
+        "http://console", "token", "pw", _listing(api_key=None, revealable=True)
+    )
+
+    assert key == ("revealed-1", "kp1")
+    assert calls == [("/user/api-keys/kp1/reveal", {"password": "pw"})]
+
+
+def test_the_full_smoke_accepts_a_previous_release_that_lists_the_full_key(monkeypatch) -> None:
+    """The restore drill runs this smoke against the image from before masking."""
+    smoke = _load_module("example_full_smoke_previous", FULL_SMOKE)
+    monkeypatch.setattr(
+        smoke, "_request_json", lambda *a, **k: pytest.fail("no reveal on a full listing")
+    )
+
+    key = smoke._active_key("http://console", "token", "pw", _listing(api_key="listed-1"))
+
+    assert key == ("listed-1", "kp1")
+
+
+def test_the_full_smoke_refuses_a_masking_release_that_lists_the_full_key() -> None:
+    smoke = _load_module("example_full_smoke_leak", FULL_SMOKE)
+
+    with pytest.raises(smoke.SmokeError, match="returned a full key"):
+        smoke._active_key(
+            "http://console", "token", "pw", _listing(api_key="listed-1", revealable=True)
+        )

@@ -13,22 +13,19 @@ from typing import Any
 
 import asyncpg
 
-from serving.config.settings import get_settings
-from serving.storage.browser_session_schema import ensure_browser_session_tables
-from serving.storage.log_schema import (
-    ErasureFenceUnavailable,
-    apply_column_migrations,
-    bounded_ddl,
-    column_metadata,
-    constraint_admitted_values,
-    constraint_definition,
-    drop_columns_if_present,
-    ensure_api_logs_schema,
-    execute_ddl,
-    protect_api_logs_insert,
+from serving.storage.erasure_fence import (
+    api_logs_fence_keys,
+    insert_api_logs_row,
     validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
+from serving.storage.pools import (
+    COMMAND_TIMEOUT_SEC,
+    GENERAL_POOL_MAX_SIZE,
+    GENERAL_POOL_MIN_SIZE,
+    REQUEST_POOL_MAX_SIZE,
+    REQUEST_POOL_MIN_SIZE,
+)
 from serving.storage.utils import (
     calculate_cost,
     conversation_shape,
@@ -42,9 +39,34 @@ from serving.utils.token_utils import normalize_usage
 logger = get_logger(__name__)
 
 
-def _parse_admin_emails(raw: str) -> list[str]:
-    """Return normalized admin email addresses from a comma-separated env var."""
-    return [email.strip().lower() for email in raw.split(",") if email.strip()]
+# What :meth:`DatabaseLogger.log_request` writes to ``api_logs``: the columns,
+# and their values over the statement's parameters, in the same order.
+_LOG_COLUMNS = """
+    request_id, model_id, provider,
+    temperature, top_p, max_tokens, seed, stream,
+    ttft_ms, latency_ms,
+    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+    cache_read_tokens, cache_write_tokens, cost_usd,
+    prompt, response, request_payload,
+    status_code, error, user_id, session_id, metadata,
+    tools, upstream_cost_usd,
+    num_turns, num_user_turns, num_tool_calls,
+    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
+    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
+"""
+_LOG_VALUES = """
+    $1, $2, $3,
+    $4, $5, $6, $7, $8,
+    $9, $10,
+    $11, $12, $13, $14,
+    $15, $16, $17,
+    $18, $19, $20::jsonb,
+    $21, $22, $23, $24, $25::jsonb,
+    $26::jsonb, $27,
+    $28, $29, $30,
+    $31, $32, $33,
+    $34, $35, $36, $37
+"""
 
 
 def _string_or_none(value: object) -> str | None:
@@ -63,7 +85,12 @@ def _parse_command_tag_count(command_tag: str) -> int:
 
 
 class DatabaseLogger:
-    """Asynchronous PostgreSQL logger using a pooled connection."""
+    """Asynchronous PostgreSQL logger, and the owner of the gateway's two pools.
+
+    ``pool`` is the general pool everything uses; ``request_pool`` is reserved
+    for the lookups a request makes before it is served (see
+    :mod:`serving.storage.pools`).
+    """
 
     def __init__(
         self,
@@ -78,7 +105,7 @@ class DatabaseLogger:
             store_full_prompts: If False, prompt and response fields will be NULL.
             fence_secret: Server secret used to derive non-reversible
                 erasure-fence digests. Resolved at startup by
-                :func:`serving.storage.log_schema.resolve_fence_secret`,
+                :func:`serving.storage.erasure_fence.resolve_fence_secret`,
                 which fails closed if no stable secret is configured.
         """
         self.db_config = db_config
@@ -86,792 +113,39 @@ class DatabaseLogger:
         self.fence_secret = fence_secret
         # Use Any to avoid mypy issues when asyncpg types are unavailable.
         self.pool: Any | None = None
+        self.request_pool: Any | None = None
 
     async def initialize(self) -> None:
-        """Create the connection pool and ensure tables exist."""
+        """Create the connection pools and check the erasure-fence secret.
+
+        The tables come from the schema migrations. With a fence secret, its
+        fingerprint is checked against the pinned one (pinned on first use)
+        before anything can write a log row.
+        """
         self.pool = await asyncpg.create_pool(
-            **self.db_config, min_size=2, max_size=10, command_timeout=60
+            **self.db_config,
+            min_size=GENERAL_POOL_MIN_SIZE,
+            max_size=GENERAL_POOL_MAX_SIZE,
+            command_timeout=COMMAND_TIMEOUT_SEC,
         )
         try:
-            await self._create_tables()
-        except ErasureFenceUnavailable:
-            # A fingerprint mismatch is a durable privacy boundary, not a
-            # transient database startup error. Do not let bootstrap retry and
-            # eventually disable logging while retaining an open pool.
+            self.request_pool = await asyncpg.create_pool(
+                **self.db_config,
+                min_size=REQUEST_POOL_MIN_SIZE,
+                max_size=REQUEST_POOL_MAX_SIZE,
+                command_timeout=COMMAND_TIMEOUT_SEC,
+            )
+            if self.fence_secret:
+                async with self.pool.acquire() as conn:
+                    await validate_or_init_fingerprint(conn, secret=self.fence_secret)
+        except Exception:
+            # Closed whatever went wrong. A fingerprint mismatch is a durable
+            # privacy boundary, not a transient database startup error, and
+            # bootstrap must not retry it while retaining an open pool; any
+            # other failure is retried by bootstrap with a fresh call, which
+            # would otherwise leave this one's pools open behind it.
             await self.cleanup()
             raise
-
-    async def ensure_schema(self) -> None:
-        """Re-run schema creation/migration against the existing pool.
-
-        Used to finish a migration that :class:`SchemaLockUnavailable` deferred:
-        the pool is already up, only the DDL still needs to land. Idempotent, so
-        retrying re-checks the catalog and issues only what is still missing.
-        """
-        await self._create_tables()
-
-    async def _create_tables(self) -> None:
-        """Create tables and indexes if they do not exist."""
-        if self.pool is None:
-            raise RuntimeError("DatabaseLogger not initialized")
-        async with self.pool.acquire() as conn:
-            if self.fence_secret:
-                # Validate the existing fence namespace before a deferrable
-                # api_logs migration can return early.
-                await validate_or_init_fingerprint(conn, secret=self.fence_secret)
-            # api_logs + api_stats_hourly (table, migrations, indexes) live in a
-            # single shared module so this boot-time builder and the runtime
-            # PostgresLogStore.initialize cannot drift. Add future api_logs
-            # schema changes in serving.storage.log_schema, never here.
-            await ensure_api_logs_schema(conn)
-
-            # API Keys table for user authentication
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS api_keys (
-                    id BIGSERIAL PRIMARY KEY,
-                    key_hash TEXT NOT NULL UNIQUE,
-                    api_key_encrypted TEXT,
-                    key_prefix TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    user_name TEXT,
-                    status TEXT NOT NULL DEFAULT 'active',
-
-                    quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00,
-                    quota_monthly_cost_usd DECIMAL(10, 4),
-
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    expires_at TIMESTAMPTZ,
-                    last_used_at TIMESTAMPTZ,
-
-                    notes TEXT,
-                    metadata JSONB
-                )
-            """)
-
-            # Indexes for api_keys
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_keys_user
-                ON api_keys(user_id)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_keys_status
-                ON api_keys(status, expires_at)
-            """)
-
-            await conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique
-                ON api_keys(key_prefix)
-            """)
-
-            # Enforce 1:1 user-to-key relationship (one active key per user)
-            await conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique
-                ON api_keys(user_id) WHERE status = 'active'
-            """)
-
-            # Migrations for api_keys table (from token-based to cost-based
-            # quotas). Catalog-gated (serving.storage.log_schema): ALTER TABLE
-            # takes ACCESS EXCLUSIVE before evaluating IF NOT EXISTS, and this
-            # exact bare cluster queued behind the nightly pg_dump and took
-            # production down on 2026-08-21.
-            await apply_column_migrations(
-                conn,
-                "api_keys",
-                [
-                    (
-                        "quota_daily_cost_usd",
-                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                        "quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00",
-                    ),
-                    (
-                        "quota_monthly_cost_usd",
-                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                        "quota_monthly_cost_usd DECIMAL(10, 4)",
-                    ),
-                    (
-                        "api_key_encrypted",
-                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
-                    ),
-                    # Links API keys to user accounts (self-registered users only).
-                    (
-                        "account_id",
-                        "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT",
-                    ),
-                ],
-            )
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_keys_account
-                ON api_keys(account_id)
-            """)
-
-            # Prevent concurrent duplicate active keys per account (self-registered users)
-            await conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique
-                ON api_keys(account_id)
-                WHERE status = 'active' AND account_id IS NOT NULL
-            """)
-
-            await drop_columns_if_present(
-                conn, "api_keys", [("tier", "ALTER TABLE api_keys DROP COLUMN IF EXISTS tier")]
-            )
-
-            # Users table for self-service registration. ``email`` admits NULL
-            # for the account created without an address (the first-run setup
-            # administrator), which signs in with ``login_name``; keep in step
-            # with the copy in ``postgres_operational.py``.
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE,
-                    login_name TEXT,
-                    password_hash TEXT,
-                    phone TEXT,
-                    phone_verified BOOLEAN NOT NULL DEFAULT FALSE,
-                    user_name TEXT,
-                    preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    role TEXT NOT NULL DEFAULT 'free'
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin')),
-                    email_verified BOOLEAN DEFAULT FALSE,
-                    status TEXT DEFAULT 'active'
-                        CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')),
-                    approval_note TEXT,
-                    reviewed_at TIMESTAMPTZ,
-                    reviewed_by TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    last_login_at TIMESTAMPTZ
-                )
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_users_email
-                ON users(email)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_users_status
-                ON users(status)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_users_created_at
-                ON users(created_at DESC)
-            """)
-
-            # Migrations: approval-based registration columns (catalog-gated —
-            # users is on auth's read path, same doctrine as api_keys above).
-            await apply_column_migrations(
-                conn,
-                "users",
-                [
-                    (
-                        "approval_note",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT",
-                    ),
-                    (
-                        "reviewed_at",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
-                    ),
-                    (
-                        "reviewed_by",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT",
-                    ),
-                    (
-                        "preferences",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-                        "preferences JSONB NOT NULL DEFAULT '{}'::jsonb",
-                    ),
-                    (
-                        "login_name",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_name TEXT",
-                    ),
-                ],
-            )
-
-            # Databases created before email-less accounts have email NOT NULL;
-            # DROP NOT NULL takes ACCESS EXCLUSIVE, so gate it on the catalog.
-            email_meta = await column_metadata(conn, "users", "email")
-            if email_meta is not None and email_meta["not_null"]:
-                async with bounded_ddl(conn):
-                    await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
-
-            await conn.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_users_login_name
-                ON users (lower(login_name)) WHERE login_name IS NOT NULL
-            """)
-
-            # Expand status CHECK constraint to include pending_approval and rejected.
-            # Rebuild inside a transaction so a failed ADD does not leave the table
-            # without its previous integrity constraint. Gated on the current
-            # constraint definition: the rebuild takes ACCESS EXCLUSIVE, so the
-            # settled path reads the catalog and walks away. Settled means the
-            # admitted set matches exactly — see constraint_admitted_values.
-            status_def = await constraint_definition(conn, "users", "users_status_check")
-            status_settled = constraint_admitted_values(status_def) == {
-                "active",
-                "suspended",
-                "deleted",
-                "pending_approval",
-                "rejected",
-            }
-            try:
-                if not status_settled:
-                    async with bounded_ddl(conn), conn.transaction():
-                        await execute_ddl(
-                            conn,
-                            """
-                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check
-                    """,
-                        )
-                        await execute_ddl(
-                            conn,
-                            """
-                        ALTER TABLE users
-                        ADD CONSTRAINT users_status_check
-                        CHECK (status IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected'))
-                    """,
-                        )
-            except asyncpg.PostgresError as exc:
-                invalid_status_rows = await conn.fetch("""
-                    SELECT id, email, status
-                    FROM users
-                    WHERE status NOT IN ('active', 'suspended', 'deleted', 'pending_approval', 'rejected')
-                    ORDER BY created_at DESC
-                    LIMIT 10
-                """)
-                logger.error(
-                    "Failed to rebuild users_status_check; transaction rolled back. "
-                    "Sample invalid rows=%s error=%s",
-                    [dict(row) for row in invalid_status_rows],
-                    exc,
-                )
-                raise
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_users_pending_approval
-                ON users(created_at DESC) WHERE status = 'pending_approval'
-            """)
-
-            # Add role column for permission levels (free/pro/internal/admin).
-            # Each strong-lock step gated on the catalog.
-            await apply_column_migrations(
-                conn,
-                "users",
-                [("role", "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")],
-            )
-            role_meta = await column_metadata(conn, "users", "role")
-            role_default = str(role_meta["default_expr"] or "") if role_meta else ""
-            if "'free'" not in role_default:
-                async with bounded_ddl(conn):
-                    await execute_ddl(
-                        conn, "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'"
-                    )
-
-            updated_roles_tag = await conn.execute("""
-                UPDATE users
-                SET role = 'free'
-                WHERE role IS NULL
-            """)
-            updated_roles = _parse_command_tag_count(updated_roles_tag)
-            if updated_roles:
-                logger.info(
-                    "Backfilled default user role for %d existing rows.",
-                    updated_roles,
-                )
-
-            if role_meta is None or not role_meta["not_null"]:
-                async with bounded_ddl(conn):
-                    await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN role SET NOT NULL")
-
-            # Migrate legacy roles and rebuild users_role_check to the current
-            # allowed set (free, pro, internal, admin). The constraint
-            # must be dropped BEFORE the UPDATE — older DBs may have CHECK
-            # constraints that reject 'internal'. Settled requires the admitted
-            # set to match exactly: the historical five-member constraint
-            # ('trial', 'free', 'pro', 'internal', 'admin') contains all four
-            # current roles, and a membership test would skip the trial->free
-            # row migration below while trial rows still exist under it.
-            role_def = await constraint_definition(conn, "users", "users_role_check")
-            role_settled = constraint_admitted_values(role_def) == {
-                "free",
-                "pro",
-                "internal",
-                "admin",
-            }
-            try:
-                if not role_settled:
-                    async with bounded_ddl(conn), conn.transaction():
-                        await execute_ddl(
-                            conn,
-                            """
-                        ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check
-                    """,
-                        )
-                        migrated_roles_tag = await conn.execute("""
-                        UPDATE users
-                        SET role = 'internal'
-                        WHERE role IN ('internal_group', 'developer')
-                    """)
-                        migrated_roles = _parse_command_tag_count(migrated_roles_tag)
-                        if migrated_roles:
-                            logger.info(
-                                "Migrated %d users from internal_group/developer to internal.",
-                                migrated_roles,
-                            )
-                        migrated_trial_tag = await conn.execute("""
-                        UPDATE users
-                        SET role = 'free'
-                        WHERE role = 'trial'
-                    """)
-                        migrated_trial = _parse_command_tag_count(migrated_trial_tag)
-                        if migrated_trial:
-                            logger.info(
-                                "Migrated %d users from trial to free.",
-                                migrated_trial,
-                            )
-                        await execute_ddl(
-                            conn,
-                            """
-                        ALTER TABLE users
-                        ADD CONSTRAINT users_role_check
-                        CHECK (role IN ('free', 'pro', 'internal', 'admin'))
-                    """,
-                        )
-            except asyncpg.PostgresError as exc:
-                invalid_role_rows = await conn.fetch("""
-                    SELECT id, email, role
-                    FROM users
-                    WHERE role NOT IN ('free', 'pro', 'internal', 'admin')
-                    ORDER BY created_at DESC
-                    LIMIT 10
-                """)
-                logger.error(
-                    "Failed to rebuild users_role_check; transaction rolled back. "
-                    "Sample invalid rows=%s error=%s",
-                    [dict(row) for row in invalid_role_rows],
-                    exc,
-                )
-                raise
-
-            # Read through settings, which carry the database-backed
-            # configuration; an account without an email never matches.
-            admin_emails = _parse_admin_emails(get_settings().admin_emails or "")
-            if admin_emails:
-                seeded_admins_tag = await conn.execute(
-                    """
-                    UPDATE users
-                    SET role = 'admin'
-                    WHERE lower(trim(email)) = ANY($1::text[])
-                      AND role IN ('free')
-                    """,
-                    admin_emails,
-                )
-                seeded_admins = _parse_command_tag_count(seeded_admins_tag)
-                if seeded_admins:
-                    logger.info(
-                        "Seeded %d admin role assignments from ADMIN_EMAILS during DB initialization.",
-                        seeded_admins,
-                    )
-
-            # Backfill account_id = user_id for legacy self-registered keys
-            # created before the account_id column existed (account_id IS NULL).
-            # Makes those keys visible/manageable in the dashboard and reconciles
-            # idx_api_keys_user_unique (user_id) with
-            # idx_api_keys_account_active_unique (account_id). Idempotent: only
-            # NULL rows whose user still exists are touched. Runs here (not next
-            # to the account_id column above) because api_keys is created before
-            # the users table in this method.
-            backfilled_account_ids_tag = await conn.execute("""
-                UPDATE api_keys k
-                SET account_id = k.user_id
-                WHERE k.account_id IS NULL
-                  AND EXISTS (SELECT 1 FROM users u WHERE u.id = k.user_id)
-            """)
-            backfilled_account_ids = _parse_command_tag_count(backfilled_account_ids_tag)
-            if backfilled_account_ids:
-                logger.info(
-                    "Backfilled account_id for %d legacy api_keys rows.",
-                    backfilled_account_ids,
-                )
-
-            # Auth sessions table for refresh token management
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS auth_sessions (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    refresh_token_hash TEXT NOT NULL UNIQUE,
-                    jti TEXT,
-                    sid TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    last_used_at TIMESTAMPTZ,
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    revoked BOOLEAN DEFAULT FALSE,
-                    user_agent TEXT,
-                    ip_address TEXT
-                )
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_auth_sessions_user
-                ON auth_sessions(user_id, expires_at)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_auth_sessions_token
-                ON auth_sessions(refresh_token_hash) WHERE NOT revoked
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti
-                ON auth_sessions(jti)
-            """)
-
-            await ensure_browser_session_tables(conn)
-
-            # Email verification tokens table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS email_verification_tokens (
-                    token TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    used_at TIMESTAMPTZ
-                )
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_email_verification_user
-                ON email_verification_tokens(user_id)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_email_verification_expires
-                ON email_verification_tokens(expires_at)
-            """)
-
-            # Password reset tokens table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                    token TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    used_at TIMESTAMPTZ
-                )
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_password_reset_user
-                ON password_reset_tokens(user_id)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_password_reset_expires
-                ON password_reset_tokens(expires_at)
-            """)
-
-            # Admin audit log table for tracking all admin operations
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS admin_audit_log (
-                    id BIGSERIAL PRIMARY KEY,
-                    timestamp TIMESTAMPTZ DEFAULT NOW(),
-                    admin_ip TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    target_user_id TEXT,
-                    details JSONB,
-                    success BOOLEAN DEFAULT TRUE
-                )
-            """)
-
-            # Indexes for admin audit log
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp
-                ON admin_audit_log(timestamp DESC)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_admin_audit_user
-                ON admin_audit_log(target_user_id, timestamp DESC)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_admin_audit_action
-                ON admin_audit_log(action, timestamp DESC)
-            """)
-
-            # Signup domain allowlist (admin-editable approval policy).
-            # Empty table = all signups auto-approve; non-empty table requires
-            # the signup email's domain to match (exact or wildcard suffix).
-            # ``created_by`` uses ON DELETE SET NULL so hard-deleting a user
-            # who once added an allowlist entry doesn't fail with a FK
-            # violation; the audit value is informational only.
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS signup_allowed_domains (
-                    domain TEXT NOT NULL,
-                    is_wildcard BOOLEAN NOT NULL DEFAULT FALSE,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-                    PRIMARY KEY (domain, is_wildcard)
-                )
-            """)
-
-            # Migration: existing databases created the FK without
-            # ON DELETE SET NULL, which blocks hard_delete_user. Rebuild
-            # the constraint in place. The auto-generated constraint name
-            # is ``signup_allowed_domains_created_by_fkey``.
-            fk_def = await constraint_definition(
-                conn, "signup_allowed_domains", "signup_allowed_domains_created_by_fkey"
-            )
-            try:
-                if fk_def is None or "ON DELETE SET NULL" not in fk_def:
-                    async with bounded_ddl(conn), conn.transaction():
-                        await execute_ddl(
-                            conn,
-                            """
-                        ALTER TABLE signup_allowed_domains
-                        DROP CONSTRAINT IF EXISTS signup_allowed_domains_created_by_fkey
-                    """,
-                        )
-                        await execute_ddl(
-                            conn,
-                            """
-                        ALTER TABLE signup_allowed_domains
-                        ADD CONSTRAINT signup_allowed_domains_created_by_fkey
-                        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
-                    """,
-                        )
-            except asyncpg.PostgresError as exc:
-                logger.error(
-                    "Failed to rebuild signup_allowed_domains_created_by_fkey "
-                    "with ON DELETE SET NULL; transaction rolled back. error=%s",
-                    exc,
-                )
-                raise
-
-            # Sort by last_login in admin user list (DESC NULLS LAST)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_users_last_login_at
-                ON users(last_login_at DESC NULLS LAST)
-            """)
-
-            # Broadcast email tables
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS email_broadcasts (
-                    id TEXT PRIMARY KEY,
-                    subject TEXT NOT NULL,
-                    body_html TEXT NOT NULL,
-                    body_text TEXT NOT NULL,
-                    template_key TEXT,
-                    template_vars JSONB NOT NULL DEFAULT '{}',
-                    target_roles TEXT[] NOT NULL DEFAULT '{}',
-                    target_statuses TEXT[] NOT NULL DEFAULT '{}',
-                    recipient_count INT NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'scheduled'
-                        CHECK (status IN ('scheduled','sending','sent','failed','cancelled')),
-                    scheduled_at TIMESTAMPTZ,
-                    created_by TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    sent_at TIMESTAMPTZ
-                )
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_email_broadcasts_status_scheduled
-                ON email_broadcasts(status, scheduled_at)
-                WHERE status = 'scheduled'
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_email_broadcasts_created_at
-                ON email_broadcasts(created_at DESC)
-            """)
-
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS email_broadcast_recipients (
-                    id BIGSERIAL PRIMARY KEY,
-                    broadcast_id TEXT NOT NULL REFERENCES email_broadcasts(id),
-                    user_id TEXT NOT NULL,
-                    email TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'pending'
-                        CHECK (status IN ('pending','sent','failed')),
-                    error TEXT,
-                    sent_at TIMESTAMPTZ,
-                    UNIQUE (broadcast_id, user_id)
-                )
-            """)
-            # Backfill the unique constraint on existing tables (no-op if it
-            # already exists or if duplicates would prevent it). Gated on the
-            # catalog so the settled path takes no lock at all.
-            uniq_def = await constraint_definition(
-                conn,
-                "email_broadcast_recipients",
-                "email_broadcast_recipients_broadcast_user_uniq",
-            )
-            if uniq_def is None:
-                async with bounded_ddl(conn):
-                    await execute_ddl(
-                        conn,
-                        """
-                DO $$
-                BEGIN
-                    BEGIN
-                        ALTER TABLE email_broadcast_recipients
-                            ADD CONSTRAINT email_broadcast_recipients_broadcast_user_uniq
-                            UNIQUE (broadcast_id, user_id);
-                    EXCEPTION
-                        WHEN duplicate_object THEN NULL;
-                        WHEN duplicate_table THEN NULL;
-                    END;
-                END $$;
-            """,
-                    )
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_broadcast
-                ON email_broadcast_recipients(broadcast_id)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_broadcast_recipients_status
-                ON email_broadcast_recipients(broadcast_id, status)
-            """)
-
-            # ====================================================
-            # site_updates — admin-managed homepage announcements.
-            # ``placement='feed'`` rows render in the chronological
-            # Updates section; ``placement='banner'`` rows surface as
-            # the single dismissible notice at the top of the homepage
-            # (only the most recent published banner is shown).
-            # ====================================================
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS site_updates (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    body TEXT NOT NULL DEFAULT '',
-                    placement TEXT NOT NULL DEFAULT 'feed'
-                        CHECK (placement IN ('feed','banner')),
-                    published BOOLEAN NOT NULL DEFAULT TRUE,
-                    link_url TEXT,
-                    link_label TEXT,
-                    created_by TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
-            # Public homepage read filters on (published, placement) and
-            # orders by created_at DESC — index covers both query shapes.
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_site_updates_published
-                ON site_updates(published, placement, created_at DESC)
-            """)
-
-            # ====================================================
-            # provider_hourly_stats — hourly rollup of api_logs by
-            # (provider, model_id). Populated by the
-            # rollup_provider_stats APScheduler job.
-            # ====================================================
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS provider_hourly_stats (
-                    hour_bucket             TIMESTAMPTZ NOT NULL,
-                    provider                TEXT        NOT NULL,
-                    model_id                TEXT        NOT NULL,
-
-                    request_count           INTEGER     NOT NULL,
-                    error_count             INTEGER     NOT NULL,
-                    stream_count            INTEGER     NOT NULL,
-
-                    ttft_p50_ms             INTEGER,
-                    ttft_p95_ms             INTEGER,
-                    ttft_p99_ms             INTEGER,
-
-                    latency_p50_ms          INTEGER,
-                    latency_p95_ms          INTEGER,
-                    latency_p99_ms          INTEGER,
-
-                    throughput_avg_tps      FLOAT,
-                    throughput_p50_tps      FLOAT,
-                    throughput_p95_tps      FLOAT,
-
-                    prompt_tokens_avg       FLOAT,
-                    completion_tokens_avg   FLOAT,
-                    total_completion_tokens BIGINT      NOT NULL,
-
-                    total_prompt_tokens     BIGINT,
-                    total_cache_read_tokens BIGINT,
-                    total_reasoning_tokens  BIGINT,
-                    total_cost_usd          DECIMAL(14, 8),
-
-                    PRIMARY KEY (provider, model_id, hour_bucket)
-                )
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_phs_hour
-                ON provider_hourly_stats(hour_bucket DESC)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_phs_provider_hour
-                ON provider_hourly_stats(provider, hour_bucket DESC)
-            """)
-
-            # Migration: token totals + cost on provider_hourly_stats.
-            # Added by per-provider Token Usage tab. Nullable so the
-            # change is metadata-only on existing tables; rows pre-dating
-            # this migration are filled by backfill_token_columns at
-            # startup and by subsequent hourly rollups.
-            await apply_column_migrations(
-                conn,
-                "provider_hourly_stats",
-                [
-                    (
-                        "total_prompt_tokens",
-                        "ALTER TABLE provider_hourly_stats "
-                        "ADD COLUMN IF NOT EXISTS total_prompt_tokens BIGINT",
-                    ),
-                    (
-                        "total_cache_read_tokens",
-                        "ALTER TABLE provider_hourly_stats "
-                        "ADD COLUMN IF NOT EXISTS total_cache_read_tokens BIGINT",
-                    ),
-                    (
-                        "total_reasoning_tokens",
-                        "ALTER TABLE provider_hourly_stats "
-                        "ADD COLUMN IF NOT EXISTS total_reasoning_tokens BIGINT",
-                    ),
-                    (
-                        "total_cost_usd",
-                        "ALTER TABLE provider_hourly_stats "
-                        "ADD COLUMN IF NOT EXISTS total_cost_usd DECIMAL(14, 8)",
-                    ),
-                ],
-            )
-
-            # provider_hourly_coverage — one row per hour the provider rollup
-            # has aggregated, quiet hours included, written with that hour's
-            # provider_hourly_stats rows. provider_hourly_stats has no row for
-            # an hour without traffic, so only this tells a quiet hour from a
-            # missed run; serving.admin.provider_stats_rollup rolls up the hours
-            # that lack one. The first rollup marks hours that already have
-            # rows, so for those completed_at is when coverage began.
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS provider_hourly_coverage (
-                    hour_bucket  TIMESTAMPTZ PRIMARY KEY,
-                    completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-
-            # Privacy-safe country/hour aggregates and their explicit
-            # completed-hour coverage markers for the admin geo dashboard.
-            from serving.admin.geo_demand_rollup import ensure_geo_rollup_schema
-
-            await ensure_geo_rollup_schema(conn)
-
-            # Daily aggregate snapshots served by GET /public-stats.
-            from serving.analytics.public_stats import ensure_public_stats_schema
-
-            await ensure_public_stats_schema(conn)
 
     async def log_request(
         self,
@@ -927,7 +201,10 @@ class DatabaseLogger:
         if not self.pool:
             raise RuntimeError("DatabaseLogger not initialized")
 
-        usage = normalize_usage(usage) or usage
+        # Same explicit-None rule as the router paths: an all-invalid usage dict
+        # must not be restored to its raw form.
+        normalized = normalize_usage(usage)
+        usage = normalized if normalized is not None else usage
 
         # Privacy control: use per-request override or instance default
         should_store_full = (
@@ -1008,103 +285,71 @@ class DatabaseLogger:
         # so both must be checked against the erasure fence (issue #1421).
         _row_user_id = (sanitized_metadata or {}).get("user_id")
         _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
+        fence_keys = api_logs_fence_keys(
+            fence_secret=self.fence_secret,
+            user_id=_row_user_id,
+            credential_owner_id=_row_credential_owner,
+        )
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            # Erasure fence check (issue #1421): if any account this row would
-            # identify has been hard-deleted, do not create an identifying row.
-            _row_user_id = (sanitized_metadata or {}).get("user_id")
-            _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
-            if await protect_api_logs_insert(
+        async with self.pool.acquire() as conn:
+            fenced = await insert_api_logs_row(
                 conn,
-                fence_secret=self.fence_secret,
-                user_id=_row_user_id,
-                credential_owner_id=_row_credential_owner,
-            ):
-                logger.info(
-                    "log_request suppressed: erasure fence hit for request %s",
+                columns=_LOG_COLUMNS,
+                values=_LOG_VALUES,
+                fence_keys=fence_keys,
+                args=(
                     request_id,
-                )
-                return
-
-            await conn.execute(
-                """
-                INSERT INTO api_logs (
-                    request_id, model_id, provider,
-                    temperature, top_p, max_tokens, seed, stream,
-                    ttft_ms, latency_ms,
-                    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
-                    cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, request_payload,
-                    status_code, error, user_id, session_id, metadata,
-                    tools, upstream_cost_usd,
-                    num_turns, num_user_turns, num_tool_calls,
-                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
-                )
-                VALUES (
-                    $1, $2, $3,
-                    $4, $5, $6, $7, $8,
-                    $9, $10,
-                    $11, $12, $13, $14,
-                    $15, $16, $17,
-                    $18, $19, $20::jsonb,
-                    $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb, $27,
-                    $28, $29, $30,
-                    $31, $32, $33,
-                    $34, $35, $36, $37
-                )
-                ON CONFLICT (request_id) DO NOTHING
-                """,
-                request_id,
-                model_id,
-                provider,
-                # Request parameters
-                (params or {}).get("temperature"),
-                (params or {}).get("top_p"),
-                (params or {}).get("max_tokens"),
-                (params or {}).get("seed"),
-                (params or {}).get("stream"),
-                # Performance metrics
-                ttft_ms,
-                latency_ms,
-                # Token usage
-                (usage or {}).get("prompt_tokens"),
-                (usage or {}).get("completion_tokens"),
-                (usage or {}).get("reasoning_tokens"),
-                (usage or {}).get("total_tokens"),
-                # Cache and cost
-                (usage or {}).get("cache_read_tokens"),
-                (usage or {}).get("cache_write_tokens"),
-                cost_usd,
-                # Content
-                prompt_str,
-                response_str,
-                request_payload_str,
-                # Metadata
-                status_code,
-                sanitized_error,
-                (sanitized_metadata or {}).get("user_id"),
-                (sanitized_metadata or {}).get("session_id"),
-                json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
-                json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
-                upstream_cost_usd,
-                # Conversation shape
-                num_turns,
-                num_user_turns,
-                num_tool_calls,
-                # Newest user message fingerprint
-                last_user_msg_chars,
-                last_user_msg_entropy,
-                last_user_msg_hash,
-                # Served model/endpoint (queryable routing identity)
-                served_model,
-                served_endpoint,
-                # Cloud agent sandbox job attribution (issue #1041)
-                (sanitized_metadata or {}).get("agent_job_id"),
-                # Batch inference attribution (/v1/batches)
-                (sanitized_metadata or {}).get("batch_job_id"),
+                    model_id,
+                    provider,
+                    # Request parameters
+                    (params or {}).get("temperature"),
+                    (params or {}).get("top_p"),
+                    (params or {}).get("max_tokens"),
+                    (params or {}).get("seed"),
+                    (params or {}).get("stream"),
+                    # Performance metrics
+                    ttft_ms,
+                    latency_ms,
+                    # Token usage
+                    (usage or {}).get("prompt_tokens"),
+                    (usage or {}).get("completion_tokens"),
+                    (usage or {}).get("reasoning_tokens"),
+                    (usage or {}).get("total_tokens"),
+                    # Cache and cost
+                    (usage or {}).get("cache_read_tokens"),
+                    (usage or {}).get("cache_write_tokens"),
+                    cost_usd,
+                    # Content
+                    prompt_str,
+                    response_str,
+                    request_payload_str,
+                    # Metadata
+                    status_code,
+                    sanitized_error,
+                    (sanitized_metadata or {}).get("user_id"),
+                    (sanitized_metadata or {}).get("session_id"),
+                    json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
+                    json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
+                    upstream_cost_usd,
+                    # Conversation shape
+                    num_turns,
+                    num_user_turns,
+                    num_tool_calls,
+                    # Newest user message fingerprint
+                    last_user_msg_chars,
+                    last_user_msg_entropy,
+                    last_user_msg_hash,
+                    # Served model/endpoint (queryable routing identity)
+                    served_model,
+                    served_endpoint,
+                    # Cloud agent sandbox job attribution (issue #1041)
+                    (sanitized_metadata or {}).get("agent_job_id"),
+                    # Batch inference attribution (/v1/batches)
+                    (sanitized_metadata or {}).get("batch_job_id"),
+                ),
             )
+        if fenced:
+            logger.info("log_request suppressed: erasure fence hit for request %s", request_id)
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
         """Aggregate recent real-user traffic per (model_id, provider).
@@ -1209,9 +454,12 @@ class DatabaseLogger:
         return [dict(r) for r in rows]
 
     async def cleanup(self) -> None:
-        """Close the connection pool if initialized."""
-        if self.pool:
-            try:
-                await self.pool.close()  # type: ignore[attr-defined]
-            finally:
-                self.pool = None
+        """Close the connection pools that were opened."""
+        pool, request_pool = self.pool, self.request_pool
+        self.pool = self.request_pool = None
+        try:
+            if request_pool:
+                await request_pool.close()
+        finally:
+            if pool:
+                await pool.close()

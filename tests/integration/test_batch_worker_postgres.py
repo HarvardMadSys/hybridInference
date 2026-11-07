@@ -3,7 +3,7 @@
 Only the upstream is stubbed (an adapter behind a real ``FixedRouter``). The rest
 is the code production runs: claiming, re-authenticating the owner from the
 stored key against the real ``api_keys`` and ``users`` rows, the owner's
-concurrency slot, the chat-completions handler, cost accounting into
+batch quota slot, the chat-completions handler, cost accounting into
 ``user_daily_cost``, and the batch's settlement. Two schedulers sharing one
 database stand for two gateway processes.
 """
@@ -73,6 +73,8 @@ class _Upstream(BaseAdapter):
                 name=model_id,
                 provider="openai",
                 base_url=f"https://{model_id}.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=_PRICING,
             )
         )
@@ -106,7 +108,6 @@ class _Upstream(BaseAdapter):
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=1, max_size=10)
-    await BatchStore(pool).initialize()
     try:
         yield pool
     finally:
@@ -241,8 +242,12 @@ async def _paused(store: BatchStore, batch_id: str) -> bool:
     return row is not None and row["paused_until"] is not None
 
 
-async def test_two_workers_drain_a_batch_within_the_deployment_wide_cap(gateway, owner):
+async def test_two_workers_drain_a_batch_within_the_deployment_wide_cap(
+    gateway, owner, monkeypatch
+):
     """Every request runs exactly once, no model ever exceeds its cap, and spend is counted."""
+    # Below model b's six requests, so the default cap is what holds it back.
+    monkeypatch.setenv("BATCH_MODEL_CONCURRENCY", "4")
     store, a, b = gateway.store, gateway.models["a"], gateway.models["b"]
     await store.set_model_limit(a.config.id, 2, "test")
     items = [(f"a{i}", a.config.id) for i in range(12)] + [(f"b{i}", b.config.id) for i in range(6)]
@@ -384,3 +389,213 @@ async def test_a_dead_workers_requests_are_taken_over_once_their_leases_lapse(ga
     gateway.start_worker("one")
     await _until(lambda: _status_is(store, batch_id, "completed"), what="the batch to complete")
     assert set(b.calls.values()) == {1}
+
+
+async def test_a_lost_lease_reruns_the_item_and_settles_it_once_with_the_lost_cost_unknown(
+    gateway, owner, pool, monkeypatch
+):
+    """What a lost lease costs, as it is today (issue #1690, design Q8).
+
+    A worker whose lease lapses mid-call (here: its loop is stuck -- it neither
+    heartbeats nor claims again) is not told; its call runs on. Another worker
+    re-claims the item and runs it again. The store's fence keeps the outcome single: the item settles once,
+    on the re-claiming attempt, and the stale worker's late answer changes
+    nothing. The lost attempt is closed as ``abandoned`` with an unknown cost,
+    counted in the batch's ``unknown_cost_count`` rather than as zero. What is
+    *not* single is the upstream: it ran twice, and the owner was charged
+    twice. This test records that so a change to it is deliberate; it is not a
+    guarantee, and nothing here promises exactly-once execution or billing
+    across attempts.
+    """
+    import dataclasses
+
+    from fastapi import FastAPI
+
+    store, upstream = gateway.store, gateway.models["a"]
+    entered_first, release_first = asyncio.Event(), asyncio.Event()
+    entered: list[int] = []
+    answered: list[int] = []
+    real_completion = upstream.chat_completion
+
+    async def numbered_completion(messages, **params):
+        entered.append(len(entered) + 1)
+        n = entered[-1]
+        if n == 1:
+            entered_first.set()
+            await release_first.wait()
+        response = await real_completion(messages, **params)
+        response["choices"][0]["message"]["content"] += f" #{n}"
+        answered.append(n)
+        return response
+
+    monkeypatch.setattr(upstream, "chat_completion", numbered_completion)
+    batch_id = await _create(store, owner, [("lost", upstream.config.id)])
+    app = FastAPI()
+    app.state.services = gateway.services
+    stalled = BatchScheduler(
+        app=app,
+        services=gateway.services,
+        store=store,
+        limits=gateway.services.batch_model_limits,
+        worker_id=f"stalled-{uuid.uuid4().hex[:6]}",
+        # A one-second lease it never renews: lost while its call is held.
+        timings=dataclasses.replace(_TIMINGS, lease_seconds=1, heartbeat_seconds=3600),
+    )
+    stalled.start()
+    try:
+        await asyncio.wait_for(entered_first.wait(), timeout=10)
+
+        async def stuck(*args, **kwargs):
+            return None
+
+        # From here the stalled worker's loop does nothing: no claim, no renewal.
+        monkeypatch.setattr(stalled, "_top_up", stuck)
+        gateway.start_worker("healthy")
+        await _until(lambda: _status_is(store, batch_id, "completed"), what="the re-claim")
+
+        settled = await store.get_batch(batch_id)
+        (result,) = await store.list_results(batch_id)
+        assert result["response"]["choices"][0]["message"]["content"].endswith("#2")
+        assert (settled["completed_count"], settled["failed_count"]) == (1, 0)
+
+        release_first.set()
+        await _until(lambda: answered == [2, 1], what="the stale call to return")
+        await _until(lambda: not stalled._in_flight, what="the stale worker to give up the item")
+    finally:
+        release_first.set()
+        await stalled.stop()
+
+    # The stale answer changed nothing: one settlement, the re-claim's.
+    after = await store.get_batch(batch_id)
+    (result,) = await store.list_results(batch_id)
+    assert result["response"]["choices"][0]["message"]["content"].endswith("#2")
+    assert (after["completed_count"], after["failed_count"]) == (1, 0)
+    assert float(after["cost_usd"]) == pytest.approx(_ITEM_COST)
+    assert after["unknown_cost_count"] == 1
+    async with pool.acquire() as conn:
+        attempts = await conn.fetch(
+            "SELECT attempt_no, worker_id, outcome, cost_status FROM batch_attempts "
+            "WHERE batch_id = $1 ORDER BY attempt_no",
+            batch_id,
+        )
+        charged = await conn.fetchval(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM user_daily_cost WHERE user_id = $1",
+            owner["user_id"],
+        )
+    assert [(a["attempt_no"], a["outcome"], a["cost_status"]) for a in attempts] == [
+        (1, "abandoned", "unknown"),
+        (2, "succeeded", "billed"),
+    ]
+    assert attempts[0]["worker_id"].startswith("stalled-")
+    assert attempts[1]["worker_id"].startswith("healthy-")
+    # Not exactly-once: both calls reached the upstream and both were charged.
+    assert sum(upstream.calls.values()) == 2
+    await _until(
+        lambda: _charged_at_least(pool, owner["user_id"], 2 * _ITEM_COST),
+        what="both charges to land",
+    )
+    assert float(charged) <= 2 * _ITEM_COST + 1e-12
+
+
+async def _charged_at_least(pool, user_id: str, amount: float) -> bool:
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM user_daily_cost WHERE user_id = $1", user_id
+        )
+    return float(total) >= amount - 1e-12
+
+
+async def test_a_worker_that_reclaims_its_own_lapsed_item_still_settles_it_once(
+    gateway, owner, pool, monkeypatch
+):
+    """The same worker can re-claim an item whose lease it let lapse (Q8, as it is today).
+
+    Nothing stops a worker from claiming again an item it is still running once
+    its lease has lapsed: the attempt in flight is not cancelled, so the item
+    runs twice inside one process. The fence still settles it once, on the
+    newer attempt; the older one is abandoned with an unknown cost; and the
+    worker's own bookkeeping drains once both calls return. Not exactly-once.
+    """
+    import dataclasses
+
+    from fastapi import FastAPI
+
+    store, upstream = gateway.store, gateway.models["a"]
+    entered_first, release_first = asyncio.Event(), asyncio.Event()
+    entered: list[int] = []
+    answered: list[int] = []
+    real_completion = upstream.chat_completion
+
+    async def numbered_completion(messages, **params):
+        entered.append(len(entered) + 1)
+        n = entered[-1]
+        if n == 1:
+            entered_first.set()
+            await release_first.wait()
+        response = await real_completion(messages, **params)
+        response["choices"][0]["message"]["content"] += f" #{n}"
+        answered.append(n)
+        return response
+
+    monkeypatch.setattr(upstream, "chat_completion", numbered_completion)
+    batch_id = await _create(store, owner, [("self", upstream.config.id)])
+    app = FastAPI()
+    app.state.services = gateway.services
+    worker = BatchScheduler(
+        app=app,
+        services=gateway.services,
+        store=store,
+        limits=gateway.services.batch_model_limits,
+        worker_id=f"lapsing-{uuid.uuid4().hex[:6]}",
+        timings=dataclasses.replace(_TIMINGS, lease_seconds=1, heartbeat_seconds=3600),
+    )
+    # Every attempt this worker starts. The re-claim replaces the stale entry in
+    # ``_in_flight`` (keyed by item), so an empty ``_in_flight`` does not mean
+    # the stale attempt's task has finished; only its task says that.
+    tracked = []
+    track = worker._track
+
+    def tracking(item):
+        entry = track(item)
+        tracked.append(entry)
+        return entry
+
+    monkeypatch.setattr(worker, "_track", tracking)
+    worker.start()
+    try:
+        await asyncio.wait_for(entered_first.wait(), timeout=10)
+        await _until(lambda: _status_is(store, batch_id, "completed"), what="the self re-claim")
+        release_first.set()
+        await _until(lambda: answered == [2, 1], what="the stale call to return")
+        assert len(tracked) == 2
+        # Each task's ``_forget`` callback was added before gather's own, so it
+        # has run by the time gather returns.
+        await asyncio.wait_for(asyncio.gather(*(e.task for e in tracked)), timeout=20)
+        assert not worker._in_flight
+        assert dict(worker._running) == {}
+    finally:
+        release_first.set()
+        await worker.stop()
+
+    settled = await store.get_batch(batch_id)
+    (result,) = await store.list_results(batch_id)
+    assert result["response"]["choices"][0]["message"]["content"].endswith("#2")
+    assert (settled["completed_count"], settled["failed_count"]) == (1, 0)
+    assert float(settled["cost_usd"]) == pytest.approx(_ITEM_COST)
+    assert settled["unknown_cost_count"] == 1
+    async with pool.acquire() as conn:
+        attempts = await conn.fetch(
+            "SELECT attempt_no, worker_id, outcome, cost_status FROM batch_attempts "
+            "WHERE batch_id = $1 ORDER BY attempt_no",
+            batch_id,
+        )
+    assert [(a["attempt_no"], a["outcome"], a["cost_status"]) for a in attempts] == [
+        (1, "abandoned", "unknown"),
+        (2, "succeeded", "billed"),
+    ]
+    assert {a["worker_id"] for a in attempts} == {worker.worker_id}
+    assert entered == [1, 2]
+    await _until(
+        lambda: _charged_at_least(pool, owner["user_id"], 2 * _ITEM_COST),
+        what="both charges to land",
+    )

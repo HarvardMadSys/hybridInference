@@ -116,6 +116,10 @@ def op_store(users: dict[str, dict[str, Any]]) -> MagicMock:
         )
     )
     store.browser_sessions = browser_sessions.install(store)
+    # The session the tokens of _admin_headers() name: the admin is signed in.
+    store.browser_sessions.remember_session(
+        {"id": "auth-sess", "user_id": ADMIN_ID, "sid": "sess", "expires_at": None}
+    )
     return store
 
 
@@ -296,6 +300,30 @@ class TestAdminEndpoints:
         assert resp.status_code == 409
         assert resp.json()["detail"] == "Cannot demote your own admin role."
         op_store.update_user_fields.assert_not_awaited()
+
+    async def test_cannot_suspend_self(self, client, op_store):
+        # Suspension revokes the account's sessions and its admin access with
+        # them, and resuming takes an admin: the lockout demotion is refused for.
+        op_store.suspend_user = AsyncMock()
+        resp = await client.patch(
+            f"/admin/users/{ADMIN_ID}", headers=_admin_headers(), json={"status": "suspended"}
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Cannot suspend your own account."
+        op_store.suspend_user.assert_not_awaited()
+
+    async def test_cannot_delete_self(self, client, op_store):
+        op_store.delete_user = AsyncMock()
+        resp = await client.post(
+            f"/admin/users/{ADMIN_ID}/delete",
+            headers=_admin_headers(),
+            json={"reason": "tidying up"},
+        )
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == "Cannot delete your own account."
+        op_store.delete_user.assert_not_awaited()
 
     async def test_can_change_another_users_role(self, client, op_store, users):
         users[OTHER_ID]["status"] = "active"

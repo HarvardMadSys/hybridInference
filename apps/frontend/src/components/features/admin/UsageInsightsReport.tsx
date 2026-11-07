@@ -2,6 +2,7 @@
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { rehypeImagesAsLinks } from '@/lib/utils/markdownImages';
 import type { UsageInsightsResponse, UsageInsightsSamplesResponse } from '@/lib/api/admin';
 
 const MARKDOWN_CLASS =
@@ -16,13 +17,18 @@ export function UsageInsightsReport({ result }: { result: UsageInsightsResponse 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-6">
       <div className={MARKDOWN_CLASS}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.analysis}</ReactMarkdown>
+        {/* The analysis is model output written from other users' prompts, so
+            its images must not load in an admin's browser: see
+            rehypeImagesAsLinks. */}
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeImagesAsLinks]}>
+          {result.analysis}
+        </ReactMarkdown>
       </div>
       <p
         className="mt-5 border-t border-gray-100 pt-3 text-[11px] text-gray-400"
         suppressHydrationWarning
       >
-        Generated {new Date(result.generated_at).toLocaleString()} · model {result.model} ·{' '}
+        Generated {new Date(result.generated_at).toLocaleString('en-US')} · model {result.model} ·{' '}
         {result.sampled_requests} sampled request(s) · scope {result.scope}
       </p>
     </div>
@@ -32,7 +38,7 @@ export function UsageInsightsReport({ result }: { result: UsageInsightsResponse 
 function formatSampleTime(value: string | null): string {
   if (!value) return 'unknown time';
   const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString('en-US');
 }
 
 /** Renders the raw user-turn sample Analyze usage would send to the LLM. */

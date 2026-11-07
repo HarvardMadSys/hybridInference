@@ -5,7 +5,9 @@ one query per card. It now reads completed hours from ``request_volume_hourly``
 and counts only the edges live (see ``admin/request_volume.py``). The unit tests
 check the assembly against an in-memory stand-in; these run the real SQL and hold
 the endpoint to the per-card query it replaced -- kept here verbatim as the
-oracle -- over rows placed on every seam the assembly has.
+oracle -- over rows placed on every seam the assembly has. The oracle narrowed
+to one source is the oracle for that source's counts and for the batch
+requests every bar reports.
 
 Also here: the Recent Requests total's time budget, which only Postgres can
 enforce.
@@ -30,13 +32,13 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
-from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
 from serving.servers.routers.admin.metrics import REQUEST_METRIC_WINDOWS
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
-from tests.fixtures import postgres
+from tests.fixtures import migrations as mig, postgres
+from tests.fixtures.audit import ADMIN_ACTOR
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -157,7 +159,7 @@ async def pool(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerator[as
     )
     assert pool is not None
     async with pool.acquire() as conn:
-        await ensure_api_logs_schema(conn)
+        await mig.ensure_api_logs_tables(conn)
         await conn.execute(
             "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, user_name TEXT, login_name TEXT)"
         )
@@ -183,6 +185,7 @@ async def client(pool: asyncpg.Pool) -> AsyncGenerator[AsyncClient, None]:
         log_store=PostgresLogStore(pool, fence_secret=postgres.FENCE_SECRET),
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
     app.include_router(admin.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -193,14 +196,16 @@ async def _seed(pool: asyncpg.Pool, stamps: list[datetime]) -> None:
     for index, at in enumerate(stamps):
         status, error, metadata = _OUTCOMES[index % len(_OUTCOMES)]
         latency = None if index % 7 == 0 else 100 + index % 9000
-        rows.append((f"req-{index}", status, error, json.dumps(metadata), latency, at))
+        # Every fifth row is the batch worker's: each outcome comes up among them.
+        batch = f"batch_{index % 3}" if index % 5 == 0 else None
+        rows.append((f"req-{index}", status, error, json.dumps(metadata), latency, at, batch))
     async with pool.acquire() as conn:
         await conn.executemany(
             """
             INSERT INTO api_logs (
                 request_id, model_id, provider, status_code, error, metadata,
-                latency_ms, timestamp
-            ) VALUES ($1, 'glm-4.6', 'zai', $2, $3, $4::jsonb, $5, $6)
+                latency_ms, timestamp, batch_job_id
+            ) VALUES ($1, 'glm-4.6', 'zai', $2, $3, $4::jsonb, $5, $6, $7)
             """,
             rows,
         )
@@ -227,11 +232,26 @@ def _spread_stamps(now_minute: datetime, count: int) -> list[datetime]:
     return [oldest + step * i + timedelta(microseconds=i * 7919 % 10**6) for i in range(count)]
 
 
-async def _old_cards(pool: asyncpg.Pool) -> dict[str, list[tuple[Any, ...]]]:
+# The oracle's row filter, and what it gains for one source.
+_PER_CARD_ROWS = "WHERE timestamp >= bounds.start_time"
+_SOURCE_ROWS = {
+    None: "",
+    "all": "",
+    "interactive": " AND batch_job_id IS NULL",
+    "batch": " AND batch_job_id IS NOT NULL",
+}
+
+
+async def _old_cards(
+    pool: asyncpg.Pool, source: str | None = None
+) -> dict[str, list[tuple[Any, ...]]]:
+    """The per-card query's cards, over *source*'s rows alone when one is named."""
+    assert _PER_CARD_SQL.count(_PER_CARD_ROWS) == 1
+    query = _PER_CARD_SQL.replace(_PER_CARD_ROWS, _PER_CARD_ROWS + _SOURCE_ROWS[source])
     cards = {}
     async with pool.acquire() as conn:
         for key, _label, window, bucket in REQUEST_METRIC_WINDOWS:
-            rows = await conn.fetch(_PER_CARD_SQL, window, bucket, 499, "client_disconnect")
+            rows = await conn.fetch(query, window, bucket, 499, "client_disconnect")
             cards[key] = [
                 (
                     row["bucket_start"],
@@ -248,6 +268,21 @@ async def _old_cards(pool: asyncpg.Pool) -> dict[str, list[tuple[Any, ...]]]:
                 for row in rows
             ]
     return cards
+
+
+def _batch_bars(body: dict[str, Any]) -> dict[str, list[tuple[Any, ...]]]:
+    """Each bar's batch requests and failures, as the oracle's bars read them."""
+    return {
+        window["key"]: [
+            (
+                datetime.fromisoformat(bar["start_time"].replace("Z", "+00:00")),
+                bar["batch_request_count"],
+                bar["batch_error_count"],
+            )
+            for bar in window["buckets"]
+        ]
+        for window in body["windows"]
+    }
 
 
 def _new_cards(body: dict[str, Any]) -> dict[str, list[tuple[Any, ...]]]:
@@ -272,16 +307,29 @@ async def _db_minute(pool: asyncpg.Pool) -> datetime:
         return await conn.fetchval("SELECT date_trunc('minute', NOW())")
 
 
-async def _compare_with_per_card_queries(client: AsyncClient, pool: asyncpg.Pool) -> None:
-    """The endpoint's cards equal the per-card query's, read in the same minute."""
+async def _compare_with_per_card_queries(
+    client: AsyncClient, pool: asyncpg.Pool, source: str | None = None
+) -> None:
+    """The endpoint's cards equal the per-card query's, read in the same minute.
+
+    The counts are *source*'s; every bar's batch requests are the per-card
+    query's over the batch worker's rows, whatever the source.
+    """
     for _attempt in range(3):
         before = await _db_minute(pool)
-        resp = await client.get("/admin/request-metrics")
+        resp = await client.get(
+            "/admin/request-metrics", params={"source": source} if source else {}
+        )
         assert resp.status_code == 200, resp.text
-        old = await _old_cards(pool)
+        old = await _old_cards(pool, source)
+        old_batch = await _old_cards(pool, "batch")
         if await _db_minute(pool) != before:
             continue  # the minute turned mid-comparison; the cards moved with it
         assert _new_cards(resp.json()) == old
+        assert _batch_bars(resp.json()) == {
+            key: [(start, count, errors) for start, count, _ok, errors, *_rest in bars]
+            for key, bars in old_batch.items()
+        }
         return
     pytest.fail("could not read both versions within one minute")
 
@@ -293,8 +341,42 @@ async def test_cards_match_the_per_card_queries(client: AsyncClient, pool: async
 
     # Cold: every completed hour is counted and stored on the way.
     await _compare_with_per_card_queries(client, pool)
-    # Warm: the stored hours are read back.
-    await _compare_with_per_card_queries(client, pool)
+    # Warm: the stored hours are read back, for each source.
+    for source in (None, "interactive", "batch"):
+        await _compare_with_per_card_queries(client, pool, source)
+
+
+@pytest.mark.asyncio
+async def test_an_hour_stored_under_another_definition_is_counted_again(
+    client: AsyncClient, pool: asyncpg.Pool
+):
+    """The hours the previous release stored count no batch requests: counted afresh."""
+    now_minute = await _db_minute(pool)
+    await _seed(pool, _spread_stamps(now_minute, 800))
+    assert (await client.get("/admin/request-metrics")).status_code == 200
+
+    async with pool.acquire() as conn:
+        # As the previous release would have stored it, give or take a count no
+        # row could give.
+        stale = await conn.fetchval(
+            """
+            UPDATE request_volume_hourly
+            SET definition = '', batch_request_count = 0, request_count = request_count + 100000
+            WHERE hour_bucket = (
+                SELECT max(hour_bucket) FROM request_volume_hourly
+                WHERE hour_bucket < NOW() - interval '3 days'
+            )
+            RETURNING hour_bucket
+            """
+        )
+    assert stale is not None
+
+    await _compare_with_per_card_queries(client, pool, "interactive")
+    async with pool.acquire() as conn:
+        definition = await conn.fetchval(
+            "SELECT definition FROM request_volume_hourly WHERE hour_bucket = $1", stale
+        )
+    assert definition == request_volume.DEFINITION
 
 
 @pytest.mark.asyncio
@@ -425,9 +507,55 @@ async def test_backfill_stores_every_completed_hour_once(pool: asyncpg.Pool):
                 WHERE l.timestamp >= v.hour_bucket
                   AND l.timestamp < v.hour_bucket + interval '1 hour'
             )
-            """
+            OR v.batch_request_count <> (
+                SELECT count(*) FROM api_logs l
+                WHERE l.timestamp >= v.hour_bucket
+                  AND l.timestamp < v.hour_bucket + interval '1 hour'
+                  AND l.batch_job_id IS NOT NULL
+            )
+            OR v.definition <> $1
+            """,
+            request_volume.DEFINITION,
+        )
+        batch_rows = await conn.fetchval(
+            "SELECT sum(batch_request_count) FROM request_volume_hourly"
         )
     assert mismatched == 0
+    assert batch_rows > 0
+
+
+@pytest.mark.asyncio
+async def test_a_bar_lists_the_requests_it_counted(client: AsyncClient, pool: asyncpg.Pool):
+    """A day bar of the month card, older than the list's week, lists its own rows."""
+    now_minute = await _db_minute(pool)
+    await _seed(pool, _spread_stamps(now_minute, 1200))
+    body = (await client.get("/admin/request-metrics?source=interactive")).json()
+    month = next(w for w in body["windows"] if w["key"] == "1mo")
+    bar = next(b for b in month["buckets"][1:-1] if b["request_count"] > 0)
+    start = datetime.fromisoformat(bar["start_time"].replace("Z", "+00:00"))
+    assert start < now_minute - timedelta(days=8), "the bar must lie past the default lookback"
+
+    resp = await client.get(
+        "/admin/recent-requests",
+        params={
+            "source": "interactive",
+            "start_time": start.isoformat(),
+            "end_time": (start + timedelta(minutes=month["bucket_minutes"])).isoformat(),
+            "limit": 200,
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    listed = resp.json()
+    assert listed["total"] == bar["request_count"]
+    assert listed["total_exact"] is True
+    assert all(
+        start
+        <= datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+        < start + timedelta(days=1)
+        for row in listed["requests"]
+    )
+    assert all(row["batch_job_id"] is None for row in listed["requests"])
 
 
 @pytest.mark.asyncio

@@ -23,8 +23,8 @@ everyone who clones the repository.
 The layout is in [docs/developer/contributing.md](docs/developer/contributing.md),
 under "Repository layout". Two things it does not tell you:
 
-- Deployment overlays under `distributions/` move out of this repository before
-  publication. `example/` is the one that remains.
+- Deployment overlays live in their own repositories; `distributions/example/`
+  is the only one here.
 - `distributions/example/` is marked `EXAMPLE_OVERLAY`, and that marker is what
   excludes it from automatic distribution discovery. Select it explicitly
   with `make up DISTRIBUTION=example` to run the local tutorial.
@@ -64,9 +64,11 @@ afresh (e.g. after switching to an older branch), use `make test-db-local-reset`
 - **Branch naming:** `<user>/<scope>/<feature-name>` (e.g. `jason/claude/add-x`).
 - **Use a git worktree** rather than working in the main checkout. Worktree should be put in /tmp/claude/worktree/<feature-name>.
 - **PRs target `dev`.**
-- **Verify against a running deployment** before claiming done. If you are
-  working on one, its staging host and test account are in its overlay guide
-  (`distributions/<name>/AGENTS.md`) — never write credentials into this file.
+- **Verify runtime changes against a running deployment** before claiming live
+  acceptance. A local/example deployment is sufficient when appropriate. For a
+  specific deployment, consult `distributions/<name>/AGENTS.md`; never write its
+  credentials here. Documentation/skill-only changes need content and link checks,
+  not a deployment.
 
 ## 6. Project-specific knowledge
 
@@ -166,12 +168,14 @@ For the full diagram (network layer, observability, storage), see
   [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))
   is applied by `RoutingManager` in
   [apps/backend/routing/manager.py](apps/backend/routing/manager.py) from
-  `config/routing.yaml` (`default_router:`, formerly `routing_strategy:`).
+  the distribution's `config/routing.yaml` (`default_router:`, formerly
+  `routing_strategy:`).
   Per-model router selection (`fixed` / `routewise`) lives in the
   [apps/backend/routing/strategies/](apps/backend/routing/strategies/) package
   and is dispatched by
   [apps/backend/routing/model_router_registry.py](apps/backend/routing/model_router_registry.py)
-  from each model's `router:` field in `config/models.yaml`.
+  from each model's `router:` field in the distribution's `config/models.yaml`
+  (see 6.3).
 - **Circuit breaker / EWMA health** — provider health tracking in
   [apps/backend/routing/](apps/backend/routing/).
 
@@ -182,7 +186,7 @@ For the full diagram (network layer, observability, storage), see
 | `distributions/<name>/config/models.yaml` | Model registry — a deployment's; per-model `router:` / `router_params:` (incl. RouteWise tuning). `config/examples/` has one to start from |
 | `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
 | `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
-| `app_config` table (Admin → Configuration) | Every other application setting — provider keys, SMTP, secrets, proxy trust, routing knobs. Resolved DB row → env → default by `config_value()` and the `Settings` overlay; a stored row also wins a cross-field rule (the conflicting env value is set aside, with a WARNING). Registry in `apps/backend/serving/config/app_config_registry.py`. Env keeps only DB connection + wiring |
+| `app_config` table (Admin → Settings) | Every other application setting — provider keys, SMTP, secrets, proxy trust, routing knobs. Resolved DB row → env → default by `config_value()` and the `Settings` overlay; a stored row also wins a cross-field rule (the conflicting env value is set aside, with a WARNING). Registry in `apps/backend/serving/config/app_config_registry.py`. Env keeps only DB connection + wiring |
 
 YAML supports env var interpolation, in two dialects: the model registry
 substitutes only a whole `${VAR}` value, while the routing and alert files also
@@ -216,6 +220,11 @@ always kept). To run anything else against that database,
 - Storage layer is Postgres (asyncpg), in `apps/backend/serving/storage/`.
   Cloudflare D1 support was removed in #460; `DB_BACKEND` and `DB_DUAL_WRITE`
   are read by no code. There is one SQL dialect — write Postgres.
+- The schema comes only from the migrations in `apps/backend/migrations/`; the
+  service issues no DDL, and a test enforces it. A schema change is a new
+  revision that leaves the previous release working, never an edit to the
+  frozen `baseline/` (its digest is pinned). See
+  [docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md](docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md).
 - Alerting has two permanent, independent paths (decision: issue #1103).
   Backend gateway alerts go through `alert_slack()`
   (`apps/backend/serving/observability/alerts.py`) to one configured Slack or
@@ -251,18 +260,32 @@ What remains here is the gateway's side of the two service contracts:
   browser bundle.
 
 The old `agent_*` tables stay in existing databases as read-only history
-(decision DR5); nothing here creates, reads or migrates them.
+(decision DR5); nothing here creates, reads or migrates them. `agent_grants` is
+the exception: it belongs to the inference-grant contract above, so the
+migrations create it and `serving/storage/postgres_operational.py` reads and
+writes it.
 
 ## 7. Common tasks
 
 Pointer table. Each row links to the canonical doc or skill — this guide does
 not duplicate their content.
 
+Repository skills live only in `.agents/skills/`. Use and edit these canonical
+files directly.
+
+Shared workflow rules apply to every skill: reuse a suitable task worktree or
+create one following section 5, preserve other work, and use the gates in
+section 4. User instructions determine whether to commit, publish comments,
+push or open a PR. Merge and deployment require authorization for those actions;
+neither a skill name nor a green CI result grants it. A request to monitor does
+not imply permission to merge. Do not force-push or bypass branch protection.
+
 | Task | Where to look |
 |---|---|
-| Implement a feature | [.kilo/skills/impl-feat/SKILL.md](.kilo/skills/impl-feat/SKILL.md) |
-| Debug a bug or test failure | [.kilo/skills/debug/SKILL.md](.kilo/skills/debug/SKILL.md) |
-| Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
+| Implement a feature | [.agents/skills/impl-feat/SKILL.md](.agents/skills/impl-feat/SKILL.md) |
+| Debug a bug or test failure | [.agents/skills/debug/SKILL.md](.agents/skills/debug/SKILL.md) |
+| Address PR review / fix CI | [.agents/skills/check-pr/SKILL.md](.agents/skills/check-pr/SKILL.md) |
+| Follow one PR to readiness | [.agents/skills/babysit-pr/SKILL.md](.agents/skills/babysit-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
 | Run / operate the cloud agent | `docs/operations.md` in [hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent) |

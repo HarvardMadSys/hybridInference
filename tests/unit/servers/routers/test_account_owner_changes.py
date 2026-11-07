@@ -76,6 +76,7 @@ class Store:
         self.bind_user_email = AsyncMock(return_value=True)
         self.update_user_fields = AsyncMock()
         self.revoke_user_sessions = AsyncMock(return_value=0)
+        self.delete_user_reset_tokens = AsyncMock()
 
 
 @pytest.fixture
@@ -155,6 +156,32 @@ async def test_phone_account_binds_email_with_a_bind_email_code(setup):
 
 
 @pytest.mark.asyncio
+async def test_login_name_account_binds_a_first_email_with_its_password(setup, monkeypatch):
+    # The first-run administrator has a login name and no address. Its
+    # password guesses count against the name it signs in with.
+    limiter = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(reauth, "check_and_record_login", limiter)
+    store = Store(account(email=None, login_name="admin", role="admin"))
+    with pytest.raises(HTTPException) as exc:
+        await bind(store, BindEmailRequest(email="admin@e2e-mail.org", password="Wrong-Horse-1"))
+    assert exc.value.status_code == 400
+    store.create_verification_token.assert_not_awaited()
+    assert limiter.await_args.args[0] == "admin"
+
+    result = await bind(store, BindEmailRequest(email="admin@e2e-mail.org", password=PASSWORD))
+    assert result.email_verified is False
+    assert store.create_verification_token.call_args.kwargs["pending_email"] == "admin@e2e-mail.org"
+    store.bind_user_email.assert_not_awaited()
+
+    # Following the link binds it; there is no replaced address to tell.
+    store.get_verification_token.return_value = token_row(pending_email="admin@e2e-mail.org")
+    tasks = BackgroundTasks()
+    await auth_routes.verify_email("link", tasks, store)
+    store.bind_user_email.assert_awaited_once_with("owner", "admin@e2e-mail.org")
+    assert tasks.tasks == []
+
+
+@pytest.mark.asyncio
 async def test_unconfirmed_session_cannot_learn_whether_an_address_is_taken(setup):
     store = Store(account(), taken_by={"id": "someone-else"})
     with pytest.raises(HTTPException) as exc:
@@ -207,6 +234,16 @@ async def test_following_the_link_binds_and_tells_the_replaced_address(setup):
     [task] = tasks.tasks
     assert task.func is auth_routes.send_email_changed_email
     assert task.args == ("owner@e2e-mail.org", "new@e2e-mail.org")
+
+
+@pytest.mark.asyncio
+async def test_a_bound_address_retires_the_reset_links_sent_to_the_old_one(setup):
+    # The notice tells the old address it no longer receives the account's
+    # resets; a link it already holds must not outlive that either.
+    store = Store(account())
+    store.get_verification_token.return_value = token_row()
+    await auth_routes.verify_email("link", BackgroundTasks(), store)
+    store.delete_user_reset_tokens.assert_awaited_once_with("owner")
 
 
 @pytest.mark.asyncio
@@ -306,6 +343,17 @@ async def test_changing_the_password_signs_other_sessions_out_and_tells_the_owne
 
 
 @pytest.mark.asyncio
+async def test_changing_the_password_retires_outstanding_reset_links(setup):
+    # Like the other sessions it signs out, a reset link someone else holds is
+    # a way back in that must not survive the change.
+    store = Store(account())
+    await change(
+        store, ChangePasswordRequest(old_password=PASSWORD, new_password="Brand-New-Pass-1")
+    )
+    store.delete_user_reset_tokens.assert_awaited_once_with("owner")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "row", [phone_account(), account(email_verified=False)], ids=["no-email", "unverified"]
 )
@@ -356,6 +404,7 @@ async def test_owner_codes_go_only_to_the_accounts_own_number(
     monkeypatch.setattr(phone_auth_routes, "run_in_threadpool", sender)
     store = Store(phone_account())
     store.get_user_by_phone.return_value = owner
+    store.session_is_live = AsyncMock(return_value=True)
     token, _ = create_access_token(user_id="owner", email=None)
     await phone_auth_routes.send_phone_code(
         request(authorization=f"Bearer {token}"),

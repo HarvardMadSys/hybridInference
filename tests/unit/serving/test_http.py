@@ -376,6 +376,20 @@ _SGLANG_UNDECODABLE_IMAGE = (
 )
 
 
+class _BodyStream:
+    """``ClientResponse.content`` for a body already in hand."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+        self.read_bytes = 0
+
+    async def iter_chunked(self, n: int):
+        for start in range(0, len(self._body), n):
+            chunk = self._body[start : start + n]
+            self.read_bytes += len(chunk)
+            yield chunk
+
+
 class _ErrorResp:
     """An upstream error response as ``_upstream_status_error`` reads it."""
 
@@ -385,10 +399,9 @@ class _ErrorResp:
         self.request_info = None
         self.history = ()
         self.headers = {"Content-Type": "application/json"}
-        self._body = body
-
-    async def text(self) -> str:
-        return self._body
+        self.charset = None
+        self.content_length = len(body.encode())
+        self.content = _BodyStream(body.encode())
 
 
 @pytest.mark.unit
@@ -450,3 +463,46 @@ async def test_stream_post_raises_undecodable_media_as_a_client_error(monkeypatc
 
     assert caught.value.status == 400
     assert caught.value.error_body == _SGLANG_UNDECODABLE_IMAGE
+
+
+_MODEL_QUEUED_BODY = (
+    '{"error": {"message": "m is queued on the cluster, waiting for a GPU.",'
+    ' "type": "model_queued", "code": "model_queued"}}'
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("retry_after", "seconds"), [("120", 120.0), (None, None), ("soon", None)])
+def test_a_model_queued_503_is_raised_as_its_own_type(retry_after, seconds):
+    from serving.exceptions import UpstreamModelQueued
+    from serving.http import _upstream_status_error
+
+    resp = _ErrorResp(503, _MODEL_QUEUED_BODY, reason="Service Unavailable")
+    if retry_after is not None:
+        resp.headers = {**resp.headers, "Retry-After": retry_after}
+
+    error = _upstream_status_error(resp, _MODEL_QUEUED_BODY)
+
+    assert isinstance(error, UpstreamModelQueued)
+    assert error.status == 503
+    assert error.retry_after == seconds
+    assert error.error_body == _MODEL_QUEUED_BODY
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        # Only a 503 says "queued"; the same body on another status is an error.
+        (500, _MODEL_QUEUED_BODY),
+        (503, '{"error": {"message": "overloaded", "code": "service_unavailable"}}'),
+        (503, "Service Unavailable"),
+    ],
+)
+def test_other_errors_are_not_model_queued(status, body):
+    from serving.exceptions import UpstreamModelQueued
+    from serving.http import _upstream_status_error
+
+    assert not isinstance(
+        _upstream_status_error(_ErrorResp(status, body), body), UpstreamModelQueued
+    )

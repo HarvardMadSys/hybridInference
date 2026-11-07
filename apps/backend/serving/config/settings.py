@@ -6,11 +6,13 @@ All environment variables are centralized here for easy tracking and testing.
 
 import ipaddress
 import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
 from typing import Annotated
+from urllib.parse import urlsplit
 
 from pydantic import (
     AliasChoices,
@@ -275,6 +277,19 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("TRUST_PROXY_HEADERS", "trust_proxy_headers"),
     )
+    # Deployment wiring, never a database-backed setting: the API target and
+    # projected service-account credentials must come from the same operator.
+    # Discovery is opt-in and identifies one Service and one owning workload.
+    # TRUST_PROXY_HEADERS remains an independent emergency kill switch.
+    trust_kubernetes_proxy_discovery: bool = False
+    kubernetes_proxy_namespace: str = ""
+    kubernetes_proxy_service_name: str = ""
+    kubernetes_proxy_service_uid: str = ""
+    kubernetes_proxy_workload_uid: str = ""
+    kubernetes_proxy_api_url: str = "https://kubernetes.default.svc"
+    kubernetes_proxy_ca_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+    kubernetes_proxy_token_file: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    kubernetes_proxy_max_age_seconds: float = Field(default=1.0, gt=0, le=5, allow_inf_nan=False)
     # Networks explicitly authorized to assert Cloudflare-derived provenance
     # (CF-Connecting-IP). A generic trusted proxy does NOT automatically
     # make a client-supplied CF-Connecting-IP safe — only operators who
@@ -402,6 +417,58 @@ class Settings(BaseSettings):
         """
         _parse_networks(value, info.field_name or "network")
         return value
+
+    @field_validator("kubernetes_proxy_namespace", "kubernetes_proxy_service_name")
+    @classmethod
+    def _check_kubernetes_proxy_name(cls, value: str) -> str:
+        if value and not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
+            raise ValueError("Kubernetes proxy namespace and service must be DNS labels")
+        return value
+
+    @field_validator("kubernetes_proxy_service_uid", "kubernetes_proxy_workload_uid")
+    @classmethod
+    def _check_kubernetes_proxy_uid(cls, value: str) -> str:
+        if value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value):
+            raise ValueError("Kubernetes proxy UIDs must be bounded non-whitespace identifiers")
+        return value
+
+    @field_validator("kubernetes_proxy_api_url")
+    @classmethod
+    def _check_kubernetes_proxy_api_url(cls, value: str) -> str:
+        try:
+            parsed = urlsplit(value)
+            valid = (
+                not any(char.isspace() for char in value)
+                and not any(char in value for char in "?#\\")
+                and parsed.scheme == "https"
+                and bool(parsed.hostname)
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.path in ("", "/")
+                and not parsed.query
+                and not parsed.fragment
+                and (parsed.port is None or 1 <= parsed.port <= 65535)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("Kubernetes proxy API URL must be an HTTPS origin without credentials")
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _require_kubernetes_proxy_identity(self) -> "Settings":
+        if self.trust_kubernetes_proxy_discovery:
+            for name in (
+                "kubernetes_proxy_namespace",
+                "kubernetes_proxy_service_name",
+                "kubernetes_proxy_service_uid",
+                "kubernetes_proxy_workload_uid",
+                "kubernetes_proxy_ca_file",
+                "kubernetes_proxy_token_file",
+            ):
+                if not getattr(self, name).strip():
+                    raise ValueError(f"{name.upper()} is required for Kubernetes proxy discovery")
+        return self
 
     @model_validator(mode="after")
     def _parse_trusted_proxies(self) -> "Settings":
@@ -600,6 +667,13 @@ def invalid_fields(error: ValidationError) -> dict[str, str]:
 #: always stops whoever reads the settings.
 CONNECTION_FIELDS = frozenset({"db_host", "db_port", "db_name", "db_user", "db_password"})
 
+# These values also cannot be repaired by the application database. Falling
+# back to defaults could silently disable discovery or change its API target.
+KUBERNETES_PROXY_WIRING_FIELDS = frozenset(
+    {"trust_kubernetes_proxy_discovery"}
+    | {name for name in Settings.model_fields if name.startswith("kubernetes_proxy_")}
+)
+
 #: What :func:`get_settings` set aside: field name -> why its value is not valid.
 _invalid_environment: dict[str, str] = {}
 
@@ -635,8 +709,8 @@ def get_settings() -> Settings:
     value for it, and only the gateway's startup can tell, once it has read the
     database. Startup refuses to continue unless it does
     (``app_config.require_valid_environment``); :func:`invalid_environment`
-    lists what was set aside. The database connection settings are never set
-    aside.
+    lists what was set aside. The database connection settings and Kubernetes
+    proxy discovery wiring are never set aside.
 
     A rule between settings (``Settings.broken_rules``) is not judged here
     either: the database may replace either side of it, so startup judges it
@@ -666,7 +740,9 @@ def _settings_without_invalid_environment() -> Settings:
     current = error
     while True:
         blamed = invalid_fields(current)
-        if not blamed or not blamed.keys().isdisjoint(set_aside.keys() | CONNECTION_FIELDS):
+        if not blamed or not blamed.keys().isdisjoint(
+            set_aside.keys() | CONNECTION_FIELDS | KUBERNETES_PROXY_WIRING_FIELDS
+        ):
             raise error
         if any(Settings.model_fields[name].is_required() for name in blamed):
             raise error

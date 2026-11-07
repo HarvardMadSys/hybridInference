@@ -10,14 +10,15 @@ import {
   AdminSection,
 } from '@/components/features/admin/AdminPrimitives';
 import { NOTICE_ACTION, PANEL, TABLE_HEAD_CELL } from '@/components/features/admin/adminStyles';
-import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import { Select, type SelectOption } from '@/components/ui/Select';
 import type { AdminModelVisibilityItem, Role } from '@/lib/api/admin';
 import { listModelVisibility, updateModelVisibility } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+
+import { useReportUnsaved } from './useReportUnsaved';
 
 const DEFAULT_VALUE = '__default__';
 const SECTION = 'Model Visibility';
@@ -32,23 +33,20 @@ const ROLE_OPTIONS: SelectOption[] = [
 
 interface ModelVisibilitySectionProps {
   onToast: (msg: string) => void;
-}
-
-function overrideLabel(value: string | null): string {
-  return value === null || value === DEFAULT_VALUE ? 'Use default' : value;
+  /** Called with the number of unsaved changes whenever it changes. */
+  onUnsavedChange?: (count: number) => void;
 }
 
 /**
- * Runtime required-role overrides. Read-only until Edit; the changed models are
- * saved together after the administrator confirms the list.
+ * Runtime required-role overrides, edited in place; Save writes the changed
+ * models together.
  */
-export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps) {
+export function ModelVisibilitySection({ onToast, onUnsavedChange }: ModelVisibilitySectionProps) {
   const queryClient = useQueryClient();
-  const confirmation = useConfirmAction();
+  const writes = useConfirmAction();
   const [models, setModels] = useState<AdminModelVisibilityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
   // Model id → the chosen override (DEFAULT_VALUE for none); only real changes are kept.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -83,57 +81,42 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
   };
 
   const cancel = () => {
-    if (confirmation.busy) return;
+    if (writes.busy) return;
     setDrafts({});
     setSaveError(null);
-    setEditing(false);
   };
 
   const changed = models.filter((model) => model.model_id in drafts);
+  useReportUnsaved(changed.length, onUnsavedChange);
 
-  const save = () => {
+  const save = async () => {
     if (changed.length === 0) return;
     const pending = changed.map((model) => ({ model, value: drafts[model.model_id] }));
-    confirmation.request({
-      title: `Save ${plural(pending.length, 'visibility change')}?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={pending.map(({ model, value }) => ({
-              label: model.model_id,
-              before: overrideLabel(model.override_required_role),
-              after: overrideLabel(value),
-            }))}
-          />
-          <p>Users below the required role stop seeing a model as soon as this is saved.</p>
-        </>
-      ),
+    setSaveError(null);
+    const failure = await writes.perform({
       run: async () => {
-        const failure = await writeEach(
-          pending,
-          ({ model }) => model.model_id,
-          async ({ model, value }) => {
-            const updated = await updateModelVisibility(
-              model.model_id,
-              value === DEFAULT_VALUE ? null : (value as Role),
-            );
-            setModels((prev) =>
-              prev.map((item) => (item.model_id === model.model_id ? updated : item)),
-            );
-            setDrafts((prev) => {
-              const next = { ...prev };
-              delete next[model.model_id];
-              return next;
-            });
-          },
-        );
-        void queryClient.invalidateQueries({ queryKey: ['user', 'models'] });
-        setSaveError(failure);
-        if (failure) return;
-        setEditing(false);
+        try {
+          await writeEach(
+            pending,
+            ({ model }) => model.model_id,
+            async ({ model, value }) => {
+              const updated = await updateModelVisibility(
+                model.model_id,
+                value === DEFAULT_VALUE ? null : (value as Role),
+              );
+              setModels((prev) =>
+                prev.map((item) => (item.model_id === model.model_id ? updated : item)),
+              );
+              setDrafts((prev) => {
+                const next = { ...prev };
+                delete next[model.model_id];
+                return next;
+              });
+            },
+          );
+        } finally {
+          void queryClient.invalidateQueries({ queryKey: ['user', 'models'] });
+        }
         onToast(
           pending.length === 1
             ? `Updated visibility for ${pending[0].model.model_id}.`
@@ -141,17 +124,13 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
         );
       },
     });
+    setSaveError(failure);
   };
 
   return (
     <AdminSection
       title={SECTION}
       description="Override each model's runtime required role without changing the YAML baseline."
-      actions={
-        !editing && !loading && models.length > 0 ? (
-          <EditButton target={SECTION} onClick={() => setEditing(true)} />
-        ) : null
-      }
     >
       {error && (
         <div className="mb-3">
@@ -173,7 +152,7 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
         <AdminEmptyState title="No models available." />
       ) : (
         <div
-          className={`${PANEL} relative overflow-x-auto ${editing ? 'border-gray-400 shadow-sm' : ''}`}
+          className={`${PANEL} relative overflow-x-auto ${changed.length > 0 ? 'border-gray-400 shadow-sm' : ''}`}
         >
           <table className="w-full min-w-[28rem] text-[13px]">
             <thead className="bg-gray-50/80">
@@ -199,21 +178,15 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
                     </td>
                     <td className="px-4 py-2 text-gray-900">{model.effective_required_role}</td>
                     <td className="px-4 py-2 text-right">
-                      {editing ? (
-                        // A choice only changes the draft; nothing is written before Confirm.
-                        <Select
-                          aria-label={`Runtime override for ${model.model_id}`}
-                          className={`w-32 ${model.model_id in drafts ? 'border-amber-400' : ''}`}
-                          disabled={confirmation.busy}
-                          value={selected}
-                          options={ROLE_OPTIONS}
-                          onValueChange={(value) => changeDraft(model, value)}
-                        />
-                      ) : (
-                        <output aria-label={`Runtime override for ${model.model_id}`}>
-                          {overrideLabel(model.override_required_role)}
-                        </output>
-                      )}
+                      {/* A choice only changes the draft; nothing is written before Save. */}
+                      <Select
+                        aria-label={`Runtime override for ${model.model_id}`}
+                        className={`w-32 ${model.model_id in drafts ? 'border-amber-400' : ''}`}
+                        disabled={writes.busy}
+                        value={selected}
+                        options={ROLE_OPTIONS}
+                        onValueChange={(value) => changeDraft(model, value)}
+                      />
                     </td>
                   </tr>
                 );
@@ -223,17 +196,15 @@ export function ModelVisibilitySection({ onToast }: ModelVisibilitySectionProps)
         </div>
       )}
 
-      {editing ? (
-        <EditBar
-          target={SECTION}
-          changeCount={changed.length}
-          onCancel={cancel}
-          onSave={save}
-          busy={confirmation.busy}
-          error={saveError}
-        />
-      ) : null}
-      {confirmation.dialog}
+      <EditBar
+        target={SECTION}
+        changeCount={changed.length}
+        onCancel={cancel}
+        onSave={() => void save()}
+        busy={writes.busy}
+        error={saveError}
+        inPlace
+      />
     </AdminSection>
   );
 }

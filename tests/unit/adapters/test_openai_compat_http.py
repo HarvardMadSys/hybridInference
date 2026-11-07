@@ -212,6 +212,50 @@ async def test_tools_and_tool_choice_reach_the_upstream(upstream, mode):
 
 
 @pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_parallel_tool_calls_reaches_the_upstream_only_when_supported(upstream, mode):
+    # The Anthropic surface's tool_choice.disable_parallel_tool_use arrives
+    # here as the top-level OpenAI switch (issue #876 P3). It is a
+    # declared-capability param like reasoning_effort: forwarded when the
+    # model's supported_params name it, dropped when they do not — a
+    # provider that rejects the field must not start seeing it.
+    adapter = _adapter(
+        upstream,
+        supported_params=["temperature", "max_tokens", "parallel_tool_calls"],
+    )
+    params = {"tools": TOOLS, "tool_choice": "auto", "parallel_tool_calls": False}
+    if mode == "chat":
+        await adapter.chat_completion(USER, **params)
+    else:
+        upstream.frames = [_chunk({"content": "ok"}, "stop"), "[DONE]"]
+        await _stream(adapter, **params)
+    assert upstream.sent["parallel_tool_calls"] is False
+
+    undeclared = _adapter(upstream)  # supported_params without the switch
+    if mode == "chat":
+        await undeclared.chat_completion(USER, **params)
+    else:
+        upstream.frames = [_chunk({"content": "ok"}, "stop"), "[DONE]"]
+        await _stream(undeclared, **params)
+    assert "parallel_tool_calls" not in upstream.sent
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_parallel_tool_calls_is_omitted_without_tools(upstream, mode):
+    adapter = _adapter(
+        upstream,
+        supported_params=["temperature", "max_tokens", "parallel_tool_calls"],
+    )
+    if mode == "chat":
+        await adapter.chat_completion(USER, parallel_tool_calls=False)
+    else:
+        upstream.frames = [_chunk({"content": "ok"}, "stop"), "[DONE]"]
+        await _stream(adapter, parallel_tool_calls=False)
+
+    assert "tools" not in upstream.sent
+    assert "parallel_tool_calls" not in upstream.sent
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
 async def test_a_model_without_tool_support_is_sent_no_tools(upstream, mode):
     adapter = _adapter(upstream, supports_tools=False)
     params = {"tools": TOOLS, "tool_choice": "required"}
@@ -266,6 +310,66 @@ async def test_structured_output_is_not_sent_to_a_model_without_it(upstream):
 
     assert "response_format" not in upstream.sent
     assert "guided_json" not in upstream.sent
+    # Not forwarded, so the model is told the shape in the prompt instead.
+    assert json.dumps(SCHEMA, separators=(",", ":")) in upstream.sent["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+@pytest.mark.parametrize(
+    ("response_format", "structured_outputs"),
+    [
+        (JSON_SCHEMA_FORMAT, {"json": SCHEMA, "disable_any_whitespace": True}),
+        ({"type": "json_object"}, {"json_object": True, "disable_any_whitespace": True}),
+    ],
+    ids=["schema", "object"],
+)
+async def test_a_vllm_route_is_sent_structured_outputs_without_free_whitespace(
+    upstream, mode, response_format, structured_outputs
+):
+    """vLLM's JSON grammar otherwise lets a model loop on whitespace until max_tokens."""
+    adapter = _adapter(upstream, vllm_structured_outputs=True)
+    if mode == "stream":
+        upstream.frames = [_chunk({"content": "{}"}, "stop"), "[DONE]"]
+        await _stream(adapter, response_format=response_format)
+    else:
+        await adapter.chat_completion(USER, response_format=response_format)
+
+    assert upstream.sent["response_format"] == response_format
+    assert upstream.sent["structured_outputs"] == structured_outputs
+    assert "guided_json" not in upstream.sent
+    assert upstream.sent["messages"] == USER  # enforced upstream: the prompt is left alone
+
+
+async def test_a_schema_the_provider_reduces_to_json_object_is_described_in_the_prompt(upstream):
+    adapter = _adapter(upstream, provider_profile="deepseek")
+
+    await adapter.chat_completion(USER, response_format=JSON_SCHEMA_FORMAT)
+
+    assert "response_format" not in upstream.sent
+    assert "structured_outputs" not in upstream.sent
+    content = upstream.sent["messages"][-1]["content"]
+    assert content.startswith("hi\n\n")
+    assert json.dumps(SCHEMA, separators=(",", ":")) in content
+
+
+async def test_an_aborted_reply_is_an_upstream_error(upstream):
+    """vLLM answers a request it aborted with a 200 and ``finish_reason: "abort"``."""
+    upstream.reply["choices"][0]["finish_reason"] = "abort"
+    upstream.reply["choices"][0]["message"]["content"] = None
+
+    with pytest.raises(aiohttp.ClientError, match="aborted") as caught:
+        await _adapter(upstream).chat_completion(USER)
+
+    assert caught.value.status == 502
+
+
+async def test_an_aborted_stream_is_an_upstream_error(upstream):
+    upstream.frames = [_chunk({"content": "{"}), _chunk({}, "abort"), "[DONE]"]
+
+    with pytest.raises(aiohttp.ClientError, match="aborted") as caught:
+        await _stream(_adapter(upstream))
+
+    assert caught.value.status == 502
 
 
 # --- what comes back ------------------------------------------------------------------------

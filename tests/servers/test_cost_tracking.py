@@ -139,11 +139,13 @@ async def tracking_client(tracking_app: FastAPI):
 
 
 async def _drain_background_logs(app: FastAPI | None = None) -> None:
-    tasks: list[asyncio.Task[Any]] = list(_TRACKED_TASKS)
+    # The completions logger owns a long-lived worker task; drain its queue
+    # instead of awaiting the worker itself (it only ends when cancelled).
     if app is not None:
         cl = getattr(app.state.services, "completions_logger", None)
         if cl is not None:
-            tasks.extend(cl._background_tasks)
+            await cl.stop()
+    tasks: list[asyncio.Task[Any]] = list(_TRACKED_TASKS)
     if tasks:
         await asyncio.gather(*tasks)
 

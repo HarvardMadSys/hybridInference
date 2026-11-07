@@ -171,6 +171,28 @@ class TrackedTaskFailureRateConfig(BaseModel):
     cooldown_sec: int = 1800
 
 
+class RequestLogQueueSaturationConfig(BaseModel):
+    """Config for ``RequestLogQueueSaturationRule``.
+
+    Fires when at least ``threshold_count`` ``request_log_queue_saturated``
+    events arrive within ``window_sec``. The producer emits that warning on the
+    first dropped row, every 100th drop, and at least once per 60 seconds while
+    drops continue, so this counts loss *events*, not lost rows; the warning
+    carries the cumulative ``dropped_total`` for the card. The default threshold
+    of 1 means the first observed loss pages, matching ``AuthIpBlockedConfig``:
+    there is no background rate of discarded report rows to tolerate.
+
+    The emit cadence plus ``cooldown_sec`` bound a sustained database stall to
+    one page per cooldown. Set ``enabled: false`` to keep only the log record;
+    no existing configuration key changes meaning.
+    """
+
+    enabled: bool = True
+    window_sec: int = 600
+    threshold_count: int = 1
+    cooldown_sec: int = 1800
+
+
 class ClientErrorBurstConfig(BaseModel):
     """Config for ``ClientErrorBurstRule``.
 
@@ -204,6 +226,23 @@ class ClientErrorBurstConfig(BaseModel):
     ``SLACK_ALERTS_WEBHOOK_URL``, so "on" here only affects a deployment that
     has already asked to be paged; with ``cooldown_sec`` at an hour the
     worst case for a noisy deployment is one message per hour.
+    """
+
+    enabled: bool = True
+    window_sec: int = 600
+    threshold_count: int = 12
+    cooldown_sec: int = 3600
+
+
+class KeyPoolExhaustionBurstConfig(BaseModel):
+    """Config for ``KeyPoolExhaustionBurstRule``, counted **per endpoint**.
+
+    Fires when more than ``threshold_count`` ``key_pool_exhausted_skip_breaker``
+    events arrive for one endpoint within ``window_sec``; each endpoint has its
+    own incident and its own ``cooldown_sec``. With breaker exemption restored, this
+    is the alerting surface for provider-wide key exhaustion: upstream 402/403
+    responses are also breaker-exempt, so neither the original auth failures nor
+    their local exhaustion echo can open the circuit.
     """
 
     enabled: bool = True
@@ -270,10 +309,19 @@ class Rules(BaseModel):
     tracked_task_failure_rate: TrackedTaskFailureRateConfig = Field(
         default_factory=TrackedTaskFailureRateConfig
     )
+    # On by default: any discarded api_logs row is a bounded report-data gap,
+    # and the producer's own warning cadence keeps a stall from paging in a
+    # storm. See RequestLogQueueSaturationConfig.
+    request_log_queue_saturation: RequestLogQueueSaturationConfig = Field(
+        default_factory=RequestLogQueueSaturationConfig
+    )
     # Both on by default: these watch authenticated, routed requests that failed
     # in front of a user, and nothing else in this file can see either symptom.
     # See ClientErrorBurstConfig and StreamFailureRateConfig.
     client_error_burst: ClientErrorBurstConfig = Field(default_factory=ClientErrorBurstConfig)
+    key_pool_exhaustion_burst: KeyPoolExhaustionBurstConfig = Field(
+        default_factory=KeyPoolExhaustionBurstConfig
+    )
     stream_failure_rate: StreamFailureRateConfig = Field(default_factory=StreamFailureRateConfig)
 
 
@@ -298,9 +346,18 @@ class CircuitOpenStateChange(StateChange):
     nothing an operator can act on, and the breaker re-arms itself once the
     provider's window resets. Trips for every other reason still page — which is
     the difference from ``enabled: false``, which silences all of them.
+
+    ``settle_sec`` is how long a circuit must stay closed before its incident
+    closes and the recovery is posted. A partially failing endpoint closes on
+    one success and reopens on the next failure, many times a minute under
+    concurrent traffic; closing the incident on every such close made each cycle
+    a new incident, with its own page and its own "Recovered" card. A reopen
+    within the period is the same incident instead, so it repeats its page only
+    at ``cooldown_sec``. ``0`` restores closing on the first success.
     """
 
     page_on_usage_limit: bool = True
+    settle_sec: float = Field(default=120.0, ge=0)
 
 
 class StateChanges(BaseModel):

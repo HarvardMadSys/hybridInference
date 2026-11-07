@@ -7,52 +7,90 @@ user_routes.py, internal.py, and user_stats.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
-import time
 from datetime import UTC
 from typing import TYPE_CHECKING, Any, Literal
 
-from serving import grants, quota
+from serving import quota
+from serving.audit import AuditTarget, audit_columns
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
-    AccountSchemaPending,
-    DuplicateAPIKeyError,
+    AmbiguousAPIKeyError,
+    APIKeyLimitReachedError,
     HardDeleteStateChanged,
     SelfDeleteRefused,
 )
-from serving.storage import account_schema, user_usage_rollup
-from serving.storage.account_schema import (
-    COMPLETE as COMPLETE_ACCOUNT_SCHEMA,
-    AccountSchema,
-    migrate_login_events_account_schema,
-    migrate_users_account_schema,
-    read_account_schema,
+from serving.storage import user_usage_rollup
+from serving.storage.audit_schema import (
+    SELECT_COLUMNS as AUDIT_SELECT_COLUMNS,
+    insert_audit_row,
 )
-from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
-from serving.storage.browser_session_schema import ensure_browser_session_tables
-from serving.storage.log_schema import (
-    SchemaLockUnavailable,
-    apply_column_migrations,
-    bounded_ddl,
-    column_metadata,
-    constraint_admitted_values,
-    constraint_definition,
-    drop_columns_if_present,
-    execute_ddl,
-    existing_columns,
+from serving.storage.base import (
+    CostIncrement,
+    CostWriteOutcomeUnknown,
+    OperationalStore,
+    ProviderDefinitionRow,
+    ProviderKeyRow,
+    Row,
 )
-from serving.storage.phone_auth import PostgresPhoneAuthMixin, initialize_phone_auth
+from serving.storage.phone_auth import PostgresPhoneAuthMixin
+from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
+    from contextlib import AbstractAsyncContextManager
     from datetime import datetime
     from decimal import Decimal
 
     import asyncpg
 
+    from serving.audit import AuditActor
+
 logger = get_logger(__name__)
+
+# Adds a batch of cost increments to the account counters and the key counters
+# in one statement, so both are written or neither, and returns the
+# transaction id that ``increment_user_costs`` asks about when the COMMIT's
+# answer is lost. Each target row is updated once: the batch is summed per
+# (user, day) and per (key, day) first, as ON CONFLICT DO UPDATE requires.
+# The sums keep each increment's rounding (``spend_ledger.counted_amount``), so
+# a coalesced batch adds exactly what the separate increments would have.
+COST_INCREMENTS_SQL = """
+WITH batch AS (
+    SELECT *
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
+        AS b(user_id, day, key_id, cost_usd, requests)
+),
+account_rows AS (
+    INSERT INTO user_daily_cost AS c (user_id, day, cost_usd, requests, last_request_at)
+    SELECT user_id, day, SUM(cost_usd), SUM(requests), NOW()
+    FROM batch
+    GROUP BY user_id, day
+    ON CONFLICT (user_id, day) DO UPDATE SET
+        cost_usd = c.cost_usd + EXCLUDED.cost_usd,
+        requests = c.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+),
+key_rows AS (
+    INSERT INTO api_key_daily_cost AS k (key_id, day, user_id, cost_usd, requests, last_request_at)
+    SELECT key_id, day, MIN(user_id), SUM(cost_usd), SUM(requests), NOW()
+    FROM batch
+    WHERE key_id IS NOT NULL
+    GROUP BY key_id, day
+    ON CONFLICT (key_id, day) DO UPDATE SET
+        cost_usd = k.cost_usd + EXCLUDED.cost_usd,
+        requests = k.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+)
+SELECT txid_current()
+"""
+
+# How long to keep asking how a cost transaction ended after its COMMIT's
+# answer was lost: the delays before each try.
+_COMMIT_STATUS_RETRY_DELAYS = (0.0, 0.2, 1.0, 3.0)
 
 # Distinct ``api_logs.provider`` values with a row in the last $1 days; see
 # ``PostgresOperationalStore.list_user_activity_providers``.
@@ -78,8 +116,7 @@ ORDER BY provider
 
 
 # Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name),
-# in select order. The account columns among them that the users table does not
-# have yet are selected as the value every row would hold (see AccountSchema).
+# in select order.
 _USER_COLUMNS = (
     "id",
     "email",
@@ -99,6 +136,7 @@ _USER_COLUMNS = (
     "admin_note",
     "suspension_message",
 )
+_USER_SELECT = ", ".join(_USER_COLUMNS)
 
 # The preferences column as a JSON object, whatever an older row holds there
 # (SQL NULL, or a JSON scalar), so a key can be set on it or removed from it.
@@ -111,33 +149,12 @@ _ISO_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d
 
 # The identity columns the API-key and browser-session lookups take from the
 # joined users row.
-_JOINED_USER_IDENTITY = ("email", "login_name", "phone", "phone_verified")
-
-# While the account migration is pending, how often a request that needs a
-# column it has not added may re-read the catalog to see whether it has landed
-# since (from this process's background retry or from another process).
-_ACCOUNT_SCHEMA_RECHECK_SECONDS = 5.0
-
-# What a write can need of the account migration (properties of AccountSchema).
-_AccountCapability = Literal["login_names", "phone_accounts"]
+_JOINED_USER_IDENTITY = "u.email, u.login_name, u.phone, u.phone_verified"
 
 # Serializes first-run setup claims across every process sharing the database.
 _FIRST_RUN_SETUP_LOCK_SQL = (
     "SELECT pg_advisory_xact_lock(hashtext('hybridinference:first-run-setup'))"
 )
-
-
-class RequiredOperationalSchemaUnavailable(SchemaLockUnavailable):
-    """A hard-delete safety column could not be installed at startup.
-
-    Unlike ordinary operational migrations, the hard-delete claim marker is
-    required before the store can be exposed: resume_user and both hard-delete
-    phases select it on every request. A lock timeout therefore must fail
-    startup rather than defer the migration while serving against an unsafe
-    schema. Only a database older than the marker (#1421) can hit this; the
-    account columns added since are deferrable instead (see
-    :mod:`serving.storage.account_schema`).
-    """
 
 
 def _parse_command_tag_count(command_tag: str) -> int:
@@ -177,6 +194,130 @@ def _decode_grant(row: Any) -> Row:
     return decoded
 
 
+#: The columns a new key is inserted with.
+_KEY_INSERT_COLUMNS = (
+    "key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd, "
+    "quota_monthly_cost_usd, expires_at, notes, metadata, account_id, "
+    "api_key_encrypted, name"
+)
+_KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12"
+
+#: A key's own limits (P2a), on top of its account's quota. NULL means no limit
+#: at the key.
+_KEY_LIMIT_COLUMNS = "k.budget_daily_usd, k.budget_monthly_usd, k.allowed_models"
+
+#: What the auth lookups add about the presented key itself: its limits, and
+#: how a refusal names it.
+_AUTH_KEY_COLUMNS = f"k.key_prefix, k.name AS key_name, {_KEY_LIMIT_COLUMNS}"
+
+#: The settings an account's owner may change on one of its keys.
+KEY_SETTINGS_COLUMNS = ("name", "budget_daily_usd", "budget_monthly_usd", "allowed_models")
+
+#: What key ``k`` spent on the current UTC day and month, from
+#: ``api_key_daily_cost``, read only for a key with a budget: at most a month of
+#: counter rows, through the counter's primary key. The day strings are the
+#: counter write path's, so a budget and its counter bucket midnight alike.
+_KEY_SPEND_JOIN = (
+    "LEFT JOIN LATERAL ("
+    "  SELECT COALESCE(SUM(c.cost_usd) FILTER ("
+    "           WHERE c.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
+    "           AS key_spent_today_usd, "
+    "         COALESCE(SUM(c.cost_usd), 0) AS key_spent_month_usd "
+    "  FROM api_key_daily_cost c "
+    "  WHERE c.key_id = k.id "
+    "    AND (k.budget_daily_usd IS NOT NULL OR k.budget_monthly_usd IS NOT NULL) "
+    "    AND c.day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+    ") ks ON TRUE "
+)
+
+#: What the owner of key ``k`` spent this UTC month, from ``user_daily_cost``,
+#: read only when the account has a monthly quota: at most a month of counter
+#: rows through the counter's primary key. Same days ``get_user_cost_period``
+#: sums, so the gate and the console agree.
+_ACCOUNT_MONTH_SPEND_JOIN = (
+    "LEFT JOIN LATERAL ("
+    "  SELECT COALESCE(SUM(m.cost_usd), 0) AS account_spent_month_usd "
+    "  FROM user_daily_cost m "
+    "  WHERE m.user_id = k.user_id "
+    "    AND k.quota_monthly_cost_usd IS NOT NULL "
+    "    AND m.day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+    ") am ON TRUE "
+)
+
+
+#: Advisory lock key held by every API-key write: shared by a write to one
+#: account's keys, exclusive by a write that spans accounts. The per-account
+#: keys are ``'hybridinference:api-keys:' || account_id``.
+_ALL_ACCOUNT_KEYS_LOCK = "hashtextextended('hybridinference:api-keys', 0)"
+
+
+async def _lock_account_keys(conn: asyncpg.Connection, account_id: str) -> None:
+    """Hold off other writes to *account_id*'s keys until this transaction ends.
+
+    Taken first, before any row is read or written, by every write that adds
+    a key or changes all of an account's keys at once: create, rotate, the
+    admin's update and revoke, suspension and deletion.
+
+    Row locks cannot do this. Under READ COMMITTED an ``UPDATE ... WHERE
+    user_id = $1`` that waited on a row lock re-checks only the rows its
+    snapshot found, so it never sees a key inserted while it waited
+    (PostgreSQL documentation, "Read Committed Isolation Level"). That key
+    would keep the quota or status it was created with: a lowered quota or a
+    suspension would miss it.
+
+    The all-accounts lock is taken in shared mode first, always in that
+    order, so this cannot deadlock with :func:`_lock_all_account_keys`.
+
+    ``account_id`` equals ``user_id`` on every key: ``create_key`` defaults
+    one to the other, no caller passes a different value, and startup
+    backfills older rows.
+    """
+    await conn.execute(f"SELECT pg_advisory_xact_lock_shared({_ALL_ACCOUNT_KEYS_LOCK})")
+    await conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended('hybridinference:api-keys:' || $1, 0))",
+        account_id,
+    )
+
+
+async def _lock_all_account_keys(conn: asyncpg.Connection) -> None:
+    """Hold off every account's key writes until this transaction ends.
+
+    For a write that spans accounts, such as a role's quota. It waits for the
+    per-account writes in flight to commit, so the snapshot of its next
+    statement holds every key they added. One lock however many accounts the
+    write reaches, where a lock per account could exhaust the shared lock
+    table.
+    """
+    await conn.execute(f"SELECT pg_advisory_xact_lock({_ALL_ACCOUNT_KEYS_LOCK})")
+
+
+async def _sync_account_quota(
+    conn: asyncpg.Connection,
+    user_id: str,
+    *,
+    daily: Any,
+    monthly: Any,
+    except_id: int | None = None,
+) -> None:
+    """Give every unrevoked key of *user_id* the account quota ``(daily, monthly)``.
+
+    The daily and monthly quota belong to the account but are stored on each
+    of its keys: the auth lookup reads them from the presented key's row, so
+    every unrevoked key must carry the same values. A revoked key never
+    authenticates again and is left as it was.
+    """
+    await conn.execute(
+        "UPDATE api_keys SET quota_daily_cost_usd = $2, quota_monthly_cost_usd = $3 "
+        "WHERE user_id = $1 AND status <> 'revoked' AND ($4::bigint IS NULL OR id <> $4) "
+        "AND (quota_daily_cost_usd IS DISTINCT FROM $2::numeric "
+        "     OR quota_monthly_cost_usd IS DISTINCT FROM $3::numeric)",
+        user_id,
+        daily,
+        monthly,
+        except_id,
+    )
+
+
 def _coerce_user_row(row: Any) -> Row | None:
     """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
 
@@ -199,10 +340,31 @@ def _coerce_user_row(row: Any) -> Row | None:
     return d
 
 
+#: The lookups a request makes before it is served -- authentication, spend and
+#: quota, session liveness, and the per-model and runtime settings read on the
+#: way -- which use the request pool (:mod:`serving.storage.pools`). Each is a
+#: cheap primary-key or index lookup; nothing slow may join them.
+REQUEST_PATH_READS = (
+    "get_user_by_id",
+    "get_auth_context_by_key_hash",
+    "get_auth_context_with_spend",
+    "get_auth_context_lightweight",
+    "get_key_spend",
+    "session_is_live",
+    "get_quota_context_for_user",
+    "get_agent_grant",
+    "get_setting",
+    "get_model_visibility_override",
+    "get_model_concurrency_exemption",
+    "get_user_cost_today",
+    "get_user_cost_period",
+)
+
+
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, request_pool: asyncpg.Pool | None = None) -> None:
         """Initialize with a shared asyncpg pool.
 
         The LogStore owns the erasure-fence schema and tombstone checks; this
@@ -210,1007 +372,54 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         Args:
             pool: Shared asyncpg pool.
+            request_pool: The pool reserved for the lookups a request makes
+                before it is served (:data:`REQUEST_PATH_READS`); *pool* when
+                not given. Those lookups wait at most
+                :data:`~serving.storage.pools.REQUEST_ACQUIRE_TIMEOUT_SEC` for a
+                connection, from whichever pool, and then raise
+                :class:`~serving.storage.pools.DatabaseBusyError`.
         """
         self._pool = pool
-        # Which account columns the users table has, read from the catalog
-        # by initialize(); until then, the schema this release creates.
-        self._set_account_schema(COMPLETE_ACCOUNT_SCHEMA)
-        self._account_schema_read_at: float | None = None
+        self._request_pool = request_pool if request_pool is not None else pool
+
+    def _request_connection(self) -> AbstractAsyncContextManager[Any]:
+        """A connection for a request-path lookup: the request pool, a bounded wait."""
+        return request_connection(self._request_pool)
+
+    def on_connection(self, connection: Any) -> PostgresOperationalStore:
+        """This store on one connection: every call runs on *connection*, in its transaction.
+
+        For writes that must commit or roll back with the caller's own, such as
+        a configuration restore, which writes these tables inside the
+        ``app_config`` transaction. The caller owns the connection and its
+        transaction; request-path lookups use it as well.
+        """
+        pool = SingleConnectionPool(connection)
+        return PostgresOperationalStore(pool, request_pool=pool)
 
     # -- lifecycle -----------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Create operational tables/indexes and run idempotent migrations.
+        """Give the accounts named in ``ADMIN_EMAILS`` the admin role.
 
-        The users migration includes the durable hard-delete claim marker
-        used to coordinate with the separate LogStore; a lock timeout on it
-        raises :class:`RequiredOperationalSchemaUnavailable`. The account
-        columns (login names, phone numbers, accounts without an email) may
-        wait: a lock timeout on them raises plain ``SchemaLockUnavailable``
-        once everything else is in place, for bootstrap to retry this method
-        in the background. Either way the store then reads which account
-        columns exist, and queries only those until the next attempt.
+        The tables come from the schema migrations. This is configuration, so
+        it runs at every start: an address added to the setting promotes its
+        account the next time the gateway starts, as long as the account still
+        has the default role. An account without an email never matches.
         """
-        async with self._pool.acquire() as conn:
-            try:
-                await self._create_tables(conn)
-            except SchemaLockUnavailable:
-                await self._read_account_schema(conn)
-                raise
-            await self._read_account_schema(conn)
-
-    # -- account schema --------------------------------------------------------
-
-    @property
-    def account_schema(self) -> AccountSchema:
-        """Which account columns the users table has, as of the last catalog read."""
-        return self._account_schema
-
-    def _set_account_schema(self, schema: AccountSchema) -> None:
-        """Query by *schema* from now on."""
-        self._account_schema = schema
-        self._user_select = schema.select(_USER_COLUMNS)
-
-    async def _read_account_schema(self, conn: asyncpg.Connection) -> AccountSchema:
-        """Re-read the account schema from the catalog and query by it from now on."""
-        schema = await read_account_schema(conn)
-        self._set_account_schema(schema)
-        self._account_schema_read_at = time.monotonic()
-        account_schema.publish(schema)
-        return schema
-
-    async def _account_schema_where(self, ready: Callable[[AccountSchema], bool]) -> AccountSchema:
-        """Return the account schema, re-read first when it does not satisfy *ready*.
-
-        The re-read is what notices a migration that landed since the last one,
-        from this process's background retry or from another process. It runs
-        at most every ``_ACCOUNT_SCHEMA_RECHECK_SECONDS``, so a stream of
-        requests refused meanwhile does not become a stream of catalog reads.
-        """
-        schema = self._account_schema
-        read_at = self._account_schema_read_at
-        if ready(schema) or (
-            read_at is not None and time.monotonic() - read_at < _ACCOUNT_SCHEMA_RECHECK_SECONDS
-        ):
-            return schema
-        async with self._pool.acquire() as conn:
-            return await self._read_account_schema(conn)
-
-    async def _require_account_schema(self, capability: _AccountCapability) -> None:
-        """Raise :class:`AccountSchemaPending` unless the users table can hold *capability*."""
-        schema = await self._account_schema_where(lambda s: getattr(s, capability))
-        if not getattr(schema, capability):
-            raise AccountSchemaPending()
-
-    async def _create_tables(self, conn: asyncpg.Connection) -> None:
-        """DDL for the 6 operational tables."""
-        import asyncpg as _asyncpg
-
-        # --- users ---
-        # ``email`` admits NULL for the one account created without an address
-        # (the first-run setup administrator), which signs in with
-        # ``login_name``; keep in step with the copy in ``database.py``.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                email TEXT UNIQUE,
-                login_name TEXT,
-                password_hash TEXT,
-                phone TEXT,
-                phone_verified BOOLEAN NOT NULL DEFAULT FALSE,
-                user_name TEXT,
-                preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-                role TEXT NOT NULL DEFAULT 'free'
-                    CHECK (role IN ('free', 'pro', 'internal', 'admin')),
-                email_verified BOOLEAN DEFAULT FALSE,
-                status TEXT DEFAULT 'active'
-                    CHECK (status IN ('active', 'suspended', 'deleted',
-                                      'pending_approval', 'rejected')),
-                hard_delete_pending BOOLEAN NOT NULL DEFAULT FALSE,
-                hard_delete_claim_token TEXT,
-                approval_note TEXT,
-                reviewed_at TIMESTAMPTZ,
-                reviewed_by TEXT,
-                signup_reason TEXT,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                last_login_at TIMESTAMPTZ,
-                max_concurrent_requests INT DEFAULT NULL,
-                admin_note TEXT,
-                suspension_message TEXT
-            )
-        """)
-        # Tables requests use that came after the users table. Creating a new
-        # table waits on no lock another session holds, so they come before
-        # any migration below that can be deferred: sign-in (browser sessions)
-        # and account deletion (phone codes) need them on the first boot of an
-        # upgrade too.
-        await ensure_browser_session_tables(conn)
-        # A lock timeout below (the account columns, or the phone codes'
-        # purpose CHECK) is remembered, the rest of the schema is still
-        # built, and the timeout is raised at the end for bootstrap to retry
-        # from the background.
-        deferred: SchemaLockUnavailable | None = None
-        try:
-            await initialize_phone_auth(conn)
-        except SchemaLockUnavailable as exc:
-            deferred = exc
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)")
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at DESC)"
-        )
-        # The hard-delete columns are part of the hard-delete state machine.
-        # Install them before any other operational migration. If the upgrade
-        # cannot acquire the lock, refuse to expose the store rather than
-        # letting bootstrap defer a migration while hard-delete/resume queries
-        # would fail with UndefinedColumnError.
-        try:
-            await apply_column_migrations(
-                conn,
-                "users",
-                [
-                    (
-                        "hard_delete_pending",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-                        "hard_delete_pending BOOLEAN NOT NULL DEFAULT FALSE",
-                    ),
-                    (
-                        "hard_delete_claim_token",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS hard_delete_claim_token TEXT",
-                    ),
-                ],
-            )
-        except SchemaLockUnavailable as exc:
-            raise RequiredOperationalSchemaUnavailable(
-                "hard-delete claim columns are required before the operational store "
-                "can serve; refusing deferred startup while its migration is locked"
-            ) from exc
-
-        # The account columns (login names, phone numbers, accounts without an
-        # email) can wait for their lock: the store queries only the ones that
-        # exist (serving.storage.account_schema). The first boot after an
-        # upgrade often meets the nightly pg_dump, so a lock timeout here is
-        # remembered, the rest of the schema is still built, and the timeout
-        # is raised at the end for bootstrap to retry from the background.
-        try:
-            await migrate_users_account_schema(conn)
-        except SchemaLockUnavailable as exc:
-            deferred = deferred or exc
-
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_users_pending_approval "
-            "ON users(created_at DESC) WHERE status = 'pending_approval'"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_users_last_login_at "
-            "ON users(last_login_at DESC NULLS LAST)"
-        )
-
-        # Migrations — catalog-gated (serving.storage.log_schema): the settled
-        # startup path issues no strong-lock DDL at all. ALTER TABLE takes its
-        # ACCESS EXCLUSIVE lock BEFORE evaluating IF NOT EXISTS, and users is
-        # on auth's read path — a bare no-op ALTER queued behind the nightly
-        # pg_dump took production down on 2026-08-21. A lock timeout here is
-        # deferred like the account columns: the rest of the schema is still
-        # built, and the reads that need a column it adds tolerate its absence.
-        try:
-            await apply_column_migrations(
-                conn,
-                "users",
-                [
-                    (
-                        "approval_note",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT",
-                    ),
-                    (
-                        "reviewed_at",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ",
-                    ),
-                    ("reviewed_by", "ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT"),
-                    (
-                        "signup_reason",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_reason TEXT",
-                    ),
-                    (
-                        "preferences",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-                        "preferences JSONB NOT NULL DEFAULT '{}'::jsonb",
-                    ),
-                    (
-                        "max_concurrent_requests",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
-                        "max_concurrent_requests INT DEFAULT NULL",
-                    ),
-                    # Free-text admin-only annotation about a user (any status).
-                    ("admin_note", "ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT"),
-                    # Admin-authored message shown to the user on the login page when
-                    # their account is suspended (user-facing, unlike admin_note).
-                    (
-                        "suspension_message",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT",
-                    ),
-                    # The user's portrait, a small image data URL. A column of its
-                    # own rather than a preference: preferences ride along on every
-                    # API-key authentication, and a portrait has no business there.
-                    (
-                        "avatar_data_url",
-                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_data_url TEXT",
-                    ),
-                ],
-            )
-        except SchemaLockUnavailable as exc:
-            deferred = deferred or exc
-
-        # Status constraint rebuild — only when the CHECK does not admit
-        # exactly the current status set (see constraint_admitted_values for
-        # why exact, not membership). The rebuild takes ACCESS EXCLUSIVE, so
-        # the settled path must read the catalog and walk away.
-        status_def = await constraint_definition(conn, "users", "users_status_check")
-        status_settled = constraint_admitted_values(status_def) == {
-            "active",
-            "suspended",
-            "deleted",
-            "pending_approval",
-            "rejected",
-        }
-        try:
-            if not status_settled:
-                async with bounded_ddl(conn), conn.transaction():
-                    await execute_ddl(
-                        conn, "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check"
-                    )
-                    await execute_ddl(
-                        conn,
-                        """
-                    ALTER TABLE users ADD CONSTRAINT users_status_check
-                    CHECK (status IN ('active', 'suspended', 'deleted',
-                                      'pending_approval', 'rejected'))
-                """,
-                    )
-        except _asyncpg.PostgresError as exc:
-            invalid_rows = await conn.fetch(
-                "SELECT id, email, status FROM users "
-                "WHERE status NOT IN ('active','suspended','deleted',"
-                "'pending_approval','rejected') "
-                "ORDER BY created_at DESC LIMIT 10"
-            )
-            logger.error(
-                "Failed to rebuild users_status_check; transaction rolled back. "
-                "Sample invalid rows=%s error=%s",
-                [dict(row) for row in invalid_rows],
-                exc,
-            )
-            raise
-
-        # Role column & migration — every strong-lock step gated on the catalog.
-        await apply_column_migrations(
-            conn, "users", [("role", "ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT")]
-        )
-        role_meta = await column_metadata(conn, "users", "role")
-        role_default = str(role_meta["default_expr"] or "") if role_meta else ""
-        if "'free'" not in role_default:
-            async with bounded_ddl(conn):
-                await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN role SET DEFAULT 'free'")
-        tag = await conn.execute("UPDATE users SET role = 'free' WHERE role IS NULL")
-        backfilled = _parse_command_tag_count(tag)
-        if backfilled:
-            logger.info("Backfilled default user role for %d existing rows.", backfilled)
-
-        if role_meta is None or not role_meta["not_null"]:
-            async with bounded_ddl(conn):
-                await execute_ddl(conn, "ALTER TABLE users ALTER COLUMN role SET NOT NULL")
-
-        # Settled requires the admitted set to match exactly: the historical
-        # five-member constraint ('trial', 'free', 'pro', 'internal', 'admin')
-        # contains all four current roles, and a membership test would skip
-        # the trial->free row migration below while trial rows still exist.
-        role_def = await constraint_definition(conn, "users", "users_role_check")
-        role_settled = constraint_admitted_values(role_def) == {
-            "free",
-            "pro",
-            "internal",
-            "admin",
-        }
-        try:
-            if not role_settled:
-                async with bounded_ddl(conn), conn.transaction():
-                    await execute_ddl(
-                        conn, "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check"
-                    )
-                    tag = await conn.execute(
-                        "UPDATE users SET role = 'internal' "
-                        "WHERE role IN ('internal_group', 'developer')"
-                    )
-                    migrated = _parse_command_tag_count(tag)
-                    if migrated:
-                        logger.info(
-                            "Migrated %d users from internal_group/developer to internal.",
-                            migrated,
-                        )
-                    trial_tag = await conn.execute(
-                        "UPDATE users SET role = 'free' WHERE role = 'trial'"
-                    )
-                    migrated_trial = _parse_command_tag_count(trial_tag)
-                    if migrated_trial:
-                        logger.info(
-                            "Migrated %d users from trial to free.",
-                            migrated_trial,
-                        )
-                    await execute_ddl(
-                        conn,
-                        """
-                    ALTER TABLE users ADD CONSTRAINT users_role_check
-                    CHECK (role IN ('free', 'pro', 'internal', 'admin'))
-                """,
-                    )
-        except _asyncpg.PostgresError as exc:
-            invalid_rows = await conn.fetch(
-                "SELECT id, email, role FROM users "
-                "WHERE role NOT IN ('free','pro','internal','admin') "
-                "ORDER BY created_at DESC LIMIT 10"
-            )
-            logger.error(
-                "Failed to rebuild users_role_check; transaction rolled back. "
-                "Sample invalid rows=%s error=%s",
-                [dict(row) for row in invalid_rows],
-                exc,
-            )
-            raise
-
-        # Seed admin roles from ADMIN_EMAILS. Read through settings, which
-        # carry the database-backed configuration; an account without an
-        # email (NULL) never matches.
         admin_emails = _parse_admin_emails(get_settings().admin_emails or "")
-        if admin_emails:
+        if not admin_emails:
+            return
+        async with self._pool.acquire() as conn:
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
                 "WHERE lower(trim(email)) = ANY($1::text[]) "
                 "AND role IN ('free')",
                 admin_emails,
             )
-            seeded = _parse_command_tag_count(tag)
-            if seeded:
-                logger.info("Seeded %d admin role assignments from ADMIN_EMAILS.", seeded)
-
-        # --- api_keys ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS api_keys (
-                id BIGSERIAL PRIMARY KEY,
-                key_hash TEXT NOT NULL UNIQUE,
-                api_key_encrypted TEXT,
-                key_prefix TEXT NOT NULL,
-                user_id TEXT NOT NULL,
-                user_name TEXT,
-                status TEXT NOT NULL DEFAULT 'active',
-                quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00,
-                quota_monthly_cost_usd DECIMAL(10, 4),
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                expires_at TIMESTAMPTZ,
-                last_used_at TIMESTAMPTZ,
-                notes TEXT,
-                metadata JSONB
-            )
-        """)
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)")
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_api_keys_status ON api_keys(status, expires_at)"
-        )
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_prefix_unique ON api_keys(key_prefix)"
-        )
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
-            "ON api_keys(user_id) WHERE status = 'active'"
-        )
-        # Migrations — catalog-gated; this exact cluster (bare, on the auth
-        # read path) is what the 2026-08-21 production outage queued behind
-        # the nightly pg_dump.
-        await apply_column_migrations(
-            conn,
-            "api_keys",
-            [
-                (
-                    "quota_daily_cost_usd",
-                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                    "quota_daily_cost_usd DECIMAL(10, 4) DEFAULT 1000.00",
-                ),
-                (
-                    "quota_monthly_cost_usd",
-                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS "
-                    "quota_monthly_cost_usd DECIMAL(10, 4)",
-                ),
-                (
-                    "api_key_encrypted",
-                    "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT",
-                ),
-                ("account_id", "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS account_id TEXT"),
-            ],
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id)"
-        )
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
-            "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
-        )
-        # Backfill account_id = user_id for legacy self-registered keys created
-        # before the account_id column existed (account_id IS NULL). Makes those
-        # keys visible/manageable in the dashboard and reconciles
-        # idx_api_keys_user_unique (user_id) with
-        # idx_api_keys_account_active_unique (account_id). Idempotent: only NULL
-        # rows whose user still exists are touched.
-        tag = await conn.execute(
-            "UPDATE api_keys k SET account_id = k.user_id "
-            "WHERE k.account_id IS NULL "
-            "AND EXISTS (SELECT 1 FROM users u WHERE u.id = k.user_id)"
-        )
-        backfilled = _parse_command_tag_count(tag)
-        if backfilled:
-            logger.info("Backfilled account_id for %d legacy api_keys rows.", backfilled)
-        # Drop legacy 'tier' column — tier/role unified on users.role
-        # (spec: docs/agents/specs/2026-05-02-unify-tier-role-design.md).
-        await drop_columns_if_present(
-            conn, "api_keys", [("tier", "ALTER TABLE api_keys DROP COLUMN IF EXISTS tier")]
-        )
-
-        # --- auth_sessions ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                refresh_token_hash TEXT NOT NULL UNIQUE,
-                jti TEXT,
-                sid TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                last_used_at TIMESTAMPTZ,
-                expires_at TIMESTAMPTZ NOT NULL,
-                revoked BOOLEAN DEFAULT FALSE,
-                user_agent TEXT,
-                ip_address TEXT
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user "
-            "ON auth_sessions(user_id, expires_at)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_token "
-            "ON auth_sessions(refresh_token_hash) WHERE NOT revoked"
-        )
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_jti ON auth_sessions(jti)")
-
-        # --- login_events ---
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS login_events (
-                id BIGSERIAL PRIMARY KEY,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                user_id TEXT,
-                email TEXT,
-                phone TEXT,
-                outcome TEXT NOT NULL
-                    CHECK (outcome IN ('success', 'failure')),
-                failure_reason TEXT,
-                ip TEXT,
-                user_agent TEXT
-            )
-            """
-        )
-        # Phone sign-in's part of the account migration. After a lock timeout
-        # on users the holder is most likely pg_dump, which holds this table
-        # too: leave it to the same retry rather than queue a second
-        # ACCESS EXCLUSIVE request behind it.
-        if deferred is None:
-            try:
-                await migrate_login_events_account_schema(conn)
-            except SchemaLockUnavailable as exc:
-                deferred = exc
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_login_events_user "
-            "ON login_events (user_id, created_at DESC) WHERE user_id IS NOT NULL"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_login_events_email "
-            "ON login_events (email, created_at DESC)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_login_events_created ON login_events (created_at DESC)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_login_events_failures "
-            "ON login_events (created_at DESC) WHERE outcome = 'failure'"
-        )
-
-        # --- email_verification_tokens ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS email_verification_tokens (
-                token TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                expires_at TIMESTAMPTZ NOT NULL,
-                used_at TIMESTAMPTZ,
-                pending_email TEXT
-            )
-        """)
-        # Deferred on a lock timeout like the users columns; a verification
-        # token for an email binding cannot be issued until it lands.
-        try:
-            await apply_column_migrations(
-                conn,
-                "email_verification_tokens",
-                [
-                    (
-                        "pending_email",
-                        "ALTER TABLE email_verification_tokens "
-                        "ADD COLUMN IF NOT EXISTS pending_email TEXT",
-                    ),
-                ],
-            )
-        except SchemaLockUnavailable as exc:
-            deferred = deferred or exc
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_email_verification_user "
-            "ON email_verification_tokens(user_id)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_email_verification_expires "
-            "ON email_verification_tokens(expires_at)"
-        )
-
-        # --- password_reset_tokens ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS password_reset_tokens (
-                token TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                expires_at TIMESTAMPTZ NOT NULL,
-                used_at TIMESTAMPTZ
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_password_reset_expires "
-            "ON password_reset_tokens(expires_at)"
-        )
-
-        # --- agent_grants ---
-        # DDL lives in serving/grants.py, the module that owns this table. It
-        # stayed behind when agent_job_store left with the cloud agent:
-        # minting capabilities for this gateway's models is the gateway's job.
-        await conn.execute(grants.CREATE_TABLE_SQL)
-        for statement in grants.CREATE_INDEX_SQL:
-            await conn.execute(statement)
-
-        # --- identity_auth_codes ---
-        # Cross-service SSO codes. Keyed by the hash, never the code itself.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS identity_auth_codes (
-                code_hash TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                client_id TEXT NOT NULL,
-                redirect_uri TEXT NOT NULL,
-                code_challenge TEXT NOT NULL,
-                created_at TIMESTAMPTZ DEFAULT NOW(),
-                expires_at TIMESTAMPTZ NOT NULL,
-                used_at TIMESTAMPTZ
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_identity_auth_codes_expires "
-            "ON identity_auth_codes(expires_at)"
-        )
-
-        # --- admin_audit_log ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS admin_audit_log (
-                id BIGSERIAL PRIMARY KEY,
-                timestamp TIMESTAMPTZ DEFAULT NOW(),
-                admin_ip TEXT NOT NULL,
-                action TEXT NOT NULL,
-                target_user_id TEXT,
-                details JSONB,
-                success BOOLEAN DEFAULT TRUE
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_admin_audit_timestamp "
-            "ON admin_audit_log(timestamp DESC)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_admin_audit_user "
-            "ON admin_audit_log(target_user_id, timestamp DESC)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_admin_audit_action "
-            "ON admin_audit_log(action, timestamp DESC)"
-        )
-
-        # --- user_daily_cost ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_daily_cost (
-                user_id TEXT NOT NULL,
-                day TEXT NOT NULL,
-                cost_usd DECIMAL(12, 6) NOT NULL DEFAULT 0,
-                requests INTEGER NOT NULL DEFAULT 0,
-                last_request_at TIMESTAMPTZ,
-                PRIMARY KEY (user_id, day)
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_user_daily_cost_day ON user_daily_cost(day)"
-        )
-
-        # --- signup_allowed_domains ---
-        # Admin-editable allowlist of email domains whose signups auto-approve.
-        # Empty table = all signups auto-approve; non-empty = only listed
-        # domains (exact or *.suffix) auto-approve, others go to pending_approval.
-        # ``created_by`` uses ON DELETE SET NULL so hard-deleting a user who
-        # once added an entry doesn't fail with a FK violation; the field is
-        # informational/audit only.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS signup_allowed_domains (
-                domain TEXT NOT NULL,
-                is_wildcard BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-                PRIMARY KEY (domain, is_wildcard)
-            )
-        """)
-
-        # Migration: existing databases created the FK without
-        # ON DELETE SET NULL, which blocks hard_delete_user. Rebuild the
-        # constraint in place. Auto-generated name is
-        # ``signup_allowed_domains_created_by_fkey``.
-        fk_def = await constraint_definition(
-            conn, "signup_allowed_domains", "signup_allowed_domains_created_by_fkey"
-        )
-        try:
-            if fk_def is None or "ON DELETE SET NULL" not in fk_def:
-                async with bounded_ddl(conn), conn.transaction():
-                    await execute_ddl(
-                        conn,
-                        "ALTER TABLE signup_allowed_domains "
-                        "DROP CONSTRAINT IF EXISTS signup_allowed_domains_created_by_fkey",
-                    )
-                    await execute_ddl(
-                        conn,
-                        "ALTER TABLE signup_allowed_domains "
-                        "ADD CONSTRAINT signup_allowed_domains_created_by_fkey "
-                        "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL",
-                    )
-        except _asyncpg.PostgresError as exc:
-            logger.error(
-                "Failed to rebuild signup_allowed_domains_created_by_fkey "
-                "with ON DELETE SET NULL; transaction rolled back. error=%s",
-                exc,
-            )
-            raise
-
-        # --- site_settings ---
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS site_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                value_type TEXT NOT NULL DEFAULT 'str',
-                updated_at TIMESTAMPTZ DEFAULT NOW(),
-                updated_by TEXT
-            )
-        """)
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS model_visibility_overrides (
-                model_id TEXT PRIMARY KEY,
-                required_role TEXT NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT
-            )
-        """)
-
-        # Migrate legacy 'trial' visibility overrides to 'free'. Trial was
-        # removed from VALID_ROLES, so an override left at 'trial' would be
-        # treated as invalid and fail closed to admin, hiding the model.
-        tag = await conn.execute(
-            "UPDATE model_visibility_overrides SET required_role = 'free' "
-            "WHERE required_role = 'trial'"
-        )
-        migrated_overrides = _parse_command_tag_count(tag)
-        if migrated_overrides:
-            logger.info(
-                "Migrated %d model visibility overrides from trial to free.",
-                migrated_overrides,
-            )
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS model_concurrency_exemptions (
-                model_id TEXT PRIMARY KEY,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT
-            )
-        """)
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_weight_overrides (
-                model_id TEXT NOT NULL,
-                endpoint_id TEXT NOT NULL,
-                weight DOUBLE PRECISION NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT,
-                PRIMARY KEY (model_id, endpoint_id)
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pwo_model ON provider_weight_overrides(model_id)"
-        )
-
-        # Admin-set capabilities for one route (context window, output cap, input
-        # modalities, tool support). A row overrides the route's models.yaml values
-        # or the values it was created with; no row means the route keeps those.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_route_capabilities (
-                model_id TEXT NOT NULL,
-                route_id TEXT NOT NULL,
-                capabilities JSONB NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT,
-                PRIMARY KEY (model_id, route_id)
-            )
-        """)
-
-        # Admin-controlled kill switch: a row here means the provider label is
-        # excluded from routing (all its endpoints treated as weight 0). Empty
-        # table = every provider enabled, so the default state needs no seeding.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS disabled_providers (
-                provider TEXT PRIMARY KEY,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT
-            )
-        """)
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_route_configs (
-                model_id TEXT NOT NULL,
-                route_id TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                openrouter_sort TEXT,
-                deployment_type TEXT,
-                base_url TEXT NOT NULL,
-                api_key_id TEXT,
-                provider_model_id TEXT NOT NULL,
-                quota_limit INTEGER,
-                concurrency_limit INTEGER,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT,
-                PRIMARY KEY (model_id, route_id)
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_prc_model ON provider_route_configs(model_id)"
-        )
-        await apply_column_migrations(
-            conn,
-            "provider_route_configs",
-            [
-                (
-                    "quota_limit",
-                    "ALTER TABLE provider_route_configs "
-                    "ADD COLUMN IF NOT EXISTS quota_limit INTEGER",
-                ),
-                (
-                    "concurrency_limit",
-                    "ALTER TABLE provider_route_configs "
-                    "ADD COLUMN IF NOT EXISTS concurrency_limit INTEGER",
-                ),
-                (
-                    "openrouter_sort",
-                    "ALTER TABLE provider_route_configs "
-                    "ADD COLUMN IF NOT EXISTS openrouter_sort TEXT",
-                ),
-                (
-                    "deployment_type",
-                    "ALTER TABLE provider_route_configs "
-                    "ADD COLUMN IF NOT EXISTS deployment_type TEXT",
-                ),
-            ],
-        )
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_route_candidates (
-                model_id TEXT NOT NULL,
-                route_id TEXT NOT NULL,
-                route_type TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                openrouter_sort TEXT,
-                deployment_type TEXT NOT NULL DEFAULT 'auto',
-                base_url TEXT NOT NULL,
-                api_key_id TEXT,
-                provider_model_id TEXT NOT NULL,
-                quota_limit INTEGER,
-                concurrency_limit INTEGER,
-                weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-                pricing JSONB,
-                capabilities JSONB,
-                endpoint_id TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT,
-                PRIMARY KEY (model_id, route_id)
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_prcand_model ON provider_route_candidates(model_id)"
-        )
-        await apply_column_migrations(
-            conn,
-            "provider_route_candidates",
-            [
-                (
-                    "openrouter_sort",
-                    "ALTER TABLE provider_route_candidates "
-                    "ADD COLUMN IF NOT EXISTS openrouter_sort TEXT",
-                ),
-                (
-                    "pricing",
-                    "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS pricing JSONB",
-                ),
-                (
-                    "capabilities",
-                    "ALTER TABLE provider_route_candidates "
-                    "ADD COLUMN IF NOT EXISTS capabilities JSONB",
-                ),
-                (
-                    "deployment_type",
-                    "ALTER TABLE provider_route_candidates "
-                    "ADD COLUMN IF NOT EXISTS deployment_type TEXT NOT NULL DEFAULT 'auto'",
-                ),
-                # Set only after an edit moved the route to another endpoint;
-                # NULL means the endpoint id is the route id.
-                (
-                    "endpoint_id",
-                    "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS endpoint_id TEXT",
-                ),
-            ],
-        )
-
-        # Admin state of one route, by its stable route id: disabled (kept,
-        # selected by nothing) and/or removed (a config route taken out of this
-        # deployment). No row means enabled and present.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_route_states (
-                model_id TEXT NOT NULL,
-                route_id TEXT NOT NULL,
-                disabled BOOLEAN NOT NULL DEFAULT FALSE,
-                removed BOOLEAN NOT NULL DEFAULT FALSE,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT,
-                PRIMARY KEY (model_id, route_id)
-            )
-        """)
-
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS routewise_probe_samples (
-                id BIGSERIAL PRIMARY KEY,
-                model_id TEXT NOT NULL,
-                endpoint_id TEXT NOT NULL,
-                ttft_ms DOUBLE PRECISION,
-                ok BOOLEAN NOT NULL,
-                error TEXT,
-                cost_usd DOUBLE PRECISION,
-                checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_rw_probe_endpoint_time "
-            "ON routewise_probe_samples(endpoint_id, checked_at DESC)"
-        )
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_rw_probe_model_time "
-            "ON routewise_probe_samples(model_id, checked_at DESC)"
-        )
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS routewise_probe_leases (
-                lease_key TEXT PRIMARY KEY,
-                holder_id TEXT NOT NULL,
-                expires_at TIMESTAMPTZ NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-
-        # --- provider_api_keys ---
-        # Runtime-managed upstream provider credentials added by admins
-        # through the dashboard. Augments env-var-sourced keys at boot.
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_api_keys (
-                id TEXT PRIMARY KEY,
-                provider TEXT NOT NULL,
-                api_key TEXT NOT NULL,
-                key_prefix TEXT NOT NULL,
-                label TEXT,
-                status TEXT NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active', 'disabled')),
-                created_by TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                min_role TEXT NOT NULL DEFAULT 'free'
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status "
-            "ON provider_api_keys(provider, status)"
-        )
-        # Tier reservation: the lowest role allowed to spend the key. Added
-        # after the table shipped, so migrate rather than assume. No CHECK
-        # constraint — the role vocabulary lives in ``VALID_ROLES`` and is
-        # enforced at the admin API; a future role must not require a DDL lock
-        # on a table the request path reads at boot.
-        await apply_column_migrations(
-            conn,
-            "provider_api_keys",
-            [
-                (
-                    "min_role",
-                    "ALTER TABLE provider_api_keys "
-                    "ADD COLUMN IF NOT EXISTS min_role TEXT NOT NULL DEFAULT 'free'",
-                ),
-            ],
-        )
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_definitions (
-                provider TEXT PRIMARY KEY,
-                display_name TEXT NOT NULL,
-                adapter_kind TEXT NOT NULL,
-                default_base_url TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active', 'disabled')),
-                created_by TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_by TEXT,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        """)
-        await conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_provider_definitions_status "
-            "ON provider_definitions(status)"
-        )
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS disabled_provider_env_keys (
-                provider TEXT NOT NULL,
-                key_hash TEXT NOT NULL,
-                key_prefix TEXT NOT NULL,
-                disabled_by TEXT,
-                disabled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (provider, key_hash)
-            )
-        """)
-        await conn.execute("DROP INDEX IF EXISTS idx_disabled_provider_env_keys_provider")
-
-        # --- provider_env_key_min_roles ---
-        # Tier reservation for env-sourced provider keys. An env credential has
-        # no row of its own (only the var it came from), so — exactly like the
-        # disable tombstone above — the reservation is keyed by the key's hash.
-        # Absent row means unreserved; a row is deleted rather than set to
-        # 'free', so the table reads as "the env keys that are reserved".
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS provider_env_key_min_roles (
-                provider TEXT NOT NULL,
-                key_hash TEXT NOT NULL,
-                key_prefix TEXT NOT NULL,
-                min_role TEXT NOT NULL,
-                updated_by TEXT,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (provider, key_hash)
-            )
-        """)
-
-        if deferred is not None:
-            raise SchemaLockUnavailable(
-                "the account migrations (login names, phone numbers, accounts without an "
-                "email, phone code purposes) are not all applied yet; until they are, "
-                "first-run setup and phone sign-in answer 503 and the rest works on the "
-                f"current tables: {deferred}"
-            ) from deferred
+        seeded = _parse_command_tag_count(tag)
+        if seeded:
+            logger.info("Seeded %d admin role assignments from ADMIN_EMAILS.", seeded)
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
@@ -1228,9 +437,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_user_by_id(self, user_id: str) -> Row | None:
         """Fetch a single user row by primary key."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
-                f"SELECT {self._user_select} FROM users WHERE id = $1",
+                f"SELECT {_USER_SELECT} FROM users WHERE id = $1",
                 user_id,
             )
         return _coerce_user_row(row)
@@ -1239,24 +448,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Fetch a single user row by lowercased email."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
-                f"SELECT {self._user_select} FROM users WHERE email = $1",
+                f"SELECT {_USER_SELECT} FROM users WHERE email = $1",
                 email.lower(),
             )
         return _coerce_user_row(row)
 
     async def get_user_by_login_name(self, login_name: str) -> Row | None:
-        """Fetch a single user row by login name, compared case-insensitively.
-
-        None, without a query, while the users table has no ``login_name``
-        column: until the upgrade adds it no account can have a login name.
-        """
-        schema = await self._account_schema_where(lambda s: s.has("login_name"))
-        if not schema.has("login_name"):
-            return None
+        """Fetch a single user row by login name, compared case-insensitively."""
         async with self._pool.acquire() as conn:
             # Matches the expression and predicate of idx_users_login_name.
             row = await conn.fetchrow(
-                f"SELECT {self._user_select} FROM users "
+                f"SELECT {_USER_SELECT} FROM users "
                 "WHERE lower(login_name) = $1 AND login_name IS NOT NULL",
                 login_name.strip().lower(),
             )
@@ -1274,33 +476,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         signup_reason: str | None = None,
         login_name: str | None = None,
     ) -> None:
-        """Insert a new user row.
-
-        A signup (an email and no login name) names only columns every
-        release's users table has, so it works while the account migration
-        is still pending. An account with a login name or without an email
-        needs that migration.
-
-        Raises:
-            AccountSchemaPending: The account needs columns the upgrade has
-                not added yet.
-        """
-        if login_name is None and email is not None:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    "INSERT INTO users (id, email, password_hash, user_name, "
-                    "email_verified, status, signup_reason) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                    user_id,
-                    email.lower(),
-                    password_hash,
-                    user_name,
-                    email_verified,
-                    status,
-                    signup_reason,
-                )
-            return
-        await self._require_account_schema("login_names")
+        """Insert a new user row."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, user_name, "
@@ -1376,7 +552,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         marker_key: str,
         marker_value: str,
         code_key: str,
-        admin_ip: str,
+        admin_ip: str | None = None,
+        actor: AuditActor | None = None,
     ) -> bool:
         """Create the first administrator unless setup has already completed.
 
@@ -1385,12 +562,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         READ COMMITTED (asyncpg's default) every statement after the lock takes
         a fresh snapshot, so a claim that waited on the lock sees the winner's
         committed user and marker and backs out.
-
-        Raises:
-            AccountSchemaPending: The users table cannot hold an account with
-                a login name and no email yet; nothing was written.
         """
-        await self._require_account_schema("login_names")
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(_FIRST_RUN_SETUP_LOCK_SQL)
             if await conn.fetchval("SELECT 1 FROM site_settings WHERE key = $1", marker_key):
@@ -1415,15 +590,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             # The code has done its job; it must not outlive the setup it guards.
             await conn.execute("DELETE FROM site_settings WHERE key = $1", code_key)
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "setup.admin_created",
-                user_id,
-                json.dumps({"login_name": login_name.lower(), "user_name": user_name}),
-                True,
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="setup.admin_created",
+                details={"login_name": login_name.lower(), "user_name": user_name},
+                success=True,
             )
         return True
 
@@ -1460,6 +632,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             set_parts.append(f"{USERS_MUTABLE_COLUMNS[key]} = ${idx}")
             params.append(val)
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             await conn.execute(f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1", *params)
             await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE user_id = $1", user_id)
             await conn.execute(
@@ -1477,11 +650,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         self,
         user_id: str,
         *,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
         self_service: bool = False,
+        actor: AuditActor | None = None,
     ) -> None:
         """Soft-delete: set status='deleted', revoke keys, purge sessions/tokens.
 
@@ -1490,7 +664,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         requires the account to still be active and not an administrator
         under the row lock; otherwise ``SelfDeleteRefused`` rolls it all back.
         """
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
+        details: dict[str, Any] = {"email": email, "reason": reason}
+        if admin_id is not None:
+            details["admin_id"] = admin_id
+        if self_service:
+            details["self_service"] = True
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             if self_service:
                 # The route checked these before proving ownership; a promotion
                 # or suspension committed since must win over the deletion.
@@ -1510,18 +693,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             await self._forget_browser_session_account(conn, user_id)
             await conn.execute("DELETE FROM email_verification_tokens WHERE user_id = $1", user_id)
             await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", user_id)
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "delete_user",
-                user_id,
-                json.dumps(
-                    {"email": email, "reason": reason}
-                    | ({"self_service": True} if self_service else {})
-                ),
-                True,
+            await insert_audit_row(
+                conn, columns=audit, action="delete_user", details=details, success=True
             )
 
     @staticmethod
@@ -1541,16 +714,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def _forget_phone_challenges(
         conn: asyncpg.Connection, user_id: str, *, erase_attempts: bool
     ) -> None:
-        """Delete a deleted account's phone codes and, on erasure, its number's attempts.
-
-        Whether the users table has a phone number to match is read from the
-        catalog here rather than from the store's account schema, which can be
-        older: an erasure must not skip a number stored since the migration.
-        """
-        if "phone" not in await existing_columns(conn, "users"):
-            # No column, so no number: only codes bound to the account remain.
-            await conn.execute("DELETE FROM phone_auth_codes WHERE user_id = $1", user_id)
-            return
+        """Delete a deleted account's phone codes and, on erasure, its number's attempts."""
         await conn.execute(
             "DELETE FROM phone_auth_codes WHERE user_id = $1 OR "
             "phone = (SELECT phone FROM users WHERE id = $1)",
@@ -1610,12 +774,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         self,
         user_id: str,
         *,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        actor: AuditActor | None = None,
     ) -> None:
-        """Resume a soft-deleted user: set status='active' and audit.
+        """Resume a soft-deleted user: set status='active' and audit it as *actor*.
 
         API keys remain ``revoked`` — the user re-creates one through the
         normal flow.  All mutations and the audit-log insert are atomic.
@@ -1625,6 +790,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         hard-delete claim. The row lock makes resume and the operational
         hard-delete claim mutually exclusive.
         """
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
@@ -1633,15 +801,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             if row is not None and row["hard_delete_pending"]:
                 raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
             await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "resume_user",
-                user_id,
-                json.dumps({"admin_id": admin_id, "email": email, "reason": reason}),
-                True,
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="resume_user",
+                details={"admin_id": admin_id, "email": email, "reason": reason},
+                success=True,
             )
 
     async def hard_delete_user(
@@ -1649,10 +814,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         user_id: str,
         *,
         claim_token: str,
-        admin_ip: str,
-        admin_id: str,
+        admin_ip: str | None = None,
+        admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        actor: AuditActor | None = None,
     ) -> dict[str, int]:
         """Permanently delete a user row and all operationally-linked rows.
 
@@ -1660,7 +826,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         the caller must purge them separately via
         ``LogStore.hard_delete_user_data``.  Returns ``{table_name: row_count}``
         for audit details.
+
+        The erased audit rows are those whose user target is this account;
+        rows it wrote as an actor about something else keep its id.
         """
+        audit = audit_columns(
+            admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
+        )
 
         def _row_count(status: str) -> int:
             # asyncpg execute() returns "DELETE <n>" / "UPDATE <n>" — parse n
@@ -1670,6 +842,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 return 0
 
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             user_row = await conn.fetchrow(
                 "SELECT status, hard_delete_pending, hard_delete_claim_token "
                 "FROM users WHERE id = $1 FOR UPDATE",
@@ -1704,6 +877,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             cost_status = await conn.execute(
                 "DELETE FROM user_daily_cost WHERE user_id = $1", user_id
             )
+            key_cost_status = await conn.execute(
+                "DELETE FROM api_key_daily_cost WHERE user_id = $1", user_id
+            )
             audit_status = await conn.execute(
                 "DELETE FROM admin_audit_log WHERE target_user_id = $1", user_id
             )
@@ -1716,6 +892,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "email_verification_tokens": _row_count(verif_status),
                 "password_reset_tokens": _row_count(reset_status),
                 "user_daily_cost": _row_count(cost_status),
+                "api_key_daily_cost": _row_count(key_cost_status),
                 "admin_audit_log": _row_count(audit_status),
                 "users": _row_count(user_status),
             }
@@ -1724,22 +901,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             # entries for this user were wiped above — the caller accepted
             # that compliance loss.  No FK on target_user_id, so an orphan
             # reference here is fine.
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                "hard_delete_user",
-                user_id,
-                json.dumps(
-                    {
-                        "admin_id": admin_id,
-                        "email": email,
-                        "reason": reason,
-                        "rows_wiped": counts,
-                    }
-                ),
-                True,
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="hard_delete_user",
+                details={
+                    "admin_id": admin_id,
+                    "email": email,
+                    "reason": reason,
+                    "rows_wiped": counts,
+                },
+                success=True,
             )
 
         return counts
@@ -1841,7 +1013,6 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         today_str = datetime.now(UTC).date().isoformat()
         prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
         prior_7d_end = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
-        schema = self._account_schema
 
         where_clauses: list[str] = []
         filter_params: list[Any] = []
@@ -1852,19 +1023,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if search:
             # Search matches email, login name, phone and display name as
             # substrings, plus a user.id prefix and an active key_prefix
-            # prefix. A login name or phone column the upgrade has not added
-            # yet holds nothing to match.
+            # prefix.
             substr_idx = len(filter_params) + 1  # %search%
             id_idx = len(filter_params) + 2  # search% (id prefix)
             kp_idx = len(filter_params) + 3  # search% (key prefix)
-            identifiers = "".join(
-                f"OR u.{column} ILIKE ${substr_idx} "
-                for column in ("login_name", "phone")
-                if schema.has(column)
-            )
             where_clauses.append(
                 f"(u.email ILIKE ${substr_idx} "
-                f"{identifiers}"
+                f"OR u.login_name ILIKE ${substr_idx} "
+                f"OR u.phone ILIKE ${substr_idx} "
                 f"OR u.user_name ILIKE ${substr_idx} "
                 f"OR u.id::text LIKE ${id_idx} "
                 f"OR EXISTS (SELECT 1 FROM api_keys k2 "
@@ -2037,9 +1203,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
             # Main query — always uses CTE form (filtered_users) so we can
             # share the WHERE clause and join optional cost CTEs uniformly.
-            identity = schema.select(
-                ("id", "email", "login_name", "phone", "phone_verified", "user_name"), "u"
-            )
+            identity = "u.id, u.email, u.login_name, u.phone, u.phone_verified, u.user_name"
             cte_parts = [
                 f"filtered_users AS ("
                 f"  SELECT {identity}, u.role, u.status, "
@@ -2048,7 +1212,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 f"  u.created_at, u.last_login_at, "
                 f"  k.key_prefix, k.status AS key_status "
                 f"  FROM users u "
-                f"  LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active' "
+                # One row per user: an account can hold several active keys,
+                # and the list shows its newest.
+                f"  LEFT JOIN LATERAL ("
+                f"    SELECT key_prefix, status FROM api_keys "
+                f"    WHERE account_id = u.id AND status = 'active' "
+                f"    ORDER BY created_at DESC, id DESC LIMIT 1"
+                f"  ) k ON TRUE "
                 f"  {where_sql}"
                 f")"
             ]
@@ -2093,11 +1263,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
                 select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
 
-            stored_usage = needs_usage_sort and await user_usage_rollup.stored_ready(conn)
             if needs_usage_sort:
-                usage_totals = user_usage_rollup.metrics_sql(
-                    "IN (SELECT id FROM filtered_users)", stored=stored_usage
-                )
+                usage_totals = user_usage_rollup.metrics_sql("IN (SELECT id FROM filtered_users)")
                 cte_parts.append(f"usage_totals AS ({usage_totals})")
                 join_parts.append("LEFT JOIN usage_totals ux ON ux.user_id = fu.id")
                 select_extras.append("COALESCE(ux.request_count, 0) AS usage_alltime_requests")
@@ -2108,7 +1275,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             ctes = ", ".join(cte_parts)
 
             async with conn.transaction():
-                if stored_usage:
+                if needs_usage_sort:
                     await conn.execute(user_usage_rollup.NO_JIT_SQL)
                 rows = await conn.fetch(
                     f"WITH {ctes} "
@@ -2255,10 +1422,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         Returns full projection in a single round-trip.
         """
-        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
-        async with self._pool.acquire() as conn:
+        identity = _JOINED_USER_IDENTITY
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                f"k.quota_monthly_cost_usd, {_AUTH_KEY_COLUMNS}, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -2279,11 +1447,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         counter row yet reads the same as the separate query's default. The
         day expression is the counter write path's, so both sides of the quota
         gate bucket midnight identically.
+
+        The key's own limits come with it, and, for a key with a budget, what
+        the key spent today and this month (``key_spent_today_usd``,
+        ``key_spent_month_usd``; see ``_KEY_SPEND_JOIN``), and, for an
+        account with a monthly quota, what it spent this month
+        (``account_spent_month_usd``; see ``_ACCOUNT_MONTH_SPEND_JOIN``). Still
+        one round-trip.
         """
-        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
-        async with self._pool.acquire() as conn:
+        identity = _JOINED_USER_IDENTITY
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
+                "k.quota_monthly_cost_usd, am.account_spent_month_usd, "
+                f"{_AUTH_KEY_COLUMNS}, ks.key_spent_today_usd, ks.key_spent_month_usd, "
                 f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd "
                 "FROM api_keys k "
@@ -2291,6 +1468,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "LEFT JOIN user_daily_cost s "
                 "  ON s.user_id = k.user_id "
                 " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+                f"{_KEY_SPEND_JOIN}"
+                f"{_ACCOUNT_MONTH_SPEND_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -2300,12 +1479,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return _coerce_user_row(row)
 
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
-        """Lightweight identity lookup (no quota check, no last_used write)."""
-        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
-        async with self._pool.acquire() as conn:
+        """Lightweight identity lookup (no quota check, no last_used write).
+
+        Carries the key's model allowlist, which the model listings apply.
+        """
+        identity = _JOINED_USER_IDENTITY
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
-                "u.max_concurrent_requests "
+                "u.max_concurrent_requests, k.allowed_models "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -2349,9 +1531,34 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return dict(row) if row is not None else None
 
     async def update_key_last_used(self, key_id: int) -> None:
-        """Set ``last_used_at = NOW()`` for the given key id."""
+        """Set ``last_used_at = NOW()`` for the given key id, at most once a minute.
+
+        The guard leaves a row written in the last minute alone: no new row
+        version and no row lock held to the end of a write, so the processes
+        serving a busy key do not queue on its row for a column the console
+        reads at minute resolution.
+        """
         async with self._pool.acquire() as conn:
-            await conn.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", key_id)
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1 "
+                "AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '60 seconds')",
+                key_id,
+            )
+
+    async def get_key_spend(self, key_id: int) -> tuple[float, float]:
+        """What key *key_id* spent on the current UTC day and month, from its counter."""
+        async with self._request_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(cost_usd) FILTER ("
+                "         WHERE day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
+                "         AS today, "
+                "       COALESCE(SUM(cost_usd), 0) AS month "
+                "FROM api_key_daily_cost "
+                "WHERE key_id = $1 "
+                "  AND day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')",
+                key_id,
+            )
+        return float(row["today"]), float(row["month"])
 
     async def create_key(
         self,
@@ -2367,10 +1574,27 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         api_key_encrypted: str | None = None,
         metadata: str | dict[str, Any] | None = None,
         account_id: str | None = None,
+        inherit_account_quota: bool = False,
+        name: str | None = None,
+        max_active_keys: int | None = None,
     ) -> Row:
-        """Insert a new API key. Returns the inserted row."""
-        import asyncpg as _asyncpg
+        """Insert a new API key. Returns the inserted row.
 
+        The quota is the account's (see :meth:`OperationalStore.create_key`).
+        With ``inherit_account_quota`` a key added to an account that already
+        has an unrevoked key takes that account's quota, and the given values
+        only seed a first key. Without it the given values become the
+        account's, and every other unrevoked key of the user is set to them in
+        the same transaction.
+
+        ``max_active_keys`` caps the account's active keys. Everything runs
+        under the account lock (:func:`_lock_account_keys`), so two concurrent
+        creates cannot both pass a cap of one remaining slot, and a quota or
+        status written to the account meanwhile reaches the new key.
+
+        Raises:
+            APIKeyLimitReachedError: The account already holds ``max_active_keys``.
+        """
         # Default account_id to user_id so self-service AND admin-created keys
         # are visible/manageable in the dashboard (list/info/lookup all key off
         # account_id). Callers that omit account_id (e.g. admin key creation)
@@ -2383,41 +1607,186 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if isinstance(metadata, dict):
             metadata = json.dumps(metadata)
 
-        async with self._pool.acquire() as conn:
-            try:
-                row = await conn.fetchrow(
-                    "INSERT INTO api_keys "
-                    "(key_hash, key_prefix, user_id, user_name, "
-                    "quota_daily_cost_usd, quota_monthly_cost_usd, "
-                    "expires_at, notes, metadata, account_id, api_key_encrypted) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11) "
-                    "RETURNING id, created_at",
-                    key_hash,
-                    key_prefix,
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
+            if max_active_keys is not None:
+                active = await conn.fetchval(
+                    "SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND status = 'active'",
                     user_id,
-                    user_name,
-                    quota_daily_cost_usd,
-                    quota_monthly_cost_usd,
-                    expires_at,
-                    notes,
-                    metadata,
-                    effective_account_id,
-                    api_key_encrypted,
                 )
-            except _asyncpg.UniqueViolationError as exc:
-                # Active-key uniqueness is enforced per user_id
-                # (idx_api_keys_user_unique) and per account_id
-                # (idx_api_keys_account_active_unique). Convert either to a clean
-                # 409 (DuplicateAPIKeyError has a global handler) instead of a
-                # 500, and guard the concurrent-create race. Re-raise other
-                # unique violations (e.g. key_prefix collision).
-                if exc.constraint_name in (
-                    "idx_api_keys_user_unique",
-                    "idx_api_keys_account_active_unique",
-                ):
-                    raise DuplicateAPIKeyError("You already have an active API key") from exc
-                raise
+                if active >= max_active_keys:
+                    raise APIKeyLimitReachedError(max_active_keys)
+            daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
+            if inherit_account_quota:
+                current = await conn.fetchrow(
+                    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd "
+                    "FROM api_keys WHERE user_id = $1 AND status <> 'revoked' "
+                    "ORDER BY created_at, id LIMIT 1",
+                    user_id,
+                )
+                if current is not None:
+                    daily = current["quota_daily_cost_usd"]
+                    monthly = current["quota_monthly_cost_usd"]
+            row = await conn.fetchrow(
+                f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}) VALUES ({_KEY_INSERT_VALUES}) "
+                "RETURNING id, created_at",
+                key_hash,
+                key_prefix,
+                user_id,
+                user_name,
+                daily,
+                monthly,
+                expires_at,
+                notes,
+                metadata,
+                effective_account_id,
+                api_key_encrypted,
+                name,
+            )
+            await _sync_account_quota(
+                conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
+            )
         return dict(row)
+
+    async def count_active_keys(self, user_id: str) -> int:
+        """Return how many active keys *user_id* holds."""
+        async with self._pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND status = 'active'",
+                user_id,
+            )
+        return int(count or 0)
+
+    async def list_account_keys(self, account_id: str) -> list[Row]:
+        """Every key the account owns, live first then newest, for its own console.
+
+        Includes the ciphertext the console decrypts to show a saved key; the
+        hash never leaves the store.
+
+        ``spent_today_usd`` and ``spent_month_usd`` are what the key spent on
+        the current UTC day and month, from ``api_key_daily_cost``, the days
+        that bucket the account's quota. At most a month of counter rows per
+        key is read, through its primary key.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT k.id, k.key_prefix, k.name, k.created_at, k.last_used_at, k.status, "
+                f"k.api_key_encrypted, {_KEY_LIMIT_COLUMNS}, "
+                "COALESCE(s.today, 0) AS spent_today_usd, "
+                "COALESCE(s.month, 0) AS spent_month_usd "
+                "FROM api_keys k "
+                "LEFT JOIN LATERAL ("
+                "  SELECT SUM(c.cost_usd) FILTER (WHERE c.day = d.today) AS today, "
+                "         SUM(c.cost_usd) AS month "
+                "  FROM api_key_daily_cost c, "
+                "       (SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS today, "
+                "               to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), "
+                "                       'YYYY-MM-DD') AS month_start) d "
+                "  WHERE c.key_id = k.id AND c.day >= d.month_start"
+                ") s ON TRUE "
+                "WHERE k.account_id = $1 "
+                "ORDER BY (k.status = 'active') DESC, k.created_at DESC, k.id DESC",
+                account_id,
+            )
+        return [dict(row) for row in rows]
+
+    async def update_key_settings(
+        self, account_id: str, key_prefix: str, changes: dict[str, Any]
+    ) -> tuple[Row, Row] | None:
+        """Change the owner's settings on the account's unrevoked key *key_prefix*.
+
+        *changes* maps columns of :data:`KEY_SETTINGS_COLUMNS` to their new
+        values; a column it leaves out is unchanged, and None clears one.
+        Returns the key's settings ``(before, after)``, or None when the account
+        has no such key. The row lock keeps two concurrent changes from both
+        reporting the same ``before``.
+
+        Raises:
+            ValueError: *changes* is empty or names another column.
+        """
+        if not changes or set(changes) - set(KEY_SETTINGS_COLUMNS):
+            raise ValueError(f"key settings must be a non-empty subset of {KEY_SETTINGS_COLUMNS}")
+        columns = [c for c in KEY_SETTINGS_COLUMNS if c in changes]
+        assignments = ", ".join(f"{c} = ${i}" for i, c in enumerate(columns, start=3))
+        returned = ", ".join(KEY_SETTINGS_COLUMNS)
+        async with self._pool.acquire() as conn, conn.transaction():
+            before = await conn.fetchrow(
+                f"SELECT id, {returned} FROM api_keys "
+                "WHERE account_id = $1 AND key_prefix = $2 AND status <> 'revoked' "
+                "FOR UPDATE",
+                account_id,
+                key_prefix,
+            )
+            if before is None:
+                return None
+            after = await conn.fetchrow(
+                f"UPDATE api_keys SET {assignments} WHERE account_id = $1 AND key_prefix = $2 "
+                f"AND id = ${len(columns) + 3} RETURNING {returned}",
+                account_id,
+                key_prefix,
+                *(changes[c] for c in columns),
+                before["id"],
+            )
+        old = dict(before)
+        del old["id"]
+        return old, dict(after)
+
+    async def rotate_key(
+        self,
+        account_id: str,
+        key_prefix: str | None,
+        *,
+        new_key_hash: str,
+        new_key_prefix: str,
+        api_key_encrypted: str | None,
+    ) -> Row | None:
+        """Give the account's active key *key_prefix* a new credential.
+
+        The key stays the same key: its row, and so its id, name, limits,
+        quota, expiry, notes, metadata and creation time, are kept, and only
+        its secret changes (hash, prefix and ciphertext). Everything keyed by
+        the id carries on: what the key spent counts against its budgets after
+        the rotation as before, and its request history stays its own. The old
+        secret stops authenticating with the commit.
+
+        One transaction under the account lock. A *key_prefix* of None means the
+        account's only active key, for clients written when an account held
+        one. Which key that is gets decided under the lock, so a key created
+        meanwhile is never rotated in its place.
+
+        Returns ``{"id", "created_at", "old_key_prefix"}``, or None when the
+        account has no such active key.
+
+        Raises:
+            AmbiguousAPIKeyError: *key_prefix* is None and the account holds
+                several active keys.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, account_id)
+            if key_prefix is None:
+                live = await conn.fetch(
+                    "SELECT key_prefix FROM api_keys "
+                    "WHERE account_id = $1 AND status = 'active' LIMIT 2",
+                    account_id,
+                )
+                if len(live) > 1:
+                    raise AmbiguousAPIKeyError()
+                if not live:
+                    return None
+                key_prefix = live[0]["key_prefix"]
+            row = await conn.fetchrow(
+                "UPDATE api_keys SET key_hash = $3, key_prefix = $4, api_key_encrypted = $5 "
+                "WHERE account_id = $1 AND key_prefix = $2 AND status = 'active' "
+                "RETURNING id, created_at",
+                account_id,
+                key_prefix,
+                new_key_hash,
+                new_key_prefix,
+                api_key_encrypted,
+            )
+        if row is None:
+            return None
+        return {"id": row["id"], "created_at": row["created_at"], "old_key_prefix": key_prefix}
 
     async def check_active_key_exists(self, user_id: str) -> bool:
         """Return True if *user_id* already has an active key."""
@@ -2499,12 +1868,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return d
 
     async def update_key(self, user_id: str, **fields: Any) -> None:
-        """Dynamically update key columns for *user_id*'s current key.
+        """Dynamically update the columns of every unrevoked key *user_id* holds.
+
+        An account-level write: an account may hold several keys, and the
+        fields here (quota, status, expiry, notes) describe the account, so
+        all of its live keys change together -- which is also what keeps the
+        account quota identical on each of them (see :func:`_sync_account_quota`).
 
         Revoked rows are never touched: a user keeps old revoked rows after
         regenerating a key, and updating them would silently resurrect dead
-        keys (``status='active'`` on every row also violates the
-        one-active-key-per-user partial unique index).
+        keys.
         """
         if not fields:
             return
@@ -2525,14 +1898,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         sql = (
             f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = $1 AND status <> 'revoked'"
         )
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             await conn.execute(sql, *params)
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
-        """Soft-revoke (status='revoked') or hard-delete the key."""
-        async with self._pool.acquire() as conn:
+        """Soft-revoke (status='revoked') or hard-delete every key of *user_id*."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
             if hard_delete:
                 await conn.execute("DELETE FROM api_keys WHERE user_id = $1", user_id)
+                await conn.execute("DELETE FROM api_key_daily_cost WHERE user_id = $1", user_id)
             else:
                 await conn.execute(
                     "UPDATE api_keys SET status = 'revoked' WHERE user_id = $1",
@@ -2546,35 +1922,34 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         new_key_hash: str,
         new_key_prefix: str,
     ) -> str:
-        """Atomically replace the active key's hash/prefix. Returns old key_prefix.
+        """Atomically replace the newest active key's hash/prefix. Returns old key_prefix.
 
-        Scoped to the active row: users keep old revoked rows around, and
-        rewriting key_hash on all of them would violate the unique key_hash
-        constraint (and resurrect revoked credentials).
+        Scoped to one row: users keep old revoked rows around, and an account
+        may hold several active keys. Rewriting key_hash on more than one row
+        would violate the unique key_hash constraint (and resurrect revoked
+        credentials).
         """
         async with self._pool.acquire() as conn, conn.transaction():
             old_row = await conn.fetchrow(
-                "SELECT key_prefix FROM api_keys WHERE user_id = $1 AND status = 'active'",
+                "SELECT id, key_prefix FROM api_keys WHERE user_id = $1 AND status = 'active' "
+                "ORDER BY created_at DESC, id DESC LIMIT 1 FOR UPDATE",
                 user_id,
             )
             if not old_row:
                 raise ValueError(f"No active key found for user_id={user_id}")
             await conn.execute(
-                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 "
-                "WHERE user_id = $3 AND status = 'active'",
+                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3",
                 new_key_hash,
                 new_key_prefix,
-                user_id,
+                old_row["id"],
             )
         return old_row["key_prefix"]
 
     async def get_key_by_account_or_user(self, account_id: str) -> Row | None:
-        """Fetch the active key by account_id OR user_id.
+        """Fetch the newest active key by account_id OR user_id.
 
-        Unlike :meth:`get_active_key_by_account`, this matches the real
-        ``idx_api_keys_user_unique`` (user_id) constraint, so it also finds
-        legacy keys whose ``account_id`` is NULL. Prefer it for the
-        create/regenerate pre-checks.
+        Unlike :meth:`get_active_key_by_account`, this matches by ``user_id``
+        too, so it also finds legacy keys whose ``account_id`` is NULL.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -2582,18 +1957,22 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "quota_daily_cost_usd "
                 "FROM api_keys "
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active' "
-                "LIMIT 1",
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
                 account_id,
             )
         return dict(row) if row else None
 
     async def get_active_key_by_account(self, account_id: str) -> Row | None:
-        """Fetch the active key for self-registered user by account_id."""
+        """Fetch the newest active key of a self-registered user by account_id.
+
+        The quota on it is the account's: every unrevoked key carries the same.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, key_prefix, created_at, last_used_at, status, "
                 "quota_daily_cost_usd "
-                "FROM api_keys WHERE account_id = $1 AND status = 'active'",
+                "FROM api_keys WHERE account_id = $1 AND status = 'active' "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
                 account_id,
             )
         return dict(row) if row else None
@@ -2634,6 +2013,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 token_hash,
             )
         return dict(row) if row else None
+
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Whether *user_id*'s session *sid* exists, unrevoked and unexpired.
+
+        Found through ``idx_auth_sessions_user`` (user_id, expires_at): ``sid``
+        has no index of its own, and an account holds few sessions.
+        """
+        async with self._request_connection() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM auth_sessions "
+                    "WHERE user_id = $1 AND expires_at > NOW() AND sid = $2 "
+                    "AND revoked IS NOT TRUE)",
+                    user_id,
+                    sid,
+                )
+            )
 
     async def rotate_session(
         self,
@@ -2728,7 +2124,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def list_browser_session_accounts(self, browser_session_id: str) -> list[Row]:
         """Return the accounts signed in to a browser, oldest first."""
-        identity = self._account_schema.select(_JOINED_USER_IDENTITY, "u")
+        identity = _JOINED_USER_IDENTITY
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT a.user_id, a.auth_session_id, a.added_at, "
@@ -2955,6 +2351,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return dict(row) if row else None
 
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Return the newest unused signup verification token valid past *valid_until*."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT token FROM email_verification_tokens "
+                "WHERE user_id = $1 AND used_at IS NULL AND pending_email IS NULL "
+                "AND expires_at > $2 ORDER BY expires_at DESC LIMIT 1",
+                user_id,
+                valid_until,
+            )
+
     async def mark_verification_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
         async with self._pool.acquire() as conn:
@@ -3001,6 +2410,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 token,
             )
         return dict(row) if row else None
+
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Return the newest unused password reset token valid past *valid_until*."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT token FROM password_reset_tokens "
+                "WHERE user_id = $1 AND used_at IS NULL AND expires_at > $2 "
+                "ORDER BY expires_at DESC LIMIT 1",
+                user_id,
+                valid_until,
+            )
 
     async def mark_reset_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
@@ -3061,19 +2481,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     # -- inference grants ----------------------------------------------------
 
     async def get_quota_context_for_user(self, user_id: str) -> list[Row]:
-        """Return the quota-bearing rows for a user's active API keys."""
-        async with self._pool.acquire() as conn:
-            # LIMIT 2, not 1: the caller must be able to *detect* a duplicate
-            # rather than silently take the first of an impossible set.
+        """Return the account's quota row: one row when it holds a live key, else none.
+
+        An account may hold several active keys, all carrying the account's
+        quota (see :func:`_sync_account_quota`), so any one of them answers;
+        the oldest is taken so repeated lookups read the same row.
+        """
+        async with self._request_connection() as conn:
             rows = await conn.fetch(
-                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, u.role "
+                "SELECT k.id, k.user_id, k.quota_daily_cost_usd, k.quota_monthly_cost_usd, u.role "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.user_id = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
                 "  AND u.id IS NOT NULL AND u.status = 'active' "
-                "LIMIT 2",
+                "ORDER BY k.created_at, k.id "
+                "LIMIT 1",
                 user_id,
             )
         return [dict(row) for row in rows]
@@ -3130,7 +2554,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_agent_grant(self, grant_id: str) -> Row | None:
         """Fetch a grant row by id, live or not."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT grant_id, user_id, external_job_id, external_attempt_id, "
                 "       allowed_models, created_at, expires_at, revoked_at "
@@ -3170,23 +2594,21 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def log_admin_action(
         self,
         *,
-        admin_ip: str,
+        admin_ip: str | None = None,
         action: str,
         target_user_id: str | None = None,
         details: dict[str, Any] | None = None,
         success: bool = True,
+        actor: AuditActor | None = None,
+        target: AuditTarget | None = None,
     ) -> None:
-        """Insert a row into admin_audit_log."""
+        """Insert a row into admin_audit_log, attributed to *actor* and *target*."""
+        columns = audit_columns(
+            admin_ip=admin_ip, target_user_id=target_user_id, actor=actor, target=target
+        )
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO admin_audit_log "
-                "(admin_ip, action, target_user_id, details, success) "
-                "VALUES ($1, $2, $3, $4::jsonb, $5)",
-                admin_ip,
-                action,
-                target_user_id,
-                json.dumps(details) if details else None,
-                success,
+            await insert_audit_row(
+                conn, columns=columns, action=action, details=details, success=success
             )
 
     async def list_audit_log(
@@ -3220,8 +2642,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             total = count_row["total"] if count_row else 0
 
             rows = await conn.fetch(
-                f"SELECT id, timestamp, admin_ip, action, target_user_id, "
-                f"details, success FROM admin_audit_log "
+                f"SELECT {AUDIT_SELECT_COLUMNS} FROM admin_audit_log "
                 f"{where_sql} ORDER BY timestamp DESC "
                 f"LIMIT ${len(params) - 1} OFFSET ${len(params)}",
                 *params,
@@ -3302,37 +2723,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return stored if isinstance(stored, dict) else None
 
     async def get_user_avatar(self, user_id: str) -> str | None:
-        """Return the user's portrait data URL, or None.
-
-        None as well while an upgrade's column migration has not added the
-        column yet (it waits for the users table's lock, see
-        :mod:`serving.storage.account_schema`): no portrait is stored then.
-        """
-        import asyncpg
-
+        """Return the user's portrait data URL, or None."""
         async with self._pool.acquire() as conn:
-            try:
-                return await conn.fetchval(
-                    "SELECT avatar_data_url FROM users WHERE id = $1", user_id
-                )
-            except asyncpg.UndefinedColumnError:
-                return None
+            return await conn.fetchval("SELECT avatar_data_url FROM users WHERE id = $1", user_id)
 
     async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
-        """Replace the user's portrait; None removes it.
-
-        Raises:
-            AccountSchemaPending: The upgrade has not added the column yet.
-        """
-        import asyncpg
-
+        """Replace the user's portrait; None removes it."""
         async with self._pool.acquire() as conn:
-            try:
-                await conn.execute(
-                    "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
-                )
-            except asyncpg.UndefinedColumnError as exc:
-                raise AccountSchemaPending() from exc
+            await conn.execute(
+                "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
+            )
 
     # -- signup domain allowlist --------------------------------------------
 
@@ -3442,7 +2842,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_setting(self, key: str) -> Row | None:
         """Fetch a single site_settings row by key."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT key, value, value_type, updated_at, updated_by "
                 "FROM site_settings WHERE key = $1",
@@ -3518,7 +2918,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_model_visibility_override(self, model_id: str) -> Row | None:
         """Fetch a single model_visibility_overrides row by model_id."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT model_id, required_role, updated_at, updated_by "
                 "FROM model_visibility_overrides WHERE model_id = $1",
@@ -3598,7 +2998,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
         """Fetch a single model_concurrency_exemptions row by model_id."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT model_id, updated_at, updated_by "
                 "FROM model_concurrency_exemptions WHERE model_id = $1",
@@ -4098,12 +3498,55 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return _parse_command_tag_count(tag) > 0
 
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Return every stored batch choice ordered by model and route."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, batch_allowed, updated_at, updated_by "
+                "FROM provider_route_batch_policies ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Store one route's batch choice; ``None`` deletes it (the route follows its locality)."""
+        async with self._pool.acquire() as conn:
+            if batch_allowed is None:
+                await conn.execute(
+                    "DELETE FROM provider_route_batch_policies "
+                    "WHERE model_id = $1 AND route_id = $2",
+                    model_id,
+                    route_id,
+                )
+                return
+            await conn.execute(
+                """
+                INSERT INTO provider_route_batch_policies
+                    (model_id, route_id, batch_allowed, updated_at, updated_by)
+                VALUES ($1, $2, $3, NOW(), $4)
+                ON CONFLICT (model_id, route_id) DO UPDATE SET
+                    batch_allowed = EXCLUDED.batch_allowed,
+                    updated_at = EXCLUDED.updated_at,
+                    updated_by = EXCLUDED.updated_by
+                """,
+                model_id,
+                route_id,
+                batch_allowed,
+                updated_by,
+            )
+
     async def delete_provider_route_candidate_with_config(
         self,
         model_id: str,
         route_id: str,
     ) -> bool:
-        """Atomically delete a route candidate, its override row and its route state."""
+        """Atomically delete a route candidate, its override row, route state and batch choice."""
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "DELETE FROM provider_route_configs WHERE model_id = $1 AND route_id = $2",
@@ -4112,6 +3555,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_route_states WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_batch_policies WHERE model_id = $1 AND route_id = $2",
                 model_id,
                 route_id,
             )
@@ -4139,6 +3587,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_route_states WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_batch_policies WHERE model_id = $1",
                 model_id,
             )
             await conn.execute(
@@ -4264,28 +3716,78 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         cost_usd: float,
         *,
         day: str | None = None,
+        api_key_id: int | None = None,
+        requests: int = 1,
     ) -> None:
-        """Atomically increment the daily cost counter via upsert."""
+        """Atomically increment the daily cost counters via upsert.
+
+        With ``api_key_id`` the key's own counter (``api_key_daily_cost``) is
+        bumped in the same statement: the key's budgets read it, so a write
+        that left it behind would let the key spend past them.
+        """
         from datetime import datetime
 
         if day is None:
             day = datetime.now(UTC).strftime("%Y-%m-%d")
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
-                "VALUES ($1, $2, $3, 1, NOW()) "
-                "ON CONFLICT (user_id, day) DO UPDATE SET "
-                "cost_usd = user_daily_cost.cost_usd + $3, "
-                "requests = user_daily_cost.requests + 1, "
-                "last_request_at = NOW()",
-                user_id,
-                day,
-                cost_usd,
-            )
+        await self.increment_user_costs(
+            [CostIncrement(user_id, day, api_key_id, cost_usd, requests)]
+        )
+
+    atomic_cost_increments = True
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Add a batch of increments to the counters in one transaction, exactly once.
+
+        A failure before the COMMIT was sent applied nothing and is raised as
+        it is, so the caller may write the batch again. When the COMMIT was
+        sent and its answer lost (the connection dropped), the database is
+        asked how the transaction ended (``txid_status``): committed returns
+        normally, aborted raises the original error, and an answer that cannot
+        be had raises :class:`CostWriteOutcomeUnknown` -- retrying then could
+        count the batch twice.
+        """
+        if not increments:
+            return
+        args = (
+            [increment.user_id for increment in increments],
+            [increment.day for increment in increments],
+            [increment.api_key_id for increment in increments],
+            [increment.cost_usd for increment in increments],
+            [increment.requests for increment in increments],
+        )
+        xid: int | None = None
+        try:
+            async with self._pool.acquire() as conn, conn.transaction():
+                xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+            return
+        except Exception as exc:
+            if xid is None:
+                raise
+            failure = exc
+        status = await self._transaction_status(xid)
+        if status == "committed":
+            return
+        if status == "aborted":
+            raise failure
+        raise CostWriteOutcomeUnknown(xid) from failure
+
+    async def _transaction_status(self, xid: int) -> str | None:
+        """How transaction *xid* ended: ``committed``, ``aborted``, or None when untold."""
+        for delay in _COMMIT_STATUS_RETRY_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                async with self._pool.acquire() as conn:
+                    status = await conn.fetchval("SELECT txid_status($1)", xid)
+            except Exception:
+                continue
+            if status in ("committed", "aborted"):
+                return status
+        return None
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return today's cost from the counter table."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT cost_usd FROM user_daily_cost "
                 "WHERE user_id = $1 AND day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
@@ -4311,10 +3813,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         :meth:`get_quota_context_for_user`, which is what the enforcer resolves
         a user's limit through — ``k.user_id = u.id``, key ``active`` and
         unexpired, user ``active``. A different join here would alert on a
-        limit no request is ever measured against.
-        ``idx_api_keys_user_unique`` is ``UNIQUE(user_id) WHERE
-        status='active'``, so the key join cannot fan a user out into several
-        rows; there is no need to de-duplicate afterwards.
+        limit no request is ever measured against. An account may hold several
+        such keys, each carrying the account's quota, so the join is a LATERAL
+        taking one of them: a user is never fanned out into several rows.
 
         **The predicate is the enforcer's** — ``spend +
         ESTIMATED_REQUEST_COST_USD > quota`` — but read carefully *whose*
@@ -4322,7 +3823,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         shares them:
 
         * The **grant door** (:mod:`serving.grant_auth`, cloud-agent tokens)
-          calls :func:`serving.quota.check` and :func:`serving.quota.resolve_quota`,
+          calls :func:`serving.quota.first_refusal` and :func:`serving.quota.resolve_quota`,
           so it and this query move together by construction: retune
           ``serving.quota`` and both follow.
         * The **API-key door** (``verify_api_key`` in
@@ -4381,10 +3882,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             JOIN users u
               ON u.id = udc.user_id
              AND u.status = 'active'
-            JOIN api_keys k
-              ON k.user_id = u.id
-             AND k.status = 'active'
-             AND (k.expires_at IS NULL OR k.expires_at > NOW())
+            -- One row per account: its keys all carry the account's quota,
+            -- and an account may hold several.
+            JOIN LATERAL (
+                SELECT k.quota_daily_cost_usd
+                FROM api_keys k
+                WHERE k.user_id = u.id
+                  AND k.status = 'active'
+                  AND (k.expires_at IS NULL OR k.expires_at > NOW())
+                ORDER BY k.created_at, k.id
+                LIMIT 1
+            ) k ON TRUE
             WHERE udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
               AND udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)
             ORDER BY (udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)) DESC
@@ -4421,7 +3929,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if period == "today":
             return await self.get_user_cost_today(user_id)
         # month: sum all days in current UTC month
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(cost_usd), 0) as total FROM user_daily_cost "
                 "WHERE user_id = $1 "
@@ -4528,13 +4036,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         today_str = datetime.now(UTC).date().isoformat()
         prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
         prior_7d_end = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
-        identity = ("id", "email", "login_name", "phone", "user_name", "role")
-        schema = self._account_schema
+        identity = "id, email, login_name, phone, user_name, role"
+        joined_identity = "u.id, u.email, u.login_name, u.phone, u.user_name, u.role"
 
         async with self._pool.acquire() as conn:
             # 1. Pending count + top
             pending_rows = await conn.fetch(
-                f"SELECT {schema.select(identity)}, created_at "
+                f"SELECT {identity}, created_at "
                 "FROM users WHERE status = 'pending_approval' "
                 "ORDER BY created_at DESC LIMIT $1",
                 top_n,
@@ -4561,7 +4069,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     WHERE day BETWEEN $2 AND $3
                     GROUP BY user_id
                 )
-                SELECT {schema.select(identity, "u")},
+                SELECT {joined_identity},
                        COALESCE(t.today_cost, 0) AS today_cost,
                        COALESCE(p.total, 0) AS prior_7d_total,
                        COALESCE(p.days_with_history, 0) AS days_with_history,
@@ -4569,7 +4077,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 FROM users u
                 LEFT JOIN today_costs t ON t.user_id = u.id
                 LEFT JOIN prior_7d p ON p.user_id = u.id
-                LEFT JOIN api_keys k ON k.account_id = u.id AND k.status = 'active'
+                -- One row per user, however many active keys it holds; each
+                -- carries the account's quota.
+                LEFT JOIN LATERAL (
+                    SELECT quota_daily_cost_usd FROM api_keys
+                    WHERE account_id = u.id AND status = 'active'
+                    ORDER BY created_at, id LIMIT 1
+                ) k ON TRUE
                 WHERE u.status = 'active'
                 """,
                 today_str,
@@ -4692,7 +4206,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     # -- role quota ----------------------------------------------------------
 
     async def count_active_keys_for_role(self, role: str) -> tuple[int, int]:
-        """Return ``(key_count, user_count)`` of active api_keys whose owner has this role."""
+        """Return ``(key_count, user_count)`` of unrevoked api_keys whose owner has this role.
+
+        Counts exactly the rows :meth:`apply_role_quota` would write.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -4700,7 +4217,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                        COUNT(DISTINCT k.user_id)::int AS users
                 FROM api_keys k
                 JOIN users u ON u.id = k.user_id
-                WHERE k.status = 'active' AND u.role = $1
+                WHERE k.status <> 'revoked' AND u.role = $1
                 """,
                 role,
             )
@@ -4709,16 +4226,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return int(row["keys"]), int(row["users"])
 
     async def apply_role_quota(self, role: str, quota: Decimal) -> int:
-        """Bulk-update ``quota_daily_cost_usd`` for all active keys whose owner has *role*.
+        """Bulk-update ``quota_daily_cost_usd`` on every unrevoked key whose owner has *role*.
+
+        Unrevoked rather than only active: the quota is the account's and is
+        carried by each of its live keys, so a suspended key left behind would
+        come back with an older quota than its siblings when it is resumed.
+        Under the all-accounts lock, so a key being created or rotated for
+        one of these accounts is written before this reads, never after.
 
         Returns the number of rows updated.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_all_account_keys(conn)
             tag = await conn.execute(
                 """
                     UPDATE api_keys
                     SET quota_daily_cost_usd = $1
-                    WHERE status = 'active'
+                    WHERE status <> 'revoked'
                       AND user_id IN (SELECT id FROM users WHERE role = $2)
                     """,
                 quota,
@@ -5152,6 +4676,25 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 provider,
             )
         return {r["key_hash"]: r["min_role"] for r in rows}
+
+    async def list_all_disabled_provider_env_keys(self) -> list[tuple[str, str, str]]:
+        """Return ``(provider, key_hash, key_prefix)`` for all disabled env keys."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, key_hash, key_prefix FROM disabled_provider_env_keys "
+                "ORDER BY provider ASC, key_hash ASC"
+            )
+        return [(r["provider"], r["key_hash"], r["key_prefix"]) for r in rows]
+
+    async def list_all_provider_env_key_reservations(self) -> list[tuple[str, str, str, str]]:
+        """Return ``(provider, key_hash, key_prefix, min_role)`` for all reserved env keys."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, key_hash, key_prefix, min_role "
+                "FROM provider_env_key_min_roles "
+                "ORDER BY provider ASC, key_hash ASC"
+            )
+        return [(r["provider"], r["key_hash"], r["key_prefix"], r["min_role"]) for r in rows]
 
 
 def _mask_provider_key(api_key: str) -> str:

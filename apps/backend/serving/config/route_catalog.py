@@ -7,9 +7,8 @@ From then on the stored document is what the process registers, resolves
 replace the row: delete the row and restart to import the file again.
 
 The text is stored unresolved, so a setting moved into ``app_config`` still
-fills ``${VAR}`` at registration. Alerts stay a file. This table is created on
-the same short-lived connection as ``app_config``, because both are read before
-the operational store exists.
+fills ``${VAR}`` at registration. Alerts stay a file. The table is
+``0009_route_catalog``; this module only reads and inserts.
 """
 
 from __future__ import annotations
@@ -30,16 +29,6 @@ KINDS = (MODELS, ROUTING)
 #: Boot import. A row from any other source is left untouched, same as one an
 #: operator has already stored.
 SOURCE_YAML_IMPORT = "yaml_import"
-
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS route_catalog (
-    kind        TEXT PRIMARY KEY,
-    body        TEXT NOT NULL,
-    source      TEXT NOT NULL,
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_by  TEXT
-)
-"""
 
 SELECT_SQL = "SELECT kind, body FROM route_catalog"
 
@@ -128,7 +117,6 @@ async def import_missing(conn: Any, texts: Mapping[str, str]) -> dict[str, str]:
     Returns:
         The stored documents keyed by kind, after this import.
     """
-    await conn.execute(CREATE_TABLE_SQL)
     inserted: list[str] = []
     async with conn.transaction():
         await conn.execute(LOCK_SQL)

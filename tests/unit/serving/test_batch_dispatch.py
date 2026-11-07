@@ -11,14 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
-from serving.batch import dispatch as dispatch_module
 from serving.batch.dispatch import BATCH_USER_AGENT, DispatchResult, dispatch_item
 from serving.schemas import ChatCompletionResponse
 from serving.servers.deps import AppServices
@@ -54,6 +53,8 @@ class _Upstream(BaseAdapter):
                 name="Batch Model",
                 provider="openai",
                 base_url="https://upstream.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=PRICING,
             )
         )
@@ -103,6 +104,7 @@ def _owner(**overrides: Any) -> dict[str, Any]:
         "disabled_models": [],
         "max_concurrent_requests": None,
         "auth_key_hash": "owner-key-hash",
+        "api_key_id": 41,
     }
     ctx.update(overrides)
     return ctx
@@ -173,6 +175,8 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
     assert result.request_id == row["request_id"]
     assert row["metadata"]["batch_job_id"] == BATCH_ID
     assert row["metadata"]["user_id"] == "owner-1"
+    # Charged to the key that created the batch, as a live request with it is.
+    assert row["metadata"]["api_key_id"] == 41
     assert row["metadata"]["user_agent"] == BATCH_USER_AGENT
     assert row["status_code"] == 200
     for _ in range(100):
@@ -180,7 +184,7 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
             break
         await asyncio.sleep(0.001)
     services.operational_store.increment_user_cost.assert_awaited_once_with(
-        "owner-1", pytest.approx(0.0002)
+        "owner-1", pytest.approx(0.0002), day=ANY, api_key_id=41, requests=1
     )
 
 
@@ -304,7 +308,9 @@ async def test_an_unexpected_exception_is_reported_not_raised(monkeypatch):
     async def broken(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("handler bug")
 
-    monkeypatch.setattr(dispatch_module, "chat_completions", broken)
+    from serving.servers.routers import completions
+
+    monkeypatch.setattr(completions, "execute_chat", broken)
     app, services = _setup(_Upstream())
 
     result = await _dispatch(app, services)
@@ -338,3 +344,46 @@ async def test_cancellation_propagates():
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def _model_queued(retry_after: float | None = 30.0) -> BaseException:
+    """The upstream's "model queued" 503, as ``serving.http`` raises it."""
+    from serving.exceptions import UpstreamModelQueued
+
+    error = UpstreamModelQueued(
+        request_info=MagicMock(), history=(), status=503, message="Service Unavailable"
+    )
+    error.retry_after = retry_after
+    error.error_body = (
+        '{"error": {"message": "batch-model is queued on the cluster, waiting for a GPU.",'
+        ' "type": "model_queued", "code": "model_queued"}}'
+    )
+    return error
+
+
+@pytest.mark.parametrize(("retry_after", "requeue_after"), [(30.0, 30.0), (None, 120.0)])
+async def test_a_model_queued_answer_is_requeued_not_failed(retry_after, requeue_after):
+    app, services = _setup(_Upstream(error=_model_queued(retry_after)))
+
+    result = await _dispatch(app, services)
+
+    assert result.status_code == 503
+    assert result.error["code"] == "model_queued"
+    assert "waiting for a GPU" in result.error["message"]
+    assert result.requeue_after == requeue_after
+    assert result.cost_status == "not_billed"
+    # The log row names the type, which is what the failed-request alert skips.
+    row = await _logged_row(services)
+    assert row["error"].startswith("UpstreamModelQueued:")
+
+
+async def test_model_queued_answers_never_open_the_circuit():
+    upstream = _Upstream(error=_model_queued())
+    app, services = _setup(upstream)
+
+    for _ in range(10):
+        result = await _dispatch(app, services)
+        assert result.error["code"] == "model_queued"
+
+    # Every attempt reached the upstream: no breaker took the route out.
+    assert len(upstream.calls) == 10

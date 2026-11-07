@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 — pydantic resolves the annotation at runtime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,7 +12,7 @@ ConfigScalar = bool | int | float | str
 
 
 class ConfigCategory(BaseModel):
-    """A group of settings in the Configuration tab."""
+    """A group of settings on the admin Settings tab."""
 
     id: str
     label: str
@@ -53,6 +53,11 @@ class ConfigEntryItem(BaseModel):
         "no value can be stored now",
     )
     setup: bool = Field(..., description="Shown on the first-run configuration step")
+    one_time: bool = Field(
+        ...,
+        description="Usually set once, when the gateway is deployed: the console lists it "
+        "after the settings changed more often",
+    )
     origin: Literal["static", "discovered", "numbered", "custom"] = Field(
         ...,
         description="Where the entry comes from: built in (static), a ${VAR} reference in a "
@@ -66,10 +71,34 @@ class ConfigEntryItem(BaseModel):
     used_by: list[str] = Field(default_factory=list, description="Model ids that reference it")
     updated_at: datetime | None = None
     updated_by: str | None = None
+    group: str | None = Field(
+        None, description="The live configuration group that owns the key, if one does"
+    )
+    apply_mode: Literal["live", "managed", "restart", "immutable"] = Field(
+        "live",
+        description="How a saved change applies in this process: in place at once (live), "
+        "through its group's prepare-and-publish with acknowledgement (managed), after a "
+        "restart, or never (immutable)",
+    )
+
+
+class ConfigSourceVersion(BaseModel):
+    """A configuration source's version: an epoch and a revision within it."""
+
+    epoch: str
+    revision: int
+
+
+class ConfigGroupSummary(BaseModel):
+    """A live configuration group as this process applies it."""
+
+    name: str
+    state: str
+    managed: bool = Field(..., description="Applied live in this process (contract active)")
 
 
 class ConfigResponse(BaseModel):
-    """Every setting, grouped by category."""
+    """Every setting the console offers, grouped by category."""
 
     categories: list[ConfigCategory]
     entries: list[ConfigEntryItem]
@@ -77,6 +106,77 @@ class ConfigResponse(BaseModel):
     pending_restart: list[str] = Field(..., description="Keys of the pending-restart entries")
     restart_supported: bool = Field(
         ..., description="Whether POST /admin/system/restart can bring the process back"
+    )
+    source_version: ConfigSourceVersion | None = Field(
+        None,
+        description="The saved configuration's version as this process last read it; send it "
+        "back as If-Match (the response's ETag) to make a change conditional",
+    )
+    saved_version: ConfigSourceVersion | None = Field(
+        None, description="On a write: the version the write committed"
+    )
+    groups: list[ConfigGroupSummary] = Field(default_factory=list)
+
+
+class LiveGroupInstance(BaseModel):
+    """One registered process and its report on a group. Never a value or a secret."""
+
+    instance_id: str
+    this_process: bool = False
+    build: str
+    host: str | None = None
+    lifecycle: str
+    started_at: datetime | None = None
+    heartbeat_age_seconds: float | None = Field(
+        None, description="Seconds since its last heartbeat, by the database clock"
+    )
+    stale: bool = Field(..., description="No heartbeat within stale_after_seconds: unknown")
+    supports: bool = Field(..., description="Its build supports the group's schema version")
+    status: dict[str, Any] | None = Field(
+        None,
+        description="Its latest report: state, epoch, checked and reconciled revisions, "
+        "generation, error code, cleanup and pending keys",
+    )
+
+
+class LiveGroupStatus(BaseModel):
+    """A live configuration group across every registered process."""
+
+    name: str
+    keys: list[str]
+    schema_version: int
+    contract: dict[str, Any] | None = Field(
+        None, description="The persisted contract; null until an operator activates the group"
+    )
+    coverage: dict[str, Any] = Field(
+        ...,
+        description="Counts of registered processes by standing. verified is false: a process "
+        "on an older build never registers, so coverage is unknown until checked against the "
+        "deployment inventory",
+    )
+    instances: list[LiveGroupInstance]
+    local: dict[str, Any] | None = Field(None, description="This process's own status")
+    preview: dict[str, Any] | None = Field(
+        None,
+        description="What activation applies: each key's saved target (a secret only as set or "
+        "not set) and, per process, the keys whose value in use differs",
+    )
+
+
+class LiveConfigStatusResponse(BaseModel):
+    """How the saved configuration has been applied, per group and per process."""
+
+    database: bool = Field(..., description="Whether the configuration is stored in a database")
+    source: str = "app_config"
+    version: ConfigSourceVersion | None = None
+    this_instance: str | None = None
+    stale_after_seconds: float | None = None
+    read_ok: bool | None = Field(
+        None, description="Whether this process's last read of the configuration succeeded"
+    )
+    groups: list[LiveGroupStatus] = Field(default_factory=list)
+    unknown_groups: list[str] = Field(
+        default_factory=list, description="Active groups in the contract this build does not know"
     )
 
 
@@ -103,4 +203,249 @@ class RestartResponse(BaseModel):
     instance: str = Field(
         ...,
         description="The process that is exiting; /health reports another once it is back",
+    )
+
+
+class ConfigBackupAppConfigRow(BaseModel):
+    """One stored ``app_config`` row in a configuration backup.
+
+    A secret's ``value`` is ``null`` unless the backup was taken with secret
+    values; restoring a row without one keeps the value this deployment has.
+    """
+
+    key: str
+    value: str | None = Field(
+        "", description="The stored value; null for a secret in a backup without secret values"
+    )
+    secret: bool = False
+    source: Literal["admin", "setup", "env_import", "generated", "reset"] = "admin"
+    is_set: bool | None = Field(
+        None, description="Whether a value is stored; absent from backups made before it existed"
+    )
+
+
+class ConfigBackupSiteSetting(BaseModel):
+    """One admin-editable ``site_settings`` row in a configuration backup.
+
+    The one secret among them, the usage-insights API key, has a ``null``
+    ``value`` unless the backup was taken with secret values.
+    """
+
+    key: str
+    value: str | None
+    value_type: str = "str"
+
+
+class ConfigBackupProviderDefinition(BaseModel):
+    """One custom provider definition in a configuration backup."""
+
+    provider: str
+    display_name: str
+    adapter_kind: str = "openai_compat"
+    default_base_url: str
+    status: Literal["active", "disabled"] = "active"
+
+
+class ConfigBackupProviderKey(BaseModel):
+    """One dynamic provider API key in a configuration backup.
+
+    ``api_key`` is the plaintext key only in a backup taken with secret values;
+    restoring a key without one keeps the value this deployment has for its id.
+    """
+
+    id: str
+    provider: str
+    api_key: str | None = None
+    label: str | None = None
+    status: Literal["active", "disabled"] = "active"
+    min_role: str = "free"
+
+
+class ConfigBackupDisabledEnvKey(BaseModel):
+    """One disabled environment provider API key tombstone in a configuration backup."""
+
+    provider: str
+    key_hash: str
+    key_prefix: str
+
+
+class ConfigBackupEnvKeyMinRole(BaseModel):
+    """One environment provider API key tier reservation in a configuration backup."""
+
+    provider: str
+    key_hash: str
+    key_prefix: str
+    min_role: str
+
+
+class ConfigBackupRouteState(BaseModel):
+    """One provider route state (disabled and/or removed) in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    disabled: bool = False
+    removed: bool = False
+
+
+class ConfigBackupRouteBatchPolicy(BaseModel):
+    """Whether batch work may use one provider route, in a configuration backup.
+
+    Only routes with an administrator's choice are listed; the others follow
+    their locality.
+    """
+
+    model_id: str
+    route_id: str
+    batch_allowed: bool
+
+
+class ConfigBackupRouteCandidate(BaseModel):
+    """One runtime provider route candidate in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    route_type: str
+    provider: str
+    openrouter_sort: str | None = None
+    deployment_type: str = "auto"
+    base_url: str
+    api_key_id: str | None = None
+    provider_model_id: str
+    quota_limit: int | None = None
+    concurrency_limit: int | None = None
+    weight: float = 1.0
+    pricing: dict[str, str] | None = None
+    capabilities: dict[str, Any] | None = None
+    endpoint_id: str | None = None
+
+
+class ConfigBackupRouteConfig(BaseModel):
+    """One config-route target override in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    provider: str
+    openrouter_sort: str | None = None
+    deployment_type: str | None = None
+    base_url: str
+    api_key_id: str | None = None
+    provider_model_id: str
+    quota_limit: int | None = None
+    concurrency_limit: int | None = None
+
+
+class ConfigBackupRouteCapability(BaseModel):
+    """One route capability override in a configuration backup."""
+
+    model_id: str
+    route_id: str
+    capabilities: dict[str, Any]
+
+
+class ConfigBackupWeightOverride(BaseModel):
+    """One endpoint weight override in a configuration backup."""
+
+    model_id: str
+    endpoint_id: str
+    weight: float
+
+
+class ConfigBackupModelVisibility(BaseModel):
+    """One model visibility override in a configuration backup."""
+
+    model_id: str
+    required_role: str
+
+
+class ConfigBackupSignupDomain(BaseModel):
+    """One allowed signup email domain in a configuration backup."""
+
+    domain: str
+    is_wildcard: bool = False
+
+
+class ConfigBackupPayload(BaseModel):
+    """Complete backup bundle of all administrator-configurable state."""
+
+    schema_version: int = Field(1, description="Backup schema version")
+    exported_at: datetime | None = Field(None, description="UTC timestamp when the backup was made")
+    secrets_included: bool = Field(
+        True,
+        description="Whether the bundle carries secret values. False for the default backup, "
+        "where each secret has only its name and is_set; true for one taken with secret values "
+        "and for bundles made before this field existed",
+    )
+    app_config: list[ConfigBackupAppConfigRow] = Field(default_factory=list)
+    site_settings: list[ConfigBackupSiteSetting] = Field(default_factory=list)
+    provider_definitions: list[ConfigBackupProviderDefinition] = Field(default_factory=list)
+    provider_keys: list[ConfigBackupProviderKey] = Field(default_factory=list)
+    disabled_provider_env_keys: list[ConfigBackupDisabledEnvKey] = Field(default_factory=list)
+    provider_env_key_min_roles: list[ConfigBackupEnvKeyMinRole] = Field(default_factory=list)
+    disabled_providers: list[str] = Field(default_factory=list)
+    provider_route_states: list[ConfigBackupRouteState] = Field(default_factory=list)
+    provider_route_batch_policies: list[ConfigBackupRouteBatchPolicy] = Field(default_factory=list)
+    provider_route_candidates: list[ConfigBackupRouteCandidate] = Field(default_factory=list)
+    provider_route_configs: list[ConfigBackupRouteConfig] = Field(default_factory=list)
+    provider_route_capabilities: list[ConfigBackupRouteCapability] = Field(default_factory=list)
+    provider_weight_overrides: list[ConfigBackupWeightOverride] = Field(default_factory=list)
+    model_visibility_overrides: list[ConfigBackupModelVisibility] = Field(default_factory=list)
+    model_concurrency_exemptions: list[str] = Field(default_factory=list)
+    batch_model_limits: dict[str, int] = Field(default_factory=dict)
+    signup_allowed_domains: list[ConfigBackupSignupDomain] = Field(default_factory=list)
+
+
+class ConfigBackupExportRequest(BaseModel):
+    """What ``POST /admin/config/backup`` exports."""
+
+    include_secrets: bool = Field(
+        False, description="Put secret values in the bundle; needs the administrator's password"
+    )
+    password: str | None = Field(
+        None, description="The signed-in administrator's password, to include secret values"
+    )
+
+
+class ConfigRestorePreview(BaseModel):
+    """What restoring a bundle would do, before anything is written."""
+
+    security_changes: list[str] = Field(
+        default_factory=list,
+        description="Security-relevant changes the restore would make, as 'domain:name' labels. "
+        "Restoring them needs confirm_security_changes set to exactly this list, and the "
+        "administrator's password",
+    )
+    secrets_not_restored: list[str] = Field(
+        default_factory=list,
+        description="Secrets the bundle withholds that this deployment has no value for; "
+        "restoring leaves them unset",
+    )
+
+
+class ConfigRestoreRequest(ConfigBackupPayload):
+    """A bundle to restore, and the confirmation a security-relevant restore needs."""
+
+    confirm_security_changes: list[str] | None = Field(
+        None,
+        description="The security_changes the administrator confirmed, from a preview of this "
+        "bundle; refused with 409 unless it matches what the restore would change",
+    )
+    password: str | None = Field(
+        None, description="The signed-in administrator's password, for security changes"
+    )
+
+
+class ConfigRestoreResponse(BaseModel):
+    """Result of restoring a configuration backup."""
+
+    config: ConfigResponse
+    immutable_keys_preserved: list[str] = Field(
+        default_factory=list,
+        description="Immutable keys whose existing target values were kept",
+    )
+    security_changes: list[str] = Field(
+        default_factory=list, description="The security-relevant changes the restore made"
+    )
+    secrets_not_restored: list[str] = Field(
+        default_factory=list,
+        description="Secrets the bundle withheld that this deployment had no value for",
     )

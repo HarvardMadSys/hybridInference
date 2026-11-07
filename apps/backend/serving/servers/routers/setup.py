@@ -11,7 +11,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from serving.auth.browser_sessions import prepare_sign_in
-from serving.exceptions import AccountSchemaPending
 from serving.schemas_auth import LoginResponse, SetupAdminRequest, SetupStatusResponse
 from serving.servers.deps import database_enabled, get_operational_store
 from serving.servers.routers.auth_routes import start_user_session
@@ -85,21 +84,14 @@ async def create_setup_admin(
         )
 
     user_id = generate_ulid()
-    try:
-        created = await complete_setup(
-            op_store,
-            user_id=user_id,
-            login_name=body.login_name,
-            password_hash=password_utils.hash_password(body.password),
-            user_name=body.display_name or body.login_name,
-            admin_ip=client_ip,
-        )
-    except AccountSchemaPending as exc:
-        logger.warning(
-            "First-run setup refused: the users table has no login names until the "
-            "deferred database upgrade lands; setup stays pending"
-        )
-        raise HTTPException(status_code=503, detail=AccountSchemaPending.MESSAGE) from exc
+    created = await complete_setup(
+        op_store,
+        user_id=user_id,
+        login_name=body.login_name,
+        password_hash=await password_utils.hash_password_async(body.password),
+        user_name=body.display_name or body.login_name,
+        source_ip=client_ip,
+    )
     if not created:
         raise HTTPException(status_code=409, detail=_SETUP_COMPLETE_DETAIL)
     logger.info("First-run setup created administrator %s (%s)", user_id, body.login_name)

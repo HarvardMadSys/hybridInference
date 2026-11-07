@@ -2,7 +2,7 @@
 
 Aggregates domain-focused sub-routers (alerts, analytics,
 api_keys, auth_blocks, batch, broadcast, config, export, login_events, metrics, model_concurrency,
-model_visibility, offload_routes, providers, settings, signup_domains, site_updates,
+model_queue, model_visibility, offload_routes, providers, settings, signup_domains, site_updates,
 stats, system, upstream_concurrency, usage_insights, users) into a single ``router``
 exported at this level. Callers use
 ``from serving.servers.routers import admin`` unchanged.
@@ -11,6 +11,7 @@ exported at this level. Callers use
 from fastapi import APIRouter
 
 from serving.servers.routers.admin import (
+    alert_history,
     alerts,
     analytics,
     api_keys,
@@ -18,10 +19,12 @@ from serving.servers.routers.admin import (
     batch,
     broadcast,
     config,
+    config_backup,
     export,
     login_events,
     metrics,
     model_concurrency,
+    model_queue,
     model_visibility,
     offload_routes,
     provider_definitions,
@@ -48,6 +51,7 @@ except ImportError:  # RouteWise absent from a partial install
 from serving.servers.routers.admin.metrics import _decode_throughput_tps
 
 router = APIRouter()
+router.include_router(alert_history.router)
 router.include_router(alerts.router)
 router.include_router(analytics.router)
 router.include_router(api_keys.router)
@@ -55,10 +59,12 @@ router.include_router(auth_blocks.router)
 router.include_router(batch.router)
 router.include_router(broadcast.router)
 router.include_router(config.router)
+router.include_router(config_backup.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
 router.include_router(metrics.router)
 router.include_router(model_concurrency.router)
+router.include_router(model_queue.router)
 router.include_router(model_visibility.router)
 router.include_router(offload_routes.router)
 router.include_router(provider_definitions.router)

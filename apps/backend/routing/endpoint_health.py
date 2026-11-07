@@ -12,11 +12,12 @@ from typing import Any
 
 from routing.engine_wait import EngineWaitExpired
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
-from serving.adapters.key_pool import KeyPoolRoleRestricted
+from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value
-from serving.exceptions import operator_safe_error
-from serving.observability.alerts import AlertSeverity, alert_on_transition
+from serving.exceptions import UpstreamModelQueued, operator_safe_error
+from serving.observability.alert_history import hooks as alert_history
+from serving.observability.alerts import AlertSeverity, alert_on_transition, interrupt_settle
 from serving.observability.state_alert_policy import (
     circuit_open_policy,
     set_usage_limit_paging as _set_usage_limit_paging,
@@ -93,11 +94,14 @@ _CALLERS_IN_ALERT = 10
 # Deriving ownership from the endpoint's base_url instead would mean threading it
 # (or an explicit ownership flag) through ``record_failure`` at every router,
 # RouteWise, and hedging call site — new plumbing on the failure path to widen an
-# escalation that is already covered indirectly: 403 is key-specific for
-# ``KeyPool``, so an endpoint answering 403 to everything mutes its keys and then
-# fails with ``KeyPoolExhausted``, which carries no HTTP status, is not exempt,
-# and trips the breaker into its own ``circuit_open`` page. So 403 keeps the
-# pre-existing exemption, and only the unambiguous statuses escalate.
+# escalation whose absence is tolerated: 402 and 403 are key-specific for
+# ``KeyPool``, so an endpoint answering either to everything mutes its keys and
+# then fails with ``KeyPoolExhausted`` — a local precondition refusal (nothing
+# was sent) that endpoint health never counts (see ``record_failure``). The
+# mutes keep the account quiet while they last, every upstream status lands in
+# ``api_logs``, and the key-pool exhaustion burst rule pages, per endpoint, when
+# the refusals pile up. So 402/403 keep the client-error exemption, and only the
+# unambiguous credential challenges escalate.
 _AUTH_MISCONFIG_STATUSES = frozenset({401, 407})
 
 # Cooldown for the upstream-auth page. Matches the circuit-open alert so a
@@ -110,7 +114,7 @@ _AUTH_ALERT_COOLDOWN_SEC = 300
 _MIN_ALERT_GAP_SEC = MIN_ALERT_GAP.total_seconds()
 
 # The ``state_changes.circuit_open`` block of alerts.yaml, installed at startup
-# by ``serving.servers.bootstrap`` and read here on every page. Three fields
+# by ``serving.servers.bootstrap`` and read here on every page. Four fields
 # matter to this module:
 #
 # ``page_on_usage_limit`` — whether a subscription usage-limit trip pages at
@@ -124,6 +128,8 @@ _MIN_ALERT_GAP_SEC = MIN_ALERT_GAP.total_seconds()
 # ``enabled`` — whether the circuit-open page is raised at all.
 # ``cooldown_sec`` — the spacing between repeats of one provider's page, which
 #   until now was a literal 300 here and ignored whatever alerts.yaml asked for.
+# ``settle_sec`` — how long a circuit must stay closed before its incident
+#   closes and "Recovered" is posted, so a flapping endpoint is one incident.
 
 # Title of the upstream-auth page. Shared by the firing and resolving edges so
 # the recovery card reads as the same incident ("Recovered: <title>").
@@ -167,7 +173,7 @@ def _iso_utc(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
-def _http_status_of(exc: BaseException) -> int | None:
+def http_status_of(exc: BaseException) -> int | None:
     """Best-effort extract of an upstream HTTP status code from an exception.
 
     Adapters surface upstream HTTP errors as exceptions that carry the status on
@@ -191,6 +197,10 @@ def _http_status_of(exc: BaseException) -> int | None:
     return None
 
 
+# The name this module and ``routing.routers`` read it by.
+_http_status_of = http_status_of
+
+
 def _is_auth_misconfig(status: int | None) -> bool:
     """Return whether ``status`` means this gateway's own credential was rejected.
 
@@ -205,9 +215,13 @@ def _is_auth_misconfig(status: int | None) -> bool:
     return status is not None and status in _AUTH_MISCONFIG_STATUSES
 
 
-def _is_client_error(exc: BaseException) -> bool:
-    """Return whether ``exc`` is a client error that must not trip the breaker."""
-    status = _http_status_of(exc)
+def is_client_error_status(status: int | None) -> bool:
+    """Return whether an upstream ``status`` blames the request rather than the endpoint.
+
+    The breaker's client-error exemption, read off a status alone so that a
+    status carried away from its exception (``RoutingObservation.status_code``,
+    a ``failed_attempts`` record) is classified the same way.
+    """
     if status is None or not (400 <= status < 500):
         return False
     # 408 and 429 signal upstream slowness/overload, not a malformed request.
@@ -215,6 +229,109 @@ def _is_client_error(exc: BaseException) -> bool:
         return False
     # Auth statuses reject the gateway's credential, not the user's request.
     return not _is_auth_misconfig(status)
+
+
+def _is_client_error(exc: BaseException) -> bool:
+    """Return whether ``exc`` is a client error that must not trip the breaker."""
+    return is_client_error_status(_http_status_of(exc))
+
+
+def _uncharged_failure_event(exc: BaseException) -> str | None:
+    """Return the log event of a failure no endpoint is charged with, or None.
+
+    Each of these ends an attempt without saying anything against the endpoint:
+    nothing was sent, or the endpoint answered exactly as it is meant to.
+    ``EndpointHealthRegistry.record_failure`` keeps them out of the breaker, and
+    :func:`failure_may_lose_prefix_cache` reads the same classification, so the
+    two cannot disagree about which failures are the endpoint's.
+    """
+    if isinstance(exc, KeyPoolRoleRestricted):
+        # The endpoint holds no key this caller's *tier* may spend, but it is
+        # still serving the tiers that own those keys — nothing was even sent
+        # upstream. Counting it would let a burst of lower-tier traffic open
+        # the circuit and strip reserved capacity from the callers it was
+        # reserved for, re-tripping on every half-open probe. Filtered here
+        # rather than per-router so the FixedRouter, RouteWise and hedging
+        # paths all inherit it.
+        return "role_restricted_skip_breaker"
+    if isinstance(exc, KeyPoolExhausted):
+        # Every key this endpoint could use is muted (the tail of a provider
+        # 429/auth storm), removed, or already tried by this request, so
+        # ``acquire()`` refused before anything was sent. The pool's own
+        # mutes are what keep traffic off a struggling provider while they
+        # last, and the failures that did the muting were counted when they
+        # happened, so a real outage still opens the circuit from its own
+        # evidence. Charging the echo instead let one muted key pool open
+        # the circuit on every route sharing the provider's keys — streams
+        # died in ``AllCircuitsOpenError`` and every half-open probe
+        # re-tripped while the mutes outlived the cooldown (issue #1440:
+        # 462 dead streams in a 59h prod window). Filtered here rather than
+        # per-router so the FixedRouter, RouteWise and hedging paths all
+        # inherit it, mirroring the role-restricted case above.
+        return "key_pool_exhausted_skip_breaker"
+    if isinstance(exc, UpstreamSaturated):
+        # This gateway declined to open another concurrent request against
+        # the provider account behind this endpoint (see
+        # ``serving.adapters.upstream_limiter``). Nothing was sent, so the
+        # endpoint answered nothing and must not be charged for it — the
+        # same reading as the role-restricted case above, for a limit this
+        # process imposed on itself rather than one the vendor imposed.
+        #
+        # Counting it would also be self-amplifying in a way a real upstream
+        # failure is not. One bucket is shared by every endpoint on that
+        # account, so a burst on one model would open the circuit on models
+        # that never sent a byte; and an endpoint whose circuit is open is
+        # skipped entirely, which is the opposite of what a concurrency
+        # limiter is for — the point is to keep using the endpoint at a rate
+        # it accepts. The request still fails over: the router's fallback
+        # chain runs off the exception, not off this accounting.
+        return "gateway_throttle_skip_breaker"
+    if isinstance(exc, EngineWaitExpired):
+        # The router cancelled this attempt because the engine had not
+        # started it within the model's offload wait (``routing.engine_wait``),
+        # and sent the request to the offload route. A queued request is not a
+        # failure of the engine: it is busy, and the next request is still
+        # sent to it. Counting it here would open the circuit on a burst of
+        # load and hold the endpoint out for a cooldown long after its queue
+        # drained.
+        return "engine_wait_skip_breaker"
+    if isinstance(exc, UpstreamModelQueued):
+        # An on-demand deployment answered that the model is queued for
+        # capacity (a cluster job waiting for a node). The endpoint is
+        # working as designed, and while the job waits every request gets
+        # this answer, so counting it would hold the circuit open, and page,
+        # for as long as the queue does.
+        return "model_queued_skip_breaker"
+    return None
+
+
+def failure_may_lose_prefix_cache(exc: BaseException | None) -> bool:
+    """Return whether a failed attempt can mean its endpoint lost its prefix cache.
+
+    A restart, an OOM or a container replaced under the same endpoint id empties
+    the engine's radix cache, and from outside each looks like a 5xx or like no
+    answer at all: a refused or reset connection, a disconnect, a timeout. Those
+    are the failures this is true for, together with one that carries no
+    exception to classify.
+
+    False for the other failures no endpoint is charged with
+    (``_uncharged_failure_event``: nothing was sent, or the engine is busy) and
+    for every 4xx. An endpoint that answered with a status is up and holds what
+    it held, so a client's malformed request, a 429 or a rejected credential is
+    no evidence about its cache -- forgetting on one let any caller wipe every
+    other caller's warm-prefix hints for that endpoint.
+    """
+    if exc is None:
+        return True
+    if isinstance(exc, UpstreamModelQueued):
+        # Answered as designed, so the breaker leaves it alone, but the answer
+        # is that the model is not running: whatever its engine had cached went
+        # with the job that stopped.
+        return True
+    if _uncharged_failure_event(exc) is not None:
+        return False
+    status = _http_status_of(exc)
+    return status is None or status >= 500
 
 
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
@@ -587,6 +704,25 @@ class _CircuitBreaker:
                 # With no running loop (sync teardown) nothing else will close
                 # this incident: a circuit has one healthy edge and state alerts
                 # are never swept, because silence is not recovery.
+                #
+                # Settled, not immediate. Any success closes the circuit -- a
+                # request admitted before the trip, a stream's first token -- and
+                # once availability sits under its floor one failure reopens it,
+                # so a partially failing endpoint cycles many times a minute.
+                # Closing the incident on each close made every cycle a page
+                # plus a "Recovered" card. The incident now closes only once the
+                # circuit has stayed closed for ``settle_sec``; a reopen before
+                # then is the same incident (see ``interrupt_settle`` in
+                # ``on_failure``).
+                #
+                # The report runs later, as a task, so it is fenced on the
+                # circuit still being closed when it does: a reopen landing
+                # before it -- one whose page the policy holds back, which only
+                # reaches ``interrupt_settle`` while nothing is settling yet --
+                # must not start a settle on an open circuit. The same fence is
+                # asked again when the settle is confirmed and when its card is
+                # sent.
+                policy = circuit_open_policy()
                 _fire_and_forget(
                     alert_on_transition(
                         key=f"circuit_open:{self.provider}",
@@ -594,10 +730,16 @@ class _CircuitBreaker:
                         severity=AlertSeverity.ERROR,
                         title="Provider circuit opened",
                         context=dict,
-                        cooldown_sec=circuit_open_policy().cooldown_sec,
+                        cooldown_sec=policy.cooldown_sec,
                         kind="state",
+                        settle_sec=policy.settle_sec,
+                        fence=self._is_closed,
                     )
                 )
+
+    def _is_closed(self) -> bool:
+        """Whether the circuit is closed now; the fence on its recovery report."""
+        return self.state == _CircuitState.CLOSED
 
     def _trip_cause(
         self, by_streak: bool, by_availability: bool, availability: float | None
@@ -675,6 +817,14 @@ class _CircuitBreaker:
             self.last_opened = time.perf_counter()
             if prev_state not in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
                 return
+            # The circuit reopened, so a close still settling from its last
+            # recovery is not a recovery after all. Reported here, before any
+            # gate below can hold the page back: a held-back trip never reaches
+            # ``alert_on_transition``, and the settle timer would otherwise post
+            # "Recovered" while the circuit is open again. A close whose own
+            # report has not run yet is not settling, so this cannot cancel it;
+            # that report's fence (``_is_closed``) refuses it instead.
+            interrupt_settle(f"circuit_open:{self.provider}")
 
             # A subscription usage-limit outage re-trips on every half-open probe
             # until the provider's window resets. Fire one alert per outage and
@@ -688,8 +838,8 @@ class _CircuitBreaker:
             # the current generation is mid-delivery, or its mute deadline has not
             # passed — stay silent no matter how *this* failure presents. A
             # half-open re-trip often surfaces differently from the original 429
-            # (e.g. KeyPoolExhausted once the key's 429-backoff exceeds the circuit
-            # cooldown, or a timeout); those must not resurrect the storm. The
+            # (for example a timeout once key backoff exceeds the circuit
+            # cooldown); those must not resurrect the storm. The
             # in-flight guard is scoped to the generation, so a recovery (which
             # bumps it) does not let a stale in-flight page mute the *next* outage;
             # recovery also clears the deadline, re-arming the endpoint.
@@ -716,10 +866,10 @@ class _CircuitBreaker:
             #
             # Reason-agnostic within the floor, because the deadline alone does not
             # hold here: behind a key pool, one sibling key with quota left reads as
-            # a recovery and clears it, and the re-trip that follows is usually
-            # ``KeyPoolExhausted`` — no usage marker, so ``usage_limit`` is None and
-            # a text-scoped gate would let exactly the page this policy exists to
-            # remove through. So a trip within ``_MIN_ALERT_GAP_SEC`` of the last
+            # a recovery and clears it, and the next trip can surface without the
+            # usage marker, so ``usage_limit`` can be None and a text-scoped gate
+            # would let exactly the page this policy exists to remove through. So a
+            # trip within ``_MIN_ALERT_GAP_SEC`` of the last
             # recognized plan limit stays silent whatever it looks like. That does
             # mute an unrelated outage on the same endpoint for up to the floor —
             # the same trade the ``max()`` re-arm below already makes, and bounded
@@ -774,6 +924,28 @@ class _CircuitBreaker:
                         # Which gate held. Paging-off first: where the policy
                         # applies it is the reason, and the other two only
                         # describe how long the same silence had left to run.
+                        "gate": (
+                            "circuit_open_disabled"
+                            if alerting_off
+                            else "usage_limit_paging_off"
+                            if paging_off
+                            else "muted"
+                            if muted
+                            else "min_alert_gap"
+                        ),
+                    },
+                )
+                # The trip is still a fact for alert history, held back here
+                # before it could reach the alert path.
+                alert_history.external_decision(
+                    f"circuit_open:{self.provider}",
+                    reason="policy_disabled" if alerting_off or paging_off else "rate_limited",
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    kind="state",
+                    context={
+                        "provider": self.provider,
+                        "consecutive_failures": self.consecutive_failures,
                         "gate": (
                             "circuit_open_disabled"
                             if alerting_off
@@ -1003,64 +1175,14 @@ class EndpointHealthRegistry:
         exc: BaseException | None = None,
     ) -> None:
         """Record a failed endpoint request unless it is a client error."""
-        if exc is not None and isinstance(exc, KeyPoolRoleRestricted):
-            # The endpoint holds no key this caller's *tier* may spend, but it is
-            # still serving the tiers that own those keys — nothing was even sent
-            # upstream. Counting it would let a burst of lower-tier traffic open
-            # the circuit and strip reserved capacity from the callers it was
-            # reserved for, re-tripping on every half-open probe. Filtered here
-            # rather than per-router so the FixedRouter, RouteWise and hedging
-            # paths all inherit it.
-            logger.info(
-                "role_restricted_skip_breaker",
-                extra={
-                    "event": "role_restricted_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "detail": _detail_str(detail or operator_safe_error(exc)),
-                },
-            )
-            return
-        if exc is not None and isinstance(exc, UpstreamSaturated):
-            # This gateway declined to open another concurrent request against
-            # the provider account behind this endpoint (see
-            # ``serving.adapters.upstream_limiter``). Nothing was sent, so the
-            # endpoint answered nothing and must not be charged for it — the
-            # same reading as the role-restricted case above, for a limit this
-            # process imposed on itself rather than one the vendor imposed.
-            #
-            # Counting it would also be self-amplifying in a way a real upstream
-            # failure is not. One bucket is shared by every endpoint on that
-            # account, so a burst on one model would open the circuit on models
-            # that never sent a byte; and an endpoint whose circuit is open is
-            # skipped entirely, which is the opposite of what a concurrency
-            # limiter is for — the point is to keep using the endpoint at a rate
-            # it accepts. The request still fails over: the router's fallback
-            # chain runs off the exception, not off this accounting.
-            logger.info(
-                "gateway_throttle_skip_breaker",
-                extra={
-                    "event": "gateway_throttle_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "detail": _detail_str(detail or operator_safe_error(exc)),
-                },
-            )
-            return
-        if exc is not None and isinstance(exc, EngineWaitExpired):
-            # The router cancelled this attempt because the engine had not
-            # started it within the model's offload wait (``routing.engine_wait``),
-            # and sent the request to the offload route. A queued request is not a
-            # failure of the engine: it is busy, and the next request is still
-            # sent to it. Counting it here would open the circuit on a burst of
-            # load and hold the endpoint out for a cooldown long after its queue
-            # drained.
-            logger.info(
-                "engine_wait_skip_breaker",
-                extra={
-                    "event": "engine_wait_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "detail": _detail_str(detail or operator_safe_error(exc)),
-                },
-            )
+        uncharged = _uncharged_failure_event(exc) if exc is not None else None
+        if uncharged is not None:
+            fields: dict[str, Any] = {"event": uncharged, "endpoint_id": endpoint_id}
+            if isinstance(exc, UpstreamModelQueued):
+                fields["retry_after"] = exc.retry_after
+            else:
+                fields["detail"] = _detail_str(detail or operator_safe_error(exc))
+            logger.info(uncharged, extra=fields)
             return
         status = _http_status_of(exc) if exc is not None else None
         # Checked before the client-error exemption: an auth rejection sits in the
@@ -1148,12 +1270,22 @@ class EndpointHealthRegistry:
         now = time.monotonic()
         with self._lock:
             last_scheduled = self._auth_alert_at.get(endpoint_id)
-            if (
+            throttled = (
                 last_scheduled is not None
                 and (now - last_scheduled) < _AUTH_ALERT_SCHEDULE_INTERVAL_SEC
-            ):
-                return
-            self._auth_alert_at[endpoint_id] = now
+            )
+            if not throttled:
+                self._auth_alert_at[endpoint_id] = now
+        if throttled:
+            alert_history.external_decision(
+                _auth_alert_key(endpoint_id),
+                reason="rate_limited",
+                severity=AlertSeverity.ERROR,
+                title=_AUTH_ALERT_TITLE,
+                kind="state",
+                context={"endpoint_id": endpoint_id, "status": status},
+            )
+            return
         context: dict[str, Any] = {
             "endpoint_id": endpoint_id,
             "status": status,

@@ -2,6 +2,7 @@ models:
   - id: example-chat
     name: Runnable Example Chat
     provider: openai_compat
+    required_role: free
     context_length: 4096
     max_output_length: 1024
     supports_tools: false

@@ -69,6 +69,9 @@ def _tracked_files() -> list[Path]:
 
 def _read_text(path: Path) -> str | None:
     """Read tracked text regardless of suffix; skip only NUL-bearing binaries."""
+    # Git stores the link target text; tracked target files are scanned separately.
+    if path.is_symlink():
+        return str(path.readlink())
     with path.open("rb") as stream:
         head = stream.read(_SNIFF_BYTES)
         if b"\0" in head:
@@ -164,3 +167,17 @@ def test_unreadable_or_missing_files_fail_closed(tmp_path: Path) -> None:
     """A file the guard could not read was not cleared for publication."""
     with pytest.raises(OSError):
         _read_text(tmp_path / "missing.txt")
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "missing"])
+def test_symlink_targets_are_scanned_as_git_content(tmp_path: Path, kind: str) -> None:
+    """Scan the published link text even for directory and broken links."""
+    target = tmp_path / ("hyi-" + "A" * 32)
+    if kind == "file":
+        target.write_text("ordinary content")
+    elif kind == "directory":
+        target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target.name, target_is_directory=kind == "directory")
+    assert _read_text(alias) == target.name
+    assert SECRET_SHAPES["HybridInference gateway API key"].fullmatch(_read_text(alias))

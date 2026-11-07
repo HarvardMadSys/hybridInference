@@ -193,9 +193,9 @@ FENCE_SECRET_LITERALS: dict[tuple[str, str], str] = {
         "different-secret",
     ): "asserts another secret cannot see a fence; it never pins one",
     (
-        "tests/unit/storage/test_schema_lock_timeout.py",
-        "test-secret",
-    ): "a fake connection; no database is involved",
+        "tests/unit/observability/test_alert_history_review_boundaries.py",
+        "synthetic-review-fence",
+    ): "derives digests in memory only; no database is involved",
 }
 
 

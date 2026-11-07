@@ -225,148 +225,124 @@ msgstr ""
 msgid "How the schema is created"
 msgstr "表结构是怎么创建出来的"
 
-#: ../developer/database.md:58
+#: ../developer/database.md
 msgid ""
-"The application creates and migrates its own schema **at startup**, and a"
-" restart leaves in place whatever already exists; there is no separate "
-"migration tool to run. Every statement is `CREATE TABLE IF NOT EXISTS`, "
-"so the builders below overlap harmlessly where two of them define the "
-"same table:"
+"The schema is versioned. The migrations in `apps/backend/migrations/` "
+"create and change every table, and a deploy applies them as a step of its"
+" own, with the image it is about to start, before it restarts the "
+"gateway:"
 msgstr ""
-"应用在**启动时**自己创建和迁移表结构，重启不会改动已经存在的部分，也不需要另外运行迁移工具。每条语句都是 `CREATE TABLE IF "
-"NOT EXISTS`，所以下面这些建表代码即使有两处定义了同一张表，也不会冲突："
-
-#: ../developer/database.md
-msgid "Code"
-msgstr "代码"
-
-#: ../developer/database.md
-msgid "Creates"
-msgstr "创建什么"
+"表结构有版本。所有的表都由 `apps/backend/migrations/` "
+"里的迁移创建和修改；部署时用即将启动的那个镜像单独执行一步迁移，然后才重启网关："
 
 #: ../developer/database.md
 msgid ""
-"`AppConfigStore.ensure_schema` in "
-"`apps/backend/serving/config/app_config_store.py`"
+"The command reads the gateway's own `DB_*` settings, and does nothing "
+"when `DB_ENABLED` is off. `make up` and `make build` run it before they "
+"start the services. `python -m migrations status` shows the database's "
+"revision next to the code's."
 msgstr ""
-"`apps/backend/serving/config/app_config_store.py` 里的 "
-"`AppConfigStore.ensure_schema`"
-
-#: ../developer/database.md
-msgid "`app_config`, first of all, because the rest of startup reads its settings"
-msgstr "`app_config`，而且最先创建，因为启动过程的其余部分都要读取其中的设置项"
-
-#: ../developer/database.md
-msgid "`ensure_api_logs_schema` in `apps/backend/serving/storage/log_schema.py`"
-msgstr "`apps/backend/serving/storage/log_schema.py` 里的 `ensure_api_logs_schema`"
-
-#: ../developer/database.md
-msgid "`api_logs` and `api_stats_hourly`, with their columns and indexes"
-msgstr "`api_logs` 和 `api_stats_hourly`，连同它们的列和索引"
+"这条命令读取网关自己的 `DB_*` 设置，`DB_ENABLED` 关闭时什么都不做。`make up` 和 `make build` "
+"会在启动服务之前先执行它。`python -m migrations status` 把数据库的迁移版本和代码的迁移版本并排列出来。"
 
 #: ../developer/database.md
 msgid ""
-"`DatabaseLogger._create_tables` in "
-"`apps/backend/serving/storage/database.py`"
-msgstr ""
-"`apps/backend/serving/storage/database.py` 里的 "
-"`DatabaseLogger._create_tables`"
-
-#: ../developer/database.md
-msgid "Calls the above, then the auth/admin tables"
-msgstr "先调用上面那个，再建认证/管理相关的表"
+"The gateway itself creates no tables. When it starts, it compares the "
+"revision the database records with its own:"
+msgstr "网关自己不建任何表。启动时，它把数据库记录的迁移版本和自己的版本做比较："
 
 #: ../developer/database.md
 msgid ""
-"`PostgresOperationalStore.initialize` in "
-"`apps/backend/serving/storage/postgres_operational.py`"
-msgstr ""
-"`apps/backend/serving/storage/postgres_operational.py` 里的 "
-"`PostgresOperationalStore.initialize`"
+"No revision recorded, or an earlier one of its own: it refuses to start "
+"and names the command above."
+msgstr "没有记录版本，或者记录的是它自己更早的版本：拒绝启动，并提示执行上面的命令。"
 
 #: ../developer/database.md
-msgid "The operational tables (settings, overrides, provider registry)"
-msgstr "运行数据表（设置、覆盖项、provider 注册表）"
+msgid "Its own revision: it starts."
+msgstr "正好是它自己的版本：正常启动。"
 
 #: ../developer/database.md
 msgid ""
-"`ResponseStore.initialize` in "
-"`apps/backend/serving/storage/responses_store.py`"
+"A revision it does not know, so a newer one, as after a deploy that "
+"restored the previous image: it starts, with a warning, as long as the "
+"database still supports its code. A revision that removes something older"
+" code uses records the oldest code it still supports, and older code "
+"refuses to start there."
+msgstr "它不认识的版本，也就是更新的版本，比如部署失败、恢复了上一版镜像之后：只要数据库仍然支持这一版代码，它就启动，并记一条警告。如果某个迁移删掉了旧代码还在用的东西，它会记下数据库还支持的最老代码，更老的代码在这个库上会拒绝启动。"
+
+#: ../developer/database.md
+msgid ""
+"The first migration of a database that was running before versioning, "
+"`0001_baseline`, needs no preparation. It runs the code that used to "
+"build the schema at startup, now frozen in "
+"`apps/backend/migrations/baseline/`: it creates what the database lacks "
+"and records the revision. On a database the previous release already "
+"started on, it changes nothing and takes no strong table lock."
 msgstr ""
-"`apps/backend/serving/storage/responses_store.py` 里的 "
-"`ResponseStore.initialize`"
+"引入版本之前就在用的数据库，第一次迁移（`0001_baseline`）不需要任何准备。它执行的就是以前在启动时建表的那些代码，现在冻结在 "
+"`apps/backend/migrations/baseline/` "
+"里：补上数据库缺的部分，然后记下版本。上一版已经在上面启动过的数据库，它什么都不改，也不拿强表锁。"
 
 #: ../developer/database.md
 msgid "`openai_responses`"
 msgstr ""
 
-#: ../developer/database.md
-msgid ""
-"`apps/backend/serving/grants.py` and "
-"`apps/backend/serving/admin/geo_demand_rollup.py`"
-msgstr ""
-"`apps/backend/serving/grants.py` 和 "
-"`apps/backend/serving/admin/geo_demand_rollup.py`"
-
-#: ../developer/database.md
-msgid "`agent_grants`; the `geo_hourly_*` rollup tables"
-msgstr "`agent_grants`；以及 `geo_hourly_*` 汇总表"
-
-#: ../developer/database.md:72
-msgid ""
-"Pointing a gateway at an empty database is therefore all the "
-"\"migration\" there is: start it and the tables appear."
-msgstr "所以所谓「迁移」，就是把网关指向一个空数据库：启动网关，表就建好了。"
-
 #: ../developer/database.md:75
 msgid "Two properties are worth knowing before you operate this:"
 msgstr "运维之前，有两点值得先了解："
 
-#: ../developer/database.md:77
+#: ../developer/database.md
 msgid ""
-"**A restart only changes what is missing.** Each startup first checks "
-"which columns and indexes already exist and issues only the "
-"`ALTER`/`CREATE INDEX` statements that are actually missing, so a steady-"
-"state restart takes no strong table locks. This matters because `ALTER "
-"TABLE` acquires `ACCESS EXCLUSIVE` *before* Postgres evaluates `IF NOT "
-"EXISTS`, and a queued exclusive lock parks every reader behind it."
+"**A migration that cannot get its lock stops instead of waiting.** Each "
+"statement waits at most 3 seconds for a table lock. A long reader such as"
+" a nightly `pg_dump` makes the migration fail and roll back; the command "
+"exits with status 75 and lists the sessions holding locks. Nothing "
+"switches over: the running gateway keeps serving, and the same command "
+"can simply be run again later. Avoid the backup window for a release that"
+" changes the schema; on a database already at the latest revision, the "
+"command only reads the version."
 msgstr ""
-"**重启只补缺失的部分**。每次启动都会先检查哪些列和索引已经存在，只执行真正缺少的 `ALTER`/`CREATE INDEX` "
-"语句，所以表结构没有变化时，重启不会拿任何强表锁。这一点很重要：`ALTER TABLE` 在 Postgres 判断 `IF NOT "
-"EXISTS` *之前*就会申请 `ACCESS EXCLUSIVE` 锁，而排队等待的排他锁会把后面所有读请求都堵住。"
+"**拿不到锁的迁移会停下来，而不是一直等。** 每条语句等表锁最多 3 秒。像夜间 `pg_dump` "
+"这样长时间读取的会话会让迁移失败并回滚；命令以状态码 75 "
+"退出，并列出持有锁的会话。服务不会切换：正在运行的网关照常服务，稍后原样再执行一次就行。改动表结构的版本要避开备份时段发布；数据库已经是最新版本时，这条命令只读一次版本号。"
 
-#: ../developer/database.md:84
+#: ../developer/database.md
 msgid ""
-"**A migration that cannot get its lock is deferred, not fatal.** The DDL "
-"phase runs under a 3-second `lock_timeout` and raises "
-"`SchemaLockUnavailable` rather than waiting; the caller retries it in the"
-" background and startup proceeds. The usual lock holder is a long-running"
-" `pg_dump`, which can hold `ACCESS SHARE` over `api_logs` for hours. If "
-"you take backups on a schedule, expect an occasional deferred-migration "
-"line in the log after a deploy that adds a column."
+"**One migration runs at a time.** A second run against the same database "
+"waits for the first to finish, and fails if that takes too long, rather "
+"than migrating alongside it."
+msgstr "**同一时间只有一个迁移在执行。** 对同一个数据库的第二次执行会等第一次结束，等太久就失败退出，不会和它同时迁移。"
+
+#: ../developer/database.md
+msgid ""
+"To change the schema, add a revision in "
+"`apps/backend/migrations/versions/`. A revision must leave the previous "
+"release working, because that release keeps serving while it runs and is "
+"what a failed deploy restores. Large indexes on `api_logs` are not "
+"migrations: they are built in the background "
+"(`apps/backend/serving/storage/perf_metrics_index.py`), since building "
+"them would block request logging for hours. The rules are in the design "
+"record, `docs/agents/specs/2026-11-02-versioned-schema-migrations-"
+"design.zh.md`."
 msgstr ""
-"**拿不到锁的迁移会推迟执行，不会导致启动失败**。DDL 阶段设置了 3 秒的 `lock_timeout`，拿不到锁就抛出 "
-"`SchemaLockUnavailable`，不会一直等；调用方会在后台重试，启动流程照常继续。最常见的持锁者是长时间运行的 "
-"`pg_dump`，它可能在 `api_logs` 上持有 `ACCESS SHARE` "
-"锁好几个小时。如果你有定时备份，那么在某次新增列的部署之后，日志里偶尔出现一行迁移被推迟的记录是正常的。"
+"要改表结构，就在 `apps/backend/migrations/versions/` 里新增一个 revision。revision "
+"必须让上一版继续能用：迁移执行时上一版还在服务，部署失败时恢复的也是它。`api_logs` "
+"上的大索引不放进迁移，而是在后台构建（`apps/backend/serving/storage/perf_metrics_index.py`），因为构建它们会让请求日志阻塞好几个小时。具体规则见设计记录"
+" `docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md`。"
 
-#: ../developer/database.md:91
+#: ../developer/database.md
 msgid ""
-"This includes the account columns (login names, phone numbers). Until "
-"they land, email sign-in, token refresh, API keys and admin pages work on"
-" the old table, while first-run setup and phone sign-in answer `503` with"
-" \"The database upgrade is still in progress; try again shortly.\" Only "
-"the hard-delete claim columns still block startup."
+"Each revision says which kind it is. `compatibility = \"expand\"` means code "
+"of earlier revisions keeps working on its result; `\"contract\"` means it "
+"does not, and a contract raises the compatibility floor with "
+"`raise_compat_floor`. A test fails until the line is set. A revision that "
+"has run on a shared database is never edited or reverted: fix it with a new "
+"one."
 msgstr ""
-"账号相关的字段（登录名、手机号）也是如此。在它们加上之前，邮箱登录、令牌刷新、API key "
-"和管理页面都在旧表上照常工作，而首次运行设置和手机号登录会返回 `503`，提示“The database upgrade is still in"
-" progress; try again shortly.”。只有硬删除认领（hard-delete claim）相关的字段仍会阻止启动。"
-
-#: ../developer/database.md:97
-msgid ""
-"If you are contributing a column to `api_logs`, add it in `log_schema.py`"
-" only; that is the one place the request log's schema is defined."
-msgstr "如果你要给 `api_logs` 加一列，只在 `log_schema.py` 里加；请求日志的表结构只在那一处定义。"
+"每个 revision 都要写明自己属于哪一类。`compatibility = \"expand\"` 表示早先 revision "
+"的代码在它执行后仍能正常工作；`\"contract\"` 表示不能，这类 revision 要用 "
+"`raise_compat_floor` 提高兼容下限。这一行没填，测试就不通过。已经在共享数据库上执行过的 "
+"revision 不能再修改或撤销，有问题只能再写一个新的 revision 来修。"
 
 #: ../developer/database.md:100
 msgid "Secrets for deleting accounts"
@@ -450,14 +426,6 @@ msgid ""
 msgstr ""
 
 #: ../developer/database.md
-msgid ""
-"One row per request (model, provider, tokens, latency, TTFT, status, "
-"cost) plus hourly and daily rollups used by the dashboards and the admin "
-"Users table, and the last computed result of the admin console's slowest "
-"views"
-msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘和管理后台用户表用的小时级与天级汇总，以及管理后台最慢几个视图最近一次的计算结果"
-
-#: ../developer/database.md
 msgid "Settings"
 msgstr "设置项"
 
@@ -467,11 +435,11 @@ msgstr ""
 
 #: ../developer/database.md
 msgid ""
-"The settings on the admin console's Configuration tab, secrets included; "
-"see [Settings and first-run setup](#settings-and-first-run-setup)"
+"The settings on the admin console's Settings tab, secrets included; see "
+"[Settings and first-run setup](#settings-and-first-run-setup)"
 msgstr ""
-"管理控制台 Configuration 标签页上的设置项，包括密钥；见[设置项与首次运行设置](#settings-and-first-run-"
-"setup)"
+"管理控制台 Settings 标签页上的设置项，包括密钥；"
+"见[设置项与首次运行设置](#settings-and-first-run-setup)"
 
 #: ../developer/database.md
 msgid "Accounts and auth"
@@ -486,9 +454,10 @@ msgstr ""
 
 #: ../developer/database.md
 msgid ""
-"User records, hashed API keys and their quotas, refresh sessions and the "
-"accounts signed in on each browser, sign-in history"
-msgstr "用户记录、哈希后的 API key 及其配额、refresh token 会话及每个浏览器上已登录的账号、登录历史"
+"User records, hashed API keys with their quotas and their own budgets and "
+"model allowlists, refresh sessions and the accounts signed in on each "
+"browser, sign-in history"
+msgstr "用户记录、哈希后的 API key 及其配额和它们各自的预算与模型白名单、refresh token 会话及每个浏览器上已登录的账号、登录历史"
 
 #: ../developer/database.md
 msgid "Admin actions"
@@ -533,12 +502,14 @@ msgid "Cost and quota"
 msgstr "成本与配额"
 
 #: ../developer/database.md
-msgid "`user_daily_cost`"
+msgid "`user_daily_cost`, `api_key_daily_cost`"
 msgstr ""
 
 #: ../developer/database.md
-msgid "Per-user daily spend used for quota enforcement"
-msgstr "每个用户每天的花费，用于配额控制"
+msgid ""
+"Per-user daily spend used for quota enforcement, and the same per API key for "
+"the console's per-key spend"
+msgstr "每个用户每天的花费，用于配额控制；以及按 API key 统计的同类数据，用于控制台展示每把 key 的花费"
 
 #: ../developer/database.md
 msgid "RouteWise"
@@ -557,8 +528,13 @@ msgid "Responses API"
 msgstr ""
 
 #: ../developer/database.md
-msgid "Stored `/v1/responses` state, when content storage is enabled"
-msgstr "启用内容存储时保存下来的 `/v1/responses` 状态"
+msgid ""
+"Stored `/v1/responses` state, when content storage is enabled, kept for 30"
+" days from each response's creation; a conversation is stored only while"
+" its history is no larger than `REQUEST_MAX_BODY_MB`"
+msgstr ""
+"启用内容存储时保存下来的 `/v1/responses` 状态，每条响应自创建起保留 30 "
+"天；对话历史不超过 `REQUEST_MAX_BODY_MB` 时才继续保存"
 
 #: ../developer/database.md
 msgid "Geo analytics"
@@ -657,15 +633,16 @@ msgstr "请求日志与隐私"
 msgid ""
 "`DB_STORE_FULL_CONTENT` defaults to `false`, and that default is not a "
 "redaction of the stored text — the text is never written. It is a setting"
-" under **Privacy** on the admin console's Configuration tab, and a change"
-" applies after a backend restart. With it off, `api_logs.prompt`, "
+" under **Privacy** on the admin console's Settings tab, and a change "
+"applies after a backend restart. With it off, `api_logs.prompt`, "
 "`api_logs.response` and `api_logs.request_payload` are inserted as "
 "`NULL`, and `/v1/responses` state is not persisted."
 msgstr ""
-"`DB_STORE_FULL_CONTENT` 默认为 `false`。这个默认值不是对已存文本做脱敏，而是根本不写入文本。它是管理控制台 "
-"Configuration 标签页 **Privacy** "
-"分类下的一个设置项，改动在重启后端后生效。关闭时，`api_logs.prompt`、`api_logs.response` 和 "
-"`api_logs.request_payload` 都写入 `NULL`，`/v1/responses` 的状态也不会保存。"
+"`DB_STORE_FULL_CONTENT` 默认为 `false`。这个默认值不是对已存文本做脱敏，"
+"而是根本不写入文本。它是管理控制台 Settings 标签页 **Privacy** 分类下的一个设置项，"
+"改动在重启后端后生效。关闭时，`api_logs.prompt`、`api_logs.response` 和 "
+"`api_logs.request_payload` 都写入 `NULL`，`/v1/responses` "
+"的状态也不会保存。"
 
 #: ../developer/database.md:173
 msgid ""
@@ -1029,12 +1006,12 @@ msgid "Batch inference"
 msgstr "批量推理"
 
 #: ../developer/database.md
-msgid "`batch_jobs`, `batch_items`, `batch_model_limits`"
+msgid "`batch_jobs`, `batch_items`, `batch_attempts`, `batch_idempotency`, `batch_files`, `batch_file_chunks`, `batch_webhooks`, `batch_webhook_events`, `batch_model_limits`, `batch_user_state`, `batch_interactive_load`, `batch_read_leases`"
 msgstr ""
 
 #: ../developer/database.md
-msgid "Batches submitted to `/v1/batches`, with their requests and results until `BATCH_RETENTION_DAYS` after they finish, and the per-model batch concurrency caps; see [Batch Inference](batches.md)"
-msgstr "提交到 `/v1/batches` 的批次及其请求和结果（保留到批次结束后 `BATCH_RETENTION_DAYS` 天），以及每个模型的批量并发上限；见[批量推理](batches.md)"
+msgid "Batches of all three batch APIs with their requests, attempts and results until `BATCH_RETENTION_DAYS` after they finish; uploaded input files and result files; idempotency keys; webhooks and their deliveries; the per-model batch concurrency caps; and the worker's scheduling state and download leases. See [Running batch inference](batches.md#running-batch-inference)"
+msgstr "三种批量 API 的批次及其请求、尝试和结果（保留到批次结束后 `BATCH_RETENTION_DAYS` 天）；上传的输入文件和结果文件；幂等 key；webhook 及其投递记录；每个模型的批量并发上限；以及 worker 的调度状态和下载租约。见[运行批量推理](batches.md#running-batch-inference)"
 
 #~ msgid "`session_id` / `conversation_id` headers"
 #~ msgstr "`session_id` / `conversation_id` 头"
@@ -1302,3 +1279,31 @@ msgstr "提交到 `/v1/batches` 的批次及其请求和结果（保留到批次
 
 #~ msgid "Two independent gates, and by default neither is pgAdmin's own login:"
 #~ msgstr "有两道互相独立的关卡，但默认情况下都不是 pgAdmin 自己的登录："
+
+#: ../developer/database.md:51
+msgid ""
+"Each gateway process opens two connection pools to it (sizes and reasons "
+"in `apps/backend/serving/storage/pools.py`): a general pool of up to 10 "
+"connections for everything, and a request pool of up to 4 reserved for "
+"the lookups a request makes before it is served — API-key authentication "
+"and spend, session checks, quotas, and the runtime settings read on the "
+"way. Slow work on the general pool (reports, exports, rollups) cannot "
+"hold those up, and a request that cannot get a request-pool connection "
+"within 3 seconds is answered with a 503 and `Retry-After` instead of "
+"waiting. With the alert-history pool's 4, a process holds at most 18 "
+"connections; size `max_connections` for that times the number of gateway "
+"processes, plus the tools you run beside them."
+msgstr ""
+"每个网关进程会向它打开两个连接池（大小及理由见 `apps/backend/serving/storage/pools.py`）：一个最多 10 "
+"个连接的通用池，供所有工作使用；以及一个最多 4 个连接的请求池，专门留给请求在被处理之前要做的查询——API key "
+"认证与花费、会话检查、配额，以及途中读取的运行时设置。通用池上的慢工作（报表、导出、汇总）挡不住这些查询；请求如果在 3 "
+"秒内拿不到请求池的连接，会直接得到 503 和 `Retry-After`，而不是一直等。加上告警历史池的 4 个连接，一个进程最多持有 18 "
+"个连接；请按这个数乘以网关进程数、再加上你在旁边运行的工具来设置 `max_connections`。"
+
+#: ../developer/database.md
+msgid ""
+"One row per request (model, provider, tokens, latency, TTFT, status, "
+"cost) plus hourly and daily rollups used by the dashboards, the admin "
+"Users table and the user dashboard's usage figures, and the last computed"
+" result of the admin console's slowest views"
+msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘、管理后台用户表和用户仪表盘用量数字所用的小时级与天级汇总，以及管理后台最慢几个视图最近一次的计算结果"

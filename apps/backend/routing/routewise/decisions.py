@@ -66,6 +66,12 @@ class RoutingTrace:
     # Separate from ``admission_refused`` because these are capacity, not health:
     # nothing was sent, so this must not be reported as a provider fault.
     capacity_refused: set[str] = field(default_factory=set)
+    # Endpoints inside this dispatch's range that the most recent solve dropped
+    # because they do not accept the request's input modalities. Never a fault
+    # and never a disposition of its own: read only to name them in the error a
+    # solve that found nothing raises, so an image request does not read as if
+    # the model had no text-only route.
+    modality_refused: set[str] = field(default_factory=set)
     initial_selected_endpoint: str | None = None
     initial_selected_provider_type: str | None = None
     fallback_policy: str | None = None
@@ -129,19 +135,10 @@ class RoutingDecision:
     reservation: ProviderReservation
     metadata: dict[str, Any]
     trace: RoutingTrace
-    # Optional prefill lease owned by this concrete primary attempt.  The
-    # callback is supplied by the tracker owner so this generic decision type
-    # does not know tracker internals.
-    prefill_lease: Any = None
-    prefill_release: Callable[[], None] | None = None
 
     def release(self) -> None:
-        """Release all dispatch-owned resources idempotently."""
+        """Release dispatch-owned refundable capacity idempotently."""
         self.reservation.release()
-        release = self.prefill_release
-        self.prefill_release = None
-        if release is not None:
-            release()
 
 
 __all__ = [

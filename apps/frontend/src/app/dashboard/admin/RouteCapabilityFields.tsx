@@ -1,6 +1,6 @@
 import type { Change } from '@/components/features/admin/confirm/ChangeList';
 import { Select } from '@/components/ui/Select';
-import type { RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
+import type { ProviderRoute, RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
 
 export type DeclaredChoice = '' | 'yes' | 'no';
 
@@ -86,6 +86,48 @@ export function readCapabilityDraft(draft: CapabilityDraft): CapabilityDraftRead
   return { payload, contextLengthError, maxOutputLengthError };
 }
 
+/**
+ * Whether two declarations are the same as this form shows them. Text input is
+ * implied: the form always sends it, so a declaration without it (which
+ * models.yaml does not refuse) is not a different one.
+ */
+export function sameCapabilities(a: RouteCapabilities, b: RouteCapabilities) {
+  const modalities = (capabilities: RouteCapabilities) =>
+    [...new Set(capabilities.input_modalities.filter((modality) => modality !== 'text'))]
+      .sort()
+      .join(',');
+  return (
+    a.context_length === b.context_length &&
+    a.max_output_length === b.max_output_length &&
+    a.supports_tools === b.supports_tools &&
+    modalities(a) === modalities(b)
+  );
+}
+
+/**
+ * Whether two drafts hold the same answers: "8192" and "08192" are one
+ * count, and a value the form would refuse is compared as typed.
+ */
+export function sameCapabilityDraft(a: CapabilityDraft, b: CapabilityDraft) {
+  const sameCount = (x: string, y: string) =>
+    x.trim() === y.trim() ||
+    (/^\d+$/.test(x.trim()) && /^\d+$/.test(y.trim()) && Number(x) === Number(y));
+  return (
+    sameCount(a.contextLength, b.contextLength) &&
+    sameCount(a.maxOutputLength, b.maxOutputLength) &&
+    a.imageInput === b.imageInput &&
+    a.toolCalling === b.toolCalling &&
+    [...a.otherInputModalities].sort().join(',') === [...b.otherInputModalities].sort().join(',')
+  );
+}
+
+/** Where a route's default capabilities come from, as a label. */
+export function capabilityDefaultsLabel(route: Pick<ProviderRoute, 'source'>) {
+  return route.source === 'runtime'
+    ? 'Default from when this route was added'
+    : 'Default from models.yaml';
+}
+
 /** "text, images and audio" */
 function listWords(words: string[]) {
   return words.length > 1
@@ -106,7 +148,7 @@ export function describeCapabilities(capabilities: RouteCapabilities) {
   ].join(' · ');
 }
 
-/** One review row per capability, as the form names them. */
+/** One row per capability, as the form names them, for listing changes. */
 export function capabilityRows(capabilities: RouteCapabilities): Change[] {
   const others = capabilities.input_modalities.filter(
     (modality) => modality !== 'text' && modality !== 'image',
@@ -157,12 +199,15 @@ export function RouteCapabilityFields({
   reading,
   onChange,
   help,
+  disabled = false,
 }: {
   idPrefix: string;
   draft: CapabilityDraft;
   reading: CapabilityDraftReading;
   onChange: (change: Partial<CapabilityDraft>) => void;
   help: string;
+  /** While the values are being written: they stay what was saved. */
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -181,6 +226,7 @@ export function RouteCapabilityFields({
             step="1"
             value={draft.contextLength}
             onChange={(event) => onChange({ contextLength: event.target.value })}
+            disabled={disabled}
             className={FIELD_CLASS}
             required
           />
@@ -202,6 +248,7 @@ export function RouteCapabilityFields({
             step="1"
             value={draft.maxOutputLength}
             onChange={(event) => onChange({ maxOutputLength: event.target.value })}
+            disabled={disabled}
             className={FIELD_CLASS}
             required
           />
@@ -222,6 +269,7 @@ export function RouteCapabilityFields({
             id={`${idPrefix}-image-input`}
             value={draft.imageInput}
             onValueChange={(imageInput) => onChange({ imageInput })}
+            disabled={disabled}
             // "" is unanswered, not "no": the form stays invalid until one is chosen.
             options={[
               { value: '', label: 'Choose…' },
@@ -244,6 +292,7 @@ export function RouteCapabilityFields({
             id={`${idPrefix}-tool-calling`}
             value={draft.toolCalling}
             onValueChange={(toolCalling) => onChange({ toolCalling })}
+            disabled={disabled}
             options={[
               { value: '', label: 'Choose…' },
               { value: 'no', label: 'Not supported' },

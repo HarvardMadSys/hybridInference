@@ -138,6 +138,18 @@ def test_keeps_tools_when_the_column_holds_something_different() -> None:
     assert stripped["tools"] == SAMPLE_TOOLS
 
 
+def test_keeps_an_empty_tools_list_the_column_stores_as_null() -> None:
+    """The writers store ``tools`` only when it is non-empty; ``[]`` becomes NULL.
+
+    So the body is the only record that the client sent ``"tools": []`` -- a
+    request an upstream may refuse for exactly that field.
+    """
+    body = _sample_body()
+    body["tools"] = []
+    stripped = _stripped(body, stored_tools=[])
+    assert stripped["tools"] == []
+
+
 def test_preserves_per_message_fields_the_prompt_column_dropped() -> None:
     """``ChatMessage`` is ``extra="ignore"``, so cache_control never reaches prompt."""
     body = _sample_body()

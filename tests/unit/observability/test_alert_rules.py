@@ -2099,6 +2099,79 @@ def _make_client_error_record(
     return rec
 
 
+#: Two routes sharing one provider's keys: the shape issue #1440 was about.
+_KEY_POOL_ENDPOINT_A = "glm-4.6:zai-api"
+_KEY_POOL_ENDPOINT_B = "glm-5.3-flash:zai-api"
+
+_NO_ENDPOINT = object()
+
+
+def _make_key_pool_exhaustion_record(
+    endpoint_id: object = _KEY_POOL_ENDPOINT_A,
+) -> logging.LogRecord:
+    """Build a record shaped like endpoint_health's exhaustion skip event.
+
+    Pass ``_NO_ENDPOINT`` to leave the attribute off entirely.
+    """
+    rec = logging.LogRecord(
+        # The registry logs on the router's logger, not its own module's.
+        name="routing.routers",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="key_pool_exhausted_skip_breaker",
+        args=None,
+        exc_info=None,
+    )
+    rec.event = "key_pool_exhausted_skip_breaker"
+    if endpoint_id is not _NO_ENDPOINT:
+        rec.endpoint_id = endpoint_id
+    return rec
+
+
+def _key_pool_rule(**overrides):
+    """The rule on its shipped defaults (12 per 600s, 3600s cooldown) unless overridden."""
+    from serving.observability.alert_config import KeyPoolExhaustionBurstConfig
+    from serving.observability.alert_rules import KeyPoolExhaustionBurstRule
+
+    return KeyPoolExhaustionBurstRule(KeyPoolExhaustionBurstConfig(**overrides))
+
+
+@pytest.fixture
+def key_pool_delivery(monkeypatch):
+    """Run the real ``alert_slack`` dedupe and cooldown; capture only the transport.
+
+    Patched at ``_post_to_slack`` for the reason given in
+    ``test_auth_ip_blocked_wave_delivers_one_named_message``: the cooldown lives
+    inside ``alert_slack``, so mocking that would assert on evaluations no
+    operator ever receives. The webhook URL is synthetic and nothing is sent.
+
+    Yields ``(posted, clock)``: the ``(dedupe_key, message)`` pairs that would
+    have been posted, and a one-element list holding the time both the rule's
+    window and the sink's cooldown read.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.example.invalid/key-pool")
+    alerts_module.reset_dedupe_state()
+    clock = [1_000_000.0]
+    monkeypatch.setattr("serving.observability.alert_rules.time.time", lambda: clock[0])
+    monkeypatch.setattr(alerts_module, "_monotonic", lambda: clock[0])
+
+    posted: list[tuple[str, str]] = []
+
+    async def _capture(_url, message, *, dedupe_key="", **_kwargs):
+        posted.append((dedupe_key, message))
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
+        yield posted, clock
+    alerts_module.reset_dedupe_state()
+
+
+async def _feed_key_pool(rule, endpoint_id: object, count: int) -> None:
+    for _ in range(count):
+        await rule.on_record(_make_key_pool_exhaustion_record(endpoint_id))
+
+
 def _make_stream_failed_record(
     model: str = "deepseek-v4-flash",
     error_type: str = "HTTPStatusError",
@@ -2262,6 +2335,187 @@ async def test_client_error_burst_ignores_records_without_the_event() -> None:
         await rule.on_record(_make_stream_failed_record())
 
     assert mock_alert.await_count == 0
+
+
+async def test_key_pool_exhaustion_burst_pages_each_endpoint_independently(
+    key_pool_delivery,
+) -> None:
+    """A second endpoint's burst pages even while the first one's cooldown runs.
+
+    The regression: with one window and one dedupe key for the whole
+    deployment, endpoint B going dry five minutes after A joined A's open
+    incident, and the sink dropped it as a repeat inside A's 3600s cooldown --
+    B was not reported for up to an hour. The circuit-open page this rule
+    replaces never had that blind spot, because it was keyed per endpoint.
+    """
+    posted, clock = key_pool_delivery
+    rule = _key_pool_rule()
+
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 13)
+    assert [key for key, _ in posted] == [f"key_pool_exhaustion_burst:{_KEY_POOL_ENDPOINT_A}"]
+    message_a = posted[0][1]
+    assert f"Key-pool exhaustion burst on {_KEY_POOL_ENDPOINT_A}" in message_a
+    assert f"• *Endpoint Id:* {_KEY_POOL_ENDPOINT_A}" in message_a
+    assert "• *Count:* 13" in message_a
+    assert "without a circuit-open alert" in message_a
+    assert _KEY_POOL_ENDPOINT_B not in message_a
+
+    clock[0] += 300
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_B, 13)
+    assert [key for key, _ in posted] == [
+        f"key_pool_exhaustion_burst:{_KEY_POOL_ENDPOINT_A}",
+        f"key_pool_exhaustion_burst:{_KEY_POOL_ENDPOINT_B}",
+    ]
+    message_b = posted[1][1]
+    assert f"Key-pool exhaustion burst on {_KEY_POOL_ENDPOINT_B}" in message_b
+    # B's card counts B alone, not the 26 refusals the two endpoints add up to.
+    assert f"• *Endpoint Id:* {_KEY_POOL_ENDPOINT_B}" in message_b
+    assert "• *Count:* 13" in message_b
+    assert _KEY_POOL_ENDPOINT_A not in message_b
+
+    # A is still breaching, and still inside its own cooldown: B's page did not
+    # spend it, and A's repeat is dropped as one.
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 1)
+    assert len(posted) == 2, posted
+
+
+async def test_key_pool_exhaustion_burst_does_not_add_endpoints_together(
+    key_pool_delivery,
+) -> None:
+    """Two endpoints each at the threshold are two quiet endpoints, not one breach."""
+    posted, _clock = key_pool_delivery
+    rule = _key_pool_rule()
+
+    for _ in range(12):
+        await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 1)
+        await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_B, 1)
+
+    assert posted == []
+    # Neither incident was opened, so neither will later post a recovery.
+    assert not alerts_module._TRANSITIONS.is_firing(
+        f"key_pool_exhaustion_burst:{_KEY_POOL_ENDPOINT_A}"
+    )
+    assert not alerts_module._TRANSITIONS.is_firing(
+        f"key_pool_exhaustion_burst:{_KEY_POOL_ENDPOINT_B}"
+    )
+
+
+async def test_key_pool_exhaustion_burst_stays_silent_at_threshold(key_pool_delivery) -> None:
+    posted, _clock = key_pool_delivery
+    rule = _key_pool_rule()
+
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 12)
+
+    assert posted == []
+
+
+async def test_key_pool_exhaustion_burst_cooldown_is_per_endpoint(key_pool_delivery) -> None:
+    """A sustained burst on one endpoint repeats once per cooldown, not per refusal."""
+    posted, clock = key_pool_delivery
+    rule = _key_pool_rule()
+    start = clock[0]
+
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 13)
+    assert len(posted) == 1
+
+    # One refusal every 30s keeps 20 in the 600s window: breached throughout.
+    while clock[0] + 30 < start + 3600:
+        clock[0] += 30
+        await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 1)
+    assert len(posted) == 1, posted
+
+    clock[0] = start + 3600
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 1)
+    assert [key for key, _ in posted] == [f"key_pool_exhaustion_burst:{_KEY_POOL_ENDPOINT_A}"] * 2
+
+
+async def test_key_pool_exhaustion_burst_disabled_does_not_fire(key_pool_delivery) -> None:
+    """``enabled: false`` leaves the log record as the only trace."""
+    posted, _clock = key_pool_delivery
+    rule = _key_pool_rule(enabled=False, threshold_count=0)
+
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 13)
+
+    assert posted == []
+    assert rule._windows == {}
+
+
+async def test_key_pool_exhaustion_burst_without_an_endpoint_id_stays_apart(
+    key_pool_delivery,
+) -> None:
+    """A record missing its endpoint neither raises nor counts toward a real endpoint."""
+    posted, _clock = key_pool_delivery
+    rule = _key_pool_rule()
+
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 12)
+    await _feed_key_pool(rule, _NO_ENDPOINT, 7)
+    await _feed_key_pool(rule, None, 6)
+    # Thirteen endpoint-less refusals breach their own bucket; A, at twelve, does not.
+    assert [key for key, _ in posted] == ["key_pool_exhaustion_burst:unknown"]
+
+
+async def test_key_pool_exhaustion_burst_forgets_idle_endpoints(key_pool_delivery) -> None:
+    """Per-endpoint state is dropped once its window empties, so it cannot only grow."""
+    _posted, clock = key_pool_delivery
+    rule = _key_pool_rule()
+
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 3)
+    assert set(rule._windows) == {_KEY_POOL_ENDPOINT_A}
+
+    clock[0] += 601
+    await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_B, 1)
+    assert set(rule._windows) == {_KEY_POOL_ENDPOINT_B}
+
+
+class _MuteStore:
+    """In-memory ``site_settings`` with the calls ``alert_mutes`` makes."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+
+    async def list_settings(self):
+        return [{"key": key, **row} for key, row in sorted(self.rows.items())]
+
+    async def set_setting(self, key, value, value_type, updated_by):
+        self.rows[key] = {"value": value, "value_type": value_type, "updated_by": updated_by}
+
+    async def delete_setting(self, key):
+        return self.rows.pop(key, None) is not None
+
+
+async def test_key_pool_exhaustion_burst_mute_covers_every_endpoint_key(
+    key_pool_delivery,
+) -> None:
+    """The dashboard's one ``key_pool_exhaustion_burst`` mute silences every endpoint.
+
+    The keys are now dynamic (``key_pool_exhaustion_burst:<endpoint>``), and the
+    endpoint id itself contains a colon; the mute must still resolve to the one
+    catalogued type rather than to nothing, and a mute on another type must not
+    touch it.
+    """
+    from serving.observability import alert_mutes
+    from serving.observability.alert_types import alert_type_of, get_alert_type
+
+    key_a = f"key_pool_exhaustion_burst:{_KEY_POOL_ENDPOINT_A}"
+    assert alert_type_of(key_a) == "key_pool_exhaustion_burst"
+    alert_type = get_alert_type("key_pool_exhaustion_burst")
+    assert alert_type is not None
+    assert alert_type.key_pattern == "key_pool_exhaustion_burst:<endpoint>"
+
+    posted, clock = key_pool_delivery
+    alert_mutes.init_alert_mutes(_MuteStore())
+    try:
+        await alert_mutes.mute_alert_type("client_error_burst", None, "admin@example.com")
+        rule = _key_pool_rule()
+        await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_A, 13)
+        assert [key for key, _ in posted] == [key_a]
+
+        await alert_mutes.mute_alert_type("key_pool_exhaustion_burst", None, "admin@example.com")
+        clock[0] += 300
+        await _feed_key_pool(rule, _KEY_POOL_ENDPOINT_B, 13)
+        assert len(posted) == 1, posted
+    finally:
+        alert_mutes.init_alert_mutes(None)
 
 
 async def test_client_error_burst_disabled_does_not_fire() -> None:
@@ -2509,3 +2763,154 @@ def test_stream_failed_fields_survive_log_formatters() -> None:
     assert payload["error_type"] == "HTTPStatusError"
     assert 'model="deepseek-v4-flash"' in plain
     assert 'error_type="HTTPStatusError"' in plain
+
+
+@pytest.mark.asyncio
+async def test_request_log_queue_loss_reaches_the_alert_engine(monkeypatch):
+    """A real drop from ``CompletionsLogger`` opens a saturation incident.
+
+    This is the integration that matters: the warning is produced by the
+    queue's own drop path, travels through ``AlertingLogHandler``, and is
+    evaluated by the rule the engine builds. The rule context is asserted too,
+    so a future event rename cannot leave a text-only warning that pages
+    nobody.
+    """
+    from unittest.mock import MagicMock
+
+    from serving.observability.alerts import reset_dedupe_state
+    from serving.servers.routers import completions_logging as cl_module
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    reset_dedupe_state()
+    # Use the real producer and its warning; shrink only the bound so the test
+    # reaches saturation with two payloads instead of 1025 rows.
+    monkeypatch.setattr(cl_module, "_LOG_QUEUE_MAXSIZE", 1)
+
+    handler = AlertingLogHandler(maxsize=100)
+    producer_logger = logging.getLogger(cl_module.__name__)
+    producer_logger.addHandler(handler)
+    engine = AlertEngine(
+        handler=handler,
+        config=AlertConfig(),
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    hang = asyncio.Event()
+    store = MagicMock()
+
+    async def _slow(**kwargs: object) -> None:
+        await hang.wait()
+
+    store.log_request = AsyncMock(side_effect=_slow)
+    cl = CompletionsLogger(log_store=store)
+    try:
+        with patch(
+            "serving.observability.alerts.alert_slack",
+            new=AsyncMock(),
+        ) as mock_alert:
+            await engine.start()
+            # The first payload fills the one-slot queue. The second finds it
+            # full before a worker can run, so the producer drops the oldest
+            # and emits request_log_queue_saturated with dropped_total=1.
+            cl.schedule_log("req-1", {"request_id": "req-1"})
+            cl.schedule_log("req-2", {"request_id": "req-2"})
+
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1
+            context = mock_alert.await_args_list[0].args[2]
+            assert context["events_in_window"] == 1
+            assert context["dropped_total"] == 1
+            assert context["queue_maxsize"] == 1
+            assert context["window_sec"] == 600
+            assert "api_logs" in context["note"]
+            assert "task/grant" in context["note"]
+
+            # A quiet period followed by a small second burst (lifetime drops
+            # #2 and #3) must still reach the rule; the time-based producer
+            # refresh is what makes that possible.
+            cl._last_drop_warn_at = -1e9
+            cl.schedule_log("req-3", {"request_id": "req-3"})
+            cl.schedule_log("req-4", {"request_id": "req-4"})
+            for _ in range(100):
+                if mock_alert.await_count >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert mock_alert.await_count >= 2
+            second_context = mock_alert.await_args_list[-1].args[2]
+            assert second_context["events_in_window"] == 2
+            assert second_context["dropped_total"] == 2
+    finally:
+        hang.set()
+        await cl.stop()
+        producer_logger.removeHandler(handler)
+        await engine.stop()
+
+
+def _make_request_log_saturation_record(
+    *, dropped_total: int = 1, queue_maxsize: int = 1024
+) -> logging.LogRecord:
+    record = logging.LogRecord(
+        name="serving.servers.routers.completions_logging",
+        level=logging.WARNING,
+        pathname="",
+        lineno=0,
+        msg="Request-log queue saturated",
+        args=None,
+        exc_info=None,
+    )
+    record.event = "request_log_queue_saturated"
+    record.dropped_total = dropped_total
+    record.queue_maxsize = queue_maxsize
+    return record
+
+
+def _request_log_saturation_rule(**overrides: object):
+    from serving.observability.alert_config import RequestLogQueueSaturationConfig
+    from serving.observability.alert_rules import RequestLogQueueSaturationRule
+
+    defaults = {
+        "enabled": True,
+        "window_sec": 600,
+        "threshold_count": 1,
+        "cooldown_sec": 0,
+    }
+    return RequestLogQueueSaturationRule(
+        RequestLogQueueSaturationConfig(**{**defaults, **overrides})
+    )
+
+
+async def test_request_log_queue_saturation_cooldown_suppresses_a_storm(monkeypatch) -> None:
+    """A sustained loss episode posts one page, not one per warning.
+
+    The producer refreshes its warning while drops continue; this is the other
+    half of the bound, enforced by the real alert cooldown.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+    rule = _request_log_saturation_rule(cooldown_sec=3600)
+    posted: list[dict] = []
+
+    async def _capture(_url, message, **_kwargs):
+        posted.append(message)
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=_capture):
+        for dropped_total in range(1, 41):
+            await rule.on_record(_make_request_log_saturation_record(dropped_total=dropped_total))
+
+    assert len(posted) == 1, posted
+    assert "Request-log queue saturated" in json.dumps(posted[0])
+
+
+def test_is_failed_request_leaves_out_model_queued_503s():
+    """An on-demand model waiting for capacity is not a failed request."""
+    from serving.observability.alert_rules import _is_failed_request
+
+    assert _is_failed_request({"status": 503, "client_error_kind": "model_queued"}) is False
+    # Any other 503 still counts.
+    assert _is_failed_request({"status": 503, "provider": "cluster-ondemand"}) is True

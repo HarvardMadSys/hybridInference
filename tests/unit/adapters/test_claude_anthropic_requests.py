@@ -252,11 +252,47 @@ async def test_tools_and_tool_choice_are_converted(upstream, kind, mode):
 
 
 @pytest.mark.parametrize(("kind", "mode"), PATHS)
-async def test_tool_choice_none_withholds_the_tools(upstream, kind, mode):
+async def test_tool_choice_none_keeps_tool_declarations(upstream, kind, mode):
     await _send(kind, mode, upstream, USER, tools=TOOLS, tool_choice="none")
 
-    assert "tools" not in upstream.sent
-    assert "tool_choice" not in upstream.sent
+    assert upstream.sent["tools"][0]["name"] == "weather"
+    assert upstream.sent["tool_choice"] == {"type": "none"}
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_vertex_none_with_tool_history_preserves_tools_and_history(upstream, mode):
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "weather", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "sunny"},
+        {"role": "user", "content": "Now answer."},
+    ]
+
+    await _send("claude", mode, upstream, messages, tools=TOOLS, tool_choice="none")
+
+    sent = upstream.sent
+    assert sent["tool_choice"] == {"type": "none"}
+    assert sent["tools"][0]["name"] == "weather"
+    assert sent["messages"][0]["content"][0]["type"] == "tool_use"
+    assert sent["messages"][1]["content"][0]["type"] == "tool_result"
+
+
+@pytest.mark.parametrize("mode", ["chat", "stream"])
+async def test_vertex_parallel_tool_calls_false_disables_parallel_tool_use(upstream, mode):
+    await _send("claude", mode, upstream, USER, tools=TOOLS, parallel_tool_calls=False)
+
+    assert upstream.sent["tool_choice"] == {
+        "type": "auto",
+        "disable_parallel_tool_use": True,
+    }
 
 
 @pytest.mark.parametrize(("kind", "mode"), PATHS)

@@ -25,7 +25,9 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
+from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
+from serving.config.batch_routes import default_batch_allowed
 from serving.config.offload_routes import offload_route_setting_key
 from serving.config.route_states import ENABLED, RouteState
 from serving.config.settings import (
@@ -45,7 +47,9 @@ from serving.schemas_admin import (
     ProviderRouteItem,
     ProviderRouteOption,
     RouteCapabilitiesItem,
+    RouteCapabilityEdit,
     RuntimeModelCapabilities,
+    UpdateProviderRouteBatchRequest,
     UpdateProviderRouteCandidateRequest,
     UpdateProviderRouteRequest,
     UpdateProviderRouteStateRequest,
@@ -55,6 +59,7 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
+    get_admin_audit_actor,
     get_operational_store,
     get_services,
     model_router_transition_lock,
@@ -843,6 +848,22 @@ def _route_state(services, model_id: str, route_id: str) -> RouteState:
     return resolver.get(model_id, route_id) if resolver is not None else ENABLED
 
 
+def _batch_route_resolver(services) -> Any | None:
+    return getattr(services, "batch_route_resolver", None)
+
+
+def _batch_fields(services, model_id: str, route_id: str, adapter) -> dict[str, Any]:
+    """A route's batch fields: whether batch work may use it, by choice or by its locality."""
+    resolver = _batch_route_resolver(services)
+    choice = resolver.choice(model_id, route_id) if resolver is not None else None
+    default = default_batch_allowed(adapter)
+    return {
+        "batch_allowed": default if choice is None else choice,
+        "batch_allowed_default": default,
+        "batch_allowed_choice": choice,
+    }
+
+
 def _usable_route_ids(services, model_id: str, route) -> set[str]:
     """Return the routes selection can pick for a model: effective weight above 0."""
     iter_routes = getattr(services.router, "iter_effective_routes", None)
@@ -1044,6 +1065,12 @@ def _model_config_provider_for_target(target: ProviderTarget) -> str:
 
 def _apply_target_adapter_defaults(cfg: dict[str, Any], target: ProviderTarget) -> None:
     cfg["chat_path"] = target.chat_path
+    # Derived from the adapter kind, and set by ``_make_adapter`` only for the
+    # kinds that have them. ``cfg`` is a copy of another route's config, whose
+    # values would otherwise outlive a change of kind: an OpenRouter pin on a
+    # Chutes route lists, keys and probes it as OpenRouter.
+    cfg["openrouter_pinned_provider"] = None
+    cfg["provider_profile"] = None
 
 
 def _target_provider_from_request(
@@ -3847,6 +3874,9 @@ async def _teardown_runtime_model_locked(
     route_states = _route_state_resolver(services)
     if route_states is not None:
         route_states.clear_model(model_id)
+    batch_routes = _batch_route_resolver(services)
+    if batch_routes is not None:
+        batch_routes.clear_model(model_id)
 
     return adapter, float(raw_weight), endpoint_id
 
@@ -3995,6 +4025,7 @@ async def _route_row(
         override_applied=override_applied,
         disabled=_route_state(services, model_id, route_id).disabled,
         removed=removed,
+        **_batch_fields(services, model_id, route_id, adapter),
         updated_at=stored_override.get("updated_at") if stored_override else None,
         updated_by=stored_override.get("updated_by") if stored_override else None,
         capabilities=RouteCapabilitiesItem(**_config_capabilities(adapter.config)),
@@ -4185,6 +4216,7 @@ async def update_provider_route_strategy(
     model_id: str,
     payload: UpdateProviderRouteStrategyRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -4228,10 +4260,10 @@ async def update_provider_route_strategy(
     async def audit_strategy_update() -> None:
         await log_admin_action(
             op_store,
-            admin_id,
-            "routing.provider_routes.strategy.update",
-            None,
-            {
+            action="routing.provider_routes.strategy.update",
+            actor=actor,
+            target=AuditTarget.model(canonical_model_id),
+            details={
                 "model_id": canonical_model_id,
                 "strategy": payload.strategy,
             },
@@ -4269,6 +4301,7 @@ async def update_provider_route_strategy(
 async def create_provider_route_model(
     payload: CreateProviderRouteModelRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -4350,10 +4383,10 @@ async def create_provider_route_model(
     async def audit_model_create() -> None:
         await log_admin_action(
             op_store,
-            admin_id,
-            "routing.provider_routes.model.create",
-            None,
-            {
+            action="routing.provider_routes.model.create",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
                 "model_id": model_id,
                 "strategy": payload.strategy,
                 "required_role": payload.required_role,
@@ -4508,6 +4541,7 @@ async def create_provider_route_candidate(
     model_id: str,
     payload: CreateProviderRouteRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -4608,10 +4642,10 @@ async def create_provider_route_candidate(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.candidate.create",
-                None,
-                {
+                action="routing.provider_routes.candidate.create",
+                actor=actor,
+                target=AuditTarget.model(canonical_model_id),
+                details={
                     "model_id": canonical_model_id,
                     "route_id": candidate.route_id,
                     "route_type": candidate.route_type,
@@ -4770,6 +4804,7 @@ async def update_provider_route_candidate(
     model_route_path: str,
     payload: UpdateProviderRouteCandidateRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -4780,7 +4815,8 @@ async def update_provider_route_candidate(
     updated in place (compare-and-swap on ``updated_at``) and the live route
     swapped under the model's transition lock, and a failed swap restores the
     row, so the database and the serving route never disagree. A limit-only
-    edit changes the live route's limit in place and rebuilds nothing.
+    edit changes the live route's limit in place and rebuilds nothing. A
+    capability change in the body is saved with the edit and restored with it.
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -4839,6 +4875,13 @@ async def update_provider_route_candidate(
                 ),
             )
         pricing = candidate.adapter.config.pricing if _is_runtime_created_route(route) else None
+        capability_write = _route_capability_write(
+            payload,
+            model_id=model_id,
+            route_id=route_id,
+            route=current_route,
+            adapter=current_adapter,
+        )
 
         async def persist_and_install() -> None:
             updated_at = await op_store.update_provider_route_candidate(
@@ -4864,8 +4907,13 @@ async def update_provider_route_candidate(
                     detail="provider route candidate changed concurrently; reload and retry",
                 )
             try:
+                if capability_write is not None:
+                    await capability_write.persist(op_store, admin_id)
+                    capability_write.publish()
                 _install_route_candidate_edit(services, edit)
             except BaseException:
+                if capability_write is not None:
+                    await capability_write.undo(op_store)
                 try:
                     await op_store.update_provider_route_candidate(
                         model_id,
@@ -4897,10 +4945,10 @@ async def update_provider_route_candidate(
             old_target = _candidate_target(edit.old_adapter)
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.candidate.update",
-                None,
-                {
+                action="routing.provider_routes.candidate.update",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "route_type": candidate.route_type,
@@ -4925,6 +4973,8 @@ async def update_provider_route_candidate(
                     "verified": edit.target_changed,
                 },
             )
+            if capability_write is not None:
+                await capability_write.log(op_store, actor, candidate.adapter)
 
         await _finish_router_transition_on_cancellation(persist_and_install())
 
@@ -4941,6 +4991,157 @@ async def update_provider_route_candidate(
     )
 
 
+async def _log_capability_change(
+    op_store,
+    *,
+    actor: AuditActor,
+    model_id: str,
+    route_id: str,
+    reset: bool,
+    old_capabilities: dict[str, Any],
+    capabilities: dict[str, Any],
+) -> None:
+    await log_admin_action(
+        op_store,
+        action=(
+            "routing.provider_routes.capabilities.reset"
+            if reset
+            else "routing.provider_routes.capabilities.update"
+        ),
+        actor=actor,
+        target=AuditTarget.model(model_id),
+        details={
+            "model_id": model_id,
+            "route_id": route_id,
+            "old_capabilities": old_capabilities,
+            "capabilities": capabilities,
+        },
+    )
+
+
+@dataclass
+class RouteCapabilityWrite:
+    """One route's capability change, saved by the request that edits its target.
+
+    Used under the model's transition lock, around the target's own save:
+    ``persist`` stores the row, ``publish`` serves the values (before the
+    target is installed, so a rebuilt adapter is built with them), and
+    ``undo`` puts the row and the served values back when anything in the
+    edit fails. The target and the capabilities are then saved together or
+    not at all. As with the target's own restore, this is compensation, not
+    one database transaction: an ``undo`` that cannot reach the database is
+    logged and the original error is raised.
+    """
+
+    model_id: str
+    route_id: str
+    route: Any
+    # None clears the override, so the route follows its baseline again.
+    capabilities: dict[str, Any] | None
+    old_capabilities: dict[str, Any]
+    stored_snapshot: dict[str, Any] | None = None
+    snapshot_taken: bool = False
+    served_snapshot: dict[str, dict[str, Any]] | None = None
+    published: bool = False
+
+    @property
+    def reset(self) -> bool:
+        """Whether this change clears the override rather than setting one."""
+        return self.capabilities is None
+
+    def _entries(self) -> list[tuple[object, float, str]]:
+        return _raw_route_entries(self.route) + _removed_baseline_entries(self.route)
+
+    async def persist(self, op_store, admin_id: str) -> None:
+        """Store the change, keeping the row it replaces for ``undo``."""
+        rows = await op_store.list_route_capability_overrides_for_model(self.model_id)
+        self.stored_snapshot = next(
+            (row for row in rows if str(row["route_id"]) == self.route_id), None
+        )
+        self.snapshot_taken = True
+        if self.capabilities is None:
+            await op_store.delete_route_capability_override(self.model_id, self.route_id)
+        else:
+            await op_store.upsert_route_capability_override(
+                self.model_id, self.route_id, self.capabilities, admin_id
+            )
+
+    def publish(self) -> None:
+        """Serve the change from the next request on; no I/O, so nothing runs in between."""
+        current = getattr(self.route, CAPABILITY_OVERRIDES_ATTR, None) or {}
+        self.served_snapshot = dict(current)
+        overrides = dict(current)
+        if self.capabilities is None:
+            overrides.pop(self.route_id, None)
+        else:
+            overrides[self.route_id] = self.capabilities
+        setattr(self.route, CAPABILITY_OVERRIDES_ATTR, overrides)
+        self.published = True
+        _apply_capability_overrides(self.route, self._entries())
+
+    async def undo(self, op_store) -> None:
+        """Serve and store what the route had before; a failed restore is logged."""
+        if self.published:
+            setattr(self.route, CAPABILITY_OVERRIDES_ATTR, self.served_snapshot or {})
+            _apply_capability_overrides(self.route, self._entries())
+            self.published = False
+        if not self.snapshot_taken:
+            return
+        try:
+            if self.stored_snapshot is None:
+                await op_store.delete_route_capability_override(self.model_id, self.route_id)
+            else:
+                raw = self.stored_snapshot["capabilities"]
+                await op_store.upsert_route_capability_override(
+                    self.model_id,
+                    self.route_id,
+                    json.loads(raw) if isinstance(raw, str) else raw,
+                    self.stored_snapshot.get("updated_by"),
+                )
+        except Exception:
+            logger.error(
+                "Failed to restore route capability override after edit failure "
+                "model=%s route_id=%s",
+                self.model_id,
+                self.route_id,
+                exc_info=True,
+            )
+
+    async def log(self, op_store, actor: AuditActor, adapter) -> None:
+        """Audit the change as the capabilities endpoint does."""
+        await _log_capability_change(
+            op_store,
+            actor=actor,
+            model_id=self.model_id,
+            route_id=self.route_id,
+            reset=self.reset,
+            old_capabilities=self.old_capabilities,
+            capabilities=_config_capabilities(adapter.config),
+        )
+
+
+def _route_capability_write(
+    payload: RouteCapabilityEdit,
+    *,
+    model_id: str,
+    route_id: str,
+    route,
+    adapter,
+) -> RouteCapabilityWrite | None:
+    """Read an edit body's capability change for the live route, or None if it has none."""
+    if not payload.reset_capabilities and payload.capabilities is None:
+        return None
+    # Its override is kept, and applies again when the route is restored.
+    _refuse_removed_route(route, route_id)
+    return RouteCapabilityWrite(
+        model_id=model_id,
+        route_id=route_id,
+        route=route,
+        capabilities=None if payload.capabilities is None else payload.capabilities.model_dump(),
+        old_capabilities=_config_capabilities(adapter.config),
+    )
+
+
 async def _change_route_capabilities(
     services,
     op_store,
@@ -4948,6 +5149,7 @@ async def _change_route_capabilities(
     model_route_path: str,
     capabilities: dict[str, Any] | None,
     admin_id: str,
+    actor: AuditActor,
 ) -> ProviderRouteItem:
     """Store or clear one route's capability override and serve the route with it."""
     model_id, route_id, _route = _split_model_route_path(services, model_route_path)
@@ -4967,21 +5169,14 @@ async def _change_route_capabilities(
                     model_id, route_id, capabilities, admin_id
                 )
             await sync_route_capability_overrides(services, op_store, model_id)
-            await log_admin_action(
+            await _log_capability_change(
                 op_store,
-                admin_id,
-                (
-                    "routing.provider_routes.capabilities.reset"
-                    if capabilities is None
-                    else "routing.provider_routes.capabilities.update"
-                ),
-                None,
-                {
-                    "model_id": model_id,
-                    "route_id": route_id,
-                    "old_capabilities": old_capabilities,
-                    "capabilities": _config_capabilities(adapter.config),
-                },
+                actor=actor,
+                model_id=model_id,
+                route_id=route_id,
+                reset=capabilities is None,
+                old_capabilities=old_capabilities,
+                capabilities=_config_capabilities(adapter.config),
             )
 
         await _finish_router_transition_on_cancellation(persist_and_apply())
@@ -5010,6 +5205,7 @@ async def update_provider_route_capabilities(
     model_route_path: str,
     payload: RuntimeModelCapabilities,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5027,6 +5223,7 @@ async def update_provider_route_capabilities(
         model_route_path=model_route_path,
         capabilities=payload.model_dump(),
         admin_id=admin_id,
+        actor=actor,
     )
 
 
@@ -5037,6 +5234,7 @@ async def update_provider_route_capabilities(
 async def reset_provider_route_capabilities(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5049,6 +5247,7 @@ async def reset_provider_route_capabilities(
         model_route_path=model_route_path,
         capabilities=None,
         admin_id=admin_id,
+        actor=actor,
     )
 
 
@@ -5057,10 +5256,15 @@ async def update_provider_route(
     model_route_path: str,
     payload: UpdateProviderRouteRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
-    """Update the provider/base URL/key target for one route candidate."""
+    """Update the provider/base URL/key target for one route candidate.
+
+    A body with ``capabilities`` or ``reset_capabilities`` saves that change in
+    the same request: a failure in either restores both.
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
@@ -5108,6 +5312,13 @@ async def update_provider_route(
             == _canonical_base_url(str(current_adapter.config.base_url))
             else None
         )
+        capability_write = _route_capability_write(
+            payload,
+            model_id=model_id,
+            route_id=route_id,
+            route=current_route,
+            adapter=current_adapter,
+        )
 
         async def persist_and_install() -> None:
             try:
@@ -5128,8 +5339,13 @@ async def update_provider_route(
                         else stored_deployment_type
                     ),
                 )
+                if capability_write is not None:
+                    await capability_write.persist(op_store, admin_id)
+                    capability_write.publish()
                 _install_route_update(services, update)
             except BaseException:
+                if capability_write is not None:
+                    await capability_write.undo(op_store)
                 try:
                     await _restore_provider_route_config_snapshot(
                         op_store,
@@ -5149,10 +5365,10 @@ async def update_provider_route(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.update",
-                None,
-                {
+                action="routing.provider_routes.update",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "route_provider": context.route_provider,
@@ -5168,6 +5384,8 @@ async def update_provider_route(
                     "deployment_type": update.adapter.config.deployment_type,
                 },
             )
+            if capability_write is not None:
+                await capability_write.log(op_store, actor, update.adapter)
 
         await _finish_router_transition_on_cancellation(persist_and_install())
 
@@ -5232,6 +5450,7 @@ async def verify_provider_route_update(
 async def delete_provider_route_override(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5292,10 +5511,10 @@ async def delete_provider_route_override(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.delete",
-                None,
-                {
+                action="routing.provider_routes.delete",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "old_upstream_provider": _upstream_provider(old_adapter),
@@ -5334,6 +5553,7 @@ async def delete_provider_route_override(
 async def delete_provider_route_candidate(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -5453,6 +5673,9 @@ async def delete_provider_route_candidate(
                     route_states = _route_state_resolver(services)
                     if route_states is not None:
                         route_states.set_state(model_id, route_id, ENABLED)
+                    batch_routes = _batch_route_resolver(services)
+                    if batch_routes is not None:
+                        batch_routes.clear_route(model_id, route_id)
                     await _delete_weight_override_for_route(
                         services,
                         op_store,
@@ -5509,14 +5732,14 @@ async def delete_provider_route_candidate(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                (
+                action=(
                     "routing.provider_routes.model.delete"
                     if deleting_model
                     else "routing.provider_routes.candidate.delete"
                 ),
-                None,
-                {
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "upstream_provider": _upstream_provider(removed[0]),
@@ -5667,6 +5890,7 @@ async def update_provider_route_state(
     model_route_path: str,
     payload: UpdateProviderRouteStateRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ProviderRouteItem:
@@ -5747,14 +5971,14 @@ async def update_provider_route_state(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                (
+                action=(
                     "routing.provider_routes.disable"
                     if state.disabled
                     else "routing.provider_routes.enable"
                 ),
-                None,
-                {
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "endpoint_id": endpoint_id,
@@ -5785,6 +6009,82 @@ async def update_provider_route_state(
     )
 
 
+@router.patch(
+    "/routing/provider-route-batch/{model_route_path:path}",
+    response_model=ProviderRouteItem,
+)
+async def update_provider_route_batch(
+    model_route_path: str,
+    payload: UpdateProviderRouteBatchRequest,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Allow or forbid batch work on one route, or let it follow its locality (``null``).
+
+    Batch requests run only on the routes batch work may use: by default the
+    gateway's own servers (``serving.config.batch_routes``). Interactive traffic
+    is unaffected. A model left with none refuses new batches, and its queued
+    batch requests fail when their turn comes. The choice takes effect on this
+    process at once and on the others within ten seconds.
+    """
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    resolver = _batch_route_resolver(services)
+    if resolver is None:
+        raise HTTPException(status_code=503, detail="Batch route choices are not available")
+    if not resolver.ready:
+        raise HTTPException(
+            status_code=503, detail="Batch route choices are still loading; try again shortly"
+        )
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        _refuse_removed_route(route, route_id)
+        entries = _raw_route_entries(route)
+        adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+        previous = resolver.choice(model_id, route_id)
+        await op_store.set_provider_route_batch_policy(
+            model_id, route_id, batch_allowed=payload.batch_allowed, updated_by=admin_id
+        )
+        resolver.set_choice(model_id, route_id, payload.batch_allowed)
+        await log_admin_action(
+            op_store,
+            action="routing.provider_routes.batch",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
+                "model_id": model_id,
+                "route_id": route_id,
+                "endpoint_id": endpoint_id,
+                "previous_choice": previous,
+                "choice": payload.batch_allowed,
+                "batch_allowed": resolver.allows(model_id, adapter),
+            },
+        )
+
+    override_row = (
+        None
+        if _is_runtime_candidate(adapter)
+        else _rows_by_route_id(await op_store.list_provider_route_configs_for_model(model_id)).get(
+            route_id
+        )
+    )
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=route_id,
+        adapter=adapter,
+        yaml_weight=float(raw_weight),
+        endpoint_id=endpoint_id,
+        override_row=override_row,
+    )
+
+
 @router.post(
     "/routing/provider-route-removals/{model_route_path:path}",
     response_model=ListProviderRoutesResponse,
@@ -5792,6 +6092,7 @@ async def update_provider_route_state(
 async def remove_config_provider_route(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -5877,10 +6178,10 @@ async def remove_config_provider_route(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.remove",
-                None,
-                {
+                action="routing.provider_routes.remove",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "endpoint_id": endpoint_id,
@@ -6002,6 +6303,7 @@ async def _prepare_restored_route_edit(
 async def restore_config_provider_route(
     model_route_path: str,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
@@ -6114,10 +6416,10 @@ async def restore_config_provider_route(
 
             await log_admin_action(
                 op_store,
-                admin_id,
-                "routing.provider_routes.restore",
-                None,
-                {
+                action="routing.provider_routes.restore",
+                actor=actor,
+                target=AuditTarget.model(model_id),
+                details={
                     "model_id": model_id,
                     "route_id": route_id,
                     "endpoint_id": restored_entry[2],
@@ -6421,3 +6723,59 @@ async def apply_persisted_model_router_strategy_overrides(services, op_store) ->
                 strategy,
                 exc,
             )
+
+
+async def reconcile_live_routes_from_store(services, op_store) -> None:
+    """Reconcile the in-memory route table and router strategies with persisted state."""
+    router = getattr(services, "router", None)
+    routes = getattr(router, "routes", None)
+    if not isinstance(routes, dict):
+        return
+
+    for model_id, route in list(routes.items()):
+        if not _is_canonical_model(model_id, route):
+            continue
+        if _is_runtime_created_route(route):
+            entries = _raw_route_entries(route)
+            previous_router = _detach_model_router_strategy_override(services, model_id)
+            _mutate_router_routes(services, lambda mid=model_id: routes.pop(mid, None))
+            for removed_adapter, _weight, _removed_endpoint_id in entries:
+                _unregister_dynamic_adapter(removed_adapter)
+            if previous_router is not None:
+                await _retire_previous_managed_router(
+                    services,
+                    model_id=model_id,
+                    previous_router=previous_router,
+                    active_router=None,
+                    stop_managed=True,
+                )
+        else:
+            baseline = _baseline_route_entries(route)
+            current_entries = _raw_route_entries(route)
+            setattr(route, REMOVED_ENTRIES_ATTR, {})
+            setattr(route, CAPABILITY_OVERRIDES_ATTR, {})
+            _set_route_entries(services, route, list(baseline))
+            for current_adapter, _weight, _endpoint_id in current_entries:
+                _unregister_replaced_dynamic_adapter(route, current_adapter)
+            previous_router = _detach_model_router_strategy_override(services, model_id)
+            if previous_router is not None:
+                active_router = None
+                if services.model_router_registry is not None:
+                    try:
+                        active_router = services.model_router_registry.get_router(model_id)
+                    except Exception:
+                        active_router = None
+                await _retire_previous_managed_router(
+                    services,
+                    model_id=model_id,
+                    previous_router=previous_router,
+                    active_router=active_router,
+                    stop_managed=True,
+                )
+
+    await apply_persisted_model_router_strategy_overrides(services, op_store)
+    await apply_persisted_provider_route_candidates(services, op_store)
+    await apply_persisted_provider_route_configs(services, op_store)
+    await sync_route_capability_overrides(services, op_store)
+    apply_persisted_provider_route_removals(services)
+    _rebuild_routewise_routers(services)

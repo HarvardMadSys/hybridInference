@@ -23,8 +23,9 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from serving.http import AsyncHTTPClient
+from serving.http import AsyncHTTPClient, read_error_text, stream_timeout
 from serving.stream import done_sentinel
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -77,6 +78,11 @@ async def _with_eof_frame_terminator(source: AsyncIterator[bytes]) -> AsyncItera
     yield b"\n\n"
 
 
+#: The ``anthropic-version`` values a batch item may carry upstream; the batch
+#: profiles (serving/batch/profiles.py) are held to this set by a test.
+_KNOWN_BATCH_VERSIONS = frozenset({"2023-06-01", "2026-10-21"})
+
+
 class AnthropicAdapter(BaseAdapter):
     """Direct Anthropic Messages API adapter."""
 
@@ -101,6 +107,19 @@ class AnthropicAdapter(BaseAdapter):
         """Return the upstream model identifier."""
         return self.config.provider_model_id or self.config.id
 
+    def _api_version(self) -> str:
+        """The ``anthropic-version`` to send: a batch item's own, else the fixed default.
+
+        Only the Messages execution of a batch item publishes a version (the
+        ``anthropic-version`` a Messages batch was created with, see
+        ``serving.batch.profiles``), and only a known one is honoured; every
+        other request keeps :attr:`ANTHROPIC_VERSION`.
+        """
+        requested = req_ctx.get().get(req_ctx.ANTHROPIC_VERSION)
+        if isinstance(requested, str) and requested in _KNOWN_BATCH_VERSIONS:
+            return requested
+        return self.ANTHROPIC_VERSION
+
     def _upstream_headers(
         self, *, streaming: bool, extra_headers: dict[str, str] | None = None
     ) -> dict[str, str]:
@@ -114,7 +133,7 @@ class AnthropicAdapter(BaseAdapter):
         headers.update(
             {
                 "x-api-key": self.config.api_key or "",
-                "anthropic-version": self.ANTHROPIC_VERSION,
+                "anthropic-version": self._api_version(),
                 "content-type": "application/json",
             }
         )
@@ -263,7 +282,8 @@ class AnthropicAdapter(BaseAdapter):
 
         http = AsyncHTTPClient.shared()
         session = await http._ensure_session()
-        timeout = aiohttp.ClientTimeout(total=None)
+        # No total (generation runs as long as it runs), but a bounded connect.
+        timeout = stream_timeout()
         accum = ToolCallAccumulator()
 
         input_tokens = 0
@@ -288,7 +308,7 @@ class AnthropicAdapter(BaseAdapter):
             ) as resp,
         ):
             if resp.status >= 400:
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
                 raise aiohttp.ClientResponseError(
                     request_info=resp.request_info,
                     history=resp.history,
@@ -377,9 +397,15 @@ class AnthropicAdapter(BaseAdapter):
         body: dict[str, Any],
         *,
         request_id: str,
+        usage_sink: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages."""
+        """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages.
+
+        ``usage_sink`` is accepted for interface compatibility and left empty:
+        the response's own Anthropic usage is all there is, with thinking
+        already counted in ``output_tokens`` and no separate reasoning count.
+        """
         forward = dict(body)
         forward["model"] = self._upstream_model()
 
@@ -416,13 +442,12 @@ class AnthropicAdapter(BaseAdapter):
 
         http = AsyncHTTPClient.shared()
         session = await http._ensure_session()
-        timeout = aiohttp.ClientTimeout(total=None)
+        # No total (generation runs as long as it runs), but a bounded connect.
+        timeout = stream_timeout()
 
         usage = {
             "input_tokens": 0,
             "output_tokens": 0,
-            "cache_creation_input_tokens": 0,
-            "cache_read_input_tokens": 0,
         }
 
         # Slot held for the whole passthrough stream; see stream_chat_completion.
@@ -436,7 +461,7 @@ class AnthropicAdapter(BaseAdapter):
             ) as resp,
         ):
             if resp.status >= 400:
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
                 raise aiohttp.ClientResponseError(
                     request_info=resp.request_info,
                     history=resp.history,

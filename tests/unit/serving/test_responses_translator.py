@@ -186,6 +186,43 @@ def test_input_function_call_output_non_string_serialized():
     assert msgs == [{"role": "tool", "tool_call_id": "c", "content": '{"k": 1}'}]
 
 
+def test_input_function_call_output_part_list_is_translated_like_message_content():
+    """The spec's array form: text and images, as Codex sends a screenshot tool's result.
+
+    Serialized as JSON, the parts reached the model as scaffolding, with the image's
+    base64 as prompt text and out of the modality check's sight.
+    """
+    image = "data:image/png;base64,iVBORw0KGgo"
+    msgs = responses_input_to_messages(
+        [
+            {
+                "type": "function_call_output",
+                "call_id": "c",
+                "output": [
+                    {"type": "input_text", "text": "Captured 1 image"},
+                    {"type": "input_image", "image_url": image},
+                ],
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "d",
+                "output": [{"type": "input_text", "text": "done"}],
+            },
+        ]
+    )
+    assert msgs == [
+        {
+            "role": "tool",
+            "tool_call_id": "c",
+            "content": [
+                {"type": "text", "text": "Captured 1 image"},
+                {"type": "image_url", "image_url": {"url": image}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "d", "content": "done"},
+    ]
+
+
 # --- request: params -------------------------------------------------------
 
 

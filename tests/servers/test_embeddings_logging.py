@@ -18,6 +18,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from routing.routers import FixedRouter
 from serving.config.runtime_settings import get_runtime_settings
 from serving.observability.alert_rules import _is_failed_request
 from serving.servers.auth import verify_api_key
@@ -26,7 +27,9 @@ from serving.servers.deps import (
     get_completions_logger,
     get_embedding_adapters,
     get_log_store,
+    get_model_visibility_resolver,
     get_operational_store,
+    get_router,
 )
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 from serving.servers.middleware.request_id import RequestIdMiddleware
@@ -48,6 +51,7 @@ class _FakeAdapter:
         pricing: dict[str, str] | None = None,
     ):
         self.config = SimpleNamespace(
+            id="emb-model",
             provider="fake-provider",
             pricing=_PAID_PRICING if pricing is None else pricing,
         )
@@ -94,9 +98,13 @@ class _CapturingOpStore:
 
     def __init__(self) -> None:
         self.increments: list[tuple[str, float]] = []
+        self.key_ids: list[int | None] = []
 
-    async def increment_user_cost(self, user_id: str, cost_usd: float, *, day=None) -> None:
+    async def increment_user_cost(
+        self, user_id: str, cost_usd: float, *, day=None, api_key_id=None, requests=1
+    ) -> None:
         self.increments.append((user_id, cost_usd))
+        self.key_ids.append(api_key_id)
 
 
 class _FakeRuntimeSettings:
@@ -127,8 +135,15 @@ def _build_app(
         "user_id": "user-emb",
         "role": user_role,
         "authenticated": True,
+        "api_key_id": 9,
     }
     app.dependency_overrides[enforce_user_concurrency] = lambda: None
+    # Register the access gate the surface now requires (fail-closed): a
+    # registered adapter without a gate record answers 404 regardless of role.
+    router_exec = FixedRouter()
+    router_exec.register_embedding_route("emb-model", [(adapter, 1.0)], required_role="free")
+    app.dependency_overrides[get_router] = lambda: router_exec
+    app.dependency_overrides[get_model_visibility_resolver] = lambda: None
     app.dependency_overrides[get_embedding_adapters] = lambda: {"emb-model": adapter}
     app.dependency_overrides[get_log_store] = lambda: object()  # truthy → logging enabled
     app.dependency_overrides[get_completions_logger] = lambda: logger
@@ -172,6 +187,7 @@ async def test_embeddings_success_is_logged():
     assert log_data["usage"] == {"prompt_tokens": 5, "total_tokens": 5}
     assert log_data["metadata"]["request_type"] == "embedding"
     assert log_data["metadata"]["user_id"] == "user-emb"
+    assert log_data["metadata"]["api_key_id"] == 9
     # Full vectors must not be persisted — only a compact summary.
     assert log_data["response"]["data_count"] == 1
     assert log_data["response"]["dimensions"] == 3
@@ -256,6 +272,7 @@ async def test_paid_embedding_increments_quota_counter():
     assert len(op_store.increments) == 1
     user_id, cost = op_store.increments[0]
     assert user_id == "user-emb"
+    assert op_store.key_ids == [9]
     # 1000 prompt tokens * $1.0 / 1M = $0.001
     assert cost == pytest.approx(0.001)
 
@@ -713,3 +730,40 @@ async def test_embeddings_session_header_recorded():
     _request_id, log_data = logger.calls[0]
     assert log_data["metadata"]["session_id"] == "canonical-emb"
     assert log_data["metadata"]["session_id_source"] == "x-session-id"
+
+
+@pytest.mark.asyncio
+async def test_embeddings_model_queued_is_relayed_and_left_out_of_the_failure_rate(caplog):
+    """An on-demand embedding model waiting for a node: a 503, not a failure.
+
+    The caller gets the deployment's message; the request log carries the tag and
+    the DB row the type name, so neither failed-request alert counts it.
+    """
+    from serving.exceptions import UpstreamModelQueued
+
+    error = UpstreamModelQueued(
+        SimpleNamespace(real_url="http://127.0.0.1:8010/v1/embeddings"),  # type: ignore[arg-type]
+        (),
+        status=503,
+        message="Service Unavailable",
+    )
+    error.error_body = (
+        '{"error": {"message": "emb-model is queued on the cluster, waiting for a GPU.",'
+        ' "type": "model_queued", "code": "model_queued"}}'
+    )
+    adapter = _FakeAdapter(raises=error)
+    adapter.config.provider = "cluster-ondemand"
+    log_stub = _CapturingLogger()
+    app = _build_logging_app(adapter, log_stub)
+
+    with caplog.at_level(logging.DEBUG, logger=_REQUEST_LOG_LOGGER):
+        resp = await _post(app, {"model": "emb-model", "input": "hello"})
+
+    assert resp.status_code == 503
+    assert "waiting for a GPU" in resp.text
+    record = [r for r in caplog.records if r.getMessage() == "http_request"][-1]
+    assert record.client_error_kind == "model_queued"
+    assert _is_failed_request(_window_item(record)) is False
+    _, log_data = log_stub.calls[0]
+    assert log_data["status_code"] == 503
+    assert log_data["error"].startswith("UpstreamModelQueued:")

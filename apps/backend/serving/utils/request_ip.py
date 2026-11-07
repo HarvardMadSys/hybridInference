@@ -44,6 +44,13 @@ Security model
 
 ``trusted_proxies`` and ``trusted_cloudflare_networks`` are validated at
 startup as comma-separated CIDR lists; invalid entries fail configuration.
+
+An opt-in Kubernetes discovery mode replaces static proxy trust with a fresh
+per-request tuple of exact Pod addresses supplied by middleware. That mode is
+proxy-only: an absent snapshot or unrecognized peer is unresolved, even when
+the peer looks public. It never authorizes Cloudflare headers or falls back to
+the static proxy list or direct socket identity. The master trust switch still
+disables all forwarded identity.
 """
 
 from __future__ import annotations
@@ -106,6 +113,28 @@ _NON_ROUTABLE_NETWORKS = (
 )
 
 _IP_INFO_STATE_KEY = "_hybrid_inference_client_ip_info"
+DYNAMIC_PROXY_NETWORKS_STATE_KEY = "_hybrid_inference_dynamic_proxy_networks"
+
+
+def _dynamic_proxy_networks(
+    state: object,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Accept only middleware-provided tuples of exact, discovered Pod addresses.
+
+    A missing or malformed snapshot grants no trust. In particular, a CIDR
+    accidentally placed in request state must never authorize a whole subnet.
+    Snapshot freshness and Kubernetes identities are checked by the middleware.
+    """
+    networks = getattr(state, DYNAMIC_PROXY_NETWORKS_STATE_KEY, None)
+    if not isinstance(networks, tuple):
+        return ()
+    if any(
+        not isinstance(network, (ipaddress.IPv4Network, ipaddress.IPv6Network))
+        or network.prefixlen != network.max_prefixlen
+        for network in networks
+    ):
+        return ()
+    return networks
 
 
 def _header_value(value: object) -> str | None:
@@ -205,8 +234,9 @@ class ClientIpInfo:
     ``trusted_proxy_headers`` describes whether any forwarding identity header
     was actually trusted for this request. It is **True** only when the global
     ``TRUST_PROXY_HEADERS`` configuration flag is enabled and the immediate
-    peer is authorized either by the generic trusted-proxy CIDRs or by the
-    separately configured Cloudflare CIDRs with ``TRUST_CLOUDFLARE_HEADERS``.
+    peer is authorized either by the configured proxy CIDRs, by a discovered
+    exact Pod address, or, in static mode, by the separately configured
+    Cloudflare CIDRs with ``TRUST_CLOUDFLARE_HEADERS``.
 
     ``client_ip`` is the best-effort originating client address, or the literal
     ``"unknown"`` when no trustworthy address could be determined. Forwarded
@@ -384,7 +414,7 @@ def preset_client_ip_info(scope_state: dict[str, Any], info: ClientIpInfo) -> No
     """Record *info* as the client of a request whose scope is still being built.
 
     For requests the gateway issues itself on a caller's behalf, with no network
-    peer to resolve (the batch worker's): :func:`get_client_ip_info` then
+    peer to resolve: :func:`get_client_ip_info` then
     returns *info* instead of resolving the missing peer, which would log
     ``client_ip_resolution_unresolved`` -- the signal for degraded proxy
     provenance, not for internal callers.
@@ -426,6 +456,11 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     never trusted, and the socket peer is the only network fact used. This is
     the fail-closed default — an operator must explicitly configure which CIDR
     ranges are allowed to assert forwarding provenance.
+
+    In Kubernetes discovery mode the middleware snapshot replaces that static
+    list. Only a peer in the exact-address snapshot may assert XFF (or X-Real-IP
+    when explicitly enabled). Missing or invalid snapshots and other peers
+    return unresolved; Cloudflare and direct-socket fallbacks are disabled.
     """
     settings = get_settings()
     state = getattr(request, "state", None)
@@ -440,6 +475,7 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     peer_ip = request.client.host if request.client else "unknown"
     global_trust_enabled = settings.trust_proxy_headers
     cf_trust_enabled = settings.trust_cloudflare_headers
+    dynamic_proxy_mode = settings.trust_kubernetes_proxy_discovery
 
     # XFF is list-valued and must preserve every physical field line in wire
     # order. The other forwarding identities are singleton assertions: a
@@ -455,14 +491,20 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     # Determine whether the immediate peer is a configured trusted proxy.
     # This is the gate for ALL forwarding-header trust. Without this, any
     # caller can spoof its identity via X-Forwarded-For / CF-Connecting-IP.
-    proxy_networks = _trusted_networks()
+    # Dynamic mode replaces the static proxy list for both the immediate peer
+    # and chain traversal. An old frontend address must not remain a trusted
+    # hop merely because it is still present in TRUSTED_PROXIES.
+    proxy_networks = _dynamic_proxy_networks(state) if dynamic_proxy_mode else _trusted_networks()
     cf_networks = _trusted_cloudflare_networks()
     peer_is_trusted_proxy = global_trust_enabled and _is_in_networks(peer_ip, proxy_networks)
     # Cloudflare trust requires BOTH the global proxy flag AND the Cloudflare flag.
     # This preserves the master kill-switch semantics: TRUST_PROXY_HEADERS=0 means
     # no forwarded headers can influence identity, regardless of other flags.
     peer_is_cloudflare = (
-        global_trust_enabled and cf_trust_enabled and _is_in_networks(peer_ip, cf_networks)
+        not dynamic_proxy_mode
+        and global_trust_enabled
+        and cf_trust_enabled
+        and _is_in_networks(peer_ip, cf_networks)
     )
 
     # Request-level trust: headers are trusted only if the peer is authorized
@@ -497,6 +539,13 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
         with suppress(AttributeError, TypeError):
             setattr(cache_owner, _IP_INFO_STATE_KEY, info)
         return info
+
+    if dynamic_proxy_mode and not peer_is_trusted_proxy:
+        # This deployment expects every client to arrive through its discovered
+        # proxy. A missing snapshot, disabled master switch, removed Pod, or
+        # unrelated peer cannot fall back to a public-looking container IP,
+        # static proxy entry, Cloudflare assertion, or direct-client exemption.
+        return _info("unknown", "unknown", False)
 
     if peer_is_cloudflare and cf_primary_header_ambiguous and not peer_is_trusted_proxy:
         # An ambiguous primary Cloudflare assertion must not become a client

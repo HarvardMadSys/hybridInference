@@ -21,6 +21,8 @@ from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
+from serving.audit import AuditTarget
+from serving.config.batch_routes import BatchRouteResolver
 from serving.config.route_states import RouteState, RouteStateResolver
 from serving.config.routewise_model_settings import model_routewise_setting_keys
 from serving.config.settings import get_settings
@@ -941,7 +943,12 @@ async def test_strategy_patch_cancellation_waits_for_publish_then_propagates(adm
     assert registry.get_router_name("on-demand-only") == "fixed"
     assert registry.get_router("on-demand-only") is route_executor
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "routing.provider_routes.strategy.update"
+    assert audit.await_args.kwargs["action"] == "routing.provider_routes.strategy.update"
+    # Run after the request was cancelled, the deferred audit still names who
+    # was admitted: the shared token, which is no account.
+    actor = audit.await_args.kwargs["actor"]
+    assert actor.type == "admin_token"
+    assert actor.id is None
 
 
 @pytest.mark.asyncio
@@ -1368,9 +1375,9 @@ async def test_apply_persisted_model_router_strategy_overrides(admin_client):
             "updated_by": "127.0.0.1",
         },
         {
-            "key": "routewise_latency_min_samples",
-            "value": "12",
-            "value_type": "int",
+            "key": "routewise_budget_alpha",
+            "value": "0.5",
+            "value_type": "float",
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
         },
@@ -2643,8 +2650,12 @@ async def test_runtime_route_edit_retargets_in_place_and_keeps_identity_and_weig
     assert resolver.get_snapshot_for_model("minimax-fast") == {PARASAIL_ENDPOINT_ID: 5.0}
 
     provider_routes.log_admin_action.assert_awaited()
-    action, details = provider_routes.log_admin_action.await_args.args[2:5:2]
+    audit = provider_routes.log_admin_action.await_args.kwargs
+    action, details = audit["action"], audit["details"]
     assert action == "routing.provider_routes.candidate.update"
+    # A route belongs to its model: the model is the typed target, never a user.
+    assert audit["target"] == AuditTarget.model("minimax-fast")
+    assert audit["target"].user_id is None
     assert details["old_endpoint_id"] == MINIMAX_ROUTE_ID
     assert details["endpoint_id"] == PARASAIL_ENDPOINT_ID
     assert details["old_upstream_provider"] == "minimax"
@@ -6285,7 +6296,7 @@ async def test_candidate_create_cancellation_commits_and_audits_exactly_once(adm
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 4
     op_store.upsert_provider_route_candidate.assert_awaited_once()
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "routing.provider_routes.candidate.create"
+    assert audit.await_args.kwargs["action"] == "routing.provider_routes.candidate.create"
 
 
 @pytest.mark.asyncio
@@ -7131,7 +7142,8 @@ async def test_route_update_audit_records_deployment_type(admin_client):
         headers=AUTH,
     )
     assert response.status_code == 200, response.text
-    action, details = provider_routes.log_admin_action.await_args.args[2:5:2]
+    audit = provider_routes.log_admin_action.await_args.kwargs
+    action, details = audit["action"], audit["details"]
     assert action == "routing.provider_routes.update"
     assert details["old_deployment_type"] == "auto"
     assert details["deployment_type"] == "self_hosted"
@@ -7210,7 +7222,7 @@ async def _set_state(client, route_id: str, disabled: bool, model_id: str = "min
 
 
 def _audited_actions() -> list[str]:
-    return [call.args[2] for call in provider_routes.log_admin_action.await_args_list]
+    return [call.kwargs["action"] for call in provider_routes.log_admin_action.await_args_list]
 
 
 @pytest.mark.asyncio
@@ -7671,9 +7683,9 @@ async def test_put_route_capabilities_overrides_a_yaml_route(admin_client, monke
     )
     audit = provider_routes.log_admin_action
     audit.assert_awaited_once()
-    assert audit.await_args.args[2] == "routing.provider_routes.capabilities.update"
-    assert audit.await_args.args[4]["old_capabilities"] == DEFAULT_CAPABILITIES
-    assert audit.await_args.args[4]["capabilities"] == RUNTIME_CAPABILITIES
+    assert audit.await_args.kwargs["action"] == "routing.provider_routes.capabilities.update"
+    assert audit.await_args.kwargs["details"]["old_capabilities"] == DEFAULT_CAPABILITIES
+    assert audit.await_args.kwargs["details"]["capabilities"] == RUNTIME_CAPABILITIES
 
     # The next request through the route is served with the new values.
     adapter = _route_adapter(route_executor, "minimax-fast:featherless-api")
@@ -7826,6 +7838,291 @@ async def test_route_capability_override_survives_a_target_edit_and_its_reset(ad
         f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}", headers=AUTH
     )
     assert cleared.json()["capabilities"] == DEFAULT_CAPABILITIES
+
+
+# -- Saving capabilities with a route's target edit ---------------------------
+
+FEATHERLESS_V2_TARGET = {
+    "upstream_provider": "featherless",
+    "base_url": "https://api.featherless.ai/v2",
+}
+
+
+def _audited_actions() -> list[str]:
+    return [call.kwargs["action"] for call in provider_routes.log_admin_action.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_saves_its_capabilities_in_the_same_request(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["base_url"] == "https://api.featherless.ai/v2"
+    assert body["capabilities"] == RUNTIME_CAPABILITIES
+    assert body["capabilities_baseline"] == DEFAULT_CAPABILITIES
+    assert body["capabilities_overridden"] is True
+    verify_mock.assert_awaited_once()
+    op_store.upsert_provider_route_config.assert_awaited_once()
+    assert json.loads(op_store.capability_rows[("minimax-fast", FEATHERLESS)]["capabilities"]) == (
+        RUNTIME_CAPABILITIES
+    )
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    assert adapter.config.base_url == "https://api.featherless.ai/v2"
+    _assert_capabilities_values(adapter, RUNTIME_CAPABILITIES)
+    _assert_capabilities_values(_route_adapter(route_executor, CHUTES), DEFAULT_CAPABILITIES)
+    # Each change keeps the audit entry it has on its own.
+    assert _audited_actions() == [
+        "routing.provider_routes.update",
+        "routing.provider_routes.capabilities.update",
+    ]
+    details = provider_routes.log_admin_action.await_args.kwargs["details"]
+    assert details["old_capabilities"] == DEFAULT_CAPABILITIES
+    assert details["capabilities"] == RUNTIME_CAPABILITIES
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_can_return_its_capabilities_to_the_baseline(admin_client):
+    """A reset in the edit clears the override, so the route follows models.yaml again."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=NARROW_CAPABILITIES,
+        headers=AUTH,
+    )
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={**FEATHERLESS_V2_TARGET, "reset_capabilities": True},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["capabilities"] == DEFAULT_CAPABILITIES
+    assert body["capabilities_overridden"] is False
+    assert op_store.capability_rows == {}
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    _assert_capabilities_values(adapter, DEFAULT_CAPABILITIES)
+    assert provider_routes._CAPABILITY_BASELINE not in adapter.config.route_metadata
+    assert _audited_actions() == [
+        "routing.provider_routes.update",
+        "routing.provider_routes.capabilities.reset",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_without_capabilities_leaves_them(admin_client):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=NARROW_CAPABILITIES,
+        headers=AUTH,
+    )
+    op_store.upsert_route_capability_override.reset_mock()
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json=FEATHERLESS_V2_TARGET,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"] == NARROW_CAPABILITIES
+    op_store.upsert_route_capability_override.assert_not_awaited()
+    op_store.delete_route_capability_override.assert_not_awaited()
+    assert _audited_actions() == ["routing.provider_routes.update"]
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_failure_restores_target_and_capabilities(admin_client):
+    """A route that cannot be installed keeps both its target and its override."""
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    await client.put(
+        f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}",
+        json=NARROW_CAPABILITIES,
+        headers=AUTH,
+    )
+    before_rows = dict(op_store.capability_rows)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    provider_routes.log_admin_action.reset_mock()
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await client.put(
+            f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+            json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+            headers=AUTH,
+        )
+
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    assert adapter.config.base_url == "https://api.featherless.ai/v1"
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+    assert json.loads(op_store.capability_rows[("minimax-fast", FEATHERLESS)]["capabilities"]) == (
+        json.loads(before_rows[("minimax-fast", FEATHERLESS)]["capabilities"])
+    )
+    # The override row the edit wrote was put back, and the target row removed.
+    op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", FEATHERLESS)
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_failure_removes_an_override_it_added(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await client.put(
+            f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+            json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+            headers=AUTH,
+        )
+
+    assert op_store.capability_rows == {}
+    adapter = _route_adapter(route_executor, FEATHERLESS)
+    _assert_capabilities_values(adapter, DEFAULT_CAPABILITIES)
+    assert provider_routes._CAPABILITY_BASELINE not in adapter.config.route_metadata
+
+
+@pytest.mark.asyncio
+async def test_config_route_edit_capability_store_failure_saves_nothing(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    fake_routewise.refresh_route_table.reset_mock()
+    provider_routes.log_admin_action.reset_mock()
+    op_store.upsert_route_capability_override.side_effect = ConnectionError("database down")
+
+    with pytest.raises(ConnectionError, match="database down"):
+        await client.put(
+            f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+            json={**FEATHERLESS_V2_TARGET, "capabilities": RUNTIME_CAPABILITIES},
+            headers=AUTH,
+        )
+
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    _assert_capabilities_values(_route_adapter(route_executor, FEATHERLESS), DEFAULT_CAPABILITIES)
+    op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", FEATHERLESS)
+    fake_routewise.refresh_route_table.assert_not_called()
+    provider_routes.log_admin_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_route_edit_refuses_setting_and_resetting_capabilities_at_once(admin_client):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={
+            **FEATHERLESS_V2_TARGET,
+            "capabilities": RUNTIME_CAPABILITIES,
+            "reset_capabilities": True,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    assert op_store.capability_rows == {}
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_saves_its_capabilities_in_the_same_request(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    provider_routes.log_admin_action.reset_mock()
+
+    response = await _patch_candidate(
+        client,
+        MINIMAX_ROUTE_ID,
+        {**OPENROUTER_PARASAIL_TARGET, "capabilities": NARROW_CAPABILITIES},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["capabilities"] == NARROW_CAPABILITIES
+    assert body["capabilities_baseline"] == RUNTIME_CAPABILITIES
+    assert body["capabilities_overridden"] is True
+    # The row keeps the route's declaration; the override has its own row.
+    assert json.loads(table.row("minimax-fast", MINIMAX_ROUTE_ID)["capabilities"]) == (
+        RUNTIME_CAPABILITIES
+    )
+    assert set(op_store.capability_rows) == {("minimax-fast", MINIMAX_ROUTE_ID)}
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    assert adapter.config.base_url == "https://openrouter.ai/api/v1"
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+    assert _audited_actions() == [
+        "routing.provider_routes.candidate.update",
+        "routing.provider_routes.capabilities.update",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_limit_edit_saves_its_capabilities(admin_client):
+    """An edit that rebuilds nothing still serves the new values from the next request."""
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    before = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+
+    response = await _patch_candidate(
+        client, MINIMAX_ROUTE_ID, {"capabilities": NARROW_CAPABILITIES}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"] == NARROW_CAPABILITIES
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    assert adapter is before
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+
+    reset = await _patch_candidate(client, MINIMAX_ROUTE_ID, {"reset_capabilities": True})
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert reset.json()["capabilities_overridden"] is False
+    assert op_store.capability_rows == {}
+
+
+@pytest.mark.asyncio
+async def test_runtime_route_edit_failure_restores_target_and_capabilities(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    table = _CandidateTable(op_store)
+    await _add_minimax_runtime_route(client, op_store)
+    path = f"/admin/routing/provider-route-capabilities/minimax-fast/{MINIMAX_ROUTE_ID}"
+    assert (await client.put(path, json=NARROW_CAPABILITIES, headers=AUTH)).status_code == 200
+    before_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    before_entries = list(route_executor.routes["minimax-fast"].raw_adapters)
+    provider_routes.log_admin_action.reset_mock()
+    fake_routewise.refresh_route_table.side_effect = [RuntimeError("rebuild failed"), None]
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await _patch_candidate(
+            client,
+            MINIMAX_ROUTE_ID,
+            {**OPENROUTER_PARASAIL_TARGET, "reset_capabilities": True},
+        )
+
+    assert route_executor.routes["minimax-fast"].raw_adapters == before_entries
+    restored_row = table.row("minimax-fast", MINIMAX_ROUTE_ID)
+    for field in ("provider", "base_url", "api_key_id", "provider_model_id", "endpoint_id"):
+        assert restored_row[field] == before_row[field], field
+    # The override the edit cleared is stored and served again.
+    assert json.loads(
+        op_store.capability_rows[("minimax-fast", MINIMAX_ROUTE_ID)]["capabilities"]
+    ) == (NARROW_CAPABILITIES)
+    adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
+    _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
+    provider_routes.log_admin_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -8530,7 +8827,7 @@ async def test_a_limit_only_edit_keeps_the_routes_adapter_key_pool_and_price(
     assert table.row("minimax-fast", PARASAIL_ENDPOINT_ID)["concurrency_limit"] == 4
     fake_routewise.refresh_route_table.assert_called_once_with()
     verify_mock.assert_not_awaited()
-    details = provider_routes.log_admin_action.await_args.args[4]
+    details = provider_routes.log_admin_action.await_args.kwargs["details"]
     assert (details["old_concurrency_limit"], details["concurrency_limit"]) == (2, 4)
 
 
@@ -8907,3 +9204,108 @@ async def test_a_route_marked_deleted_but_still_listed_cannot_be_toggled(admin_c
     )
     stored = states.rows[("minimax-fast", FEATHERLESS)]
     assert (stored["disabled"], stored["removed"]) == (True, True)
+
+
+# ---------------------------------------------------------------------------
+# Batch work: which routes it may use
+# ---------------------------------------------------------------------------
+
+
+class _BatchPolicyTable:
+    """Stateful stand-in for ``provider_route_batch_policies`` with a real resolver on top."""
+
+    def __init__(self, client, op_store, route_executor) -> None:
+        self.rows: dict[tuple[str, str], dict[str, Any]] = {}
+        op_store.set_provider_route_batch_policy = AsyncMock(side_effect=self.set)
+        op_store.list_all_provider_route_batch_policies = AsyncMock(side_effect=self.list_all)
+        self.resolver = BatchRouteResolver(op_store)
+        client.app.state.services.batch_route_resolver = self.resolver
+        route_executor.batch_route_resolver = self.resolver
+
+    async def set(self, model_id, route_id, *, batch_allowed, updated_by):
+        if batch_allowed is None:
+            self.rows.pop((model_id, route_id), None)
+            return
+        self.rows[(model_id, route_id)] = {
+            "model_id": model_id,
+            "route_id": route_id,
+            "batch_allowed": batch_allowed,
+            "updated_by": updated_by,
+        }
+
+    async def list_all(self):
+        return [dict(row) for _key, row in sorted(self.rows.items())]
+
+
+async def _set_batch(client, route_id: str, batch_allowed, model_id: str = "minimax-fast"):
+    return await client.patch(
+        f"/admin/routing/provider-route-batch/{model_id}/{route_id}",
+        json={"batch_allowed": batch_allowed},
+        headers=AUTH,
+    )
+
+
+def _batch_fields(row: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return row["batch_allowed"], row["batch_allowed_default"], row["batch_allowed_choice"]
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_route_takes_batch_work_only_once_an_admin_allows_it(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _BatchPolicyTable(client, op_store, route_executor)
+
+    listed = (await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)).json()
+    # Every route of this model is a cloud provider: none takes batch work by default.
+    assert {_batch_fields(row) for row in listed["routes"]} == {(False, False, None)}
+
+    allowed = await _set_batch(client, CHUTES, True)
+    assert allowed.status_code == 200, allowed.text
+    assert _batch_fields(allowed.json()) == (True, False, True)
+    assert table.rows[("minimax-fast", CHUTES)]["batch_allowed"] is True
+    assert table.resolver.choice("minimax-fast", CHUTES) is True
+    assert _audited_actions()[-1] == "routing.provider_routes.batch"
+
+    # Clearing the choice hands the route back to its locality.
+    cleared = await _set_batch(client, CHUTES, None)
+    assert cleared.status_code == 200, cleared.text
+    assert _batch_fields(cleared.json()) == (False, False, None)
+    assert table.rows == {}
+
+    # A choice is kept per route; a forbidden route reads as such.
+    forbidden = await _set_batch(client, FEATHERLESS, False)
+    assert _batch_fields(forbidden.json()) == (False, False, False)
+    others = (await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)).json()
+    by_route = {row["route_id"]: _batch_fields(row) for row in others["routes"]}
+    assert by_route[FEATHERLESS] == (False, False, False)
+    assert by_route[CHUTES] == (False, False, None)
+
+
+@pytest.mark.asyncio
+async def test_the_batch_endpoint_waits_for_the_choices_to_load(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _BatchPolicyTable(client, op_store, route_executor)
+    op_store.list_all_provider_route_batch_policies = AsyncMock(
+        side_effect=ConnectionError("database unavailable")
+    )
+    with pytest.raises(ConnectionError):
+        await table.resolver.load_all()
+
+    response = await _set_batch(client, CHUTES, True)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Batch route choices are still loading; try again shortly"
+    assert table.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_the_batch_endpoint_refuses_a_value_that_is_not_a_choice(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _BatchPolicyTable(client, op_store, route_executor)
+
+    response = await client.patch(
+        f"/admin/routing/provider-route-batch/minimax-fast/{CHUTES}",
+        json={"batch_allowed": "sometimes"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422

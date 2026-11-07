@@ -392,14 +392,55 @@ export async function hardDeleteUser(
 // Audit Log
 // ========================================
 
+/**
+ * Who made a change. `admin` and `user` are signed-in accounts with a stable
+ * `actor_id`; `admin_token` is the shared admin token, which names no account;
+ * `anonymous` is a registration, `bootstrap` the first-run setup.
+ */
+export type AuditActorType =
+  | 'admin'
+  | 'user'
+  | 'admin_token'
+  | 'anonymous'
+  | 'bootstrap'
+  | 'system';
+
+/** What a change was made to. The list is open: a newer gateway may add kinds. */
+export type AuditTargetType =
+  | 'user'
+  | 'model'
+  | 'provider'
+  | 'provider_key'
+  | 'setting'
+  | 'config'
+  | 'alert_type'
+  | 'auth_block'
+  | 'signup_domain'
+  | 'site_update'
+  | 'broadcast'
+  | (string & {});
+
 export interface AuditLogEntry {
   id: number;
   timestamp: string;
+  /**
+   * The source as historically recorded, unvalidated: an address, a login or
+   * an email. Newer entries carry `source_ip` and may repeat it here.
+   */
   admin_ip: string;
   action: string;
+  /** Affected user for typed entries; an untyped raw ID on legacy entries. */
   target_user_id: string | null;
   details: Record<string, unknown> | null;
   success: boolean;
+  // Absent from an older gateway, and null on entries recorded before it
+  // stored them: nothing about the actor, target or source is known then.
+  actor_type?: AuditActorType | null;
+  actor_id?: string | null;
+  /** The trusted request address, or null when unavailable. */
+  source_ip?: string | null;
+  target_type?: AuditTargetType | null;
+  target_id?: string | null;
 }
 
 export interface ListAuditLogResponse {
@@ -437,6 +478,10 @@ export interface AdminRequestMetricsBucket {
   error_count: number;
   client_disconnect_count?: number;
   avg_latency_ms?: number | null;
+  // The batch worker's requests in the bucket, and how many failed, whatever
+  // `source` the counts above are of. Omitted by a gateway that predates them.
+  batch_request_count?: number;
+  batch_error_count?: number;
 }
 
 export interface AdminRequestMetricsWindow {
@@ -449,16 +494,26 @@ export interface AdminRequestMetricsWindow {
   error_requests: number;
   client_disconnect_requests?: number;
   avg_latency_ms?: number | null;
+  batch_requests?: number;
+  batch_error_requests?: number;
   buckets: AdminRequestMetricsBucket[];
 }
 
 export interface AdminRequestMetricsResponse {
   generated_at: string;
+  // Whose requests the counts count. A gateway that predates the field counts
+  // every request, whatever was asked.
+  source?: RequestSource | 'all';
   windows: AdminRequestMetricsWindow[];
 }
 
-export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/request-metrics');
+export async function getRequestMetrics(
+  // Whose requests to count; the batch worker's are reported beside them in
+  // every bucket either way. Omitted: every request.
+  source?: RequestSource,
+): Promise<AdminRequestMetricsResponse> {
+  const query = source ? `?${new URLSearchParams({ source }).toString()}` : '';
+  const resp = await fetchWithAuth(API_BASE, `/admin/request-metrics${query}`);
   return jsonOrThrow<AdminRequestMetricsResponse>(resp);
 }
 
@@ -521,7 +576,7 @@ export async function getPerformanceMetrics({
 export interface AdminTtftScatterPoint {
   prompt_tokens: number;
   ttft_ms: number;
-  cache_hit: boolean;
+  cache_hit: boolean | null;
   timestamp: string;
 }
 
@@ -628,6 +683,9 @@ export interface AdminRecentRequestItem {
   num_turns?: number | null;
   num_user_turns?: number | null;
   num_tool_calls?: number | null;
+  // The batch whose worker ran this request (`api_logs.batch_job_id`); null
+  // for a request a caller made directly. An older gateway omits it.
+  batch_job_id?: string | null;
 }
 
 // Per-request RouteWise decision blob. The backend passes the raw persisted
@@ -690,6 +748,31 @@ export type RequestOutcome =
   | 'errors_excluding_disconnects'
   | 'client_disconnect';
 
+// Who ran a logged request. `interactive` is every request a caller made
+// directly (API, console, Playground) and is what Recent Requests lists;
+// `batch` is the batch worker's, listed under Batches → Requests. The backend
+// tells them apart by `api_logs.batch_job_id`.
+export type RequestSource = 'interactive' | 'batch';
+
+// The request views' filters on who ran a request: a source, and optionally
+// one batch (exact id).
+export interface RequestSourceFilter {
+  source?: RequestSource;
+  batchId?: string;
+}
+
+function setSourceParams(params: URLSearchParams, filter: RequestSourceFilter = {}): void {
+  if (filter.source) params.set('source', filter.source);
+  if (filter.batchId) params.set('batch_id', filter.batchId);
+}
+
+// One stretch of time, as ISO 8601 instants: from `start` (inclusive) to `end`
+// (exclusive), like a Request volume bar.
+export interface RequestWindow {
+  start: string;
+  end: string;
+}
+
 export async function listRecentRequests(
   limit = 50,
   offset = 0,
@@ -705,6 +788,11 @@ export async function listRecentRequests(
   // Count the total again instead of reusing the one the backend counted for
   // these filters moments ago. Set by an explicit Refresh, not by paging.
   refresh = false,
+  // Interactive or batch requests, or one batch's. Omitted: both sources.
+  sourceFilter: RequestSourceFilter = {},
+  // Only the requests of one stretch (a clicked Request volume bar). The
+  // backend widens `days` to reach its start.
+  window: RequestWindow | null = null,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
@@ -714,6 +802,11 @@ export async function listRecentRequests(
   if (days != null) params.set('days', String(days));
   if (sessionId) params.set('session_id', sessionId);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, sourceFilter);
+  if (window) {
+    params.set('start_time', window.start);
+    params.set('end_time', window.end);
+  }
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
@@ -755,8 +848,10 @@ export async function getRecentRequestsPerformance({
   sessionId,
   modelId,
   requestType,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -773,6 +868,7 @@ export async function getRecentRequestsPerformance({
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -817,8 +913,10 @@ export async function getRecentRequestOffloads({
   sessionId,
   modelId,
   requestType,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -835,6 +933,7 @@ export async function getRecentRequestOffloads({
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -879,8 +978,10 @@ export async function getRecentRequestsPerformanceTrend({
   requestType,
   servedModel,
   servedEndpoint,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -902,6 +1003,7 @@ export async function getRecentRequestsPerformanceTrend({
   if (servedModel) params.set('served_model', servedModel);
   if (servedEndpoint) params.set('served_endpoint', servedEndpoint);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -934,10 +1036,19 @@ export interface ClearErrorRequestsResponse {
   message: string;
 }
 
-export async function clearErrorRequests(hours = 1): Promise<ClearErrorRequestsResponse> {
-  const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests/clear-errors?hours=${hours}`, {
-    method: 'POST',
-  });
+export async function clearErrorRequests(
+  hours = 1,
+  // Whose errors: `interactive` clears what Recent Requests shows and leaves
+  // the batch worker's rows alone. Omitted: every source's.
+  source?: RequestSource,
+): Promise<ClearErrorRequestsResponse> {
+  const params = new URLSearchParams({ hours: String(hours) });
+  if (source) params.set('source', source);
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/recent-requests/clear-errors?${params.toString()}`,
+    { method: 'POST' },
+  );
   return jsonOrThrow<ClearErrorRequestsResponse>(resp);
 }
 
@@ -974,12 +1085,18 @@ export interface AnalyticsModelUserEntry {
   user_id: string;
   requests: number;
   tokens: number; // prompt + completion tokens for this user + model
+  prompt_tokens: number; // prefill tokens, cached ones included
+  cache_read_tokens: number; // prefill tokens served from the prompt cache
+  completion_tokens: number; // output tokens, reasoning included
 }
 
 export interface AnalyticsModelUsers {
   model: string; // model_id
   requests: number; // total signed-in-user requests for this model
   tokens: number; // total signed-in-user tokens for this model
+  prompt_tokens: number;
+  cache_read_tokens: number;
+  completion_tokens: number;
   users: AnalyticsModelUserEntry[];
 }
 
@@ -1414,6 +1531,9 @@ export interface ExportRequestsParams {
   modelId?: string;
   outcome?: RequestOutcome;
   requestType?: 'chat' | 'embedding';
+  // Interactive or batch requests, or one batch's, as on the list.
+  source?: RequestSource;
+  batchId?: string;
   includeContent?: boolean;
 }
 
@@ -1427,6 +1547,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.outcome && params.outcome !== 'all') qs.set('outcome', params.outcome);
   if (params.requestType) qs.set('request_type', params.requestType);
+  setSourceParams(qs, { source: params.source, batchId: params.batchId });
   if (params.includeContent) qs.set('include_content', 'true');
 
   const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
@@ -1664,6 +1785,7 @@ export interface ProviderObservabilityTotals {
   cache_eligible_count: number;
   cache_hit_count: number;
   input_tokens: number;
+  cache_eligible_input_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
 }
@@ -1676,6 +1798,7 @@ export interface ProviderObservabilityBucket {
   cache_hit_count: number;
   cache_read_tokens: number;
   input_tokens: number;
+  cache_eligible_input_tokens: number;
 }
 
 export interface ProviderErrorTypeRow {
@@ -2475,6 +2598,16 @@ export interface ListOpenRouterProviderOptionsResponse {
   providers: OpenRouterProviderOption[];
 }
 
+/**
+ * A route edit's capability change, saved in the same request as its other
+ * fields. Leave both out to keep the capabilities; `reset_capabilities` clears
+ * the values set in the console, so the route follows its defaults again.
+ */
+export type RouteCapabilityEdit =
+  | { capabilities?: undefined; reset_capabilities?: undefined }
+  | { capabilities: RuntimeModelCapabilities; reset_capabilities?: undefined }
+  | { capabilities?: undefined; reset_capabilities: true };
+
 export interface UpdateProviderRoutePayload {
   upstream_provider: string;
   openrouter_provider?: string | null;
@@ -2601,7 +2734,7 @@ export async function verifyProviderRouteModel(
 export async function updateProviderRoute(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRoutePayload,
+  payload: UpdateProviderRoutePayload & RouteCapabilityEdit,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -2619,6 +2752,8 @@ export async function updateProviderRoute(
         provider_model_id: payload.provider_model_id ?? null,
         quota_limit: payload.quota_limit ?? null,
         concurrency_limit: payload.concurrency_limit ?? null,
+        ...(payload.capabilities ? { capabilities: payload.capabilities } : {}),
+        ...(payload.reset_capabilities ? { reset_capabilities: true } : {}),
       }),
     },
   );
@@ -2671,7 +2806,7 @@ export async function createProviderRouteCandidate(
 export async function updateProviderRouteCandidate(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRouteCandidatePayload,
+  payload: UpdateProviderRouteCandidatePayload & RouteCapabilityEdit,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,

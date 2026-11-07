@@ -1,6 +1,6 @@
 /**
- * What a reviewed edit changes, for the confirmation dialog: one row per
- * changed field, `before → after`.
+ * What a confirmed action changes, for its dialog: one row per field,
+ * `before → after`, or the value alone.
  *
  * Callers pass display strings. A secret's row says only what happens to it
  * ("Set → Replace", "Clear"), never its value. Long values (URLs, lists) wrap

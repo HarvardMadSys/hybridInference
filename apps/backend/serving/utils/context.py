@@ -18,6 +18,9 @@ CLIENT_ERROR_KIND = "client_error_kind"
 # Value: the gateway could not find/authorize the requested model (a 404 we raised
 # ourselves, not an upstream provider 404).
 MODEL_NOT_FOUND = "model_not_found"
+# Value: an on-demand upstream answered that the model is queued for capacity
+# (``serving.exceptions.UpstreamModelQueued``), a 503 that is no fault.
+MODEL_QUEUED = "model_queued"
 
 # req_ctx key holding the authenticated caller's role, published by the API-key
 # auth dependency. Read by the multi-key pool to skip upstream provider keys
@@ -79,6 +82,14 @@ UPSTREAM_DISPATCH_WATCH = "upstream_dispatch_watch"
 # place up for the next request. Only ever pushed, like the watch above.
 UPSTREAM_ENGINE_HOLD = "upstream_engine_hold"
 
+# req_ctx key holding the ``anthropic-version`` a batch item was created under
+# (serving/batch/profiles.py). Published only by the Messages execution for a
+# batch item (``MessagesConstraints.for_batch_item``), in the request scope the
+# batch worker opens for that item; the native Anthropic adapter sends it
+# upstream instead of its fixed default when it is one of the versions it
+# knows. Interactive requests never carry it, so their behaviour is unchanged.
+ANTHROPIC_VERSION = "anthropic_version"
+
 # req_ctx key naming the upstream that served (or refused) this request.
 PROVIDER = "provider"
 #: Provider label meaning "no upstream was ever selected" — a pre-routing failure.
@@ -125,6 +136,8 @@ REQUEST_SCOPED_KEYS = (
     # A leftover value would rewrite the next request's error messages, for a
     # model it did not ask for.
     CONCEALED_MODEL,
+    # Batch-only; cleared anyway so no later scope on a task could inherit it.
+    ANTHROPIC_VERSION,
 )
 
 
@@ -215,9 +228,20 @@ def mark_model_not_found() -> None:
     update({CLIENT_ERROR_KIND: MODEL_NOT_FOUND})
 
 
+def mark_model_queued() -> None:
+    """Tag the current request as answered "model queued" by its upstream.
+
+    The model's on-demand deployment is waiting for capacity, so the request got
+    a 503 with nothing wrong anywhere. Surfaced onto the request log record so
+    the failed-request-rate alert leaves it out, as the DB-query alerter does.
+    """
+    update({CLIENT_ERROR_KIND: MODEL_QUEUED})
+
+
 __all__ = [
     "CLIENT_ERROR_KIND",
     "MODEL_NOT_FOUND",
+    "MODEL_QUEUED",
     "PRICING_SNAPSHOT",
     "PRICING_TIME",
     "PROVIDER",
@@ -226,6 +250,7 @@ __all__ = [
     "USER_ROLE",
     "get",
     "mark_model_not_found",
+    "mark_model_queued",
     "publish_upstream_provider",
     "push",
     "reset_request_scope",

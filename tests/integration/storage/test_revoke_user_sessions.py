@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import operational_store
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 
@@ -25,8 +26,9 @@ async def store():
         pool = await postgres.create_pool(
             min_size=1, max_size=3, server_settings={"search_path": schema}
         )
+        async with pool.acquire() as conn:
+            await operational_store.create_tables(conn)  # the baseline's, in this schema
         operational = PostgresOperationalStore(pool)
-        await operational.initialize()
         yield operational
     finally:
         if pool is not None:

@@ -38,6 +38,13 @@ UNLIMITED_CONCURRENCY = 0
 # concurrent requests against an exempt model.
 EXEMPT_MODEL_USER_CONCURRENCY_LIMIT = 64
 
+# Per-user cap on concurrent ``/v1/messages/count_tokens`` requests. Counting is
+# done in-process (it tokenizes the request) and is not billed, so it gets a
+# budget of its own: it must not take the slots the user's inference requests
+# run in -- Claude Code counts while its turns stream -- yet one user must not
+# be able to keep the tokenizer busy for everyone.
+COUNT_TOKENS_USER_CONCURRENCY_LIMIT = 4
+
 
 def _build_fallback_limits() -> dict[str, int]:
     """Derive fallback caps from the runtime-settings registry.
@@ -188,10 +195,13 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, HTTPException, Request
+from starlette.requests import ClientDisconnect
 
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
+from serving.spend_ledger import Reservation, spend_check_of
+from serving.surfaces.context import InteractiveAdmission
 
-from .auth import verify_api_key
+from .auth import _quota_exceeded, verify_api_key
 from .deps import (
     get_embedding_adapters,
     get_model_concurrency_resolver,
@@ -203,41 +213,42 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
 
 
-_INTERACTIVE_LOAD_SCOPE_STATE_KEY = "_interactive_load_tracker"
-_NO_TRACKER = object()
+def _admit_spend(request: Request, user: dict[str, Any]) -> Reservation | None:
+    """Reserve the request's estimated cost against the check its gate made.
+
+    ``verify_api_key`` refused a caller already over a limit, counting the
+    requests then in flight; others may have been admitted since. Checking
+    again and reserving in one step (:meth:`~serving.spend_ledger.SpendCheck.admit`)
+    is what keeps concurrent requests from all fitting into the same remaining
+    budget. Raises the same 429 the gate does when the request no longer fits.
+    ``None`` for a caller with no check (auth disabled, or a gate that a test
+    replaced): nothing to reserve against.
+    """
+    check = spend_check_of(user)
+    if check is None:
+        return None
+    reservation, refusal = check.admit()
+    if refusal is not None:
+        raise _quota_exceeded(
+            request,
+            user_id=check.user_id,
+            role=user.get("role") or "free",
+            refusal=refusal,
+        )
+    return reservation
 
 
 @contextmanager
-def _track_interactive_request(
-    request: Request, canonical: str | None
-) -> Iterator[InteractiveLoadTracker]:
-    """Publish a retargetable load tracker for this request's full lifetime."""
-    state = request.scope.setdefault("state", {})
-    previous = state.get(_INTERACTIVE_LOAD_SCOPE_STATE_KEY, _NO_TRACKER)
-    tracker = INTERACTIVE_LOAD.track(canonical)
-    state[_INTERACTIVE_LOAD_SCOPE_STATE_KEY] = tracker
-    try:
-        with tracker:
-            yield tracker
-    finally:
-        if previous is _NO_TRACKER:
-            state.pop(_INTERACTIVE_LOAD_SCOPE_STATE_KEY, None)
-        else:
-            state[_INTERACTIVE_LOAD_SCOPE_STATE_KEY] = previous
+def _track_interactive_request(canonical: str | None) -> Iterator[InteractiveLoadTracker]:
+    """Count this request as interactive load for its full lifetime.
 
-
-def retarget_interactive_load(request: Request, canonical: str) -> None:
-    """Count this request on the concrete model selected after admission.
-
-    The HTTP concurrency dependency publishes the tracker in the request scope,
-    so handlers called directly by compatibility and Responses routes retarget
-    the same request. Calls without that dependency (notably batch dispatch)
-    intentionally do nothing: they are not interactive traffic.
+    The tracker is retargetable: the route's execution moves the count to the
+    concrete model once an auto model is resolved, through the
+    :class:`~serving.surfaces.context.InteractiveAdmission` the dependency
+    yields. A batch item holds no tracker; it is not interactive traffic.
     """
-    state = request.scope.get("state")
-    tracker = state.get(_INTERACTIVE_LOAD_SCOPE_STATE_KEY) if isinstance(state, dict) else None
-    if isinstance(tracker, InteractiveLoadTracker):
-        tracker.retarget(canonical)
+    with INTERACTIVE_LOAD.track(canonical) as tracker:
+        yield tracker
 
 
 def _exempt_slot_key(user_id: str) -> str:
@@ -249,6 +260,11 @@ def _exempt_slot_key(user_id: str) -> str:
     can never collide with a real user's normal key.
     """
     return f"{user_id}:exempt"
+
+
+def _count_tokens_slot_key(user_id: str) -> str:
+    """Return the per-user budget key for token counting (see :func:`_exempt_slot_key`)."""
+    return f"{user_id}:count_tokens"
 
 
 def canonical_model_id(
@@ -284,11 +300,23 @@ async def _request_model(
     router: Any,
     embedding_adapters: dict[str, Any] | None,
 ) -> tuple[str | None, str | None]:
-    """Read and canonicalize a POST body's model without breaking admission."""
+    """Read and canonicalize a POST body's model without breaking admission.
+
+    A body that never arrives ends the request here with the 400 the route
+    would answer, instead of admitting it: the client went away, or the request
+    body limit refused the body (it answers 413 itself and reports a
+    disconnect), and either way there is nothing to hold a slot for.
+    """
     if router is None or request.method != "POST":
         return None, None
     try:
         body = await request.json()
+    except ClientDisconnect:
+        raise HTTPException(status_code=400, detail="There was an error parsing the body") from None
+    except Exception:
+        logger.debug("user_concurrency: exemption check skipped", exc_info=True)
+        return None, None
+    try:
         model = body.get("model") if isinstance(body, dict) else None
         canonical = canonical_model_id(model, router=router, embedding_adapters=embedding_adapters)
         return model, canonical
@@ -366,7 +394,7 @@ async def enforce_user_concurrency(
     router: Any = Depends(get_router),
     concurrency_resolver: Any = Depends(get_model_concurrency_resolver),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
-) -> AsyncGenerator[None, None]:
+) -> AsyncGenerator[InteractiveAdmission, None]:
     """Acquire a per-user concurrency slot or raise 429.
 
     Models flagged as concurrency-exempt ("not limited by concurrency") do not
@@ -379,11 +407,29 @@ async def enforce_user_concurrency(
     response (including streaming body) is fully sent, on exception, or
     on client disconnect. For as long as the slot is held, the request is also
     counted as interactive load on its model (:data:`INTERACTIVE_LOAD`), which
-    batch work on the model yields to.
+    batch work on the model yields to, and its estimated cost is reserved
+    against the caller's quotas and key budgets (:func:`_admit_spend`). The
+    request's real cost is recorded before the response ends, so releasing
+    the reservation here leaves no moment in which it counts nowhere.
+
+    Yields the request's :class:`~serving.surfaces.context.InteractiveAdmission`,
+    through which the route's execution moves that count to the concrete model
+    once an auto model has been resolved. Acquiring and releasing stay here.
     """
     # An exemption resolver needs the model before admission to choose its slot.
     # Without one, acquire the normal slot first so a slow POST body is counted.
     # FastAPI caches the parsed body for the handler later.
+    #
+    # Reading first is bounded: RequestBodyLimitMiddleware refuses a body over
+    # REQUEST_MAX_BODY_MB as its bytes arrive, before anything here parses it,
+    # and verify_api_key has already authenticated the caller. So a request
+    # costs at most one capped parse before admission -- no more than an
+    # admitted one may cost, with the exempt budget admitting 64 at once.
+    # Acquiring first would mean choosing the budget before the model is known:
+    # taking the normal slot would refuse an exempt-model request whenever the
+    # normal budget is full, which the exemption exists to allow, and taking
+    # an exempt slot would hold one for every request that turns out to be
+    # normal. Either changes who is admitted, so the order stays.
     parse_before_acquire = limiter is None or concurrency_resolver is not None
     model: str | None = None
     canonical: str | None = None
@@ -395,10 +441,16 @@ async def enforce_user_concurrency(
     if limiter is None:
         # If the limiter isn't configured (e.g., misconfigured deployment),
         # fail open for per-user admission. Interactive load is independent and
-        # remains visible to the batch worker, including a later auto retarget.
+        # remains visible to the batch worker, including a later auto retarget;
+        # so is the cost reservation.
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        with _track_interactive_request(request, canonical):
-            yield
+        reservation = _admit_spend(request, user)
+        try:
+            with _track_interactive_request(canonical) as tracker:
+                yield InteractiveAdmission(tracker)
+        finally:
+            if reservation is not None:
+                reservation.release()
         return
 
     user_id = user["user_id"]
@@ -455,14 +507,18 @@ async def enforce_user_concurrency(
             headers={"Retry-After": "1"},
         )
 
+    reservation: Reservation | None = None
     try:
+        reservation = _admit_spend(request, user)
         if not parse_before_acquire:
             model, canonical = await _request_model(
                 request, router=router, embedding_adapters=embedding_adapters
             )
-        with _track_interactive_request(request, canonical):
-            yield
+        with _track_interactive_request(canonical) as tracker:
+            yield InteractiveAdmission(tracker)
     finally:
+        if reservation is not None:
+            reservation.release()
         try:
             limiter.release(slot_key)
         except Exception:
@@ -471,3 +527,52 @@ async def enforce_user_concurrency(
                 "user_concurrency: release failed",
                 extra={"user_id": user_id},
             )
+
+
+async def enforce_count_tokens_concurrency(
+    request: Request,
+    user: dict[str, Any] = Depends(verify_api_key),
+    limiter: UserConcurrencyLimiter | None = Depends(get_user_concurrency_limiter),
+) -> AsyncGenerator[None, None]:
+    """Hold one of the caller's token-counting slots for the request, or raise 429.
+
+    A budget of its own (:data:`COUNT_TOKENS_USER_CONCURRENCY_LIMIT` per user),
+    separate from the inference slots, taken before the body is read: the
+    budget does not depend on the model, so nothing needs parsing first. A
+    per-user override below the cap is honoured, as for exempt models.
+    """
+    if limiter is None:
+        yield
+        return
+    user_id = user["user_id"]
+    override = user.get("max_concurrent_requests")
+    cap = (
+        COUNT_TOKENS_USER_CONCURRENCY_LIMIT
+        if override is None
+        else min(override, COUNT_TOKENS_USER_CONCURRENCY_LIMIT)
+    )
+    slot_key = _count_tokens_slot_key(user_id)
+    granted, limit, role_label = await limiter.try_acquire(
+        slot_key, user.get("role", "free") or "free", bool(user.get("is_admin", False)), cap
+    )
+    if not granted:
+        logger.info(
+            "per-user count_tokens limit hit",
+            extra={"user_id": user_id, "limit": limit, "route": request.url.path},
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": {
+                    "code": "concurrency_limit_exceeded",
+                    "message": f"Too many concurrent token-count requests (limit: {limit})",
+                    "limit": limit,
+                    "role": role_label,
+                }
+            },
+            headers={"Retry-After": "1"},
+        )
+    try:
+        yield
+    finally:
+        limiter.release(slot_key)

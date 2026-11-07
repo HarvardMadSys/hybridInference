@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.auto_mode import AutoMode
 from serving.config.runtime_settings import RuntimeSettings
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
@@ -89,7 +90,70 @@ async def test_list_settings_excludes_routewise_keys(admin_client):
     keys = {item["key"] for item in response.json()["settings"]}
     assert "routewise_budget_alpha" not in keys
     assert "routewise_latency_slo_sec" not in keys
-    assert "routewise_latency_min_samples" not in keys
+
+
+@pytest.mark.asyncio
+async def test_list_settings_offers_the_auto_mode_switch_only_with_auto_models(admin_client):
+    client, _op_store, _ = admin_client
+    headers = {"Authorization": "Bearer test-admin"}
+
+    async def keys() -> set[str]:
+        response = await client.get("/admin/settings", headers=headers)
+        assert response.status_code == 200
+        return {item["key"] for item in response.json()["settings"]}
+
+    # No auto: section in the model registry, so the switch has nothing to serve.
+    assert "auto_mode_enabled" not in await keys()
+    client._transport.app.state.services.auto_mode = MagicMock(spec=AutoMode)
+    assert "auto_mode_enabled" in await keys()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "default"),
+    [
+        ("analytics_token_usage_enabled", True),
+        ("analytics_users_and_requests_enabled", True),
+        ("analytics_performance_metrics_enabled", True),
+        ("analytics_growth_rate_enabled", False),
+    ],
+)
+async def test_analytics_visibility_settings_persist_for_a_new_reader(admin_client, key, default):
+    client, op_store, log_action = admin_client
+    headers = {"Authorization": "Bearer test-admin"}
+    rows = {}
+
+    async def get_setting(name):
+        return rows.get(name)
+
+    async def set_setting(name, value, value_type, updated_by):
+        rows[name] = {"key": name, "value": value, "value_type": value_type}
+
+    op_store.get_setting.side_effect = get_setting
+    op_store.set_setting.side_effect = set_setting
+
+    async def listed_value():
+        response = await client.get("/admin/settings", headers=headers)
+        assert response.status_code == 200
+        return next(item for item in response.json()["settings"] if item["key"] == key)
+
+    initial = await listed_value()
+    assert initial["value"] is default
+    assert initial["default_value"] is default
+    assert initial["value_type"] == "bool"
+
+    for enabled in (not default, default):
+        response = await client.patch(
+            f"/admin/settings/{key}", json={"value": enabled}, headers=headers
+        )
+        assert response.status_code == 200
+        assert response.json()["value"] is enabled
+        assert (await listed_value())["value"] is enabled
+        # A fresh reader proves the value survives beyond the writer's cache.
+        client._transport.app.state.services.runtime_settings = RuntimeSettings(op_store)
+        assert (await listed_value())["value"] is enabled
+
+    assert log_action.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -309,6 +373,27 @@ async def test_update_float_setting_rejects_bool(monkeypatch, admin_client):
     )
     assert response.status_code == 400
     assert "numeric" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["NaN", "Infinity"])
+async def test_update_float_setting_rejects_a_non_finite_number(admin_client, literal):
+    """NaN passes every bound, all its comparisons being false.
+
+    Stored as the default daily quota, it is seeded onto new keys, and no spend
+    is ever over a NaN quota.
+    """
+    client, op_store, _ = admin_client
+
+    response = await client.patch(
+        "/admin/settings/user_daily_quota_free",
+        content=f'{{"value": {literal}}}',
+        headers={"Authorization": "Bearer test-admin", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert "finite" in response.json()["detail"].lower()
+    op_store.set_setting.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -244,6 +244,26 @@ async def test_put_rejects_negative_unknown_endpoint_and_all_zero(admin_client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("literal", ["NaN", "Infinity"])
+async def test_route_weight_rejects_a_non_finite_number(admin_client, literal):
+    """NaN passed both checks (its comparisons are all false) and was stored.
+
+    The router selects only routes with a weight above 0, so a NaN weight took
+    the route out of service as surely as 0, past the guard against zeroing them all.
+    """
+    client, op_store, _, _ = admin_client
+
+    response = await client.put(
+        "/admin/routing/weights/public-model/public-model:remote",
+        content=f'{{"weight": {literal}}}',
+        headers={"Authorization": "Bearer test-admin", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    op_store.upsert_weight_override.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_unknown_model_and_alias_return_404(admin_client):
     client, _, _, _ = admin_client
     headers = {"Authorization": "Bearer test-admin"}

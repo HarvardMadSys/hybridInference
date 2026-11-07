@@ -16,6 +16,18 @@ Two JSON columns are kept per row:
   a ``previous_response_id`` follow-up can replay the conversation in O(1)
   without walking a chain.
 
+Each row holds the whole conversation so far, so a chain of turns stores its
+early turns again in every later row. Two limits bound that:
+
+- A stored response is kept for :data:`RETENTION_DAYS` (30) days from when it
+  was created, as OpenAI keeps them by default, then purged by an hourly job
+  (:func:`register_retention_job`). A chain still being continued is unaffected:
+  its newest row carries the whole conversation.
+- A conversation is continued with ``store`` on only while its stored
+  ``messages`` are no larger than a request body may be
+  (``serving.servers.routers.responses``), so no row grows past that by more
+  than one turn.
+
 When no database is configured the store is simply absent (``None`` in
 ``AppServices``) and statefulness degrades gracefully: ``store`` becomes a
 no-op and ``previous_response_id`` / ``GET`` return 404.
@@ -24,11 +36,56 @@ no-op and ``previous_response_id`` / ``GET`` return 404.
 from __future__ import annotations
 
 import json
+import time
+from datetime import UTC
 from typing import Any
 
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+#: How long a stored response is kept, from when it was created: the Responses
+#: API's default retention.
+RETENTION_DAYS = 30
+
+#: Responses deleted per statement by :func:`purge_expired`.
+PURGE_BATCH = 1000
+
+# Up to ``$2`` responses created more than ``$1`` days ago. The table has no
+# index on ``created_at`` alone, and ``idx_openai_responses_user`` is
+# ``(user_id, created_at DESC)``: the recursive part walks that index from one
+# owner to the next (a loose index scan), and each owner's expired responses are
+# a range of it. So a run reads the index, once per owner, and the rows it
+# deletes -- never the whole table, whose rows carry whole conversations.
+_PURGE_SQL = """
+DELETE FROM openai_responses
+WHERE id = ANY(ARRAY(
+    WITH RECURSIVE owners AS (
+        (SELECT user_id FROM openai_responses ORDER BY user_id LIMIT 1)
+        UNION ALL
+        SELECT (
+            SELECT r.user_id FROM openai_responses AS r
+            WHERE r.user_id > owners.user_id
+            ORDER BY r.user_id
+            LIMIT 1
+        )
+        FROM owners
+        WHERE owners.user_id IS NOT NULL
+    )
+    SELECT expired.id
+    FROM owners
+    CROSS JOIN LATERAL (
+        SELECT r.id FROM openai_responses AS r
+        WHERE r.user_id = owners.user_id
+          AND r.created_at < now() - make_interval(days => $1)
+        LIMIT $2
+    ) AS expired
+    LIMIT $2
+))
+"""
+
+#: Minute past the hour the purge runs, clear of the rollups (5, 10, 15, 20, 25).
+_PURGE_MINUTE = 40
 
 
 class ResponseStore:
@@ -43,27 +100,6 @@ class ResponseStore:
         """
         self._pool = pool
         self.persist_enabled = persist_enabled
-
-    async def initialize(self) -> None:
-        """Create the ``openai_responses`` table and indexes (idempotent)."""
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS openai_responses (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    response JSONB NOT NULL,
-                    messages JSONB NOT NULL,
-                    previous_response_id TEXT,
-                    model TEXT,
-                    created_at TIMESTAMPTZ DEFAULT NOW()
-                )
-                """
-            )
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_openai_responses_user "
-                "ON openai_responses(user_id, created_at DESC)"
-            )
 
     async def save(
         self,
@@ -102,8 +138,9 @@ class ResponseStore:
         """Fetch a stored response row by id.
 
         Returns a dict with keys ``id``, ``user_id``, ``response``,
-        ``messages``, ``previous_response_id``, ``model`` — or ``None`` if not
-        found. JSON columns are decoded to Python objects.
+        ``messages``, ``previous_response_id``, ``model`` and ``messages_bytes``
+        -- or ``None`` if not found. JSON columns are decoded to Python objects;
+        ``messages_bytes`` is the size of the stored conversation as JSON text.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -120,6 +157,7 @@ class ResponseStore:
             "messages": _load_json(row["messages"]) or [],
             "previous_response_id": row["previous_response_id"],
             "model": row["model"],
+            "messages_bytes": _json_bytes(row["messages"]),
         }
 
     async def delete(self, response_id: str, *, user_id: str | None = None) -> bool:
@@ -157,6 +195,75 @@ class ResponseStore:
             return int(result.rsplit(" ", 1)[-1])
         except (ValueError, AttributeError):
             return 0
+
+
+async def purge_expired(
+    pool: Any, *, retention_days: int = RETENTION_DAYS, batch: int = PURGE_BATCH
+) -> int:
+    """Delete the responses created more than *retention_days* ago; return how many.
+
+    In statements of at most *batch* rows, until one finds fewer, so none holds
+    many locks or runs long; each takes a pooled connection only for itself.
+    """
+    purged = 0
+    while True:
+        async with pool.acquire() as conn:
+            deleted = _rowcount(await conn.execute(_PURGE_SQL, retention_days, batch))
+        purged += deleted
+        if deleted < batch:
+            return purged
+
+
+async def retention_job(pool: Any) -> None:
+    """The hourly purge, for the scheduler: never raises."""
+    started_at = time.monotonic()
+    purged = 0
+    outcome = "error"
+    try:
+        purged = await purge_expired(pool)
+        outcome = "ok"
+    except Exception:
+        logger.exception("responses_retention failed")
+    finally:
+        logger.info(
+            "responses_retention: purged=%d duration_ms=%d outcome=%s",
+            purged,
+            int((time.monotonic() - started_at) * 1000),
+            outcome,
+        )
+
+
+def register_retention_job(scheduler: Any, pool: Any) -> None:
+    """Register the hourly purge of expired responses on the existing AsyncIOScheduler."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    scheduler.add_job(
+        retention_job,
+        trigger=CronTrigger(minute=_PURGE_MINUTE, timezone=UTC),
+        args=[pool],
+        id="responses_retention",
+        replace_existing=True,
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+    logger.info("responses_retention: registered on scheduler (cron minute=%d)", _PURGE_MINUTE)
+
+
+def _rowcount(status: Any) -> int:
+    try:
+        return int(str(status).rsplit(" ", 1)[-1])
+    except ValueError:
+        return 0
+
+
+def _json_bytes(value: Any) -> int:
+    """The size of a JSON column as UTF-8 text, however asyncpg handed it back."""
+    if isinstance(value, bytes):
+        return len(value)
+    if isinstance(value, str):
+        return len(value.encode())
+    return len(json.dumps(value).encode()) if value is not None else 0
 
 
 def _load_json(value: Any) -> Any:

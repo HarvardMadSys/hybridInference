@@ -346,7 +346,9 @@ async def _build_model_list_async(
     ):
         models.append(_auto_model_item(auto_id, tier, configs))
 
-    # Append embedding models from the embedding_adapters dict
+    # Append only embedding models with a registry access gate. The adapter
+    # table alone is insufficient evidence that the model is published or
+    # visible to this caller.
     emb_seen: set[str] = set()
     for _model_id, adapter in embedding_adapters.items():
         cfg = getattr(adapter, "config", None)
@@ -354,6 +356,11 @@ async def _build_model_list_async(
             continue
         canonical_id = cfg.id
         if canonical_id in emb_seen or canonical_id in emitted_ids:
+            continue
+        embedding_route = getattr(router_exec, "embedding_routes", {}).get(_model_id)
+        if embedding_route is None or not await _listed_for(
+            embedding_route, _model_id, user_ctx, model_visibility_resolver
+        ):
             continue
         emb_seen.add(canonical_id)
         models.append(

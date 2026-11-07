@@ -25,6 +25,7 @@ from serving.grant_auth import (
     authenticate_grant_model_call,
 )
 from serving.grants import mint_grant_token
+from serving.spend_ledger import spend_check_of
 
 CUSTOM_QUOTA = 5.0
 
@@ -46,6 +47,8 @@ class FakeStore:
             {"id": 1, "user_id": "user_1", "quota_daily_cost_usd": CUSTOM_QUOTA, "role": "pro"}
         ]
         self.spend = 0.0
+        self.month_spend = 0.0
+        self.month_reads = 0
         self.grant: dict[str, Any] | None = None
         self.fail: str | None = None
 
@@ -70,6 +73,13 @@ class FakeStore:
         if self.fail == "spend":
             raise RuntimeError("database down")
         return self.spend
+
+    async def get_user_cost_period(self, user_id: str, period: str) -> float:
+        assert period == "month"
+        self.month_reads += 1
+        if self.fail == "month":
+            raise RuntimeError("database down")
+        return self.month_spend
 
 
 @pytest.fixture
@@ -178,6 +188,21 @@ async def test_a_spent_custom_quota_refuses_a_grant_model_call(store, token) -> 
     assert caught.value.spent_usd == CUSTOM_QUOTA
 
 
+async def test_requests_in_flight_count_against_a_grants_quota(store, token) -> None:
+    """The owner's admitted requests still running hold their share of the quota."""
+    store.spend = CUSTOM_QUOTA - 0.015  # room for one more request
+    first = await authenticate_grant_model_call(token, op_store=store)
+    reservation, refusal = spend_check_of(first).admit()
+    assert refusal is None
+
+    with pytest.raises(AgentQuotaExceeded):
+        await authenticate_grant_model_call(token, op_store=store)
+
+    reservation.release()
+    second = await authenticate_grant_model_call(token, op_store=store)
+    assert spend_check_of(second).user_id == "user_1"
+
+
 async def test_removing_the_quota_lookup_makes_that_test_fail(store, token, monkeypatch) -> None:
     """Mutation check: the gate must be reachable, not merely present.
 
@@ -188,9 +213,9 @@ async def test_removing_the_quota_lookup_makes_that_test_fail(store, token, monk
     store.spend = CUSTOM_QUOTA
 
     async def _no_gate(_op_store, _user_id):
-        return (float("inf"), 0.0)
+        return None
 
-    monkeypatch.setattr(model_auth, "_quota_context", _no_gate)
+    monkeypatch.setattr(model_auth, "_quota_check", _no_gate)
     context = await authenticate_grant_model_call(token, op_store=store)
     assert context["user_id"] == "user_1"
 
@@ -230,6 +255,42 @@ async def test_a_null_quota_still_means_the_documented_default(store, token) -> 
     with pytest.raises(AgentQuotaExceeded) as caught:
         await authenticate_grant_model_call(token, op_store=store)
     assert caught.value.quota_usd == quota.DEFAULT_DAILY_QUOTA_USD
+
+
+async def test_a_spent_monthly_quota_refuses_a_grant_model_call(store, token) -> None:
+    """The month's quota is the account's too, so an agent cannot spend past it."""
+    store.keys[0]["quota_monthly_cost_usd"] = 30.0
+    store.spend = 1.0
+    store.month_spend = 30.0
+    with pytest.raises(AgentQuotaExceeded) as caught:
+        await authenticate_grant_model_call(token, op_store=store)
+    assert caught.value.status_code == 429
+    assert caught.value.window == "month"
+    assert (caught.value.quota_usd, caught.value.spent_usd) == (30.0, 30.0)
+    assert caught.value.message == "Monthly cost quota exceeded"
+
+
+async def test_the_daily_quota_is_reported_before_the_monthly_one(store, token) -> None:
+    store.keys[0]["quota_monthly_cost_usd"] = 30.0
+    store.spend = CUSTOM_QUOTA
+    store.month_spend = 30.0
+    with pytest.raises(AgentQuotaExceeded) as caught:
+        await authenticate_grant_model_call(token, op_store=store)
+    assert caught.value.window == "day"
+
+
+async def test_no_monthly_quota_reads_no_month_spend(store, token) -> None:
+    store.spend = 1.0
+    await authenticate_grant_model_call(token, op_store=store)
+    assert store.month_reads == 0
+
+
+async def test_a_month_spend_that_cannot_be_read_refuses(store, token) -> None:
+    store.keys[0]["quota_monthly_cost_usd"] = 30.0
+    store.fail = "month"
+    with pytest.raises(AgentModelAuthError) as caught:
+        await authenticate_grant_model_call(token, op_store=store)
+    assert caught.value.status_code == 503
 
 
 # ---------------------------------------------------------------------------

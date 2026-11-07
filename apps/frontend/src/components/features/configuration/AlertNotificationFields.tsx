@@ -30,7 +30,6 @@ export function AlertNotificationFields({
   testResult,
   onTest,
   onReset,
-  readOnly,
   pendingResets,
 }: {
   entries: AlertWebhookEntries;
@@ -45,8 +44,6 @@ export function AlertNotificationFields({
   onTest: () => void;
   /** Stage (or unstage) removing a stored row, so the setting follows the environment again. */
   onReset: (entry: ConfigEntry) => void;
-  /** Show the saved channel and webhook only; Send test still works. */
-  readOnly: boolean;
   /** Keys whose stored row the save removes. */
   pendingResets: ReadonlySet<string>;
 }) {
@@ -54,6 +51,10 @@ export function AlertNotificationFields({
   const entry = selectedWebhookEntry(entries, channel);
   const name = channel === 'wecom' ? 'WeCom' : 'Slack';
   const pending = Object.values(entries).some((candidate) => candidate.pending_restart);
+  // Applied without a restart once the alerts.runtime group is active.
+  const live = Object.values(entries).some((candidate) => candidate.apply_mode === 'managed');
+  // A test of a typed address uses it; otherwise the saved webhook.
+  const typedUrl = entry ? drafts[entry.key]?.kind === 'replace' : false;
   // Channels turned off by an earlier save keep an empty row, and that row wins
   // over the environment forever. Resetting one removes the row; without that
   // button the only way back to a .env webhook was SQL or the config CLI. Only
@@ -76,23 +77,13 @@ export function AlertNotificationFields({
         </p>
       </div>
       <div className="min-w-0 space-y-4 lg:max-w-2xl">
-        {readOnly ? (
-          <output
-            id={id}
-            aria-describedby={`${id}-description ${id}-restart`}
-            className="block text-[13px] text-gray-800"
-          >
-            {channel === 'wecom' ? 'WeCom' : channel === 'slack' ? 'Slack' : 'None'}
-          </output>
-        ) : (
-          <AlertChannelPicker
-            id={id}
-            value={channel}
-            onChange={onChannelChange}
-            disabled={disabled}
-            describedBy={`${id}-description ${id}-restart`}
-          />
-        )}
+        <AlertChannelPicker
+          id={id}
+          value={channel}
+          onChange={onChannelChange}
+          disabled={disabled}
+          describedBy={`${id}-description ${id}-restart`}
+        />
 
         {entry ? (
           <div className="rounded-xl border border-gray-200 bg-gray-50/50 p-4">
@@ -111,7 +102,6 @@ export function AlertNotificationFields({
               onChange={onDraftChange}
               serverError={errors[entry.key]}
               onReset={onReset}
-              readOnly={readOnly}
               resetPending={pendingResets.has(entry.key)}
               disabled={disabled}
             />
@@ -121,11 +111,18 @@ export function AlertNotificationFields({
                 onClick={onTest}
                 disabled={disabled || Boolean(alertWebhookError(entry, drafts))}
                 aria-busy={testing || undefined}
+                aria-describedby={`${id}-test-target`}
                 className={BUTTON_SECONDARY}
               >
                 {testing ? 'Sending test…' : 'Send test notification'}
               </button>
-              <p className="text-[11px] text-gray-500">Sends a test without saving changes.</p>
+              {/* The test goes where the button says, at once: the saved webhook
+                  is not necessarily the one a backend process alerts through. */}
+              <p id={`${id}-test-target`} className="min-w-0 flex-1 text-[11px] text-gray-500">
+                {typedUrl
+                  ? 'Sends a test to the address you typed, without saving it.'
+                  : `Sends a test to the saved ${name} webhook, without saving changes. It tests the saved setting, not necessarily the channel alerts go to now: a backend process keeps the channel it applied until it applies the save${live ? '' : ', after a restart'}.`}
+              </p>
             </div>
             {testResult ? (
               <p
@@ -152,31 +149,29 @@ export function AlertNotificationFields({
               Resetting removes the stored value, so the setting follows .env again on the next
               restart.
             </p>
-            {readOnly ? null : (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {storedElsewhere.map((candidate) => {
-                  const staged = pendingResets.has(candidate.key);
-                  return (
-                    <button
-                      key={candidate.key}
-                      type="button"
-                      onClick={() => onReset(candidate)}
-                      disabled={disabled}
-                      aria-label={
-                        staged ? `Undo reset of ${candidate.key}` : `Reset ${candidate.key}`
-                      }
-                      className={`rounded-md border px-3 py-1.5 font-mono text-[11px] font-medium shadow-sm transition disabled:opacity-40 ${
-                        staged
-                          ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
-                          : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
-                      }`}
-                    >
-                      {staged ? `Undo reset of ${candidate.key}` : `Reset ${candidate.key}`}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {storedElsewhere.map((candidate) => {
+                const staged = pendingResets.has(candidate.key);
+                return (
+                  <button
+                    key={candidate.key}
+                    type="button"
+                    onClick={() => onReset(candidate)}
+                    disabled={disabled}
+                    aria-label={
+                      staged ? `Undo reset of ${candidate.key}` : `Reset ${candidate.key}`
+                    }
+                    className={`rounded-md border px-3 py-1.5 font-mono text-[11px] font-medium shadow-sm transition disabled:opacity-40 ${
+                      staged
+                        ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                        : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    {staged ? `Undo reset of ${candidate.key}` : `Reset ${candidate.key}`}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ) : null}
         <p
@@ -188,6 +183,8 @@ export function AlertNotificationFields({
               <span className="font-medium">Pending restart</span> — saved changes have not taken
               effect.
             </>
+          ) : live ? (
+            'Saved changes apply in every backend process within about ten seconds, without a restart. Alerts already being sent finish on the old channel; the recovery of an incident opened earlier goes to the new one.'
           ) : (
             'Changes apply after saving and restarting the backend.'
           )}

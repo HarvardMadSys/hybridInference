@@ -69,6 +69,16 @@ export function Header() {
             {t('chrome.header.stats', 'Stats')}
           </Link>
         )}
+        {branding.docsUrl && (
+          <a
+            href={branding.docsUrl}
+            className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t('chrome.header.docs', 'Docs')}
+          </a>
+        )}
         {branding.navLinks.map((link) => (
           <a
             key={link.url}

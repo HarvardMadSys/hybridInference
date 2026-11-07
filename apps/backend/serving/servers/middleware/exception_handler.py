@@ -28,7 +28,8 @@ legitimate client rather than protect anyone:
 
 from datetime import UTC, datetime
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
 
 from serving.exceptions import (
@@ -47,6 +48,11 @@ from serving.exceptions import (
     UserAlreadyExistsError,
     UserNotFoundError,
     WeakPasswordError,
+)
+from serving.storage.pools import (
+    DATABASE_BUSY_DETAIL,
+    DATABASE_BUSY_RETRY_AFTER_SEC,
+    DatabaseBusyError,
 )
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -269,9 +275,9 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(QuotaExceededError)
     async def quota_exceeded_handler(request: Request, exc: QuotaExceededError):
-        # The fourth 429 quota shape in this codebase (the other three: the
-        # hand-rolled body in servers/auth.py, quota.exceeded_payload used by
-        # the grant door, and the concurrency limiter). Nothing here is
+        # The third 429 quota shape in this codebase (the other two:
+        # quota.refusal_payload, which both the API-key and the grant door
+        # answer with, and the concurrency limiter). Nothing here is
         # redacted: the numbers are the caller's own spend against their own
         # cap, which is exactly what a client needs to decide how long to wait,
         # and the message is rendered from those typed fields rather than taken
@@ -288,4 +294,38 @@ def install_exception_handlers(app: FastAPI) -> None:
             },
         )
 
+    @app.exception_handler(DatabaseBusyError)
+    async def database_busy_handler(request: Request, exc: DatabaseBusyError):
+        # A request-path lookup got no connection in time (serving.storage.pools):
+        # a 503 the client may retry, shaped like every other HTTP error on its
+        # path -- the Anthropic surfaces get their envelope -- by handing it to
+        # whichever HTTPException handler the app has installed.
+        logger.warning(
+            "database_busy",
+            extra={
+                "error_code": "DATABASE_BUSY",
+                "status_code": 503,
+                "path": request.url.path,
+                "method": request.method,
+                "detail": str(exc),
+            },
+        )
+        busy = HTTPException(
+            status_code=503,
+            detail=DATABASE_BUSY_DETAIL,
+            headers={"Retry-After": str(DATABASE_BUSY_RETRY_AFTER_SEC)},
+        )
+        return await _http_exception_handler(request.app)(request, busy)
+
     logger.info("Exception handlers installed")
+
+
+def _http_exception_handler(app: FastAPI):
+    """The handler *app* answers an ``HTTPException`` with, found as Starlette finds it."""
+    for cls in HTTPException.__mro__:
+        if cls is Exception:
+            break
+        handler = app.exception_handlers.get(cls)
+        if handler is not None:
+            return handler
+    return http_exception_handler

@@ -12,8 +12,12 @@ license = { file = "LICENSE" }
 authors = [{ name = "HarvardSys" }]
 dependencies = [
     "aiohttp>=3.14.4",
+    "filelock>=4.2.1",
     "APScheduler>=3.10.4",
     "asyncpg>=0.28.0",
+    # Schema migrations: [tool.alembic] needs 1.16; SQLAlchemy drives asyncpg for it.
+    "alembic>=1.16.0",
+    "sqlalchemy[asyncio]>=2.0.0",
     "fastapi>=0.110.0",
     "llm-routewise>=0.2.0",
     "markdown-it-py>=3.0.0",
@@ -33,6 +37,8 @@ dependencies = [
     "maxminddb>=3.1.1",
     # Language identification for the public usage stats job (bundled lid.176 model).
     "fast-langdetect>=1.0.1",
+    # Checks structured-output replies against the caller's response_format schema.
+    "jsonschema>=4.18",
 ]
 
 [tool.setuptools]
@@ -45,16 +51,21 @@ include = [
   "serving.*",
   "routing",
   "routing.*",
-  "utils",
-  "utils.*",
+  "migrations",
+  "migrations.*",
 ]
+
+# For the `alembic` command in this checkout (`alembic revision`, `history`).
+# Deploys run `python -m migrations upgrade`, which needs no configuration.
+[tool.alembic]
+script_location = "%(here)s/apps/backend/migrations"
+prepend_sys_path = ["apps/backend"]
 
 [tool.pytest.ini_options]
 pythonpath = ["apps/backend", "."]
 asyncio_mode = "auto"
-# "distributions" collects distribution-owned tests (e.g. the FreeInference
-# overlay manifest invariants) so they run in the default suite while living
-# with the overlay they validate.
+# "distributions" collects tests an overlay ships with itself, so they run in
+# the default suite while living with the overlay they validate.
 testpaths = ["tests", "distributions"]
 timeout = 300
 addopts = [
@@ -79,6 +90,10 @@ target-version = "py311"
 src = ["apps/backend", "."]
 exclude = [
   ".venv",
+  # Frozen with its digest pinned (tests/unit/test_migration_hygiene.py): a
+  # formatter or lint-rule upgrade must not rewrite history.
+  "apps/backend/migrations/baseline",
+  "apps/backend/migrations/versions/0001_baseline.py",
 ]
 
 [tool.ruff.lint]

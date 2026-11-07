@@ -8,7 +8,8 @@ estimation:
 - :class:`Block` / :func:`build_blocks` -- turn a canonical prompt into a
   metadata-only block-hash sequence (HMAC of fixed-size token chunks).
 - :class:`CacheSignal` -- the per-candidate lookup result: how many prefix
-  tokens match the scope's most recent request.
+  tokens match the scope's most recent request. A matched prefix is treated
+  as cached, without learning cache-hit probability from provider usage.
 - :class:`SessionProviderPrefixMemory` -- a bounded in-memory store of the most
   recent successful request's block sequence per scope, with TTL + LRU
   eviction. ``lookup`` returns a :class:`CacheSignal`; ``observe`` records a
@@ -30,7 +31,9 @@ import json
 import secrets
 import threading
 import time
+from array import array
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -38,7 +41,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import tokenize_text
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from typing import Any
 
 logger = get_logger(__name__)
@@ -49,303 +52,42 @@ DEFAULT_TTL_SEC: float = 2 * 3600.0
 DEFAULT_MAX_ENTRIES: int = 50_000
 DEFAULT_MIN_MATCH_TOKENS: int = 1024
 
+# Most of a request's canonical text that is cut into blocks. Tokenizing costs
+# about a second per three megabytes, and a request body may be 32 MiB. The bound
+# sits above the canonical text of any prompt a context window admits -- 1M
+# tokens is about 4M characters of English, and the canonical form escapes
+# non-ASCII text to six characters a character -- so blocks are cut exactly as
+# before for every prompt a route could serve. A longer one is cut over its
+# first MAX_CANONICAL_CHARS characters, which can only shorten a match.
+MAX_CANONICAL_CHARS: int = 16_000_000
+
+# Content block types whose payload is media, not prompt text. Such a payload
+# is tokenized by the provider as an image or a sound, never as the base64 text
+# it is sent in, so the canonical form keeps only its identity
+# (``_media_identity``): a different attachment still breaks the match where it
+# sits, and a megabyte of base64 is neither tokenized nor counted as cached.
+_MEDIA_BLOCK_TYPES = frozenset(
+    {
+        "image",
+        "image_url",
+        "input_image",
+        "audio",
+        "input_audio",
+        "video",
+        "video_url",
+        "input_video",
+        "file",
+        "input_file",
+    }
+)
+
+# A string at least this long inside a media block is its payload; shorter ones
+# (a detail level, a format, a file name) are kept as they are.
+_MEDIA_PAYLOAD_MIN_CHARS = 256
+
 # Per-process secret so block digests are not reversible across deployments and
 # never need a configured key. Callers may override for deterministic tests.
 _PROCESS_SECRET: bytes = secrets.token_bytes(32)
-
-
-# ---------------------------------------------------------------------------
-# Cache-locality evidence
-# ---------------------------------------------------------------------------
-
-
-class CacheLocalityEvidenceState:
-    """Evidence state for a single scope (session/provider/endpoint).
-
-    Models three distinct facts:
-
-    - prefix opportunity: HMAC block matching already answered by
-      ``SessionProviderPrefixMemory``.
-    - potential warming: a successful request may have populated the cache.
-    - verified reuse: provider explicitly reported ``cached_tokens > 0``.
-
-    States:
-    - UNKNOWN: no prior request; no discount.
-    - POSSIBLY_WARMED: successful dispatch, no authoritative reuse signal;
-      no strong discount.
-    - VERIFIED_REUSABLE: observed ``cached_tokens > 0``; evidence-backed
-      discount permitted.
-    - MATERIALIZATION_CANDIDATE: a successful request reported
-      ``cached_tokens = 0``. The request may have populated the cache after
-      the provider measured it, but it has not yet demonstrated reuse.
-    - NEGATIVE: an unsuccessful request reported ``cached_tokens = 0`` after
-      prior warming; the dispatched prediction was not observed as reusable.
-      This never creates a cost discount and is not a claim about future
-      cache residency.
-    """
-
-    UNKNOWN = "UNKNOWN"
-    POSSIBLY_WARMED = "POSSIBLY_WARMED"
-    MATERIALIZATION_CANDIDATE = "MATERIALIZATION_CANDIDATE"
-    VERIFIED_REUSABLE = "VERIFIED_REUSABLE"
-    NEGATIVE = "NEGATIVE"
-
-
-@dataclass(frozen=True, slots=True)
-class _CacheLocalityEvidence:
-    """One observation of cache reuse for a scope."""
-
-    state: str
-    """Evidence state: UNKNOWN, POSSIBLY_WARMED, VERIFIED_REUSABLE, NEGATIVE."""
-
-    last_cached_tokens: int
-    """Most recent observed cached_tokens (0 if none)."""
-
-    confidence: float
-    """0..1. Scales the permitted discount."""
-
-    observed_at: float
-    """Timestamp of the last observation (seconds)."""
-
-    generation: int
-    """Number of observations for this scope."""
-
-
-class _CacheLocalityEstimator:
-    """Prefix-/endpoint-scoped evidence gate for HybridInference's PrefixCacheCoordinator.
-
-    Unlike RouteWise #24's generic locality estimator (which learns at
-    provider+affinity granularity), this estimator is keyed by the full
-    ``CacheScope`` (session + endpoint + provider + model + key-slot +
-    cache-affecting params). It does NOT perform prefix matching itself —
-    ``SessionProviderPrefixMemory`` determines prefix opportunity via HMAC
-    block matching; this estimator determines whether observed reuse evidence
-    justifies applying that opportunity as a cost discount.
-
-    It exists because HybridInference has finer endpoint and prefix
-    information than RouteWise's generic abstraction can represent directly.
-
-    Semantics (conceptually aligned with RouteWise #24):
-
-    - ``cached_tokens > 0``: positive evidence, confidence = 1.0.
-    - ``cached_tokens == 0``: negative evidence, confidence *= 0.3
-      (with time decay applied first). Repeated misses degrade confidence but
-      do not immediately delete evidence (transient eviction possible).
-      A subsequent hit restores confidence.
-    - ``cached_tokens is None``: no evidence. No positive or negative evidence
-      manufactured from a missing observation.
-    """
-
-    def __init__(
-        self,
-        *,
-        ttl_sec: float = DEFAULT_TTL_SEC,
-        min_confidence: float = 0.01,
-        max_entries: int = DEFAULT_MAX_ENTRIES,
-        miss_confidence_factor: float = 0.3,
-        time_source: Callable[[], float] = time.time,
-    ) -> None:
-        if ttl_sec <= 0:
-            raise ValueError(f"ttl_sec must be positive, got {ttl_sec}")
-        if max_entries <= 0:
-            raise ValueError(f"max_entries must be positive, got {max_entries}")
-        self._ttl_sec = float(ttl_sec)
-        self._half_life_sec = ttl_sec / 2.0
-        self._min_confidence = float(min_confidence)
-        self._max_entries = int(max_entries)
-        self._miss_confidence_factor = float(miss_confidence_factor)
-        self._time = time_source
-        self._evidence: OrderedDict[CacheScope, _CacheLocalityEvidence] = OrderedDict()
-        self._lock = threading.Lock()
-
-    def record(
-        self,
-        scope: CacheScope,
-        cached_tokens: int | None,
-        *,
-        materialization_candidate: bool = False,
-    ) -> None:
-        """Record a cache-locality observation for one scope.
-
-        ``cached_tokens`` is the authoritative observed cache-reuse count from
-        the provider:
-
-        - ``cached_tokens > 0``: positive evidence, refresh state to
-          VERIFIED_REUSABLE with confidence = 1.0.
-        - ``cached_tokens == 0`` with ``materialization_candidate=True``:
-          retain only a weak materialization candidate. A miss is measured
-          before this request can warm the cache, so it must not become
-          durable anti-locality.
-        - ``cached_tokens == 0`` otherwise: negative evidence. Apply time
-          decay then the miss penalty. State becomes NEGATIVE (or
-          POSSIBLY_WARMED -> NEGATIVE).
-        - ``cached_tokens is None``: no authoritative observation. Do not
-          manufacture positive or negative evidence. Successful dispatch may
-          still establish POTENTIAL warming (handled by ``record_dispatch``).
-        """
-        now = self._time()
-        with self._lock:
-            existing = self._evidence.get(scope)
-            generation = existing.generation + 1 if existing is not None else 1
-
-            if cached_tokens is None:
-                # No authoritative observation: do NOT update evidence.
-                return
-
-            try:
-                cached_tokens = int(cached_tokens)
-            except (TypeError, ValueError):
-                # Malformed provider telemetry is missing evidence, not a
-                # measured cache miss.
-                return
-            if cached_tokens < 0:
-                # Never turn impossible telemetry into an authoritative zero.
-                return
-
-            if cached_tokens > 0:
-                # Positive observation: refresh evidence.
-                self._evidence[scope] = _CacheLocalityEvidence(
-                    state=CacheLocalityEvidenceState.VERIFIED_REUSABLE,
-                    last_cached_tokens=cached_tokens,
-                    confidence=1.0,
-                    observed_at=now,
-                    generation=generation,
-                )
-            else:
-                if materialization_candidate:
-                    self._evidence[scope] = _CacheLocalityEvidence(
-                        state=CacheLocalityEvidenceState.MATERIALIZATION_CANDIDATE,
-                        last_cached_tokens=0,
-                        confidence=0.0,
-                        observed_at=now,
-                        generation=generation,
-                    )
-                    self._evidence.move_to_end(scope)
-                    self._enforce_capacity()
-                    return
-                # Negative observation (miss): degrade confidence.
-                if existing is not None:
-                    age = now - existing.observed_at
-                    decayed = existing.confidence * (0.5 ** (age / self._half_life_sec))
-                    new_confidence = decayed * self._miss_confidence_factor
-                    self._evidence[scope] = _CacheLocalityEvidence(
-                        state=(
-                            CacheLocalityEvidenceState.NEGATIVE
-                            if new_confidence >= self._min_confidence
-                            else CacheLocalityEvidenceState.POSSIBLY_WARMED
-                        ),
-                        last_cached_tokens=existing.last_cached_tokens,
-                        confidence=new_confidence,
-                        observed_at=now,
-                        generation=generation,
-                    )
-                # If no existing evidence, a miss creates no evidence.
-            # Refresh LRU recency on write (only if scope exists).
-            if scope in self._evidence:
-                self._evidence.move_to_end(scope)
-            self._enforce_capacity()
-
-    def record_dispatch(self, scope: CacheScope) -> None:
-        """Record a successful dispatch (potential warming).
-
-        This does NOT create positive evidence. It only advances UNKNOWN ->
-        POSSIBLY_WARMED so the cost estimator can represent "a request reached
-        this destination and may have populated its cache".
-
-        If the prefix memory has been replaced with a different prompt
-        (block generation changed) and there is no authoritative evidence to
-        support it, the stale evidence is invalidated. This prevents a
-        VERIFIED_REUSABLE observation for an old prompt from incorrectly
-        transferring to an unrelated new prompt.
-        """
-        now = self._time()
-        with self._lock:
-            existing = self._evidence.get(scope)
-            if existing is None:
-                # First successful dispatch: potential warming, low confidence.
-                self._evidence[scope] = _CacheLocalityEvidence(
-                    state=CacheLocalityEvidenceState.POSSIBLY_WARMED,
-                    last_cached_tokens=0,
-                    confidence=0.0,
-                    observed_at=now,
-                    generation=1,
-                )
-            else:
-                # Already has evidence: do not degrade. A successful dispatch
-                # does not reduce existing confidence.
-                # Refresh LRU recency on access.
-                self._evidence.move_to_end(scope)
-            self._enforce_capacity()
-
-    def estimate(self, scope: CacheScope, current_input_tokens: int) -> tuple[int, str, float]:
-        """Return (estimated_cached_tokens, evidence_state, confidence).
-
-        Returns (0, UNKNOWN, 0.0) if no valid evidence, expired, or below
-        confidence threshold. Uses lazy expiration.
-
-        The estimated cached tokens is bounded by both the matched prefix
-        length (caller responsibility) and the learned evidence:
-
-            estimated_cached_tokens = min(matched_prefix_tokens,
-                                          last_cached_tokens * decayed_confidence)
-
-        For POSSIBLY_WARMED or MATERIALIZATION_CANDIDATE (no verified reuse
-        yet): 0 (no strong discount).
-        For NEGATIVE: 0 (suppressed unless confidence recovers).
-        For UNKNOWN: 0.
-        """
-        now = self._time()
-        with self._lock:
-            ev = self._evidence.get(scope)
-            if ev is None:
-                return 0, CacheLocalityEvidenceState.UNKNOWN, 0.0
-            age = now - ev.observed_at
-            if age > self._ttl_sec:
-                del self._evidence[scope]
-                return 0, CacheLocalityEvidenceState.UNKNOWN, 0.0
-            decayed = ev.confidence * (0.5 ** (age / self._half_life_sec))
-            # POSSIBLY_WARMED and MATERIALIZATION_CANDIDATE intentionally have
-            # zero confidence until a provider reports a hit. Keep those weak
-            # states alive for the TTL so a successful miss is not silently
-            # discarded on the next routing lookup.
-            if (
-                ev.state
-                not in (
-                    CacheLocalityEvidenceState.POSSIBLY_WARMED,
-                    CacheLocalityEvidenceState.MATERIALIZATION_CANDIDATE,
-                )
-                and decayed < self._min_confidence
-            ):
-                del self._evidence[scope]
-                return 0, CacheLocalityEvidenceState.UNKNOWN, 0.0
-
-            if ev.state == CacheLocalityEvidenceState.VERIFIED_REUSABLE:
-                estimated = int(ev.last_cached_tokens * decayed)
-                estimated_tokens = min(estimated, ev.last_cached_tokens, current_input_tokens)
-            else:
-                # POSSIBLY_WARMED / MATERIALIZATION_CANDIDATE / NEGATIVE /
-                # UNKNOWN: no strong discount.
-                estimated_tokens = 0
-            # Every valid evidence observation is active state. Refresh recency
-            # for misses too; otherwise a hot scope with repeated NEGATIVE
-            # observations can be evicted before colder scopes.
-            self._evidence.move_to_end(scope)
-            return estimated_tokens, ev.state, decayed
-
-    def invalidate(self, scope: CacheScope) -> None:
-        """Remove evidence for a scope when its remembered prefix is evicted."""
-        with self._lock:
-            if scope in self._evidence:
-                del self._evidence[scope]
-
-    def _enforce_capacity(self) -> None:
-        """Evict oldest entries if over capacity. Must be called under lock.
-
-        Uses OrderedDict for O(1) LRU eviction, matching the strategy in
-        SessionProviderPrefixMemory.
-        """
-        while len(self._evidence) > self._max_entries:
-            self._evidence.popitem(last=False)
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +132,61 @@ def _hmac_digest(secret: bytes, payload: bytes) -> str:
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
 
+def _media_identity(payload: str) -> str:
+    """Return a short identity for one media payload: its length and a digest of it."""
+    digest = hashlib.blake2b(payload.encode("utf-8", "surrogatepass"), digest_size=16)
+    return f"\x03media:{len(payload)}:{digest.hexdigest()}"
+
+
+def _media_field(value: Any) -> Any:
+    """Return ``value`` with a payload-sized string replaced by its identity."""
+    if isinstance(value, str) and len(value) >= _MEDIA_PAYLOAD_MIN_CHARS:
+        return _media_identity(value)
+    return value
+
+
+def _is_media_block(block: Any) -> bool:
+    return isinstance(block, Mapping) and block.get("type") in _MEDIA_BLOCK_TYPES
+
+
+def _without_media_payload(block: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy of one media block whose payloads are replaced by their identity.
+
+    Looks one level into nested objects, where the payload sits in every format
+    this gateway forwards: ``image_url.url``, ``input_audio.data``,
+    ``source.data``, ``file.file_data``.
+    """
+    return {
+        key: (
+            {inner: _media_field(item) for inner, item in value.items()}
+            if isinstance(value, Mapping)
+            else _media_field(value)
+        )
+        for key, value in block.items()
+    }
+
+
+def _messages_without_media(messages: Sequence[Any]) -> list[Any]:
+    """Return ``messages`` with each media payload replaced by its identity.
+
+    A message without media is the same object, so a text-only request
+    serializes exactly as it would have.
+    """
+    result: list[Any] = []
+    for message in messages:
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if isinstance(content, list) and any(_is_media_block(block) for block in content):
+            message = {
+                **message,
+                "content": [
+                    _without_media_payload(block) if _is_media_block(block) else block
+                    for block in content
+                ],
+            }
+        result.append(message)
+    return result
+
+
 def canonicalize_prompt(
     messages: Sequence[Mapping[str, Any]],
     *,
@@ -399,14 +196,51 @@ def canonicalize_prompt(
     """Return a deterministic string for the cache-affecting parts of a request.
 
     Field order and whitespace are normalized so that semantically identical
-    requests serialize identically. Only prompt-shaping inputs are included.
+    requests serialize identically. Only prompt-shaping inputs are included, and
+    a media payload is included by identity (see ``_MEDIA_BLOCK_TYPES``).
     """
     payload = {
-        "messages": list(messages),
+        "messages": _messages_without_media(messages),
         "tools": tools,
         "response_format": response_format,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _token_array(token_ids: Sequence[Any]) -> array | None:
+    """Return the token ids as 64-bit integers, or None when some cannot be one."""
+    try:
+        return array("q", token_ids)
+    except TypeError:
+        pass
+    except OverflowError:
+        return None
+    try:
+        return array("q", (int(token) for token in token_ids))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _block_payloads(token_ids: Sequence[Any], block_size: int) -> Iterator[tuple[int, Any]]:
+    """Yield ``(token count, bytes to digest)`` for each ``block_size`` run of tokens.
+
+    The bytes of one run are a slice of the token array's own buffer: one copy
+    of the ids for the whole request, none per block. A tokenizer whose ids do
+    not fit 64 bits falls back to the ids written out in decimal, which digests
+    the same runs to the same match.
+    """
+    ids = _token_array(token_ids)
+    if ids is not None:
+        raw = memoryview(ids).cast("B")
+        width = ids.itemsize
+        total = len(ids)
+        for start in range(0, total, block_size):
+            end = min(start + block_size, total)
+            yield end - start, raw[start * width : end * width]
+        return
+    for start in range(0, len(token_ids), block_size):
+        chunk = token_ids[start : start + block_size]
+        yield len(chunk), ",".join(str(int(token)) for token in chunk).encode("ascii")
 
 
 def build_blocks(
@@ -422,20 +256,28 @@ def build_blocks(
 
     The canonical prompt is tokenized and split into ``block_size`` chunks; each
     chunk is HMAC-hashed so the stored sequence is opaque. The trailing partial
-    chunk is kept so short prompts still produce a block.
+    chunk is kept so short prompts still produce a block. Only the first
+    ``MAX_CANONICAL_CHARS`` characters of the canonical prompt are tokenized.
+
+    The digests are compared only with others this process computed under the
+    same secret, so what is hashed for a run is free to be its raw token bytes:
+    two runs digest alike exactly when their tokens are alike.
     """
     if block_size <= 0:
         raise ValueError(f"block_size must be positive, got {block_size}")
     key = secret if secret is not None else _PROCESS_SECRET
     text = canonicalize_prompt(messages, tools=tools, response_format=response_format)
-    token_ids = list(tokenize(text))
+    if len(text) > MAX_CANONICAL_CHARS:
+        text = text[:MAX_CANONICAL_CHARS]
+    token_ids = tokenize(text)
+    if not isinstance(token_ids, (list, tuple)):
+        token_ids = list(token_ids)
+    keyed = hmac.new(key, digestmod=hashlib.sha256)
     blocks: list[Block] = []
-    for start in range(0, len(token_ids), block_size):
-        chunk = token_ids[start : start + block_size]
-        if not chunk:
-            continue
-        payload = b",".join(str(int(tok)).encode("ascii") for tok in chunk)
-        blocks.append(Block(digest=_hmac_digest(key, payload), token_count=len(chunk)))
+    for count, payload in _block_payloads(token_ids, block_size):
+        digest = keyed.copy()
+        digest.update(payload)
+        blocks.append(Block(digest=digest.hexdigest(), token_count=count))
     return tuple(blocks)
 
 
@@ -562,12 +404,6 @@ class SessionProviderPrefixMemory:
             self._entries.move_to_end(scope)
             self._evict_locked()
 
-    def current_blocks(self, scope: CacheScope) -> tuple[Block, ...] | None:
-        """Return an immutable snapshot of the remembered blocks for ``scope``."""
-        with self._lock:
-            entry = self._entries.get(scope)
-            return None if entry is None else entry.blocks
-
     def __len__(self) -> int:
         """Return the number of scopes currently held."""
         with self._lock:
@@ -616,20 +452,8 @@ def price_delta_per_token(
 class PrefixCacheCostRecord:
     """Per-candidate prefix-cache cost estimate.
 
-    Combines two distinct signals:
-
-    - **Prefix opportunity** (``matched_prefix_tokens``): how many leading
-      tokens match the scope's most recent request, determined by HMAC block
-      matching in ``SessionProviderPrefixMemory``. A match means reuse is
-      *possible* — it does NOT imply verified cache residency.
-    - **Evidence-bounded estimate** (``expected_cached_tokens``): the actual
-      token count eligible for cost adjustment, bounded by both the matched
-      prefix length AND observed-reuse evidence from ``_CacheLocalityEstimator``.
-      Zero unless the scope has VERIFIED_REUSABLE evidence.
-
-    ``cache_discount`` is ``expected_cached_tokens * (p_in - p_cache)``, floored
-    so cost never goes negative. ``evidence_state`` and ``evidence_confidence``
-    describe the observed-reuse support behind the estimate.
+    It captures the cache discount estimate for a candidate. Callers may apply
+    it only when guarded cost adjustment is enabled.
     """
 
     matched_prefix_tokens: int
@@ -638,10 +462,6 @@ class PrefixCacheCostRecord:
     would_apply: bool
     has_history: bool
     meets_threshold: bool
-    evidence_state: str = CacheLocalityEvidenceState.UNKNOWN
-    """The evidence state backing this estimate (UNKNOWN/POSSIBLY_WARMED/VERIFIED_REUSABLE/NEGATIVE)."""
-    evidence_confidence: float = 0.0
-    """Confidence in the evidence (0..1)."""
 
 
 class PrefixCacheCoordinator:
@@ -651,13 +471,6 @@ class PrefixCacheCoordinator:
     (which fields form a scope, which are hashed). Sensitive scope fields
     (user, project, session, params) are HMAC hashed so no raw identifier is
     stored.
-
-    The coordinator combines two models:
-
-    - **Prefix opportunity** (``SessionProviderPrefixMemory``): "these requests
-      share reusable prefix content" (deterministic HMAC block matching).
-    - **Locality evidence** (``_CacheLocalityEstimator``): "has this destination
-      actually demonstrated cache reuse?" (positive/negative/unknown semantics).
     """
 
     def __init__(
@@ -668,41 +481,17 @@ class PrefixCacheCoordinator:
         block_size: int = DEFAULT_BLOCK_SIZE_TOKENS,
         secret: bytes | None = None,
         tokenize: Callable[[str], Sequence[int]] = tokenize_text,
-        evidence: _CacheLocalityEstimator | None = None,
-        max_generation_entries: int | None = None,
     ) -> None:
         self.enabled = bool(enabled)
         self._memory = memory if memory is not None else SessionProviderPrefixMemory()
         self._block_size = int(block_size)
         self._secret = secret if secret is not None else _PROCESS_SECRET
         self._tokenize = tokenize
-        self._evidence = evidence if evidence is not None else _CacheLocalityEstimator()
-        self._generation_lock = threading.Lock()
-        self._next_generation = 0
-        if max_generation_entries is None:
-            max_generation_entries = min(
-                getattr(self._memory, "_max_entries", DEFAULT_MAX_ENTRIES),
-                getattr(self._evidence, "_max_entries", DEFAULT_MAX_ENTRIES),
-            )
-        if max_generation_entries <= 0:
-            raise ValueError(
-                f"max_generation_entries must be positive, got {max_generation_entries}"
-            )
-        self._max_generation_entries = int(max_generation_entries)
-        # This is a bounded stale-completion guard. It is kept separate from
-        # prefix memory because pending attempts can reserve a generation
-        # before a successful response is eligible to update that memory.
-        self._scope_generations: OrderedDict[CacheScope, int] = OrderedDict()
 
     @property
     def memory(self) -> SessionProviderPrefixMemory:
         """Expose the backing prefix memory for metrics and tests."""
         return self._memory
-
-    @property
-    def evidence(self) -> _CacheLocalityEstimator:
-        """Expose the backing evidence estimator for metrics and tests."""
-        return self._evidence
 
     def build_blocks(
         self,
@@ -756,57 +545,32 @@ class PrefixCacheCoordinator:
     ) -> PrefixCacheCostRecord:
         """Look up one candidate and return its prefix-cache cost record.
 
-        The expected cached tokens is bounded by BOTH the matched prefix length
-        (opportunity) AND the learned locality evidence:
-
-            expected_cached_tokens = min(matched_prefix_tokens,
-                                          learned_evidence_estimate)
-
-        Where ``learned_evidence_estimate`` is non-zero only for VERIFIED_REUSABLE
-        state. POSSIBLY_WARMED, NEGATIVE, and UNKNOWN yield 0 (no strong discount).
+        A matched prefix that clears the minimum-cacheable threshold is
+        estimated as cached, so the discount is
+        ``expected_cached_tokens * (p_in - p_cache)``, capped at cold cost.
+        This is a prefix-match estimate, not verified cache residency. No
+        discount is applied while disabled or without a usable match or a
+        per-token cache saving.
         """
         signal = self._memory.lookup(scope, blocks, now=now)
-        matched = signal.matched_prefix_tokens
-        meets = signal.meets_threshold and signal.has_history
-
-        # Locality evidence bounds the estimate.
-        learned_tokens, evidence_state, evidence_confidence = (
-            0,
-            CacheLocalityEvidenceState.UNKNOWN,
-            0.0,
+        expected = (
+            float(max(signal.matched_prefix_tokens, 0))
+            if signal.has_history and signal.meets_threshold
+            else 0.0
         )
-        if meets:
-            learned_tokens, evidence_state, evidence_confidence = self._evidence.estimate(
-                scope, matched
-            )
-            learned_tokens = min(learned_tokens, matched)
-
-        effective_expected = float(learned_tokens) if learned_tokens > 0 else 0.0
-
-        # The discount applies to the evidence-bounded expected tokens, floored
-        # so the cost cannot go negative.
         cold = max(float(cold_cost), 0.0)
-        if effective_expected <= 0.0 or price_delta <= 0.0 or not self.enabled:
-            return PrefixCacheCostRecord(
-                matched_prefix_tokens=matched,
-                expected_cached_tokens=0.0,
-                cache_discount=0.0,
-                would_apply=False,
-                has_history=signal.has_history,
-                meets_threshold=signal.meets_threshold,
-                evidence_state=evidence_state,
-                evidence_confidence=evidence_confidence,
-            )
-        discount = min(effective_expected * price_delta, cold)
+        discount = (
+            min(expected * price_delta, cold)
+            if self.enabled and expected > 0.0 and price_delta > 0.0
+            else 0.0
+        )
         return PrefixCacheCostRecord(
-            matched_prefix_tokens=matched,
-            expected_cached_tokens=effective_expected,
+            matched_prefix_tokens=signal.matched_prefix_tokens,
+            expected_cached_tokens=expected,
             cache_discount=discount,
             would_apply=discount > 0.0,
             has_history=signal.has_history,
             meets_threshold=signal.meets_threshold,
-            evidence_state=evidence_state,
-            evidence_confidence=evidence_confidence,
         )
 
     def remember(
@@ -815,147 +579,13 @@ class PrefixCacheCoordinator:
         blocks: Sequence[Block],
         *,
         now: float | None = None,
-        generation: int | None = None,
-    ) -> bool:
-        """Store the selected provider's blocks so the next turn can match them.
-
-        If the stored blocks are being replaced with a different prompt and
-        there is existing evidence, that evidence is invalidated. VERIFIED_REUSABLE
-        evidence belongs to the prefix it was observed for, not to every future
-        prompt under the same session/endpoint scope.
-
-        Also invalidates evidence when the scope is not present in prefix
-        memory (e.g., it was evicted at capacity). A scope returning after
-        eviction must re-establish locality from observations, not from stale
-        evidence left behind by a previous prompt.
-        """
-        with self._generation_lock:
-            generation = self._claim_generation(scope, generation)
-            if generation is None:
-                return False
-            current = self._scope_generations.get(scope)
-            if current != generation:
-                return False
-
-            # Invalidate stale evidence when prefix content changes or scope
-            # was evicted. Keep the check and write together with generation
-            # ordering so an older completion cannot overwrite a newer one.
-            prior_blocks = self._memory.current_blocks(scope)
-            new_blocks = tuple(blocks)
-            if prior_blocks is not None:
-                if prior_blocks != new_blocks:
-                    self._evidence.invalidate(scope)
-            else:
-                # Scope not in memory (evicted or brand-new): clear any stale
-                # evidence before reintroducing it.
-                self._evidence.invalidate(scope)
-            self._memory.observe(scope, new_blocks, now=now)
-            return True
-
-    def reserve_generations(self, scopes: Iterable[CacheScope]) -> dict[CacheScope, int]:
-        """Reserve one ordered prefix generation for a pending request."""
-        unique_scopes = tuple(dict.fromkeys(scopes))
-        if not unique_scopes:
-            return {}
-        with self._generation_lock:
-            self._next_generation += 1
-            generation = self._next_generation
-            # Publish the guard at reservation time. A completion may be
-            # delayed while this bounded registry evicts the scope; retaining
-            # the guard here lets the completion be rejected instead of being
-            # mistaken for a new generation when it eventually arrives.
-            for scope in unique_scopes:
-                self._track_generation(scope, generation)
-            return dict.fromkeys(unique_scopes, generation)
-
-    def _claim_generation(self, scope: CacheScope, generation: int | None) -> int | None:
-        if generation is None:
-            self._next_generation += 1
-            generation = self._next_generation
-            self._track_generation(scope, generation)
-            return generation
-
-        # Supplied generations must have an active reservation/guard. In
-        # particular, do not recreate a guard that was LRU-evicted while the
-        # request was still pending; that would let an old completion install
-        # stale memory and evidence as though it were current.
-        if self._scope_generations.get(scope) != generation:
-            return None
-        self._scope_generations.move_to_end(scope)
-        return generation
-
-    def _track_generation(self, scope: CacheScope, generation: int) -> None:
-        """Track a generation and evict the oldest stale-completion guard."""
-        self._scope_generations[scope] = generation
-        self._scope_generations.move_to_end(scope)
-        while len(self._scope_generations) > self._max_generation_entries:
-            evicted_scope, _ = self._scope_generations.popitem(last=False)
-            # Evidence without a generation guard cannot safely be associated
-            # with a pending request after the guard itself has been evicted.
-            self._evidence.invalidate(evicted_scope)
-
-    def record_evidence(
-        self,
-        scope: CacheScope,
-        cached_tokens: int | None,
-        *,
-        generation: int | None = None,
-        blocks: Sequence[Block] | None = None,
-        materialization_candidate: bool = False,
     ) -> None:
-        """Record authoritative observed cache usage for a scope.
-
-        - ``cached_tokens > 0``: VERIFIED_REUSABLE (positive evidence).
-        - ``cached_tokens == 0`` after a successful dispatch:
-          MATERIALIZATION_CANDIDATE (the request may have warmed the cache
-          after the provider measured its miss).
-        - ``cached_tokens == 0`` after an unsuccessful dispatch: NEGATIVE
-          (degrades confidence without warming prefix memory).
-        - ``cached_tokens is None``: no evidence; nothing recorded.
-        """
-        with self._generation_lock:
-            if generation is not None:
-                current = self._scope_generations.get(scope)
-                if current is not None and generation < current:
-                    return
-                if current is None:
-                    # The bounded registry no longer knows this attempt. Do
-                    # not let a delayed completion recreate an old entry just
-                    # because its blocks happen to match current memory.
-                    return
-                if blocks is not None and self._memory.current_blocks(scope) != tuple(blocks):
-                    # A failed/empty completion does not replace prefix
-                    # memory. Its evidence is valid only if the remembered
-                    # prefix is still the one dispatched by this attempt.
-                    return
-                if current != generation:
-                    # A terminal miss does not call ``remember`` because it
-                    # did not prove that the prefix was materialized. It may
-                    # still update evidence when the remembered prefix is
-                    # unchanged since dispatch. A different current prefix
-                    # means this completion is stale and must be ignored.
-                    if blocks is None or self._memory.current_blocks(scope) != tuple(blocks):
-                        return
-                    self._track_generation(scope, generation)
-            self._evidence.record(
-                scope,
-                cached_tokens,
-                materialization_candidate=materialization_candidate,
-            )
-
-    def record_dispatch(self, scope: CacheScope, *, generation: int | None = None) -> None:
-        """Record a successful dispatch (potential warming, no reuse signal).
-
-        This does NOT create positive evidence. It only advances UNKNOWN ->
-        POSSIBLY_WARMED so the model can represent "a request reached this
-        destination and may have populated its cache".
-        """
-        with self._generation_lock:
-            if generation is not None:
-                if self._scope_generations.get(scope) != generation:
-                    return
-                self._scope_generations.move_to_end(scope)
-            self._evidence.record_dispatch(scope)
+        """Store the selected provider's blocks so the next turn can match them."""
+        self._memory.observe(
+            scope,
+            blocks,
+            now=now,
+        )
 
     def _hash(self, value: str) -> str:
         if not value:
@@ -967,15 +597,13 @@ __all__ = [
     "DEFAULT_BLOCK_SIZE_TOKENS",
     "DEFAULT_MIN_MATCH_TOKENS",
     "DEFAULT_TTL_SEC",
+    "MAX_CANONICAL_CHARS",
     "Block",
-    "CacheLocalityEvidenceState",
     "CacheScope",
     "CacheSignal",
     "PrefixCacheCoordinator",
     "PrefixCacheCostRecord",
     "SessionProviderPrefixMemory",
-    "_CacheLocalityEstimator",
-    "_CacheLocalityEvidence",
     "build_blocks",
     "canonicalize_prompt",
     "longest_common_prefix_tokens",

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving.audit import AuditActor
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
@@ -65,6 +66,7 @@ if TYPE_CHECKING:
     from serving.auto_mode import AutoMode
     from serving.batch.model_limits import BatchModelLimits
     from serving.batch.scheduler import BatchScheduler
+    from serving.config.batch_routes import BatchRouteResolver
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
@@ -77,7 +79,9 @@ if TYPE_CHECKING:
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
     from serving.storage.base import LogStore, OperationalStore
+    from serving.storage.batch_file_store import BatchFileStore
     from serving.storage.batch_store import BatchStore
+    from serving.storage.batch_webhook_store import BatchWebhookStore
     from serving.storage.database import DatabaseLogger
     from serving.storage.responses_store import ResponseStore
 
@@ -108,6 +112,7 @@ class AppServices:
     disabled_provider_resolver: DisabledProviderResolver | None = None
     route_state_resolver: RouteStateResolver | None = None
     offload_route_resolver: OffloadRouteResolver | None = None
+    batch_route_resolver: BatchRouteResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None
@@ -125,9 +130,9 @@ class AppServices:
     batch_store: BatchStore | None = None
     batch_model_limits: BatchModelLimits | None = None
     batch_scheduler: BatchScheduler | None = None
-    # The batch store while its schema migration waits for a lock at boot:
-    # nothing is served from it, but the hard-delete purge still goes through it.
-    batch_store_pending: BatchStore | None = None
+    # Batch input/output files and webhooks, over the batch store's pool.
+    batch_file_store: BatchFileStore | None = None
+    batch_webhook_store: BatchWebhookStore | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
@@ -146,115 +151,122 @@ def model_router_transition_lock(
     )
 
 
-def get_services(request: Request) -> AppServices:
+async def get_services(request: Request) -> AppServices:
     """Return the shared services object from the application state."""
     return request.app.state.services  # type: ignore[attr-defined]
 
 
-def get_router(services: AppServices = Depends(get_services)) -> FixedRouter:
+async def get_router(services: AppServices = Depends(get_services)) -> FixedRouter:
     """Dependency to obtain the FixedRouter."""
     return services.router
 
 
-def get_embedding_adapters(
+async def get_embedding_adapters(
     services: AppServices = Depends(get_services),
 ) -> dict[str, Any]:
     """Dependency to obtain the embedding adapters dict."""
     return services.embedding_adapters or {}
 
 
-def get_db_logger(
+async def get_db_logger(
     services: AppServices = Depends(get_services),
 ) -> DatabaseLogger | None:
     """Dependency to obtain the database logger (if configured)."""
     return services.db_logger
 
 
-def get_operational_store(
+async def get_operational_store(
     services: AppServices = Depends(get_services),
 ) -> OperationalStore | None:
     """Dependency to obtain the operational store (if configured)."""
     return services.operational_store
 
 
-def get_log_store(
+async def get_log_store(
     services: AppServices = Depends(get_services),
 ) -> LogStore | None:
     """Dependency to obtain the log store (if configured)."""
     return services.log_store
 
 
-def get_response_store(
+async def get_response_store(
     services: AppServices = Depends(get_services),
 ) -> ResponseStore | None:
     """Dependency to obtain the Responses API store (if configured)."""
     return getattr(services, "responses_store", None)
 
 
-def get_batch_store(
+async def get_batch_store(
     services: AppServices = Depends(get_services),
 ) -> BatchStore | None:
     """Dependency to obtain the batch job store (if configured)."""
     return getattr(services, "batch_store", None)
 
 
-def get_batch_store_for_purge(
+async def get_batch_file_store(
+    services: AppServices = Depends(get_services),
+) -> BatchFileStore | None:
+    """Dependency to obtain the batch file store (if configured)."""
+    return getattr(services, "batch_file_store", None)
+
+
+async def get_batch_webhook_store(
+    services: AppServices = Depends(get_services),
+) -> BatchWebhookStore | None:
+    """Dependency to obtain the batch webhook store (if configured)."""
+    return getattr(services, "batch_webhook_store", None)
+
+
+async def get_batch_store_for_purge(
     services: AppServices = Depends(get_services),
 ) -> BatchStore | None:
-    """Dependency to obtain the batch store an erasure must purge, ready or not."""
-    return getattr(services, "batch_store", None) or getattr(services, "batch_store_pending", None)
+    """Dependency to obtain the batch store an erasure must purge, whatever ``BATCH_ENABLED`` says."""
+    return getattr(services, "batch_store", None)
 
 
-def get_batch_model_limits(
+async def get_batch_model_limits(
     services: AppServices = Depends(get_services),
 ) -> BatchModelLimits | None:
     """Dependency to obtain the per-model batch concurrency caps (if configured)."""
     return getattr(services, "batch_model_limits", None)
 
 
-def get_batch_scheduler(
-    services: AppServices = Depends(get_services),
-) -> BatchScheduler | None:
-    """Dependency to obtain the in-process batch worker (if running)."""
-    return getattr(services, "batch_scheduler", None)
-
-
-def get_user_concurrency_limiter(
+async def get_user_concurrency_limiter(
     services: AppServices = Depends(get_services),
 ) -> UserConcurrencyLimiter | None:
     """Dependency to obtain the per-user concurrency limiter."""
     return services.user_concurrency_limiter
 
 
-def get_model_router_registry(
+async def get_model_router_registry(
     services: AppServices = Depends(get_services),
 ) -> ModelRouterRegistry | None:
     """Dependency to obtain the ModelRouterRegistry (if configured)."""
     return services.model_router_registry
 
 
-def get_model_visibility_resolver(
+async def get_model_visibility_resolver(
     services: AppServices = Depends(get_services),
 ) -> ModelVisibilityResolver | None:
     """Dependency to obtain the ModelVisibilityResolver (if configured)."""
     return getattr(services, "model_visibility_resolver", None)
 
 
-def get_auto_mode(
+async def get_auto_mode(
     services: AppServices = Depends(get_services),
 ) -> AutoMode | None:
     """Dependency to obtain the loaded auto mode (if configured)."""
     return getattr(services, "auto_mode", None)
 
 
-def get_model_concurrency_resolver(
+async def get_model_concurrency_resolver(
     services: AppServices = Depends(get_services),
 ) -> ModelConcurrencyResolver | None:
     """Dependency to obtain the ModelConcurrencyResolver (if configured)."""
     return getattr(services, "model_concurrency_resolver", None)
 
 
-def get_completions_logger(
+async def get_completions_logger(
     services: AppServices = Depends(get_services),
 ) -> CompletionsLogger:
     """Dependency to obtain the ``CompletionsLogger``.
@@ -272,7 +284,7 @@ def get_completions_logger(
     return services.completions_logger
 
 
-def get_pricing_lookup(
+async def get_pricing_lookup(
     services: AppServices = Depends(get_services),
 ) -> PricingLookup:
     """Dependency to obtain the shared ``PricingLookup``.
@@ -288,7 +300,7 @@ def get_pricing_lookup(
     return _PL(router=services.router)
 
 
-def get_cost_tracker(
+async def get_cost_tracker(
     services: AppServices = Depends(get_services),
 ) -> CostTracker:
     """Dependency to obtain the shared ``CostTracker``.
@@ -309,6 +321,31 @@ def get_cost_tracker(
     return _CT(op_store=services.operational_store, pricing=pricing)
 
 
+async def require_live_session(op_store: Any, payload: dict[str, Any]) -> None:
+    """Refuse an access token whose session has ended.
+
+    A token is good until it expires, but its session can end first: signing
+    out, a password change or reset, signing out the other devices, a
+    suspension or deletion all revoke or delete the ``auth_sessions`` row its
+    ``sid`` names. The store answers from a cache of a few seconds that every
+    such revocation in this process clears
+    (:meth:`serving.storage.cache.CachedOperationalStore.session_is_live`).
+    Every token this gateway mints carries a ``sid``; one without is refused.
+
+    Raises:
+        HTTPException: 401 when the session is not live; the console then
+            refreshes, which fails the same way for an ended session.
+    """
+    sid = payload.get("sid")
+    if not isinstance(sid, str) or not sid:
+        raise HTTPException(status_code=401, detail="Invalid token payload.")
+    if not await op_store.session_is_live(payload["sub"], sid):
+        raise HTTPException(
+            status_code=401,
+            detail="This session has ended. Please login again.",
+        )
+
+
 async def get_current_user(
     authorization: str | None = Header(None),
     op_store=Depends(get_operational_store),
@@ -327,7 +364,8 @@ async def get_current_user(
         setup administrator), whose token carries an empty ``email`` claim.
 
     Raises:
-        HTTPException: 401 if token is missing, invalid, or expired.
+        HTTPException: 401 if token is missing, invalid, or expired, or its
+            session has ended (see :func:`require_live_session`).
     """
     from serving.utils.jwt import verify_access_token
 
@@ -368,6 +406,8 @@ async def get_current_user(
             status_code=503,
             detail=auth_database_detail(),
         )
+
+    await require_live_session(op_store, payload)
 
     user_row = await op_store.get_user_by_id(user_id)
 
@@ -411,6 +451,8 @@ async def get_current_user(
         "phone": user_row.get("phone"),
         "phone_verified": user_row.get("phone_verified", False),
         "status": user_row["status"],
+        # Per-user override of the role's concurrency cap (None: the role's).
+        "max_concurrent_requests": user_row.get("max_concurrent_requests"),
         # The auth session this token was issued for; ``auth_sessions.sid``.
         "sid": payload.get("sid"),
     }
@@ -444,12 +486,18 @@ async def verify_admin_access(
     This dependency allows admin endpoints to be called from both the
     frontend dashboard (JWT) and scripts/legacy admin UI (ADMIN_TOKEN).
     For a JWT admin it also records the account's user id on the request,
-    readable through :func:`get_admin_user_id`.
+    readable through :func:`get_admin_user_id`. Either way it records who
+    was admitted as an immutable :class:`~serving.audit.AuditActor` on this
+    request's state, readable through :func:`get_admin_audit_actor`: an
+    ``admin`` actor with the account's stable user id, or an ``admin_token``
+    actor, which has none. Request state is per request, so concurrent
+    requests never see each other's actor.
 
     Returns:
         Admin identifier string: for JWT auth the admin's email, or its login
         name when the account has no email (the first-run setup
-        administrator); for token auth the client IP.
+        administrator); for token auth the client IP. For display; audit rows
+        take the actor instead.
     """
     from serving.utils.jwt import verify_access_token
 
@@ -466,6 +514,7 @@ async def verify_admin_access(
         user_id = payload.get("sub")
 
         if op_store and user_id:
+            await require_live_session(op_store, payload)
             user_row = await op_store.get_user_by_id(user_id)
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
@@ -487,6 +536,7 @@ async def verify_admin_access(
             if (user_row["role"] or "free") != "admin":
                 raise HTTPException(status_code=403, detail="Admin access required.")
             request.state.admin_user_id = user_id
+            request.state.audit_actor = AuditActor.admin(user_id, get_client_ip(request))
             admin_identity = user_row["email"] or user_row.get("login_name") or user_id
         else:
             # DB unavailable — fail closed.  Admin endpoints require
@@ -520,14 +570,38 @@ async def verify_admin_access(
         )
 
     client_ip = get_client_ip(request)
+    request.state.audit_actor = AuditActor.admin_token(client_ip)
     return client_ip if client_ip != "unknown" else "admin-token"
 
 
 def get_admin_user_id(request: Request) -> str | None:
     """Return the user id of the admin account ``verify_admin_access`` admitted.
 
-    The identity string that dependency returns is for display and audit; use
-    this to compare against a user id (it is None for an ``ADMIN_TOKEN``
-    caller, which has no account).
+    The identity string that dependency returns is for display; use this to
+    compare against a user id (it is None for an ``ADMIN_TOKEN`` caller,
+    which has no account).
     """
     return getattr(request.state, "admin_user_id", None)
+
+
+def get_admin_audit_actor(
+    request: Request,
+    _admin: str = Depends(verify_admin_access),
+) -> AuditActor:
+    """Return who ``verify_admin_access`` admitted on this request, for an audit row.
+
+    Depending on ``verify_admin_access`` makes FastAPI run it first (once per
+    request, shared with the route's own dependency on it). Raises 500 rather
+    than inventing an actor if that dependency did not record one, which
+    only an override that bypasses it can cause.
+    """
+    actor = getattr(request.state, "audit_actor", None)
+    if not isinstance(actor, AuditActor):
+        logger.error("get_admin_audit_actor: no audit actor recorded for this admin request")
+        raise HTTPException(status_code=500, detail="Admin identity was not recorded.")
+    return actor
+
+
+def user_audit_actor(request: Request, current_user: dict[str, Any]) -> AuditActor:
+    """The ``user`` actor for an account acting on itself through its session."""
+    return AuditActor.user(current_user["user_id"], get_client_ip(request))

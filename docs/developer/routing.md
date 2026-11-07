@@ -91,7 +91,7 @@ route is not in that order: it comes next after an attempt that waited out its
 queue budget or its engine's first token, and last otherwise (see
 [Queue-wait offload](#queue-wait-offload)).
 
-Two deliberate exceptions:
+Three deliberate exceptions:
 
 - **A pinned request never falls back.** The caller asked for one endpoint, so
   a silent switch would produce a misleading result.
@@ -99,6 +99,15 @@ Two deliberate exceptions:
   Splicing a second provider into a committed SSE stream would duplicate role
   events, switch voice mid-message, and produce mismatched usage totals; the
   truncated stream is the lesser harm.
+- **A request two routes refuse as malformed stops there.** A 400, 404, 413 or
+  422 is usually the answering server's own verdict, so the walk goes on after
+  the first one; after a second it stops, and the request is reported as if
+  every route had failed. Otherwise every malformed request reached every
+  weighted route, a 1% fallback or a canary included. A context-window refusal
+  does not count: fallback already passes over every route whose window is no
+  wider and keeps the wider ones. The stop is logged as
+  `request_refusal_fallback_stopped`; the hybrid composition walks its plan
+  under the same bound.
 
 Successful responses carry a `_routing` blob (`provider`, `base_url`,
 `endpoint_id`, plus `fallback` and `failed_attempts` when a fallback ran) so
@@ -214,6 +223,10 @@ selection signal.
   route".
 - Un-cached size is estimated from the caller's last completed prompt on that
   endpoint, so a warm continuation is not mistaken for a cold mega-prefill.
+  Those hints are forgotten for an endpoint that fails with a 5xx or with no
+  answer at all, which is what a restart or an OOM looks like; an endpoint that
+  answered a 4xx (a 429 included), or that the request never reached, keeps
+  them.
 - A lease is released at the first token, not at end of stream: a long cheap
   decode is not prefill pressure.
 
@@ -378,7 +391,9 @@ that token (`apps/backend/routing/engine_wait.py`):
   held for a local engine, is bounded by the queue wait instead. Anything the
   engine sends before its first token, such as a
   role-only delta, is held back until the token arrives, so a client never sees
-  the attempt that was abandoned.
+  the attempt that was abandoned. At most 1 MB is held, the bound the RouteWise
+  hedge race applies: past it the held output goes out, which commits the
+  stream to that engine and ends the wait (`first_token_hold_cap_reached`).
 - **Back to the engine.** If the offload route fails too, the request goes back
   to the engine it left, once, after every other candidate, and this time waits
   as long as the engine needs.
@@ -602,6 +617,19 @@ Resource limits used to live in `router_params:`. Those keys are now rejected
 at boot with a message naming their route-level replacement, so a stale
 registry fails loudly rather than silently using defaults.
 
+RouteWise does not read prefill load: the latency estimates used by its LP and
+hedge choice have no backlog penalty, and it takes no prefill lease. The three keys of that
+withdrawn feature — `prefill_load_routing_enabled`,
+`prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are still
+accepted so an older registry keeps starting, but they have no effect whatever
+their value, and the backend logs a warning naming them once per process.
+Remove them from `models.yaml`. FixedRouter's
+[prefill-aware selection](#prefill-aware-selection) is unchanged.
+
+`latency_min_samples` is accepted the same way. Provider selection never read
+it, so it was removed, and a registry that still sets it starts with the same
+warning.
+
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
 exactly against the usage records a provider's quota fetcher returns. RouteWise
@@ -797,7 +825,9 @@ auto:
 Each profile is served as `auto-<name>`. The auto models exist only while the
 `auto_mode_enabled` runtime setting is on, and it is off by default. While it
 is off, a request naming one gets 404 and `/v1/models` does not list them.
-Requests that name a real model are never affected.
+Requests that name a real model are never affected. The admin Settings tab
+offers the switch only once the backend has started with a valid `auto:`
+section; without one it has nothing to serve.
 
 **Which candidate serves.** The first one in the list that can serve the
 request. A candidate is skipped for any of these reasons:
@@ -879,19 +909,19 @@ The design is in
 | `POST /v1/chat/completions` | Chat completion with automatic routing. |
 | `GET /health` | Liveness plus a `routes_configured` count. |
 | `GET /health/deep` | Per-endpoint availability, circuit state, and `route_exclusions`. |
-| `GET /routing` | Current weight distribution per model, plus the probe's `endpoint_health` map. |
+| `GET /routing` | Current weight distribution per model; for an administrator, also each route's `base_url` and the probe's `endpoint_health` map. |
 
-```{warning}
-`GET /routing` requires no authentication and returns, for every published
-model, each route's `provider`, **`base_url`**, and weight. On a public host
-that discloses your upstream topology — including private LAN addresses and
-any internal hostnames in a route's base URL. Put it behind your reverse proxy,
-or do not expose it.
-
-`GET /health/deep` is unauthenticated on the same terms: its `providers` keys
-are `endpoint_id`s (`<model-id>:<location>`), and each `route_exclusions` entry
-carries that route's `base_url` too. Gate both, not just `/routing`.
-```
+`GET /routing` and `GET /health/deep` require no authentication. Anonymously,
+`/routing` returns each published route's `provider` and weight, and
+`/health/deep` keys its `providers` by `endpoint_id` (`<model-id>:<location>`)
+and lists `route_exclusions` without their upstream. Where requests go — each
+route's `base_url`, and the probe's `endpoint_health` map, keyed by endpoint
+URL — is shown only to a caller that sends an administrator's JWT or
+`ADMIN_TOKEN` as `Authorization: Bearer ...`. Any other credential, valid or
+not, gets the anonymous answer with the same status code. An `endpoint_id` can
+still carry a local port or a host's first label (`local-12003`, `10-api`);
+gate both paths at your reverse proxy if even that is too much for your
+deployment.
 
 Runtime administration lives under `/admin/...`, requires admin
 authentication, and is backed by the operational store. The routing-related
@@ -905,6 +935,7 @@ endpoints:
 | `POST /admin/routing/provider-route-candidates/{model_id}` | Add a route to a model; `PATCH` and `DELETE` on `.../{model_id}/{route_id}` edit or remove it. |
 | `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
 | `PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` | Disable or enable a route of either source; a disabled route keeps its weights but takes no request, retry, fallback or offload. |
+| `PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` | Allow or forbid batch work on a route, or let it follow its locality (`null`): see [Which routes batch work may use](batches.md#which-routes-batch-work-may-use). |
 | `POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}` | Delete a registry route from this deployment, or restore it; models.yaml is not changed. |
 | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
 | `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |
@@ -976,7 +1007,11 @@ execution failure may try another candidate), `bound_endpoint` (the resolved
 adapter binding), `require_target`, and `required_modalities`.
 `RoutingObservation` (`routers.py`) is how the serving layer reports a
 completed request — endpoint id, TTFT, total latency, token counts, success,
-and a `strategy_metadata` dict the strategy itself populated during selection.
+the upstream HTTP status of a failure (`status_code`, when it had one), and a
+`strategy_metadata` dict the strategy itself populated during selection.
+RouteWise leaves a failure whose status blames the request itself (the
+breaker's client-error rule: a 4xx other than 408, 429, 401 and 407) out of
+its latency profiles.
 A stateless strategy returns `None` from `record_observation`; an
 online-learning one updates its model there.
 

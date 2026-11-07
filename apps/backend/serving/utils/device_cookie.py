@@ -17,7 +17,9 @@ them), the HMAC-SHA256 of nonce, expiry and identifier under a key derived from
 ``JWT_SECRET_KEY`` for this use alone. Only the backend can make one, so an
 entry the backend did not issue, an expired one or one for another account is
 passed over without a word, and that sign-in is limited like any other. The
-nonce keys the entry's rate-limit window.
+nonce keys the entry's rate-limit window. Because every sign-in issues a new
+nonce, the account's recognized browsers also share one window of their own,
+which only requests carrying a valid entry for the account count against.
 
 An entry carries no authority beyond that window -- the password is checked
 exactly as always -- so nothing revokes one. Signing out leaves the cookie in

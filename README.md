@@ -64,9 +64,11 @@ docker logs hybridinference-example-backend 2>&1 | grep 'setup code'
 
 Enter the code and create the administrator with a username and a demo-only
 password (at least eight characters, including uppercase, lowercase, and a
-number). From the dashboard, create an API key, open the API Playground,
-or enter the Admin Console, whose Configuration tab holds the gateway's
-settings. The example model returns the fixed reply `RUNNABLE_EXAMPLE_OK`.
+number). In the side navigation, create an API key under **API Keys** or
+open **Chat** to try a model. Administrators can open **Admin Console**
+or **pgAdmin** from the separate **Admin** group; the Admin Console's
+Settings tab holds the gateway's settings.
+The example model returns the fixed reply `RUNNABLE_EXAMPLE_OK`.
 
 When you are done, stop the stack. Its database volume is kept for the next
 run:
@@ -122,6 +124,7 @@ row describes you:
 | Understand how a request becomes a routing decision | [Architecture](docs/developer/architecture.md) |
 | Add a model, a local server, or a new provider | [Adding a New Model](docs/developer/adding-models.md) |
 | Operate one in production | [Deployment Guide](docs/developer/deployment.md) |
+| Follow changing Kubernetes proxy Pod addresses | [Proxy discovery deployment guide](deploy/kubernetes/proxy-discovery/README.md) |
 | Send a change | [Contributing](docs/developer/contributing.md) |
 
 Bugs and questions go to the
@@ -240,8 +243,8 @@ config/
 distributions/    # Per-distribution overlays: identity, content, config
                   # (including example/, the public runnable router example)
 tests/            # Unit, API, integration, and external tests
-ops/              # CI classifiers, admin sweeps, release/deploy scripts, backend-coupled DB analysis
-deploy/           # Docker, systemd, observability manifests
+ops/              # CI helpers, admin tools and sweeps, local dev scripts, backend-coupled DB analysis
+deploy/           # Docker, systemd and Kubernetes manifests
 docs/             # Developer docs, agent specs/plans, reviews
 ```
 

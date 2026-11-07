@@ -46,7 +46,6 @@ class TestRouteWiseConfigDefaults:
         assert cfg.latency_slo_sec == 3.0
         assert cfg.latency_window_sec == 900.0
         assert cfg.latency_max_samples_per_profile == 5000
-        assert cfg.latency_min_samples == 10
         assert cfg.latency_hedge_mode == "disabled"
 
     def test_invalid_latency_hedge_mode_rejected(self):
@@ -175,7 +174,7 @@ def _router_for_alpha(alpha: float) -> tuple[RouteWiseRouter, str, str]:
     register_from_models_yaml(fixed, _EXAMPLE)
     router = RouteWiseRouter(
         route_table=fixed,
-        config=RouteWiseConfig(budget_alpha=alpha, latency_min_samples=5),
+        config=RouteWiseConfig(budget_alpha=alpha),
     )
     for _ in range(25):
         router.predictor.update("routewise-demo", 500)

@@ -38,6 +38,15 @@ const BADGE_TONES: Record<BadgeTone, string> = {
   gray: 'bg-gray-100 text-gray-600',
 };
 
+/**
+ * Whether a saved change waits for a restart in the process that answered. A
+ * key a live group owns is declared restart-required, and is until the group
+ * is active; `apply_mode` says which applies now. An older backend omits it.
+ */
+export function appliesAfterRestart(entry: ConfigEntry): boolean {
+  return entry.apply_mode ? entry.apply_mode === 'restart' : entry.restart_required;
+}
+
 function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTone }> {
   const badges: Array<{ label: string; tone: BadgeTone }> = [];
   if (entry.missing) badges.push({ label: 'Missing', tone: 'red' });
@@ -45,7 +54,8 @@ function configBadges(entry: ConfigEntry): Array<{ label: string; tone: BadgeTon
   if (entry.required) badges.push({ label: 'Required', tone: 'gray' });
   if (entry.secret) badges.push({ label: 'Secret', tone: 'gray' });
   if (entry.pending_restart) badges.push({ label: 'Pending restart', tone: 'amber' });
-  else if (entry.restart_required) badges.push({ label: 'Restart required', tone: 'gray' });
+  else if (entry.apply_mode === 'managed') badges.push({ label: 'Applies live', tone: 'blue' });
+  else if (appliesAfterRestart(entry)) badges.push({ label: 'Restart required', tone: 'gray' });
   // Only a value comes from somewhere: an empty variable in the environment is
   // reported as its source, but "From environment" beside "Missing" misleads.
   if (entry.source === 'environment' && entry.is_set) {
@@ -79,14 +89,6 @@ const INPUT_ERROR_CLASS = `${TEXT_FIELD} ${FIELD_INVALID}`;
 const LINK_BUTTON_CLASS =
   'rounded-md px-2 py-1 text-[12px] font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:opacity-40';
 
-/** What a setting holds, as the read-only view shows it. A secret shows only whether it is set. */
-export function savedValueText(entry: ConfigEntry): string {
-  if (entry.secret) return entry.is_set ? 'Set' : 'Not set';
-  if (entry.type === 'bool') return entry.value === true ? 'On' : 'Off';
-  if (entry.value === null || entry.value === undefined || entry.value === '') return 'Not set';
-  return String(entry.value);
-}
-
 /**
  * One setting: its name and badges, what it is for, and an editor for its type.
  *
@@ -98,10 +100,9 @@ export function savedValueText(entry: ConfigEntry): string {
  * Render it inside a `<form autoComplete="off">`, so that browsers do not
  * offer to save a secret typed here as a password for the console.
  *
- * `readOnly` shows the saved value with no editor and no actions: the admin
- * Configuration tab edits a category only after its Edit button. There, Reset
- * and "Mark as secret" are staged like any other edit (`resetPending`,
- * `markSecretPending`) and written only when the category is saved.
+ * In Admin → Settings, Reset and "Mark as secret" are staged like
+ * any other edit (`resetPending`, `markSecretPending`) and written only when
+ * the category is saved.
  */
 export function ConfigEntryField({
   entry,
@@ -114,7 +115,6 @@ export function ConfigEntryField({
   serverError,
   onReset,
   onMarkSecret,
-  readOnly = false,
   resetPending = false,
   markSecretPending = false,
   disabled = false,
@@ -137,8 +137,6 @@ export function ConfigEntryField({
   onReset?: (entry: ConfigEntry) => void;
   /** Offer "Mark as secret" where it applies. Omitted in the setup wizard. */
   onMarkSecret?: (entry: ConfigEntry) => void;
-  /** Show the saved value only: no editor, no Reset, no "Mark as secret". */
-  readOnly?: boolean;
   /** Reset is staged: the save removes the stored value. */
   resetPending?: boolean;
   /** "Mark as secret" is staged: the save marks it. */
@@ -161,10 +159,8 @@ export function ConfigEntryField({
       .join(' ') || undefined;
   // Also for a stored value the backend refused: that entry reports what
   // applies in its place, and the row is still there to remove.
-  const canReset =
-    !readOnly && Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
-  const offerMarkSecret =
-    !readOnly && !resetPending && Boolean(onMarkSecret) && canMarkSecret(entry);
+  const canReset = Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
+  const offerMarkSecret = !resetPending && Boolean(onMarkSecret) && canMarkSecret(entry);
 
   // An edit back to the starting value is no edit, so it leaves no draft.
   const setValue = (value: string | boolean) =>
@@ -175,19 +171,6 @@ export function ConfigEntryField({
     control = (
       <output id={controlId} className="text-[12px] text-amber-700" aria-describedby={describedBy}>
         {entry.custom ? 'Deleted when you save' : 'Reset when you save'}
-      </output>
-    );
-  } else if (readOnly && !locked) {
-    const shown = savedValueText(entry);
-    control = (
-      <output
-        id={controlId}
-        aria-describedby={describedBy}
-        className={`block break-all text-[13px] ${shown === 'Not set' ? 'text-gray-400' : 'text-gray-800'} ${
-          entry.type === 'text' && !entry.secret ? 'whitespace-pre-wrap font-mono' : ''
-        }`}
-      >
-        {shown}
       </output>
     );
   } else if (locked) {
@@ -289,7 +272,9 @@ export function ConfigEntryField({
   const compact = presentation === 'compact';
   const split = layout === 'split';
   const badges = configBadges(entry).filter(
-    (badge) => !compact || !['Secret', 'Restart required', 'Pending restart'].includes(badge.label),
+    (badge) =>
+      !compact ||
+      !['Secret', 'Restart required', 'Pending restart', 'Applies live'].includes(badge.label),
   );
 
   return (
@@ -370,7 +355,7 @@ export function ConfigEntryField({
               Becomes secret when you save. This cannot be undone from the console.
             </p>
           ) : null}
-          {entry.type === 'list' && !locked && !readOnly && !resetPending ? (
+          {entry.type === 'list' && !locked && !resetPending ? (
             <p className="text-gray-400">A comma-separated list.</p>
           ) : null}
           {usedBy.length > 0 ? (

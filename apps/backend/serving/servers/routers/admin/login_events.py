@@ -8,21 +8,24 @@ Two valid query shapes (exactly one must be supplied):
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from typing import TYPE_CHECKING
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
-from serving.utils.request_ip import get_client_ip
+from serving.servers.deps import get_admin_audit_actor, get_operational_store
+
+if TYPE_CHECKING:
+    from serving.audit import AuditActor
 
 router = APIRouter(prefix="/admin")
 
 
 @router.delete("/login-events")
 async def purge_login_events_endpoint(
-    request: Request,
     older_than_days: int | None = Query(None, ge=1),
     user_id: str | None = Query(None, min_length=1),
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> dict[str, int]:
     """Purge ``login_events`` rows by age or by user."""
@@ -44,6 +47,5 @@ async def purge_login_events_endpoint(
         deleted = await op_store.purge_login_events_for_user(user_id)
         details = {"user_id": user_id, "deleted": deleted}
 
-    ip = get_client_ip(request)
-    await log_admin_action(op_store, ip, "login_events.purge", None, details)
+    await log_admin_action(op_store, action="login_events.purge", details=details, actor=actor)
     return {"deleted": deleted}

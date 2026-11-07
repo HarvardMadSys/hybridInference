@@ -24,6 +24,12 @@ from serving.servers.deps import AppServices
 from serving.servers.registry import ModelRegistrationInfo
 
 
+@pytest.fixture(autouse=True)
+def _schema_is_current(monkeypatch):
+    """These boots run on fake connections; the schema check has tests of its own."""
+    monkeypatch.setattr(bootstrap, "require_schema", AsyncMock())
+
+
 def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
     """Return a strict RouteWise double with production-shaped configuration."""
     router = MagicMock(spec=RouteWiseRouter)
@@ -1317,7 +1323,7 @@ def _database_boot(batch_store):
 
 @pytest.mark.asyncio
 async def test_initialize_builds_the_batch_store_beside_the_responses_store(mock_env):
-    """A database brings the batch store, initialized, and the caps cache in front of it."""
+    """A database brings the batch store and the caps cache in front of it."""
     from serving.batch.model_limits import BatchModelLimits
 
     batch_store = AsyncMock()
@@ -1326,7 +1332,6 @@ async def test_initialize_builds_the_batch_store_beside_the_responses_store(mock
         services = await bootstrap.initialize()
 
     batch_store_class.assert_called_once_with(pool)
-    batch_store.initialize.assert_awaited_once()
     assert services.batch_store is batch_store
     assert isinstance(services.batch_model_limits, BatchModelLimits)
     assert services.batch_model_limits._store is batch_store
@@ -1359,7 +1364,8 @@ def batch_scheduler_class():
     class FakeBatchScheduler:
         instances: list = []  # noqa: RUF012
 
-        def __init__(self, *, app, services, store, limits):
+        def __init__(self, *, app, services, store, limits, **options):
+            self.options = options
             self.app = app
             self.services = services
             self.store = store
@@ -1509,121 +1515,9 @@ async def test_the_lifespan_starts_the_batch_scheduler_once_services_are_set(mon
         assert started == [(app, services)]
 
 
-class _LockedBatchSchema:
-    """A batch store whose DDL cannot get its lock until ``release()``."""
-
-    def __init__(self) -> None:
-        self.attempts = 0
-        self.locked = True
-
-    async def initialize(self) -> None:
-        from serving.storage.log_schema import SchemaLockUnavailable
-
-        self.attempts += 1
-        if self.locked:
-            raise SchemaLockUnavailable("held by a sibling process")
-
-    def release(self) -> None:
-        self.locked = False
-
-
 async def _until(condition) -> None:
     """Let background tasks run until ``condition()`` holds."""
     for _ in range(200):
         if condition():
             return
         await asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_a_lock_blocked_batch_schema_keeps_batches_away_until_it_lands(
-    mock_env, monkeypatch, batch_scheduler_class
-):
-    """Startup survives the lock; no store, caps or worker exist until the DDL lands."""
-    from serving.batch.model_limits import BatchModelLimits
-
-    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_INITIAL_DELAY", 0)
-    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_MAX_DELAY", 0)
-    store = _LockedBatchSchema()
-    app = object()
-
-    with _database_boot(store):
-        services = await bootstrap.initialize()
-    bootstrap.start_batch_scheduler(app, services)
-    await _until(lambda: store.attempts >= 3)
-
-    # Still locked: every batch route answers 404 and nothing is claimed, but
-    # the hard-delete purge reaches the batches stored before this boot.
-    assert services.batch_store is None
-    assert services.batch_model_limits is None
-    assert services.batch_store_pending is store
-    assert batch_scheduler_class.instances == []
-    services.batch_scheduler.notify()  # the placeholder takes a wake-up quietly
-
-    store.release()
-    await _until(lambda: services.batch_store is not None)
-
-    assert services.batch_store is store
-    assert services.batch_store_pending is None
-    assert isinstance(services.batch_model_limits, BatchModelLimits)
-    assert services.batch_model_limits._store is store
-    (scheduler,) = batch_scheduler_class.instances
-    assert scheduler.app is app
-    assert scheduler.store is store
-    assert scheduler.limits is services.batch_model_limits
-    assert scheduler.started == 1
-    assert services.batch_scheduler is scheduler
-
-
-@pytest.mark.asyncio
-async def test_a_deferred_batch_schema_without_a_lifespan_starts_no_worker(
-    mock_env, monkeypatch, batch_scheduler_class
-):
-    """Outside the app (a CLI, a test) the store is published but nothing runs it."""
-    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_INITIAL_DELAY", 0)
-    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_MAX_DELAY", 0)
-    store = _LockedBatchSchema()
-
-    with _database_boot(store):
-        services = await bootstrap.initialize()
-    store.release()
-    await _until(lambda: services.batch_store is not None)
-
-    assert services.batch_store is store
-    assert services.batch_scheduler is None
-    assert batch_scheduler_class.instances == []
-
-
-@pytest.mark.asyncio
-async def test_shutdown_cancels_a_deferred_batch_schema_migration(
-    mock_env, monkeypatch, batch_scheduler_class
-):
-    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_INITIAL_DELAY", 0)
-    monkeypatch.setattr("serving.servers.bootstrap._SCHEMA_RETRY_MAX_DELAY", 0)
-    store = _LockedBatchSchema()
-
-    with _database_boot(store):
-        services = await bootstrap.initialize()
-    bootstrap.start_batch_scheduler(object(), services)
-    placeholder = services.batch_scheduler
-    await _until(lambda: store.attempts >= 2)
-
-    await bootstrap.shutdown(services)
-    store.release()
-    for _ in range(20):
-        await asyncio.sleep(0)
-
-    assert placeholder.retry.cancelled()
-    assert services.batch_scheduler is None
-    assert services.batch_store is None
-    assert batch_scheduler_class.instances == []
-
-
-@pytest.mark.asyncio
-async def test_a_broken_batch_schema_still_fails_startup(mock_env):
-    """Only a lock timeout is deferred; any other schema error stops the boot."""
-    batch_store = AsyncMock()
-    batch_store.initialize.side_effect = RuntimeError("column definition is wrong")
-
-    with _database_boot(batch_store), pytest.raises(RuntimeError, match="column definition"):
-        await bootstrap.initialize()

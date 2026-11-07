@@ -71,6 +71,9 @@ def tracked_files(repo_root: Path) -> list[str]:
 
 def read_text(path: Path) -> str | None:
     """Read text regardless of suffix; return None only for NUL-bearing binary."""
+    # Git stores the link target text; tracked target files are scanned separately.
+    if path.is_symlink():
+        return str(path.readlink())
     with path.open("rb") as stream:
         head = stream.read(_SNIFF_BYTES)
         if b"\0" in head:

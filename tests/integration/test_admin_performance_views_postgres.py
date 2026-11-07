@@ -22,9 +22,9 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.servers.routers.admin import metrics
 from serving.storage import admin_view_results, perf_metrics_index
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
 
@@ -75,11 +75,13 @@ async def _log(
     ttft: int | None = 300,
     latency: int | None = 2000,
     request_type: str | None = None,
+    cache_read: int | None = 0,
 ) -> None:
     await conn.execute(
         "INSERT INTO api_logs (request_id, model_id, provider, user_id, timestamp, stream, "
-        "prompt_tokens, completion_tokens, ttft_ms, latency_ms, status_code, metadata) "
-        "VALUES ($1, 'm', 'p', $2, NOW() - $3::interval, $4, $5, $6, $7, $8, $9, $10::jsonb)",
+        "prompt_tokens, completion_tokens, ttft_ms, latency_ms, status_code, metadata, "
+        "cache_read_tokens) "
+        "VALUES ($1, 'm', 'p', $2, NOW() - $3::interval, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)",
         uuid.uuid4().hex,
         user_id,
         ago,
@@ -90,6 +92,7 @@ async def _log(
         latency,
         status,
         json.dumps({"request_type": request_type}) if request_type else None,
+        cache_read,
     )
 
 

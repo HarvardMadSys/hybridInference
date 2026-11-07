@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/api/admin', () => ({
@@ -68,21 +68,15 @@ describe('UserUsageInsights', () => {
     generated_at: '2026-10-24T00:00:00Z',
   };
 
-  it('asks before the paid analysis, and Cancel sends nothing', async () => {
-    render(<UserUsageInsights userId="user-1" userLabel="user@example.com" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Analyze usage' }));
-
-    const dialog = screen.getByRole('dialog', { name: 'Analyze usage for user@example.com?' });
-    expect(dialog).toHaveTextContent('up to 100 of user@example.com');
-    expect(dialog).toHaveTextContent('counts toward its usage and cost');
-    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-
-    expect(screen.queryByRole('dialog')).toBeNull();
+  it('says beside the buttons that the analysis is a paid, audited call', () => {
+    render(<UserUsageInsights userId="user-1" />);
+    expect(
+      screen.getByText(/a paid call on the Usage Insights analysis key that is recorded/),
+    ).toBeInTheDocument();
     expect(analyzeUsageInsights).not.toHaveBeenCalled();
   });
 
-  it('runs the analysis once on Confirm and shows the report', async () => {
+  it('runs the analysis once on the click, holding both buttons until the report shows', async () => {
     let finish!: (value: typeof ANALYSIS) => void;
     vi.mocked(analyzeUsageInsights).mockImplementationOnce(
       () =>
@@ -90,39 +84,35 @@ describe('UserUsageInsights', () => {
           finish = resolve as (value: typeof ANALYSIS) => void;
         }) as ReturnType<typeof analyzeUsageInsights>,
     );
-    render(<UserUsageInsights userId="user-1" userLabel="user@example.com" />);
+    render(<UserUsageInsights userId="user-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Analyze usage' }));
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Analyze' }));
 
-    // Busy: no second run, no closing.
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: 'Analyzing…' })).toBeDisabled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Analyzing…' }));
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    // No confirmation: it runs at once, and nothing starts again while it runs.
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(analyzeUsageInsights).toHaveBeenCalledTimes(1);
+    expect(analyzeUsageInsights).toHaveBeenCalledWith({ user_id: 'user-1', limit: 100 });
+    expect(screen.getByRole('button', { name: 'Analyzing…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'View user turns' })).toBeDisabled();
 
     finish(ANALYSIS);
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(analyzeUsageInsights).toHaveBeenCalledWith({ user_id: 'user-1', limit: 100 });
     expect(await screen.findByText('Mostly coding-agent traffic.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Re-analyze' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Re-analyze' })).toBeEnabled();
+    expect(analyzeUsageInsights).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the confirmation open with the error when the analysis fails, and retries', async () => {
+  it('shows a failed analysis in the panel, and runs it again on the next click', async () => {
     vi.mocked(analyzeUsageInsights)
       .mockRejectedValueOnce(new Error('No analysis API key configured.'))
       .mockResolvedValueOnce(ANALYSIS);
     render(<UserUsageInsights userId="user-1" />);
     fireEvent.click(screen.getByRole('button', { name: 'Analyze usage' }));
-    const dialog = screen.getByRole('dialog', { name: 'Analyze usage for user-1?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Analyze' }));
 
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
-      'No analysis API key configured.',
-    );
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Analyze' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(await screen.findByText('No analysis API key configured.')).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze usage' }));
+    expect(await screen.findByText('Mostly coding-agent traffic.')).toBeInTheDocument();
+    expect(screen.queryByText('No analysis API key configured.')).toBeNull();
     expect(analyzeUsageInsights).toHaveBeenCalledTimes(2);
   });
 

@@ -29,6 +29,10 @@ client ──▶ (your edge: CDN / tunnel / reverse proxy)
 
 ## The path table
 
+One path is the console's own and reaches nothing behind it: `/healthz`, the
+container health check (`src/app/healthz/route.ts`), which answers `200 ok`
+without asking the gateway. `/health` is the gateway's check, forwarded.
+
 The table below combines the static rewrites with the filesystem route
 handlers. `apps/frontend/next.config.js` is the source of truth for rewrites;
 the matching `route.ts` file is the source of truth for a runtime handler.
@@ -81,19 +85,28 @@ Three details matter here:
 - The handler streams request and response bodies, including SSE, but it cannot
   accept WebSocket upgrades. A future WebSocket endpoint needs an upgrade-aware
   proxy in front of Next.js.
-- Hop-by-hop headers are removed, cookies are preserved, and redirects that
-  name either internal agent service are folded back through its public prefix.
+- Hop-by-hop headers are removed, and redirects that name either internal
+  agent service are folded back through its public prefix. The agent's own
+  cookies pass in both directions; the console's session cookie is never
+  forwarded to it. A cookie the agent sets under one of the console's names is
+  dropped, and the rest are confined to `/agents` (a `__Host-` cookie keeps the
+  `Path=/` browsers require of it).
 
 ### Runtime route handlers — the gateway's streaming surfaces
 
 Three gateway prefixes are forwarded by route handlers instead of rewrites,
-because their responses stream:
+because their responses stream. A fourth, `/user/batch-files`, is too, because
+its uploads are larger than a rewrite forwards: Next copies every rewritten
+request body into memory and stops at `middlewareClientMaxBodySize` (32 MiB,
+the gateway's default body limit), while a batch upload may reach
+`BATCH_MAX_BODY_MB`.
 
 | Source | Handler | Serves |
 |---|---|---|
 | `/v1/:path*` | `src/app/v1/[[...path]]/route.ts` | the OpenAI-compatible API surface |
 | `/anthropic/:path*` | `src/app/anthropic/[[...path]]/route.ts` | the Anthropic Messages surface |
 | `/internal/playground/:path*` | `src/app/internal/playground/[[...path]]/route.ts` | the admin-only model playground the console's dashboard calls |
+| `/user/batch-files/:path*` | `src/app/user/batch-files/[[...path]]/route.ts` | batch input file uploads and downloads |
 
 Each handler forwards to `${BACKEND_INTERNAL_URL}` plus the same path.
 `BACKEND_INTERNAL_URL` is the address fixed at build time, the same one the
@@ -136,7 +149,7 @@ are route handlers, listed above.
 | Source | Serves |
 |---|---|
 | `/auth/:path*` | authentication routes |
-| `/user/:path*` | the user dashboard API |
+| `/user/:path*` | the user dashboard API (except `/user/batch-files`, above) |
 | `/admin/:path*` | the admin API |
 | `/internal/verify-admin` | cookie-session admin check (used by the pgAdmin handler) |
 | `/internal/model-catalog` | model catalog read |
@@ -144,6 +157,7 @@ are route handlers, listed above.
 | `/internal/users/:userId/agent-access` | whether one user may use the Cloud Agent, read by the standalone agent (see [Backend Extensions](backend-extensions.md#cloud-agent-access)) |
 | `/internal/agent-grants` | mint an inference grant (`POST`) |
 | `/internal/agent-grants/:path*` | renew / usage / revoke for one grant |
+| `/internal/alert-history/events` | alert-history ingestion from external sources (`POST`; scoped writer token, `404` while off — see [Alert history](alert-history.md)) |
 | `/health` | health check |
 | `/site-updates` | the public site banner |
 | `/site-config` | public deployment identity, consumed by the console's `SiteConfigProvider` |
@@ -187,6 +201,10 @@ Next.js route handler, and every one of its decisions generalizes:
   `content-encoding` on the way back, because `fetch` already decompressed the
   body. Re-split `Set-Cookie` with `getSetCookie()` — `Headers.forEach` folds
   repeated values into one string.
+- **Keep the app's cookies to the app.** It shares the console's origin, so a
+  cookie it sets on `/` reaches every console and API request, and one named
+  like the console's replaces it. `scopeProxiedSetCookie()` drops the second
+  kind and confines the first to `/pgadmin`, without a `Domain`.
 - **Fold upstream-absolute redirects back to bare paths.** When a request
   arrives without a trailing slash a route requires, Werkzeug builds an absolute
   redirect from the `Host` it saw — here the internal container name, which

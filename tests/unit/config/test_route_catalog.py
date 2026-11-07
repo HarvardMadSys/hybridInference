@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import textwrap
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from routing.config import load_routing_config_text
 from routing.routers import FixedRouter
+from serving.config import app_config
 from serving.config.app_config_registry import discover_references
 from serving.config.route_catalog import (
     import_missing,
@@ -19,7 +21,7 @@ from serving.config.route_catalog import (
 from serving.config.settings import get_settings
 from serving.servers import bootstrap
 from serving.servers.registry import register_from_models_text, register_from_models_yaml
-from tests.fixtures.app_config_store import FakeAppConfigStore
+from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
 
 def _model(model_id: str) -> str:
@@ -84,6 +86,7 @@ def boot_env(monkeypatch, tmp_path):
     monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
     monkeypatch.delenv("DB_STORE_FULL_CONTENT", raising=False)
     monkeypatch.setattr(bootstrap, "_CONFIG_LOAD_RETRY_DELAY", 0)
+    monkeypatch.setattr(bootstrap, "require_schema", AsyncMock())
     get_settings.cache_clear()
     return tmp_path
 
@@ -250,6 +253,25 @@ async def test_boot_imports_each_file_once(boot_env, monkeypatch, tmp_path, clea
 
     assert installed_body("models") == models
     assert conn.inserts == ["models", "routing"]
+
+
+async def test_a_failed_catalog_import_still_loads_settings(
+    boot_env, monkeypatch, clean_catalog
+) -> None:
+    store = FakeAppConfigStore([row("SITE_NAME", "Stored")])
+    conn = CatalogConn()
+
+    async def boom(*_args: object, **_kwargs: object) -> dict[str, str]:
+        raise RuntimeError("catalog down")
+
+    monkeypatch.setattr(bootstrap, "import_route_catalog", boom)
+    monkeypatch.setattr(bootstrap, "connect_app_config", AsyncMock(return_value=conn))
+    monkeypatch.setattr(bootstrap, "AppConfigStore", lambda _conn: store)
+
+    await bootstrap._load_app_config()
+
+    assert app_config.config_value("SITE_NAME") == "Stored"
+    assert installed_body("models") is None
 
 
 async def test_a_database_free_boot_forgets_a_stored_catalog(
