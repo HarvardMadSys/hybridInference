@@ -502,3 +502,76 @@ async def test_the_debug_header_dump_never_contains_a_credential(caplog):
     assert dump.headers["x-api-key"] == "***"
     assert dump.headers["x-long"] == "y" * 256 + "…"
     assert secret not in repr([r.__dict__ for r in caplog.records])
+
+
+# --- what a client chooses is cut and escaped ---------------------------------
+#
+# The line is written for every request, an anonymous 404 included, and the
+# client chooses its headers and path, up to the server's 16 KiB header limit:
+# the formatter's JSON escaping turned 15 KB of them into a 60-105 KB line.
+
+
+def _hostile_scope() -> dict:
+    high = "\xe9".encode("latin-1") * 4000
+    scope = _http_scope(
+        [
+            (b"host", b"h" * 2000),
+            (b"user-agent", high),
+            (b"referer", b"https://evil.test/" + high),
+            (b"origin", high),
+            (b"x-forwarded-for", b"203.0.113.1, " * 300),
+            (b"x-real-ip", high),
+            (b"x-session-id", b"s" * 3000),
+        ]
+    )
+    scope["path"] = "/v1/" + "a" * 3000
+    scope["raw_path"] = scope["path"].encode()
+    return scope
+
+
+async def _ok(scope, receive, send):
+    await send({"type": "http.response.start", "status": 404, "headers": []})
+    await send({"type": "http.response.body", "body": b"{}"})
+
+
+async def test_a_request_line_keeps_a_bounded_part_of_each_value(caplog):
+    from serving.servers.middleware.request_log import (
+        MAX_LOGGED_PATH_CHARS,
+        MAX_LOGGED_VALUE_CHARS,
+    )
+    from serving.utils.logging import JsonFormatter, PlainFormatter
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(_hostile_scope(), _receive, _discard)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert len(record.path) == MAX_LOGGED_PATH_CHARS + 1
+    for field in ("host", "user_agent", "referer", "origin", "x_forwarded_for", "session_id"):
+        value = getattr(record, field)
+        assert len(value) == MAX_LOGGED_VALUE_CHARS + 1, field
+        assert value.endswith("…")
+    plain = PlainFormatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    # About 40 KB of headers and path; the line keeps a few KB of them.
+    assert len(plain.format(record)) < 16_000
+    assert len(JsonFormatter().format(record)) < 8_000
+
+
+async def test_control_characters_in_a_value_are_escaped(caplog):
+    scope = _http_scope(
+        [
+            (b"host", b"gateway.test"),
+            (b"user-agent", b"agent\r\nlevel=ERROR forged=1"),
+            (b"referer", "https://x.test/‮".encode()),
+        ]
+    )
+    scope["path"] = "/v1/x\x1b[31mred\u2028"
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(scope, _receive, _discard)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert record.user_agent == "agent\\r\\nlevel=ERROR forged=1"
+    assert record.path == "/v1/x\\x1b[31mred\\u2028"
+    # The referer arrived as latin-1 text: its UTF-8 bytes include C1 controls.
+    assert "\\x80" in record.referer or "\\x8e" in record.referer
+    assert all(ch.isprintable() for ch in record.user_agent + record.path + record.referer)

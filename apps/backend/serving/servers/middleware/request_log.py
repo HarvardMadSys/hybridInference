@@ -17,6 +17,33 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+#: Longest request value -- a header, the path -- a request log line keeps. The
+#: client chooses these, up to the server's 16 KiB header limit, and the line is
+#: written for every request, an anonymous 404 included; the formatter's JSON
+#: escaping turns each byte over 0x7f into six characters. Real values (a user
+#: agent, an address chain, a URL) are a few hundred characters at most.
+MAX_LOGGED_VALUE_CHARS = 256
+
+#: The path gets more room: an admin path can carry a model and route id.
+MAX_LOGGED_PATH_CHARS = 512
+
+_TRUNCATED = "…"
+
+
+def loggable(value: str | None, max_chars: int = MAX_LOGGED_VALUE_CHARS) -> str | None:
+    r"""*value* as a log line keeps it: cut to *max_chars*, control characters escaped.
+
+    Escaped as ``repr`` writes them (``\n``, ``\x85``, ``\u202e``), so a value
+    cannot break a line, reorder what a terminal shows (bidirectional
+    overrides), or pass for another field.
+    """
+    if value is None:
+        return None
+    clipped = value[:max_chars]
+    if not clipped.isprintable():
+        clipped = "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in clipped)
+    return clipped + _TRUNCATED if len(value) > max_chars else clipped
+
 
 class RequestLogMiddleware:
     """Emit a concise structured log per HTTP request."""
@@ -63,15 +90,16 @@ class RequestLogMiddleware:
         request_id = ctx.get("request_id")
         canonical_session_id = request.headers.get("X-Session-ID")
 
+        # Every value a client chooses is cut and escaped (``loggable``).
         log_extra = {
-            "method": request.method,
-            "path": request.url.path,
+            "method": loggable(request.method),
+            "path": loggable(request.url.path, MAX_LOGGED_PATH_CHARS),
             "status_code": status_code,
             "duration_ms": duration_ms,
             # Proxy discovery runs outside this middleware, so it is not part
             # of duration_ms; reported separately, None when it did not run.
             "proxy_discovery_ms": proxy_discovery_ms(request),
-            "model": ctx.get("model"),
+            "model": loggable(ctx.get("model")),
             "provider": ctx.get(req_ctx.PROVIDER),
             "remote_ip": remote_ip,
             "peer_ip": ip_info.peer_ip,
@@ -79,16 +107,16 @@ class RequestLogMiddleware:
             "ip_resolved": ip_info.resolved,
             "trusted_forwarded_headers": ip_info.trusted_forwarded_headers,
             "trusted_cloudflare_headers": ip_info.trusted_cloudflare_headers,
-            "x_forwarded_for": ip_info.x_forwarded_for,
-            "x_real_ip": ip_info.x_real_ip,
-            "cf_connecting_ip": ip_info.cf_connecting_ip,
-            "cf_connecting_ipv6": ip_info.cf_connecting_ipv6,
-            "user_agent": user_agent,
-            "host": host,
-            "origin": origin,
-            "referer": referer,
-            "request_id": request_id,
-            "session_id": canonical_session_id,
+            "x_forwarded_for": loggable(ip_info.x_forwarded_for),
+            "x_real_ip": loggable(ip_info.x_real_ip),
+            "cf_connecting_ip": loggable(ip_info.cf_connecting_ip),
+            "cf_connecting_ipv6": loggable(ip_info.cf_connecting_ipv6),
+            "user_agent": loggable(user_agent),
+            "host": loggable(host),
+            "origin": loggable(origin),
+            "referer": loggable(referer),
+            "request_id": loggable(request_id),
+            "session_id": loggable(canonical_session_id),
             # Gateway-generated client-error tag (e.g. model-not-found), set by the
             # handler via req_ctx so failure-rate alerts can exclude user-driven 404s.
             "client_error_kind": ctx.get(req_ctx.CLIENT_ERROR_KIND),
@@ -112,7 +140,7 @@ class RequestLogMiddleware:
         is_auth_challenge = status_code == 401 and not ctx.get(req_ctx.PROVIDER)
 
         if exc_to_raise:
-            log_extra["error"] = str(exc_to_raise)
+            log_extra["error"] = loggable(str(exc_to_raise), MAX_LOGGED_PATH_CHARS)
             log_extra["error_type"] = type(exc_to_raise).__name__
             logger.error("http_request", extra=log_extra)
         elif is_quiet_path or is_synthetic_probe or is_auth_challenge:
@@ -127,8 +155,7 @@ class RequestLogMiddleware:
                 if key_lower in {"authorization", "x-api-key"}:
                     masked_headers[k] = "***"
                 else:
-                    val = v if v is not None else ""
-                    masked_headers[k] = (val[:256] + "…") if len(val) > 256 else val
+                    masked_headers[loggable(k) or ""] = loggable(v or "") or ""
             logger.debug("http_request_headers", extra={"headers": masked_headers})
 
         if exc_to_raise:
