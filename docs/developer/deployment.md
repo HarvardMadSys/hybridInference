@@ -548,8 +548,10 @@ only requests carrying such a cookie count against. Changing `JWT_SECRET_KEY`
 invalidates every device cookie until that browser's next sign-in.
 
 Other browsers share the limits with their address, and behind the bundled
-Compose file's console proxy every browser has the same address unless
-[trusted-proxy settings](trusted-proxies-and-client-ips.md) name the console;
+Compose file's console every browser has the same address unless the gateway
+trusts the header your edge sets, which is safe only while the console is
+reachable through that edge alone (see
+[Behind the console](trusted-proxies-and-client-ips.md#behind-the-console));
 `admin` is the first username anyone tries. The pages that mail a link to an
 address anyone types, password reset and resending the verification email,
 are limited too: three of each kind an hour per address, whether or not an

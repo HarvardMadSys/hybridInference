@@ -38,6 +38,14 @@
  * values come from the socket, not the caller, and the gateway trusts them
  * only from a peer listed in TRUSTED_PROXIES; behind Cloudflare the caller
  * always sends all three, so nothing changes there.
+ *
+ * A caller's own `X-Forwarded-For`, `X-Real-IP` and `CF-Connecting-IP` travel
+ * unchanged, and this proxy adds no address to them: Next gives a route handler
+ * no way to see the connection's address once the caller has sent
+ * `X-Forwarded-For` (it fills that header in only when it is missing). So the
+ * console cannot tell its edge's requests from anyone else's, and a gateway
+ * that trusts the console trusts whatever can reach it: see "Behind the
+ * console" in docs/developer/trusted-proxies-and-client-ips.md.
  */
 import http from 'node:http';
 import https from 'node:https';

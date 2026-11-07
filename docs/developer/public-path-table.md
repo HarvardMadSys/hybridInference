@@ -147,10 +147,16 @@ these paths' responses, in three ways:
 
 The handler sends the gateway the same request the rewrite did. Every request
 header is forwarded except the hop-by-hop ones, `Host` names the gateway, and
-`X-Forwarded-Host` carries the caller's host. One header differs: when the
-caller sent no `X-Forwarded-For`, `-Proto` or `-Port`, Next fills them in from
-the connection. Behind Cloudflare the caller always sends all three. When the
-caller hangs up, the gateway's request is cancelled at once.
+`X-Forwarded-Host` carries the caller's host. A body's framing is the
+handler's own: it declares the length of the body it actually sends, or sends
+it chunked, never a length the caller declared for a body Next did not pass
+on. The forwarding headers travel exactly as the caller sent them; the handler
+adds no address of its own, because a route handler cannot see the
+connection's once the caller has sent `X-Forwarded-For`. When the caller sent
+no `X-Forwarded-For`, `-Proto` or `-Port`, Next fills them in from the
+connection. Before trusting any of them, see
+[Behind the console](trusted-proxies-and-client-ips.md#behind-the-console).
+When the caller hangs up, the gateway's request is cancelled at once.
 
 ### Legacy `beforeFiles` compatibility
 
