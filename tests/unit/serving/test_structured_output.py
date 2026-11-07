@@ -4,11 +4,15 @@ how a miss is asked again, and that a reply is never turned into an error."""
 from __future__ import annotations
 
 import json
+import time
+import urllib.request
 from typing import Any
 
 import pytest
 
+from serving import structured_output
 from serving.structured_output import (
+    MAX_CHECKED_SCHEMA_CHARS,
     MAX_STRUCTURED_RETRIES,
     RequestedFormat,
     check_reply,
@@ -116,6 +120,188 @@ def test_an_invalid_schema_holds_the_reply_only_to_being_json():
     wanted = RequestedFormat("json_schema", schema={"type": 12})
 
     assert check_reply('{"a": 1}', wanted).ok
+
+
+# --- check_reply: the caller's schema runs on the event loop, so it is bounded ---------------
+
+
+def _schema(schema: dict[str, Any]) -> RequestedFormat:
+    return RequestedFormat("json_schema", schema=schema)
+
+
+def _timed_check(content: str, wanted: RequestedFormat) -> tuple[float, Any]:
+    started = time.perf_counter()
+    check = check_reply(content, wanted)
+    return time.perf_counter() - started, check
+
+
+@pytest.mark.parametrize(
+    ("schema", "content"),
+    [
+        # Python's re backtracks: this pattern against these 41 characters takes hours.
+        (
+            {"type": "object", "properties": {"answer": {"type": "string", "pattern": "^(a+)+$"}}},
+            json.dumps({"answer": "a" * 40 + "!"}),
+        ),
+        (
+            {"type": "string", "pattern": r"^(\w+\s?)*$"},
+            json.dumps(" ".join(["word"] * 40) + "."),
+        ),
+        (
+            {"type": "object", "patternProperties": {"^(a+)+$": {"type": "integer"}}},
+            json.dumps({"a" * 40 + "!": 1}),
+        ),
+        (
+            {"type": "object", "propertyNames": {"pattern": "^(a+)+$"}},
+            json.dumps({"a" * 40 + "!": 1}),
+        ),
+        (
+            {
+                "type": "object",
+                "patternProperties": {"^(a+)+$": {}},
+                "additionalProperties": False,
+            },
+            json.dumps({"a" * 40 + "!": 1}),
+        ),
+    ],
+    ids=["pattern", "pattern-sentence", "patternProperties", "propertyNames", "additional"],
+)
+def test_a_regex_from_the_request_is_not_run(schema, content):
+    elapsed, check = _timed_check(content, _schema(schema))
+
+    assert elapsed < 1.0
+    assert check.ok
+
+
+def test_the_rest_of_the_schema_still_applies_beside_a_pattern():
+    wanted = _schema(
+        {
+            "type": "object",
+            "required": ["answer"],
+            "properties": {"answer": {"type": "string", "pattern": "^(a+)+$"}},
+        }
+    )
+
+    assert check_reply('{"answer": "anything"}', wanted).ok
+    assert "schema" in check_reply('{"answer": 5}', wanted).reason
+    assert "schema" in check_reply('{"other": "x"}', wanted).reason
+
+
+def test_format_is_not_checked_regex_included():
+    wanted = _schema(
+        {"type": "object", "properties": {"re": {"type": "string", "format": "regex"}}}
+    )
+
+    assert check_reply('{"re": "(unclosed"}', wanted).ok
+
+
+def test_a_remote_reference_is_not_fetched(monkeypatch):
+    fetched: list[Any] = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: fetched.append(a))
+    wanted = _schema({"$ref": "http://169.254.169.254/latest/meta-data/"})
+
+    check = check_reply('{"a": 1}', wanted)
+
+    assert fetched == []
+    assert check.ok
+
+
+def test_a_schema_whose_check_grows_exponentially_stops_in_time():
+    # allOf of two references to the next level: 2**30 steps.
+    depth = 30
+    defs: dict[str, Any] = {
+        f"d{i}": {"allOf": [{"$ref": f"#/$defs/d{i + 1}"}, {"$ref": f"#/$defs/d{i + 1}"}]}
+        for i in range(depth)
+    }
+    defs[f"d{depth}"] = {"type": "object"}
+
+    elapsed, check = _timed_check('{"a": 1}', _schema({"$defs": defs, "$ref": "#/$defs/d0"}))
+
+    assert elapsed < 2.0
+    assert check.ok
+
+
+def test_a_check_out_of_time_holds_the_reply_only_to_being_json(monkeypatch):
+    monkeypatch.setattr(structured_output, "_CHECK_SECONDS", -1.0)
+
+    assert check_reply('{"answer": "E"}', STRICT).ok
+    assert not check_reply("prose", STRICT).ok
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"$ref": "#"},
+        {"$ref": "#/$defs/missing"},
+        {"$ref": "other.json"},
+        {"$id": {"not": "a uri"}, "type": "object"},
+    ],
+    ids=["self-reference", "missing-target", "unknown-document", "bad-id"],
+)
+def test_a_schema_that_cannot_be_applied_holds_the_reply_only_to_being_json(schema):
+    assert check_reply('{"a": 1}', _schema(schema)).ok
+    assert not check_reply("prose", _schema(schema)).ok
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "required": "answer"},
+        {"enum": "ABCD"},
+        {"type": []},
+        {"type": "object", "properties": {"answer": "string"}},
+        {"type": "array", "minItems": True},
+        {"anyOf": []},
+    ],
+)
+def test_a_malformed_keyword_holds_the_reply_only_to_being_json(schema):
+    assert check_reply('{"answer": "B"}', _schema(schema)).ok
+
+
+def test_unique_items_is_linear_and_still_finds_a_duplicate():
+    wanted = _schema({"type": "array", "uniqueItems": True})
+    distinct = json.dumps([{"a": i, "b": [i, str(i)]} for i in range(20_000)])
+
+    elapsed, check = _timed_check(distinct, wanted)
+
+    assert elapsed < 2.0
+    assert check.ok
+    assert not check_reply('[{"a": 1, "b": 2}, {"b": 2, "a": 1}]', wanted).ok
+    assert check_reply("[true, 1, 0, false]", wanted).ok
+
+
+def test_the_schemas_own_dialect_is_dropped_and_a_nested_one_is_not_used():
+    draft7 = "http://json-schema.org/draft-07/schema#"
+
+    root = _schema({**SCHEMA, "$schema": draft7})
+    assert not check_reply('{"answer": "E"}', root).ok
+    assert check_reply('{"answer": "B"}', root).ok
+
+    nested = _schema(
+        {
+            "$defs": {"s": {"$schema": draft7, "type": "string", "pattern": "^(a+)+$"}},
+            "$ref": "#/$defs/s",
+        }
+    )
+    elapsed, check = _timed_check(json.dumps("a" * 40 + "!"), nested)
+    assert elapsed < 1.0
+    assert check.ok
+
+
+def test_a_schema_too_long_to_check_holds_the_reply_only_to_being_json():
+    names = {f"p{i}": {"type": "integer"} for i in range(MAX_CHECKED_SCHEMA_CHARS // 10)}
+    wanted = _schema({"type": "object", "properties": names, "required": ["p0"]})
+
+    assert check_reply('{"other": 1}', wanted).ok
+
+
+def test_a_long_mismatch_is_described_briefly():
+    wanted = _schema({"enum": [f"value-{i}" for i in range(2_000)]})
+
+    check = check_reply('"nope"', wanted)
+
+    assert not check.ok
+    assert len(check.reason) < 400
 
 
 # --- with_instruction -----------------------------------------------------------------------
