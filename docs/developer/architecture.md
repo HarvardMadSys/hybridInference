@@ -172,7 +172,13 @@ adds what those tables do not show yet:
   The ledger keeps counting a cost until its write is confirmed (and for a
   while after, for a gate whose read began before it landed), so the delay
   never lets a request past a limit. A failed write is retried; shutdown
-  writes what is left and logs anything it could not.
+  writes what is left and logs anything it could not. An entry the counters
+  refuse for its own values, such as one that would overflow its counter, is
+  set aside rather than retried, so it cannot hold back other accounts' costs:
+  it stays counted in the process and is logged (`cost_counter_write_refused`)
+  and alerted, for an operator to reconcile. One request adds at most $1,000;
+  a larger cost is recorded as $1,000, logged (`cost_above_request_ceiling`)
+  and alerted.
 
 The ledger is per process. With several worker processes each sees only its
 own requests in flight and costs not yet written, so the limits are protected
