@@ -27,6 +27,9 @@
  * follows as the next request, which may be another caller's. See
  * `bodyFraming()`.
  *
+ * Each route file relays only paths under its own prefix, judged on the URL as
+ * Next hands it over, with its dot segments resolved: see `isUnder()`.
+ *
  * What the gateway sees is what the rewrite sent: every request header except
  * the hop-by-hop ones and the body's framing, `Host` set to the gateway, and
  * the caller's host in `X-Forwarded-Host`. One difference: when the caller sent no
@@ -193,14 +196,48 @@ function hasNoBody(method: string, status: number): boolean {
   return method === 'HEAD' || status === 204 || status === 205 || status === 304;
 }
 
-/** Relay `request` to the same path on the gateway. */
-export function proxyToGateway(request: Request): Promise<Response> {
-  return relayToGateway(request, UPSTREAM_IDLE_TIMEOUT_MS);
+/**
+ * Whether `pathname` is `mount` or a path below it.
+ *
+ * A handler gets its URL with dot segments already resolved. Next picks the
+ * handler by the path as it was sent -- `/v1/%2e%2e/openapi.json` goes to the
+ * `/v1` handler -- but builds `request.url` with the URL parser, which reads
+ * `%2e%2e` as `..`: that handler sees `/openapi.json`. Relayed as it stands,
+ * every gateway path would be reachable through every handler, including the
+ * ones no handler or rewrite publishes.
+ */
+function isUnder(pathname: string, mount: string): boolean {
+  return pathname === mount || pathname.startsWith(`${mount}/`);
 }
 
-/** `proxyToGateway()` with the idle limit as an argument, so a test need not wait an hour. */
-export function relayToGateway(request: Request, idleTimeoutMs: number): Promise<Response> {
+function notUnderMount(): Response {
+  return Response.json(
+    { error: { message: 'Not found.', type: 'invalid_request_error', code: 404 } },
+    { status: 404, headers: { 'cache-control': 'no-store' } },
+  );
+}
+
+/**
+ * The handler a route file exports for every method: it relays the requests
+ * Next routes to that file, as long as their path stays under `mount` (the
+ * file's own URL prefix, `/v1` for `src/app/v1/[[...path]]/route.ts`).
+ */
+export function gatewayRoute(mount: string): (request: Request) => Promise<Response> {
+  return (request) => proxyToGateway(request, mount);
+}
+
+/**
+ * Relay `request` to the same path on the gateway, or answer 404 when that
+ * path is not under `mount`. `idleTimeoutMs` is a parameter so a test need not
+ * wait an hour.
+ */
+export function proxyToGateway(
+  request: Request,
+  mount: string,
+  idleTimeoutMs: number = UPSTREAM_IDLE_TIMEOUT_MS,
+): Promise<Response> {
   const incoming = new URL(request.url);
+  if (!isUnder(incoming.pathname, mount)) return Promise.resolve(notUnderMount());
   const target = new URL(`${BACKEND_INTERNAL_URL}${incoming.pathname}${incoming.search}`);
   const protocol = target.protocol === 'https:' ? 'https:' : 'http:';
   const client = protocol === 'https:' ? https : http;

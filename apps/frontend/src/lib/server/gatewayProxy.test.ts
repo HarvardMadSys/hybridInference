@@ -8,8 +8,7 @@ type Handler = (req: http.IncomingMessage, res: http.ServerResponse) => void;
 
 let server: http.Server;
 let handler: Handler;
-let proxyToGateway: (request: Request) => Promise<Response>;
-let relayToGateway: (request: Request, idleTimeoutMs: number) => Promise<Response>;
+let proxyToGateway: (request: Request, mount: string, idleTimeoutMs?: number) => Promise<Response>;
 /** Which of the server's connections a request arrived on, numbered from 0. */
 let connectionOf: (req: http.IncomingMessage) => number;
 
@@ -24,7 +23,7 @@ beforeEach(async () => {
   // The target is read once, at import, as it is from the build in production.
   vi.stubEnv('BUILT_BACKEND_INTERNAL_URL', `http://127.0.0.1:${port}/`);
   vi.resetModules();
-  ({ proxyToGateway, relayToGateway } = await import('./gatewayProxy'));
+  ({ proxyToGateway } = await import('./gatewayProxy'));
 });
 
 afterEach(async () => {
@@ -83,6 +82,7 @@ describe('proxyToGateway', () => {
         },
         body: '{"model":"m"}',
       }),
+      '/v1',
     );
 
     expect(seen.method).toBe('POST');
@@ -113,7 +113,7 @@ describe('proxyToGateway', () => {
       finish = () => res.end('data: [DONE]\n\n');
     };
 
-    const response = await proxyToGateway(callerRequest('/v1/chat/completions'));
+    const response = await proxyToGateway(callerRequest('/v1/chat/completions'), '/v1');
     const reader = response.body!.getReader();
     const first = await reader.read();
 
@@ -130,7 +130,10 @@ describe('proxyToGateway', () => {
       res.write('data: partial\n\n', () => setTimeout(() => res.socket?.destroy(), 20));
     };
 
-    const response = await proxyToGateway(callerRequest('/internal/playground/chat'));
+    const response = await proxyToGateway(
+      callerRequest('/internal/playground/chat'),
+      '/internal/playground',
+    );
     const reader = response.body!.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: partial\n\n');
 
@@ -150,6 +153,7 @@ describe('proxyToGateway', () => {
 
     const response = await proxyToGateway(
       callerRequest('/anthropic/v1/messages', { signal: caller.signal }),
+      '/anthropic',
     );
     await response.body!.getReader().read();
     caller.abort();
@@ -159,7 +163,7 @@ describe('proxyToGateway', () => {
 
   it('answers a JSON 502 when the gateway cannot be reached', async () => {
     await new Promise((resolve) => server.close(resolve));
-    const response = await proxyToGateway(callerRequest('/v1/models'));
+    const response = await proxyToGateway(callerRequest('/v1/models'), '/v1');
 
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({
@@ -179,11 +183,41 @@ describe('proxyToGateway', () => {
       res.end();
     };
 
-    const response = await proxyToGateway(callerRequest('/v1/models', { method }));
+    const response = await proxyToGateway(callerRequest('/v1/models', { method }), '/v1');
 
     expect(response.status).toBe(status);
     expect(response.headers.get('x-kept')).toBe('yes');
     expect(response.body).toBeNull();
+  });
+});
+
+// A handler's `request.url` arrives with its dot segments resolved, so the path
+// relayed is the one that URL names, and it has to stay under the handler's own
+// prefix.
+describe('the prefix a handler relays', () => {
+  it('takes the prefix itself and any path under it, as the URL resolves it', async () => {
+    const seen: string[] = [];
+    handler = (req, res) => {
+      seen.push(req.url ?? '');
+      res.end();
+    };
+
+    for (const path of ['/v1', '/v1/models', '/v1/x/%2e%2e/models', '/v1/./models?a=1']) {
+      expect((await proxyToGateway(callerRequest(path), '/v1')).status, path).toBe(200);
+    }
+    expect(seen).toEqual(['/v1', '/v1/models', '/v1/models', '/v1/models?a=1']);
+  });
+
+  it('refuses a path outside it, a neighbour sharing its first letters included', async () => {
+    handler = () => {
+      throw new Error('nothing outside the prefix may reach the gateway');
+    };
+
+    for (const path of ['/v1/%2e%2e/openapi.json', '/v1/%2e%2e/v1beta/models', '/v1/%2e%2e']) {
+      const response = await proxyToGateway(callerRequest(path), '/v1');
+      expect(response.status, path).toBe(404);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+    }
   });
 });
 
@@ -223,6 +257,7 @@ describe('the pooled connection to the gateway', () => {
     // Next hands a GET handler no body, but keeps the caller's headers.
     const attacker = await proxyToGateway(
       callerRequest('/v1/models', { method: 'GET', headers: { 'content-length': '60' } }),
+      '/v1',
     );
     expect(await answer(attacker)).toBe('200 GET /v1/models ');
     const victim = await proxyToGateway(
@@ -231,6 +266,7 @@ describe('the pooled connection to the gateway', () => {
         headers: { 'content-type': 'application/json', 'content-length': '13' },
         body: '{"model":"m"}',
       }),
+      '/v1',
     );
 
     expect(await answer(victim)).toBe('200 POST /v1/chat/completions {"model":"m"}');
@@ -257,9 +293,10 @@ describe('the pooled connection to the gateway', () => {
         headers: { 'transfer-encoding': 'chunked' },
         body: smuggled,
       }),
+      '/v1',
     );
     expect(await answer(first)).toBe(`200 DELETE /v1/files/f1 ${smuggled}`);
-    const second = await proxyToGateway(callerRequest('/v1/models'));
+    const second = await proxyToGateway(callerRequest('/v1/models'), '/v1');
 
     expect(await answer(second)).toBe('200 GET /v1/models ');
     expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
@@ -279,13 +316,14 @@ describe('the pooled connection to the gateway', () => {
         headers: { 'content-length': '10' },
         body: 'abc',
       }),
+      '/v1',
     );
     expect(short.status).toBe(502);
     await new Promise((resolve) => setImmediate(resolve));
 
     // Reused, that connection would hand the next request's first bytes to
     // the short one as the rest of its body.
-    const next = await proxyToGateway(callerRequest('/v1/models'));
+    const next = await proxyToGateway(callerRequest('/v1/models'), '/v1');
     expect(await answer(next)).toBe('200 GET /v1/models ');
     expect(seen.at(-1)?.url).toBe('/v1/models');
   });
@@ -309,6 +347,7 @@ describe('the pooled connection to the gateway', () => {
         headers: { 'content-length': String(size) },
         body: new Uint8Array(size).fill(0x61),
       }),
+      '/user/batch-files',
     );
 
     expect(await answer(response)).toBe(`200 ${size} ${size}`);
@@ -317,7 +356,7 @@ describe('the pooled connection to the gateway', () => {
   it('answers 504 when the gateway stays silent past the idle limit', async () => {
     handler = () => {};
 
-    const response = await relayToGateway(callerRequest('/v1/chat/completions'), 50);
+    const response = await proxyToGateway(callerRequest('/v1/chat/completions'), '/v1', 50);
 
     expect(response.status).toBe(504);
     expect(await response.json()).toEqual({
@@ -343,12 +382,12 @@ describe('the pooled connection to the gateway', () => {
       }, 25);
     };
 
-    const stalled = await relayToGateway(callerRequest('/v1/stalls'), 100);
+    const stalled = await proxyToGateway(callerRequest('/v1/stalls'), '/v1', 100);
     const reader = stalled.body!.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe('data: first\n\n');
     await expect(reader.read()).rejects.toThrow();
 
-    const kept = await relayToGateway(callerRequest('/v1/keeps'), 100);
+    const kept = await proxyToGateway(callerRequest('/v1/keeps'), '/v1', 100);
     expect(await kept.text()).toBe(`${': keepalive\n\n'.repeat(8)}data: [DONE]\n\n`);
   });
 });

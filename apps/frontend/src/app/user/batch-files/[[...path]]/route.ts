@@ -6,17 +6,19 @@
 // upload may reach BATCH_MAX_BODY_MB, a limit the gateway applies to this path
 // instead. A route handler streams it, in both directions: see
 // src/lib/server/gatewayProxy.ts.
-import { proxyToGateway } from '@/lib/server/gatewayProxy';
+import { gatewayRoute } from '@/lib/server/gatewayProxy';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const relay = gatewayRoute('/user/batch-files');
+
 export {
-  proxyToGateway as GET,
-  proxyToGateway as HEAD,
-  proxyToGateway as POST,
-  proxyToGateway as PUT,
-  proxyToGateway as PATCH,
-  proxyToGateway as DELETE,
-  proxyToGateway as OPTIONS,
+  relay as GET,
+  relay as HEAD,
+  relay as POST,
+  relay as PUT,
+  relay as PATCH,
+  relay as DELETE,
+  relay as OPTIONS,
 };
