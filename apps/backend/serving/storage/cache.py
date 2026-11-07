@@ -822,6 +822,12 @@ class CachedOperationalStore(OperationalStore):
         await self._forget_sessions(user_id)
         return revoked
 
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Delegate, then forget the account's session liveness."""
+        revoked = await self._store.revoke_session_by_sid(user_id, sid)
+        await self._forget_sessions(user_id)
+        return revoked
+
     # -- browser sessions (pass-through) -------------------------------------
 
     async def create_browser_session(

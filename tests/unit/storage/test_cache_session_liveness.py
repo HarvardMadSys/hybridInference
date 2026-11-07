@@ -28,6 +28,7 @@ def inner() -> MagicMock:
         "revoke_session",
         "delete_user_sessions",
         "revoke_user_sessions",
+        "revoke_session_by_sid",
         "attach_browser_session_account",
         "detach_browser_session_account",
         "revoke_browser_session",
@@ -81,6 +82,7 @@ async def test_the_answer_expires(cached, inner, monkeypatch):
     [
         ("delete_user_sessions", ("u1",), {}),
         ("revoke_user_sessions", ("u1",), {"except_sid": "sess_keep"}),
+        ("revoke_session_by_sid", ("u1", "sess_a"), {}),
         ("detach_browser_session_account", ("browser-1", "u1"), {}),
         (
             "attach_browser_session_account",

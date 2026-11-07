@@ -2112,6 +2112,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return int(result.split()[-1])
 
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Revoke *user_id*'s session *sid*, found through the account's sessions."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE auth_sessions SET revoked = TRUE "
+                "WHERE user_id = $1 AND sid = $2 AND revoked IS NOT TRUE",
+                user_id,
+                sid,
+            )
+        return int(result.split()[-1]) > 0
+
     # -- browser sessions ----------------------------------------------------
 
     async def create_browser_session(

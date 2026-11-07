@@ -835,6 +835,14 @@ class OperationalStore(ABC):
         Returns how many sessions were revoked.
         """
 
+    @abstractmethod
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Revoke *user_id*'s session *sid*, the ``sid`` claim of an access token.
+
+        Whichever browser holds it can no longer refresh it. Returns whether a
+        session was still live to revoke.
+        """
+
     # -- browser sessions ----------------------------------------------------
     #
     # A browser holds one cookie naming one browser session, and that session

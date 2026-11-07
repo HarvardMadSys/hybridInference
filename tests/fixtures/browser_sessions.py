@@ -180,6 +180,13 @@ class BrowserSessionFake:
             browser.update(revoked=True, active_user_id=None)
         return remaining
 
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        revoked = False
+        for row in self._sessions_with_sid(sid):
+            if row.get("user_id") == user_id and not row.get("revoked"):
+                row["revoked"] = revoked = True
+        return revoked
+
     async def revoke_browser_session(self, browser_session_id: str) -> None:
         for key in [key for key in self.members if key[0] == browser_session_id]:
             auth_session_id = self.members.pop(key)
@@ -200,6 +207,7 @@ def install(store: Any) -> BrowserSessionFake:
         "set_browser_session_active",
         "detach_browser_session_account",
         "revoke_browser_session",
+        "revoke_session_by_sid",
         "session_is_live",
     ):
         setattr(store, name, AsyncMock(side_effect=getattr(fake, name)))

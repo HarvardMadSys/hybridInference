@@ -609,6 +609,11 @@ async def logout(
     still holds the account when the cookie was rotated by another tab, and
     leaving it would let the account be chosen again without a password;
     signing the browser's other accounts out is the safe way to fail.
+
+    The session the access token was issued for (its ``sid``) is revoked
+    either way. A cookie that no longer resolves may have been rotated by
+    whoever copied it, and clearing it here alone would leave them signed
+    in, refreshing on the stolen browser session after the owner signed out.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -618,6 +623,8 @@ async def logout(
         await _sign_out_of_browser(op_store, response, browser, current_user["user_id"])
     else:
         delete_refresh_token_cookie(response)
+    if current_user.get("sid"):
+        await op_store.revoke_session_by_sid(current_user["user_id"], current_user["sid"])
 
     logger.info(f"User logged out: {current_user['user_id']}")
 
