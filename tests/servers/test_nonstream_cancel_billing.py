@@ -26,7 +26,7 @@ from serving.batch.dispatch import dispatch_item
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.timeout import TimeoutMiddleware
-from serving.servers.routers import anthropic_messages, completions
+from serving.servers.routers import anthropic_messages, completions, responses
 from serving.servers.routers.completions_cost import CostTracker, PricingLookup
 from serving.storage.utils import calculate_cost
 from tests.servers.conftest import ANTHROPIC_TEST_API_KEY
@@ -218,6 +218,28 @@ async def test_a_client_that_leaves_after_dispatch_is_billed_and_logged_as_499(
     assert await _charged(store, tracker._background_tasks) == pytest.approx(
         calculate_cost(row["usage"], row["pricing"])
     )
+
+
+async def test_a_responses_request_the_deadline_cuts_off_after_dispatch_is_billed(
+    monkeypatch, mock_log_store
+):
+    """The Responses API delegates to the chat execution, and is billed the same way."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    upstream = _SlowUpstream()
+    app, store, tracker = _chat_app(upstream, mock_log_store)
+    app.include_router(responses.router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+        response = await client.post(
+            "/v1/responses", json={"model": "m", "input": PROMPT, "store": False}
+        )
+
+    assert response.status_code == 504
+    row = await _logged_row(mock_log_store)
+    assert (row["status_code"], row["metadata"]["terminal_state"]) == (504, "request_timeout")
+    charged = await _charged(store, tracker._background_tasks)
+    assert charged
+    assert charged == pytest.approx(calculate_cost(row["usage"], row["pricing"]))
 
 
 async def test_a_batch_attempt_cut_off_at_its_deadline_is_left_to_the_batch_worker():
