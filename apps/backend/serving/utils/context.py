@@ -72,6 +72,14 @@ CONCEALED_MODEL = "concealed_model"
 # like the deadline above.
 UPSTREAM_DISPATCH_WATCH = "upstream_dispatch_watch"
 
+# req_ctx key holding a handler's record of whether its upstream call has left
+# the gateway (``serving.adapters.dispatch_watch.DispatchRecord``). A
+# non-streaming handler pushes one around each upstream call, and
+# ``upstream_limiter`` marks it when it gives the request its slot, so a call
+# cut off by a cancellation is billed only once the upstream was asked. Only
+# ever pushed, like the watch above.
+UPSTREAM_DISPATCH_RECORD = "upstream_dispatch_record"
+
 # req_ctx key holding the dispatch's place in line for a local engine
 # (``serving.adapters.upstream_limiter.EngineHold``), or ``None``. FixedRouter
 # pushes one around each streaming attempt of a model whose offload policy sets

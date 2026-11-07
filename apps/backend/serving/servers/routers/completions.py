@@ -20,6 +20,7 @@ from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import conversation_fingerprint
 from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, ProviderPinError, TargetUnavailableError
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.auto_mode import (
     AutoModelUnavailable,
     apply_to_chat_request,
@@ -79,9 +80,10 @@ from serving.utils.token_utils import (
     sanitize_usage,
     usage_count,
 )
+from serving.utils.tokens import estimate_prompt_tokens_bounded
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
     from serving.auto_mode import AutoSelection
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -451,6 +453,172 @@ def _total_usage(usages: list[dict[str, Any] | None]) -> dict[str, Any] | None:
         if any(count is not None for count in counts):
             total[field] = sum(count or 0 for count in counts)
     return total
+
+
+class _UpstreamCalls:
+    """The upstream calls a non-streaming chat request makes, so that each is billed.
+
+    ``replies`` are the answers, in order: a request with ``response_format``
+    may be asked again (:func:`~serving.structured_output.conform_reply`), and
+    each answer was a generation the upstream charged for. ``pending`` is the
+    call in flight: whether it has left the gateway
+    (:class:`~serving.adapters.dispatch_watch.DispatchRecord`) and the messages
+    it sent, for billing a cancellation that cuts it short. A call that fails is
+    not kept, and is not billed, as a failed request is not. ``settled`` is set
+    once the request has been billed.
+    """
+
+    __slots__ = ("pending", "pending_messages", "replies", "settled")
+
+    def __init__(self) -> None:
+        """Start with no call made."""
+        self.replies: list[Any] = []
+        self.pending: DispatchRecord | None = None
+        self.pending_messages: list[dict[str, Any]] = []
+        self.settled = False
+
+    async def call(
+        self,
+        send: Callable[[list[dict[str, Any]]], Awaitable[Any]],
+        messages: list[dict[str, Any]],
+    ) -> Any:
+        """Make one upstream call through *send*, keeping track of it."""
+        record = DispatchRecord()
+        self.pending, self.pending_messages = record, messages
+        try:
+            with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: record}):
+                reply = await send(messages)
+        except Exception:
+            self.pending = None
+            raise
+        self.pending = None
+        self.replies.append(reply)
+        return reply
+
+
+def _finalize_cancelled_reply(
+    calls: _UpstreamCalls,
+    *,
+    timed_out: bool,
+    routing: RoutingInfo,
+    request_id: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    params: dict[str, Any],
+    body: Any,
+    metadata: dict[str, Any],
+    user_id: str,
+    start_time: float,
+    services: ChatServices,
+    log: bool,
+) -> None:
+    """Bill and log a non-streaming request a cancellation cut off before it answered.
+
+    The gateway's own deadline (``TimeoutMiddleware``, 504), or the client
+    leaving (499). The upstream goes on with what it was sent either way, so the
+    request is billed as a cut-off stream is (``StreamSession._bill_cancelled``):
+    the replies it already gave (a structured-output retry was in flight) as
+    they reported, and the call in flight by an estimate of its prompt -- once
+    it left the gateway (``DispatchRecord.sent``); before that the upstream never
+    saw it, and nothing is charged for it. ``metadata.usage_estimated`` marks
+    the estimate. The row records no routing observation: a cancellation says
+    nothing about the endpoint.
+
+    Must not suspend, and never raises: it runs while the request task is being
+    cancelled.
+    """
+    if timed_out:
+        status_code, terminal_state = 504, "request_timeout"
+        error_text = "Request cancelled: gateway request timeout exceeded"
+    else:
+        status_code, terminal_state = 499, "client_disconnect"
+        error_text = "Client disconnected before the response was ready"
+    usage: dict[str, Any] | None = None
+    estimated = False
+    billed_routing = routing
+    try:
+        usages = [_reply_usage(reply) for reply in calls.replies]
+        if calls.replies and isinstance(calls.replies[-1], dict):
+            replied = calls.replies[-1].get("_routing")
+            billed_routing = merge_adapter_routing(
+                routing, replied if isinstance(replied, dict) else None
+            )
+        pending = calls.pending
+        if pending is not None and pending.sent:
+            tools = params.get("tools")
+            tool_texts: tuple[str, ...] = ()
+            if isinstance(tools, list) and tools:
+                with contextlib.suppress(TypeError, ValueError):
+                    tool_texts = (json.dumps(tools),)
+            prompt_tokens = estimate_prompt_tokens_bounded(
+                calls.pending_messages, extra_texts=tool_texts
+            )
+            usages.append(
+                {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": prompt_tokens,
+                }
+            )
+            estimated = True
+            if not calls.replies:
+                # Priced at the route the call was sent to.
+                billed_routing = RoutingInfo(
+                    request_id=routing.request_id,
+                    model=routing.model,
+                    provider=pending.provider or routing.provider,
+                )
+        usage = _total_usage(usages)
+        if usage:
+            billed_routing = services.cost_tracker.charge(
+                user_id=user_id,
+                api_key_id=metadata.get("api_key_id"),
+                routing=billed_routing,
+                prompt_tokens=usage["prompt_tokens"],
+                completion_tokens=usage["completion_tokens"],
+                total_tokens=usage["total_tokens"],
+                cache_read_tokens=usage.get("cache_read_tokens"),
+                cache_write_tokens=usage.get("cache_write_tokens"),
+                reasoning_tokens=usage.get("reasoning_tokens") or 0,
+            )
+    except Exception:
+        logger.exception(
+            f"Billing a cancelled request failed: model={model}, request_id={request_id}"
+        )
+        usage, estimated = None, False
+
+    if not log:
+        return
+    try:
+        metadata_for_log: dict[str, Any] = {**metadata, "terminal_state": terminal_state}
+        if estimated:
+            metadata_for_log["usage_estimated"] = True
+        services.completions_logger.schedule_log(
+            request_id,
+            {
+                "request_id": request_id,
+                "model_id": model,
+                "provider": billed_routing.provider or "router",
+                "prompt": messages,
+                "response": None,
+                "usage": usage,
+                "latency_ms": int((time.time() - start_time) * 1000),
+                "status_code": status_code,
+                "error": error_text,
+                "params": params,
+                "metadata": metadata_for_log,
+                # The price billed above, so the row's cost_usd is the charge.
+                "pricing": (
+                    services.pricing_lookup.raw_dict_for_routing(billed_routing) if usage else None
+                ),
+                "upstream_cost_usd": billed_routing.upstream_cost_usd,
+                "request_payload": body,
+            },
+        )
+    except Exception:
+        logger.exception(
+            f"Logging a cancelled request failed: model={model}, request_id={request_id}"
+        )
 
 
 # --- Protocol execution, shared with Responses, compat and Batch (issue #1690) --
@@ -1358,28 +1526,30 @@ async def execute_chat(
             provider_header=get_single_route_provider() if is_synthetic_probe else None,
         )
 
-    # Non-streaming path
+    # Non-streaming path. Every reply the upstream generates for this request is
+    # paid for upstream, so each is billed (_UpstreamCalls); one a cancellation
+    # cuts short is billed by estimate once it was sent (_finalize_cancelled_reply).
+    calls = _UpstreamCalls()
+    # Read up front: ``ctx`` is rebound below when a reply is not a dict.
+    timeout_fired = ctx.timeout_probe
+    # A batch attempt cut off at its deadline is settled by the batch worker.
+    bill_cancellation = ctx.batch is None
+
+    async def _send(call_messages: list[dict[str, Any]]) -> Any:
+        return await active_router.chat_completion(model, call_messages, **router_params)
+
     try:
-        response = await active_router.chat_completion(
-            model,
-            messages,
-            **router_params,
-        )
-        # Every reply the upstream generated for this request, the one returned
-        # included: each was paid for upstream, so each is billed.
-        replies = [response]
+        response = await calls.call(_send, messages)
         wanted_format = requested_format(params)
         if wanted_format is not None:
 
             async def _retry(retry_messages: list[dict[str, Any]]) -> Any:
-                reply = await active_router.chat_completion(model, retry_messages, **router_params)
-                replies.append(reply)
-                return reply
+                return await calls.call(_send, retry_messages)
 
             response, metadata["structured_output"] = await conform_reply(
                 response, wanted_format, _retry, messages
             )
-        set_aside = [reply for reply in replies if reply is not response]
+        set_aside = [reply for reply in calls.replies if reply is not response]
         serializer_mode = resolve_mode(ctx.origin.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content
@@ -1449,6 +1619,7 @@ async def execute_chat(
                 cache_write_tokens=_ns_usage.get("cache_write_tokens"),
                 reasoning_tokens=int(_ns_usage.get("reasoning_tokens", 0) or 0),
             )
+        calls.settled = True
 
         # Background DB log so the row write doesn't block the HTTP response.
         if log_store and not suppress_synthetic_logging:
@@ -1547,6 +1718,32 @@ async def execute_chat(
                 provider_header,
             )
         return ChatResponse(response, provider_header)
+
+    except asyncio.CancelledError:
+        # TimeoutMiddleware's deadline, or the client gone. Not a failure of the
+        # upstream, which goes on with the request: billed and logged without
+        # awaiting anything, then the cancellation goes on.
+        if bill_cancellation and not calls.settled:
+            timed_out = False
+            if timeout_fired is not None:
+                with contextlib.suppress(Exception):
+                    timed_out = bool(timeout_fired())
+            _finalize_cancelled_reply(
+                calls,
+                timed_out=timed_out,
+                routing=routing,
+                request_id=request_id,
+                model=model,
+                messages=messages,
+                params=params,
+                body=body,
+                metadata=metadata,
+                user_id=user_id,
+                start_time=start_time,
+                services=services,
+                log=bool(log_store) and not suppress_synthetic_logging,
+            )
+        raise
 
     except ProviderPinError as exc:
         raise HTTPException(

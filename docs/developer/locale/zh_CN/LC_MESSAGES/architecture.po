@@ -1841,14 +1841,16 @@ msgstr ""
 
 #: ../developer/architecture.md:167
 msgid ""
-"A streamed response the client closes early, or that the gateway's "
-"request timeout cuts off, is billed for what the upstream already did: "
-"the usage it reported, or else an estimate of the prompt and of the "
-"output so far (`metadata.usage_estimated` marks the estimate). A request "
-"the upstream fails is not billed."
+"A response the client closes early, or that the gateway's request "
+"timeout cuts off, is billed for what the upstream already did, streamed "
+"or not: the usage it reported, or else an estimate of the prompt and of "
+"the output so far (`metadata.usage_estimated` marks the estimate). A "
+"non-streaming request is billed so only once it has left the gateway; "
+"one still waiting for an outbound slot was never seen upstream. A request"
+" the upstream fails is not billed."
 msgstr ""
-"客户端提前关闭的流式响应，或被网关请求超时截断的流式响应，按上游已经完成的部分计费：上游报告了用量就用它，否则估算提示词和目前为止的输出（`metadata.usage_estimated`"
-" 标记这是估算值）。上游失败的请求不计费。"
+"客户端提前关闭的响应，或被网关请求超时截断的响应，无论是否流式，都按上游已经完成的部分计费：上游报告了用量就用它，否则估算提示词和目前为止的输出（`metadata.usage_estimated`"
+" 标记这是估算值）。非流式请求只有在离开网关之后才这样计费；仍在等待出站槽位的请求从未到达上游。上游失败的请求不计费。"
 
 #: ../developer/architecture.md:493
 msgid ""

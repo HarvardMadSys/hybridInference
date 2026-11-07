@@ -171,11 +171,12 @@ The ledger is per process. With several worker processes each sees only its
 own requests in flight and costs not yet written, so the limits are protected
 within each process, not across them; production runs one worker.
 
-A streamed response the client closes early, or that the gateway's request
-timeout cuts off, is billed for what the upstream already did: the usage it
+A response the client closes early, or that the gateway's request timeout cuts
+off, is billed for what the upstream already did, streamed or not: the usage it
 reported, or else an estimate of the prompt and of the output so far
-(`metadata.usage_estimated` marks the estimate). A request the upstream fails
-is not billed.
+(`metadata.usage_estimated` marks the estimate). A non-streaming request is
+billed so only once it has left the gateway; one still waiting for an outbound
+slot was never seen upstream. A request the upstream fails is not billed.
 
 Read-only endpoints such as `/v1/models` use `optional_verify_api_key` instead:
 a missing or invalid key is anonymous rather than rejected, and the key only

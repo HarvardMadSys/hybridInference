@@ -39,6 +39,7 @@ from routing.prefill_load import (
 )
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
@@ -1580,6 +1581,89 @@ def _log_failure(
         )
 
 
+def _finalize_cancelled_message(
+    *,
+    sent: bool,
+    timed_out: bool,
+    adapter,
+    canonical: str,
+    request_id: str,
+    request_payload: dict[str, Any] | None,
+    messages_for_log,
+    metadata: dict[str, Any],
+    params_for_log: dict[str, Any],
+    start: float,
+    log_store,
+    op_store: Any,
+    user_id: str | None,
+    completions_logger=None,
+) -> None:
+    """Bill and log a non-streaming request a cancellation cut off before it answered.
+
+    The gateway's own deadline (504) or the client leaving (499). The upstream
+    goes on with what it was sent, so once the request left the gateway
+    (*sent*, ``DispatchRecord``) it is billed as an interrupted stream is: its
+    input estimated from the request -- messages, system prompt and tool
+    definitions (:func:`_estimate_request_input_tokens`) -- and no output, with
+    ``metadata.usage_estimated``. Before that the upstream never saw it, and it
+    is logged unbilled. Billed whether or not there is a log store: that is
+    noise, not money.
+
+    Must not suspend, and never raises: it runs while the request task is being
+    cancelled.
+    """
+    if timed_out:
+        status_code, terminal_state = 504, "request_timeout"
+        error_text = "Request cancelled: gateway request timeout exceeded"
+    else:
+        status_code, terminal_state = 499, "client_disconnect"
+        error_text = "Client disconnected before the response was ready"
+    usage: dict[str, Any] = {}
+    log_metadata: dict[str, Any] = {**metadata, "terminal_state": terminal_state}
+    pricing: dict[str, str] = {}
+    try:
+        pricing = effective_pricing(adapter.config) or {}
+        if sent:
+            input_tokens = _estimate_request_input_tokens(request_payload)
+            usage = {"input_tokens": input_tokens, "output_tokens": 0}
+            log_metadata["usage_estimated"] = True
+            _schedule_messages_cost_increment(
+                op_store,
+                user_id,
+                {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": input_tokens,
+                },
+                pricing,
+                api_key_id=metadata.get("api_key_id"),
+            )
+    except Exception:
+        logger.exception(f"[{request_id}] Billing a cancelled request failed")
+    if not log_store:
+        return
+    try:
+        _schedule_log_store_task(
+            log_store,
+            request_id=request_id,
+            model_id=canonical,
+            provider=adapter.config.provider,
+            usage=usage,
+            latency_ms=int((time.time() - start) * 1000),
+            status_code=status_code,
+            pricing=pricing,
+            metadata=log_metadata,
+            params=params_for_log,
+            prompt=messages_for_log,
+            response=None,
+            error=error_text,
+            request_payload=request_payload,
+            completions_logger=completions_logger,
+        )
+    except Exception:
+        logger.exception(f"[{request_id}] Logging a cancelled request failed")
+
+
 _SSE_LEFTOVER_CAP = 65536
 
 
@@ -2750,13 +2834,16 @@ async def execute_messages(
     # This request's own sink: the adapter's OpenAI-shaped counts for the log,
     # kept out of the response the client receives.
     request_usage: dict[str, Any] = {}
+    # Marked when the request leaves the gateway, for billing a cancellation.
+    dispatch = DispatchRecord()
     try:
-        resp = await adapter.messages(
-            body,
-            request_id=request_id,
-            usage_sink=request_usage,
-            extra_headers=forwarded_headers,
-        )
+        with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: dispatch}):
+            resp = await adapter.messages(
+                body,
+                request_id=request_id,
+                usage_sink=request_usage,
+                extra_headers=forwarded_headers,
+            )
         prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         # Not str(exc.detail): unlike the router's own HTTPExceptions (static
@@ -2944,6 +3031,33 @@ async def execute_messages(
             completions_logger=completions_logger,
         )
         return _messages_error(502, error_message)
+    except asyncio.CancelledError:
+        # The gateway's deadline or the client gone: not the upstream's failure,
+        # so nothing is recorded against the endpoint. The upstream goes on with
+        # the request, so it is billed and logged, without awaiting anything; a
+        # batch attempt cut off at its deadline is settled by the batch worker.
+        if ctx.batch is None:
+            timed_out = False
+            if ctx.timeout_probe is not None:
+                with contextlib.suppress(Exception):
+                    timed_out = bool(ctx.timeout_probe())
+            _finalize_cancelled_message(
+                sent=dispatch.sent,
+                timed_out=timed_out,
+                adapter=adapter,
+                canonical=canonical,
+                request_id=request_id,
+                request_payload=request_payload_for_log,
+                messages_for_log=messages_for_log,
+                metadata=metadata,
+                params_for_log=params_for_log,
+                start=start,
+                log_store=log_store,
+                op_store=op_store,
+                user_id=user_ctx.get("user_id"),
+                completions_logger=completions_logger,
+            )
+        raise
 
     finally:
         # Every except arm above returns its own error response, so this is the
