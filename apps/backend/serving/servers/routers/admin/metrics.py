@@ -628,17 +628,18 @@ async def _get_cached_performance_metrics(
 async def warm_performance_caches(db_logger) -> None:
     """Prepare the Providers tab's cached views before the first admin asks.
 
-    First the performance distributions' covering index, built concurrently if
-    missing -- minutes on a large api_logs, during which the stored results are
-    served -- then each view, one after the other, so a starting gateway adds
-    one heavy scan at a time. A failure is logged and left to the next start;
-    the views work without the index, only slower.
+    First the admin views' background indexes on api_logs -- the performance
+    distributions' covering index and the request lists' source index -- each
+    built concurrently if missing: minutes on a large api_logs, during which
+    the stored results are served. Then each view, one after the other, so a
+    starting gateway adds one heavy scan at a time. A failure is logged and
+    left to the next start; the views work without the indexes, only slower.
     """
     pool = db_logger.pool
     try:
         await perf_metrics_index.ensure_index(pool)
     except Exception:
-        logger.exception(f"{perf_metrics_index.INDEX_NAME}: build failed")
+        logger.exception("api_logs background indexes: build failed")
     await PERFORMANCE_METRICS.warm(pool, lambda: _load_performance_metrics(db_logger))
     await TTFT_SCATTER.warm(pool, lambda: _load_ttft_scatter(db_logger))
 
