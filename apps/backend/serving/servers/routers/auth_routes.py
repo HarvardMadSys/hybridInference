@@ -443,6 +443,11 @@ async def login(
     # Only rate limiting differs for a recognized browser: the password is
     # checked, and every outcome answered, exactly as for any other client.
     device = recognized_device(request, identifier)
+    if device is None:
+        # With as many password checks waiting as may (a flood of guesses),
+        # refuse before counting the attempt or looking the name up. The same
+        # for every name; and a recognized browser is never refused this way.
+        password_utils.ensure_password_capacity()
     allowed, reason = await check_and_record_login(identifier, client_ip, device=device)
     if not allowed:
         # "ip" is the hourly per-IP window; "email" (this account from this
@@ -466,7 +471,9 @@ async def login(
     # account made by phone has none): answering an unknown name before the
     # hash a known one costs would tell from the timing who holds an account.
     password_matches = await password_utils.verify_password_async(
-        body.password, user_row.get("password_hash") if user_row else None
+        body.password,
+        user_row.get("password_hash") if user_row else None,
+        shed=device is None,
     )
 
     if not user_row:

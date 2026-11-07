@@ -1271,7 +1271,8 @@ async def change_password(
             status_code=400, detail="New password must be different from current password."
         )
 
-    new_password_hash = await password_utils.hash_password_async(body.new_password)
+    # A signed-in owner, confirmed just above: not refused for a busy queue.
+    new_password_hash = await password_utils.hash_password_async(body.new_password, shed=False)
     await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
     # Whoever else holds a session (the reason to change a password, often)
     # loses it; this one stays signed in.
