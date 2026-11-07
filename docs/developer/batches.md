@@ -883,6 +883,13 @@ request list takes `start_time` and `end_time`, timezone-aware, to list the
 requests of one bar: the start is inclusive, the end is not, and a start older
 than the list's lookback widens the lookback to reach it, as far as 90 days.
 
+On **Recent Requests**, the **Request volume** cards count only the requests
+callers made directly; each card also says how many batch requests ran in its
+window, and each bar stacks them on top, in violet. Clicking a bar narrows the
+list below to that bar's stretch, shown as a **Window** chip in place of the
+lookback, with a link to the same stretch's batch requests on the **Requests**
+page (`?from=…&to=…`). Clicking the bar again, or clearing the chip, lets it go.
+
 ### Upgrading a deployment
 
 A worker only runs the kinds of batch it knows: claims, expiry, finalizing,
