@@ -414,12 +414,12 @@ async def update_llm_prober_layout(
             body.model_dump(),
             max_total_bytes=USER_PREFERENCES_MAX_BYTES,
         )
-    except PreferencesTooLargeError as exc:
+    except PreferencesTooLargeError:
         raise HTTPException(
             status_code=413,
             detail=(
                 "The layout is too large to save: an account's saved preferences "
-                f"may take at most {exc.limit_bytes} bytes"
+                f"may take at most {USER_PREFERENCES_MAX_BYTES} bytes"
             ),
         ) from None
     if not found:
