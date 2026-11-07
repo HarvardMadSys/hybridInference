@@ -7,6 +7,7 @@ import secrets
 import time
 import weakref
 from base64 import urlsafe_b64encode
+from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -206,6 +207,49 @@ def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | 
     if authorization and authorization.startswith("Bearer "):
         return authorization[7:]
     return x_api_key or None
+
+
+#: Keys of internal and administrator accounts that authenticated in this
+#: process, by hash, with when they last did. A source blocked for repeated
+#: auth failures is refused before its key is looked up, which is the block's
+#: point: brute force costs no database work. One of these keys is still
+#: looked up, so the deployment's own monitor keeps reaching the gateway from
+#: an address it shares with whoever got that address blocked (a Cloudflare
+#: Worker's, say). Nothing enters this set but a key that already proved
+#: itself here, so the block is no weaker for a guesser.
+_PRIVILEGED_KEY_TTL_SEC = 24 * 3600
+_PRIVILEGED_KEYS_MAX = 256
+_privileged_keys: OrderedDict[str, float] = OrderedDict()
+
+
+def _remember_key_privilege(key_hash: str, role: str | None) -> None:
+    """Record whether *key_hash* just authenticated an internal or admin account."""
+    if not has_role(role or "free", "internal"):
+        _privileged_keys.pop(key_hash, None)
+        return
+    _privileged_keys[key_hash] = time.monotonic()
+    _privileged_keys.move_to_end(key_hash)
+    while len(_privileged_keys) > _PRIVILEGED_KEYS_MAX:
+        _privileged_keys.popitem(last=False)
+
+
+def _passes_ip_block(authorization: str | None, x_api_key: str | None) -> bool:
+    """Whether the presented key is a recently proven internal or admin key.
+
+    Costs a keyed hash of the presented value and no lookup, so a blocked
+    source sending guesses is still refused for almost nothing.
+    """
+    if not _privileged_keys:
+        return False
+    api_key = _extract_api_key(authorization, x_api_key)
+    if not api_key:
+        return False
+    try:
+        key_hash = hash_api_key(api_key)
+    except ValueError:
+        return False
+    seen = _privileged_keys.get(key_hash)
+    return seen is not None and time.monotonic() - seen <= _PRIVILEGED_KEY_TTL_SEC
 
 
 def _credential_state(row: dict[str, Any]) -> str:
@@ -552,7 +596,7 @@ async def _authenticate_by_api_key(
     # Block only on resolved client IPs (never on proxy address).
     ip_info = get_client_ip_info(request)
     blocked, retry_after = await is_ip_blocked(ip_info)
-    if blocked:
+    if blocked and not _passes_ip_block(authorization, x_api_key):
         # Only once the refusal is settled — and only when the rejection log is
         # actually on — spend anything on making the row useful in the admin
         # dashboard. Without this, every ip_blocked row lands with a null prompt
@@ -658,6 +702,8 @@ async def _authenticate_by_api_key(
     user, spend_today = await _auth_context_with_spend(op_store, key_hash, want_spend=want_spend)
 
     if not user:
+        # Revoked or expired since it proved itself: it no longer passes a block.
+        _privileged_keys.pop(key_hash, None)
         # Resolve who the key belongs to, through the same bounded lookup the
         # ip_blocked path above uses. Not gated on ``rejection_logging_enabled``
         # the way that path is: it answers False for every 401 by construction
@@ -730,6 +776,7 @@ async def _authenticate_by_api_key(
             detail="Email not verified. Please verify your email to continue.",
         )
 
+    _remember_key_privilege(key_hash, user.get("role"))
     return user, key_hash, spend_today
 
 
