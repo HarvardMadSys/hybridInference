@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import asyncpg
 import pytest
 
 from serving import spend_ledger
@@ -415,6 +416,153 @@ async def test_zero_and_unattributed_costs_are_not_recorded():
     assert ledger.record("", 0.5) is None
     assert ledger.record("u1", float("nan")) is None
     assert ledger._pending == {}
+
+
+# -- an entry the counters refuse ------------------------------------------------
+
+#: The most a ``DECIMAL(12, 6)`` counter holds.
+_COUNTER_MAX = Decimal("999999.999999")
+
+
+class _Counters:
+    """An atomic store that behaves like PostgreSQL's ``DECIMAL(12, 6)`` counters.
+
+    The batch is one statement: when any counter would overflow, all of it
+    fails, with the error asyncpg raises for that (SQLSTATE 22003).
+    """
+
+    atomic_cost_increments = True
+
+    def __init__(self) -> None:
+        self.counters: dict[tuple[str, str], Decimal] = {}
+        self.calls = 0
+        self.down = 0
+
+    async def increment_user_costs(self, increments: list[CostIncrement]) -> None:
+        self.calls += 1
+        if self.down:
+            self.down -= 1
+            raise ConnectionRefusedError("database restarting")
+        staged = dict(self.counters)
+        for inc in increments:
+            key = (inc.user_id, inc.day)
+            staged[key] = staged.get(key, Decimal(0)) + Decimal(inc.cost_usd)
+            if staged[key] > _COUNTER_MAX:
+                raise asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+        self.counters = staged
+
+
+@pytest.fixture
+def alerts(monkeypatch) -> list[tuple[str, dict[str, Any], str]]:
+    sent: list[tuple[str, dict[str, Any], str]] = []
+    monkeypatch.setattr(
+        spend_ledger,
+        "_alert",
+        lambda title, context, *, dedupe_key: sent.append((title, context, dedupe_key)),
+    )
+    return sent
+
+
+async def test_an_entry_the_counters_refuse_does_not_hold_back_anyone_elses(caplog, alerts):
+    store = _Counters()
+    # This account's counter is all but full: its next cost overflows it.
+    store.counters[("full", utc_day())] = _COUNTER_MAX - Decimal("0.5")
+    ledger = SpendLedger(store)
+
+    ledger.record("full", 0.75)
+    for index in range(50):
+        ledger.record(f"user-{index}", 0.01)
+    assert await ledger.flush(timeout=5)
+
+    written = {user for user, _ in store.counters if user.startswith("user-")}
+    assert len(written) == 50
+    # Set aside, not written again and again with everyone else's.
+    assert ledger._pending == {}
+    assert ledger._retry is None
+    assert ledger.unwritten() == (pytest.approx(0.75), 1)
+    # Still counted against its quota in this process.
+    assert _check(ledger, user_id="full", account_quota_usd=0.755).refusal() is not None
+    refused = [
+        r for r in caplog.records if getattr(r, "event", None) == "cost_counter_write_refused"
+    ]
+    assert [entry["user_id"] for entry in refused[0].entries] == ["full"]
+    assert refused[0].entries[0]["sqlstate"] == "22003"
+    assert [key for _, _, key in alerts] == ["cost_counter_write_refused"]
+
+
+async def test_one_refused_entry_on_its_own_is_set_aside_at_once(alerts):
+    store = _Counters()
+    store.counters[("full", utc_day())] = _COUNTER_MAX
+    ledger = SpendLedger(store)
+
+    await asyncio.wait({ledger.record("full", 0.25)})
+
+    assert store.calls == 1
+    assert ledger._pending == {}
+    assert ledger._retry is None
+    assert ledger.unwritten() == (pytest.approx(0.25), 1)
+    assert len(alerts) == 1
+
+
+async def test_a_database_outage_is_retried_whole_not_entry_by_entry(alerts):
+    store = _Counters()
+    store.down = 1
+    ledger = SpendLedger(store)
+    for index in range(20):
+        ledger.record(f"user-{index}", 0.01)
+    await asyncio.sleep(0)
+
+    assert store.calls == 1  # one batch, no futile write per entry
+    assert ledger._retry is not None
+    assert await ledger.flush(timeout=5)
+    assert len(store.counters) == 20
+    assert alerts == []
+
+
+async def test_an_unexplained_batch_failure_still_lets_the_others_through():
+    """A store error that names no cause: the others go in, the entry is retried."""
+    store = _AtomicStore()
+    batches_seen: list[int] = []
+
+    async def increment(increments: list[CostIncrement]) -> None:
+        batches_seen.append(len(increments))
+        if any(inc.user_id == "odd" for inc in increments):
+            raise RuntimeError("something about this entry")
+        store.batches.append(list(increments))
+
+    store.increment_user_costs = increment  # type: ignore[method-assign]
+    ledger = SpendLedger(store)
+    ledger.record("odd", 0.5)
+    for index in range(10):
+        ledger.record(f"user-{index}", 0.01)
+
+    assert not await ledger.flush(timeout=0.2)
+
+    assert {inc.user_id for batch in store.batches for inc in batch} == {
+        f"user-{index}" for index in range(10)
+    }
+    # Not refused for its values, as far as anyone can tell: kept for a retry.
+    assert list(ledger._pending) == [("odd", None, utc_day())]
+    assert ledger._refused == []
+
+
+async def test_a_cost_beyond_any_real_request_is_recorded_as_the_ceiling(caplog, alerts):
+    ledger = SpendLedger(_AtomicStore())
+
+    ledger.record("u1", 2_000_000.0)
+    ledger.record("u2", float("inf"))
+
+    ceiling = spend_ledger.MAX_REQUEST_COST_USD
+    day = utc_day()
+    assert ledger._pending[("u1", None, day)].cost == ceiling
+    assert ledger._pending[("u2", None, day)].counted == counted_amount(ceiling)
+    assert [
+        r.user_id
+        for r in caplog.records
+        if getattr(r, "event", None) == "cost_above_request_ceiling"
+    ] == ["u1", "u2"]
+    assert len(alerts) == 2
+    assert await ledger.flush()
 
 
 async def test_one_ledger_per_store():

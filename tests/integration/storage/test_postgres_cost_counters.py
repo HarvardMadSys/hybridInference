@@ -9,10 +9,11 @@ key's counters written together.
 
 from __future__ import annotations
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
-from serving.spend_ledger import counted_amount
+from serving.spend_ledger import SpendLedger, counted_amount, utc_day
 from serving.storage.base import CostIncrement
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
@@ -111,6 +112,52 @@ async def test_one_batch_writes_many_users_keys_and_days_onto_existing_rows(coun
             "SELECT cost_usd FROM user_daily_cost WHERE user_id = 'u-ctr-b' AND day = '2026-11-03'"
         )
     assert str(next_day) == "4.000000"
+
+
+async def test_a_counter_that_would_overflow_holds_back_no_one_elses(counters):
+    """One account's full counter fails the batch; the ledger writes the rest alone.
+
+    The counter column is ``DECIMAL(12, 6)``: past 999999.999999 the whole
+    statement fails, with SQLSTATE 22003. The ledger takes that for the
+    entry's own fault, writes each entry on its own, and sets the refused one
+    aside instead of sending it, and everyone else's, again and again.
+    """
+    store, pool = counters
+    today = utc_day()
+    await store.increment_user_cost("u-ctr-full", 999999.5, day=today)
+    with pytest.raises(asyncpg.exceptions.NumericValueOutOfRangeError):
+        await store.increment_user_costs(
+            [
+                CostIncrement("u-ctr-ok", today, None, counted_amount(0.25), 1),
+                CostIncrement("u-ctr-full", today, None, counted_amount(0.75), 1),
+            ]
+        )
+
+    ledger = SpendLedger(store)
+    ledger.record("u-ctr-full", 0.75)
+    ledger.record("u-ctr-ok", 0.25)
+    ledger.record("u-ctr-ok-2", 0.5, api_key_id=9031)
+
+    assert await ledger.flush(timeout=10)
+
+    async with pool.acquire() as conn:
+        rows = dict(
+            await conn.fetch(
+                "SELECT user_id, cost_usd FROM user_daily_cost "
+                "WHERE user_id LIKE 'u-ctr-%' AND day = $1",
+                today,
+            )
+        )
+        key_cost = await conn.fetchval(
+            "SELECT cost_usd FROM api_key_daily_cost WHERE key_id = 9031 AND day = $1", today
+        )
+    assert {user: str(cost) for user, cost in rows.items()} == {
+        "u-ctr-full": "999999.500000",
+        "u-ctr-ok": "0.250000",
+        "u-ctr-ok-2": "0.500000",
+    }
+    assert str(key_cost) == "0.500000"
+    assert ledger.unwritten() == (pytest.approx(0.75), 1)
 
 
 async def test_a_committed_transaction_reads_back_as_committed(counters):
