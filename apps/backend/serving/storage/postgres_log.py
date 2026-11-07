@@ -14,6 +14,7 @@ from serving.storage import (
     user_usage_rollup,
 )
 from serving.storage.base import LogStore, Row
+from serving.storage.bounded_log import bound_payload_leftovers
 from serving.storage.erasure_fence import (
     api_logs_fence_keys,
     check_erasure_fence,
@@ -267,6 +268,15 @@ class PostgresLogStore(LogStore):
                 stored_messages=sanitized_prompt,
                 stored_tools=sanitized_tools,
             )
+            # What the body still repeats of the prompt column, or holds of
+            # each message besides it (fields the gateway ignored), is held to
+            # a small bound: the conversation itself is in the prompt column.
+            sanitized_request_payload, leftovers_cut = bound_payload_leftovers(
+                sanitized_request_payload,
+                prompt_stored=isinstance(sanitized_prompt, list) and bool(sanitized_prompt),
+            )
+            if leftovers_cut:
+                sanitized_metadata = {**(sanitized_metadata or {}), "payload_truncated": True}
             prompt_str = (
                 json.dumps(sanitized_prompt)
                 if isinstance(sanitized_prompt, list)

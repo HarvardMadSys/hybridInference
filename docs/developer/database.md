@@ -210,6 +210,15 @@ fingerprint of the newest user message (`last_user_msg_chars`,
 Turning it on stores full prompts and responses. Weigh that against your users'
 expectations before you do.
 
+A row's size stays bounded even then. A request's conversation (its messages,
+system prompt, tool definitions and input) is stored up to 4 Mi characters,
+more than any context window holds. The other fields of its body share
+64 Ki characters: each is stored whole while they fit, smallest first, and left
+out when it does not, so a field the gateway ignores cannot fill the table. A
+refused request (a 4xx other than 499) keeps a summary of each of them, of at
+most 64 Ki characters. `metadata.payload_truncated` marks a row from which
+anything was cut.
+
 ### Which session a request belongs to
 
 `api_logs.session_id` groups one conversation's requests together. A client can

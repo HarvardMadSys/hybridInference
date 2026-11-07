@@ -661,6 +661,23 @@ msgid ""
 "users' expectations before you do."
 msgstr "打开后会保存完整的 prompt 和响应。打开之前，先想清楚你的用户能否接受。"
 
+#: ../developer/database.md:213
+msgid ""
+"A row's size stays bounded even then. A request's conversation (its "
+"messages, system prompt, tool definitions and input) is stored up to 4 "
+"Mi characters, more than any context window holds. The other fields of "
+"its body share 64 Ki characters: each is stored whole while they fit, "
+"smallest first, and left out when it does not, so a field the gateway "
+"ignores cannot fill the table. A refused request (a 4xx other than 499) "
+"keeps a summary of each of them, of at most 64 Ki characters. "
+"`metadata.payload_truncated` marks a row from which anything was cut."
+msgstr ""
+"即便如此，每一行的大小仍有上限。请求的对话内容（消息、系统提示词、工具定义和输入）最多保存 4 Mi "
+"个字符，超过任何上下文窗口能容纳的长度。请求体中的其他字段共享 64 Ki "
+"个字符：按从小到大的顺序，放得下的字段完整保存，放不下的就不保存，因此网关忽略的字段无法撑满这张表。被拒绝的请求（499 以外的 "
+"4xx）则为其中每一项只保存一份最多 64 Ki 个字符的摘要。`metadata.payload_truncated` "
+"标记有内容被截掉的行。"
+
 #: ../developer/database.md:182
 msgid "Which session a request belongs to"
 msgstr "请求属于哪个会话"
