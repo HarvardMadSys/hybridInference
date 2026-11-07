@@ -333,11 +333,6 @@ class LiveGroup(Generic[D, V]):
             published = self._published
         return published is not None and published.managed
 
-    @property
-    def active_in_contract(self) -> bool:
-        """Whether the last snapshot this applier processed has this group's contract active."""
-        return self.status.state not in ("dormant", "dormant-frozen", "unsupported")
-
     def owns(self, contracts: Contracts) -> bool:
         """Whether *contracts* hand this group's keys to its applier.
 
