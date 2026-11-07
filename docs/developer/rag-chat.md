@@ -29,8 +29,10 @@ through the normal `/v1/embeddings` and `/v1/chat/completions` handlers: they
 are logged in `api_logs` and counted toward cost, quota and concurrency like any
 other request. They also carry `X-On-Behalf-Of: <user id>`, so that usage is
 charged to the signed-in user who asked rather than to the shared key, and
-counts against that user's own daily quota. The gateway honours the header only
-on requests made with `RAG_API_KEY`, and ignores it on every other key.
+counts against that user's own daily and monthly quotas (for an account with no
+API key, the daily quota its first key would get). The gateway honours the
+header only on requests made with `RAG_API_KEY`, and ignores it on every other
+key.
 
 - **Corpus:** the active distribution overlay's documentation source
   (`<overlay>/content/docs/docs/source/*.md`) — the same markdown that builds

@@ -449,8 +449,8 @@ async def _spend_check(
     The account's monthly quota is read the same way: the month's spend
     arrives with the lookup (``account_spent_month_usd``), or is read here, and
     only for an account that has one. An identity resolved by user rather than
-    by key (``X-On-Behalf-Of``) carries no quota columns, so its daily quota is
-    the default and it has no monthly quota, as before.
+    by key (``X-On-Behalf-Of``) carries its account's quotas
+    (:func:`_account_quotas`), and its month's spend is read here.
 
     ``read_at`` is when the first of these reads began
     (:attr:`~serving.spend_ledger.SpendCheck.read_at`). The check counts, on
@@ -823,8 +823,8 @@ async def _resolve_effective_identity(
 
     The returned dict is shaped like the ``get_auth_context_by_key_hash`` row
     that :func:`verify_api_key` consumes downstream: ``user_id``, ``user_name``,
-    ``role``, ``quota_daily_cost_usd``, ``preferences``,
-    ``max_concurrent_requests``.
+    ``role``, ``quota_daily_cost_usd``, ``quota_monthly_cost_usd``,
+    ``preferences``, ``max_concurrent_requests``.
     """
     if not on_behalf_of:
         return caller
@@ -842,18 +842,43 @@ async def _resolve_effective_identity(
             on_behalf_of,
         )
         return caller
-    # The daily quota column lives on ``api_keys``; an on-behalf-of user is
-    # addressed by id (no specific key), so leave quota None to take the same
-    # default the NULL-quota path uses. The per-user cost counter is keyed by
-    # user_id, so the end user's own daily spend still gates their RAG usage.
+    # The end user's own quotas, daily and monthly, gate what is spent on their
+    # behalf; their spend counters are keyed by user_id, so they meet the same
+    # limits as their own key would.
+    daily, monthly = await _account_quotas(op_store, target)
     return {
         "user_id": target["id"],
         "user_name": target.get("user_name"),
         "role": target.get("role"),
-        "quota_daily_cost_usd": None,
+        "quota_daily_cost_usd": daily,
+        "quota_monthly_cost_usd": monthly,
         "preferences": target.get("preferences"),
         "max_concurrent_requests": target.get("max_concurrent_requests"),
     }
+
+
+async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any]:
+    """The daily and monthly cost quotas of *user*'s account, for spending on their behalf.
+
+    The account's quotas are stored on each of its API keys (any live one
+    answers, :meth:`get_quota_context_for_user`). An account with no live key
+    has none stored, so it gets what its first key would: its role's default
+    daily quota and no monthly quota -- not the far larger default that a key
+    row with no quota stands for.
+    """
+    rows = await op_store.get_quota_context_for_user(user["id"])
+    if rows:
+        return rows[0].get("quota_daily_cost_usd"), rows[0].get("quota_monthly_cost_usd")
+    # Imported here: the router imports this module.
+    from serving.config.runtime_settings import get_runtime_settings_instance
+    from serving.servers.routers.user_routes import get_default_daily_quota_for_role
+
+    try:
+        runtime_settings = get_runtime_settings_instance()
+    except RuntimeError:
+        runtime_settings = None
+    role = user.get("role") or "free"
+    return await get_default_daily_quota_for_role(role, runtime_settings), None
 
 
 # The only routes an agent-job token may reach. An allowlist rather than a
