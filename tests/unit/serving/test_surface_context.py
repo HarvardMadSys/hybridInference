@@ -252,5 +252,9 @@ async def test_a_rejection_logged_by_source_is_the_row_logged_by_request():
     by_request, by_source = (call.kwargs for call in log_store.log_request.await_args_list)
     by_request["metadata"].pop("ledger_started_at", None)
     by_source["metadata"].pop("ledger_started_at", None)
+    # Outside a request scope neither has a request id, so each row gets a key
+    # of its own (one shared key would store only the first).
+    keys = (by_request.pop("request_id"), by_source.pop("request_id"))
+    assert all(key.startswith("rej_") for key in keys) and keys[0] != keys[1]
     assert by_source == by_request
     assert by_source["metadata"]["synthetic_probe"] is True
