@@ -416,6 +416,44 @@ function SearchInput({
   );
 }
 
+/** How far back "Clear errors" reaches. The backend accepts up to 24 hours. */
+const CLEAR_ERROR_SPANS = [
+  { hours: 1, label: 'The past hour' },
+  { hours: 24, label: 'The past day (24 hours)' },
+] as const;
+
+/** The confirmation's body: what is deleted, and from how far back. */
+function ClearErrorsSpan({ onChange }: { onChange: (hours: number) => void }) {
+  const [hours, setHours] = useState<number>(CLEAR_ERROR_SPANS[0].hours);
+  const name = useId();
+  return (
+    <div className="space-y-3">
+      <p>
+        Every request listed here that ended in an error is permanently removed from the request log
+        and its metrics. Batch requests are kept. This cannot be undone.
+      </p>
+      <fieldset className="space-y-1.5">
+        <legend className="mb-1 text-[12px] font-medium text-gray-700">Delete errors from</legend>
+        {CLEAR_ERROR_SPANS.map((span) => (
+          <label key={span.hours} className="flex items-center gap-2 text-[13px] text-gray-700">
+            <input
+              type="radio"
+              name={name}
+              value={span.hours}
+              checked={hours === span.hours}
+              onChange={() => {
+                setHours(span.hours);
+                onChange(span.hours);
+              }}
+            />
+            {span.label}
+          </label>
+        ))}
+      </fieldset>
+    </div>
+  );
+}
+
 function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
   const maxRequests = Math.max(...metric.buckets.map((bucket) => bucket.request_count), 1);
   // Split out of `error_requests` by the backend, so the two are read side by
@@ -646,20 +684,23 @@ export function RequestsTab({
   }, [toast]);
 
   const handleClearErrors = useCallback(() => {
+    // The dialog's choice, read when the admin confirms. A mutable object, not
+    // state: the dialog's body is built once, here, so its radios report to it.
+    const span: { hours: number } = { hours: CLEAR_ERROR_SPANS[0].hours };
     requestClearConfirmation({
-      title: 'Delete the last hour of error requests?',
+      title: 'Delete error requests?',
       confirmLabel: 'Delete error requests',
       busyLabel: 'Deleting…',
       tone: 'danger',
       body: (
-        <p>
-          Every request listed here that ended in an error during the past hour is permanently
-          removed from the request log and its metrics. Batch requests are kept. This cannot be
-          undone.
-        </p>
+        <ClearErrorsSpan
+          onChange={(hours) => {
+            span.hours = hours;
+          }}
+        />
       ),
       run: async () => {
-        const result = await clearErrorRequests(1, source);
+        const result = await clearErrorRequests(span.hours, source);
         toast.success(result.message);
         loadRequests(reqUserFilter, reqModelFilter);
         loadRequestMetrics();
@@ -927,7 +968,7 @@ export function RequestsTab({
             disabled={clearingErrors}
             className="ml-auto rounded-lg border border-red-200 bg-white px-3 py-2 text-[13px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
           >
-            {clearingErrors ? 'Clearing…' : 'Clear last hour errors'}
+            {clearingErrors ? 'Clearing…' : 'Clear errors…'}
           </button>
         )}
         {clearConfirmation.dialog}
