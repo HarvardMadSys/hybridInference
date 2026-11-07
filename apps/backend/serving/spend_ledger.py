@@ -396,14 +396,19 @@ class SpendLedger:
                     "ceiling_usd": MAX_REQUEST_COST_USD,
                 },
             )
-            _alert(
-                "Request cost above the per-request ceiling; recorded as the ceiling",
-                {
-                    "cost_usd": repr(cost_usd),
-                    "ceiling_usd": MAX_REQUEST_COST_USD,
-                    "logs": "event cost_above_request_ceiling names the account",
-                },
-                dedupe_key="cost_above_request_ceiling",
+            context = {
+                "cost_usd": repr(cost_usd),
+                "ceiling_usd": MAX_REQUEST_COST_USD,
+                "logs": "event cost_above_request_ceiling names the account",
+            }
+            _send_alert(
+                lambda alerts: alerts.alert_slack(
+                    alerts.AlertSeverity.ERROR,
+                    "Request cost above the per-request ceiling",
+                    context,
+                    dedupe_key="cost_above_request_ceiling",
+                    cooldown_sec=3600,
+                )
             )
             cost_usd = MAX_REQUEST_COST_USD
         day = utc_day()
@@ -556,15 +561,20 @@ class SpendLedger:
                 ],
             },
         )
-        _alert(
-            "Cost counters refused an entry; it was set aside unwritten",
-            {
-                "entries": len(entries),
-                "cost_usd": str(sum((amount.counted for _, amount, _ in entries), Decimal(0))),
-                "error": type(entries[0][2]).__name__,
-                "logs": "event cost_counter_write_refused lists each entry to reconcile",
-            },
-            dedupe_key="cost_counter_write_refused",
+        context = {
+            "entries": len(entries),
+            "cost_usd": str(sum((amount.counted for _, amount, _ in entries), Decimal(0))),
+            "error": type(entries[0][2]).__name__,
+            "logs": "event cost_counter_write_refused lists each entry to reconcile",
+        }
+        _send_alert(
+            lambda alerts: alerts.alert_slack(
+                alerts.AlertSeverity.ERROR,
+                "Cost counters refused an entry",
+                context,
+                dedupe_key="cost_counter_write_refused",
+                cooldown_sec=3600,
+            )
         )
 
     def _schedule_retry(self) -> None:
@@ -753,27 +763,30 @@ def _by_error(entries: list[tuple[_Key, Exception]]) -> list[tuple[Exception, li
 _ALERTS: set[asyncio.Task[Any]] = set()
 
 
-def _alert(title: str, context: dict[str, Any], *, dedupe_key: str) -> None:
-    """Send an alert to the configured channel, if any, without waiting for it."""
+def _send_alert(send: Callable[[Any], Awaitable[Any]]) -> None:
+    """Page the configured channel, if any, without waiting: ``send(alerts)`` in a task.
+
+    *send* calls ``alert_slack`` on the :mod:`serving.observability.alerts`
+    module it is handed, each call site with its own literal key, as the
+    alert-type catalog requires. Imported on use, which keeps this module's
+    imports light; a failed send is logged, never raised.
+    """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    task = loop.create_task(_send_alert(title, context, dedupe_key))
+    from serving.observability import alerts
+
+    async def run() -> None:
+        try:
+            await send(alerts)
+        except Exception:
+            # The log record already holds everything; the page is extra.
+            logger.warning("Sending a cost counter alert failed", exc_info=True)
+
+    task = loop.create_task(run())
     _ALERTS.add(task)
     task.add_done_callback(_ALERTS.discard)
-
-
-async def _send_alert(title: str, context: dict[str, Any], dedupe_key: str) -> None:
-    from serving.observability.alerts import AlertSeverity, alert_slack
-
-    try:
-        await alert_slack(
-            AlertSeverity.ERROR, title, context, dedupe_key=dedupe_key, cooldown_sec=3600
-        )
-    except Exception:
-        # The log record above already holds everything; the page is extra.
-        logger.warning("Sending a cost counter alert failed", exc_info=True)
 
 
 # Per store, weakly: a store that goes away (tests make many) takes its

@@ -454,12 +454,16 @@ class _Counters:
 
 @pytest.fixture
 def alerts(monkeypatch) -> list[tuple[str, dict[str, Any], str]]:
+    """The alerts the ledger sends, as (title, context, dedupe key)."""
     sent: list[tuple[str, dict[str, Any], str]] = []
-    monkeypatch.setattr(
-        spend_ledger,
-        "_alert",
-        lambda title, context, *, dedupe_key: sent.append((title, context, dedupe_key)),
+
+    def alert_slack(severity, title, context, *, dedupe_key, cooldown_sec):
+        sent.append((title, context, dedupe_key))
+
+    module = types.SimpleNamespace(
+        AlertSeverity=types.SimpleNamespace(ERROR="error"), alert_slack=alert_slack
     )
+    monkeypatch.setattr(spend_ledger, "_send_alert", lambda send: send(module))
     return sent
 
 
@@ -571,3 +575,20 @@ async def test_one_ledger_per_store():
     assert ledger_for(first) is ledger_for(first)
     assert ledger_for(first) is not ledger_for(second)
     assert ledger_for(None) is None
+
+
+async def test_the_ledger_pages_through_alert_slack_under_a_catalogued_type(monkeypatch):
+    from serving.observability import alerts as alerts_module
+    from serving.observability.alert_types import alert_type_of, get_alert_type
+
+    alert_slack = AsyncMock(return_value=True)
+    monkeypatch.setattr(alerts_module, "alert_slack", alert_slack)
+    ledger = SpendLedger(_AtomicStore())
+
+    ledger.record("u1", 2_000_000.0)
+    await asyncio.gather(*spend_ledger._ALERTS)
+
+    alert_slack.assert_awaited_once()
+    key = alert_slack.await_args.kwargs["dedupe_key"]
+    assert get_alert_type(alert_type_of(key)) is not None
+    assert await ledger.flush()
