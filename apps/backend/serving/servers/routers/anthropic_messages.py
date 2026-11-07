@@ -39,7 +39,11 @@ from routing.prefill_load import (
 )
 from serving.adapters import dispatch_watch
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
-from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
+from serving.adapters.anthropic_translator import (
+    INPUT_SEED_SINK_KEY,
+    OPENAI_USAGE_SINK_KEY,
+    normalize_inline_system,
+)
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
@@ -1475,8 +1479,11 @@ def _resolve_stream_usage(
     Recovery, applied only when ``request_usage`` is empty:
       1. Real partial input/cache usage observed on the forwarded stream
          (``response_acc``'s ``message_start`` -- the native passthrough
-         captures these even mid-stream).
-      2. Estimate input tokens from the request payload (messages + system).
+         captures these even mid-stream). Not the estimate a translated
+         stream seeded message_start with, which the adapter declares under
+         ``INPUT_SEED_SINK_KEY``: that is a guess, not a count.
+      2. Estimate input tokens from the request payload (messages, system and
+         tool definitions).
       3. Output: the larger of any observed count and an estimate from the
          accumulated assistant content.
 
@@ -1505,12 +1512,22 @@ def _resolve_stream_usage(
     # 1. Real partial input/cache usage captured from the forwarded SSE. The
     #    native passthrough fills message_start.input_tokens (and cache counts)
     #    mid-stream; its output_tokens is only a placeholder, handled in step 3.
+    #    A translated stream's message_start carries the adapter's seed
+    #    instead, unless the upstream reported usage before it: an estimate
+    #    made before the upstream was asked. It goes to step 2, which bills the
+    #    tool definitions too, as a stream cut before message_start is billed.
+    seed = request_usage.get(INPUT_SEED_SINK_KEY)
     acc_usage = response_acc.get("usage") if isinstance(response_acc, dict) else None
     if isinstance(acc_usage, dict):
         for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
             value = acc_usage.get(key)
             if key == "input_tokens":
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value > 0
+                    and value != seed
+                ):
                     base[key] = value
             else:
                 cache_count = optional_token_count(value)

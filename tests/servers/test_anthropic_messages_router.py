@@ -1670,6 +1670,119 @@ async def test_streaming_recovers_usage_on_client_disconnect(anthropic_test_clie
     assert captured["metadata"].get("usage_estimated") is True
 
 
+# A coding agent's turn: a short exchange and a large tool catalogue.
+_CATALOGUE = [
+    {
+        "name": f"tool_{i}",
+        "description": "Reads, edits and searches files in the workspace. " * 40,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                f"arg{j}": {"type": "string", "description": "a path or a pattern " * 5}
+                for j in range(6)
+            },
+        },
+    }
+    for i in range(20)
+]
+
+
+@pytest.mark.asyncio
+async def test_a_translated_stream_cut_after_message_start_bills_the_tool_definitions(
+    anthropic_test_client, monkeypatch
+):
+    """The translator's message_start seed is a guess; the cut stream bills the request.
+
+    An OpenAI-backed upstream sends content, then the connection is cut before
+    it reports usage. The tool catalogue is input like the messages are, so it
+    is billed whether the cut came before message_start or after it.
+    """
+    openai_sse = (
+        b'data: {"id":"x","object":"chat.completion.chunk","model":"glm-4.7",'
+        b'"choices":[{"index":0,"delta":{"content":"Sure, refactoring the parser now"}}]}\n\n'
+    )
+
+    class _Content:
+        async def iter_any(self):
+            yield openai_sse
+            raise asyncio.CancelledError()
+
+        async def iter_chunked(self, n):
+            yield openai_sse
+            raise asyncio.CancelledError()
+
+    class _Response:
+        status = 200
+        content = _Content()
+        headers: dict = {"Content-Type": "text/event-stream"}  # noqa: RUF012
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _Session:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _Response()
+
+    async def fake_ensure_session(self):
+        return _Session()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+    captured: dict = {}
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(anthropic_messages, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "system": "You are a coding agent.",
+        "messages": [{"role": "user", "content": "Refactor the parser and run the tests."}],
+        "tools": _CATALOGUE,
+    }
+    seen = b""
+    try:
+        async with anthropic_test_client.stream(
+            "POST", "/v1/messages", json=body, headers=_auth()
+        ) as r:
+            async for chunk in r.aiter_bytes():
+                seen += chunk
+    except Exception:
+        pass
+
+    assert b"event: message_start" in seen
+    assert captured, "_schedule_log_store_task should still run via the finally"
+    usage = captured["usage"]
+    tool_tokens = anthropic_messages.estimate_text_tokens(json.dumps(_CATALOGUE))
+    assert usage["input_tokens"] == anthropic_messages._estimate_request_input_tokens(body)
+    assert usage["input_tokens"] > tool_tokens
+    assert captured["metadata"].get("usage_estimated") is True
+
+
+def test_a_count_the_upstream_reported_before_message_start_is_not_a_seed():
+    """A translated stream whose first chunk carried usage shows a real count."""
+    seeded = {"input_tokens": 0, "output_tokens": 0, anthropic_messages.INPUT_SEED_SINK_KEY: 30}
+    payload = {"messages": [{"role": "user", "content": "hi"}], "tools": _CATALOGUE}
+
+    reported, _ = anthropic_messages._resolve_stream_usage(
+        dict(seeded), {"usage": {"input_tokens": 512, "output_tokens": 0}}, payload
+    )
+    assert reported["input_tokens"] == 512
+
+    guessed, estimated = anthropic_messages._resolve_stream_usage(
+        dict(seeded), {"usage": {"input_tokens": 30, "output_tokens": 0}}, payload
+    )
+    assert guessed["input_tokens"] == anthropic_messages._estimate_request_input_tokens(payload)
+    assert estimated is True
+
+
 @pytest.mark.asyncio
 async def test_referer_header_captured_in_logged_metadata(anthropic_test_client, monkeypatch):
     """The inbound Referer header is persisted into the request metadata so it is
