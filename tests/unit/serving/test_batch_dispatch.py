@@ -53,6 +53,8 @@ class _Upstream(BaseAdapter):
                 name="Batch Model",
                 provider="openai",
                 base_url="https://upstream.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=PRICING,
             )
         )

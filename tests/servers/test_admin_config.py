@@ -1142,3 +1142,41 @@ async def test_the_preview_names_where_requests_and_keys_would_go(config_client)
         "provider_keys:acme/key-1",
         "provider_route_candidates:chat/r1",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_backup_carries_the_batch_route_choices_and_a_restore_puts_them_back(
+    config_client,
+) -> None:
+    """Which routes batch work may use is configuration: backed up, and replaced on restore."""
+    client, _store, _audit = config_client
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_all_provider_route_batch_policies = AsyncMock(
+        return_value=[
+            {"model_id": "chat", "route_id": "chat:local-1", "batch_allowed": False},
+            {"model_id": "chat", "route_id": "chat:api-api", "batch_allowed": True},
+        ]
+    )
+    op_store.set_provider_route_batch_policy = AsyncMock()
+
+    bundle = await _exported(client)
+
+    assert bundle["provider_route_batch_policies"] == [
+        {"model_id": "chat", "route_id": "chat:api-api", "batch_allowed": True},
+        {"model_id": "chat", "route_id": "chat:local-1", "batch_allowed": False},
+    ]
+
+    bundle["provider_route_batch_policies"] = [
+        {"model_id": "chat", "route_id": "chat:api-api", "batch_allowed": False}
+    ]
+    response = await client.post("/admin/config/restore", headers=AUTH, json=bundle)
+
+    assert response.status_code == 200, response.text
+    calls = op_store.set_provider_route_batch_policy.await_args_list
+    # A stored choice the bundle leaves out is cleared: that route follows its locality.
+    assert any(
+        c.args == ("chat", "chat:local-1") and c.kwargs["batch_allowed"] is None for c in calls
+    )
+    assert any(
+        c.args == ("chat", "chat:api-api") and c.kwargs["batch_allowed"] is False for c in calls
+    )

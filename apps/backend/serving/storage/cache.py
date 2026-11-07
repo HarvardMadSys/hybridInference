@@ -1487,6 +1487,23 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_all_provider_route_states()
 
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_provider_route_batch_policies()
+
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_provider_route_batch_policy(
+            model_id, route_id, batch_allowed=batch_allowed, updated_by=updated_by
+        )
+
     async def set_provider_route_state(
         self,
         model_id: str,

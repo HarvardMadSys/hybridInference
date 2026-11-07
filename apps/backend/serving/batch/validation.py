@@ -261,6 +261,7 @@ async def validate_file_batch(
         visibility_resolver=getattr(services, "model_visibility_resolver", None),
         embedding_adapters=getattr(services, "embedding_adapters", None),
         embedding_routes=getattr(router, "embedding_routes", None),
+        batch_routes=getattr(router, "batch_route_resolver", None),
         profile=profile if target == TARGET_MESSAGES else None,
     )
     errors: list[dict[str, Any]] = []
