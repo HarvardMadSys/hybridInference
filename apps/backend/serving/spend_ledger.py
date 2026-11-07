@@ -139,6 +139,7 @@ class _Unconfirmed:
 
     cost: float = 0.0
     requests: int = 0
+    project_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -159,10 +160,15 @@ class _Outcome:
 class Reservation:
     """An admitted request's estimated cost, counted until :meth:`release`."""
 
-    __slots__ = ("_ledger", "_open", "amount", "key_id", "user_id", "project_id")
+    __slots__ = ("_ledger", "_open", "amount", "key_id", "project_id", "user_id")
 
     def __init__(
-        self, ledger: SpendLedger, user_id: str, key_id: int | None, amount: float, project_id: str | None = None
+        self,
+        ledger: SpendLedger,
+        user_id: str,
+        key_id: int | None,
+        amount: float,
+        project_id: str | None = None,
     ) -> None:
         """Count *amount* against *user_id* (and *key_id*) until released."""
         self._ledger = ledger
@@ -231,7 +237,8 @@ class SpendCheck:
 
 
 def _refusal(
-    check: SpendCheck, extra: tuple[float, float, float, float],
+    check: SpendCheck,
+    extra: tuple[float, float, float, float],
     project_extra: tuple[float, float] = (0.0, 0.0),
 ) -> quota.BudgetRefusal | None:
     """Apply *check*'s limits to what it read plus *extra* (day, month, key day, key month)."""
@@ -284,7 +291,6 @@ class SpendLedger:
         except TypeError:
             self._store = lambda: store
         self._reserved_projects: dict[str, list[float]] = {}
-        self._key_projects: dict[tuple[str, int | None], str] = {}
         self._reserved_users: dict[str, list[float]] = {}
         self._reserved_keys: dict[int, list[float]] = {}
         # Recorded, not yet handed to a write (or handed back by a failed one).
@@ -295,7 +301,9 @@ class SpendLedger:
         # being written, written with an outcome nobody could tell, or refused.
         self._unconfirmed: dict[str, dict[tuple[int | None, str], _Unconfirmed]] = {}
         # Writes confirmed: (when, {user: [(key, day, cost), ...]}).
-        self._landed: deque[tuple[float, dict[str, list[tuple[int | None, str, float]]]]] = deque()
+        self._landed: deque[
+            tuple[float, dict[str, list[tuple[int | None, str, float, str | None]]]]
+        ] = deque()
         self._unknown: list[tuple[_Key, _Amount]] = []
         # Entries the counters refused for their own values, set aside.
         self._refused: list[tuple[_Key, _Amount]] = []
@@ -309,9 +317,13 @@ class SpendLedger:
         """Apply the gate's limits to what it read plus what only this ledger knows."""
         project_extra = (0.0, 0.0)
         if check.project_id is not None:
-            values = self._extra(check.user_id, check.key_id, check.read_at, project_id=check.project_id)
+            values = self._extra(
+                check.user_id, check.key_id, check.read_at, project_id=check.project_id
+            )
             project_extra = values[:2]
-        return _refusal(check, self._extra(check.user_id, check.key_id, check.read_at), project_extra)
+        return _refusal(
+            check, self._extra(check.user_id, check.key_id, check.read_at), project_extra
+        )
 
     def admit(
         self, check: SpendCheck, amount: float = quota.ESTIMATED_REQUEST_COST_USD
@@ -360,8 +372,8 @@ class SpendLedger:
         month = today[:7]
         totals = [0.0, 0.0, 0.0, 0.0]
 
-        def count(cost_key: int | None, day: str, cost: float) -> None:
-            if project_id is not None and self._key_projects.get((user_id, cost_key)) != project_id:
+        def count(cost_key: int | None, day: str, cost: float, cost_project: str | None) -> None:
+            if project_id is not None and cost_project != project_id:
                 return
             if day.startswith(month):
                 totals[1] += cost
@@ -373,17 +385,21 @@ class SpendLedger:
                         totals[2] += cost
 
         for (cost_key, day), amount in self._unconfirmed.get(user_id, {}).items():
-            count(cost_key, day, amount.cost)
+            count(cost_key, day, amount.cost, amount.project_id)
         now = time.monotonic()
         self._forget_landed(now)
         stale = read_at < now - LANDED_WINDOW_SECONDS
         for confirmed_at, by_user in reversed(self._landed):
             if confirmed_at < read_at and not stale:
                 break
-            for cost_key, day, cost in by_user.get(user_id, ()):
-                count(cost_key, day, cost)
+            for cost_key, day, cost, cost_project in by_user.get(user_id, ()):
+                count(cost_key, day, cost, cost_project)
 
-        reserved = self._reserved_projects.get(project_id) if project_id is not None else self._reserved_users.get(user_id)
+        reserved = (
+            self._reserved_projects.get(project_id)
+            if project_id is not None
+            else self._reserved_users.get(user_id)
+        )
         if reserved is not None:
             totals[0] += reserved[0]
             totals[1] += reserved[0]
@@ -445,11 +461,11 @@ class SpendLedger:
         context = req_ctx.get() or {}
         org_id = context.get(req_ctx.ORG_ID) or None
         project_id = context.get(req_ctx.PROJECT_ID) or None
-        if project_id is not None:
-            self._key_projects[(user_id, api_key_id)] = project_id
-        self._pending.setdefault(key, _Amount(org_id=org_id, project_id=project_id)).add(cost_usd, counted_amount(cost_usd), 1)
+        self._pending.setdefault(key, _Amount(org_id=org_id, project_id=project_id)).add(
+            cost_usd, counted_amount(cost_usd), 1
+        )
         unconfirmed = self._unconfirmed.setdefault(user_id, {}).setdefault(
-            (api_key_id, day), _Unconfirmed()
+            (api_key_id, day), _Unconfirmed(project_id=project_id)
         )
         unconfirmed.cost += cost_usd
         unconfirmed.requests += 1
@@ -523,11 +539,11 @@ class SpendLedger:
             raise outcome.error
 
     def _land(self, keys: list[_Key], batch: dict[_Key, _Amount]) -> None:
-        by_user: dict[str, list[tuple[int | None, str, float]]] = {}
+        by_user: dict[str, list[tuple[int | None, str, float, str | None]]] = {}
         for key in keys:
             amount = batch[key]
             self._unconfirm(key, amount)
-            by_user.setdefault(key[0], []).append((key[1], key[2], amount.cost))
+            by_user.setdefault(key[0], []).append((key[1], key[2], amount.cost, amount.project_id))
         now = time.monotonic()
         self._landed.append((now, by_user))
         self._forget_landed(now)
@@ -708,7 +724,12 @@ async def _write(store: Any, batch: dict[_Key, _Amount]) -> _Outcome:
             if amount.project_id is not None:
                 scopes["project_id"] = amount.project_id
             await store.increment_user_cost(
-                key[0], amount.cost, day=key[2], api_key_id=key[1], requests=amount.requests, **scopes
+                key[0],
+                amount.cost,
+                day=key[2],
+                api_key_id=key[1],
+                requests=amount.requests,
+                **scopes,
             )
 
         return await _write_each(keys, write_one)

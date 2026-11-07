@@ -592,3 +592,40 @@ async def test_the_ledger_pages_through_alert_slack_under_a_catalogued_type(monk
     key = alert_slack.await_args.kwargs["dedupe_key"]
     assert get_alert_type(alert_type_of(key)) is not None
     assert await ledger.flush()
+
+
+async def test_project_reservations_are_shared_across_keys():
+    ledger = SpendLedger(object())
+    fields = {"project_id": "proj_shared", "project_budget_daily_usd": 0.015}
+    first, refusal = _check(ledger, key_id=1, **fields).admit()
+    assert first is not None and refusal is None
+    _, refused = _check(ledger, key_id=2, **fields).admit()
+    assert refused.scope == "project"
+    assert (
+        _check(ledger, key_id=3, project_id="proj_other", project_budget_daily_usd=0.015).refusal()
+        is None
+    )
+    first.release()
+    assert _check(ledger, key_id=2, **fields).refusal() is None
+
+
+async def test_project_cost_keeps_attribution_through_the_coalesced_writer():
+    from serving.utils import context as req_ctx
+
+    store = _AtomicStore()
+    store.gate = asyncio.Event()
+    ledger = SpendLedger(store)
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_shared", req_ctx.ORG_ID: "org_shared"})
+    ledger.record("u1", 0.02, api_key_id=1)
+    req_ctx.reset_request_scope()
+    check = _check(ledger, key_id=2, project_id="proj_shared", project_budget_daily_usd=0.025)
+    assert check.refusal().scope == "project"
+    assert (
+        _check(ledger, key_id=3, project_id="proj_other", project_budget_daily_usd=0.025).refusal()
+        is None
+    )
+    store.gate.set()
+    assert await ledger.flush()
+    increment = store.batches[0][0]
+    assert (increment.org_id, increment.project_id) == ("org_shared", "proj_shared")
+    assert check.refusal().scope == "project"

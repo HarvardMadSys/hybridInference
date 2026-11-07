@@ -25,7 +25,6 @@ from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
 from serving.spend_ledger import ledger_for
 from serving.storage.utils import billable_output_tokens
-from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:

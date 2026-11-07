@@ -5,8 +5,8 @@ the previous release keeps serving while this runs. The backfill that fills a
 personal org and a Default project for existing accounts runs in the gateway
 (code), not here, because it must be idempotent and resumable.
 
-Revision ID: 0003_projects
-Revises: 0002_api_key_limits
+Revision ID: 0010_projects
+Revises: 0009_route_catalog
 Create Date: 2026-11-05
 """
 
@@ -14,11 +14,15 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0003_projects"
-down_revision = "0002_api_key_limits"
+revision = "0010_projects"
+down_revision = "0009_route_catalog"
 branch_labels = None
 depends_on = None
 compatibility = "expand"
+
+API_LOG_STATEMENTS = (
+    "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS key_id BIGINT, ADD COLUMN IF NOT EXISTS project_id TEXT",
+)
 
 
 def upgrade() -> None:
@@ -107,11 +111,8 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS idx_api_keys_project_active "
         "ON api_keys(project_id) WHERE status = 'active'"
     )
-    op.execute(
-        "ALTER TABLE api_logs "
-        "ADD COLUMN IF NOT EXISTS key_id BIGINT, "
-        "ADD COLUMN IF NOT EXISTS project_id TEXT"
-    )
+    for statement in API_LOG_STATEMENTS:
+        op.execute(statement)
 
 
 def downgrade() -> None:

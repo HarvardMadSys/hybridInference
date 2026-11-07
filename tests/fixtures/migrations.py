@@ -95,6 +95,12 @@ async def ensure_api_logs_tables(conn: Any) -> None:
         for statement in importlib.import_module(f"migrations.versions.{name}").STATEMENTS:
             await conn.execute(statement)
 
+    for statement in importlib.import_module(
+        "migrations.versions.0010_projects"
+    ).API_LOG_STATEMENTS:
+        await conn.execute(statement)
+
+
 async def prepare_current_schema(conn: Any) -> None:
     """Build the current schema in a fixture's private search path."""
     from alembic.operations import Operations
@@ -114,13 +120,14 @@ async def prepare_current_schema(conn: Any) -> None:
     )
 
     def apply_revisions(connection: Any) -> None:
-        with Operations.context(MigrationContext.configure(connection)):
+        context = MigrationContext.configure(connection)
+        with context.begin_transaction(), Operations.context(context):
             for revision in reversed(list(scripts.walk_revisions(base="0001_baseline"))):
                 if revision.revision != "0001_baseline":
                     revision.module.upgrade()
 
     try:
-        async with engine.begin() as connection:
+        async with engine.connect() as connection:
             await connection.run_sync(apply_revisions)
     finally:
         await engine.dispose()

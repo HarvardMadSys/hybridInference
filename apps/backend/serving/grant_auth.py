@@ -139,7 +139,9 @@ async def _resolve_grant(
     return row
 
 
-async def _quota_check(op_store: Any, user_id: str, context: dict[str, Any] | None = None) -> SpendCheck | None:
+async def _quota_check(
+    op_store: Any, user_id: str, context: dict[str, Any] | None = None
+) -> SpendCheck | None:
     """Read the account quotas a grant's next call is checked against.
 
     The limits are the account's, stored on each of its API keys, and the

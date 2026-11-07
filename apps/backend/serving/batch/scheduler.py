@@ -90,7 +90,11 @@ from serving.servers.auth import (
     authenticate_stored_key,
     stored_key_quota_exceeded,
 )
-from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id, scope_concurrency_limits
+from serving.servers.concurrency import (
+    UserConcurrencyLimiter,
+    canonical_model_id,
+    scope_concurrency_limits,
+)
 from serving.spend_ledger import spend_check_of
 from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
 from serving.utils.logging import get_logger
