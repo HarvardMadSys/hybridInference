@@ -1139,9 +1139,9 @@ async def initialize() -> AppServices:
                         # The Providers tab's percentile and TTFT-scatter views
                         # take seconds to minutes over a large api_logs and are
                         # served from their last stored result; build the
-                        # percentiles' covering index if missing, then refresh
-                        # both, so the first admin to open the tab sees fresh
-                        # numbers.
+                        # percentiles' covering index and the request lists'
+                        # source index if missing, then refresh both views, so
+                        # the first admin to open the tab sees fresh numbers.
                         from serving.servers.routers.admin.metrics import (
                             warm_performance_caches,
                         )
