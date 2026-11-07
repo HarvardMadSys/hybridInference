@@ -30,6 +30,7 @@ import {
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteBatch,
   updateProviderRouteState,
   updateProviderRouteCapabilities,
   resetProviderRouteCapabilities,
@@ -240,6 +241,20 @@ function noProviderHelpText(routeType: ProviderRouteType) {
 
 function overrideNotApplied(route: ProviderRoute) {
   return route.source === 'override' && route.override_applied === false;
+}
+
+/** Why batch work may or may not use a route, for its badge and button. */
+function batchTitle(route: ProviderRoute): string {
+  const local = route.batch_allowed_default === true;
+  const where = local ? "one of the gateway's own servers" : "not one of the gateway's own servers";
+  if (route.batch_allowed_choice == null) {
+    return route.batch_allowed
+      ? `Batch work may use it: by default batch requests run only on the gateway's own servers, and this is ${where}.`
+      : `Batch work may not use it: by default batch requests run only on the gateway's own servers, and this is ${where}.`;
+  }
+  return route.batch_allowed
+    ? `An administrator allowed batch work on it (by default it would ${local ? '' : 'not '}take batch work: it is ${where}).`
+    : `An administrator forbade batch work on it (by default it would ${local ? '' : 'not '}take batch work: it is ${where}).`;
 }
 
 function sourceLabel(route: ProviderRoute) {
@@ -727,6 +742,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
+  // The route whose batch choice is being saved.
+  const [batchKey, setBatchKey] = useState<string | null>(null);
   const [offloadRoutes, setOffloadRoutes] = useState<OffloadRoute[]>([]);
   const [offloadQueue, setOffloadQueue] = useState<OffloadQueueInfo | null>(null);
   const [offloadLoadError, setOffloadLoadError] = useState<string | null>(null);
@@ -1919,6 +1936,56 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (failure) toast.error(`${disabled ? 'Disable' : 'Enable'} failed: ${failure}`);
   };
 
+  // Allow or forbid batch work on a route, or let it follow its locality
+  // (null). Acts on the click, as Disable does, unless it would leave the model
+  // with no route batch work may use: its queued batch requests would then fail.
+  const setRouteBatch = (route: ProviderRoute, allowed: boolean | null) => {
+    const willAllow = allowed ?? route.batch_allowed_default === true;
+    const write = async () => {
+      setBatchKey(routeKey(route));
+      try {
+        const updated = await updateProviderRouteBatch(route.model_id, route.route_id, {
+          batch_allowed: allowed,
+        });
+        updateRoute(updated);
+        toast.success(
+          allowed === null
+            ? `${route.route_id} follows its default for batch work (${
+                updated.batch_allowed ? 'allowed' : 'not allowed'
+              }).`
+            : `${allowed ? 'Allowed' : 'Stopped'} batch work on ${route.route_id}.`,
+        );
+      } catch (err) {
+        throw new Error(routeErrorMessage(err));
+      } finally {
+        setBatchKey(null);
+      }
+    };
+    const anotherBatchRoute = selectedRoutes.some(
+      (item) => routeKey(item) !== routeKey(route) && !item.removed && item.batch_allowed === true,
+    );
+    if (!willAllow && route.batch_allowed === true && !anotherBatchRoute) {
+      confirmation.request({
+        title: `Stop batch work on ${route.model_id}?`,
+        body: (
+          <p>
+            {route.route_id} is the only route of {route.model_id} batch work may use. Without it,
+            new batches for {route.model_id} are refused, and its queued batch requests fail when
+            their turn comes.
+          </p>
+        ),
+        confirmLabel: 'Stop batch work',
+        busyLabel: 'Stopping…',
+        tone: 'danger',
+        run: write,
+      });
+      return;
+    }
+    void confirmation.perform({ run: write }).then((failure) => {
+      if (failure) toast.error(`Batch change failed: ${failure}`);
+    });
+  };
+
   const restoreRoute = async (route: ProviderRoute) => {
     const failure = await confirmation.perform({
       run: async () => {
@@ -2497,6 +2564,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           Offload
                         </span>
                       )}
+                      {route.batch_allowed !== undefined &&
+                        (route.batch_allowed || route.batch_allowed_choice === false) && (
+                          <span
+                            className={
+                              route.batch_allowed
+                                ? 'inline-flex rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700'
+                                : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                            }
+                            title={batchTitle(route)}
+                            data-testid={`batch-badge-${route.route_id}`}
+                          >
+                            {route.batch_allowed ? 'Batch' : 'No batch'}
+                          </span>
+                        )}
                       {route.capabilities_overridden && route.capabilities_baseline && (
                         <span
                           className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
@@ -2542,6 +2623,38 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         >
                           Edit
                         </button>
+                        {route.batch_allowed !== undefined && (
+                          <button
+                            type="button"
+                            onClick={() => setRouteBatch(route, !route.batch_allowed)}
+                            disabled={confirmation.busy}
+                            title={batchTitle(route)}
+                            aria-label={`${route.batch_allowed ? 'Stop' : 'Allow'} batch work on ${route.route_id}`}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
+                          >
+                            {batchKey === key
+                              ? 'Saving…'
+                              : route.batch_allowed
+                                ? 'Stop batch'
+                                : 'Allow batch'}
+                          </button>
+                        )}
+                        {route.batch_allowed_choice != null && (
+                          <button
+                            type="button"
+                            onClick={() => setRouteBatch(route, null)}
+                            disabled={confirmation.busy}
+                            title={`Follow the route's locality: ${
+                              route.batch_allowed_default
+                                ? "it is one of the gateway's own servers, so batch work may use it"
+                                : "it is not one of the gateway's own servers, so batch work may not use it"
+                            }.`}
+                            aria-label={`Batch default for ${route.route_id}`}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                          >
+                            Batch default
+                          </button>
+                        )}
                         {canDisableRoute && (
                           <button
                             type="button"

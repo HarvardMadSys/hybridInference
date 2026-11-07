@@ -2568,6 +2568,15 @@ export interface ProviderRoute {
   disabled?: boolean;
   /** A config route deleted from this deployment; listed so it can be restored. */
   removed?: boolean;
+  /**
+   * Whether batch work may use the route: the admin's choice
+   * (`batch_allowed_choice`) or, without one, its locality
+   * (`batch_allowed_default`: true for a server the gateway runs itself).
+   * Omitted by a gateway that predates batch route choices.
+   */
+  batch_allowed?: boolean;
+  batch_allowed_default?: boolean;
+  batch_allowed_choice?: boolean | null;
   updated_at: string | null;
   updated_by: string | null;
   /** What the route serves with now. */
@@ -2894,6 +2903,27 @@ export async function updateProviderRouteState(
   const resp = await fetchWithAuth(
     API_BASE,
     providerRoutePath('provider-route-states', modelId, routeId),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+/**
+ * Allow or forbid batch work on a route, or let it follow its locality again
+ * (`null`: the gateway's own servers take batch work, cloud routes do not).
+ */
+export async function updateProviderRouteBatch(
+  modelId: string,
+  routeId: string,
+  payload: { batch_allowed: boolean | null },
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    providerRoutePath('provider-route-batch', modelId, routeId),
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
