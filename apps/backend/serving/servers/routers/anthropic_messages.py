@@ -54,6 +54,7 @@ from serving.auto_mode import (
 from serving.batch.attempts import note_request_id, observe_billing
 from serving.batch.targets import AdapterRequirement
 from serving.config.app_config import config_value, on_change
+from serving.config.batch_routes import batch_endpoint_scope, batch_route_refusal
 from serving.exceptions import (
     conceal_served_model,
     generic_message_for_status,
@@ -553,6 +554,7 @@ def _pick_dispatch_adapter(
     size_prompt: Callable[[Any], int] | None = None,
     *,
     requirement: AdapterRequirement | None = None,
+    batch_routes_only: bool = False,
 ):
     """Return the route adapter this request may actually be dispatched to.
 
@@ -584,8 +586,15 @@ def _pick_dispatch_adapter(
     prompt over its max input may not be sent (``eligible_adapters``).
     ``requirement`` narrows the candidates of a batch item to the adapters that
     serve it as written (:class:`MessagesConstraints`); None for online traffic.
+    ``batch_routes_only`` narrows them to the routes batch work may use
+    (``serving.config.batch_routes``); a model with none refuses the item.
     """
-    eligible = router_exec.eligible_adapters(canonical, size_prompt=size_prompt)
+    scope = batch_endpoint_scope(router_exec, canonical) if batch_routes_only else None
+    if scope is not None and not scope:
+        raise HTTPException(400, batch_route_refusal(model_id))
+    eligible = router_exec.eligible_adapters(
+        canonical, size_prompt=size_prompt, endpoint_scope=scope
+    )
     if requirement is not None and eligible:
         # A batch item may only go to an adapter that serves it as written
         # (serving/batch/targets.py): never one that would drop a parameter.
@@ -593,7 +602,9 @@ def _pick_dispatch_adapter(
         if not eligible:
             route = router_exec.routes.get(canonical)
             capable = route is not None and any(
-                requirement.problem(entry[0]) is None for entry in route.adapters
+                requirement.problem(entry[0]) is None
+                for entry in route.adapters
+                if scope is None or endpoint_id_for_adapter(entry[0]) in scope
             )
             if not capable:
                 raise HTTPException(
@@ -620,6 +631,7 @@ async def _resolve(
     for_dispatch: bool = True,
     size_prompt: Callable[[Any], int] | None = None,
     requirement: AdapterRequirement | None = None,
+    batch_routes_only: bool = False,
 ):
     """Return (canonical_model_id, route, adapter).
 
@@ -630,8 +642,8 @@ async def _resolve(
     and never reaches an upstream, so a provider outage must not stop it.
     ``size_prompt`` returns the request's estimated prompt tokens as a given
     adapter would be sent them, for an offload route with a max input
-    (``_pick_dispatch_adapter``). ``requirement`` narrows the candidates of a
-    batch item (``_pick_dispatch_adapter``).
+    (``_pick_dispatch_adapter``). ``requirement`` and ``batch_routes_only``
+    narrow the candidates of a batch item (``_pick_dispatch_adapter``).
     """
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -658,7 +670,13 @@ async def _resolve(
         return canonical, route, adapter
     user_role = (user_ctx or {}).get("role", "free")
     adapter = _pick_dispatch_adapter(
-        model_id, canonical, router_exec, user_role, size_prompt, requirement=requirement
+        model_id,
+        canonical,
+        router_exec,
+        user_role,
+        size_prompt,
+        requirement=requirement,
+        batch_routes_only=batch_routes_only,
     )
     require_source_pricing(adapter.config)
     return (
@@ -1668,9 +1686,10 @@ MALFORMED_BODY: Any = object()
 class MessagesConstraints:
     """What a caller's own arrangement narrows a Messages request to.
 
-    ``adapter_requirement`` and ``pin_model`` only ever narrow: a batch item
-    may go only to an adapter that serves it as written, and is never rerouted
-    to another model. ``anthropic_version`` is not a narrowing but a frozen
+    ``adapter_requirement``, ``pin_model`` and ``batch_routes_only`` only ever
+    narrow: a batch item may go only to an adapter that serves it as written, on
+    a route batch work may use, and is never rerouted to another model.
+    ``anthropic_version`` is not a narrowing but a frozen
     protocol option: the ``anthropic-version`` a Messages batch was created
     under, validated and stored then, sent to a native upstream so the item
     keeps that version's semantics. Built by :meth:`online` or
@@ -1681,6 +1700,7 @@ class MessagesConstraints:
     adapter_requirement: AdapterRequirement | None
     pin_model: bool
     anthropic_version: str | None
+    batch_routes_only: bool = False
 
     @classmethod
     def online(cls) -> MessagesConstraints:
@@ -1691,11 +1711,12 @@ class MessagesConstraints:
     def for_batch_item(
         cls, body: dict[str, Any], protocol_profile: str | None
     ) -> MessagesConstraints:
-        """A batch item: served as written, on its model, under its stored version."""
+        """A batch item: served as written, on its model and its batch routes, under its version."""
         return cls(
             adapter_requirement=AdapterRequirement(body=body),
             pin_model=True,
             anthropic_version=protocol_profile or None,
+            batch_routes_only=True,
         )
 
 
@@ -2016,6 +2037,7 @@ async def execute_messages(
             # route has a max input to hold it to.
             size_prompt=lambda adapter: _prompt_tokens(body, adapter),
             requirement=constraints.adapter_requirement,
+            batch_routes_only=constraints.batch_routes_only,
         )
     except HTTPException as exc:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log

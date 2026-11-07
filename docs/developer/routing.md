@@ -935,6 +935,7 @@ endpoints:
 | `POST /admin/routing/provider-route-candidates/{model_id}` | Add a route to a model; `PATCH` and `DELETE` on `.../{model_id}/{route_id}` edit or remove it. |
 | `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
 | `PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` | Disable or enable a route of either source; a disabled route keeps its weights but takes no request, retry, fallback or offload. |
+| `PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` | Allow or forbid batch work on a route, or let it follow its locality (`null`): see [Which routes batch work may use](batches.md#which-routes-batch-work-may-use). |
 | `POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}` | Delete a registry route from this deployment, or restore it; models.yaml is not changed. |
 | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
 | `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |

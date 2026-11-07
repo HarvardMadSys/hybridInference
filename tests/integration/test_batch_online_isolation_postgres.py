@@ -81,6 +81,8 @@ class _ChatUpstream(BaseAdapter):
                 name=model_id,
                 provider="openai",
                 base_url=f"https://{model_id}.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=_PRICING,
             )
         )
@@ -107,6 +109,8 @@ class _Embedder:
             name=model_id,
             provider="openai",
             base_url=f"https://{model_id}.test",
+            # The gateway's own server, so batch work may use it.
+            deployment_type="self_hosted",
             pricing=_PRICING,
         )
         self.gate = gate

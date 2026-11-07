@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from serving.auto_mode import AutoMode
     from serving.batch.model_limits import BatchModelLimits
     from serving.batch.scheduler import BatchScheduler
+    from serving.config.batch_routes import BatchRouteResolver
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
@@ -111,6 +112,7 @@ class AppServices:
     disabled_provider_resolver: DisabledProviderResolver | None = None
     route_state_resolver: RouteStateResolver | None = None
     offload_route_resolver: OffloadRouteResolver | None = None
+    batch_route_resolver: BatchRouteResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None

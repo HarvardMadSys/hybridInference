@@ -74,6 +74,8 @@ def _adapter(model_id: str) -> _Adapter:
             name=model_id,
             provider="test",
             base_url="http://test",
+            # The gateway's own server, so batch work may use it.
+            deployment_type="self_hosted",
             context_length=8192,
             max_output_length=4096,
             pricing={"prompt": "0", "completion": "0"},

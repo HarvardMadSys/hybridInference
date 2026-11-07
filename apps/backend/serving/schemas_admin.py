@@ -1779,6 +1779,12 @@ class ProviderRouteItem(BaseModel):
     disabled: bool = False
     # A config route removed from this deployment; listed so it can be restored.
     removed: bool = False
+    # Whether batch work may use the route: the admin's choice
+    # (``batch_allowed_choice``) or, without one, its locality
+    # (``batch_allowed_default``: true for a server this gateway runs itself).
+    batch_allowed: bool = False
+    batch_allowed_default: bool = False
+    batch_allowed_choice: bool | None = None
     updated_at: datetime | None = None
     updated_by: str | None = None
     # What the route serves with now, and what it had from models.yaml or its
@@ -1971,6 +1977,16 @@ class UpdateProviderRouteStateRequest(BaseModel):
     """Request payload for disabling or enabling one provider route."""
 
     disabled: bool
+
+
+class UpdateProviderRouteBatchRequest(BaseModel):
+    """Request payload for allowing or forbidding batch work on one provider route.
+
+    ``null`` clears the choice: the route follows its locality again (batch work
+    on the gateway's own servers only).
+    """
+
+    batch_allowed: bool | None
 
 
 class UpdateProviderRouteRequest(RouteCapabilityEdit):

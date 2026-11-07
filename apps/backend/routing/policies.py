@@ -144,6 +144,8 @@ class FixedPolicy:
                     backend=owner,
                     target=RoutingTarget(endpoint_id=preferred),
                 )
+        # The draw honors the caller's range and affinity choice as a dispatch
+        # does: a pick outside the range is one no backend may serve.
         adapter = self._compute.select_adapter(
             model_id,
             required_modalities=(
@@ -154,6 +156,8 @@ class FixedPolicy:
                 tools=params.get("tools"),
                 response_format=params.get("response_format"),
             ),
+            endpoint_scope=options.endpoint_scope if options is not None else None,
+            use_affinity=options.affinity if options is not None else True,
         )
         if adapter is None:
             # No draw is possible; name the domain the model is configured for
@@ -228,8 +232,9 @@ class FixedPolicy:
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
         primary_endpoint = decision.target.endpoint_id if decision.target is not None else None
+        scope = routing_options.endpoint_scope if routing_options is not None else None
         attempts: list[FallbackAttempt] = []
-        for adapter, _weight in self._compute.eligible_adapters(model_id):
+        for adapter, _weight in self._compute.eligible_adapters(model_id, endpoint_scope=scope):
             if not adapter_supports_modalities(adapter, required):
                 continue
             endpoint_id = endpoint_id_for_adapter(adapter)

@@ -2008,6 +2008,15 @@ msgstr "停用或启用一条路由（两种来源都可以）；停用的路由
 
 #: ../developer/routing.md:661
 #, python-brace-format
+msgid "`PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}`"
+msgstr ""
+
+#: ../developer/routing.md:661
+msgid "Allow or forbid batch work on a route, or let it follow its locality (`null`): see [Which routes batch work may use](batches.md#which-routes-batch-work-may-use)."
+msgstr "允许或禁止某条路由执行批处理，或让它重新按所在位置决定（`null`）：参见[批处理可以使用哪些路由](batches.md#which-routes-batch-work-may-use)。"
+
+#: ../developer/routing.md:661
+#, python-brace-format
 msgid "`POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}`"
 msgstr ""
 

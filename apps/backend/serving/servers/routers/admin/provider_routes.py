@@ -27,6 +27,7 @@ from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
 from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
+from serving.config.batch_routes import default_batch_allowed
 from serving.config.offload_routes import offload_route_setting_key
 from serving.config.route_states import ENABLED, RouteState
 from serving.config.settings import (
@@ -48,6 +49,7 @@ from serving.schemas_admin import (
     RouteCapabilitiesItem,
     RouteCapabilityEdit,
     RuntimeModelCapabilities,
+    UpdateProviderRouteBatchRequest,
     UpdateProviderRouteCandidateRequest,
     UpdateProviderRouteRequest,
     UpdateProviderRouteStateRequest,
@@ -844,6 +846,22 @@ def _route_state_resolver(services) -> Any | None:
 def _route_state(services, model_id: str, route_id: str) -> RouteState:
     resolver = _route_state_resolver(services)
     return resolver.get(model_id, route_id) if resolver is not None else ENABLED
+
+
+def _batch_route_resolver(services) -> Any | None:
+    return getattr(services, "batch_route_resolver", None)
+
+
+def _batch_fields(services, model_id: str, route_id: str, adapter) -> dict[str, Any]:
+    """A route's batch fields: whether batch work may use it, by choice or by its locality."""
+    resolver = _batch_route_resolver(services)
+    choice = resolver.choice(model_id, route_id) if resolver is not None else None
+    default = default_batch_allowed(adapter)
+    return {
+        "batch_allowed": default if choice is None else choice,
+        "batch_allowed_default": default,
+        "batch_allowed_choice": choice,
+    }
 
 
 def _usable_route_ids(services, model_id: str, route) -> set[str]:
@@ -3856,6 +3874,9 @@ async def _teardown_runtime_model_locked(
     route_states = _route_state_resolver(services)
     if route_states is not None:
         route_states.clear_model(model_id)
+    batch_routes = _batch_route_resolver(services)
+    if batch_routes is not None:
+        batch_routes.clear_model(model_id)
 
     return adapter, float(raw_weight), endpoint_id
 
@@ -4004,6 +4025,7 @@ async def _route_row(
         override_applied=override_applied,
         disabled=_route_state(services, model_id, route_id).disabled,
         removed=removed,
+        **_batch_fields(services, model_id, route_id, adapter),
         updated_at=stored_override.get("updated_at") if stored_override else None,
         updated_by=stored_override.get("updated_by") if stored_override else None,
         capabilities=RouteCapabilitiesItem(**_config_capabilities(adapter.config)),
@@ -5651,6 +5673,9 @@ async def delete_provider_route_candidate(
                     route_states = _route_state_resolver(services)
                     if route_states is not None:
                         route_states.set_state(model_id, route_id, ENABLED)
+                    batch_routes = _batch_route_resolver(services)
+                    if batch_routes is not None:
+                        batch_routes.clear_route(model_id, route_id)
                     await _delete_weight_override_for_route(
                         services,
                         op_store,
@@ -5963,6 +5988,82 @@ async def update_provider_route_state(
             )
 
         await _finish_router_transition_on_cancellation(persist_and_apply())
+
+    override_row = (
+        None
+        if _is_runtime_candidate(adapter)
+        else _rows_by_route_id(await op_store.list_provider_route_configs_for_model(model_id)).get(
+            route_id
+        )
+    )
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=route_id,
+        adapter=adapter,
+        yaml_weight=float(raw_weight),
+        endpoint_id=endpoint_id,
+        override_row=override_row,
+    )
+
+
+@router.patch(
+    "/routing/provider-route-batch/{model_route_path:path}",
+    response_model=ProviderRouteItem,
+)
+async def update_provider_route_batch(
+    model_route_path: str,
+    payload: UpdateProviderRouteBatchRequest,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Allow or forbid batch work on one route, or let it follow its locality (``null``).
+
+    Batch requests run only on the routes batch work may use: by default the
+    gateway's own servers (``serving.config.batch_routes``). Interactive traffic
+    is unaffected. A model left with none refuses new batches, and its queued
+    batch requests fail when their turn comes. The choice takes effect on this
+    process at once and on the others within ten seconds.
+    """
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    resolver = _batch_route_resolver(services)
+    if resolver is None:
+        raise HTTPException(status_code=503, detail="Batch route choices are not available")
+    if not resolver.ready:
+        raise HTTPException(
+            status_code=503, detail="Batch route choices are still loading; try again shortly"
+        )
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        _refuse_removed_route(route, route_id)
+        entries = _raw_route_entries(route)
+        adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+        previous = resolver.choice(model_id, route_id)
+        await op_store.set_provider_route_batch_policy(
+            model_id, route_id, batch_allowed=payload.batch_allowed, updated_by=admin_id
+        )
+        resolver.set_choice(model_id, route_id, payload.batch_allowed)
+        await log_admin_action(
+            op_store,
+            action="routing.provider_routes.batch",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
+                "model_id": model_id,
+                "route_id": route_id,
+                "endpoint_id": endpoint_id,
+                "previous_choice": previous,
+                "choice": payload.batch_allowed,
+                "batch_allowed": resolver.allows(model_id, adapter),
+            },
+        )
 
     override_row = (
         None

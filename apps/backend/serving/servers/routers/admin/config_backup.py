@@ -57,6 +57,7 @@ from serving.schemas_config import (
     ConfigBackupPayload,
     ConfigBackupProviderDefinition,
     ConfigBackupProviderKey,
+    ConfigBackupRouteBatchPolicy,
     ConfigBackupRouteCandidate,
     ConfigBackupRouteCapability,
     ConfigBackupRouteConfig,
@@ -557,6 +558,23 @@ async def _build_backup(
     ]
     provider_route_states.sort(key=lambda item: (item.model_id, item.route_id))
 
+    batch_policies_raw = await _call_store(
+        op_store,
+        "list_all_provider_route_batch_policies",
+        default=[],
+    )
+    provider_route_batch_policies = sorted(
+        (
+            ConfigBackupRouteBatchPolicy(
+                model_id=str(row["model_id"]),
+                route_id=str(row["route_id"]),
+                batch_allowed=bool(row["batch_allowed"]),
+            )
+            for row in batch_policies_raw
+        ),
+        key=lambda item: (item.model_id, item.route_id),
+    )
+
     route_candidates_raw = await _call_store(
         op_store,
         "list_all_provider_route_candidates",
@@ -684,6 +702,7 @@ async def _build_backup(
             "provider_env_key_min_roles": provider_env_key_min_roles,
             "disabled_providers": disabled_providers,
             "provider_route_states": provider_route_states,
+            "provider_route_batch_policies": provider_route_batch_policies,
             "provider_route_candidates": provider_route_candidates,
             "provider_route_configs": provider_route_configs,
             "provider_route_capabilities": provider_route_capabilities,
@@ -1172,6 +1191,34 @@ async def _apply_operational_and_batch_stores(
                 updated_by=admin_id,
             )
 
+        # 7b. provider_route_batch_policies: the bundle's choices replace the
+        # current ones; a route the bundle leaves out follows its locality.
+        target_batch_policies = {
+            (p.model_id, p.route_id): p.batch_allowed for p in payload.provider_route_batch_policies
+        }
+        for row in await _call_store(
+            op_store, "list_all_provider_route_batch_policies", default=[]
+        ):
+            key = (str(row["model_id"]), str(row["route_id"]))
+            if key not in target_batch_policies:
+                await _call_store(
+                    op_store,
+                    "set_provider_route_batch_policy",
+                    key[0],
+                    key[1],
+                    batch_allowed=None,
+                    updated_by=admin_id,
+                )
+        for (model_id, route_id), batch_allowed in target_batch_policies.items():
+            await _call_store(
+                op_store,
+                "set_provider_route_batch_policy",
+                model_id,
+                route_id,
+                batch_allowed=batch_allowed,
+                updated_by=admin_id,
+            )
+
         # 8. provider_route_candidates
         current_candidates = await _call_store(
             op_store,
@@ -1402,6 +1449,10 @@ async def _refresh_live_caches(services: Any, op_store: Any) -> None:
     route_state_resolver = getattr(services, "route_state_resolver", None)
     if route_state_resolver is not None:
         await _call_store(route_state_resolver, "load_all")
+
+    batch_route_resolver = getattr(services, "batch_route_resolver", None)
+    if batch_route_resolver is not None:
+        await _call_store(batch_route_resolver, "load_all")
 
     weight_resolver = getattr(services, "weight_override_resolver", None)
     if weight_resolver is not None:

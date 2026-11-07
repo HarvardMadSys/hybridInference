@@ -890,6 +890,46 @@ list below to that bar's stretch, shown as a **Window** chip in place of the
 lookback, with a link to the same stretch's batch requests on the **Requests**
 page (`?from=…&to=…`). Clicking the bar again, or clearing the chip, lets it go.
 
+### Which routes batch work may use
+
+A batch is work nobody waits on, so by default it runs only on the servers the
+gateway runs itself and never spends a cloud provider's quota or money. A route
+is local when its `deployment_type` is `self_hosted`, or, for `auto` (the
+default), when its host is `localhost`, `127.0.0.1`, `0.0.0.0` or
+`host.docker.internal`. A `provider_api` route, or an `auto` route on any other
+host, is not.
+
+An administrator can allow or forbid batch work on any route with
+`PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` and
+`{"batch_allowed": true}` or `false`, or `null` to let the route follow its
+locality again. The choice is kept in `provider_route_batch_policies`, by the
+model's canonical id and the route id, and `GET /admin/routing/provider-routes`
+reports each route's `batch_allowed`, `batch_allowed_default` and
+`batch_allowed_choice`.
+
+A batch request runs only on its model's batch-allowed routes: the router's
+selection, retries, fallback, offload and hedging all stay among them, whatever
+their weights. Interactive requests are untouched, and batch requests neither
+follow nor move the owner's routing affinity. A batch-allowed route that is
+disabled, has an open circuit or has weight 0 makes items wait, as it makes
+interactive requests fail over. An embedding model's backends follow their
+locality; they have no per-route choice.
+
+A batch for a model with no batch-allowed route is refused when it is submitted
+(`batch_route_unavailable`, status 400). An item already queued fails with the
+same error when its turn comes, for example after an administrator forbids the
+model's last batch route, or after an upgrade to this release for a model with
+only cloud routes: allow one of its routes for batch work if its queued batches
+should finish.
+
+Two cases to check when you set this up:
+
+- A self-hosted engine reached at a LAN or cluster address counts as cloud
+  unless its route says `deployment_type: self_hosted`.
+- A proxy on the gateway host that forwards to a cloud API counts as local
+  unless its route says `deployment_type: provider_api`, or batch work is
+  forbidden on it.
+
 ### Upgrading a deployment
 
 A worker only runs the kinds of batch it knows: claims, expiry, finalizing,

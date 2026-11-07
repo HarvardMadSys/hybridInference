@@ -89,6 +89,8 @@ class _Chat(BaseAdapter):
                 name=model_id,
                 provider="openai",
                 base_url=f"https://{model_id}.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=_PRICING,
                 max_output_length=max_output,
                 **({"supported_params": params} if params is not None else {}),
@@ -121,6 +123,8 @@ class _Embed(BaseAdapter):
                 name=model_id,
                 provider="openai",
                 base_url=f"https://{model_id}.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=_PRICING,
             )
         )

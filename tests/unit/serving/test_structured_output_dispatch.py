@@ -43,7 +43,14 @@ BODY = {
 class _Upstream(BaseAdapter):
     def __init__(self, *replies: str) -> None:
         super().__init__(
-            ModelConfig(id=MODEL, name=MODEL, provider="openai", base_url="https://upstream.test")
+            ModelConfig(
+                id=MODEL,
+                name=MODEL,
+                provider="openai",
+                base_url="https://upstream.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
+            )
         )
         self.replies = list(replies)
         self.calls: list[list[dict[str, Any]]] = []

@@ -1878,6 +1878,7 @@ class FixedRouter:
         prefill_tokens: int = 0,
         preferred_endpoint_id: str | None = None,
         endpoint_scope: frozenset[str] | None = None,
+        use_affinity: bool = True,
     ) -> BaseAdapter | None:
         """Return the adapter automatic routing would choose, without dispatching.
 
@@ -1896,6 +1897,9 @@ class FixedRouter:
                 route can serve it. Unlike ``pin_provider`` it does not turn the
                 selection into a single-candidate dispatch: the result is still
                 an ordinary selection subject to the caller's fallback loop.
+            endpoint_scope: Candidate range, as for a dispatch.
+            use_affinity: Whether the caller's affinity pin is followed and
+                updated (``RoutingRequestOptions.affinity``).
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -1906,6 +1910,7 @@ class FixedRouter:
             prefill_tokens=prefill_tokens,
             preferred_endpoint_id=preferred_endpoint_id,
             endpoint_scope=endpoint_scope,
+            use_affinity=use_affinity,
         )
 
     def preferred_endpoint_for_provider(
@@ -1971,6 +1976,7 @@ class FixedRouter:
         endpoint_scope: frozenset[str] | None = None,
         require_target: bool = False,
         fingerprint: str | None = None,
+        use_affinity: bool = True,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
@@ -2004,6 +2010,9 @@ class FixedRouter:
                 candidate per attempt is told which candidate it lost.
             fingerprint: This request's conversation, so the prefill-aware draw
                 judges a mega-prefill the way the dispatch's lease will count it.
+            use_affinity: Whether the caller's affinity pin is followed and
+                updated (``RoutingRequestOptions.affinity``). ``False`` leaves the
+                pin untouched; the prefill-aware draw still knows the caller.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -2109,6 +2118,10 @@ class FixedRouter:
         affinity_key: str | None = None
         if AFFINITY_ENABLED:
             affinity_key = req_ctx.get().get("affinity_key") or None
+        # The key whose pin this selection follows and records: none for a
+        # dispatch that must leave the caller's pin alone, which still hands the
+        # caller's key to the prefill-aware draw below.
+        pin_key = affinity_key if use_affinity else None
 
         # Set when a pin is dropped for backlog, so selection does not simply
         # hand the caller straight back to the endpoint it was moved off.
@@ -2119,10 +2132,10 @@ class FixedRouter:
         # planned candidate would be silently replaced by the one the plan has
         # already left behind. The entry is left alone rather than dropped: it is
         # still the right answer for the next ordinary selection.
-        if affinity_key and not require_target:
+        if pin_key and not require_target:
             now = time.monotonic()
             with self._lock:
-                entry = self._affinity.get((affinity_key, model_id))
+                entry = self._affinity.get((pin_key, model_id))
                 if entry is not None and entry.expires_at > now:
                     for adapter, _w in allowed:
                         if endpoint_id_for_adapter(adapter) == entry.endpoint_id:
@@ -2134,16 +2147,16 @@ class FixedRouter:
                             # whatever it picks, so the caller rebuilds locality
                             # on an endpoint that can actually serve it.
                             if self._prefill_load.should_keep_affinity(
-                                entry.endpoint_id, affinity_key=affinity_key
+                                entry.endpoint_id, affinity_key=pin_key
                             ):
                                 entry.expires_at = _affinity_expiry(entry.created_at, now)
                                 return adapter
                             avoid_endpoint_id = entry.endpoint_id
                             break
                     else:
-                        del self._affinity[(affinity_key, model_id)]
+                        del self._affinity[(pin_key, model_id)]
                 elif entry is not None:
-                    del self._affinity[(affinity_key, model_id)]
+                    del self._affinity[(pin_key, model_id)]
 
         # A caller-supplied target outranks affinity: it was asked for now,
         # while affinity only remembers what served this conversation last. It
@@ -2167,7 +2180,7 @@ class FixedRouter:
                         avoid_endpoint_id=None,
                         fingerprint=fingerprint,
                     ),
-                    affinity_key,
+                    pin_key,
                 )
             if require_target:
                 # Falling through would hand back a different endpoint: the
@@ -2185,7 +2198,7 @@ class FixedRouter:
             avoid_endpoint_id=avoid_endpoint_id,
             fingerprint=fingerprint,
         )
-        return self._record_affinity_and_return(model_id, chosen, affinity_key)
+        return self._record_affinity_and_return(model_id, chosen, pin_key)
 
     def _record_affinity_and_return(
         self,
@@ -2281,6 +2294,7 @@ class FixedRouter:
         endpoint_scope: frozenset[str] | None = None,
         require_target: bool = False,
         fingerprint: str | None = None,
+        use_affinity: bool = True,
     ) -> tuple[BaseAdapter | None, DispatchClaim | None]:
         """Select an adapter and claim the dispatch slot for its endpoint.
 
@@ -2322,6 +2336,7 @@ class FixedRouter:
                     prefill_tokens=prefill_tokens,
                     endpoint_scope=endpoint_scope,
                     fingerprint=fingerprint,
+                    use_affinity=use_affinity,
                 ),
                 None,
             )
@@ -2347,6 +2362,7 @@ class FixedRouter:
                 endpoint_scope=endpoint_scope,
                 require_target=require_target,
                 fingerprint=fingerprint,
+                use_affinity=use_affinity,
             )
             if preferred is not None:
                 preferred_endpoint = endpoint_id_for_adapter(preferred)
@@ -2373,6 +2389,7 @@ class FixedRouter:
                 exclude=exclude,
                 endpoint_scope=endpoint_scope,
                 fingerprint=fingerprint,
+                use_affinity=use_affinity,
             )
             if adapter is None:
                 return None, None
@@ -2507,6 +2524,7 @@ class FixedRouter:
         endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
         allow_fallback = routing_options.allow_fallback if routing_options is not None else True
         require_target = routing_options.require_target if routing_options is not None else False
+        use_affinity = routing_options.affinity if routing_options is not None else True
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -2540,6 +2558,7 @@ class FixedRouter:
                     endpoint_scope=endpoint_scope,
                     require_target=require_target,
                     fingerprint=fingerprint,
+                    use_affinity=use_affinity,
                 )
                 if primary is not None:
                     lease = self._prefill_load.acquire(
@@ -2666,7 +2685,8 @@ class FixedRouter:
                 # candidates out of the order it planned -- and would try the
                 # same candidate twice, once here and once from the caller.
                 raise primary_error
-            self._drop_affinity(model_id)
+            if use_affinity:
+                self._drop_affinity(model_id)
             refused_window = _widest_refused_window(None, primary, primary_error)
             # Every other route in declaration order, bounded by the dispatch
             # scope and the request's modalities exactly as selection was. The
@@ -2830,6 +2850,7 @@ class FixedRouter:
         endpoint_scope = routing_options.endpoint_scope if routing_options is not None else None
         allow_fallback = routing_options.allow_fallback if routing_options is not None else True
         require_target = routing_options.require_target if routing_options is not None else False
+        use_affinity = routing_options.affinity if routing_options is not None else True
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
@@ -2863,6 +2884,7 @@ class FixedRouter:
                     endpoint_scope=endpoint_scope,
                     require_target=require_target,
                     fingerprint=fingerprint,
+                    use_affinity=use_affinity,
                 )
                 if primary is not None:
                     lease = self._prefill_load.acquire(
@@ -3017,7 +3039,8 @@ class FixedRouter:
                 # candidates out of the order it planned -- and would try the
                 # same candidate twice, once here and once from the caller.
                 raise primary_error
-            self._drop_affinity(model_id)
+            if use_affinity:
+                self._drop_affinity(model_id)
             # Once any chunk has been yielded to the client the SSE stream
             # has committed to a single provider. Falling back here would
             # produce a corrupt response: duplicate role/system events from

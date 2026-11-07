@@ -30,6 +30,7 @@ from serving.auto_mode import AutoMode, load_auto_mode
 from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
+from serving.config.batch_routes import BatchRouteResolver
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
@@ -329,6 +330,43 @@ async def _apply_route_removals_after_boot(services: AppServices) -> None:
     for model_id in sorted({model_id for model_id, _route_id in resolver.removed_routes()}):
         async with model_router_transition_lock(services, model_id):
             apply_persisted_provider_route_removals(services, model_ids={model_id})
+
+
+async def _refresh_batch_route_snapshots(
+    resolver: BatchRouteResolver,
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Periodically reload the per-route batch choices so workers converge after admin edits.
+
+    No RouteWise rebuild follows a change: a batch request's routes are worked
+    out from the snapshot when it is dispatched.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await resolver.load_all()
+        except Exception:
+            logger.warning("Batch route snapshot refresh failed", exc_info=True)
+
+
+async def _attach_batch_routes(router: Any, store: Any) -> BatchRouteResolver:
+    """Attach the per-route batch choices to the shared router, loaded if they can be.
+
+    Attached even when the first load fails: until the refresh loop's read
+    lands, every route follows its locality, and the admin batch endpoint
+    refuses to write (``ready``).
+    """
+    resolver = BatchRouteResolver(store)
+    try:
+        await resolver.load_all()
+    except Exception:
+        logger.warning(
+            "Batch route snapshot load failed; retrying in the background",
+            exc_info=True,
+        )
+    router.batch_route_resolver = resolver
+    return resolver
 
 
 async def _refresh_offload_route_snapshots(
@@ -1560,6 +1598,7 @@ async def initialize() -> AppServices:
     disabled_provider_refresh_task = None
     route_state_refresh_task = None
     offload_route_resolver = None
+    batch_route_resolver: BatchRouteResolver | None = None
     offload_route_refresh_task = None
     if operational_store is not None:
         try:
@@ -1678,6 +1717,14 @@ async def initialize() -> AppServices:
         _BACKGROUND_TASKS.add(offload_route_refresh_task)
         offload_route_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
         logger.info("Offload route resolver initialized")
+
+        # Which routes batch work may use (serving/config/batch_routes.py).
+        batch_route_resolver = await _attach_batch_routes(router, operational_store)
+        batch_route_refresh_task = asyncio.create_task(
+            _refresh_batch_route_snapshots(batch_route_resolver)
+        )
+        _BACKGROUND_TASKS.add(batch_route_refresh_task)
+        batch_route_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     # Say which routes the operational store just took out of service. Both
     # resolvers are attached by now, so this is the first moment the effective
@@ -1815,6 +1862,7 @@ async def initialize() -> AppServices:
         disabled_provider_resolver=disabled_provider_resolver,
         route_state_resolver=route_state_resolver,
         offload_route_resolver=offload_route_resolver,
+        batch_route_resolver=batch_route_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,

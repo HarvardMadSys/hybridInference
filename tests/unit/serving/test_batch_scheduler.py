@@ -350,9 +350,9 @@ async def worker(settings, auth, dispatch, limiter):
     """Build schedulers on a store; every one built is stopped afterwards."""
     built: list[BatchScheduler] = []
 
-    def build(store, *, caps=None, timings=SLOW, load=None):
+    def build(store, *, caps=None, timings=SLOW, load=None, router=None):
         services = types.SimpleNamespace(
-            router=None,
+            router=router,
             operational_store=object(),
             user_concurrency_limiter=limiter,
             model_concurrency_resolver=None,
@@ -932,6 +932,48 @@ async def test_retryable_failures_cool_the_model_down(worker, dispatch, threshol
     # The flaky model's attempts stop at the threshold; the healthy one still runs.
     assert len(dispatch.calls) == threshold + 1
     assert all(c["model_id"] != "flaky" for c in store.claims[claims:])
+
+
+def _route_table(model: str, base_url: str) -> Any:
+    from routing.routers import FixedRouter
+    from serving.adapters.base import ModelConfig
+
+    adapter = types.SimpleNamespace(
+        config=ModelConfig(id=model, name=model, provider="p", base_url=base_url)
+    )
+    router = FixedRouter()
+    router.register_route(model, [(adapter, 1.0)])
+    return router
+
+
+async def test_an_item_whose_model_has_no_batch_route_fails_without_running(worker, dispatch):
+    """A queued item fails with the reason a new batch is refused for, not left to wait."""
+    store = FakeStore()
+    store.add(2)
+    scheduler = worker(store, caps={"m1": 1}, router=_route_table("m1", "https://cloud.test"))
+
+    scheduler.start()
+    await until(lambda: store.count("failed") == 2)
+
+    assert dispatch.calls == []
+    assert store.calls["mark_dispatched"] == 0
+    assert store.calls["retry_item"] == 0
+    error = store.items[1]["error"]
+    assert error["code"] == "batch_route_unavailable"
+    assert error["status"] == 400
+    assert "no route that batch requests may use" in error["message"]
+    assert store.items[1]["status_code"] == 400
+
+
+async def test_an_item_whose_model_has_a_batch_route_runs(worker, dispatch):
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store, caps={"m1": 1}, router=_route_table("m1", "http://localhost:8000"))
+
+    scheduler.start()
+    await until(lambda: store.count("completed") == 1)
+
+    assert len(dispatch.calls) == 1
 
 
 async def test_an_item_past_its_last_attempt_fails_with_its_last_error(worker, dispatch):

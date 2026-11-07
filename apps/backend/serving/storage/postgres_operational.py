@@ -3498,12 +3498,55 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return _parse_command_tag_count(tag) > 0
 
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Return every stored batch choice ordered by model and route."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, batch_allowed, updated_at, updated_by "
+                "FROM provider_route_batch_policies ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Store one route's batch choice; ``None`` deletes it (the route follows its locality)."""
+        async with self._pool.acquire() as conn:
+            if batch_allowed is None:
+                await conn.execute(
+                    "DELETE FROM provider_route_batch_policies "
+                    "WHERE model_id = $1 AND route_id = $2",
+                    model_id,
+                    route_id,
+                )
+                return
+            await conn.execute(
+                """
+                INSERT INTO provider_route_batch_policies
+                    (model_id, route_id, batch_allowed, updated_at, updated_by)
+                VALUES ($1, $2, $3, NOW(), $4)
+                ON CONFLICT (model_id, route_id) DO UPDATE SET
+                    batch_allowed = EXCLUDED.batch_allowed,
+                    updated_at = EXCLUDED.updated_at,
+                    updated_by = EXCLUDED.updated_by
+                """,
+                model_id,
+                route_id,
+                batch_allowed,
+                updated_by,
+            )
+
     async def delete_provider_route_candidate_with_config(
         self,
         model_id: str,
         route_id: str,
     ) -> bool:
-        """Atomically delete a route candidate, its override row and its route state."""
+        """Atomically delete a route candidate, its override row, route state and batch choice."""
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "DELETE FROM provider_route_configs WHERE model_id = $1 AND route_id = $2",
@@ -3512,6 +3555,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_route_states WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_batch_policies WHERE model_id = $1 AND route_id = $2",
                 model_id,
                 route_id,
             )
@@ -3539,6 +3587,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_route_states WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_batch_policies WHERE model_id = $1",
                 model_id,
             )
             await conn.execute(

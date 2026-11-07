@@ -124,7 +124,8 @@ def _embedding_services(
     access gate on the router under the same names. ``gate_role=None`` leaves
     the gate out, the inconsistency every embeddings surface must refuse.
     """
-    adapter = SimpleNamespace(config=SimpleNamespace(id=model))
+    # Self-hosted, so batch work may use it (serving/config/batch_routes.py).
+    adapter = SimpleNamespace(config=SimpleNamespace(id=model, deployment_type="self_hosted"))
     router = FixedRouter()
     if gate_role is not None:
         router.register_embedding_route(

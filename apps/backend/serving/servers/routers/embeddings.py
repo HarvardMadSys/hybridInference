@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from routing.endpoints import endpoint_id_for_config
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.batch.attempts import note_request_id, observe_billing
+from serving.config.batch_routes import batch_embedding_adapter, batch_route_refusal
 from serving.config.runtime_settings import get_runtime_settings
 from serving.exceptions import UpstreamModelQueued, user_safe_upstream_error
 from serving.grant_auth import ledger_attribution
@@ -416,6 +417,13 @@ async def execute_embeddings(
         )
 
     adapter = embedding_adapters[model]
+    if ctx.batch is not None:
+        # A batch item runs only on the backends batch work may use
+        # (serving/config/batch_routes.py). The batch worker fails an item whose
+        # model has none before dispatch; this is the backstop.
+        adapter = batch_embedding_adapter(adapter, model, router_exec)
+        if adapter is None:
+            raise HTTPException(400, batch_route_refusal(model))
     require_embedding_pricing(adapter)
     adapter_config = getattr(adapter, "config", None)
     provider = getattr(adapter_config, "provider", None) or "unknown"

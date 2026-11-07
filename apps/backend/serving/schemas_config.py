@@ -287,6 +287,18 @@ class ConfigBackupRouteState(BaseModel):
     removed: bool = False
 
 
+class ConfigBackupRouteBatchPolicy(BaseModel):
+    """Whether batch work may use one provider route, in a configuration backup.
+
+    Only routes with an administrator's choice are listed; the others follow
+    their locality.
+    """
+
+    model_id: str
+    route_id: str
+    batch_allowed: bool
+
+
 class ConfigBackupRouteCandidate(BaseModel):
     """One runtime provider route candidate in a configuration backup."""
 
@@ -371,6 +383,7 @@ class ConfigBackupPayload(BaseModel):
     provider_env_key_min_roles: list[ConfigBackupEnvKeyMinRole] = Field(default_factory=list)
     disabled_providers: list[str] = Field(default_factory=list)
     provider_route_states: list[ConfigBackupRouteState] = Field(default_factory=list)
+    provider_route_batch_policies: list[ConfigBackupRouteBatchPolicy] = Field(default_factory=list)
     provider_route_candidates: list[ConfigBackupRouteCandidate] = Field(default_factory=list)
     provider_route_configs: list[ConfigBackupRouteConfig] = Field(default_factory=list)
     provider_route_capabilities: list[ConfigBackupRouteCapability] = Field(default_factory=list)

@@ -1650,6 +1650,25 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Return every route's stored batch choice (``batch_allowed``), by (model, route id)."""
+
+    @abstractmethod
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Store whether batch work may use one route; ``None`` deletes the choice.
+
+        A route without a choice follows its locality (``serving.config.batch_routes``).
+        Keyed by the model's canonical id and the route id, as the route states are.
+        """
+
+    @abstractmethod
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delete a runtime provider route candidate row. Returns True if removed."""
 

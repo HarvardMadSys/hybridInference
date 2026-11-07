@@ -69,6 +69,11 @@ from serving.batch.dispatch import dispatch_item
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoad
 from serving.batch.validation import validate_file_batch
 from serving.batch.webhooks import deliver_due_events
+from serving.config.batch_routes import (
+    BATCH_ROUTE_UNAVAILABLE,
+    batch_route_available,
+    batch_route_refusal,
+)
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
@@ -78,7 +83,7 @@ from serving.servers.auth import (
 )
 from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id
 from serving.spend_ledger import spend_check_of
-from serving.storage.batch_store import TARGET_CHAT
+from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -854,6 +859,24 @@ class BatchScheduler:
             return
 
         target = item.get("target") or TARGET_CHAT
+        if not batch_route_available(
+            self._services, entry.model_id, embeddings=target == TARGET_EMBEDDINGS
+        ):
+            # No route of the model may serve batch work any more (an admin
+            # changed it since the batch was created). Failed, with the reason a
+            # new batch is refused for, rather than queued for a route that
+            # never comes.
+            await self._complete(
+                entry,
+                error={
+                    "code": BATCH_ROUTE_UNAVAILABLE,
+                    "message": batch_route_refusal(entry.model_id),
+                    "status": 400,
+                },
+                status_code=400,
+                cost_status="not_billed",
+            )
+            return
         dispatch_body = self._dispatch_body(item, entry, target)
         give_back = await self._take_user_slot(user_ctx, entry.model_id)
         if give_back is None:

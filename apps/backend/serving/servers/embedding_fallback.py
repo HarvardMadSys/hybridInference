@@ -58,6 +58,11 @@ class FallbackEmbeddingAdapter:
         self.config = self._adapters[0].config
 
     @property
+    def backends(self) -> tuple[Any, ...]:
+        """The route adapters this chain tries, in order."""
+        return tuple(self._adapters)
+
+    @property
     def serving_config(self) -> Any:
         """``ModelConfig`` of the backend that served the current request.
 
