@@ -3,12 +3,17 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-import { BATCHES_PATH, BATCH_REQUESTS_PATH } from '@/components/features/admin/batchRoutes';
+import {
+  BATCHES_PATH,
+  BATCH_REQUESTS_PATH,
+  MODEL_QUEUE_PATH,
+} from '@/components/features/admin/batchRoutes';
 
 /** The Batches tab's pages. Each has its own address, so a link opens it. */
 const SECTIONS = [
   { href: BATCHES_PATH, label: 'Batches' },
   { href: BATCH_REQUESTS_PATH, label: 'Requests' },
+  { href: MODEL_QUEUE_PATH, label: 'Model queue' },
 ] as const;
 
 /** The segmented control above every Batches page. */
