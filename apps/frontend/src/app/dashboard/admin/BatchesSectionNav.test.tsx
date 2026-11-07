@@ -24,7 +24,7 @@ describe('BatchesSectionNav', () => {
     cleanup();
   });
 
-  it('links to the batch list and the batch requests', () => {
+  it('links to the batch list, the batch requests and the model queue', () => {
     render(<BatchesSectionNav />);
 
     const nav = screen.getByRole('navigation', { name: 'Batches sections' });
@@ -35,6 +35,7 @@ describe('BatchesSectionNav', () => {
     ).toEqual([
       ['Batches', '/dashboard/admin/batches'],
       ['Requests', '/dashboard/admin/batches/requests'],
+      ['Model queue', '/dashboard/admin/batches/queue'],
     ]);
   });
 
@@ -44,6 +45,7 @@ describe('BatchesSectionNav', () => {
       ['/dashboard/admin/batches/requests', 'Requests'],
       // A batch's address under Requests is still Requests.
       ['/dashboard/admin/batches/requests/anything', 'Requests'],
+      ['/dashboard/admin/batches/queue', 'Model queue'],
     ]) {
       pathname = path;
       render(<BatchesSectionNav />);
