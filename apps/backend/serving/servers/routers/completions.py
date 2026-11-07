@@ -27,6 +27,7 @@ from serving.auto_mode import (
     openai_features,
     session_key,
 )
+from serving.config.batch_routes import batch_endpoint_scope, batch_route_refusal
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.grant_auth import ledger_attribution
@@ -1227,6 +1228,16 @@ async def execute_chat(
                 detail=f"Pinned provider '{pin_provider}' not found for model {model}",
             )
 
+    # A batch item runs only on the routes batch work may use: the routers' own
+    # per-request range narrows every selection, retry and fallback to them. It
+    # leaves the owner's affinity pin alone, so a batch on the local routes does
+    # not re-pin the owner's interactive requests there. A model with no such
+    # route is refused before anything runs (the batch worker fails such items
+    # before dispatch; this is the backstop).
+    batch_scope = batch_endpoint_scope(router_exec, model) if ctx.batch is not None else None
+    if batch_scope is not None and not batch_scope:
+        raise HTTPException(status_code=400, detail=batch_route_refusal(model))
+
     # Per-model routing strategy via ModelRouterRegistry. Pinned requests still
     # bypass RouteWise, but both selected routers now share one execution call
     # contract below.
@@ -1234,8 +1245,10 @@ async def execute_chat(
         RoutingRequestOptions(
             pin_provider=pin_provider,
             required_modalities=required_modalities,
+            endpoint_scope=batch_scope,
+            affinity=ctx.batch is None,
         )
-        if pin_provider or required_modalities
+        if pin_provider or required_modalities or ctx.batch is not None
         else None
     )
     active_router = router_exec

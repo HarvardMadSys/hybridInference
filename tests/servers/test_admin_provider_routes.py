@@ -22,6 +22,7 @@ from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
 from serving.audit import AuditTarget
+from serving.config.batch_routes import BatchRouteResolver
 from serving.config.route_states import RouteState, RouteStateResolver
 from serving.config.routewise_model_settings import model_routewise_setting_keys
 from serving.config.settings import get_settings
@@ -9203,3 +9204,108 @@ async def test_a_route_marked_deleted_but_still_listed_cannot_be_toggled(admin_c
     )
     stored = states.rows[("minimax-fast", FEATHERLESS)]
     assert (stored["disabled"], stored["removed"]) == (True, True)
+
+
+# ---------------------------------------------------------------------------
+# Batch work: which routes it may use
+# ---------------------------------------------------------------------------
+
+
+class _BatchPolicyTable:
+    """Stateful stand-in for ``provider_route_batch_policies`` with a real resolver on top."""
+
+    def __init__(self, client, op_store, route_executor) -> None:
+        self.rows: dict[tuple[str, str], dict[str, Any]] = {}
+        op_store.set_provider_route_batch_policy = AsyncMock(side_effect=self.set)
+        op_store.list_all_provider_route_batch_policies = AsyncMock(side_effect=self.list_all)
+        self.resolver = BatchRouteResolver(op_store)
+        client.app.state.services.batch_route_resolver = self.resolver
+        route_executor.batch_route_resolver = self.resolver
+
+    async def set(self, model_id, route_id, *, batch_allowed, updated_by):
+        if batch_allowed is None:
+            self.rows.pop((model_id, route_id), None)
+            return
+        self.rows[(model_id, route_id)] = {
+            "model_id": model_id,
+            "route_id": route_id,
+            "batch_allowed": batch_allowed,
+            "updated_by": updated_by,
+        }
+
+    async def list_all(self):
+        return [dict(row) for _key, row in sorted(self.rows.items())]
+
+
+async def _set_batch(client, route_id: str, batch_allowed, model_id: str = "minimax-fast"):
+    return await client.patch(
+        f"/admin/routing/provider-route-batch/{model_id}/{route_id}",
+        json={"batch_allowed": batch_allowed},
+        headers=AUTH,
+    )
+
+
+def _batch_fields(row: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return row["batch_allowed"], row["batch_allowed_default"], row["batch_allowed_choice"]
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_route_takes_batch_work_only_once_an_admin_allows_it(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _BatchPolicyTable(client, op_store, route_executor)
+
+    listed = (await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)).json()
+    # Every route of this model is a cloud provider: none takes batch work by default.
+    assert {_batch_fields(row) for row in listed["routes"]} == {(False, False, None)}
+
+    allowed = await _set_batch(client, CHUTES, True)
+    assert allowed.status_code == 200, allowed.text
+    assert _batch_fields(allowed.json()) == (True, False, True)
+    assert table.rows[("minimax-fast", CHUTES)]["batch_allowed"] is True
+    assert table.resolver.choice("minimax-fast", CHUTES) is True
+    assert _audited_actions()[-1] == "routing.provider_routes.batch"
+
+    # Clearing the choice hands the route back to its locality.
+    cleared = await _set_batch(client, CHUTES, None)
+    assert cleared.status_code == 200, cleared.text
+    assert _batch_fields(cleared.json()) == (False, False, None)
+    assert table.rows == {}
+
+    # A choice is kept per route; a forbidden route reads as such.
+    forbidden = await _set_batch(client, FEATHERLESS, False)
+    assert _batch_fields(forbidden.json()) == (False, False, False)
+    others = (await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)).json()
+    by_route = {row["route_id"]: _batch_fields(row) for row in others["routes"]}
+    assert by_route[FEATHERLESS] == (False, False, False)
+    assert by_route[CHUTES] == (False, False, None)
+
+
+@pytest.mark.asyncio
+async def test_the_batch_endpoint_waits_for_the_choices_to_load(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    table = _BatchPolicyTable(client, op_store, route_executor)
+    op_store.list_all_provider_route_batch_policies = AsyncMock(
+        side_effect=ConnectionError("database unavailable")
+    )
+    with pytest.raises(ConnectionError):
+        await table.resolver.load_all()
+
+    response = await _set_batch(client, CHUTES, True)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Batch route choices are still loading; try again shortly"
+    assert table.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_the_batch_endpoint_refuses_a_value_that_is_not_a_choice(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _BatchPolicyTable(client, op_store, route_executor)
+
+    response = await client.patch(
+        f"/admin/routing/provider-route-batch/minimax-fast/{CHUTES}",
+        json={"batch_allowed": "sometimes"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422

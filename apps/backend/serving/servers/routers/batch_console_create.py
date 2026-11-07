@@ -156,6 +156,7 @@ def _admission_context(
         visibility_resolver=visibility_resolver,
         embedding_adapters=getattr(services, "embedding_adapters", None),
         embedding_routes=getattr(router_exec, "embedding_routes", None),
+        batch_routes=getattr(router_exec, "batch_route_resolver", None),
     )
 
 
