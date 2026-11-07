@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-10-27 05:51-0400\n"
+"POT-Creation-Date: 2026-11-07 14:03-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -259,6 +259,46 @@ msgstr ""
 
 #: ../developer/configuration.md:49
 msgid ""
+"The built-in `rules.request_log_queue_saturation` rule pages when the "
+"bounded request-log queue drops `api_logs` report rows. It is on by "
+"default but still only runs when alerting is otherwise enabled "
+"(`ALERTS_ENABLED` and a configured channel). Tune or disable it in "
+"`alerts.yaml`:"
+msgstr ""
+"内置的 `rules.request_log_queue_saturation` 规则会在有界请求日志队列丢弃 `api_logs` "
+"报表行时触发告警。该规则默认开启，但仍须启用告警系统（`ALERTS_ENABLED`）并配置通知渠道才会运行。可在 `alerts.yaml` "
+"中调整或关闭："
+
+#: ../developer/configuration.md:63
+msgid ""
+"`threshold_count` counts the producer's loss warnings, not dropped rows. "
+"The producer warns on the first drop, every 100th drop, and at least once"
+" per 60 seconds while drops continue, so a second small burst after a "
+"quiet period is still observable. The rule uses the alert engine's "
+"existing cooldown, so a sustained loss episode does not page once per "
+"warning."
+msgstr ""
+"`threshold_count` 统计生产端发出的丢弃警告次数，而不是丢弃行数。生产端在首次丢弃、每累计丢弃 100 "
+"行时发出警告；持续丢弃期间还会按 60 "
+"秒间隔刷新警告，因此静默一段时间后再次出现的小批量丢弃仍可被观测。该规则复用告警引擎现有的冷却机制，不会在持续丢弃期间每收到一次警告就发送一次通知。"
+
+#: ../developer/configuration.md:69
+msgid ""
+"Every record-driven rule keeps at most 250,000 samples in its window. At "
+"traffic that would exceed that, the oldest samples leave early: the "
+"window then covers less than `window_sec`, and a rate alert says `only "
+"the latest 250000 samples are kept`. The `top_paths` line of "
+"`failed_request_rate` tracks at most 256 distinct paths per window. "
+"Failures on any other path still count toward the rate, and the line says"
+" how many it left out."
+msgstr ""
+"每条由日志记录驱动的规则，其窗口内最多保留 250,000 个样本。流量高到会超出这一数量时，最早的样本会提前移出：此时窗口覆盖的时长短于 "
+"`window_sec`，比率类告警会注明 `only the latest 250000 samples are "
+"kept`。`failed_request_rate` 告警中的 `top_paths` 一行在每个窗口内最多跟踪 256 "
+"个不同路径。其他路径上的失败仍计入失败率，该行会注明有多少未列出。"
+
+#: ../developer/configuration.md:77
+msgid ""
 "The files are not the whole story once a database is configured. The "
 "admin console writes providers, keys, routes, weights and per-model "
 "overrides to the operational store, and the gateway re-applies that state"
@@ -272,11 +312,11 @@ msgstr ""
 "](#runtime-configuration-from-the-admin-console)，设置项见[存储在数据库中的设置项"
 "](#settings-stored-in-the-database)。"
 
-#: ../developer/configuration.md:58
+#: ../developer/configuration.md:86
 msgid "Where configuration lives"
 msgstr "配置放在哪里"
 
-#: ../developer/configuration.md:60
+#: ../developer/configuration.md:88
 msgid ""
 "`config/examples/` contains reference gateway configuration, including "
 "`models.openrouter.yaml` and `routing.minimal.yaml`. A deployment keeps "
@@ -292,7 +332,7 @@ msgstr ""
 "选用这些文件。manifest 和 overlay 的目录结构见[发行版定制](distribution-customization.md"
 "#the-distribution-manifest)。"
 
-#: ../developer/configuration.md:68
+#: ../developer/configuration.md:96
 msgid ""
 "A provider, key, route or whole model can also be added from the admin "
 "console while the gateway runs. That state lives in Postgres and is "
@@ -301,19 +341,19 @@ msgstr ""
 "网关运行期间，也可以在管理控制台里添加 provider、key、路由乃至整个模型。这些状态保存在 Postgres 里，详见[下文"
 "](#runtime-configuration-from-the-admin-console)。"
 
-#: ../developer/configuration.md:72
+#: ../developer/configuration.md:100
 msgid "How a gateway finds its config"
 msgstr "网关如何找到自己的配置"
 
-#: ../developer/configuration.md:74
+#: ../developer/configuration.md:102
 msgid "Precedence is environment, then manifest, then built-in default."
 msgstr "优先级依次是：环境变量、manifest、内置默认值。"
 
-#: ../developer/configuration.md:76
+#: ../developer/configuration.md:104
 msgid "Each kind of file is looked up on its own, in this order:"
 msgstr "每类文件都单独查找，顺序如下："
 
-#: ../developer/configuration.md:78
+#: ../developer/configuration.md:106
 msgid ""
 "**An explicit environment variable.** `MODELS_CONFIG_PATH`, "
 "`ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH`. (The older names "
@@ -323,7 +363,7 @@ msgstr ""
 "**显式设置的环境变量**。`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`。（旧名"
 " `MODELS_CONFIG` 和 `ROUTING_CONFIG` 仍然可用；两者都设置时，以规范名 `*_CONFIG_PATH` 为准。）"
 
-#: ../developer/configuration.md:82
+#: ../developer/configuration.md:110
 msgid ""
 "**The distribution manifest's `paths:` section** — only when "
 "`DISTRIBUTION_CONFIG_MODE=active`. By default a manifest is only checked,"
@@ -334,7 +374,7 @@ msgstr ""
 "时生效。默认情况下只检查 manifest，不应用它；见[启用 manifest](distribution-"
 "customization.md#activating-a-manifest)。"
 
-#: ../developer/configuration.md:86
+#: ../developer/configuration.md:114
 msgid ""
 "**The built-in default**, which points at the reference examples: "
 "`config/examples/models.openrouter.yaml` and "
@@ -346,11 +386,11 @@ msgstr ""
 "`config/examples/routing.minimal.yaml`。`alerts` 的默认值是 "
 "`config/alerts.yaml`，本仓库并不带这个文件——缺少告警配置文件就表示「使用内置阈值」。"
 
-#: ../developer/configuration.md:92
+#: ../developer/configuration.md:120
 msgid "Two things follow:"
 msgstr "这意味着两件事："
 
-#: ../developer/configuration.md:94
+#: ../developer/configuration.md:122
 msgid ""
 "An environment variable **beats the manifest**. If you set "
 "`MODELS_CONFIG_PATH` in a deployment that also has a manifest, the "
@@ -361,27 +401,55 @@ msgstr ""
 " 里的 `models:` 路径就会被忽略，网关会记一条 `explicit env override ... wins over "
 "manifest value ...` 日志。两种方式选一种就好。"
 
-#: ../developer/configuration.md:98
+#: ../developer/configuration.md:126
 msgid ""
 "Paths that come from the environment are resolved relative to the "
 "**working directory** of the process. Relative paths inside a manifest "
 "are resolved against **the manifest file's own directory**."
 msgstr "来自环境变量的路径，相对于进程的**工作目录**解析；manifest 里的相对路径，则相对于 **manifest 文件自己所在的目录**解析。"
 
-#: ../developer/configuration.md:102
+#: ../developer/configuration.md:130
 msgid ""
 "A path that resolves from layer 1 or 2 but does not exist is a warning, "
 "not a failure: the gateway logs `Models config not found: <path> "
-"(source=env)` and continues with no models registered."
+"(source=env)` and continues with no models registered. That warning is "
+"about the file lookup. Once the database holds a models or routing row, "
+"the file is no longer read."
 msgstr ""
 "如果第 1 层或第 2 层给出的路径实际不存在，网关只会发出警告，不会启动失败：它记录 `Models config not found: "
-"<path> (source=env)`，然后在一个模型都没注册的状态下继续运行。"
+"<path> (source=env)`，然后在一个模型都没注册的状态下继续运行。这条警告只针对文件查找。一旦数据库里存有 models 或 "
+"routing 的行，就不再读取这个文件。"
 
-#: ../developer/configuration.md:106
+#: ../developer/configuration.md:135
+msgid "Model and routing documents in the database"
+msgstr "数据库中的模型和路由文档"
+
+#: ../developer/configuration.md:137
+#, python-brace-format
+msgid ""
+"On a database-backed boot the gateway copies `models.yaml` and "
+"`routing.yaml` into `route_catalog` when that kind has no row and the "
+"file exists and is not blank. The copy keeps `${VAR}` unresolved. Later "
+"boots register from the row, and settings discovery scans the row. Alerts"
+" stay a file."
+msgstr ""
+"使用数据库启动时，如果某个 kind 在 `route_catalog` 里还没有行，且文件存在且非空，网关会把 `models.yaml` 和 "
+"`routing.yaml` 复制进去。复制时保留未展开的 `${VAR}`。之后的启动从这一行注册，设置项发现也扫描这一行。告警配置仍是文件。"
+
+#: ../developer/configuration.md:142
+msgid ""
+"A stored row wins, including an empty one. Editing the file and "
+"restarting does not change it. Delete the row and restart to import the "
+"file again. `provider_route_configs`, runtime candidates and weight "
+"overrides still apply on top of whichever document was loaded."
+msgstr ""
+"已存的行优先，空行也算。改文件再重启不会改变它。删掉这一行再重启，才会重新导入文件。`provider_route_configs`、运行时添加的候选路由和权重覆盖项，仍然叠在实际加载的那份文档之上。"
+
+#: ../developer/configuration.md:147
 msgid "What a fresh clone does with no configuration at all"
 msgstr "全新克隆、完全没有配置时会怎样"
 
-#: ../developer/configuration.md:108
+#: ../developer/configuration.md:149
 msgid ""
 "Start the gateway in a clean checkout with no `MODELS_CONFIG_PATH`, no "
 "manifest and no overlay, and the built-in default applies: it serves "
@@ -395,37 +463,37 @@ msgstr ""
 "`config/examples/models.openrouter.yaml`。这个文件注册了三个模型：两个直接走 "
 "OpenRouter，另一个优先用本地的 OpenAI 兼容服务器，失败时自动回退到 OpenRouter。三个模型都只需要同一个凭据。"
 
-#: ../developer/configuration.md:120
+#: ../developer/configuration.md:161
 msgid ""
 "Without that variable every model in the file is skipped — its route's "
 "only API key expands to empty — and the gateway says so before serving "
 "anything:"
 msgstr "不设这个变量，文件里的每个模型都会被跳过（每条路由唯一的 API key 展开后是空的），网关在开始服务之前就会给出提示："
 
-#: ../developer/configuration.md:130
+#: ../developer/configuration.md:171
 msgid ""
 "With a database, set it on the admin console's **Configuration** tab "
 "instead, which lists it as missing, and restart the backend."
 msgstr "有数据库时，改为在管理控制台的 **Configuration** 标签页上设置它（那里会把它标为缺失），然后重启后端。"
 
-#: ../developer/configuration.md:133
+#: ../developer/configuration.md:174
 msgid ""
 "This is the fastest way to a gateway that routes real traffic. Replace "
 "the file with your own registry once you know what you want to serve."
 msgstr "这是让网关跑上真实流量的最快路径。等你想清楚要提供哪些模型，再用自己的注册表替换这个文件。"
 
-#: ../developer/configuration.md:136
+#: ../developer/configuration.md:177
 msgid "The model registry"
 msgstr "模型注册表"
 
-#: ../developer/configuration.md:138
+#: ../developer/configuration.md:179
 msgid ""
 "[Adding a New Model](adding-models.md) is the field reference. Three "
 "things belong here because they are properties of *configuration loading*"
 " rather than of any one field:"
 msgstr "字段参考见[添加新模型](adding-models.md)。有三件事放在本页讲，因为它们属于*配置加载*的行为，而不是某个字段的含义："
 
-#: ../developer/configuration.md:142
+#: ../developer/configuration.md:183
 msgid ""
 "**A route's `kind:` picks the adapter; the model's `provider:` is its "
 "default.** When a route omits `kind:`, the model's top-level `provider:` "
@@ -439,7 +507,7 @@ msgstr ""
 "`api_key` 构造出一条路由。`provider` 同时也是写入 "
 "`api_logs.provider`、并在指标里展示的标签，所以一条路由可以用 `provider:` 单独覆盖它。"
 
-#: ../developer/configuration.md:149
+#: ../developer/configuration.md:190
 msgid ""
 "**These are the built-in kinds.** A deployment can add more with a "
 "[backend extension](backend-extensions.md); those are checked first."
@@ -493,7 +561,7 @@ msgstr ""
 msgid "`AnthropicAdapter`"
 msgstr ""
 
-#: ../developer/configuration.md:160
+#: ../developer/configuration.md:201
 msgid ""
 "Local inference servers have no dedicated adapter: `vllm`, `sglang` and "
 "`ollama` are OpenAI-compatible kinds that differ only in their provider "
@@ -504,7 +572,7 @@ msgstr ""
 "provider 标签和用量处理上。其他任何 kind 都会让注册表加载失败，报错 `ValueError: Unknown adapter "
 "kind: <kind>`。"
 
-#: ../developer/configuration.md:165
+#: ../developer/configuration.md:206
 #, python-brace-format
 msgid ""
 "**`${VAR}` interpolation in the registry is whole-value only.** In "
@@ -526,17 +594,17 @@ msgstr ""
 " 会以 `https://llm.chutes.ai/v1` 加载。数据库或环境变量里的值哪怕为空也优先。不支持 "
 "`${VAR:-default}`，也不支持嵌在字符串中间的替换："
 
-#: ../developer/configuration.md:184
+#: ../developer/configuration.md:225
 msgid ""
 "The routing and alerts files are more permissive (see below), so do not "
 "carry habits from one file to the other."
 msgstr "路由配置文件和告警配置文件的展开规则更宽松（见下文），所以别把一种文件里的写法习惯带到另一种文件里。"
 
-#: ../developer/configuration.md:187
+#: ../developer/configuration.md:228
 msgid "The routing file"
 msgstr "路由配置文件"
 
-#: ../developer/configuration.md:189
+#: ../developer/configuration.md:230
 msgid ""
 "`routing.yaml` is optional, and most deployments can leave it out. Read "
 "this section before relying on it: on a gateway with a database, which "
@@ -549,7 +617,7 @@ msgstr ""
 "服务栈就是这种），它的权重划分不起作用，它的健康探测也从不改变路由。流量去哪里，由模型注册表里的权重、在管理控制台里设置的权重覆盖，以及[路由](routing.md)里介绍的"
 " router 共同决定。"
 
-#: ../developer/configuration.md:196
+#: ../developer/configuration.md:237
 msgid "Every key, with its default:"
 msgstr "所有键及其默认值："
 
@@ -636,7 +704,7 @@ msgstr ""
 msgid "Free-form mapping."
 msgstr "自由格式的映射。"
 
-#: ../developer/configuration.md:207
+#: ../developer/configuration.md:248
 msgid ""
 "Each deployment entry needs both an `endpoint:` (which must start with "
 "`http://` or `https://`) and a non-empty `models:` list; an entry with an"
@@ -651,7 +719,7 @@ msgstr ""
 "initialize`，然后继续使用注册表自己的权重。而 `endpoint:` "
 "展开为空的条目只会被单独丢弃，同时发出一条警告，列出因此失去归属的模型。这样，某个变量没设置也不会导致其余端点全部失效。"
 
-#: ../developer/configuration.md:229
+#: ../developer/configuration.md:270
 msgid ""
 "**The weight split applies only to a gateway without a database.** At "
 "startup, the gateway sorts each model's routes into local and remote: a "
@@ -671,7 +739,7 @@ msgstr ""
 "设置了别的比例），在组内平均分摊，再把每个模型的权重缩放到总和为 1.0。如果某个模型有一组为空，全部流量归另一组。什么都匹配不上的模型，保留它 "
 "`route:` 列表里的权重。在带数据库的网关上，路由读的是注册表里的权重加上管理员设置的覆盖值，根本不会用到这次划分。"
 
-#: ../developer/configuration.md:240
+#: ../developer/configuration.md:281
 msgid ""
 "Health probing covers `local_deployment` endpoints only — remote "
 "providers do not serve the gateway's `/health` path and would be marked "
@@ -681,13 +749,25 @@ msgstr ""
 "健康探测只针对 `local_deployment` 里的端点：远程 provider 没有网关要探测的 `/health` "
 "路径，探测的话会被误判为不健康。每次探测都是向端点 origin 的根路径加 `/health` 发一个 `GET`。"
 
-#: ../developer/configuration.md:244
+#: ../developer/configuration.md:285
 msgid ""
-"**The probe only reports; it never changes routing.** An endpoint that fails every probe keeps its weight and keeps receiving traffic. Each change of state is logged at `WARNING`, and `GET /routing` shows the latest results to an administrator under `manager_status.endpoint_health`, next to `endpoint_health_enforced: false`. The map is keyed by endpoint URL, so an anonymous caller is shown `endpoint_health_enforced` without it. The [circuit breaker](routing.md#endpoint-health-and-circuit-breaking) is what takes a failing endpoint out of rotation."
+"**The probe only reports; it never changes routing.** An endpoint that "
+"fails every probe keeps its weight and keeps receiving traffic. Each "
+"change of state is logged at `WARNING`, and `GET /routing` shows the "
+"latest results to an administrator under "
+"`manager_status.endpoint_health`, next to `endpoint_health_enforced: "
+"false`. The map is keyed by endpoint URL, so an anonymous caller is shown"
+" `endpoint_health_enforced` without it. The [circuit breaker](routing.md"
+"#endpoint-health-and-circuit-breaking) is what takes a failing endpoint "
+"out of rotation."
 msgstr ""
-"**探测只报告结果，不会改变路由**。即使某个端点每次探测都失败，它也保有原来的权重，照样接收流量。每次状态变化都会记一条 `WARNING` 日志，`GET /routing` 向管理员在 `manager_status.endpoint_health` 下展示最新结果，旁边是 `endpoint_health_enforced: false`。这张映射以端点 URL 为键，所以匿名调用方只能看到 `endpoint_health_enforced`，看不到映射本身。真正把故障端点暂时移出的是[熔断器](routing.md#endpoint-health-and-circuit-breaking)。"
+"**探测只报告结果，不会改变路由**。即使某个端点每次探测都失败，它也保有原来的权重，照样接收流量。每次状态变化都会记一条 `WARNING` "
+"日志，`GET /routing` 向管理员在 `manager_status.endpoint_health` 下展示最新结果，旁边是 "
+"`endpoint_health_enforced: false`。这张映射以端点 URL 为键，所以匿名调用方只能看到 "
+"`endpoint_health_enforced`，看不到映射本身。真正把故障端点暂时移出的是[熔断器](routing.md"
+"#endpoint-health-and-circuit-breaking)。"
 
-#: ../developer/configuration.md:251
+#: ../developer/configuration.md:294
 #, python-brace-format
 msgid ""
 "Unlike the model registry, this file's expander handles `${VAR}`, "
@@ -700,7 +780,7 @@ msgstr ""
 "和嵌在长字符串里的变量，而且在任意嵌套层级都有效。告警文件的展开方式与此相同。数据库和环境变量都没有设置的变量，先取行内的 "
 "`:-default`，没有的话再用网关为这个设置项注册的默认值。"
 
-#: ../developer/configuration.md:257
+#: ../developer/configuration.md:300
 msgid ""
 "`routing_strategy:` and `routing_parameter:` are the deprecated spellings"
 " of `default_router:` and per-model `router_params:`. They still load, "
@@ -712,11 +792,11 @@ msgstr ""
 "`router_params:` 的旧写法，已废弃。它们仍然能加载，但会记录一条废弃警告。按模型选择 router（模型注册表里的 "
 "`router:` / `router_params:`）会覆盖 `default_router`，详见[路由](routing.md)。"
 
-#: ../developer/configuration.md:263
+#: ../developer/configuration.md:306
 msgid "Settings that currently have no effect"
 msgstr "目前不生效的设置"
 
-#: ../developer/configuration.md:265
+#: ../developer/configuration.md:308
 msgid ""
 "The gateway accepts these when it loads its configuration, so setting "
 "them does not stop it from starting, but today they do nothing — or, in "
@@ -756,7 +836,8 @@ msgstr "`health_check` 的探测结果"
 
 #: ../developer/configuration.md
 msgid ""
-"Logged, and shown to administrators on `GET /routing`; never used for routing"
+"Logged, and shown to administrators on `GET /routing`; never used for "
+"routing"
 msgstr "记入日志，并在 `GET /routing` 中向管理员展示；从不用于路由决策"
 
 #: ../developer/configuration.md
@@ -809,11 +890,11 @@ msgstr ""
 msgid "A label only; does not select a host or build anything"
 msgstr "只是个标签；不会选择主机，也不会构建任何东西"
 
-#: ../developer/configuration.md:279
+#: ../developer/configuration.md:322
 msgid "Runtime configuration from the admin console"
 msgstr "从管理控制台做运行时配置"
 
-#: ../developer/configuration.md:281
+#: ../developer/configuration.md:324
 msgid ""
 "The files above are read once, at startup. Everything else an operator "
 "changes about routing goes through the admin console — or the `/admin/*` "
@@ -826,7 +907,7 @@ msgstr ""
 "端点）写进运行数据存储，所以不用重启就能生效，重启后也不会丢。如果某个模型、provider 或 key "
 "需要*马上*在运行中的网关上可用，又不想改 overlay、重新部署，就用这一层。"
 
-#: ../developer/configuration.md:288
+#: ../developer/configuration.md:331
 msgid ""
 "It needs a database. `DB_ENABLED` defaults to `true` "
 "([Database](database.md) covers the connection); with `DB_ENABLED=false` "
@@ -840,7 +921,7 @@ msgstr ""
 "configured`，调用这些端点的控制台标签页也就无处可写。所有端点都要求在 `Authorization: Bearer ...` "
 "头里带上管理员的 JWT 或 `ADMIN_TOKEN`。"
 
-#: ../developer/configuration.md:294
+#: ../developer/configuration.md:337
 msgid "Providers tab"
 msgstr "Providers 标签页"
 
@@ -977,7 +1058,7 @@ msgstr ""
 msgid "`disabled_providers`"
 msgstr ""
 
-#: ../developer/configuration.md:305
+#: ../developer/configuration.md:348
 msgid ""
 "The registry on the Overview tab lists every provider the gateway can "
 "route to, but only *custom* providers are editable there. A provider that"
@@ -994,7 +1075,7 @@ msgstr ""
 "provider 只能是 `openai_compat`；通用 adapter 处理不了的协议需要专门的 adapter，这就要改代码了（见[编写"
 " provider adapter](provider-adapters.md)）。"
 
-#: ../developer/configuration.md:314
+#: ../developer/configuration.md:357
 msgid ""
 "Each row is a provider that at least one route goes through. A slug the "
 "model registry only mentions is reserved the same way but gets no row of "
@@ -1007,7 +1088,7 @@ msgstr ""
 "`provider:`，它表示模型出自哪家，由谁提供服务则看它的路由；二是 `route_metadata` 声明了另一个 "
 "`key_provider` 的路由的 `kind:`，这条路由改列在该 `key_provider` 名下。"
 
-#: ../developer/configuration.md:320
+#: ../developer/configuration.md:363
 #, python-brace-format
 msgid ""
 "A key added here joins the same pool as the keys the registry names "
@@ -1023,7 +1104,7 @@ msgstr ""
 "database)）在这张表里没有对应的行，所以这个标签页可以禁用它、把它预留给某个层级，但不能删除。要去掉它，就在 "
 "**Configuration** 标签页上清空这个变量，再重启后端。"
 
-#: ../developer/configuration.md:328
+#: ../developer/configuration.md:371
 msgid "Routing tab"
 msgstr "Routing 标签页"
 
@@ -1265,7 +1346,7 @@ msgstr "RouteWise 设置"
 msgid "`/admin/routewise/model-settings` — see [RouteWise](routing.md#routewise)"
 msgstr "`/admin/routewise/model-settings`——见 [RouteWise](routing.md#routewise)"
 
-#: ../developer/configuration.md:343
+#: ../developer/configuration.md:386
 #, python-brace-format
 msgid ""
 "`GET /admin/routing/provider-routes` (or `.../{model_id}`) returns every "
@@ -1276,7 +1357,7 @@ msgstr ""
 "`.../{model_id}`）返回网关当前在用的每一条路由，每条都标着 `source: yaml`、`override` 或 "
 "`runtime`；想看两层叠加后的结果，这是最快的办法。"
 
-#: ../developer/configuration.md:347
+#: ../developer/configuration.md:390
 msgid ""
 "The provider selector on this tab offers every custom provider, plus each"
 " built-in kind that the registry, the live route table or a configured "
@@ -1292,7 +1373,7 @@ msgstr ""
 "这个设置项声明（见[环境变量](installation.md#environment-variables)）；没有列出的 provider "
 "三种都可以用。"
 
-#: ../developer/configuration.md:355
+#: ../developer/configuration.md:398
 msgid ""
 "A model created here is a **runtime model**: it exists only in the "
 "database, carries an id, a first route, a pricing table, a router "
@@ -1328,46 +1409,44 @@ msgstr ""
 " 8192，`max_output_length` 4096，只支持文本，不支持工具调用。支持的参数（例如 "
 "`reasoning_effort`）、结构化输出和别名仍取 `ModelConfig` 的默认值；模型需要其中任何一项时，就把它写进注册表。"
 
-#: ../developer/configuration.md:375
+#: ../developer/configuration.md:418
 msgid ""
 "Any route's four can be changed after the fact in its **Edit** form, "
-"registry and runtime routes alike, with the same validation. They change"
-" what the gateway does with requests through the route, not what the "
+"registry and runtime routes alike, with the same validation. They change "
+"what the gateway does with requests through the route, not what the "
 "upstream model can do. The console's form has a field for image input "
 "only: it keeps a route's `audio` and `video` input as they are, and an "
-"added route starts with the first route's. The values the route has from"
-" the registry or from its creation stay as its baseline: the change is "
+"added route starts with the first route's. The values the route has from "
+"the registry or from its creation stay as its baseline: the change is "
 "stored as an override, the next request through the route follows it, a "
 "restart restores it, and retargeting the route keeps it. Deleting a "
 "registry route keeps it too, so **Restore** brings the route back with "
-"it. **Restore defaults** fills the form with the baseline; saving it, or"
-" any values equal to the baseline, deletes the override, so the route "
-"goes on following its registry or creation values. An edit that also "
-"changes the route's target is saved in one request: `PUT .../provider-"
-"routes/...` and `PATCH .../provider-route-candidates/...` accept "
-"`capabilities`, or `reset_capabilities: true`, and when either part "
-"cannot be saved the gateway puts both back. That is a restore of the "
-"earlier rows and live route, not one database transaction; a restore "
-"that fails is logged. Route listings report `capabilities` (as served), "
-"`capabilities_baseline` and `capabilities_overridden`. A change applies "
-"in the gateway process that handles the admin request; a deployment "
-"running several gateway processes sees it in the others after their next"
-" restart."
+"it. **Restore defaults** fills the form with the baseline; saving it, or "
+"any values equal to the baseline, deletes the override, so the route goes"
+" on following its registry or creation values. An edit that also changes "
+"the route's target is saved in one request: `PUT .../provider-routes/...`"
+" and `PATCH .../provider-route-candidates/...` accept `capabilities`, or "
+"`reset_capabilities: true`, and when either part cannot be saved the "
+"gateway puts both back. That is a restore of the earlier rows and live "
+"route, not one database transaction; a restore that fails is logged. "
+"Route listings report `capabilities` (as served), `capabilities_baseline`"
+" and `capabilities_overridden`. A change applies in the gateway process "
+"that handles the admin request; a deployment running several gateway "
+"processes sees it in the others after their next restart."
 msgstr ""
-"任何路由的这四项之后都可以在它的 **Edit** 表单里修改，注册表路由和运行时路由都可以，校验规则相同。它们改变的是"
-"网关如何处理经过这条路由的请求，而不是上游模型本身能做什么。控制台表单只有图片输入这一项：路由已有的 `audio` 和"
-" `video` 输入会原样保留，新加的路由则沿用第一条路由的。路由在注册表里或创建时的值保留为它的基线：修改作为覆盖项"
-"保存，经过这条路由的下一个请求就按新值处理，重启后会恢复，改路由的目标也不会丢掉它。删除注册表路由同样会保留它，用 **"
-"Restore** 恢复路由时会一并带回。**Restore defaults** 把基线值填进表单；保存它，或保存任何"
-"与基线相同的值，都会删除覆盖项，让路由继续沿用注册表或创建时的值。同时修改路由目标的编辑在一个请求里保存：`PUT .."
-"./provider-routes/...` 和 `PATCH .../provider-route-candidate"
-"s/...` 接受 `capabilities` 或 `reset_capabilities: true`，任何一部分保"
-"存失败时，网关会把两者都恢复。这是恢复之前的数据行和在用路由，不是单个数据库事务；恢复失败会记入日志。路由列表会返回 `"
-"capabilities`（当前生效的值）、`capabilities_baseline` 和 `capabilitie"
-"s_overridden`。修改在处理这次管理请求的网关进程里生效；运行多个网关进程的部署，其他进程要在下次重启后才会看"
-"到。"
+"任何路由的这四项之后都可以在它的 **Edit** "
+"表单里修改，注册表路由和运行时路由都可以，校验规则相同。它们改变的是网关如何处理经过这条路由的请求，而不是上游模型本身能做什么。控制台表单只有图片输入这一项：路由已有的"
+" `audio` 和 `video` "
+"输入会原样保留，新加的路由则沿用第一条路由的。路由在注册表里或创建时的值保留为它的基线：修改作为覆盖项保存，经过这条路由的下一个请求就按新值处理，重启后会恢复，改路由的目标也不会丢掉它。删除注册表路由同样会保留它，用"
+" **Restore** 恢复路由时会一并带回。**Restore defaults** "
+"把基线值填进表单；保存它，或保存任何与基线相同的值，都会删除覆盖项，让路由继续沿用注册表或创建时的值。同时修改路由目标的编辑在一个请求里保存：`PUT"
+" .../provider-routes/...` 和 `PATCH .../provider-route-candidates/...` 接受 "
+"`capabilities` 或 `reset_capabilities: "
+"true`，任何一部分保存失败时，网关会把两者都恢复。这是恢复之前的数据行和在用路由，不是单个数据库事务；恢复失败会记入日志。路由列表会返回 "
+"`capabilities`（当前生效的值）、`capabilities_baseline` 和 "
+"`capabilities_overridden`。修改在处理这次管理请求的网关进程里生效；运行多个网关进程的部署，其他进程要在下次重启后才会看到。"
 
-#: ../developer/configuration.md:388
+#: ../developer/configuration.md:440
 msgid "Settings tab"
 msgstr "Settings 标签页"
 
@@ -1434,32 +1513,32 @@ msgstr ""
 msgid "`batch_model_limits`"
 msgstr ""
 
-#: ../developer/configuration.md:396
+#: ../developer/configuration.md:448
 msgid "How the two layers combine"
 msgstr "两层如何叠加"
 
-#: ../developer/configuration.md:398
+#: ../developer/configuration.md:450
 msgid ""
 "The registry is loaded first and the stored state is applied on top of "
 "it, in this order at boot; each admin change is also applied to the "
 "running router the moment it is saved."
 msgstr "启动时先加载注册表，再按下面的顺序把已存状态叠加上去；管理员的每次改动在保存时也会立即应用到运行中的 router 上。"
 
-#: ../developer/configuration.md:402
+#: ../developer/configuration.md:454
 msgid "Custom provider definitions, skipping any slug the code or registry owns."
 msgstr "自定义 provider 定义；代码或注册表里已有的 slug 会被跳过。"
 
-#: ../developer/configuration.md:403
+#: ../developer/configuration.md:455
 msgid ""
 "Stored provider keys, seeded into each provider's pool beside the "
 "environment keys."
 msgstr "已存的 provider key，加入各个 provider 的 key 池，与环境变量里的 key 并列。"
 
-#: ../developer/configuration.md:405
+#: ../developer/configuration.md:457
 msgid "Per-model router strategy overrides."
 msgstr "按模型设置的 router 策略覆盖项。"
 
-#: ../developer/configuration.md:406
+#: ../developer/configuration.md:458
 msgid ""
 "Runtime routes. A runtime model is restored only if its creation "
 "finished; a stored route whose model is no longer in the registry is "
@@ -1469,17 +1548,17 @@ msgstr ""
 "运行时路由。运行时模型只有在创建过程完整结束后才会被恢复；如果一条已存路由对应的模型已经不在注册表里，它会被跳过并记录警告，所以从 YAML "
 "里删掉一个模型，不会因为一行残留数据又把它带回来。"
 
-#: ../developer/configuration.md:410
+#: ../developer/configuration.md:462
 msgid "Route overrides, retargeting the registry routes they name."
 msgstr "路由覆盖项，把对应的注册表路由改指到新的目标。"
 
-#: ../developer/configuration.md:411
+#: ../developer/configuration.md:463
 msgid ""
 "Route capability overrides, last of the route state, so they reach every "
 "route the steps above installed."
 msgstr "路由能力覆盖项，在路由状态里最后应用，这样上面各步装好的每条路由都能覆盖到。"
 
-#: ../developer/configuration.md:413
+#: ../developer/configuration.md:465
 msgid ""
 "Key tier reservations, re-read now that every provider is known; then "
 "weight overrides, disabled providers, offload routes and model "
@@ -1488,24 +1567,26 @@ msgstr ""
 "key 的层级预留：此时所有 provider 都已加载，所以再读一遍。然后是权重覆盖项、已禁用的 "
 "provider、卸载路由和模型可见性，这些会加载到解析器里，供 router 在处理请求时查询。"
 
-#: ../developer/configuration.md:417
+#: ../developer/configuration.md:469
 msgid ""
 "Two rules follow from that order. A stored change never edits the file it"
 " overrides: delete the override and the registry route, weight or "
 "`router:` value is back, and a runtime candidate sits beside the "
-"registry's routes rather than replacing them. And the file still wins for"
-" anything the store has no row for, so a registry edit plus restart is "
-"how catalog metadata, aliases and new adapter kinds change."
+"registry's routes rather than replacing them. Once a models or routing "
+"row is stored, that document wins over a later edit to the file; delete "
+"the row and restart to import again. See [Model and routing documents in "
+"the database](#model-and-routing-documents-in-the-database)."
 msgstr ""
 "由这个顺序可以得出两条规则。第一，已存的改动从不修改它覆盖的文件：删掉覆盖项，注册表里的路由、权重或 `router:` "
-"值就恢复了；运行时添加的候选路由和注册表的路由并存，而不是取代它们。第二，存储里没有记录的内容仍以文件为准，所以要改目录元数据、别名或新增 "
-"adapter kind，还是得改注册表再重启。"
+"值就恢复了；运行时添加的候选路由和注册表的路由并存，而不是取代它们。第二，一旦存有 models 或 routing "
+"的行，这份文档就优先于之后对文件的修改；删掉这一行再重启，才会重新导入。见[数据库中的模型和路由文档](#model-and-routing-"
+"documents-in-the-database)。"
 
-#: ../developer/configuration.md:424
+#: ../developer/configuration.md:476
 msgid "Settings stored in the database"
 msgstr "存储在数据库中的设置项"
 
-#: ../developer/configuration.md:426
+#: ../developer/configuration.md:478
 msgid ""
 "Everything the gateway reads that is not one of the files above, the "
 "database connection or container wiring is a *setting*: provider keys, "
@@ -1516,35 +1597,34 @@ msgid ""
 "console's **Settings** tab. A gateway with `DB_ENABLED=false` has no "
 "stored settings and reads the environment and the built-in defaults only."
 msgstr ""
-"网关读取的东西里，凡不是上面这些文件、数据库连接或容器连接方式的，都是*设置项*：provider key、"
-"SMTP、Slack webhook、代理信任、浏览器来源（origin）、日志、路由和超时调优、与云端 "
-"agent 的约定，以及签发会话、保护 API key 的密钥。有数据库的网关把它们存在 "
-"`app_config` 表里，由管理员在管理控制台的 **Settings** 标签页上编辑。"
-"`DB_ENABLED=false` 的网关没有存储的设置项，只读环境变量和内置默认值。"
+"网关读取的东西里，凡不是上面这些文件、数据库连接或容器连接方式的，都是*设置项*：provider key、SMTP、Slack "
+"webhook、代理信任、浏览器来源（origin）、日志、路由和超时调优、与云端 agent 的约定，以及签发会话、保护 API key "
+"的密钥。有数据库的网关把它们存在 `app_config` 表里，由管理员在管理控制台的 **Settings** "
+"标签页上编辑。`DB_ENABLED=false` 的网关没有存储的设置项，只读环境变量和内置默认值。"
 
-#: ../developer/configuration.md:435
+#: ../developer/configuration.md:487
 msgid "Where a value comes from"
 msgstr "值从哪里来"
 
-#: ../developer/configuration.md:437
+#: ../developer/configuration.md:489
 msgid "Each setting resolves in this order:"
 msgstr "每个设置项按以下顺序取值："
 
-#: ../developer/configuration.md:439
+#: ../developer/configuration.md:491
 msgid ""
 "its row in the database — even an empty one, which is how a setting is "
 "cleared;"
 msgstr "数据库里它的那一行——哪怕值为空也算，清空一个设置项靠的就是这个；"
 
-#: ../developer/configuration.md:441
+#: ../developer/configuration.md:493
 msgid "the environment variable of the same name;"
 msgstr "同名的环境变量；"
 
-#: ../developer/configuration.md:442
+#: ../developer/configuration.md:494
 msgid "the built-in default."
 msgstr "内置默认值。"
 
-#: ../developer/configuration.md:444
+#: ../developer/configuration.md:496
 msgid ""
 "The environment is a starting point. At every start, a setting that has a"
 " non-empty value in the environment and no row in the database is copied "
@@ -1564,7 +1644,7 @@ msgstr ""
 "重置它，让环境变量、再往后是默认值重新生效。重置是持久的：数据库会记住这次重置，下次启动时不会再把这个变量复制进来，之后对它的修改也会生效。**Settings**"
 " 标签页上的开关（`USER_AUTH_ENABLED`、`SIGNUP_ENABLED` 等）也以同样的方式从环境变量复制过去。"
 
-#: ../developer/configuration.md:456
+#: ../developer/configuration.md:508
 msgid ""
 "An environment value that is not valid on its own — a CIDR range that "
 "does not parse, a number that is not one — is not copied in. The backend "
@@ -1583,7 +1663,7 @@ msgstr ""
 "一节），环境变量无效时这个命令照样能用。数据库连接设置（`DB_HOST`、`DB_PORT` "
 "等）是例外：读取数据库需要它们，所以其中任何一个无效，后端都会停下来。"
 
-#: ../developer/configuration.md:466
+#: ../developer/configuration.md:518
 msgid ""
 "Settings that depend on each other — `TRUST_X_REAL_IP` needs "
 "`TRUST_PROXY_HEADERS` — are judged together, and a stored value wins "
@@ -1598,16 +1678,13 @@ msgid ""
 "set`. Only a rule the environment breaks on its own, with no stored value"
 " involved, stops the backend, which names the rule."
 msgstr ""
-"相互依赖的设置项（`TRUST_X_REAL_IP` 需要 `TRUST_PROXY_HEADERS`）"
-"会放在一起判断，存储的值在这里同样优先。如果一个变量的搭档已经存储并且满足规则，它会像其他变量一样被复制进去，"
-"所以即使删掉这个环境变量，它也会保留。与存储值一起违反规则的变量则会被搁置：它被当作未设置，使用默认值，"
-"下次启动也不会复制进去，日志里会有一条警告说明这一点。比如环境变量里是 `TRUST_X_REAL_IP=1`，"
-"而存储的 `TRUST_PROXY_HEADERS` 是关闭的，网关就会在 `TRUST_X_REAL_IP` "
-"关闭的状态下运行；要把两者都打开，就在 Settings 标签页上或用 `python -m "
-"serving.config.manage set` 一起修改。只有环境变量自己（不涉及任何存储值）"
-"违反的规则才会让后端停下，并指出是哪条规则。"
+"相互依赖的设置项（`TRUST_X_REAL_IP` 需要 "
+"`TRUST_PROXY_HEADERS`）会放在一起判断，存储的值在这里同样优先。如果一个变量的搭档已经存储并且满足规则，它会像其他变量一样被复制进去，所以即使删掉这个环境变量，它也会保留。与存储值一起违反规则的变量则会被搁置：它被当作未设置，使用默认值，下次启动也不会复制进去，日志里会有一条警告说明这一点。比如环境变量里是"
+" `TRUST_X_REAL_IP=1`，而存储的 `TRUST_PROXY_HEADERS` 是关闭的，网关就会在 "
+"`TRUST_X_REAL_IP` 关闭的状态下运行；要把两者都打开，就在 Settings 标签页上或用 `python -m "
+"serving.config.manage set` 一起修改。只有环境变量自己（不涉及任何存储值）违反的规则才会让后端停下，并指出是哪条规则。"
 
-#: ../developer/configuration.md:479
+#: ../developer/configuration.md:531
 msgid ""
 "On the first start against an empty database the backend also generates "
 "the two secrets it cannot run without, `JWT_SECRET_KEY` and "
@@ -1624,32 +1701,71 @@ msgstr ""
 "accounts)。如果数据库里已经有 API key，后端宁可拒绝启动，也不会为它生成新的 "
 "`API_KEY_SECRET`，因为新密钥会让所有这些 key 失效。"
 
-#: ../developer/configuration.md:441
+#: ../developer/configuration.md:539
+msgid "Analytics sections"
+msgstr "Analytics 区块"
+
+#: ../developer/configuration.md:541
+msgid ""
+"In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, "
+"**Users and Requests**, **Performance Metrics** and **Growth Rate** "
+"independently, then select **Save changes**. These database-backed "
+"settings apply to **Analytics → Overview** for all administrators. Token "
+"Usage, Users and Requests and Performance Metrics default to on; Growth "
+"Rate defaults to off. Reopen Analytics after saving; no backend restart "
+"is needed. A disabled section is hidden and does not request its data. "
+"Data collection continues, so re-enabling a section can show existing "
+"history."
+msgstr ""
+"在 **Admin → Settings → Common → Analytics** 中，分别切换 **Token "
+"Usage**、**Users and Requests**、**Performance Metrics** 和 **Growth "
+"Rate**，然后点击 **Save changes**。这些设置保存在数据库中，对所有管理员的 **Analytics → Overview**"
+" 生效。Token Usage、Users and Requests 和 Performance Metrics 默认开启，Growth Rate"
+" 默认关闭。保存后重新打开 Analytics "
+"即可，无需重启后端。关闭的区块会隐藏，且不请求其数据。数据仍持续收集，因此重新启用区块后可以查看已有历史。"
+
+#: ../developer/configuration.md:550
+msgid ""
+"The runtime keys are `analytics_token_usage_enabled`, "
+"`analytics_users_and_requests_enabled`, "
+"`analytics_performance_metrics_enabled` and "
+"`analytics_growth_rate_enabled`. The overview's Hour / Day / Week / Month"
+" control applies to Token Usage and Users and Requests. Performance "
+"Metrics keeps its existing windows, and Growth Rate has its own 30, 60 or"
+" 90-day range."
+msgstr ""
+"运行时设置键为 "
+"`analytics_token_usage_enabled`、`analytics_users_and_requests_enabled`、`analytics_performance_metrics_enabled`"
+" 和 `analytics_growth_rate_enabled`。概览的 Hour / Day / Week / Month 控件作用于 "
+"Token Usage 和 Users and Requests。Performance Metrics 保留原有时间窗口，Growth Rate"
+" 独立提供 30、60 或 90 天的范围。"
+
+#: ../developer/configuration.md:556
 msgid "On the Settings tab"
 msgstr "在 Settings 标签页上"
 
-#: ../developer/configuration.md:489
+#: ../developer/configuration.md:558
 msgid ""
 "The tab opens on **Common**, with the switches and limits changed most "
-"often: sign-up, per-user concurrency and the daily quotas among them. "
-"The rest is grouped by category, and each category is listed on the "
-"sub-tab of its topic: **Access** holds the sign-up settings and the "
-"signup allowlist, for instance. **Setup**, near the end, holds the "
-"categories usually set once, when the gateway is deployed: its "
-"addresses and name, email, network, privacy and integrations. Within "
-"any category, the settings usually set once come last, under **Usually "
-"set once**. The tab describes each setting and shows where its value "
-"comes from. A search, or **Missing only**, looks through every sub-tab "
-"at once. Besides every setting the gateway reads itself, it lists:"
+"often: sign-up, per-user concurrency and the daily quotas among them. The"
+" rest is grouped by category, and each category is listed on the sub-tab "
+"of its topic: **Access** holds the sign-up settings and the signup "
+"allowlist, for instance. **Setup**, near the end, holds the categories "
+"usually set once, when the gateway is deployed: its addresses and name, "
+"email, network, privacy and integrations. Within any category, the "
+"settings usually set once come last, under **Usually set once**. The tab "
+"describes each setting and shows where its value comes from. A search, or"
+" **Missing only**, looks through every sub-tab at once. Besides every "
+"setting the gateway reads itself, it lists:"
 msgstr ""
-"这个标签页打开时显示 **Common**，里面是最常改动的开关和限额，包括注册、每用户并发上限和每日配额。"
-"其余设置项按类别分组，每个类别放在对应主题的子标签页上：比如 **Access** 里有注册相关的设置项和注册域名白名单。"
-"靠近末尾的 **Setup** 放的是通常在部署网关时设置一次的类别：网关的地址和名称、邮件、网络、隐私和集成。"
-"在每个类别里，通常只设置一次的设置项排在最后，列在 **Usually set once** 下。"
-"这个标签页逐个说明设置项的用途，并标出每个值的来源。搜索或勾选 **Missing only** 时，会同时查找所有子标签页。"
-"除了网关自己读取的所有设置项，它还列出："
+"这个标签页打开时显示 "
+"**Common**，里面是最常改动的开关和限额，包括注册、每用户并发上限和每日配额。其余设置项按类别分组，每个类别放在对应主题的子标签页上：比如"
+" **Access** 里有注册相关的设置项和注册域名白名单。靠近末尾的 **Setup** "
+"放的是通常在部署网关时设置一次的类别：网关的地址和名称、邮件、网络、隐私和集成。在每个类别里，通常只设置一次的设置项排在最后，列在 "
+"**Usually set once** 下。这个标签页逐个说明设置项的用途，并标出每个值的来源。搜索或勾选 **Missing only** "
+"时，会同时查找所有子标签页。除了网关自己读取的所有设置项，它还列出："
 
-#: ../developer/configuration.md:492
+#: ../developer/configuration.md:569
 #, python-brace-format
 msgid ""
 "every `${VAR}` the active model registry and routing file name, under "
@@ -1659,7 +1775,7 @@ msgstr ""
 "当前模型注册表和路由配置文件引用的每一个 `${VAR}`，列在 **Providers** 下，并注明用到它的模型；告警规则引用的则列在 "
 "**Alerts** 下；"
 
-#: ../developer/configuration.md:495
+#: ../developer/configuration.md:572
 msgid ""
 "numbered extra keys for a provider's key pool, `MINIMAX_API_KEY1` to "
 "`MINIMAX_API_KEY20` beside `MINIMAX_API_KEY` for instance, once one is "
@@ -1670,7 +1786,7 @@ msgstr ""
 "`MINIMAX_API_KEY20`，只要设置了其中一个就会列出。每个有值的 key 都会加入池子：中间有一个空着并不会让列表就此结束，同一个 "
 "key 填了两次也只算一次；"
 
-#: ../developer/configuration.md:499
+#: ../developer/configuration.md:576
 #, python-brace-format
 msgid ""
 "variables added with **Add variable**, for a `${VAR}` reference the "
@@ -1678,7 +1794,7 @@ msgid ""
 " to."
 msgstr "用 **Add variable** 添加的变量，用于网关暂时还看不到的 `${VAR}` 引用，比如你即将切换过去的那份注册表里的引用。"
 
-#: ../developer/configuration.md:502
+#: ../developer/configuration.md:579
 msgid ""
 "It leaves out the settings that offer nothing to choose: one with a "
 "single accepted value, such as `EMAIL_PROVIDER` while SMTP is the only "
@@ -1692,7 +1808,7 @@ msgstr ""
 "`EMAIL_PROVIDER`；还有没注册短信服务时的手机号相关设置，因为没有短信服务它们不起任何作用。这类设置在需要处理时仍会显示（必填却为空、存储的值无法生效，或者正在等待重启），`python"
 " -m serving.config.manage list` 也始终会列出它们。"
 
-#: ../developer/configuration.md:509
+#: ../developer/configuration.md:586
 #, python-brace-format
 msgid ""
 "Secrets are write-only: the tab shows whether one is set, never its "
@@ -1713,7 +1829,7 @@ msgstr ""
 " 或 `SA_JSON`，就是密钥；用这样的名字添加的变量一定是密钥。管理员也可以用 **Mark as secret** "
 "把从配置文件里发现的变量、带编号的变量或手动添加的变量标为密钥。这个操作只能单向进行：密钥一旦标记，就再也不会显示出来，即使重置之后也一样。"
 
-#: ../developer/configuration.md:520
+#: ../developer/configuration.md:597
 #, python-brace-format
 msgid ""
 "A save is checked as a whole, against everything it leaves in force, so "
@@ -1738,27 +1854,65 @@ msgstr ""
 "`MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH /admin/config`，以及 "
 "`DELETE /admin/config/{key}`。"
 
-#: ../developer/configuration.md:520
+#: ../developer/configuration.md:610
 msgid "Backup and restore"
 msgstr "备份与恢复"
 
-#: ../developer/configuration.md:520
+#: ../developer/configuration.md:612
 msgid ""
-"**Backup** (`GET /admin/config/backup`) downloads every setting an administrator can change as one JSON file: the stored settings, the runtime and model settings, custom providers and their keys, routes and their overrides, the batch caps and the signup allowlist. It names each secret without its value: a stored setting has `value: null` and `is_set`, and a provider key keeps its id, provider and label. **Backup with secrets** (`POST /admin/config/backup` with `include_secrets: true`) puts the values in, in plain text, once the signed-in administrator gives the account's password again. The admin token cannot ask for them, and an account without a password, made by phone, sets one first. Store that file as you would the secrets themselves."
+"**Backup** (`GET /admin/config/backup`) downloads every setting an "
+"administrator can change as one JSON file: the stored settings, the "
+"runtime and model settings, custom providers and their keys, routes and "
+"their overrides, the batch caps and the signup allowlist. It names each "
+"secret without its value: a stored setting has `value: null` and "
+"`is_set`, and a provider key keeps its id, provider and label. **Backup "
+"with secrets** (`POST /admin/config/backup` with `include_secrets: true`)"
+" puts the values in, in plain text, once the signed-in administrator "
+"gives the account's password again. The admin token cannot ask for them, "
+"and an account without a password, made by phone, sets one first. Store "
+"that file as you would the secrets themselves."
 msgstr ""
-"**Backup**（`GET /admin/config/backup`）把管理员能修改的全部设置下载为一个 JSON 文件：存储的设置、运行时与模型设置、自定义 provider 及其 key、路由及其覆盖、批处理上限和注册白名单。每个密钥只写名字、不写值：存储的设置是 `value: null` 加 `is_set`，provider key 保留它的 id、provider 和标签。**Backup with secrets**（`POST /admin/config/backup`，带 `include_secrets: true`）会把这些值以明文写进文件，前提是已登录的管理员再输入一次账号密码。admin token 不能请求这些值；没有密码的账号（用手机注册的）要先设置一个。保管这个文件要像保管密钥本身一样小心。"
+"**Backup**（`GET /admin/config/backup`）把管理员能修改的全部设置下载为一个 JSON "
+"文件：存储的设置、运行时与模型设置、自定义 provider 及其 "
+"key、路由及其覆盖、批处理上限和注册白名单。每个密钥只写名字、不写值：存储的设置是 `value: null` 加 "
+"`is_set`，provider key 保留它的 id、provider 和标签。**Backup with secrets**（`POST "
+"/admin/config/backup`，带 `include_secrets: "
+"true`）会把这些值以明文写进文件，前提是已登录的管理员再输入一次账号密码。admin token "
+"不能请求这些值；没有密码的账号（用手机注册的）要先设置一个。保管这个文件要像保管密钥本身一样小心。"
 
-#: ../developer/configuration.md:520
+#: ../developer/configuration.md:623
 msgid ""
-"**Restore** (`POST /admin/config/restore`) replaces all of it in one database transaction, so a failure anywhere leaves the deployment as it was. A secret the file withholds keeps the value this deployment has; one the deployment has no value for stays unset, and the response names it under `secrets_not_restored`. A backup file is not signed, so a restore that changes anything security-relevant needs a confirmation and the password: any secret, the Security and Network settings, every `*_URL` setting and every variable a configuration file references, mail delivery, the identity issuer, keys and redirects, user authentication, the sign-up switches and allowlist, full request logging, private batch webhook targets, and where a custom provider or a route sends requests and keys. The console lists those changes before it restores, from `POST /admin/config/restore/preview`; a script sends that list back as `confirm_security_changes`, with `password`, and a restore whose changes differ from the confirmed list is refused with 409. The admin token can restore only a file that changes none of them."
+"**Restore** (`POST /admin/config/restore`) replaces all of it in one "
+"database transaction, so a failure anywhere leaves the deployment as it "
+"was. A secret the file withholds keeps the value this deployment has; one"
+" the deployment has no value for stays unset, and the response names it "
+"under `secrets_not_restored`. A backup file is not signed, so a restore "
+"that changes anything security-relevant needs a confirmation and the "
+"password: any secret, the Security and Network settings, every `*_URL` "
+"setting and every variable a configuration file references, mail "
+"delivery, the identity issuer, keys and redirects, user authentication, "
+"the sign-up switches and allowlist, full request logging, private batch "
+"webhook targets, and where a custom provider or a route sends requests "
+"and keys. The console lists those changes before it restores, from `POST "
+"/admin/config/restore/preview`; a script sends that list back as "
+"`confirm_security_changes`, with `password`, and a restore whose changes "
+"differ from the confirmed list is refused with 409. The admin token can "
+"restore only a file that changes none of them."
 msgstr ""
-"**Restore**（`POST /admin/config/restore`）在一个数据库事务里替换上述全部内容，所以任何一处出错，部署都保持原样。文件里没有给出值的密钥保留本部署现有的值；本部署也没有值的，则保持未设置，并在响应的 `secrets_not_restored` 中列出。备份文件没有签名，所以凡是涉及安全的改动都需要确认并输入密码：任何密钥、Security 和 Network 分类的设置、所有 `*_URL` 设置和配置文件引用的每个变量、邮件投递、身份签发方及其密钥和重定向地址、用户认证、注册开关和白名单、完整请求日志、批处理 webhook 的内网目标，以及自定义 provider 或路由把请求和 key 发往何处。控制台在恢复之前会列出这些改动，来源是 `POST /admin/config/restore/preview`；脚本则要把这份列表作为 `confirm_security_changes` 连同 `password` 一起发回，改动与确认的列表不一致的恢复会被以 409 拒绝。admin token 只能恢复不涉及这些改动的文件。"
+"**Restore**（`POST "
+"/admin/config/restore`）在一个数据库事务里替换上述全部内容，所以任何一处出错，部署都保持原样。文件里没有给出值的密钥保留本部署现有的值；本部署也没有值的，则保持未设置，并在响应的"
+" `secrets_not_restored` 中列出。备份文件没有签名，所以凡是涉及安全的改动都需要确认并输入密码：任何密钥、Security "
+"和 Network 分类的设置、所有 `*_URL` "
+"设置和配置文件引用的每个变量、邮件投递、身份签发方及其密钥和重定向地址、用户认证、注册开关和白名单、完整请求日志、批处理 webhook "
+"的内网目标，以及自定义 provider 或路由把请求和 key 发往何处。控制台在恢复之前会列出这些改动，来源是 `POST "
+"/admin/config/restore/preview`；脚本则要把这份列表作为 `confirm_security_changes` 连同 "
+"`password` 一起发回，改动与确认的列表不一致的恢复会被以 409 拒绝。admin token 只能恢复不涉及这些改动的文件。"
 
-#: ../developer/configuration.md:533
+#: ../developer/configuration.md:639
 msgid "When a change applies"
 msgstr "改动何时生效"
 
-#: ../developer/configuration.md:535
+#: ../developer/configuration.md:641
 msgid ""
 "Most settings apply as soon as they are saved: at once in the backend "
 "process that served the save, and within ten seconds in every other one. "
@@ -1770,9 +1924,13 @@ msgid ""
 " thresholds are too, until an operator activates their [live group"
 "](#settings-that-apply-without-a-restart)."
 msgstr ""
-"大多数设置项一保存就生效：处理这次保存的后端进程立即生效，其他后端进程在十秒内生效。标着 **Restart required** 的设置项只在启动时读取，进程会一直用启动时的值，直到重启。provider 凭据和注册表引用的每个变量都属于这一类，熔断器和出站并发的调优、`ALERTS_ENABLED` 以及 `DB_STORE_FULL_CONTENT` 也是。告警渠道和失败请求告警阈值在操作者激活它们的[实时配置组](#settings-that-apply-without-a-restart)之前也属于这一类。"
+"大多数设置项一保存就生效：处理这次保存的后端进程立即生效，其他后端进程在十秒内生效。标着 **Restart required** "
+"的设置项只在启动时读取，进程会一直用启动时的值，直到重启。provider "
+"凭据和注册表引用的每个变量都属于这一类，熔断器和出站并发的调优、`ALERTS_ENABLED` 以及 "
+"`DB_STORE_FULL_CONTENT` 也是。告警渠道和失败请求告警阈值在操作者激活它们的[实时配置组](#settings-that-"
+"apply-without-a-restart)之前也属于这一类。"
 
-#: ../developer/configuration.md:544
+#: ../developer/configuration.md:650
 msgid ""
 "While such a change is waiting, the tab shows a **Restart pending** "
 "notice with a **Restart backend** button. The button (`POST "
@@ -1802,23 +1960,20 @@ msgstr ""
 "hybridinference-backend`。重启会切断正在处理的请求，流式请求也不例外。控制台以 `/health` 的 "
 "`instance` 字段换成另一个进程作为重启完成的标志，所以后端回来得再快也不会被漏掉。"
 
-#: ../developer/configuration.md:561
+#: ../developer/configuration.md:667
 msgid "Settings that apply without a restart"
-msgstr ""
-"无需重启即可生效的设置项"
+msgstr "无需重启即可生效的设置项"
 
-#: ../developer/configuration.md:563
+#: ../developer/configuration.md:669
 msgid ""
 "A live group is a set of settings the backend applies together, without a"
 " restart, once an operator has activated it. The first one, "
 "`alerts.runtime`, holds the alert channel and the failed-request alert:"
-msgstr ""
-"实时配置组是后端一起应用、无需重启的一组设置项，前提是操作者已经激活它。第一个组 `alerts.runtime` 包含告警渠道和失败请求告警："
+msgstr "实时配置组是后端一起应用、无需重启的一组设置项，前提是操作者已经激活它。第一个组 `alerts.runtime` 包含告警渠道和失败请求告警："
 
 #: ../developer/configuration.md
 msgid "What they choose"
-msgstr ""
-"决定什么"
+msgstr "决定什么"
 
 #: ../developer/configuration.md
 msgid ""
@@ -1828,8 +1983,7 @@ msgstr ""
 
 #: ../developer/configuration.md
 msgid "The one channel alerts go to"
-msgstr ""
-"告警发往的唯一渠道"
+msgstr "告警发往的唯一渠道"
 
 #: ../developer/configuration.md
 msgid ""
@@ -1840,10 +1994,9 @@ msgstr ""
 
 #: ../developer/configuration.md
 msgid "When the failed-request alert pages"
-msgstr ""
-"失败请求告警何时发出"
+msgstr "失败请求告警何时发出"
 
-#: ../developer/configuration.md:572
+#: ../developer/configuration.md:678
 msgid ""
 "Once the group is active, a save reaches every backend process within "
 "about ten seconds. Each process checks the whole group first: a pair of "
@@ -1856,9 +2009,13 @@ msgid ""
 "`SLACK_WEBHOOK_URL` or `WECOM_ALERTS_WEBHOOK_URL` is set, as before; "
 "`SLACK_ALERTS_WEBHOOK_URL` alone does not start it."
 msgstr ""
-"组激活后，一次保存会在约十秒内到达每个后端进程。每个进程先检查整个组：渠道互相冲突或数值越界时，进程继续使用当前的值并把该组报告为无效，已保存的值保留下来供你修正。要从 Slack 换成企业微信，请在同一次保存中清空 Slack webhook 并填入企业微信 webhook。清空所有 webhook 会有意暂停告警投递和失败请求告警，这不是故障。和以前一样，设置了 `SLACK_WEBHOOK_URL` 或 `WECOM_ALERTS_WEBHOOK_URL` 时失败请求告警才运行；只设置 `SLACK_ALERTS_WEBHOOK_URL` 不会启动它。"
+"组激活后，一次保存会在约十秒内到达每个后端进程。每个进程先检查整个组：渠道互相冲突或数值越界时，进程继续使用当前的值并把该组报告为无效，已保存的值保留下来供你修正。要从"
+" Slack 换成企业微信，请在同一次保存中清空 Slack webhook 并填入企业微信 webhook。清空所有 webhook "
+"会有意暂停告警投递和失败请求告警，这不是故障。和以前一样，设置了 `SLACK_WEBHOOK_URL` 或 "
+"`WECOM_ALERTS_WEBHOOK_URL` 时失败请求告警才运行；只设置 `SLACK_ALERTS_WEBHOOK_URL` "
+"不会启动它。"
 
-#: ../developer/configuration.md:582
+#: ../developer/configuration.md:688
 msgid ""
 "The Alerts category shows where the saved configuration stands. **Applied"
 " in each backend process** names the saved version — for example "
@@ -1873,58 +2030,58 @@ msgid ""
 "channel, which **Send test** checks. **Send test** uses the saved webhook"
 " (or the address you typed), not necessarily the one a process is using."
 msgstr ""
-"Alerts 分类显示已保存的配置处于什么状态。**Applied in each backend process** 给出已保存的版本，例如 `app_config / epoch 3f1c… / revision 42`，并对每个已登记的进程说明它是已应用该版本、仍在应用、失败，还是尚未汇报。心跳停止超过一分钟的进程算作未知，绝不算作已应用。运行旧版本的后端根本不会登记，因此面板无法证明所有进程都已覆盖：请把它的列表和部署自己的进程列表对照。**Applied** 表示进程正在使用已保存的渠道和阈值，并不说明消息是否送达了渠道，送达请用 **Send test** 检查。**Send test** 使用已保存的 webhook（或你输入的地址），不一定是某个进程正在使用的那个。"
+"Alerts 分类显示已保存的配置处于什么状态。**Applied in each backend process** 给出已保存的版本，例如 "
+"`app_config / epoch 3f1c… / revision "
+"42`，并对每个已登记的进程说明它是已应用该版本、仍在应用、失败，还是尚未汇报。心跳停止超过一分钟的进程算作未知，绝不算作已应用。运行旧版本的后端根本不会登记，因此面板无法证明所有进程都已覆盖：请把它的列表和部署自己的进程列表对照。**Applied**"
+" 表示进程正在使用已保存的渠道和阈值，并不说明消息是否送达了渠道，送达请用 **Send test** 检查。**Send test** "
+"使用已保存的 webhook（或你输入的地址），不一定是某个进程正在使用的那个。"
 
-#: ../developer/configuration.md:595
+#: ../developer/configuration.md:701
 msgid ""
 "After a channel change, alerts already under way finish on the old "
 "channel, and the recovery message of an incident opened earlier goes to "
 "the new one. The failed-request alert keeps its cooldown and its open "
 "incident across the change. It still checks once a minute, so a new "
 "threshold takes effect at the next check after the change has applied."
-msgstr ""
-"换渠道之后，已经在发送的告警仍在旧渠道完成，此前打开的事故的恢复消息会发到新渠道。失败请求告警在切换前后保留冷却时间和未关闭的事故。它仍然每分钟检查一次，所以新阈值在改动应用之后的下一次检查才生效。"
+msgstr "换渠道之后，已经在发送的告警仍在旧渠道完成，此前打开的事故的恢复消息会发到新渠道。失败请求告警在切换前后保留冷却时间和未关闭的事故。它仍然每分钟检查一次，所以新阈值在改动应用之后的下一次检查才生效。"
 
-#: ../developer/configuration.md:601
+#: ../developer/configuration.md:707
 msgid ""
 "The console saves conditionally: if someone else saved the configuration "
 "after you started editing a category, your save is refused, nothing is "
 "stored, and the tab reloads the latest values and keeps your unsaved "
 "changes for you to review and save again. A reload, or a save in another "
 "category, never moves unsaved changes onto values you have not seen."
-msgstr ""
-"控制台按条件保存：如果在你开始编辑某个分类之后有人保存了配置，你的保存会被拒绝，不写入任何内容，页面会重新加载最新值，并保留你未保存的改动，供你核对后再次保存。重新加载或在其他分类中保存，都不会把未保存的改动挪到你没有看过的值之上。"
+msgstr "控制台按条件保存：如果在你开始编辑某个分类之后有人保存了配置，你的保存会被拒绝，不写入任何内容，页面会重新加载最新值，并保留你未保存的改动，供你核对后再次保存。重新加载或在其他分类中保存，都不会把未保存的改动挪到你没有看过的值之上。"
 
-#: ../developer/configuration.md:605
+#: ../developer/configuration.md:713
 msgid ""
 "`ALERTS_ENABLED`, the alert rules file and the alert engine still apply "
 "only after a restart. Other settings join live groups later, one group at"
 " a time."
-msgstr ""
-"`ALERTS_ENABLED`、告警规则文件和告警引擎仍然只在重启后生效。其他设置项以后会逐组加入实时配置组。"
+msgstr "`ALERTS_ENABLED`、告警规则文件和告警引擎仍然只在重启后生效。其他设置项以后会逐组加入实时配置组。"
 
-#: ../developer/configuration.md:608
+#: ../developer/configuration.md:716
 msgid "Activating a live group"
-msgstr ""
-"激活实时配置组"
+msgstr "激活实时配置组"
 
-#: ../developer/configuration.md:610
+#: ../developer/configuration.md:718
 msgid ""
 "A group stays inactive until an operator activates it, and a backend "
 "upgrade never activates one by itself. Until then its settings behave as "
 "**Restart required**. Activate it once every backend process runs a build"
 " that supports it:"
 msgstr ""
-"组在操作者激活之前一直不生效，后端升级也不会自动激活它。在此之前，它的设置项按 **Restart required** 的方式工作。等每个后端进程都运行支持它的版本之后再激活："
+"组在操作者激活之前一直不生效，后端升级也不会自动激活它。在此之前，它的设置项按 **Restart required** "
+"的方式工作。等每个后端进程都运行支持它的版本之后再激活："
 
-#: ../developer/configuration.md:615
+#: ../developer/configuration.md:723
 msgid ""
 "Deploy the build everywhere and check that each process registered: "
 "`python -m serving.config.manage live status`."
-msgstr ""
-"把该版本部署到所有地方，并检查每个进程都已登记：`python -m serving.config.manage live status`。"
+msgstr "把该版本部署到所有地方，并检查每个进程都已登记：`python -m serving.config.manage live status`。"
 
-#: ../developer/configuration.md:617
+#: ../developer/configuration.md:725
 msgid ""
 "Preview what activation applies. It shows each setting's saved value (a "
 "secret only as set or not set) and the processes whose value in use "
@@ -1932,9 +2089,10 @@ msgid ""
 "activate, which can change where alerts go: `python -m "
 "serving.config.manage live preview alerts.runtime`."
 msgstr ""
-"预览激活会应用什么。它显示每个设置项已保存的值（秘密值只显示是否已设置），以及正在使用的值与之不同的进程——等待重启时保存的值会在激活时立刻生效，可能改变告警发往的地方：`python -m serving.config.manage live preview alerts.runtime`。"
+"预览激活会应用什么。它显示每个设置项已保存的值（秘密值只显示是否已设置），以及正在使用的值与之不同的进程——等待重启时保存的值会在激活时立刻生效，可能改变告警发往的地方：`python"
+" -m serving.config.manage live preview alerts.runtime`。"
 
-#: ../developer/configuration.md:622
+#: ../developer/configuration.md:730
 msgid ""
 "Activate with the version the preview printed, and the number of backend "
 "processes your deployment runs: `python -m serving.config.manage live "
@@ -1942,25 +2100,25 @@ msgid ""
 "<N>`. It refuses when the configuration changed after the preview, when a"
 " running process does not support the group, or when the count differs."
 msgstr ""
-"用预览打印的版本和部署运行的后端进程数激活：`python -m serving.config.manage live activate alerts.runtime --expect <epoch>:<revision> --expect-instances <N>`。如果预览之后配置有变化、有正在运行的进程不支持该组，或者进程数不符，命令会拒绝激活。"
+"用预览打印的版本和部署运行的后端进程数激活：`python -m serving.config.manage live activate "
+"alerts.runtime --expect <epoch>:<revision> --expect-instances "
+"<N>`。如果预览之后配置有变化、有正在运行的进程不支持该组，或者进程数不符，命令会拒绝激活。"
 
-#: ../developer/configuration.md:627
+#: ../developer/configuration.md:735
 msgid ""
 "Check `live status`, or the Alerts category, until every process has "
 "applied the latest revision."
-msgstr ""
-"查看 `live status` 或 Alerts 分类，直到每个进程都应用了最新版本。"
+msgstr "查看 `live status` 或 Alerts 分类，直到每个进程都应用了最新版本。"
 
-#: ../developer/configuration.md:631
+#: ../developer/configuration.md:738
 msgid ""
 "If a process cannot apply the group when it is activated — a saved value "
 "is invalid, say — the group stays active and the process keeps the values"
 " it was using. Correct the setting and save it again: it applies without "
 "a restart."
-msgstr ""
-"如果激活时某个进程无法应用该组（例如某个已保存的值无效），该组仍保持激活，该进程继续使用原来的值。修正该设置并再次保存即可，无需重启就会生效。"
+msgstr "如果激活时某个进程无法应用该组（例如某个已保存的值无效），该组仍保持激活，该进程继续使用原来的值。修正该设置并再次保存即可，无需重启就会生效。"
 
-#: ../developer/configuration.md:630
+#: ../developer/configuration.md:742
 msgid ""
 "`live deactivate alerts.runtime --expect <epoch>:<revision>` turns the "
 "group off. A running process then keeps the values it last applied until "
@@ -1970,19 +2128,28 @@ msgid ""
 " a build that does not know the group is a deployment, not a "
 "configuration change."
 msgstr ""
-"`live deactivate alerts.runtime --expect <epoch>:<revision>` 会关闭该组。之后正在运行的进程会一直保留它最后应用的值，直到重启，而不会回到启动时的值；之后启动的进程使用已保存的值。在每个进程都重启之前，两者可能不同，状态会显示出来。退回到不认识该组的版本属于部署，不是配置改动。"
+"`live deactivate alerts.runtime --expect <epoch>:<revision>` "
+"会关闭该组。之后正在运行的进程会一直保留它最后应用的值，直到重启，而不会回到启动时的值；之后启动的进程使用已保存的值。在每个进程都重启之前，两者可能不同，状态会显示出来。退回到不认识该组的版本属于部署，不是配置改动。"
 
-#: ../developer/configuration.md:637
+#: ../developer/configuration.md:749
 msgid ""
-"A configuration backup does not include this status. Restoring a backup applies its `app_config` rows to live groups like any other save, and writes the other tables in the same transaction, so a failure anywhere restores none of them. After restoring a whole database, run `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`: it starts a new version history and makes every process register again."
+"A configuration backup does not include this status. Restoring a backup "
+"applies its `app_config` rows to live groups like any other save, and "
+"writes the other tables in the same transaction, so a failure anywhere "
+"restores none of them. After restoring a whole database, run `python -m "
+"serving.config.manage live reset-epoch --expect <epoch>:<revision>`: it "
+"starts a new version history and makes every process register again."
 msgstr ""
-"配置备份不包含这些状态。恢复备份时，备份中的 `app_config` 行会像任何一次保存一样应用到实时配置组，其他表也在同一个事务里写入，所以任何一处出错，就什么都不会恢复。恢复整个数据库之后，运行 `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`：它会开始新的版本历史，并让每个进程重新登记。"
+"配置备份不包含这些状态。恢复备份时，备份中的 `app_config` "
+"行会像任何一次保存一样应用到实时配置组，其他表也在同一个事务里写入，所以任何一处出错，就什么都不会恢复。恢复整个数据库之后，运行 `python "
+"-m serving.config.manage live reset-epoch --expect "
+"<epoch>:<revision>`：它会开始新的版本历史，并让每个进程重新登记。"
 
-#: ../developer/configuration.md:644
+#: ../developer/configuration.md:756
 msgid "Without the console"
 msgstr "不通过控制台"
 
-#: ../developer/configuration.md:646
+#: ../developer/configuration.md:758
 msgid ""
 "A setting can break the console that edits it — a value that stops sign-"
 "in from working, say. `python -m serving.config.manage` changes stored "
@@ -1992,7 +2159,7 @@ msgstr ""
 "某个设置项可能把用来编辑它的控制台本身弄坏——比如一个让登录失效的值。这时可以用 `python -m "
 "serving.config.manage` 在命令行里修改已存储的设置项，校验规则和控制台完全一样："
 
-#: ../developer/configuration.md:655
+#: ../developer/configuration.md:767
 msgid ""
 "`list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores"
 " a value — add `--secret` to mark a discovered, numbered or added "
@@ -2007,7 +2174,7 @@ msgstr ""
 "则像标签页上的 **Reset** 一样重置它，让环境变量或默认值重新生效。它从不打印密钥的值。正在运行的后端会在大约十秒内读到改动；标着 "
 "**Restart required** 的设置项则要等下次重启。"
 
-#: ../developer/configuration.md:662
+#: ../developer/configuration.md:774
 msgid ""
 "The tool talks to the database directly with the `DB_*` connection "
 "settings alone, so it needs no sign-in and still runs when another "
@@ -2027,11 +2194,11 @@ msgstr ""
 "`127.0.0.1:5432` 连上 Postgres。重置管理员密码的命令也是同样的用法，见[第一个管理员账号](deployment.md"
 "#the-first-admin-account)。"
 
-#: ../developer/configuration.md:673
+#: ../developer/configuration.md:785
 msgid "Missing settings"
 msgstr "缺失的设置项"
 
-#: ../developer/configuration.md:675
+#: ../developer/configuration.md:787
 msgid ""
 "Some settings are required: the two generated secrets, every variable a "
 "model route needs to load (unless the route is `optional: true`), and "
@@ -2046,15 +2213,15 @@ msgid ""
 " the same \"not found\" as for a model the deployment does not define, so"
 " the difference reveals nothing beyond what they may use."
 msgstr ""
-"有些设置项是必填的：那两个自动生成的密钥、模型路由加载时需要的每个变量（路由标了 `optional: "
-"true` 的除外），以及公开注册要求邮箱验证时的 `SMTP_USER` 和 `SMTP_PASSWORD`。"
-"其中任何一个没有值时，控制台会给已登录的用户显示一条横幅。管理员看到的是指向 Settings 标签页的链接，"
-"在那里勾选 **Missing only** 就能列出要填的项；其他人看到的则是部分功能可能无法使用、"
-"请联系管理员。缺少凭据的模型不会被加载，对它的请求会得到一个 `404`。管理员用自己的 API key "
-"发起请求时，这个 `404` 会说明部署的配置不完整；其他人得到的则和请求一个部署里根本没有定义的模型时一样，"
-"都是“not found”，所以从这个差别里看不出任何超出其可用范围的信息。"
+"有些设置项是必填的：那两个自动生成的密钥、模型路由加载时需要的每个变量（路由标了 `optional: true` "
+"的除外），以及公开注册要求邮箱验证时的 `SMTP_USER` 和 "
+"`SMTP_PASSWORD`。其中任何一个没有值时，控制台会给已登录的用户显示一条横幅。管理员看到的是指向 Settings "
+"标签页的链接，在那里勾选 **Missing only** "
+"就能列出要填的项；其他人看到的则是部分功能可能无法使用、请联系管理员。缺少凭据的模型不会被加载，对它的请求会得到一个 `404`。管理员用自己的 "
+"API key 发起请求时，这个 `404` 会说明部署的配置不完整；其他人得到的则和请求一个部署里根本没有定义的模型时一样，都是“not "
+"found”，所以从这个差别里看不出任何超出其可用范围的信息。"
 
-#: ../developer/configuration.md:688
+#: ../developer/configuration.md:800
 msgid ""
 "A deployment that leaves a model's credential unset on purpose — a route "
 "it does not use yet, or a canary it enables elsewhere — should mark that "
@@ -2064,7 +2231,7 @@ msgstr ""
 "如果部署有意不设置某个模型的凭据——比如一条暂时不用的路由，或者在别处才启用的 canary——就应该在模型注册表里给那条路由标上 "
 "`optional: true`。这样这条路由会被悄悄跳过，它的变量也不会被报告为缺失。"
 
-#: ../developer/configuration.md:694
+#: ../developer/configuration.md:806
 msgid ""
 "Settings are stored in plaintext. Anyone who can read the database — a "
 "`pg_dump`, a backup, a `psql` or pgAdmin session — can read every "
@@ -2075,30 +2242,30 @@ msgstr ""
 "设置项以明文存储。任何能读到数据库的人——通过 `pg_dump`、备份，或者 `psql`、pgAdmin 会话——都能读到每一个 "
 "provider key，解密用户存下的 API key，并签发管理员 token。要像保护这些凭据本身那样，保护数据库的访问权限和备份。"
 
-#: ../developer/configuration.md:700
+#: ../developer/configuration.md:812
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/configuration.md:702
+#: ../developer/configuration.md:814
 msgid ""
 "The environment keeps what the backend needs before it can reach its "
 "database and what describes the containers rather than the application:"
 msgstr "环境变量里留下的，是后端连上数据库之前就需要的东西，以及描述容器而不是应用本身的东西："
 
-#: ../developer/configuration.md:705
+#: ../developer/configuration.md:817
 msgid ""
 "the database connection: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, "
 "`DB_PASSWORD`, `DB_ENABLED`;"
 msgstr "数据库连接：`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_ENABLED`；"
 
-#: ../developer/configuration.md:707
+#: ../developer/configuration.md:819
 msgid ""
 "the configuration files: `MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH`, "
 "`ALERTS_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH`, "
 "`DISTRIBUTION_CONFIG_MODE`;"
 msgstr "配置文件：`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`、`DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE`；"
 
-#: ../developer/configuration.md:710
+#: ../developer/configuration.md:822
 msgid ""
 "the backend process: `LOG_FILE`, `BACKEND_EXTENSIONS`, "
 "`GEOIP_COUNTRY_DB`, `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, "
@@ -2108,13 +2275,13 @@ msgstr ""
 "后端进程：`LOG_FILE`、`BACKEND_EXTENSIONS`、`GEOIP_COUNTRY_DB`、`GEOIP_COUNTRY_PROVIDER`、`WEB_CONCURRENCY`、`SUPERVISOR_RESTARTS_BACKEND`，以及控制台也会读取的"
 " `REFRESH_TOKEN_COOKIE_NAME`；"
 
-#: ../developer/configuration.md:713
+#: ../developer/configuration.md:825
 msgid ""
 "Compose and the console: host ports and bind addresses, the console's "
 "build values and its runtime ones such as `AGENT_WEB_INTERNAL_URL`."
 msgstr "Compose 和控制台：宿主机端口和绑定地址，控制台的构建期取值，以及 `AGENT_WEB_INTERNAL_URL` 这类运行期取值。"
 
-#: ../developer/configuration.md:716
+#: ../developer/configuration.md:828
 #, python-brace-format
 msgid ""
 "The gateway reads a `.env` file from its working directory and the "
@@ -2131,15 +2298,15 @@ msgstr ""
 "variables)列出了你最可能要设置的设置项。其他设置项如果在环境变量里有值，会按上文所述在启动时导入数据库。永远不要把密钥写进模型注册表或 "
 "manifest：在那里用 `${VAR}` 引用它。"
 
-#: ../developer/configuration.md:725
+#: ../developer/configuration.md:837
 msgid "Running with your configuration"
 msgstr "用你自己的配置运行"
 
-#: ../developer/configuration.md:731
+#: ../developer/configuration.md:843
 msgid "Then check what actually loaded:"
 msgstr "然后检查实际加载了什么："
 
-#: ../developer/configuration.md:738
+#: ../developer/configuration.md:850
 msgid ""
 "The startup log says what was loaded. `Registered N routes from <path>` "
 "names the registry file that was used; `[distribution dark mode] ...` "
@@ -2151,17 +2318,30 @@ msgstr ""
 "指出实际使用的是哪个注册表文件；`[distribution dark mode] ...` 这几行显示 manifest "
 "启用后会改变什么；`Skipping model '<id>' ... after env expansion` 逐个列出凭据没有设置的模型。"
 
-#: ../developer/configuration.md:744
+#: ../developer/configuration.md:855
 msgid ""
-"`GET /routing` requires no credentials and returns, for every published route, its provider label and its weight. Each route's upstream `base_url`, and the routing file's probe results, which are keyed by endpoint URL, are shown only to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header; any other caller, or a credential that does not check out, gets the anonymous answer with the same status code. `GET /admin/routing` requires those credentials and additionally reports unpublished routes. Treat their output as sensitive: it is your upstream topology, including any host and port embedded in a base URL."
+"`GET /routing` requires no credentials and returns, for every published "
+"route, its provider label and its weight. Each route's upstream "
+"`base_url`, and the routing file's probe results, which are keyed by "
+"endpoint URL, are shown only to a caller that sends an administrator's "
+"JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header; any other"
+" caller, or a credential that does not check out, gets the anonymous "
+"answer with the same status code. `GET /admin/routing` requires those "
+"credentials and additionally reports unpublished routes. Treat their "
+"output as sensitive: it is your upstream topology, including any host and"
+" port embedded in a base URL."
 msgstr ""
-"`GET /routing` 不需要任何凭据，会返回每条已发布路由的 provider 标签和权重。每条路由的上游 `base_url`，以及以端点 URL 为键的路由配置文件探测结果，只展示给在 `Authorization: Bearer ...` 头里带上管理员 JWT 或 `ADMIN_TOKEN` 的调用方；其他调用方，或者凭据校验不通过的调用方，得到的是匿名视图，状态码不变。`GET /admin/routing` 必须带这些凭据，并且还会返回未发布的路由。它们的输出要当作敏感信息：那是你的上游拓扑，包括 base URL 里的主机和端口。"
+"`GET /routing` 不需要任何凭据，会返回每条已发布路由的 provider 标签和权重。每条路由的上游 "
+"`base_url`，以及以端点 URL 为键的路由配置文件探测结果，只展示给在 `Authorization: Bearer ...` "
+"头里带上管理员 JWT 或 `ADMIN_TOKEN` 的调用方；其他调用方，或者凭据校验不通过的调用方，得到的是匿名视图，状态码不变。`GET "
+"/admin/routing` 必须带这些凭据，并且还会返回未发布的路由。它们的输出要当作敏感信息：那是你的上游拓扑，包括 base URL "
+"里的主机和端口。"
 
-#: ../developer/configuration.md:754
+#: ../developer/configuration.md:865
 msgid "Optional phone authentication"
 msgstr "可选手机号认证"
 
-#: ../developer/configuration.md:756
+#: ../developer/configuration.md:867
 msgid ""
 "Phone signup, login and binding are disabled by default. Install a "
 "distribution-owned SMS provider, configure its delivery settings, then "
@@ -2177,7 +2357,7 @@ msgstr ""
 "选择已注册的服务；注册了短信服务之后，手机号相关设置才会出现在该页面。网关通过 `/site-config` 发布 "
 "`features.phone_auth`；共享表单仅在该功能可用时显示手机号选项。原有邮箱登录和首次启动管理员登录保持可用。"
 
-#: ../developer/configuration.md:758
+#: ../developer/configuration.md:869
 msgid ""
 "Account identifiers use international format, such as `+12025550123`. "
 "`SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local "
@@ -2191,7 +2371,7 @@ msgstr ""
 "可为本地号码补充区号；留空时必须输入国际格式。`SMS_ALLOWED_PREFIXES` "
 "可通过逗号分隔的前缀限制目的地。发行版选择发送服务支持的号码策略；账号存储和验证码策略仍由共享核心负责。"
 
-#: ../developer/configuration.md:760
+#: ../developer/configuration.md:871
 msgid ""
 "Codes expire after 300 seconds by default, allow at most five guesses, "
 "and can be consumed once. PostgreSQL serializes send and verification "
@@ -2208,7 +2388,7 @@ msgstr ""
 "处理继续复用注册流程。手机号注册遵循开放注册和审核策略，不会自动合并邮箱账号，也不会创建密码。和邮箱注册一样，首次运行设置完成之前，手机号注册会被拒绝并返回"
 " `503`。绑定需要已认证会话及专属于该账号的验证码。"
 
-#: ../developer/configuration.md:762
+#: ../developer/configuration.md:873
 msgid ""
 "Startup adds phone identity columns and durable code tables and makes "
 "password hashes nullable. When a long-running `pg_dump` holds the users "
@@ -2409,26 +2589,3 @@ msgstr ""
 #~ "once one is set;"
 #~ msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
 
-#: ../developer/configuration.md
-msgid "Analytics sections"
-msgstr "Analytics 区块"
-
-#: ../developer/configuration.md
-msgid "In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, **Users and Requests**, **Performance Metrics** and **Growth Rate** independently, then select **Save changes**. These database-backed settings apply to **Analytics → Overview** for all administrators. Token Usage, Users and Requests and Performance Metrics default to on; Growth Rate defaults to off. Reopen Analytics after saving; no backend restart is needed. A disabled section is hidden and does not request its data. Data collection continues, so re-enabling a section can show existing history."
-msgstr "在 **Admin → Settings → Common → Analytics** 中，分别切换 **Token Usage**、**Users and Requests**、**Performance Metrics** 和 **Growth Rate**，然后点击 **Save changes**。这些设置保存在数据库中，对所有管理员的 **Analytics → Overview** 生效。Token Usage、Users and Requests 和 Performance Metrics 默认开启，Growth Rate 默认关闭。保存后重新打开 Analytics 即可，无需重启后端。关闭的区块会隐藏，且不请求其数据。数据仍持续收集，因此重新启用区块后可以查看已有历史。"
-
-#: ../developer/configuration.md
-msgid "The runtime keys are `analytics_token_usage_enabled`, `analytics_users_and_requests_enabled`, `analytics_performance_metrics_enabled` and `analytics_growth_rate_enabled`. The overview's Hour / Day / Week / Month control applies to Token Usage and Users and Requests. Performance Metrics keeps its existing windows, and Growth Rate has its own 30, 60 or 90-day range."
-msgstr "运行时设置键为 `analytics_token_usage_enabled`、`analytics_users_and_requests_enabled`、`analytics_performance_metrics_enabled` 和 `analytics_growth_rate_enabled`。概览的 Hour / Day / Week / Month 控件作用于 Token Usage 和 Users and Requests。Performance Metrics 保留原有时间窗口，Growth Rate 独立提供 30、60 或 90 天的范围。"
-
-#: ../developer/configuration.md
-msgid "The built-in `rules.request_log_queue_saturation` rule pages when the bounded request-log queue drops `api_logs` report rows. It is on by default but still only runs when alerting is otherwise enabled (`ALERTS_ENABLED` and a configured channel). Tune or disable it in `alerts.yaml`:"
-msgstr "内置的 `rules.request_log_queue_saturation` 规则会在有界请求日志队列丢弃 `api_logs` 报表行时触发告警。该规则默认开启，但仍须启用告警系统（`ALERTS_ENABLED`）并配置通知渠道才会运行。可在 `alerts.yaml` 中调整或关闭："
-
-#: ../developer/configuration.md
-msgid "`threshold_count` counts the producer's loss warnings, not dropped rows. The producer warns on the first drop, every 100th drop, and at least once per 60 seconds while drops continue, so a second small burst after a quiet period is still observable. The rule uses the alert engine's existing cooldown, so a sustained loss episode does not page once per warning."
-msgstr "`threshold_count` 统计生产端发出的丢弃警告次数，而不是丢弃行数。生产端在首次丢弃、每累计丢弃 100 行时发出警告；持续丢弃期间还会按 60 秒间隔刷新警告，因此静默一段时间后再次出现的小批量丢弃仍可被观测。该规则复用告警引擎现有的冷却机制，不会在持续丢弃期间每收到一次警告就发送一次通知。"
-
-#: ../developer/configuration.md
-msgid "Every record-driven rule keeps at most 250,000 samples in its window. At traffic that would exceed that, the oldest samples leave early: the window then covers less than `window_sec`, and a rate alert says `only the latest 250000 samples are kept`. The `top_paths` line of `failed_request_rate` tracks at most 256 distinct paths per window. Failures on any other path still count toward the rate, and the line says how many it left out."
-msgstr "每条由日志记录驱动的规则，其窗口内最多保留 250,000 个样本。流量高到会超出这一数量时，最早的样本会提前移出：此时窗口覆盖的时长短于 `window_sec`，比率类告警会注明 `only the latest 250000 samples are kept`。`failed_request_rate` 告警中的 `top_paths` 一行在每个窗口内最多跟踪 256 个不同路径。其他路径上的失败仍计入失败率，该行会注明有多少未列出。"
