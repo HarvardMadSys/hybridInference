@@ -9,6 +9,7 @@ from serving.stream import (
     STREAM_QUEUE_MAX_BYTES,
     STREAM_QUEUE_MAX_ITEMS,
     StreamQueue,
+    StreamText,
     make_final_usage_chunk,
     make_stream_chunk,
     pump_stream,
@@ -164,3 +165,24 @@ async def test_a_cancellation_the_upstream_raises_itself_still_ends_the_stream()
 
     assert queue.get_nowait() == "first"
     assert queue.get_nowait() is _END
+
+
+# -- how each layer keeps the text it relays ---------------------------------------
+
+
+def test_stream_text_reads_what_was_appended_and_keeps_growing_after_a_read():
+    text = StreamText("He")
+    assert text
+    text.append("llo")
+    text.append("")
+    assert text.text == "Hello"
+    assert text.text is text.text  # read once until more arrives
+    text.append(", 世界")
+    assert text.text == "Hello, 世界"
+    assert not StreamText()
+    assert StreamText().text == ""
+
+
+def test_stream_text_refuses_what_a_string_append_refused():
+    with pytest.raises(TypeError):
+        StreamText().append(7)  # type: ignore[arg-type]

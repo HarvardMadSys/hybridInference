@@ -5,12 +5,14 @@ chat completions. Keeping this logic in one place ensures adapters
 emit consistent formats and minimizes duplication.
 
 :func:`pump_stream` and :class:`StreamQueue` are the reader a streaming
-response consumes its upstream through, shared by the surfaces that stream.
+response consumes its upstream through, shared by the surfaces that stream, and
+:class:`StreamText` is how each layer keeps the text it relays.
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import time
 import uuid
@@ -23,6 +25,44 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 logger = get_logger(__name__)
+
+
+class StreamText:
+    """Text that arrives a piece at a time, kept in one growing buffer.
+
+    Adding a piece costs about its own length. It neither copies the text so
+    far, as ``+=`` on a string held in an attribute, a closure or a dict does --
+    quadratic over a stream -- nor keeps an object per piece, as a list of the
+    pieces did: some 60 bytes for a token of four characters, fifteen times the
+    text, in every layer that kept one. The text is built when it is read, and
+    built again only once more has arrived.
+    """
+
+    __slots__ = ("_buffer", "_text")
+
+    def __init__(self, text: str = "") -> None:
+        """Start with *text*."""
+        self._buffer = io.StringIO()
+        self._buffer.write(text)
+        self._text: str | None = text
+
+    def append(self, piece: str) -> None:
+        """Add *piece*; anything but a ``str`` raises ``TypeError``."""
+        self._buffer.write(piece)
+        if piece:
+            self._text = None
+
+    @property
+    def text(self) -> str:
+        """Everything added so far."""
+        if self._text is None:
+            self._text = self._buffer.getvalue()
+        return self._text
+
+    def __bool__(self) -> bool:
+        """Whether any text has been added."""
+        return self._buffer.tell() > 0
+
 
 #: How far a stream's reader may run ahead of the response it feeds, in chunks
 #: and in bytes of them. A client that stops reading then stops the reads from

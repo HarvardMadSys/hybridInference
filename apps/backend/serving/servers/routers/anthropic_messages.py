@@ -90,7 +90,7 @@ from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import ledger_for
 from serving.storage.bounded_log import bound_rejected_log_payload
 from serving.storage.utils import calculate_cost
-from serving.stream import StreamQueue, pump_stream
+from serving.stream import StreamQueue, StreamText, pump_stream
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -1227,15 +1227,18 @@ def _is_content_delta(event_type: str, payload: Any) -> bool:
 # --- Anthropic SSE accumulator ---------------------------------------------
 
 
-class _Fragments(list):
-    """The pieces of one streamed string field of a block, joined when it finalizes.
+class _Fragments(StreamText):
+    """One streamed string field of a block, built up until the block finalizes.
 
     A block's ``text``, ``thinking`` and ``_partial_json`` arrive one delta at a
     time. Rebuilding the dict item's string per delta copied all of it on every
     token -- quadratic in the block, seconds of event loop for a long answer.
-    The pieces are held here instead and joined once, by :func:`_finalize_block`.
-    A type of its own, so it is never mistaken for a value an upstream sent.
+    The field is kept here instead (see :class:`~serving.stream.StreamText`)
+    and read once, by :func:`_finalize_block`. A type of its own, so it is
+    never mistaken for a value an upstream sent.
     """
+
+    __slots__ = ()
 
 
 def _append_fragment(block: dict, key: str, piece: Any) -> None:
@@ -1250,7 +1253,9 @@ def _append_fragment(block: dict, key: str, piece: Any) -> None:
     if isinstance(current, _Fragments):
         current.append(piece)
     elif isinstance(current, str):
-        block[key] = _Fragments((current, piece))
+        fragments = _Fragments(current)
+        fragments.append(piece)
+        block[key] = fragments
     else:
         raise TypeError(f"{key} is {type(current).__name__}, not str")
 
@@ -1259,8 +1264,9 @@ def _apply_sse_payload(acc: dict | None, event_type: str, payload: Any) -> dict 
     """Update *acc* in place with one Anthropic SSE event's parsed ``data``; return it.
 
     Best-effort: an event of an unexpected shape is ignored, so streaming
-    logging never affects the forwarded client stream. String fields keep their pieces in :class:`_Fragments` until the block
-    finalizes; read the accumulator through :func:`_finalize_response_acc`.
+    logging never affects the forwarded client stream. String fields are kept in
+    :class:`_Fragments` until the block finalizes; read the accumulator through
+    :func:`_finalize_response_acc`.
     """
     if event_type in ("ping", "message_stop", "error", ""):
         return acc
@@ -1359,11 +1365,11 @@ def _apply_sse_payload(acc: dict | None, event_type: str, payload: Any) -> dict 
 
 
 def _finalize_block(block: dict) -> None:
-    """Join streamed fields, resolve a tool_use block's partial JSON, drop sentinel keys."""
+    """Read streamed fields, resolve a tool_use block's partial JSON, drop sentinel keys."""
     for key in ("text", "thinking", "_partial_json"):
         value = block.get(key)
         if isinstance(value, _Fragments):
-            block[key] = "".join(value)
+            block[key] = value.text
     if block.get("type") == "tool_use" and "_partial_json" in block:
         raw = block.pop("_partial_json")
         try:

@@ -45,6 +45,7 @@ from serving.servers.routers.routing_info import (
 from serving.storage.utils import json_safe
 from serving.stream import (
     StreamQueue,
+    StreamText,
     make_role_chunk,
     new_completion_id,
     pump_stream,
@@ -176,20 +177,6 @@ def _unparseable_tool_call_arguments(
     return findings
 
 
-def _joined(parts: list[str]) -> str:
-    """Return ``parts`` joined, keeping the result as the list's only element.
-
-    Streamed text is accumulated as a list of pieces and joined when read:
-    appending to a string held in an attribute, a closure variable or a dict
-    copies all of it on every piece -- quadratic over a stream, seconds of event
-    loop for a long answer -- which a list append does not. Keeping the join
-    makes a second read free, and later pieces still append after it.
-    """
-    if len(parts) > 1:
-        parts[:] = ["".join(parts)]
-    return parts[0] if parts else ""
-
-
 class ToolCallAccumulator:
     """Merge tool_calls deltas indexed by ``index`` into complete tool calls.
 
@@ -197,15 +184,16 @@ class ToolCallAccumulator:
     payload) needs the merged form. Mirrors the prior inline merge logic
     from completions.py lines 543-570.
 
-    A call's name and arguments arrive in pieces and are kept that way, joined
-    by :meth:`to_list` (see :func:`_joined`): a long tool call -- a file
-    written by an agent -- arrives in thousands of argument fragments.
+    A call's name and arguments arrive in pieces and are kept as
+    :class:`~serving.stream.StreamText`, read by :meth:`to_list`: a long tool
+    call -- a file written by an agent -- arrives in thousands of argument
+    fragments.
     """
 
     def __init__(self) -> None:
         self._calls: dict[int, dict[str, Any]] = {}
-        # Per call index: the name pieces and the arguments pieces.
-        self._pieces: dict[int, tuple[list[str], list[str]]] = {}
+        # Per call index: the name and the arguments so far.
+        self._pieces: dict[int, tuple[StreamText, StreamText]] = {}
 
     def add(self, deltas: list[dict[str, Any]]) -> None:
         """Merge a list of tool_call deltas into the accumulator."""
@@ -218,7 +206,7 @@ class ToolCallAccumulator:
                     "type": tc_delta.get("type") or "function",
                     "function": {"name": "", "arguments": ""},
                 }
-                self._pieces[idx] = ([], [])
+                self._pieces[idx] = (StreamText(), StreamText())
             id_delta = tc_delta.get("id")
             if not self._calls[idx]["id"] and isinstance(id_delta, str) and id_delta:
                 self._calls[idx]["id"] = id_delta
@@ -227,13 +215,13 @@ class ToolCallAccumulator:
                 self._calls[idx]["type"] = type_delta
             fn_delta = tc_delta.get("function")
             if isinstance(fn_delta, dict):
-                name_pieces, argument_pieces = self._pieces[idx]
+                name, arguments = self._pieces[idx]
                 name_delta = fn_delta.get("name")
                 if isinstance(name_delta, str):
-                    name_pieces.append(name_delta)
+                    name.append(name_delta)
                 arguments_delta = fn_delta.get("arguments")
                 if isinstance(arguments_delta, str):
-                    argument_pieces.append(arguments_delta)
+                    arguments.append(arguments_delta)
 
     def __bool__(self) -> bool:
         return bool(self._calls)
@@ -241,9 +229,9 @@ class ToolCallAccumulator:
     def to_list(self) -> list[dict[str, Any]]:
         """Return tool_calls sorted by ``index`` for the final message."""
         for idx, call in self._calls.items():
-            name_pieces, argument_pieces = self._pieces[idx]
-            call["function"]["name"] = _joined(name_pieces)
-            call["function"]["arguments"] = _joined(argument_pieces)
+            name, arguments = self._pieces[idx]
+            call["function"]["name"] = name.text
+            call["function"]["arguments"] = arguments.text
         return [tc for _, tc in sorted(self._calls.items())]
 
 
@@ -396,10 +384,10 @@ class StreamSession:
         # Streaming-loop state
         self._yielded_first_chunk = False
         self._chunk_count = 0
-        # The answer and the reasoning so far, as the pieces they arrived in;
-        # read through ``_final_text`` / ``_final_reasoning`` (see ``_joined``).
-        self._text_pieces: list[str] = []
-        self._reasoning_pieces: list[str] = []
+        # The answer and the reasoning so far (see ``StreamText``); read
+        # through ``_final_text`` / ``_final_reasoning``.
+        self._text = StreamText()
+        self._reasoning = StreamText()
         self._finish_reason_for_db = "stop"
         self._tool_calls = ToolCallAccumulator()
         self._ttft = _TTFTTracker(start_time)
@@ -792,13 +780,13 @@ class StreamSession:
 
     @property
     def _final_text(self) -> str:
-        """The content streamed so far, joined (see ``_joined``)."""
-        return _joined(self._text_pieces)
+        """The content streamed so far."""
+        return self._text.text
 
     @property
     def _final_reasoning(self) -> str:
-        """The reasoning streamed so far, joined (see ``_joined``)."""
-        return _joined(self._reasoning_pieces)
+        """The reasoning streamed so far."""
+        return self._reasoning.text
 
     # -- internal: per-chunk handlers ---------------------------------------
 
@@ -853,7 +841,7 @@ class StreamSession:
                 # What appending it to the answer string raised, here, at the
                 # chunk that carried it, as before: the stream fails with it.
                 raise TypeError(f"stream content delta is {type(content_piece).__name__}, not str")
-            self._text_pieces.append(content_piece)
+            self._text.append(content_piece)
 
         reasoning_piece = delta.get("reasoning_content")
         if not (isinstance(reasoning_piece, str) and reasoning_piece):
@@ -861,7 +849,7 @@ class StreamSession:
         if not (isinstance(reasoning_piece, str) and reasoning_piece):
             reasoning_piece = delta.get("thinking")
         if isinstance(reasoning_piece, str) and reasoning_piece:
-            self._reasoning_pieces.append(reasoning_piece)
+            self._reasoning.append(reasoning_piece)
 
         tool_calls_delta = delta.get("tool_calls")
         if tool_calls_delta:

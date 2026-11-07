@@ -14,7 +14,7 @@ import aiohttp
 from serving.config.app_config import config_value, on_change
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
-from serving.stream import done_sentinel
+from serving.stream import StreamText, done_sentinel
 from serving.structured_output import requested_format, with_instruction
 from serving.utils.logging import get_logger
 from serving.utils.messages import (
@@ -1442,11 +1442,12 @@ class OpenAICompatAdapter(BaseAdapter):
         processor = get_processor(self._processor_model_id, override=self._processor_override)
 
         # The output so far, for the usage estimate when the upstream reports
-        # none: content and reasoning, and tool-call names and arguments. Lists
-        # of pieces, joined once at the end -- appending to a string the closure
-        # below rebinds copies all of it on every token, quadratic in the answer.
-        content_pieces: list[str] = []
-        tool_text_pieces: list[str] = []
+        # none: content and reasoning, and tool-call names and arguments. Kept
+        # as ``StreamText``, read once at the end -- appending to a string the
+        # closure below rebinds copies all of it on every token, quadratic in
+        # the answer.
+        content_text = StreamText()
+        tool_text = StreamText()
         finish_reason = "stop"
         upstream_usage: dict[str, Any] | None = None
         prompt_tokens_override: int | None = None
@@ -1480,13 +1481,13 @@ class OpenAICompatAdapter(BaseAdapter):
             # Accumulate visible content and reasoning independently for the fallback
             content = delta.get("content")
             if isinstance(content, str) and content:
-                content_pieces.append(content)
+                content_text.append(content)
 
             reasoning = (
                 delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             )
             if isinstance(reasoning, str) and reasoning:
-                content_pieces.append(reasoning)
+                content_text.append(reasoning)
 
             has_reasoning = (
                 bool(delta.get("reasoning_content"))
@@ -1511,9 +1512,9 @@ class OpenAICompatAdapter(BaseAdapter):
                         name = fn.get("name") or ""
                         args = fn.get("arguments") or ""
                         if isinstance(name, str):
-                            tool_text_pieces.append(name)
+                            tool_text.append(name)
                         if isinstance(args, str):
-                            tool_text_pieces.append(args)
+                            tool_text.append(args)
                 return self._format_passthrough_chunk(processed_chunk)
 
             if isinstance(content, str) and content:
@@ -1758,9 +1759,9 @@ class OpenAICompatAdapter(BaseAdapter):
             usage_info = None
             final_usage = self._build_fallback_usage(
                 messages=cleaned_messages,
-                total_content="".join(content_pieces),
+                total_content=content_text.text,
                 prompt_tokens_override=prompt_tokens_override,
-                tool_text="".join(tool_text_pieces),
+                tool_text=tool_text.text,
             )
         final_chunk_str = self._build_final_chunk(
             usage=final_usage,
