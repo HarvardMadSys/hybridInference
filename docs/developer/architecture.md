@@ -146,7 +146,10 @@ dependency on every inference endpoint. It resolves, in order:
 The same dependency enforces the caller's daily spend quota and returns `429`
 with a shared payload builder (`apps/backend/serving/quota.py`) whichever door
 the request came through. A separate `enforce_user_concurrency` dependency holds a
-per-user in-flight slot for the duration of the request.
+per-user in-flight slot for the duration of the request. Which budget the slot
+comes from depends on the model (a concurrency-exempt model has its own), so the
+body is read before the slot is taken; a caller may have four bodies read that
+way at once, and a fifth request gets the same `429` before its body is read.
 
 The spend the gate reads comes from the counter tables (`user_daily_cost`,
 `api_key_daily_cost`), and the spend ledger (`apps/backend/serving/spend_ledger.py`)

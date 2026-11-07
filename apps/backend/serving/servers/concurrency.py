@@ -45,6 +45,15 @@ EXEMPT_MODEL_USER_CONCURRENCY_LIMIT = 64
 # be able to keep the tokenizer busy for everyone.
 COUNT_TOKENS_USER_CONCURRENCY_LIMIT = 4
 
+# Per-user cap on requests whose body is being read and decoded before
+# admission (see ``enforce_user_concurrency``: the budget a request is admitted
+# under depends on its model). Held from before the body is read until the
+# request has its slot or its 429, so a user already at their cap cannot keep
+# any number of bodies -- each up to ``REQUEST_MAX_BODY_MB``, and several times
+# that once decoded -- in memory waiting for that 429. An ordinary body is read
+# at once, so this binds only on bodies still arriving.
+INTAKE_USER_CONCURRENCY_LIMIT = 4
+
 
 def _build_fallback_limits() -> dict[str, int]:
     """Derive fallback caps from the runtime-settings registry.
@@ -267,6 +276,61 @@ def _count_tokens_slot_key(user_id: str) -> str:
     return f"{user_id}:count_tokens"
 
 
+def _intake_slot_key(user_id: str) -> str:
+    """Return the per-user budget key for bodies read before admission (see :func:`_exempt_slot_key`)."""
+    return f"{user_id}:intake"
+
+
+async def _take_intake_slot(
+    request: Request, user: dict[str, Any], limiter: UserConcurrencyLimiter
+) -> str:
+    """Count a request whose body is read before admission against its caller's intake budget.
+
+    Taken before anything of the body is read, and given back once the request
+    has its slot or its 429 (:data:`INTAKE_USER_CONCURRENCY_LIMIT`). Returns the
+    key to release. When the budget is spent the request is refused with the
+    concurrency 429 there and then, its body unread.
+    """
+    user_id = user["user_id"]
+    key = _intake_slot_key(user_id)
+    granted, limit, role_label = await limiter.try_acquire(
+        key,
+        user.get("role", "free") or "free",
+        bool(user.get("is_admin", False)),
+        INTAKE_USER_CONCURRENCY_LIMIT,
+    )
+    if granted:
+        return key
+    logger.info(
+        "per-user intake limit hit",
+        extra={"user_id": user_id, "role": role_label, "limit": limit, "route": request.url.path},
+    )
+    asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        log_rejection(
+            request=request,
+            status_code=429,
+            error_code="concurrency_limit_exceeded",
+            reason=f"intake limit={limit} role={role_label}",
+            user=user,
+            prompt="",
+        )
+    )
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "error": {
+                "code": "concurrency_limit_exceeded",
+                "message": (
+                    f"Too many concurrent requests still sending their bodies (limit: {limit})"
+                ),
+                "limit": limit,
+                "role": role_label,
+            }
+        },
+        headers={"Retry-After": "1"},
+    )
+
+
 def canonical_model_id(
     model: str | None,
     *,
@@ -404,14 +468,24 @@ async def enforce_user_concurrency(
     # taking the normal slot would refuse an exempt-model request whenever the
     # normal budget is full, which the exemption exists to allow, and taking
     # an exempt slot would hold one for every request that turns out to be
-    # normal. Either changes who is admitted, so the order stays.
+    # normal. Either changes who is admitted, so the order stays. What a caller
+    # may have read this way at once is its intake budget (_take_intake_slot),
+    # held until the request has its slot or its 429.
     parse_before_acquire = limiter is None or concurrency_resolver is not None
     model: str | None = None
     canonical: str | None = None
+    intake_key: str | None = None
     if parse_before_acquire:
-        model, canonical = await _request_model(
-            request, router=router, embedding_adapters=embedding_adapters
-        )
+        if limiter is not None and router is not None and request.method == "POST":
+            intake_key = await _take_intake_slot(request, user, limiter)
+        try:
+            model, canonical = await _request_model(
+                request, router=router, embedding_adapters=embedding_adapters
+            )
+        except BaseException:
+            if limiter is not None and intake_key is not None:
+                limiter.release(intake_key)
+            raise
 
     if limiter is None:
         # If the limiter isn't configured (e.g., misconfigured deployment),
@@ -431,11 +505,16 @@ async def enforce_user_concurrency(
     user_id = user["user_id"]
     role = user.get("role", "free") or "free"
     is_admin = bool(user.get("is_admin", False))
-    slot_key, max_concurrent = await _slot_for_canonical(
-        user, model, canonical, concurrency_resolver
-    )
-
-    granted, limit, role_label = await limiter.try_acquire(slot_key, role, is_admin, max_concurrent)
+    try:
+        slot_key, max_concurrent = await _slot_for_canonical(
+            user, model, canonical, concurrency_resolver
+        )
+        granted, limit, role_label = await limiter.try_acquire(
+            slot_key, role, is_admin, max_concurrent
+        )
+    finally:
+        if intake_key is not None:
+            limiter.release(intake_key)
     if not granted:
         logger.info(
             "per-user concurrency limit hit",
