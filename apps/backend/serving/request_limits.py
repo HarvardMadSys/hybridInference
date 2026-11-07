@@ -13,11 +13,11 @@ The limits are generous, far above what a real client sends, and a request at
 every limit is served in well under a second of loop time (measured on the
 chat route: 0.3 s for 50,000 messages, 0.7 s for 50,000 with two parts each).
 
-* :data:`MAX_MESSAGES`: the largest context window served is about a million
-  tokens. A coding agent's message averages hundreds of tokens (a tool result,
-  a file), so a whole million-token session is a few thousand messages, and
-  even a minimal tool round trip (a call and an "ok") takes some 40 tokens:
-  50,000 messages do not fit in any context window served.
+* :data:`MAX_MESSAGES`: context windows reach about a million tokens. A
+  coding agent's message averages hundreds of tokens (a tool result, a file),
+  so a whole million-token session is a few thousand messages, and even a
+  minimal tool round trip (a call and an "ok") takes some 40 tokens: 50,000
+  messages fit in no context window.
 * :data:`MAX_PARTS_PER_MESSAGE` and :data:`MAX_PARTS_PER_REQUEST`: content
   parts (text, images, tool results) and tool calls. A message holds a few, a
   turn after many parallel tool calls a few dozen: 10,000 in one message, and
