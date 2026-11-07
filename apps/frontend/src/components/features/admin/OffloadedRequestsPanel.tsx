@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AdminRequestOffloadGroup,
   type RequestOutcome,
+  type RequestSource,
   getRecentRequestOffloads,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -80,6 +81,7 @@ export function OffloadedRequestsPanel({
   requestType,
   refreshKey = 0,
   outcome = 'all',
+  source,
 }: {
   userFilter: string;
   sessionFilter: string;
@@ -87,6 +89,8 @@ export function OffloadedRequestsPanel({
   requestType: 'all' | 'chat' | 'embedding';
   refreshKey?: number;
   outcome?: RequestOutcome;
+  // Whose requests the table lists, as for the performance panel.
+  source?: RequestSource;
 }) {
   const [groups, setGroups] = useState<AdminRequestOffloadGroup[]>([]);
   const [total, setTotal] = useState(0);
@@ -112,6 +116,7 @@ export function OffloadedRequestsPanel({
           sessionId: sessionFilter || undefined,
           modelId: modelFilter || undefined,
           requestType: requestType === 'all' ? undefined : requestType,
+          source,
           refresh,
         });
         if (seq !== seqRef.current) return;
@@ -132,7 +137,7 @@ export function OffloadedRequestsPanel({
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [userFilter, sessionFilter, modelFilter, requestType],
+    [userFilter, sessionFilter, modelFilter, requestType, source],
   );
 
   useEffect(() => {

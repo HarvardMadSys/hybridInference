@@ -6,6 +6,7 @@ import {
   AdminRequestPerfGroup,
   AdminRequestPerfTrendSeries,
   type RequestOutcome,
+  type RequestSource,
   getRecentRequestsPerformance,
   getRecentRequestsPerformanceTrend,
 } from '@/lib/api/admin';
@@ -110,6 +111,7 @@ export function RequestPerformancePanel({
   requestType,
   refreshKey = 0,
   outcome = 'all',
+  source,
 }: {
   userFilter: string;
   // The session the table is scoped to, or '' for all of them. Without it the
@@ -120,6 +122,9 @@ export function RequestPerformancePanel({
   requestType: 'all' | 'chat' | 'embedding';
   refreshKey?: number;
   outcome?: RequestOutcome;
+  // Whose requests the table lists (Recent Requests: `interactive`), so the
+  // summary describes the same rows. Omitted: every source.
+  source?: RequestSource;
 }) {
   const [groups, setGroups] = useState<AdminRequestPerfGroup[]>([]);
   const [truncated, setTruncated] = useState(false);
@@ -176,6 +181,7 @@ export function RequestPerformancePanel({
           sessionId: sessionFilter || undefined,
           modelId: modelFilter || undefined,
           requestType: requestType === 'all' ? undefined : requestType,
+          source,
           refresh,
         });
         if (seq !== seqRef.current) return;
@@ -195,7 +201,7 @@ export function RequestPerformancePanel({
         if (seq === seqRef.current) setLoading(false);
       }
     },
-    [userFilter, sessionFilter, modelFilter, requestType],
+    [userFilter, sessionFilter, modelFilter, requestType, source],
   );
 
   useEffect(() => {
@@ -231,6 +237,7 @@ export function RequestPerformancePanel({
         requestType: requestType === 'all' ? undefined : requestType,
         servedModel: group.model_id,
         servedEndpoint: group.endpoint_id,
+        source,
         refresh,
       })
         .then((data) => {
@@ -261,7 +268,16 @@ export function RequestPerformancePanel({
           });
         });
     },
-    [expanded, trendByRoute, trendLoading, userFilter, sessionFilter, modelFilter, requestType],
+    [
+      expanded,
+      trendByRoute,
+      trendLoading,
+      userFilter,
+      sessionFilter,
+      modelFilter,
+      requestType,
+      source,
+    ],
   );
 
   return (

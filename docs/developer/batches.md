@@ -866,6 +866,14 @@ where the gateway keeps prompts in its request log (`db_store_full_content`);
 elsewhere it answers `403`. Opening a batch's requests is audited as
 `batch.requests.read` against the batch's owner.
 
+The tab's **Requests** page lists the requests the batch worker ran, newest
+first: one row per attempt, from the request log, with the batch it belongs
+to. A batch's **Requests** link opens the page on that batch. The **Recent
+Requests** tab leaves these requests out, so a large batch does not bury the
+requests callers made directly. Both pages read the request log's admin
+endpoints with `source=batch` or `source=interactive`, and `batch_id` for one
+batch.
+
 ### Upgrading a deployment
 
 A worker only runs the kinds of batch it knows: claims, expiry, finalizing,
