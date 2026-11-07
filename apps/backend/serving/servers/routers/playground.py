@@ -19,7 +19,13 @@ from serving.pricing import require_route_pricing
 from serving.servers.deps import get_router, require_role
 from serving.servers.request_body import json_body_after, json_body_schema
 from serving.servers.routers.completions_stream import _extract_exception_status_code
-from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
+from serving.stream import (
+    StreamQueue,
+    make_role_chunk,
+    new_completion_id,
+    pump_stream,
+    stamp_completion_id,
+)
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -324,24 +330,17 @@ async def playground_chat(
             "max_tokens": body.max_tokens,
         }
         # A reader task drains the router into a queue, so a heartbeat can go
-        # out while it waits without cancelling the upstream read.
-        chunks: asyncio.Queue = asyncio.Queue()
-
-        async def _read() -> None:
-            try:
-                async for chunk in router_exec.stream_chat_completion(
-                    body.model,
-                    effective_messages,
-                    routing_options=RoutingRequestOptions(pin_provider=body.provider),
-                    **kwargs,
-                ):
-                    await chunks.put(chunk)
-            except Exception as exc:
-                await chunks.put(exc)
-            finally:
-                await chunks.put(_STREAM_END)
-
-        reader = asyncio.create_task(_read())
+        # out while it waits without cancelling the upstream read. Bounded: a
+        # client that stops reading stops the reads from the upstream too.
+        chunks = StreamQueue()
+        # Nothing runs until the reader's first read, selection included.
+        router_chunks = router_exec.stream_chat_completion(
+            body.model,
+            effective_messages,
+            routing_options=RoutingRequestOptions(pin_provider=body.provider),
+            **kwargs,
+        )
+        reader = asyncio.create_task(pump_stream(router_chunks, chunks, end=_STREAM_END))
         idle_s = 0
         try:
             while True:

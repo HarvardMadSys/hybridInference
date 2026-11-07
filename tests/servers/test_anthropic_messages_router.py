@@ -3305,3 +3305,118 @@ async def test_a_stream_left_during_prefill_bills_the_prompt(
     expected = anthropic_messages._estimate_request_input_tokens(_LONG_PROMPT)
     assert captured["usage"]["input_tokens"] == expected
     assert captured["metadata"].get("usage_estimated") is True
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_stops_reading_holds_the_upstream_back_and_tears_down(
+    anthropic_test_app, monkeypatch
+):
+    """A bounded queue between the upstream and the client, and no wedge on leaving.
+
+    The queue used to be unbounded, so a client that read nothing let the gateway
+    drain the whole generation into memory. Bounding it is safe only if teardown
+    cannot block on a full queue: the reader is stopped without putting anything
+    more, and closes the upstream wherever it was waiting.
+    """
+    from serving.http import AsyncHTTPClient
+    from serving.stream import STREAM_QUEUE_MAX_ITEMS
+    from tests.servers.conftest import ANTHROPIC_TEST_API_KEY
+
+    produced = 0
+    closed = asyncio.Event()
+    event = (
+        b'data: {"id":"x","object":"chat.completion.chunk","model":"glm-4.7",'
+        b'"choices":[{"index":0,"delta":{"content":"token"}}]}\n\n'
+    )
+
+    async def events():
+        nonlocal produced
+        try:
+            for _ in range(5_000):
+                produced += 1
+                yield event
+                await asyncio.sleep(0)
+        finally:
+            closed.set()
+
+    class _Content:
+        def iter_any(self):
+            return events()
+
+        def iter_chunked(self, n):
+            return events()
+
+    class _Response:
+        status = 200
+        content = _Content()
+        headers: dict = {"Content-Type": "text/event-stream"}  # noqa: RUF012
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _Session:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _Response()
+
+    async def fake_ensure_session(self):
+        return _Session()
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+    monkeypatch.setattr(anthropic_messages, "_schedule_log_store_task", lambda store, **kw: None)
+
+    payload = json.dumps({**_LONG_PROMPT, "messages": [{"role": "user", "content": "hi"}]}).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.1"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/messages",
+        "raw_path": b"/v1/messages",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+            (b"x-api-key", ANTHROPIC_TEST_API_KEY.encode()),
+        ],
+        "client": ("127.0.0.1", 45678),
+        "server": ("test", 80),
+    }
+    stalled, disconnected = asyncio.Event(), asyncio.Event()
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        # As uvicorn's: a client that stops reading fills the connection's write
+        # buffer, so a send waits -- until the connection is lost, after which
+        # sends return at once and are dropped.
+        if message["type"] == "http.response.body" and b"content_block_delta" in message.get(
+            "body", b""
+        ):
+            stalled.set()
+            await disconnected.wait()
+
+    app_task = asyncio.create_task(anthropic_test_app(scope, receive, send))
+    await asyncio.wait_for(stalled.wait(), timeout=5)
+    for _ in range(500):
+        await asyncio.sleep(0)
+    assert produced <= STREAM_QUEUE_MAX_ITEMS + 8
+
+    disconnected.set()
+    await asyncio.wait_for(app_task, timeout=5)
+    # Torn down with the request, upstream included: no put waited on the
+    # full queue, and the generation was not read to its end.
+    await asyncio.wait_for(closed.wait(), timeout=5)
+    assert produced < 5_000

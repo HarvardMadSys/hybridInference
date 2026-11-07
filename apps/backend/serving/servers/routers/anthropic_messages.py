@@ -90,6 +90,7 @@ from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import ledger_for
 from serving.storage.bounded_log import bound_rejected_log_payload
 from serving.storage.utils import calculate_cost
+from serving.stream import StreamQueue, pump_stream
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -2475,21 +2476,14 @@ async def execute_messages(
                 # Consume the upstream via a queue + background reader so idle
                 # gaps can be filled with keepalive heartbeats without cancelling
                 # the upstream read (see _KEEPALIVE_INTERVAL / _MAX_STREAM_IDLE).
-                # The queue MUST stay unbounded: a bounded queue can wedge teardown
-                # -- if a fast upstream fills it while the client is gone, the
-                # reader parks on put(), and on cancel its finally sentinel-put
-                # blocks forever on the full queue, leaking the upstream connection.
-                chunk_queue: asyncio.Queue = asyncio.Queue()
-
-                async def _reader() -> None:
-                    try:
-                        async for c in upstream:
-                            await chunk_queue.put(c)
-                    except Exception as exc:
-                        # Forward upstream errors to the main loop to re-raise.
-                        await chunk_queue.put(exc)
-                    finally:
-                        await chunk_queue.put(_STREAM_SENTINEL)
+                # The queue is bounded, so a client that stops reading stops the
+                # reads from the upstream too instead of the gateway buffering
+                # the rest of the generation. Teardown cannot wedge on it:
+                # ``pump_stream``, cancelled by the ``finally`` below, puts
+                # nothing more on its way out -- not even the sentinel, which a
+                # full queue nobody drains would never take -- and closes the
+                # upstream, connection included, wherever it was waiting.
+                chunk_queue = StreamQueue()
 
                 def _account_sse(raw: bytes) -> bool:
                     """Parse ``raw`` into events and apply them to this request's state.
@@ -2536,7 +2530,9 @@ async def execute_messages(
 
                 # The adapter runs in the reader's copy of this context.
                 with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: upstream_dispatch}):
-                    reader_task = asyncio.create_task(_reader())
+                    reader_task = asyncio.create_task(
+                        pump_stream(upstream, chunk_queue, end=_STREAM_SENTINEL)
+                    )
                 idle_seconds = 0.0
                 saw_upstream_frame = False
                 try:

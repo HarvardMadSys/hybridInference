@@ -43,7 +43,13 @@ from serving.servers.routers.routing_info import (
     merge_adapter_routing,
 )
 from serving.storage.utils import json_safe
-from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
+from serving.stream import (
+    StreamQueue,
+    make_role_chunk,
+    new_completion_id,
+    pump_stream,
+    stamp_completion_id,
+)
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
@@ -531,24 +537,19 @@ class StreamSession:
             # Keepalive: a background task drains adapter_chunks into a
             # queue.  The generator pulls with a short timeout; on timeout
             # it yields an SSE comment so intermediate proxies see activity
-            # and don't drop the connection during long upstream pauses.
+            # and don't drop the connection during long upstream pauses. The
+            # queue is bounded, so a client that stops reading stops the reads
+            # from the upstream too (see ``pump_stream``).
             last_client_yield = time.monotonic()
-            chunk_queue: asyncio.Queue = asyncio.Queue()
-
-            async def _adapter_reader() -> None:
-                try:
-                    async for item in adapter_chunks:
-                        await chunk_queue.put(item)
-                except Exception as exc:
-                    await chunk_queue.put(exc)
-                finally:
-                    await chunk_queue.put(_SENTINEL)
+            chunk_queue = StreamQueue()
 
             # The reader runs the router, and the adapter under it, in a copy of
             # this context: the record pushed for it is the one the outbound
             # limiter marks when the request leaves the gateway.
             with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: self._dispatch}):
-                reader_task = asyncio.create_task(_adapter_reader())
+                reader_task = asyncio.create_task(
+                    pump_stream(adapter_chunks, chunk_queue, end=_SENTINEL)
+                )
             try:
                 while True:
                     try:

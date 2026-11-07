@@ -66,6 +66,7 @@ from serving.servers.routers.routing_info import (
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
+from serving.stream import StreamQueue, pump_stream
 from serving.structured_output import conform_reply, requested_format
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
@@ -259,18 +260,10 @@ async def _streaming_response_with_keepalive(
 
     last_client_byte = time.monotonic()
     yielded_any = False
-    chunk_queue: Any = asyncio.Queue()
-
-    async def _reader() -> None:
-        try:
-            async for item in stream_chunks:
-                await chunk_queue.put(item)
-        except Exception as exc:
-            await chunk_queue.put(exc)
-        finally:
-            await chunk_queue.put(None)
-
-    reader_task = asyncio.create_task(_reader())
+    # Bounded, with a reader that stops cleanly however it is left (see
+    # ``pump_stream``).
+    chunk_queue = StreamQueue()
+    reader_task = asyncio.create_task(pump_stream(stream_chunks, chunk_queue, end=None))
     try:
         while True:
             try:
