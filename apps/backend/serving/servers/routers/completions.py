@@ -77,6 +77,7 @@ from serving.utils.token_utils import (
     normalize_usage,
     optional_token_count,
     sanitize_usage,
+    usage_count,
 )
 
 if TYPE_CHECKING:
@@ -418,6 +419,38 @@ def _metadata_with_fallback_diagnostic(
     if fallback_error is None:
         return metadata
     return {**metadata, "upstream_error": fallback_error}
+
+
+def _reply_usage(reply: Any) -> dict[str, Any] | None:
+    """The normalized usage of one upstream reply, or None when it reported none."""
+    usage = reply.get("usage") if isinstance(reply, dict) else None
+    return normalize_usage(usage) if isinstance(usage, dict) else None
+
+
+def _total_usage(usages: list[dict[str, Any] | None]) -> dict[str, Any] | None:
+    """Add up the normalized usage of several upstream calls, to bill and log them as one.
+
+    The counts are summed. A cache or reasoning count no call reported stays
+    unreported, and ``total_tokens`` is kept only when every call reported one:
+    billing reads it as evidence of whether ``completion_tokens`` already
+    includes reasoning (``billable_output_tokens``), so a sum of some calls'
+    totals would decide that wrongly. None when no call reported usage.
+    """
+    reported = [usage for usage in usages if usage]
+    if not reported:
+        return None
+    total: dict[str, Any] = {
+        field: sum(usage_count(usage.get(field), field=field) for usage in reported)
+        for field in ("prompt_tokens", "completion_tokens")
+    }
+    totals = [optional_token_count(usage.get("total_tokens")) for usage in reported]
+    known_totals = [count for count in totals if count is not None]
+    total["total_tokens"] = sum(known_totals) if len(known_totals) == len(totals) else None
+    for field in ("reasoning_tokens", "cache_read_tokens", "cache_write_tokens"):
+        counts = [optional_token_count(usage.get(field)) for usage in reported]
+        if any(count is not None for count in counts):
+            total[field] = sum(count or 0 for count in counts)
+    return total
 
 
 # --- Protocol execution, shared with Responses, compat and Batch (issue #1690) --
@@ -1332,15 +1365,21 @@ async def execute_chat(
             messages,
             **router_params,
         )
+        # Every reply the upstream generated for this request, the one returned
+        # included: each was paid for upstream, so each is billed.
+        replies = [response]
         wanted_format = requested_format(params)
         if wanted_format is not None:
 
             async def _retry(retry_messages: list[dict[str, Any]]) -> Any:
-                return await active_router.chat_completion(model, retry_messages, **router_params)
+                reply = await active_router.chat_completion(model, retry_messages, **router_params)
+                replies.append(reply)
+                return reply
 
             response, metadata["structured_output"] = await conform_reply(
                 response, wanted_format, _retry, messages
             )
+        set_aside = [reply for reply in replies if reply is not response]
         serializer_mode = resolve_mode(ctx.origin.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content
@@ -1383,9 +1422,17 @@ async def execute_chat(
         # cost-tracker-populated ``upstream_cost_usd`` on ``routing``.
         # Unconditional — probes included: the ``x-probe`` header must be able
         # to affect log noise but never cost/quota (mirrors embeddings.py).
-        _ns_usage = (
+        billed_usage = (
             normalize_usage(response.get("usage")) if isinstance(response, dict) else None
-        ) or {}
+        )
+        if set_aside:
+            # The replies conform_reply asked for and did not return were
+            # generated too: billed with the one returned, at its price, and
+            # logged as billed. The client's copy keeps the returned reply's own.
+            billed_usage = _total_usage(
+                [billed_usage, *(_reply_usage(reply) for reply in set_aside)]
+            )
+        _ns_usage = billed_usage or {}
         if _ns_usage:
             routing = await cost_tracker.schedule_increment(
                 user_id=user_id,
@@ -1418,9 +1465,7 @@ async def execute_chat(
                     "provider": provider,
                     "prompt": messages,
                     "response": response,
-                    "usage": normalize_usage(response.get("usage"))
-                    if isinstance(response, dict)
-                    else None,
+                    "usage": billed_usage,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": 200,
                     "params": completions_logger.build_db_params(
