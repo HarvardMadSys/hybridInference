@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 
@@ -29,6 +31,22 @@ MAX_LOGGED_PATH_CHARS = 512
 
 _TRUNCATED = "…"
 
+#: Request headers the DEBUG header dump shows only as ``***``: credentials, and
+#: whom a request acts for. A name that merely looks like one of these is masked
+#: too (:data:`_CREDENTIAL_NAME`), so a header added later is not printed until
+#: someone notices.
+MASKED_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "api-key",
+        "cookie",
+        "x-on-behalf-of",
+    }
+)
+_CREDENTIAL_NAME = re.compile(r"auth|cookie|key|token|secret|passw|session|signature", re.I)
+
 
 def loggable(value: str | None, max_chars: int = MAX_LOGGED_VALUE_CHARS) -> str | None:
     r"""*value* as a log line keeps it: cut to *max_chars*, control characters escaped.
@@ -43,6 +61,33 @@ def loggable(value: str | None, max_chars: int = MAX_LOGGED_VALUE_CHARS) -> str 
     if not clipped.isprintable():
         clipped = "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in clipped)
     return clipped + _TRUNCATED if len(value) > max_chars else clipped
+
+
+def _is_masked(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in MASKED_HEADERS or _CREDENTIAL_NAME.search(lowered) is not None
+
+
+def loggable_url(value: str | None) -> str | None:
+    """A ``Referer`` or ``Origin`` as a log line keeps it: scheme, host and path.
+
+    The query and fragment are dropped, and so is any user name or password in
+    the address: a browser sends the full address of the page a request came
+    from, and the page that resets a password carries its live token in the
+    query (``/reset-password?token=...``). What is left is cut and escaped by
+    :func:`loggable`.
+    """
+    if value is None:
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        # Not a URL Python can split (an unbalanced IPv6 bracket): keep only
+        # what precedes a query or a fragment.
+        return loggable(re.split(r"[?#]", value, maxsplit=1)[0])
+    host = parts.netloc.rpartition("@")[2]
+    prefix = f"{parts.scheme}://{host}" if parts.scheme and host else ""
+    return loggable(prefix + parts.path)
 
 
 class RequestLogMiddleware:
@@ -113,8 +158,8 @@ class RequestLogMiddleware:
             "cf_connecting_ipv6": loggable(ip_info.cf_connecting_ipv6),
             "user_agent": loggable(user_agent),
             "host": loggable(host),
-            "origin": loggable(origin),
-            "referer": loggable(referer),
+            "origin": loggable_url(origin),
+            "referer": loggable_url(referer),
             "request_id": loggable(request_id),
             "session_id": loggable(canonical_session_id),
             # Gateway-generated client-error tag (e.g. model-not-found), set by the
@@ -151,9 +196,10 @@ class RequestLogMiddleware:
         if logger.isEnabledFor(10):
             masked_headers: dict[str, str] = {}
             for k, v in request.headers.items():
-                key_lower = k.lower()
-                if key_lower in {"authorization", "x-api-key"}:
-                    masked_headers[k] = "***"
+                if _is_masked(k):
+                    masked_headers[loggable(k) or ""] = "***"
+                elif k.lower() in ("referer", "origin"):
+                    masked_headers[loggable(k) or ""] = loggable_url(v) or ""
                 else:
                     masked_headers[loggable(k) or ""] = loggable(v or "") or ""
             logger.debug("http_request_headers", extra={"headers": masked_headers})

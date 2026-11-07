@@ -575,3 +575,76 @@ async def test_control_characters_in_a_value_are_escaped(caplog):
     # The referer arrived as latin-1 text: its UTF-8 bytes include C1 controls.
     assert "\\x80" in record.referer or "\\x8e" in record.referer
     assert all(ch.isprintable() for ch in record.user_agent + record.path + record.referer)
+
+
+# --- addresses and credentials ------------------------------------------------
+#
+# A browser sends the full address of the page a request came from: the page
+# that resets a password carries its live token in the query, and it calls
+# /auth/accounts on load, so the token reached the INFO log through Referer.
+
+
+async def test_a_referer_is_logged_without_its_query(caplog):
+    token = "Zt9vQ2liveResetToken_from_email"
+    scope = _http_scope(
+        [
+            (b"host", b"gateway.test"),
+            (
+                b"referer",
+                f"https://user:pw@freeinference.org/reset-password?token={token}#x".encode(),
+            ),
+            (b"origin", b"https://freeinference.org/also?token=" + token.encode()),
+        ]
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(scope, _receive, _discard)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert record.referer == "https://freeinference.org/reset-password"
+    assert record.origin == "https://freeinference.org/also"
+    [dump] = [r for r in caplog.records if r.getMessage() == "http_request_headers"]
+    assert dump.headers["referer"] == "https://freeinference.org/reset-password"
+    logged = repr([r.__dict__ for r in caplog.records])
+    assert token not in logged
+    assert "pw@" not in logged
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://freeinference.org", "https://freeinference.org"),
+        ("https://freeinference.org:8443/a/b?c=d", "https://freeinference.org:8443/a/b"),
+        ("null", "null"),
+        ("/relative/path?q=1#f", "/relative/path"),
+        ("http://[::1/broken?token=t", "http://[::1/broken"),
+    ],
+)
+def test_what_an_address_keeps(value, expected):
+    from serving.servers.middleware.request_log import loggable_url
+
+    assert loggable_url(value) == expected
+
+
+async def test_the_debug_header_dump_masks_every_credential_header(caplog):
+    secret = "sk-live-must-not-be-logged-0123456789"
+    names = [
+        b"cookie",
+        b"api-key",
+        b"x-on-behalf-of",
+        b"proxy-authorization",
+        b"x-goog-api-key",
+        b"x-custom-token",
+        b"x-client-secret",
+    ]
+    headers = [(b"host", b"gateway.test"), (b"accept", b"application/json")]
+    headers += [(name, secret.encode()) for name in names]
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(_http_scope(headers), _receive, _discard)
+
+    [dump] = [r for r in caplog.records if r.getMessage() == "http_request_headers"]
+    for name in names:
+        assert dump.headers[name.decode()] == "***", name
+    assert dump.headers["accept"] == "application/json"
+    assert secret not in repr([r.__dict__ for r in caplog.records])

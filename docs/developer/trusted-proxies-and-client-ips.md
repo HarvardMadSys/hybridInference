@@ -454,9 +454,16 @@ provenance: `remote_ip`, `peer_ip`, `ip_source`, `x_forwarded_for`, `x_real_ip`,
 Keeping the raw headers next to the verdict is what makes a wrong address
 diagnosable: you can see which rung fired and what the alternatives said.
 
+The client chooses these values, so the line keeps a bounded copy of each: cut
+to 256 characters (the path to 512), with control characters escaped. `origin`
+and `referer` keep only the scheme, host and path: a page's address can carry a
+secret in its query, as a password-reset link does.
+
 At `DEBUG` the middleware additionally emits an `http_request_headers` line with
-every request header, truncated to 256 characters each and with `authorization`
-and `x-api-key` replaced by `***`.
+every request header, cut and escaped the same way. A credential is replaced by
+`***`: `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `cookie`,
+`x-on-behalf-of`, and any header whose name mentions a key, token, secret,
+password, session, signature, cookie or auth.
 
 ## What is persisted
 
