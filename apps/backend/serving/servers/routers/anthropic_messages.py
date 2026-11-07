@@ -39,11 +39,8 @@ from routing.prefill_load import (
 )
 from serving.adapters import dispatch_watch
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
-from serving.adapters.anthropic_translator import (
-    INPUT_SEED_SINK_KEY,
-    OPENAI_USAGE_SINK_KEY,
-    normalize_inline_system,
-)
+from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
@@ -1516,6 +1513,8 @@ def _resolve_stream_usage(
     #    instead, unless the upstream reported usage before it: an estimate
     #    made before the upstream was asked. It goes to step 2, which bills the
     #    tool definitions too, as a stream cut before message_start is billed.
+    from serving.adapters.anthropic_translator import INPUT_SEED_SINK_KEY
+
     seed = request_usage.get(INPUT_SEED_SINK_KEY)
     acc_usage = response_acc.get("usage") if isinstance(response_acc, dict) else None
     if isinstance(acc_usage, dict):
@@ -2446,6 +2445,9 @@ async def execute_messages(
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
+            # Marked by the outbound limiter when the request leaves the gateway
+            # (``dispatch_watch.report_sent``); see the usage resolution below.
+            upstream_dispatch = DispatchRecord()
             stream_failed = False
             stream_status_code: int = 200
             stream_error_message: str | None = None
@@ -2532,7 +2534,9 @@ async def execute_messages(
                             prefill_load.release(prefill_lease, prefill_confirmed=True)
                     return well_formed
 
-                reader_task = asyncio.create_task(_reader())
+                # The adapter runs in the reader's copy of this context.
+                with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: upstream_dispatch}):
+                    reader_task = asyncio.create_task(_reader())
                 idle_seconds = 0.0
                 saw_upstream_frame = False
                 try:
@@ -2796,7 +2800,10 @@ async def execute_messages(
                     # than logging a 0-token row. Failed streams keep their
                     # zeros: don't attribute usage/cost to an errored request.
                     try:
-                        if stream_failed:
+                        if stream_failed or not upstream_dispatch.sent:
+                            # Failed, or cut off before the request left the
+                            # gateway (waiting for a remote image or an outbound
+                            # slot), when no upstream had been asked for anything.
                             resolved_usage, usage_estimated = request_usage, False
                         else:
                             resolved_usage, usage_estimated = _resolve_stream_usage(

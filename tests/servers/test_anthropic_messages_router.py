@@ -1776,7 +1776,9 @@ async def test_a_translated_stream_cut_after_message_start_bills_the_tool_defini
 
 def test_a_count_the_upstream_reported_before_message_start_is_not_a_seed(one_sample_phase):
     """A translated stream whose first chunk carried usage shows a real count."""
-    seeded = {"input_tokens": 0, "output_tokens": 0, anthropic_messages.INPUT_SEED_SINK_KEY: 30}
+    from serving.adapters.anthropic_translator import INPUT_SEED_SINK_KEY
+
+    seeded = {"input_tokens": 0, "output_tokens": 0, INPUT_SEED_SINK_KEY: 30}
     payload = {"messages": [{"role": "user", "content": "hi"}], "tools": _CATALOGUE}
 
     reported, _ = anthropic_messages._resolve_stream_usage(
@@ -3143,3 +3145,163 @@ async def test_client_metadata_container_is_not_forwarded_to_a_native_upstream(
     assert captured["metadata"]["session_id"] == "declared-2"
     assert captured["metadata"]["session_id_source"] == "client_metadata.session_id"
     assert captured["request_payload"]["client_metadata"]["session_id"] == "declared-2"
+
+
+# --- a stream left while the request still waits in the gateway --------------
+
+
+async def _stream_then_leave(app, body: dict, cue: asyncio.Event) -> None:
+    """POST a streaming /v1/messages over raw ASGI; disconnect once *cue* is set.
+
+    Raw ASGI because the httpx test client buffers the response and so can
+    never leave mid-stream; ASGI spec 2.1 makes Starlette cancel the stream on
+    ``http.disconnect``, as it does under uvicorn.
+    """
+    from tests.servers.conftest import ANTHROPIC_TEST_API_KEY
+
+    payload = json.dumps(body).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.1"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/messages",
+        "raw_path": b"/v1/messages",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+            (b"x-api-key", ANTHROPIC_TEST_API_KEY.encode()),
+        ],
+        "client": ("127.0.0.1", 45678),
+        "server": ("test", 80),
+    }
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        await cue.wait()
+        await asyncio.sleep(0.05)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        return None
+
+    await asyncio.wait_for(app(scope, receive, send), timeout=10)
+
+
+@pytest.fixture
+def zai_with_one_slot(monkeypatch):
+    """One outbound slot for the zai route, and events for when a dispatch queues or goes."""
+    from serving.adapters import dispatch_watch, upstream_limiter
+
+    upstream_limiter.reset_upstream_limiter(
+        upstream_limiter.UpstreamConcurrencyLimiter(
+            initial_limit=1, max_limit=1, acquire_timeout=30.0
+        )
+    )
+    queued, sent = asyncio.Event(), asyncio.Event()
+
+    def report_queued():
+        dispatch_watch.report_queued()
+        queued.set()
+
+    def report_sent():
+        dispatch_watch.report_sent()
+        sent.set()
+
+    monkeypatch.setattr(upstream_limiter, "report_queued", report_queued)
+    monkeypatch.setattr(upstream_limiter, "report_sent", report_sent)
+    yield SimpleNamespace(queued=queued, sent=sent)
+    upstream_limiter.reset_upstream_limiter(None)
+
+
+def _prefill_forever_session():
+    """An upstream that accepts the request and is still reading the prompt."""
+
+    class _Content:
+        async def iter_any(self):
+            await asyncio.sleep(30)
+            yield b""
+
+        def iter_chunked(self, n):
+            return self.iter_any()
+
+    class _Response:
+        status = 200
+        content = _Content()
+        headers: dict = {"Content-Type": "text/event-stream"}  # noqa: RUF012
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _Session:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _Response()
+
+    async def fake_ensure_session(self):
+        return _Session()
+
+    return fake_ensure_session
+
+
+_LONG_PROMPT = {
+    "model": OPENAI_MODEL,
+    "max_tokens": 50,
+    "stream": True,
+    "messages": [{"role": "user", "content": "Summarize this. " * 400}],
+}
+
+
+@pytest.mark.asyncio
+async def test_a_stream_left_while_waiting_for_an_outbound_slot_bills_nothing(
+    anthropic_test_app, zai_with_one_slot, monkeypatch
+):
+    from serving.adapters.upstream_limiter import acquire_upstream_slot
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _prefill_forever_session())
+    captured: dict = {}
+    monkeypatch.setattr(
+        anthropic_messages, "_schedule_log_store_task", lambda store, **kw: captured.update(kw)
+    )
+    # Another request holds the route's one slot.
+    busy = await acquire_upstream_slot("zai", "zai-test", base_url="https://example-zai.test")
+    zai_with_one_slot.sent.clear()
+    try:
+        await _stream_then_leave(anthropic_test_app, _LONG_PROMPT, zai_with_one_slot.queued)
+    finally:
+        busy.release()
+
+    assert not zai_with_one_slot.sent.is_set()
+    assert captured["usage"]["input_tokens"] == 0
+    assert captured["usage"]["output_tokens"] == 0
+    assert "usage_estimated" not in captured["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_a_stream_left_during_prefill_bills_the_prompt(
+    anthropic_test_app, zai_with_one_slot, monkeypatch
+):
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _prefill_forever_session())
+    captured: dict = {}
+    monkeypatch.setattr(
+        anthropic_messages, "_schedule_log_store_task", lambda store, **kw: captured.update(kw)
+    )
+
+    await _stream_then_leave(anthropic_test_app, _LONG_PROMPT, zai_with_one_slot.sent)
+
+    expected = anthropic_messages._estimate_request_input_tokens(_LONG_PROMPT)
+    assert captured["usage"]["input_tokens"] == expected
+    assert captured["metadata"].get("usage_estimated") is True

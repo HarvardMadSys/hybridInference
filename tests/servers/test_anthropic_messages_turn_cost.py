@@ -17,7 +17,10 @@ from typing import Any
 
 import pytest
 
-from serving.adapters.anthropic_translator import anthropic_request_to_openai
+from serving.adapters.anthropic_translator import (
+    INPUT_SEED_SINK_KEY,
+    anthropic_request_to_openai,
+)
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.routers import anthropic_messages
 from serving.utils import tokens
@@ -89,7 +92,7 @@ async def test_the_seed_counts_the_tool_definitions() -> None:
             seed = json.loads(frame.split(b"data: ", 1)[1])["message"]["usage"]["input_tokens"]
     assert seed == expected
     # Declared as the guess it is, for the router's cancel billing.
-    assert sink[anthropic_messages.INPUT_SEED_SINK_KEY] == seed
+    assert sink[INPUT_SEED_SINK_KEY] == seed
 
 
 @pytest.mark.asyncio

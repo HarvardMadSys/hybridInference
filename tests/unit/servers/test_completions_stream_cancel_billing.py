@@ -18,6 +18,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from serving.adapters.dispatch_watch import report_sent
+from serving.adapters.upstream_limiter import (
+    UpstreamConcurrencyLimiter,
+    acquire_upstream_slot,
+    reset_upstream_limiter,
+)
 from serving.servers.routers.completions_cost import CostTracker, PricingLookup
 from serving.servers.routers.completions_logging import CompletionsLogger
 from serving.servers.routers.completions_stream import StreamSession
@@ -67,6 +73,18 @@ def _usage_chunk(usage: dict[str, int]) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
+async def _sent_after_routing(chunks: list[str]) -> AsyncIterator[str]:
+    """Yield *chunks*, reporting the request sent after the router's routing chunk.
+
+    As the adapter does through the outbound limiter, which reports each request
+    it lets go (``dispatch_watch.report_sent``).
+    """
+    for chunk in chunks:
+        yield chunk
+        if '"_routing"' in chunk:
+            report_sent()
+
+
 class _Harness:
     """A session over a real CostTracker, whose store records every increment."""
 
@@ -103,7 +121,7 @@ class _Harness:
         arrived = asyncio.Event()
 
         async def _upstream() -> AsyncIterator[str]:
-            for chunk in chunks:
+            async for chunk in _sent_after_routing(chunks):
                 yield chunk
             arrived.set()
             await asyncio.sleep(30)
@@ -125,7 +143,7 @@ class _Harness:
         """Feed *chunks*, then close the stream once *last_text* reached the client."""
 
         async def _upstream() -> AsyncIterator[str]:
-            for chunk in chunks:
+            async for chunk in _sent_after_routing(chunks):
                 yield chunk
             await asyncio.sleep(30)
 
@@ -288,3 +306,93 @@ async def test_a_billing_failure_still_writes_the_row():
     row = harness.row()
     assert row["status_code"] == 499
     assert row["pricing"] is None
+
+
+# -- a request still waiting in the gateway --------------------------------------
+#
+# The router announces an attempt (its routing chunk) before the adapter fetches
+# remote media, waits for an outbound slot or sends anything. A client that
+# leaves in between asked no upstream for anything.
+
+ZAI = {"provider": "zai", "api_key": "zai-key", "base_url": "https://api.z.ai/api/paas/v4"}
+
+
+@pytest.fixture
+def one_slot():
+    """The process-wide outbound limiter, with one slot per provider key."""
+    reset_upstream_limiter(
+        UpstreamConcurrencyLimiter(initial_limit=1, max_limit=1, acquire_timeout=30.0)
+    )
+    yield
+    reset_upstream_limiter(None)
+
+
+async def _take_slot():
+    return await acquire_upstream_slot(ZAI["provider"], ZAI["api_key"], base_url=ZAI["base_url"])
+
+
+async def _leave_once(harness: _Harness, upstream: AsyncIterator[str], cue: asyncio.Event) -> None:
+    """Stream *upstream* until *cue*, then cancel the response task, as a client leaving."""
+
+    async def _respond() -> None:
+        async for _frame in harness.session.stream(upstream):
+            pass
+
+    response_task = asyncio.ensure_future(_respond())
+    await asyncio.wait_for(cue.wait(), timeout=5)
+    for _ in range(20):
+        await asyncio.sleep(0)
+    response_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await response_task
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_leaves_while_the_request_waits_for_a_slot_is_not_billed(one_slot):
+    harness = _Harness()
+    busy = await _take_slot()  # another request holds the provider's one slot
+    queued = asyncio.Event()
+
+    async def _router() -> AsyncIterator[str]:
+        yield _routing_chunk()
+        queued.set()
+        slot = await _take_slot()  # waits behind the other request
+        slot.release()
+        yield _delta_chunk({"content": "never"})
+
+    try:
+        await _leave_once(harness, _router(), queued)
+    finally:
+        busy.release()
+
+    assert await harness.charged() == []
+    row = harness.row()
+    assert row["status_code"] == 499
+    assert row["pricing"] is None
+    assert "usage_estimated" not in row["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_leaves_after_the_request_was_sent_is_billed(one_slot):
+    harness = _Harness()
+    sent = asyncio.Event()
+
+    async def _router() -> AsyncIterator[str]:
+        yield _routing_chunk()
+        slot = await _take_slot()  # free: the request goes at once
+        sent.set()
+        try:
+            await asyncio.sleep(30)  # the upstream reads the prompt; nothing back yet
+        finally:
+            slot.release()
+        yield _delta_chunk({"content": "never"})
+
+    await _leave_once(harness, _router(), sent)
+
+    prompt = estimate_prompt_tokens_bounded(MESSAGES, extra_texts=(json.dumps(TOOLS),))
+    charged = await harness.charged()
+    assert len(charged) == 1
+    assert charged[0][1] == pytest.approx(
+        calculate_cost({"prompt_tokens": prompt, "completion_tokens": 0}, PRICING)
+    )
+    assert harness.row()["metadata"]["usage_estimated"] is True

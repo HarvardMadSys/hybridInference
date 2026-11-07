@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from routing.endpoint_health import http_status_of
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
@@ -406,6 +407,12 @@ class StreamSession:
         # ends its stream with a ``_routing`` block of its own (openai_compat
         # does) would otherwise drop them from the request log.
         self._adapter_routing: dict[str, Any] | None = None
+        # Whether the attempt in flight has left the gateway, for billing a
+        # stream the client leaves: the outbound limiter marks it when it gives
+        # the request its slot (``dispatch_watch.report_sent``). The router
+        # announces an attempt before the adapter fetches remote media, waits
+        # for a slot or sends anything.
+        self._dispatch = DispatchRecord()
         self._provider_from_ctx: str | None = None
         # Upstream label resolved on the failure path, exposed for the caller
         # (see ``error_provider``). ``None`` until this stream fails.
@@ -537,7 +544,11 @@ class StreamSession:
                 finally:
                     await chunk_queue.put(_SENTINEL)
 
-            reader_task = asyncio.create_task(_adapter_reader())
+            # The reader runs the router, and the adapter under it, in a copy of
+            # this context: the record pushed for it is the one the outbound
+            # limiter marks when the request leaves the gateway.
+            with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: self._dispatch}):
+                reader_task = asyncio.create_task(_adapter_reader())
             try:
                 while True:
                     try:
@@ -1179,11 +1190,13 @@ class StreamSession:
 
         Billed only once the router chose the endpoint and began the attempt
         -- the same condition the success path bills on (``_adapter_routing``,
-        which carries the price). Before that the upstream was never asked,
-        and there is no price to charge at. Never raises: billing must not
-        cost the request its log row.
+        which carries the price) -- and only while that attempt has left the
+        gateway (``DispatchRecord.sent``). Before that the client was waiting
+        on the gateway (a remote image, an outbound slot, a local engine's
+        queue) and no upstream was asked for anything. Never raises: billing
+        must not cost the request its log row.
         """
-        if not self._adapter_routing:
+        if not self._adapter_routing or not self._dispatch.sent:
             return None, False
         try:
             usage, estimated = self._cancelled_usage()
