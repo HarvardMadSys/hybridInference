@@ -167,6 +167,37 @@ async def test_a_check_without_a_ledger_only_checks():
     assert refusal is not None
 
 
+async def test_a_reservation_is_its_estimate_up_to_what_the_tightest_limit_has_left():
+    """Refused only when the minimum does not fit; otherwise it holds what it may cost, or the rest."""
+    ledger = SpendLedger(object())
+
+    plenty, _ = _check(ledger, account_quota_usd=100.0).admit(2.5)
+    near, refusal = _check(
+        ledger, user_id="u2", account_quota_usd=1.0, account_spent_usd=0.96
+    ).admit(2.5)
+    key, _ = _check(
+        ledger, user_id="u3", key_id=9, key_budget_daily_usd=0.5, account_quota_usd=100.0
+    ).admit(2.5)
+
+    assert plenty.amount == pytest.approx(2.5)
+    assert refusal is None
+    assert near.amount == pytest.approx(0.04)
+    assert key.amount == pytest.approx(0.5)
+    # Whatever is left is held: the next request, however small, waits.
+    assert _check(ledger, user_id="u2", account_quota_usd=1.0, account_spent_usd=0.96).admit()[1]
+    near.release()
+    assert ledger._reserved_users.get("u2") is None
+
+
+async def test_the_default_reservation_is_the_flat_minimum():
+    """What the batch worker reserves for an item, unchanged."""
+    ledger = SpendLedger(object())
+
+    reservation, _ = _check(ledger, account_quota_usd=0.015).admit()
+
+    assert reservation.amount == ESTIMATED_REQUEST_COST_USD
+
+
 # -- costs recorded, not yet written ------------------------------------------------
 
 

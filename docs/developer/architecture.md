@@ -157,8 +157,12 @@ adds what those tables do not show yet:
 
 - **Requests in flight.** `enforce_user_concurrency` (and the batch worker, for
   each item) checks the quotas and the key's budgets again and reserves the
-  request's estimated cost (`ESTIMATED_REQUEST_COST_USD`) in one step, then
-  releases the reservation when the request ends, however it ends. Requests
+  request's estimated cost in one step, then releases the reservation when the
+  request ends, however it ends. A request is refused only when not even
+  `ESTIMATED_REQUEST_COST_USD` fits, as at the gate. An online request then
+  reserves what it may cost (its prompt and its `max_tokens` at its model's
+  prices, at most `MAX_RESERVED_REQUEST_COST_USD`), or what its limits have left
+  if that is less; a batch item reserves `ESTIMATED_REQUEST_COST_USD`. Requests
   admitted at the same time therefore cannot all fit into the same remaining
   budget.
 - **Costs not yet written.** A finished request's cost is recorded in the

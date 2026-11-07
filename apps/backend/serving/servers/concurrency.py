@@ -206,7 +206,9 @@ from typing import TYPE_CHECKING, Any
 from fastapi import Depends, HTTPException, Request
 from starlette.requests import ClientDisconnect
 
+from serving import quota
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
+from serving.pricing import effective_pricing
 from serving.spend_ledger import Reservation, spend_check_of
 from serving.surfaces.context import InteractiveAdmission
 
@@ -222,7 +224,14 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
 
 
-def _admit_spend(request: Request, user: dict[str, Any]) -> Reservation | None:
+def _admit_spend(
+    request: Request,
+    user: dict[str, Any],
+    *,
+    model: str | None = None,
+    router: Any = None,
+    embedding_adapters: dict[str, Any] | None = None,
+) -> Reservation | None:
     """Reserve the request's estimated cost against the check its gate made.
 
     ``verify_api_key`` refused a caller already over a limit, counting the
@@ -230,13 +239,17 @@ def _admit_spend(request: Request, user: dict[str, Any]) -> Reservation | None:
     again and reserving in one step (:meth:`~serving.spend_ledger.SpendCheck.admit`)
     is what keeps concurrent requests from all fitting into the same remaining
     budget. Raises the same 429 the gate does when the request no longer fits.
-    ``None`` for a caller with no check (auth disabled, or a gate that a test
-    replaced): nothing to reserve against.
+    What is reserved is the request's own estimate (:func:`_reserved_cost`),
+    up to what the caller's limits have left. ``None`` for a caller with no
+    check (auth disabled, or a gate that a test replaced): nothing to reserve
+    against.
     """
     check = spend_check_of(user)
     if check is None:
         return None
-    reservation, refusal = check.admit()
+    reservation, refusal = check.admit(
+        _reserved_cost(request, model, router=router, embedding_adapters=embedding_adapters)
+    )
     if refusal is not None:
         raise _quota_exceeded(
             request,
@@ -245,6 +258,85 @@ def _admit_spend(request: Request, user: dict[str, Any]) -> Reservation | None:
             refusal=refusal,
         )
     return reservation
+
+
+def _reserved_cost(
+    request: Request,
+    model: str | None,
+    *,
+    router: Any,
+    embedding_adapters: dict[str, Any] | None,
+) -> float:
+    """What a request may cost, reserved against its caller's limits while it runs.
+
+    :func:`serving.quota.estimate_request_cost` of the prompt -- the body's
+    size, a token for every four bytes, at most the model's context window --
+    and of the output the request allows: its ``max_tokens`` (or
+    ``max_completion_tokens``, or the Responses ``max_output_tokens``), at most
+    the model's output limit, and that limit when it names none. Each at the
+    dearest of the model's routes, since any of them may serve it. The flat
+    minimum when the body was not read or the model or its prices are unknown
+    (an auto model's among them). Never raises: an estimate must not cost a
+    request its admission.
+    """
+    try:
+        body = getattr(request, "_body", None)
+        if not isinstance(model, str) or not isinstance(body, bytes) or router is None:
+            return quota.ESTIMATED_REQUEST_COST_USD
+        resolved = resolve_anthropic_alias(model)
+        route = router.routes.get(resolved)
+        if route is not None:
+            configs = [adapter.config for adapter, _weight in route.adapters]
+        else:
+            embedding = (embedding_adapters or {}).get(resolved)
+            configs = [embedding.config] if embedding is not None else []
+        prices = [price for price in map(_prices, configs) if price is not None]
+        if not prices:
+            return quota.ESTIMATED_REQUEST_COST_USD
+        context_limit = max(_count(getattr(config, "context_length", 0)) for config in configs)
+        output_limit = max(_count(getattr(config, "max_output_length", 0)) for config in configs)
+        prompt_tokens = len(body) // 4
+        if context_limit:
+            prompt_tokens = min(prompt_tokens, context_limit)
+        if all(getattr(config, "model_type", "chat") == "embedding" for config in configs):
+            output_tokens = 0
+        else:
+            output_tokens = _output_allowance(getattr(request, "_json", None), output_limit)
+        return quota.estimate_request_cost(
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            prompt_price=max(prompt for prompt, _ in prices),
+            completion_price=max(completion for _, completion in prices),
+        )
+    except Exception:
+        logger.debug("user_concurrency: reservation estimate skipped", exc_info=True)
+        return quota.ESTIMATED_REQUEST_COST_USD
+
+
+def _prices(config: Any) -> tuple[float, float] | None:
+    """A route's ``(prompt, completion)`` prices, USD per million tokens; None if unpriced."""
+    try:
+        pricing = effective_pricing(config)
+        if not isinstance(pricing, dict):
+            return None
+        return float(pricing.get("prompt") or 0), float(pricing.get("completion") or 0)
+    except Exception:
+        return None
+
+
+def _count(value: Any) -> int:
+    """A configured token limit as a non-negative int (0: none)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _output_allowance(payload: Any, output_limit: int) -> int:
+    """The output tokens a request allows: what it asks for, within *output_limit*."""
+    if isinstance(payload, dict):
+        for field in ("max_completion_tokens", "max_tokens", "max_output_tokens"):
+            asked = _count(payload.get(field))
+            if asked:
+                return min(asked, output_limit) if output_limit else asked
+    return output_limit
 
 
 @contextmanager
@@ -493,7 +585,9 @@ async def enforce_user_concurrency(
         # remains visible to the batch worker, including a later auto retarget;
         # so is the cost reservation.
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        reservation = _admit_spend(request, user)
+        reservation = _admit_spend(
+            request, user, model=model, router=router, embedding_adapters=embedding_adapters
+        )
         try:
             with _track_interactive_request(canonical) as tracker:
                 yield InteractiveAdmission(tracker)
@@ -563,11 +657,14 @@ async def enforce_user_concurrency(
 
     reservation: Reservation | None = None
     try:
-        reservation = _admit_spend(request, user)
         if not parse_before_acquire:
             model, canonical = await _request_model(
                 request, router=router, embedding_adapters=embedding_adapters
             )
+        # After the body is read: what is reserved is estimated from it.
+        reservation = _admit_spend(
+            request, user, model=model, router=router, embedding_adapters=embedding_adapters
+        )
         with _track_interactive_request(canonical) as tracker:
             yield InteractiveAdmission(tracker)
     finally:

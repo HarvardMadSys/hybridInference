@@ -19,10 +19,14 @@ at the same time overshoot a limit by as much as they cost together:
   counts here until its write is confirmed, and for a while after that, for a
   gate whose read of the table may have been taken before the write landed.
 
-A gate adds both to what it read (:meth:`SpendCheck.refusal`). The estimate a
-request reserves is :data:`serving.quota.ESTIMATED_REQUEST_COST_USD`, the same
-optimistic charge every gate already adds for the request it is checking, so a
-caller with nothing else running is answered exactly as before.
+A gate adds both to what it read (:meth:`SpendCheck.refusal`), and refuses a
+request only when not even :data:`serving.quota.ESTIMATED_REQUEST_COST_USD`,
+the optimistic charge every gate already adds for the request it is checking,
+fits: a caller with nothing else running is answered exactly as before. What a
+request then reserves is an estimate of its own cost
+(:func:`serving.quota.estimate_request_cost`), up to what its limits have left
+(:meth:`SpendLedger.admit`), so requests running together cannot overshoot a
+limit by much more than one of them costs.
 
 Everything here is per process. With several worker processes each one sees
 only its own requests in flight and its own costs not yet written, so a limit
@@ -166,7 +170,7 @@ class SpendCheck:
     def admit(
         self, amount: float = quota.ESTIMATED_REQUEST_COST_USD
     ) -> tuple[Reservation | None, quota.BudgetRefusal | None]:
-        """Check again and reserve *amount*, in one step; see :meth:`SpendLedger.admit`.
+        """Check again and reserve up to *amount*, in one step; see :meth:`SpendLedger.admit`.
 
         Without a ledger (no store) there is nothing to reserve in: only checked.
         """
@@ -192,6 +196,19 @@ def _refusal(
         key_prefix=check.key_prefix,
         key_label=check.key_label,
     )
+
+
+def _headroom(check: SpendCheck, extra: tuple[float, float, float, float]) -> float:
+    """What the tightest of *check*'s limits has left, counting *extra* (see :func:`_refusal`)."""
+    day, month, key_day, key_month = extra
+    left = [check.account_quota_usd - (check.account_spent_usd + day)]
+    if check.account_quota_monthly_usd is not None:
+        left.append(check.account_quota_monthly_usd - (check.account_spent_month_usd + month))
+    if check.key_budget_daily_usd is not None:
+        left.append(check.key_budget_daily_usd - (check.key_spent_today_usd + key_day))
+    if check.key_budget_monthly_usd is not None:
+        left.append(check.key_budget_monthly_usd - (check.key_spent_month_usd + key_month))
+    return min(left)
 
 
 def spend_check_of(user_ctx: Mapping[str, Any] | None) -> SpendCheck | None:
@@ -234,16 +251,27 @@ class SpendLedger:
     def admit(
         self, check: SpendCheck, amount: float = quota.ESTIMATED_REQUEST_COST_USD
     ) -> tuple[Reservation | None, quota.BudgetRefusal | None]:
-        """Admit a request against *check*: reserve *amount*, or say which limit refuses it.
+        """Admit a request against *check*: reserve its cost, or say which limit refuses it.
 
         The check and the reservation happen in one step with nothing awaited
         between them, so two requests admitted at the same moment cannot both
         fit into the same remaining budget. Whoever takes the reservation
         releases it when the request ends.
+
+        The request is refused only when not even the flat minimum
+        (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD`) fits, as every gate
+        refuses. It then reserves *amount*, what it may cost -- but no more than
+        its tightest limit has left, and never less than that minimum: a
+        request is not refused because its worst case does not fit, yet while
+        it runs it holds what is left, so the requests admitted alongside it
+        cannot overshoot the limit together.
         """
-        refusal = self.refusal(check)
+        extra = self._extra(check.user_id, check.key_id, check.read_at)
+        refusal = _refusal(check, extra)
         if refusal is not None:
             return None, refusal
+        if amount > quota.ESTIMATED_REQUEST_COST_USD:
+            amount = max(quota.ESTIMATED_REQUEST_COST_USD, min(amount, _headroom(check, extra)))
         reservation = Reservation(self, check.user_id, check.key_id, amount)
         _add_reserved(self._reserved_users, check.user_id, amount)
         if check.key_id is not None:
