@@ -185,11 +185,20 @@ const nextConfig = {
       // not rewrites: their responses stream, and the rewrite proxy neither
       // reports a gateway that goes away mid-response nor tolerates 30s of
       // silence. See src/lib/server/gatewayProxy.ts. So does
-      // `/user/batch-files`, ahead of `/user/:path*` here, because its uploads
-      // are larger than a rewrite forwards (`middlewareClientMaxBodySize`).
+      // `/user/batch-files`, because its uploads are larger than a rewrite
+      // forwards (`middlewareClientMaxBodySize`).
+      //
+      // Next checks these rules before any dynamic route, a `[[...path]]`
+      // handler included, so a rule here must not match a path such a handler
+      // serves: `/user` stops short of `batch-files`, which a plain
+      // `/user/:path*` took, leaving that handler unreachable.
+      // next.config.routes.test.ts checks every handler against this table.
       afterFiles: [
         { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
-        { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
+        {
+          source: '/user/:path((?!batch-files(?:/|$)).*)',
+          destination: `${BACKEND_INTERNAL_URL}/user/:path`,
+        },
         { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
         {
           source: '/internal/verify-admin',
