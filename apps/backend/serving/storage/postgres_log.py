@@ -1034,13 +1034,16 @@ class PostgresLogStore(LogStore):
         *,
         hours: int = 1,
         on_deleted: Callable[[Any, list[dt.datetime]], Awaitable[None]] | None = None,
+        batch: bool | None = None,
     ) -> int:
         """Hard-delete error requests from ``api_logs`` in the last *hours*.
 
         The error predicate mirrors the admin Recent Requests ``outcome=errors``
         filter (``admin_list_recent_requests``) so this clears exactly the rows
         that filter surfaces — client disconnects (status 499) included, since
-        that outcome class carries them. Returns the deleted row count.
+        that outcome class carries them. *batch* narrows it as the list's
+        ``source`` filter does (see :meth:`LogStore.delete_recent_error_requests`).
+        Returns the deleted row count.
 
         The days of ``user_usage_daily`` and ``daily_activity`` the deleted rows
         were counted in are dropped in the same transaction (``invalidate_days``):
@@ -1052,26 +1055,33 @@ class PostgresLogStore(LogStore):
         import asyncpg as _asyncpg
 
         hours = max(1, hours)
+        # Constant, chosen from a bool: nothing the caller sends reaches the SQL.
+        source_sql = {
+            None: "",
+            False: "AND batch_job_id IS NULL",
+            True: "AND batch_job_id IS NOT NULL",
+        }[None if batch is None else bool(batch)]
         async with self.pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                """
+                f"""
                 WITH deleted AS (
                     DELETE FROM api_logs
                     WHERE timestamp >= NOW() - make_interval(hours => $1::int)
                       AND (error IS NOT NULL OR status_code IS NULL
                            OR status_code < 200 OR status_code >= 400)
+                      {source_sql}
                     RETURNING timestamp
                 )
                 SELECT COUNT(*) AS n,
                        COALESCE(
                            array_agg(DISTINCT (timestamp AT TIME ZONE 'UTC')::date),
-                           '{}'
+                           '{{}}'
                        ) AS days,
                        COALESCE(
                            array_agg(DISTINCT to_timestamp(
                                floor(extract(epoch FROM timestamp) / 3600) * 3600
                            )),
-                           '{}'
+                           '{{}}'
                        ) AS hours
                 FROM deleted
                 """,

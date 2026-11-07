@@ -2221,6 +2221,7 @@ class LogStore(ABC):
         *,
         hours: int = 1,
         on_deleted: Callable[[Any, list[datetime]], Awaitable[None]] | None = None,
+        batch: bool | None = None,
     ) -> int:
         """Hard-delete error requests logged within the last *hours* hours.
 
@@ -2228,6 +2229,11 @@ class LogStore(ABC):
         ``outcome=errors`` filter uses: ``error IS NOT NULL`` OR a status code
         that is missing or outside the 2xx/3xx success range — which includes
         client disconnects (status 499). Returns the number of deleted rows.
+
+        *batch* narrows it by who ran the request, as the list's ``source``
+        filter does: None deletes every source's errors, False only those of
+        requests the batch worker did not run (no ``batch_job_id``), True only
+        the batch worker's.
 
         *on_deleted*, when rows were deleted, is awaited inside the delete's
         transaction with its connection and the UTC hour starts the rows were
