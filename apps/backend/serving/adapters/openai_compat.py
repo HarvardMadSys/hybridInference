@@ -14,6 +14,7 @@ import aiohttp
 from serving.config.app_config import config_value, on_change
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
+from serving.http import MAX_RESPONSE_BODY_BYTES
 from serving.stream import StreamText, done_sentinel
 from serving.structured_output import requested_format, with_instruction
 from serving.utils.logging import get_logger
@@ -196,6 +197,28 @@ def completion_timeout_s() -> float:
     loaded and through every later change.
     """
     return _COMPLETION_TIMEOUT_S
+
+
+#: The response bytes an embeddings request may bring back per input: one
+#: vector of 8,192 dimensions written as JSON floats (about 200 KB) and the
+#: object around it. Floats come back at most about 24 bytes each.
+EMBEDDING_RESPONSE_BYTES_PER_INPUT = 256 * 1024
+#: ... and once per response, for the list's own fields (``model``, ``usage``).
+_EMBEDDING_RESPONSE_BASE_BYTES = 64 * 1024
+
+
+def embeddings_response_limit(input_data: str | list[str]) -> int:
+    """Return the most response bytes read for an embeddings request of *input_data*.
+
+    An embeddings response is one vector per input, so its size follows from
+    the request: a few inputs cannot make the gateway read and decode hundreds
+    of MiB. Never more than the limit on any response body.
+    """
+    count = len(input_data) if isinstance(input_data, list) else 1
+    return min(
+        MAX_RESPONSE_BODY_BYTES,
+        _EMBEDDING_RESPONSE_BASE_BYTES + count * EMBEDDING_RESPONSE_BYTES_PER_INPUT,
+    )
 
 
 async def _iter_with_idle_timeout(
@@ -849,7 +872,9 @@ class OpenAICompatAdapter(BaseAdapter):
             deployment_type=self.config.deployment_type,
         )
 
-    async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post_with_pool(
+        self, url: str, payload: dict[str, Any], *, max_body_bytes: int | None = None
+    ) -> dict[str, Any]:
         """POST JSON with sequential key-pool rotation on any upstream error.
 
         When ``self._key_pool`` is None, falls through to the legacy single-key
@@ -871,7 +896,12 @@ class OpenAICompatAdapter(BaseAdapter):
         rotates like any other key-specific failure — a sibling key may have
         room — and only a request that finds every usable key saturated fails
         with ``UpstreamSaturated``.
+
+        ``max_body_bytes``, when given, bounds the response body read (see
+        ``AsyncHTTPClient.json_post``); otherwise the client's default applies.
         """
+        # Passed only when set: the chat path's call is unchanged.
+        limit = {} if max_body_bytes is None else {"max_body_bytes": max_body_bytes}
         if self._key_pool is None:
             headers = self._build_headers()
             slot = await self._acquire_upstream_slot(self.config.api_key)
@@ -891,6 +921,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
                     retries=1,
+                    **limit,
                 )
             except (TimeoutError, aiohttp.ClientError) as e:
                 slot.release(
@@ -966,6 +997,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                    **limit,
                 )
             except (TimeoutError, aiohttp.ClientError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
@@ -1804,7 +1836,9 @@ class OpenAICompatAdapter(BaseAdapter):
 
         logger.debug(f"[OpenAICompat] POST {url} model={payload['model']}")
 
-        return await self._post_with_pool(url, payload)
+        return await self._post_with_pool(
+            url, payload, max_body_bytes=embeddings_response_limit(input_data)
+        )
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""

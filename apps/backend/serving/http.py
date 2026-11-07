@@ -120,6 +120,15 @@ MAX_LINE_CHARS = MAX_FRAME_CHARS
 
 _READ_CHUNK_BYTES = 64 * 1024
 
+#: A JSON response this long or longer is decoded a part at a time, the event
+#: loop running between the parts (:func:`loads_yielding`). Shorter ones decode
+#: in about 10 ms, and in one piece.
+YIELDING_DECODE_MIN_CHARS = 1024 * 1024
+
+#: About how much of a large JSON response is decoded between two turns of the
+#: event loop: some 5 ms of the C decoder.
+_YIELDING_DECODE_SLICE_CHARS = 256 * 1024
+
 #: Connection bounds for a request with no total timeout -- a stream, which then
 #: runs for as long as generation does. ``connect`` covers the whole acquisition
 #: of a connection (a wait for the pool, DNS, the handshakes), ``sock_connect``
@@ -230,11 +239,13 @@ def _response_charset(resp: Any) -> str:
 _JSON_CONTENT_TYPE_RE = re.compile(r"^application/(?:[\w.+-]+?\+)?json")
 
 
-def _json_from_body(resp: Any, body: bytes) -> Any:
+async def _json_from_body(resp: Any, body: bytes) -> Any:
     """Decode a body read with :func:`read_body` as ``resp.json()`` would have.
 
     The same content-type check (an ``aiohttp.ContentTypeError`` for anything
-    but JSON), ``None`` for an empty body, and the declared charset.
+    but JSON), ``None`` for an empty body, and the declared charset. A large
+    body is decoded with :func:`loads_yielding`, so the event loop keeps
+    running while it is.
     """
     content_type = str(resp.headers.get("Content-Type", "")).lower()
     if not _JSON_CONTENT_TYPE_RE.match(content_type):
@@ -248,7 +259,114 @@ def _json_from_body(resp: Any, body: bytes) -> Any:
     stripped = body.strip()
     if not stripped:
         return None
-    return jsonlib.loads(stripped.decode(_response_charset(resp)))
+    text = stripped.decode(_response_charset(resp))
+    if len(text) < YIELDING_DECODE_MIN_CHARS:
+        return jsonlib.loads(text)
+    return await loads_yielding(text)
+
+
+_JSON_DECODER = jsonlib.JSONDecoder()
+# JSON's own whitespace: what ``json.decoder`` skips between tokens.
+_JSON_WHITESPACE = re.compile(r"[ \t\n\r]*")
+
+
+def _skip_whitespace(text: str, pos: int) -> int:
+    """Return the position of the first non-whitespace character at or after *pos*."""
+    match = _JSON_WHITESPACE.match(text, pos)
+    return match.end() if match else pos
+
+
+async def loads_yielding(text: str) -> Any:
+    """Return ``json.loads(text)``, letting the event loop run while it decodes.
+
+    ``json.loads`` holds the GIL from the first character to the last, so
+    running it in a thread does not free the loop either: a 40 MiB embeddings
+    response took 0.6 s, all of it a stall for every other request. Here the
+    top-level object's members, and each element of an array of objects or
+    arrays it holds, are decoded one at a time by the same decoder, yielding to
+    the loop every :data:`_YIELDING_DECODE_SLICE_CHARS` or so. An embeddings
+    response is one such array, with one vector per element.
+
+    The result is what ``json.loads`` returns; malformed text raises
+    ``json.JSONDecodeError`` as it does, though the message may differ.
+    """
+    decoder = _YieldingDecoder(text)
+    value, pos = await decoder.value(_skip_whitespace(text, 0), depth=0)
+    pos = _skip_whitespace(text, pos)
+    if pos != len(text):
+        raise jsonlib.JSONDecodeError("Extra data", text, pos)
+    return value
+
+
+class _YieldingDecoder:
+    """The container walk behind :func:`loads_yielding`."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._yielded_at = 0
+
+    async def value(self, pos: int, *, depth: int) -> tuple[Any, int]:
+        """Decode the value at *pos* and return it with the position after it.
+
+        The top level and, one level down, an array whose first element is an
+        object or an array are walked; any other value is decoded in one piece.
+        """
+        text = self._text
+        opener = text[pos] if pos < len(text) else ""
+        if depth == 0 and opener == "{":
+            return await self._object(pos + 1, depth)
+        if opener == "[" and (depth == 0 or (depth == 1 and self._holds_containers(pos))):
+            return await self._array(pos + 1, depth)
+        value, end = _JSON_DECODER.raw_decode(text, pos)
+        if end - self._yielded_at >= _YIELDING_DECODE_SLICE_CHARS:
+            self._yielded_at = end
+            await asyncio.sleep(0)
+        return value, end
+
+    def _holds_containers(self, pos: int) -> bool:
+        first = _skip_whitespace(self._text, pos + 1)
+        return first < len(self._text) and self._text[first] in "{["
+
+    def _skip(self, pos: int) -> int:
+        return _skip_whitespace(self._text, pos)
+
+    def _expect(self, pos: int, char: str, message: str) -> int:
+        if pos >= len(self._text) or self._text[pos] != char:
+            raise jsonlib.JSONDecodeError(message, self._text, pos)
+        return pos + 1
+
+    async def _object(self, pos: int, depth: int) -> tuple[dict[str, Any], int]:
+        text = self._text
+        members: dict[str, Any] = {}
+        pos = self._skip(pos)
+        if pos < len(text) and text[pos] == "}":
+            return members, pos + 1
+        while True:
+            if pos >= len(text) or text[pos] != '"':
+                raise jsonlib.JSONDecodeError(
+                    "Expecting property name enclosed in double quotes", text, pos
+                )
+            key, pos = _JSON_DECODER.raw_decode(text, pos)
+            pos = self._skip(self._expect(self._skip(pos), ":", "Expecting ':' delimiter"))
+            members[key], pos = await self.value(pos, depth=depth + 1)
+            pos = self._skip(pos)
+            if pos < len(text) and text[pos] == "}":
+                return members, pos + 1
+            pos = self._skip(self._expect(pos, ",", "Expecting ',' delimiter"))
+
+    async def _array(self, pos: int, depth: int) -> tuple[list[Any], int]:
+        text = self._text
+        elements: list[Any] = []
+        pos = self._skip(pos)
+        if pos < len(text) and text[pos] == "]":
+            return elements, pos + 1
+        while True:
+            element, pos = await self.value(pos, depth=depth + 1)
+            elements.append(element)
+            pos = self._skip(pos)
+            if pos < len(text) and text[pos] == "]":
+                return elements, pos + 1
+            pos = self._skip(self._expect(pos, ",", "Expecting ',' delimiter"))
 
 
 class _LineSplitter:
@@ -339,6 +457,7 @@ class AsyncHTTPClient:
         json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
+        max_body_bytes: int | None = None,
     ) -> dict[str, Any]:
         """Send a POST request with JSON payload.
 
@@ -352,8 +471,9 @@ class AsyncHTTPClient:
         at all*, which would let a black-holed upstream hold the request (and
         its connection-pool slot) forever.
 
-        The body is read up to :data:`MAX_RESPONSE_BODY_BYTES` (a longer one
-        raises ``UpstreamPayloadTooLarge``), an error body up to
+        The body is read up to ``max_body_bytes``, by default
+        :data:`MAX_RESPONSE_BODY_BYTES` (a longer one raises
+        ``UpstreamPayloadTooLarge``), an error body up to
         :data:`MAX_ERROR_BODY_BYTES`.
         """
         session = await self._ensure_session()
@@ -372,7 +492,8 @@ class AsyncHTTPClient:
                 raise _upstream_status_error(resp, error_body)
             from typing import cast
 
-            return cast("dict[str, Any]", _json_from_body(resp, await read_body(resp)))
+            body = await read_body(resp, max_body_bytes)
+            return cast("dict[str, Any]", await _json_from_body(resp, body))
 
     async def json_post_with_retry(
         self,
@@ -384,16 +505,21 @@ class AsyncHTTPClient:
         retries: int = 3,
         backoff_base: float = 0.5,
         backoff_factor: float = 2.0,
+        max_body_bytes: int | None = None,
     ) -> dict[str, Any]:
         """POST JSON with simple exponential backoff retries.
 
         Retries on aiohttp client errors and timeouts. Backoff delays are
         computed as backoff_base * (backoff_factor ** attempt).
+        ``max_body_bytes`` is passed to :meth:`json_post`.
         """
         last_err: BaseException | None = None
+        limit = {} if max_body_bytes is None else {"max_body_bytes": max_body_bytes}
         for attempt in range(retries):
             try:
-                return await self.json_post(url, json=json, headers=headers, timeout=timeout)
+                return await self.json_post(
+                    url, json=json, headers=headers, timeout=timeout, **limit
+                )
             except (TimeoutError, aiohttp.ClientError) as err:
                 last_err = err
                 if attempt == retries - 1:
