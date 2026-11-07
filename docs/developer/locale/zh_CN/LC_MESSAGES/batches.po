@@ -2078,6 +2078,20 @@ msgstr ""
 "`start_time` 和 `end_time`，用于列出某一柱条的请求：包含起点、不包含终点；若起点早于列表的回溯范围，回溯范围会扩大到起点，"
 "最多 90 天。"
 
+#: ../developer/batches.md:886
+msgid ""
+"On **Recent Requests**, the **Request volume** cards count only the requests "
+"callers made directly; each card also says how many batch requests ran in its "
+"window, and each bar stacks them on top, in violet. Clicking a bar narrows the "
+"list below to that bar's stretch, shown as a **Window** chip in place of the "
+"lookback, with a link to the same stretch's batch requests on the **Requests** "
+"page (`?from=…&to=…`). Clicking the bar again, or clearing the chip, lets it "
+"go."
+msgstr ""
+"在 **Recent Requests** 中，**Request volume** 卡片只统计调用方直接发出的请求；每张卡片还会注明其时间窗口内运行了多少批处理请求，"
+"每个柱条则以紫色把这些请求叠加在上方。点击某个柱条，下方列表会缩小到该柱条的时间段，并以 **Window** 标签代替回溯范围显示，"
+"同时附有链接，可在 **Requests** 页面查看同一时间段的批处理请求（`?from=…&to=…`）。再次点击该柱条或清除该标签即可取消。"
+
 #: ../developer/batches.md:801
 msgid "Upgrading a deployment"
 msgstr "升级部署"

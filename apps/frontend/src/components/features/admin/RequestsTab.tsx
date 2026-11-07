@@ -15,9 +15,11 @@ import Link from 'next/link';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   AdminRecentRequestItem,
+  type AdminRequestMetricsBucket,
   AdminRequestMetricsWindow,
   type RequestOutcome,
   type RequestSource,
+  type RequestWindow,
   clearErrorRequests,
   exportRequests,
   getRecentRequestContent,
@@ -454,12 +456,59 @@ function ClearErrorsSpan({ onChange }: { onChange: (hours: number) => void }) {
   );
 }
 
-function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
-  const maxRequests = Math.max(...metric.buckets.map((bucket) => bucket.request_count), 1);
+/** The stretch an address names, or null unless both ends are instants in order. */
+function windowFrom(start: string, end: string): RequestWindow | null {
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) return null;
+  return { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
+}
+
+/** The stretch a bar covers: from its start, one bar width on. */
+function barWindow(bucket: AdminRequestMetricsBucket, bucketMinutes: number): RequestWindow {
+  const start = new Date(bucket.start_time);
+  return {
+    start: start.toISOString(),
+    end: new Date(start.getTime() + bucketMinutes * 60_000).toISOString(),
+  };
+}
+
+/** A stretch in the browser's time zone: "Nov 7, 16:00 – 16:05", or across days in full. */
+export function formatRequestWindow(window: RequestWindow): string {
+  const start = new Date(window.start);
+  const end = new Date(window.end);
+  const day = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const time = (d: Date) =>
+    d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  const sameDay = start.toDateString() === end.toDateString();
+  return `${day(start)}, ${time(start)} – ${sameDay ? '' : `${day(end)}, `}${time(end)}`;
+}
+
+/**
+ * One lookback window's volume. The figures count the requests callers made
+ * directly; each bar stacks the batch worker's on top, in violet. With
+ * `onSelect`, a bar is a button that lists its requests below.
+ */
+function RequestMetricsCard({
+  metric,
+  selected = null,
+  onSelect,
+}: {
+  metric: AdminRequestMetricsWindow;
+  // The stretch the list is narrowed to: its bar, if this card has it, is marked.
+  // Both ends count: an hour bar and a five-minute bar can start together.
+  selected?: RequestWindow | null;
+  // Absent for a gateway that cannot narrow the list to a bar.
+  onSelect?: (window: RequestWindow, bucket: AdminRequestMetricsBucket) => void;
+}) {
+  const stackedCount = (bucket: AdminRequestMetricsBucket) =>
+    bucket.request_count + (bucket.batch_request_count ?? 0);
+  const maxRequests = Math.max(...metric.buckets.map(stackedCount), 1);
   // Split out of `error_requests` by the backend, so the two are read side by
   // side. Older payloads omit the field; treating that as 0 shows the card as it
   // looked before the split rather than inventing a count.
   const disconnects = metric.client_disconnect_requests ?? 0;
+  const batchRequests = metric.batch_requests ?? 0;
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
@@ -484,28 +533,79 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
             </div>
           )}
           <div>{formatLatency(metric.avg_latency_ms)} avg</div>
+          {batchRequests > 0 && (
+            <div title="Requests the batch worker ran in this window. They are not in the figures above; each bar stacks them on top, in violet.">
+              <span className="text-violet-600">{batchRequests.toLocaleString()}</span> batch
+            </div>
+          )}
         </div>
       </div>
       <div className="mt-4 flex h-16 items-end gap-px overflow-hidden rounded-md bg-gray-50 px-1 py-1">
         {metric.buckets.map((bucket) => {
-          const height =
-            bucket.request_count === 0 ? 2 : (bucket.request_count / maxRequests) * 100;
+          const batch = bucket.batch_request_count ?? 0;
+          const stacked = bucket.request_count + batch;
+          const height = stacked === 0 ? 2 : (stacked / maxRequests) * 100;
           const bucketDisconnects = bucket.client_disconnect_count ?? 0;
           // Disconnects are excluded here on purpose: a bar goes red to flag a
           // window where the gateway is failing, and a run of callers hanging up
-          // mid-stream is not that.
+          // mid-stream is not that. Batch failures are left out too: the batch
+          // worker retries them, and they are not what a caller saw.
           const isErrorHeavy = bucket.error_count > 0 && bucket.error_count >= bucket.success_count;
+          const window = barWindow(bucket, metric.bucket_minutes);
+          const isSelected = selected?.start === window.start && selected.end === window.end;
+          const summary = `${formatRequestWindow(window)}: ${bucket.request_count} requests, ${
+            bucket.error_count
+          } errors, ${bucketDisconnects} client disconnects${
+            batch > 0 ? `, ${batch} batch (${bucket.batch_error_count ?? 0} failed)` : ''
+          }`;
+          const segments = (
+            <>
+              {batch > 0 && (
+                <span
+                  data-segment="batch"
+                  className="block w-full shrink-0 bg-violet-400"
+                  style={{ height: `${(batch / stacked) * 100}%` }}
+                />
+              )}
+              <span
+                data-segment="interactive"
+                className={`block w-full flex-1 ${isErrorHeavy ? 'bg-red-400' : 'bg-gray-900'}`}
+              />
+            </>
+          );
+          const barClass = 'flex min-w-0 flex-1 flex-col justify-end overflow-hidden rounded-t-sm';
+          if (!onSelect) {
+            return (
+              <div
+                key={bucket.start_time}
+                className={barClass}
+                style={{ height: `${height}%` }}
+                title={summary}
+              >
+                {segments}
+              </div>
+            );
+          }
           return (
-            <div
+            <button
               key={bucket.start_time}
-              className={`min-w-0 flex-1 rounded-t-sm ${
-                isErrorHeavy ? 'bg-red-400' : 'bg-gray-900'
-              }`}
+              type="button"
+              onClick={() => onSelect(window, bucket)}
+              aria-label={`List the requests of ${formatRequestWindow(window)}`}
+              aria-pressed={isSelected}
+              title={`${summary}. Click to list them.`}
+              className={`${barClass} relative cursor-pointer transition-opacity hover:opacity-75 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-500`}
               style={{ height: `${height}%` }}
-              title={`${new Date(bucket.start_time).toLocaleString('en-US')}: ${
-                bucket.request_count
-              } requests, ${bucket.error_count} errors, ${bucketDisconnects} client disconnects`}
-            />
+            >
+              {segments}
+              {isSelected && (
+                // Over the segments: a ring on the bar itself would lie beneath them.
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 rounded-t-sm ring-2 ring-inset ring-blue-500"
+                />
+              )}
+            </button>
           );
         })}
       </div>
@@ -521,15 +621,24 @@ function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
  * large batch cannot bury them; `batch` (Batches → Requests) lists only the
  * batch worker's, one row per attempt, narrowed to one batch by
  * `initialBatchId` or by clicking a row's batch. The batch list leaves out
- * what describes interactive traffic: the volume cards (every request, batch
- * included), the per-endpoint streaming summaries and Clear errors.
+ * what describes interactive traffic: the volume cards (interactive requests,
+ * with the batch worker's stacked on each bar), the per-endpoint streaming
+ * summaries and Clear errors.
+ *
+ * Clicking a volume bar narrows the list to that bar's stretch;
+ * `initialWindowStart` / `initialWindowEnd` (ISO instants, from the address)
+ * open the list narrowed to one.
  */
 export function RequestsTab({
   source = 'interactive',
   initialBatchId = '',
+  initialWindowStart = '',
+  initialWindowEnd = '',
 }: {
   source?: RequestSource;
   initialBatchId?: string;
+  initialWindowStart?: string;
+  initialWindowEnd?: string;
 } = {}) {
   const isBatch = source === 'batch';
   const toast = useAccountToast();
@@ -568,6 +677,11 @@ export function RequestsTab({
   // exposes the backend's existing `days` window (default 7, max 90).
   const [reqType, setReqType] = useState<'all' | 'chat' | 'embedding'>('all');
   const [reqDays, setReqDays] = useState(7);
+  // One stretch of time instead of the lookback: a clicked volume bar, or the
+  // address. `batchCount` is the bar's batch requests, for the link to them.
+  const [reqWindow, setReqWindow] = useState<(RequestWindow & { batchCount?: number }) | null>(() =>
+    windowFrom(initialWindowStart, initialWindowEnd),
+  );
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
   const [reqContentCache, setReqContentCache] = useState<
     Map<
@@ -584,6 +698,10 @@ export function RequestsTab({
   const [reqJumpPage, setReqJumpPage] = useState('');
   const [reqMetrics, setReqMetrics] = useState<AdminRequestMetricsWindow[]>([]);
   const [reqMetricsLoading, setReqMetricsLoading] = useState(false);
+  // Whose requests the volume cards count, as the gateway answered: an older
+  // gateway counts every request and cannot narrow the list to a bar.
+  const [reqMetricsSource, setReqMetricsSource] = useState<string>('interactive');
+  const filtersRef = useRef<HTMLDivElement>(null);
   // Bumped by Refresh / Clear errors so the per-endpoint performance panel
   // reloads alongside the volume cards and the list. Filter changes reload it
   // on their own (it takes the same filters as props).
@@ -603,6 +721,12 @@ export function RequestsTab({
     setReqBatchFilter(initialBatchId);
     setReqOffset(0);
   }, [initialBatchId]);
+
+  // And another stretch.
+  useEffect(() => {
+    setReqWindow(windowFrom(initialWindowStart, initialWindowEnd));
+    setReqOffset(0);
+  }, [initialWindowStart, initialWindowEnd]);
 
   // Monotonic id for list fetches so an out-of-order response (e.g. a slow
   // request issued under an older filter) can't overwrite a newer one.
@@ -628,6 +752,7 @@ export function RequestsTab({
           reqSessionFilter || undefined,
           refresh,
           { source, batchId: (isBatch && reqBatchFilter) || undefined },
+          reqWindow && { start: reqWindow.start, end: reqWindow.end },
         );
         if (seq !== reqSeqRef.current) return;
         setReqEntries(d.requests);
@@ -650,6 +775,7 @@ export function RequestsTab({
       source,
       isBatch,
       reqBatchFilter,
+      reqWindow,
       toast,
     ],
   );
@@ -674,8 +800,10 @@ export function RequestsTab({
   const loadRequestMetrics = useCallback(async () => {
     setReqMetricsLoading(true);
     try {
-      const d = await getRequestMetrics();
+      // The requests callers made, with the batch worker's beside them per bar.
+      const d = await getRequestMetrics('interactive');
       setReqMetrics(d.windows);
+      setReqMetricsSource(d.source ?? 'all');
     } catch (e) {
       toast.error(getErrorMessage(e));
     } finally {
@@ -725,6 +853,21 @@ export function RequestsTab({
     // The volume cards count every request; the batch list shows none of them.
     if (!isBatch) loadRequestMetrics();
   }, [isBatch, loadRequestMetrics]);
+
+  // A bar's stretch, or none when the bar already chosen is clicked again. The
+  // list is below the cards, so it is brought into view.
+  const handleSelectWindow = useCallback(
+    (window: RequestWindow, bucket: AdminRequestMetricsBucket) => {
+      setReqWindow((current) =>
+        current?.start === window.start && current.end === window.end
+          ? null
+          : { ...window, batchCount: bucket.batch_request_count ?? 0 },
+      );
+      setReqOffset(0);
+      filtersRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    },
+    [],
+  );
 
   const handleRefresh = () => {
     if (!isBatch) loadRequestMetrics();
@@ -821,7 +964,16 @@ export function RequestsTab({
             <div>
               <h2 className="text-[15px] font-semibold text-gray-900">Request volume</h2>
               <p className="text-[12px] text-gray-400">
-                Traffic trends across short and long lookback windows, batch requests included.
+                {reqMetricsSource === 'interactive' ? (
+                  <>
+                    Requests callers made directly, over short and long lookback windows. Each bar
+                    stacks the batch worker&apos;s requests on top, in{' '}
+                    <span className="text-violet-600">violet</span>; click a bar to list its
+                    requests.
+                  </>
+                ) : (
+                  'Traffic trends across short and long lookback windows, batch requests included.'
+                )}
               </p>
             </div>
             {refreshButton}
@@ -829,7 +981,14 @@ export function RequestsTab({
           {reqMetrics.length > 0 ? (
             <div className="grid gap-3 sm:grid-cols-2">
               {reqMetrics.map((metric) => (
-                <RequestMetricsCard key={metric.key} metric={metric} />
+                <RequestMetricsCard
+                  key={metric.key}
+                  metric={metric}
+                  selected={reqWindow}
+                  // An older gateway counts every request and ignores a
+                  // stretch: its bars stay plain.
+                  onSelect={reqMetricsSource === 'interactive' ? handleSelectWindow : undefined}
+                />
               ))}
             </div>
           ) : !reqMetricsLoading ? (
@@ -841,7 +1000,10 @@ export function RequestsTab({
       )}
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+      <div
+        ref={filtersRef}
+        className="flex scroll-mt-4 flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm"
+      >
         <SearchInput
           value={reqUserFilter}
           onChange={(value) => {
@@ -932,24 +1094,55 @@ export function RequestsTab({
             className="w-32"
           />
         </label>
-        <label className="flex select-none items-center gap-1.5 text-[13px] text-gray-600">
-          Last
-          <Select
-            value={String(reqDays)}
-            onValueChange={(next) => {
-              setReqDays(Number(next));
-              setReqOffset(0);
-            }}
-            options={[
-              { value: '1', label: '24h' },
-              { value: '7', label: '7d' },
-              { value: '30', label: '30d' },
-              { value: '90', label: '90d' },
-            ]}
-            aria-label="Lookback window"
-            className="w-24"
-          />
-        </label>
+        {reqWindow ? (
+          // A stretch replaces the lookback until it is cleared.
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-gray-50 py-1 pl-2 pr-1 text-[13px] text-gray-600">
+            <span className="text-gray-500">Window</span>
+            <span className="tabular-nums text-gray-800">{formatRequestWindow(reqWindow)}</span>
+            <button
+              onClick={() => {
+                setReqWindow(null);
+                setReqOffset(0);
+              }}
+              aria-label="Clear window filter"
+              className="rounded px-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700"
+            >
+              ×
+            </button>
+          </span>
+        ) : (
+          <label className="flex select-none items-center gap-1.5 text-[13px] text-gray-600">
+            Last
+            <Select
+              value={String(reqDays)}
+              onValueChange={(next) => {
+                setReqDays(Number(next));
+                setReqOffset(0);
+              }}
+              options={[
+                { value: '1', label: '24h' },
+                { value: '7', label: '7d' },
+                { value: '30', label: '30d' },
+                { value: '90', label: '90d' },
+              ]}
+              aria-label="Lookback window"
+              className="w-24"
+            />
+          </label>
+        )}
+        {!isBatch && reqWindow?.batchCount ? (
+          <Link
+            href={`${BATCH_REQUESTS_PATH}?${new URLSearchParams({
+              from: reqWindow.start,
+              to: reqWindow.end,
+            }).toString()}`}
+            prefetch={false}
+            className="text-[13px] text-violet-700 underline decoration-violet-300 underline-offset-2 hover:text-violet-900"
+          >
+            {reqWindow.batchCount.toLocaleString()} batch{' '}
+            {reqWindow.batchCount === 1 ? 'request' : 'requests'} in this window
+          </Link>
+        ) : null}
         <span
           className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600"
           title={

@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AdminRecentRequestItem, AdminRecentRequestsResponse } from '@/lib/api/admin';
-import { RequestsTab } from './RequestsTab';
+import { formatRequestWindow, RequestsTab } from './RequestsTab';
 
 vi.mock('react-hot-toast', () => ({
   default: { error: vi.fn(), success: vi.fn() },
@@ -905,5 +905,180 @@ describe('RequestsTab sources', () => {
     render(<RequestsTab source="batch" />);
 
     expect(await screen.findByText('No batch requests found')).toBeInTheDocument();
+  });
+});
+
+describe('RequestsTab volume by source', () => {
+  // listRecentRequests' 11th positional argument: the stretch, or null.
+  const windowOfLastList = () => vi.mocked(listRecentRequests).mock.calls.at(-1)?.[10];
+  const BAR = {
+    start: '2026-06-30T11:00:00.000Z',
+    end: '2026-06-30T12:00:00.000Z',
+  };
+  const metrics = (source?: 'interactive') => ({
+    generated_at: '2026-06-30T12:30:00.000Z',
+    ...(source ? { source } : {}),
+    windows: [
+      {
+        key: '1d',
+        label: 'Last 24 hours',
+        window_minutes: 1440,
+        bucket_minutes: 60,
+        total_requests: 100,
+        success_requests: 95,
+        error_requests: 5,
+        client_disconnect_requests: 0,
+        avg_latency_ms: 900,
+        batch_requests: 300,
+        batch_error_requests: 7,
+        buckets: [
+          {
+            start_time: '2026-06-30T10:00:00.000Z',
+            request_count: 60,
+            success_count: 60,
+            error_count: 0,
+            client_disconnect_count: 0,
+            avg_latency_ms: 800,
+            batch_request_count: 0,
+            batch_error_count: 0,
+          },
+          {
+            start_time: BAR.start,
+            request_count: 40,
+            success_count: 35,
+            error_count: 5,
+            client_disconnect_count: 0,
+            avg_latency_ms: 1050,
+            batch_request_count: 300,
+            batch_error_count: 7,
+          },
+        ],
+      },
+    ],
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRequestMetrics).mockResolvedValue(metrics('interactive'));
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      total_offloaded: 0,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: [makeRequest()],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  afterEach(cleanup);
+
+  it('counts the requests callers made and stacks the batch requests on each bar', async () => {
+    render(<RequestsTab />);
+
+    const bar = await screen.findByRole('button', {
+      name: `List the requests of ${formatRequestWindow(BAR)}`,
+    });
+    expect(getRequestMetrics).toHaveBeenCalledWith('interactive');
+    // The figures leave the batch requests out; the card says how many there were.
+    expect(screen.getByText('100')).toBeInTheDocument();
+    expect(screen.getByText('300')).toBeInTheDocument();
+    expect(screen.getByText(/violet/)).toBeInTheDocument();
+    // The bar is the tallest: its 40 requests and 300 batch requests, stacked.
+    expect(bar).toHaveStyle({ height: '100%' });
+    const batch = bar.querySelector('[data-segment="batch"]') as HTMLElement;
+    expect(batch.style.height).toBe(`${(300 / 340) * 100}%`);
+    expect(bar).toHaveAttribute('title', expect.stringContaining('300 batch (7 failed)'));
+    // A bar with no batch requests has no batch segment.
+    const quiet = screen.getAllByRole('button', { name: /^List the requests of / })[0];
+    expect(quiet.querySelector('[data-segment="batch"]')).toBeNull();
+  });
+
+  it("lists a bar's requests when it is clicked, and the lookback once that is cleared", async () => {
+    render(<RequestsTab />);
+    const name = `List the requests of ${formatRequestWindow(BAR)}`;
+    await screen.findByText('gpt-4o-mini');
+    expect(windowOfLastList()).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name }));
+
+    await waitFor(() => expect(windowOfLastList()).toEqual(BAR));
+    expect(screen.getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
+    // Only that bar: the one beside it, an hour earlier, is not marked.
+    const [earlier] = screen.getAllByRole('button', { name: /^List the requests of / });
+    expect(earlier).toHaveAttribute('aria-pressed', 'false');
+    // The stretch replaces the lookback, and leads to the same stretch's batch requests.
+    expect(screen.getByText(formatRequestWindow(BAR))).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Lookback window' })).toBeNull();
+    const link = screen.getByRole('link', { name: '300 batch requests in this window' });
+    const href = new URL(link.getAttribute('href') ?? '', 'http://console');
+    expect(href.pathname).toBe('/dashboard/admin/batches/requests');
+    expect(Object.fromEntries(href.searchParams)).toEqual({ from: BAR.start, to: BAR.end });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear window filter' }));
+    await waitFor(() => expect(windowOfLastList()).toBeNull());
+    expect(screen.getByRole('combobox', { name: 'Lookback window' })).toBeInTheDocument();
+
+    // Clicking the chosen bar again lets it go, as clearing does.
+    fireEvent.click(screen.getByRole('button', { name }));
+    await waitFor(() => expect(windowOfLastList()).toEqual(BAR));
+    fireEvent.click(screen.getByRole('button', { name }));
+    await waitFor(() => expect(windowOfLastList()).toBeNull());
+  });
+
+  it("keeps an older gateway's bars plain: it counts every request and ignores a stretch", async () => {
+    vi.mocked(getRequestMetrics).mockResolvedValue(metrics());
+    render(<RequestsTab />);
+
+    expect(await screen.findByText(/batch requests included/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^List the requests of / })).toBeNull();
+  });
+
+  it('opens the batch list on the stretch the address names', async () => {
+    render(
+      <RequestsTab source="batch" initialWindowStart={BAR.start} initialWindowEnd={BAR.end} />,
+    );
+
+    await screen.findByText('gpt-4o-mini');
+    expect(windowOfLastList()).toEqual(BAR);
+    expect(screen.getByText(formatRequestWindow(BAR))).toBeInTheDocument();
+    // The batch list links to no batch list.
+    expect(screen.queryByRole('link', { name: /in this window/ })).toBeNull();
+  });
+
+  it('ignores a stretch the address names out of order', async () => {
+    render(
+      <RequestsTab source="batch" initialWindowStart={BAR.end} initialWindowEnd={BAR.start} />,
+    );
+
+    await screen.findByText('gpt-4o-mini');
+    expect(windowOfLastList()).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Lookback window' })).toBeInTheDocument();
+  });
+});
+
+describe('formatRequestWindow', () => {
+  it('names the day once when the stretch stays in it, and both days otherwise', () => {
+    const start = new Date(2026, 5, 30, 11, 0);
+    const sameDay = formatRequestWindow({
+      start: start.toISOString(),
+      end: new Date(2026, 5, 30, 12, 0).toISOString(),
+    });
+    expect(sameDay).toBe('Jun 30, 11:00 – 12:00');
+    const acrossDays = formatRequestWindow({
+      start: new Date(2026, 5, 30, 18, 0).toISOString(),
+      end: new Date(2026, 6, 1, 0, 0).toISOString(),
+    });
+    expect(acrossDays).toBe('Jun 30, 18:00 – Jul 1, 00:00');
   });
 });
