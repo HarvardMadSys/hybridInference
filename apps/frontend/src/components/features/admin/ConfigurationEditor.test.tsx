@@ -17,7 +17,6 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/api/config', () => ({
   getConfig: vi.fn(),
   patchConfig: vi.fn(),
-  markConfigSecret: vi.fn(),
   resetConfigKey: vi.fn(),
   exportConfigBackup: vi.fn(),
   previewConfigRestore: vi.fn(),
@@ -41,7 +40,6 @@ import {
   exportConfigBackup,
   getConfig,
   getLiveConfigStatus,
-  markConfigSecret,
   patchConfig,
   previewConfigRestore,
   resetConfigKey,
@@ -200,7 +198,6 @@ beforeEach(() => {
     test_id: 'test-123',
   });
   vi.mocked(patchConfig).mockImplementation(async () => makeConfig());
-  vi.mocked(markConfigSecret).mockImplementation(async () => makeConfig());
   vi.mocked(resetConfigKey).mockImplementation(async () => makeConfig());
   vi.mocked(restartBackend).mockResolvedValue({ restarting: true, instance: 'old-process' });
   vi.mocked(waitForBackendRestart).mockResolvedValue('restarted');
@@ -1401,7 +1398,6 @@ describe('marking a variable secret', () => {
       }),
     );
     expect(patchConfig).toHaveBeenCalledTimes(1);
-    expect(markConfigSecret).not.toHaveBeenCalled();
     await waitFor(() => expect(saveButton('Providers')).toBeNull());
     // Neither the stored value (still in the buggy response) nor the edit.
     for (const plaintext of [HEADER_VALUE, 'typed-value']) {

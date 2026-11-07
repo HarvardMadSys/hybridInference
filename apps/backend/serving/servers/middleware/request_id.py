@@ -12,7 +12,6 @@ from serving.utils import context as req_ctx
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
-_HEADER_NAME = "x-request-id"
 _HEADER_BYTES = b"x-request-id"
 _USER_AGENT_BYTES = b"user-agent"
 

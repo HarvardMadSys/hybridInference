@@ -41,7 +41,7 @@ from serving.observability.alerts import (
     sweep_stale_breaches,
 )
 from serving.utils import context as req_ctx
-from serving.utils.secret_urls import scrub, url_fingerprint, url_redaction
+from serving.utils.secret_urls import url_fingerprint, url_redaction
 
 
 @pytest.fixture(autouse=True)
@@ -2020,7 +2020,9 @@ class TestTheRedactedFormNamesTheSinkOnly:
 
     def test_a_path_only_mention_is_scrubbed_too(self):
         """Some errors name the request target without the host in front."""
-        scrubbed = scrub("POST /services/T00000000/B00000000/nOtArEaLtOkEn failed", self.WEBHOOK)
+        scrubbed = url_redaction(self.WEBHOOK).scrub(
+            "POST /services/T00000000/B00000000/nOtArEaLtOkEn failed"
+        )
         assert "nOtArEaLtOkEn" not in scrubbed
         assert url_fingerprint(self.WEBHOOK) in scrubbed
 
@@ -2449,14 +2451,16 @@ class TestTheQueryStringIsRedacted:
         assert url_fingerprint(url) in caplog.text
 
     def test_a_target_with_the_query_is_scrubbed(self):
-        scrubbed = scrub("POST /cgi-bin/webhook/send?key=nOtArEaLtOkEn failed", self.WEBHOOK)
+        scrubbed = url_redaction(self.WEBHOOK).scrub(
+            "POST /cgi-bin/webhook/send?key=nOtArEaLtOkEn failed"
+        )
 
         assert "nOtArEaLtOkEn" not in scrubbed
         assert "key=" not in scrubbed
         assert url_fingerprint(self.WEBHOOK) in scrubbed
 
     def test_a_bare_query_mention_is_scrubbed(self):
-        scrubbed = scrub("key=nOtArEaLtOkEn was rejected", self.WEBHOOK)
+        scrubbed = url_redaction(self.WEBHOOK).scrub("key=nOtArEaLtOkEn was rejected")
 
         assert "nOtArEaLtOkEn" not in scrubbed
         assert url_fingerprint(self.WEBHOOK) in scrubbed
@@ -2464,7 +2468,9 @@ class TestTheQueryStringIsRedacted:
     def test_a_slack_webhook_without_a_query_is_unaffected(self):
         slack = "https://hooks.slack.test/services/T00000000/B00000000/nOtArEaLtOkEn"
 
-        scrubbed = scrub("POST /services/T00000000/B00000000/nOtArEaLtOkEn failed", slack)
+        scrubbed = url_redaction(slack).scrub(
+            "POST /services/T00000000/B00000000/nOtArEaLtOkEn failed"
+        )
 
         assert "nOtArEaLtOkEn" not in scrubbed
         assert url_fingerprint(slack) in scrubbed

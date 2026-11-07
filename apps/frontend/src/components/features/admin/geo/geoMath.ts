@@ -185,23 +185,6 @@ export function deriveGeoMetricModel(
   };
 }
 
-/** Map each observed request-origin country to its continent. */
-export function buildCountryContinentMap(data: GeoAnalyticsResponse): Map<string, string> {
-  const bucketIndex = buildColumnIndex(data.bucket_cols);
-  const countryPosition = requiredIndex(bucketIndex, 'c');
-  const continentPosition = requiredIndex(bucketIndex, 'cont');
-  const result = new Map<string, string>();
-  for (const hour of data.hours) {
-    for (const row of hour.b) {
-      const country = stringAt(row, countryPosition);
-      if (country && !result.has(country)) {
-        result.set(country, stringAt(row, continentPosition));
-      }
-    }
-  }
-  return result;
-}
-
 function emptyOriginSummary(): OriginSummary {
   return {
     totalRequests: 0,
