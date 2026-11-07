@@ -144,7 +144,7 @@ def test_the_messages_accumulator_accumulates_in_linear_time():
 
 
 def test_a_messages_block_keeps_text_it_started_with_and_drops_bad_deltas():
-    acc = amod._apply_sse_event(None, "message_start", json.dumps({"message": {"id": "m"}}))
+    acc = amod._apply_sse_payload(None, "message_start", {"message": {"id": "m"}})
     for event_type, payload in [
         ("content_block_start", {"index": 0, "content_block": {"type": "text", "text": "Hi"}}),
         ("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": ", "}}),
@@ -153,7 +153,7 @@ def test_a_messages_block_keeps_text_it_started_with_and_drops_bad_deltas():
         ("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": "you"}}),
         ("content_block_stop", {"index": 0}),
     ]:
-        acc = amod._apply_sse_event(acc, event_type, json.dumps(payload))
+        acc = amod._apply_sse_payload(acc, event_type, payload)
 
     assert acc["content"] == [{"type": "text", "text": "Hi, you"}]
 

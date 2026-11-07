@@ -297,11 +297,11 @@ alerts file expands the same way. A variable neither the database nor the
 environment sets takes the inline `:-default`, and without one the default the
 gateway registers for that setting.
 
-`routing_strategy:` and `routing_parameter:` are the deprecated spellings of
-`default_router:` and per-model `router_params:`. They still load, and log a
-deprecation warning. Per-model router selection (`router:` / `router_params:` in
-the model registry) overrides `default_router` and is documented in
-[Routing](routing.md).
+`routing_strategy:`, the earlier name of `default_router:`, is no longer read.
+`routing_parameter:` is the deprecated spelling of per-model `router_params:`;
+it still loads, and logs a deprecation warning. Per-model router selection
+(`router:` / `router_params:` in the model registry) overrides `default_router`
+and is documented in [Routing](routing.md).
 
 ## Settings that currently have no effect
 

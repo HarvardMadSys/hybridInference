@@ -47,7 +47,7 @@ function tokenCountOrNull(value: string) {
   return parsed > 0 && parsed <= MAX_DECLARED_TOKENS ? parsed : null;
 }
 
-export type CapabilityDraftReading = {
+type CapabilityDraftReading = {
   payload: RuntimeModelCapabilities | null;
   contextLengthError: string | null;
   maxOutputLengthError: string | null;
@@ -149,7 +149,7 @@ export function describeCapabilities(capabilities: RouteCapabilities) {
 }
 
 /** One row per capability, as the form names them, for listing changes. */
-export function capabilityRows(capabilities: RouteCapabilities): Change[] {
+function capabilityRows(capabilities: RouteCapabilities): Change[] {
   const others = capabilities.input_modalities.filter(
     (modality) => modality !== 'text' && modality !== 'image',
   );

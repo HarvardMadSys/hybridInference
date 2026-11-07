@@ -13,7 +13,7 @@ export interface PublicSiteUpdate {
   created_at: string;
 }
 
-export interface PublicSiteUpdatesResponse {
+interface PublicSiteUpdatesResponse {
   banner: PublicSiteUpdate | null;
   updates: PublicSiteUpdate[];
 }

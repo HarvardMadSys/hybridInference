@@ -362,31 +362,6 @@ async def _slot_for_canonical(
     return _exempt_slot_key(user_id), max_concurrent
 
 
-async def user_slot_for(
-    user: dict[str, Any],
-    model: str | None,
-    *,
-    router: Any,
-    concurrency_resolver: Any,
-    embedding_adapters: dict[str, Any] | None,
-) -> tuple[str, int | None]:
-    """Return the per-user slot a request for *model* takes: ``(slot_key, max_concurrent)``.
-
-    The decision :func:`enforce_user_concurrency` makes for an HTTP request,
-    for work that acquires the slot on the user's behalf itself (the batch
-    worker): the key to pass to :meth:`UserConcurrencyLimiter.try_acquire` and
-    release afterwards, and the cap to pass with it -- the user's override,
-    ``None`` for the role default, or the exempt-model budget. Never raises
-    for the model: one it cannot resolve takes the normal budget.
-    """
-    try:
-        canonical = canonical_model_id(model, router=router, embedding_adapters=embedding_adapters)
-    except Exception:
-        logger.debug("user_concurrency: exemption check skipped", exc_info=True)
-        canonical = None
-    return await _slot_for_canonical(user, model, canonical, concurrency_resolver)
-
-
 async def enforce_user_concurrency(
     request: Request,
     user: dict[str, Any] = Depends(verify_api_key),
