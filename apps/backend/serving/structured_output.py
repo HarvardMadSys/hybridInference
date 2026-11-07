@@ -26,6 +26,7 @@ import copy
 import functools
 import json
 import math
+import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -65,6 +66,16 @@ _CHECK_SECONDS = 0.05
 
 #: The longest description of a schema mismatch a check keeps, for the log.
 _MAX_REASON_CHARS = 300
+
+#: How many ``{`` or ``[`` in a reply that is not JSON as a whole are tried as
+#: the start of its JSON value, and how many characters the failed tries may
+#: read in all. A try reads on until it fails, and its error counts the lines
+#: before it, so trying every bracket was quadratic: 8,000 unclosed ``[`` took
+#: 1.5 s per check, a reply of 100,000 ``{`` 2.2 s.
+_MAX_JSON_STARTS = 64
+_MAX_JSON_SCAN_CHARS = 1024 * 1024
+
+_JSON_START = re.compile(r"[{\[]")
 
 
 @dataclass(frozen=True)
@@ -109,8 +120,8 @@ class ReplyCheck:
     """The outcome of checking one reply against its requested format.
 
     ``content`` is the reply to return when ``ok``: the JSON text itself, with
-    any code fence or surrounding prose removed. ``reason`` says why a reply
-    failed, for the log.
+    any code fence or surrounding prose removed, or None to keep the reply as
+    it is. ``reason`` says why a reply failed, for the log.
     """
 
     ok: bool
@@ -139,7 +150,9 @@ def requested_format(params: dict[str, Any]) -> RequestedFormat | None:
 def _extract_json(text: str) -> Any:
     """Return the first JSON value in *text*, tolerating fences and prose.
 
-    Raises ``ValueError`` when no JSON value can be found.
+    Raises ``ValueError`` when no JSON value can be found: none is there, it
+    is nested too deep to decode, or it is not found within
+    :data:`_MAX_JSON_STARTS` tries and :data:`_MAX_JSON_SCAN_CHARS`.
     """
     stripped = text.strip()
     if stripped.startswith("```"):
@@ -150,16 +163,25 @@ def _extract_json(text: str) -> Any:
             stripped = "\n".join(body).strip()
     try:
         return json.loads(stripped)
-    except ValueError:
+    except (ValueError, RecursionError):
         pass
     decoder = json.JSONDecoder()
-    for index, char in enumerate(stripped):
-        if char in "{[":
-            try:
-                value, _ = decoder.raw_decode(stripped, index)
-            except ValueError:
-                continue
-            return value
+    scanned = 0
+    start = _JSON_START.search(stripped)
+    for _ in range(_MAX_JSON_STARTS):
+        if start is None or scanned > _MAX_JSON_SCAN_CHARS:
+            break
+        index = start.start()
+        try:
+            value, _ = decoder.raw_decode(stripped, index)
+        except ValueError as exc:
+            # A decode error says where it stopped reading.
+            scanned += getattr(exc, "pos", len(stripped)) - index + 1
+            start = _JSON_START.search(stripped, index + 1)
+            continue
+        except RecursionError:
+            break
+        return value
     raise ValueError("no JSON value in the reply")
 
 
@@ -179,7 +201,11 @@ def check_reply(content: Any, wanted: RequestedFormat) -> ReplyCheck:
     if _is_plain_json(content):
         return ReplyCheck(ok=True, content=content)
     # Fenced or wrapped in prose: return just the JSON the caller asked for.
-    return ReplyCheck(ok=True, content=json.dumps(value, ensure_ascii=False))
+    try:
+        unwrapped = json.dumps(value, ensure_ascii=False)
+    except (ValueError, RecursionError):
+        return ReplyCheck(ok=True)
+    return ReplyCheck(ok=True, content=unwrapped)
 
 
 def _schema_mismatch(value: Any, wanted: RequestedFormat) -> str | None:
@@ -438,7 +464,7 @@ def _is_plain_json(content: str) -> bool:
     """Whether *content* is exactly one JSON value, whitespace aside."""
     try:
         json.loads(content)
-    except ValueError:
+    except (ValueError, RecursionError):
         return False
     return True
 

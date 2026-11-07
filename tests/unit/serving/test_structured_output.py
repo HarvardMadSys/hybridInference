@@ -109,6 +109,46 @@ def test_a_reply_that_misses_the_schema(content, reason):
     assert reason in check.reason
 
 
+def test_json_after_a_few_stray_brackets_is_still_found():
+    check = check_reply('See {this} and [that] (or {so}): {"answer": "B"}', STRICT)
+
+    assert check.ok
+    assert json.loads(check.content) == {"answer": "B"}
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["[" * 8_000, "x" + "{" * 100_000, '["' + '\\"[' * 100_000],
+    ids=["unclosed-brackets", "unclosed-braces", "unterminated-string"],
+)
+def test_finding_the_json_in_a_reply_is_not_quadratic(content):
+    # Trying every bracket read the rest of the reply each time: 1.5 s for 8,000.
+    elapsed, check = _timed_check(content, STRICT)
+
+    assert elapsed < 0.5
+    assert check.reason == "reply is not JSON"
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["[" * 50_000, "[" * 50_000 + "]" * 50_000, "note: " + "[" * 50_000 + "]" * 50_000],
+    ids=["unclosed", "closed", "after-prose"],
+)
+def test_json_nested_too_deep_to_decode_is_not_json_rather_than_an_error(content):
+    assert check_reply(content, STRICT).reason == "reply is not JSON"
+
+
+@pytest.mark.asyncio
+async def test_a_reply_too_deep_to_decode_is_returned_unchanged_not_raised():
+    deep = "[" * 50_000 + "]" * 50_000
+    retry = Retry(*[_reply(deep) for _ in range(MAX_STRUCTURED_RETRIES)])
+
+    response, summary = await conform_reply(_reply(deep), STRICT, retry, USER)
+
+    assert response["choices"][0]["message"]["content"] == deep
+    assert summary["conforms"] is False
+
+
 def test_json_object_wants_an_object():
     wanted = RequestedFormat("json_object")
 
