@@ -3305,6 +3305,9 @@ async def test_a_stream_left_during_prefill_bills_the_prompt(
     expected = anthropic_messages._estimate_request_input_tokens(_LONG_PROMPT)
     assert captured["usage"]["input_tokens"] == expected
     assert captured["metadata"].get("usage_estimated") is True
+    # Charged whatever status the row is logged with: the client left, the
+    # upstream did not fail.
+    assert captured["charge"] is True
 
 
 @pytest.mark.asyncio
@@ -3420,3 +3423,42 @@ async def test_a_client_that_stops_reading_holds_the_upstream_back_and_tears_dow
     # full queue, and the generation was not read to its end.
     await asyncio.wait_for(closed.wait(), timeout=5)
     assert produced < 5_000
+
+
+@pytest.mark.parametrize(
+    ("status_code", "charge", "charged"),
+    [
+        (200, None, True),
+        (499, None, False),
+        (502, None, False),
+        (499, True, True),
+        (200, False, False),
+    ],
+)
+def test_a_logged_row_is_charged_by_its_status_unless_told_otherwise(
+    monkeypatch, status_code, charge, charged
+):
+    """A cut-off stream is billed whatever status it is logged with (499, 504)."""
+    increments: list[dict] = []
+    monkeypatch.setattr(
+        anthropic_messages,
+        "_schedule_messages_cost_increment",
+        lambda op_store, user_id, usage, pricing, **kw: increments.append(usage),
+    )
+    anthropic_messages._schedule_log_store_task(
+        None,
+        request_id="r",
+        model_id="m",
+        provider="p",
+        usage={"input_tokens": 10, "output_tokens": 2},
+        latency_ms=1,
+        status_code=status_code,
+        pricing={"prompt": "1", "completion": "1"},
+        metadata={},
+        params={},
+        op_store=object(),
+        user_id="u",
+        completions_logger=SimpleNamespace(schedule_log=lambda request_id, payload: None),
+        charge=charge,
+    )
+    assert bool(increments) is charged

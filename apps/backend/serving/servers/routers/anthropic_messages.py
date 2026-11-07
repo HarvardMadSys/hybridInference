@@ -1087,6 +1087,7 @@ def _schedule_log_store_task(
     op_store: Any = None,
     user_id: str | None = None,
     completions_logger=None,
+    charge: bool | None = None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget).
 
@@ -1099,6 +1100,9 @@ def _schedule_log_store_task(
     ``op_store`` / ``user_id``, when supplied, advance the per-user daily quota
     counter for successful (status 200) requests via
     :func:`_schedule_messages_cost_increment`; error rows are logged only.
+    ``charge`` overrides that rule for a row whose status does not say whether
+    it is billed: a stream the client cut short is billed for what the upstream
+    did, whatever status its row is logged with.
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
@@ -1192,7 +1196,7 @@ def _schedule_log_store_task(
     # Successful, billed requests must also advance the daily quota counter that
     # verify_api_key enforces; error rows (status != 200) are logged but never
     # billed, matching the chat/embedding paths.
-    if status_code == 200:
+    if charge if charge is not None else status_code == 200:
         _schedule_messages_cost_increment(
             op_store, user_id, usage_for_cost, pricing, api_key_id=metadata.get("api_key_id")
         )
@@ -2847,6 +2851,9 @@ async def execute_messages(
                         op_store=op_store,
                         user_id=user_ctx.get("user_id"),
                         completions_logger=completions_logger,
+                        # Billed unless the upstream failed it, whatever status
+                        # a stream the client cut short is logged with.
+                        charge=not stream_failed,
                     )
 
         return MessagesStream(
