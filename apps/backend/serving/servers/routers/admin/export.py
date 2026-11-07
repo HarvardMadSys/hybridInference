@@ -14,6 +14,7 @@ from serving.servers.deps import get_admin_audit_actor, get_db_logger
 from serving.servers.routers.admin._common import (
     _escape_ilike_substring_term,
     resolve_request_outcome_filter,
+    resolve_request_source_filter,
 )
 from serving.utils.logging import get_logger
 
@@ -48,6 +49,8 @@ async def admin_export_requests(
     errors_only: bool = False,
     outcome: str | None = None,
     request_type: str | None = None,
+    source: str | None = None,
+    batch_id: str | None = None,
     include_content: bool = False,
     actor: AuditActor = Depends(get_admin_audit_actor),
     db_logger=Depends(get_db_logger),
@@ -67,6 +70,9 @@ async def admin_export_requests(
       ``"client_disconnect"``). Wins over ``errors_only``
     - request_type: ``"embedding"`` to export only embedding requests,
       ``"chat"`` to exclude them; any other value (or omission) applies no filter
+    - source: ``"interactive"``, ``"batch"`` or ``"all"``, as on
+      ``/admin/recent-requests``; any other value is a 422
+    - batch_id: Export one batch's requests (exact match)
     - include_content: If true, include prompt and response fields
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
@@ -126,6 +132,16 @@ async def admin_export_requests(
     elif request_type == "chat":
         where_clauses.append("(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'")
 
+    # And its source filter: exporting from Recent Requests takes the requests
+    # callers made, from the Batches tab the batch worker's. Constant predicate.
+    source_sql = resolve_request_source_filter(source)
+    if source_sql:
+        where_clauses.append(source_sql)
+
+    if batch_id:
+        params.append(batch_id)
+        where_clauses.append(f"l.batch_job_id = ${len(params)}")
+
     content_cols = (
         ", l.prompt, l.response, l.tools, l.metadata, l.request_payload" if include_content else ""
     )
@@ -155,6 +171,8 @@ async def admin_export_requests(
             "errors_only": errors_only,
             "outcome": outcome,
             "request_type": request_type,
+            "source": source,
+            "batch_id": batch_id,
         },
     )
 
@@ -188,7 +206,7 @@ async def admin_export_requests(
                         l.status_code, l.latency_ms, l.ttft_ms,
                         l.prompt_tokens, l.completion_tokens, l.reasoning_tokens,
                         l.cache_read_tokens, l.cache_write_tokens, l.total_tokens,
-                        l.cost_usd, l.error{content_cols}
+                        l.cost_usd, l.error, l.batch_job_id{content_cols}
                     FROM api_logs l
                     LEFT JOIN users u ON u.id = l.user_id
                     {local_where}
@@ -223,6 +241,8 @@ async def admin_export_requests(
                     "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
                     "status_code": row["status_code"],
                     "error": row["error"],
+                    # The batch whose worker ran it; None for a direct request.
+                    "batch_job_id": row.get("batch_job_id"),
                 }
                 if include_content:
                     record["prompt"] = row["prompt"]
