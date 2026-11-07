@@ -57,17 +57,6 @@ export function statusLabel(status: BatchStatus, t: Translate): string {
   return labels[status] ?? status;
 }
 
-export const ALL_STATUSES: BatchStatus[] = [
-  'validating',
-  'in_progress',
-  'finalizing',
-  'completed',
-  'failed',
-  'expired',
-  'cancelling',
-  'cancelled',
-];
-
 /** Done / total: completed, failed and cancelled requests are done. */
 export function progress(batch: ConsoleBatch): { done: number; total: number; failed: number } {
   const counts = batch.request_counts;

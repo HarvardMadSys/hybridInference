@@ -30,7 +30,7 @@ import { BatchCategoryBadge } from './BatchCategoryBadge';
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
 
-export { inputLabel, progress, statusLabel, targetLabel } from './batchText';
+export { progress } from './batchText';
 
 function BatchRow({
   batch,

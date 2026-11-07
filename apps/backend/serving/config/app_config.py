@@ -126,11 +126,6 @@ class ConfigUpdateError(Exception):
         self.detail = detail
         self.current_version = current_version
 
-    @property
-    def version_conflict(self) -> bool:
-        """Whether the write was refused because the configuration changed since it was read."""
-        return self.current_version is not None
-
 
 @dataclass(frozen=True)
 class ConfigChange:

@@ -296,10 +296,6 @@ export async function downloadSourceFile(fileId: string, filename: string): Prom
 
 /** The two types the console creates. */
 export type ConsoleTarget = 'chat' | 'embeddings';
-export const CONSOLE_ENDPOINTS: Record<ConsoleTarget, string> = {
-  chat: '/v1/chat/completions',
-  embeddings: '/v1/embeddings',
-};
 
 export interface CatalogModel {
   id: string;

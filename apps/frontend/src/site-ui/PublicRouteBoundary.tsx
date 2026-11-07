@@ -1,12 +1,9 @@
 'use client';
 
-import { usePathname } from 'next/navigation';
-
 import { ConfigurationBanner } from '@/components/ui/ConfigurationBanner';
 import { Header } from '@/components/ui/Header';
 import { SiteFooter } from '@/components/ui/SiteFooter';
 import { useModuleRendersRoute } from '@/site-ui/SiteUiBoundary';
-import { publicRouteFor } from '@/site-ui/routes';
 import { useConsoleWidth } from '@/components/ui/consoleWidth';
 
 /**
@@ -44,15 +41,4 @@ export function ConsoleChrome({ children }: { children: React.ReactNode }) {
       <SiteFooter />
     </div>
   );
-}
-
-/**
- * The public route for the current pathname, or `null` for a console route.
- *
- * Exported from here as well as from `SiteUiBoundary`, because this is the
- * module a reader looking for "which chrome does this path get" opens first.
- */
-export function usePublicRoute() {
-  const pathname = usePathname();
-  return publicRouteFor(pathname ?? '/');
 }

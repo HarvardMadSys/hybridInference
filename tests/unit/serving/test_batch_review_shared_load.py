@@ -24,9 +24,6 @@ async def test_publish_between_shared_and_own_reads_cannot_hide_other_gateway_lo
                     requests.enter_context(local.track("model"))
                 return snapshot
 
-            async def interactive_load_of(self, *, process_id, ttl_seconds):
-                return {"model": 3}
-
         shared = SharedInteractiveLoad(
             PublishingBetweenQueries(), process_id="review-local", local=local
         )

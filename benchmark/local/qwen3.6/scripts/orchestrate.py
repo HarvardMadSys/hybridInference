@@ -221,20 +221,6 @@ def _ensure_model_downloaded(store: StateStore) -> None:
     store.mark_done("model_downloaded")
 
 
-def _ensure_image_pulled(engine: str, store: StateStore) -> None:
-    """No-op stub — the image pull sentinel is set inside _run_engine_phases.
-
-    The launch script pulls the image lazily on first start. Recording the
-    sentinel before a successful start would poison it on failures; therefore
-    the sentinel is set only after _start_engine() returns successfully.
-
-    Args:
-        engine: Engine name.
-        store:  StateStore (unused here; present for signature symmetry).
-    """
-    # Intentional no-op: sentinel set inside _run_engine_phases after start.
-
-
 def _run_engine_phases(engine: str, store: StateStore, num_repeats: int) -> None:
     """Run prefill + decode batteries for one engine, with sentinel guards.
 

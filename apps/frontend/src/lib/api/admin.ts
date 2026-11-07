@@ -1163,8 +1163,6 @@ export async function getGrowthAnalytics(
   return jsonOrThrow<AdminGrowthResponse>(resp);
 }
 
-export type GeoBucketColumn = 'c' | 'cont' | 'n' | 'tout';
-
 export type GeoMetric = 'n' | 'tout';
 
 export type GeoBucketRow = [

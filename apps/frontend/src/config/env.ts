@@ -54,5 +54,3 @@ if (
     'Warning: Production build is using a localhost API base. Check NEXT_PUBLIC_API_BASE.',
   );
 }
-
-export type Config = typeof config;
