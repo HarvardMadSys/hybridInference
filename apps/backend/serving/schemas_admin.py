@@ -1576,6 +1576,86 @@ class UpdateBatchModelLimitRequest(BaseModel):
     max_concurrency: StrictInt | None = Field(..., ge=0, le=MAX_BATCH_MODEL_CONCURRENCY)
 
 
+class ModelQueueJob(BaseModel):
+    """One scheduler job serving, or waiting to serve, a model. Times are epoch seconds."""
+
+    job_id: str | None = None
+    state: str = Field(..., description="The scheduler's state, e.g. PENDING or RUNNING.")
+    reason: str | None = Field(None, description="Why a pending job waits, as the scheduler says.")
+    partition: str | None = None
+    nodes: str | None = Field(None, description="The node(s) a running job holds.")
+    submitted_at: float | None = None
+    started_at: float | None = None
+    expected_start_at: float | None = Field(
+        None, description="The scheduler's estimate of when a pending job starts."
+    )
+    ends_at: float | None = Field(None, description="When a running job's walltime ends.")
+
+
+class ModelQueueModel(BaseModel):
+    """One model on an on-demand host, its jobs, and the batch requests waiting for it."""
+
+    model: str = Field(..., description="The name the host serves the model under.")
+    state: str = Field(..., description="serving, loading, queued or idle.")
+    job_name: str | None = None
+    last_request_at: float | None = Field(None, description="The host's last request for it.")
+    walltime_seconds: float | None = None
+    startup_estimate_seconds: float | None = None
+    partitions: str | None = None
+    constraint: str | None = None
+    avoided_nodes: list[str] = Field(
+        default_factory=list, description="Nodes its next job keeps off, after failures there."
+    )
+    jobs: list[ModelQueueJob] = Field(default_factory=list)
+    gateway_models: list[str] = Field(
+        default_factory=list,
+        description="This gateway's models with a route to it on the host, by canonical id.",
+    )
+    batch_queued: int | None = Field(
+        None, description="Batch requests of those models waiting to run; null when unknown."
+    )
+    batch_running: int | None = Field(
+        None, description="Batch requests of those models running now; null when unknown."
+    )
+
+
+class ModelQueueFailedNode(BaseModel):
+    """A node jobs keep off for a while, because a job failed there."""
+
+    node: str
+    jobs: list[str] = Field(default_factory=list, description="The jobs that failed there.")
+    last_failed_at: float | None = None
+    avoided_until: float | None = None
+    avoided_by_all: bool = Field(False, description="Every model's jobs avoid it, not only theirs.")
+
+
+class ModelQueuePolicy(BaseModel):
+    """How long the host keeps jobs nobody asks for, and avoids failed nodes, in seconds."""
+
+    pending_idle_cancel_seconds: float | None = None
+    running_idle_stop_seconds: float | None = None
+    renew_before_seconds: float | None = None
+    node_avoid_seconds: float | None = None
+
+
+class ModelQueueResponse(BaseModel):
+    """An on-demand model host's queue, as its status address reports it, for Admin -> Batches."""
+
+    configured: bool = Field(..., description="Whether MODEL_QUEUE_STATUS_URL is set.")
+    error: str | None = Field(None, description="Why the host's status could not be read.")
+    cluster: str | None = Field(None, description="The host's name for itself, e.g. a cluster.")
+    scheduler: str | None = None
+    generated_at: float | None = None
+    refreshed_at: float | None = Field(
+        None, description="When the host last read its scheduler's queue; null if never."
+    )
+    started_at: float | None = None
+    poll_interval_seconds: float | None = None
+    policy: ModelQueuePolicy | None = None
+    models: list[ModelQueueModel] = Field(default_factory=list)
+    failed_nodes: list[ModelQueueFailedNode] = Field(default_factory=list)
+
+
 class RouteWeightItem(BaseModel):
     """Current route weight state for one model endpoint."""
 
