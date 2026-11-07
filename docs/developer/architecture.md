@@ -114,6 +114,15 @@ order from the outside in is:
    through a route handler and is bounded only here, so raising
    `REQUEST_MAX_BODY_MB` takes effect behind the console too.
 
+Control routes get a much smaller body limit: 256 KiB under `/auth/`, `/user/`,
+`/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 MiB under
+`/admin/`. FastAPI reads and decodes a route's declared body model before any
+dependency runs, authentication included, so an anonymous caller's body is
+decoded before the `401`. The routes that legitimately take a larger body (a
+configuration restore, the playground, the alert-history ingest) and
+`/v1/embeddings` read theirs only once the caller is authenticated, and keep
+`REQUEST_MAX_BODY_MB`.
+
 Middleware order matters: streaming responses are `StreamingResponse`
 objects that must not be buffered. Any new middleware that reads a response body
 before forwarding it will break Server-Sent Events. The body limit counts request

@@ -79,6 +79,7 @@ from serving.servers.deps import (
     get_services,
     verify_admin_access,
 )
+from serving.servers.request_body import json_body_after, json_body_schema
 from serving.servers.routers.admin.provider_definitions import (
     _config_managed_provider_names,
     _configured_provider_specs,
@@ -1505,10 +1506,22 @@ async def _plan_or_refuse(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
 
 
-@router.post("/admin/config/restore/preview", response_model=ConfigRestorePreview)
+# A bundle can be large, so the two restore routes keep the general body limit
+# rather than the small one other /admin paths get (RequestBodyLimitMiddleware),
+# and read it only once the caller is known to be an administrator: a declared
+# body is read and decoded before any dependency, authentication included.
+_bundle_body = json_body_after(verify_admin_access, ConfigBackupPayload)
+_restore_body = json_body_after(verify_admin_access, ConfigRestoreRequest)
+
+
+@router.post(
+    "/admin/config/restore/preview",
+    response_model=ConfigRestorePreview,
+    openapi_extra=json_body_schema(ConfigBackupPayload),
+)
 async def preview_config_restore(
-    payload: ConfigBackupPayload,
     response: Response,
+    payload: ConfigBackupPayload = Depends(_bundle_body),
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ConfigRestorePreview:
@@ -1526,11 +1539,15 @@ async def preview_config_restore(
     )
 
 
-@router.post("/admin/config/restore", response_model=ConfigRestoreResponse)
+@router.post(
+    "/admin/config/restore",
+    response_model=ConfigRestoreResponse,
+    openapi_extra=json_body_schema(ConfigRestoreRequest),
+)
 async def restore_config_backup(
-    payload: ConfigRestoreRequest,
     request: Request,
     response: Response,
+    payload: ConfigRestoreRequest = Depends(_restore_body),
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),

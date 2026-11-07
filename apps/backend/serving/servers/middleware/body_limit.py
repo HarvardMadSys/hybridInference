@@ -22,6 +22,16 @@ API refuses larger requests too), read on every request. Batch input uploads are
 exempt: they stream to storage under their own limit, ``BATCH_MAX_BODY_MB``,
 and refuse an oversized body themselves.
 
+Control routes -- sign-in and the console's own account, the identity hand-off,
+administration and service-to-service calls -- get a much smaller limit
+(:data:`CONTROL_MAX_BODY_BYTES`, :data:`ADMIN_MAX_BODY_BYTES`). FastAPI reads
+and decodes a route's declared body model before any dependency runs,
+authentication included, so on these routes an anonymous caller's body is
+decoded before the 401; none of them takes more than a few KiB from a
+legitimate caller. The few control routes that do take a large body read it
+only once the caller is authenticated (:mod:`serving.servers.request_body`)
+and keep the general limit (:data:`AUTHENTICATED_BODY_PATHS`).
+
 Registered as the innermost middleware, inside CORS, so the 413 carries the
 CORS headers a browser needs to read it, and inside the request-id and
 request-log middlewares, so it is logged like any other response.
@@ -50,6 +60,40 @@ _MIB = 1024 * 1024
 #: Capping them here too would make that setting unable to raise their limit.
 EXEMPT_PATHS: frozenset[str] = frozenset({"/v1/files", "/v1/batches", "/user/batch-files"})
 
+#: The limit on a control route's body. Their bodies are a few fields; the
+#: largest legitimate one is a portrait (``PATCH /user/profile``, under 70 KiB).
+#: Decoding this much costs about 10 ms, against 1.6-2.7 s for 32 MiB.
+CONTROL_MAX_BODY_BYTES = 256 * 1024
+
+#: The limit under ``/admin/``, where an administrator also writes longer text:
+#: a broadcast email, a site update.
+ADMIN_MAX_BODY_BYTES = _MIB
+
+#: Path prefixes of the control routes, each with its limit.
+CONTROL_PREFIXES: tuple[tuple[str, int], ...] = (
+    ("/admin/", ADMIN_MAX_BODY_BYTES),
+    ("/auth/", CONTROL_MAX_BODY_BYTES),
+    ("/user/", CONTROL_MAX_BODY_BYTES),
+    ("/internal/", CONTROL_MAX_BODY_BYTES),
+    ("/v1/identity/", CONTROL_MAX_BODY_BYTES),
+)
+
+#: Control routes outside those prefixes, matched exactly.
+CONTROL_PATHS: frozenset[str] = frozenset({"/v1/batch_webhook"})
+
+#: Control routes that legitimately take a large body and read it only once the
+#: caller is authenticated, so they keep the general limit: a configuration
+#: backup, a playground prompt, and the alert-history ingest, which enforces
+#: its own smaller limit and error.
+AUTHENTICATED_BODY_PATHS: frozenset[str] = frozenset(
+    {
+        "/admin/config/restore",
+        "/admin/config/restore/preview",
+        "/internal/playground/chat",
+        "/internal/alert-history/events",
+    }
+)
+
 #: The surfaces whose clients parse Anthropic-shaped errors; the same prefixes
 #: ``anthropic_messages.anthropic_aware_http_exception_handler`` matches.
 _ANTHROPIC_PATH_PREFIXES = ("/v1/messages", "/anthropic/")
@@ -72,6 +116,21 @@ def configured_max_body_bytes() -> int:
     except ValueError:
         return DEFAULT_MAX_BODY_MB * _MIB
     return (megabytes if megabytes > 0 else DEFAULT_MAX_BODY_MB) * _MIB
+
+
+def control_limit(path: str) -> int | None:
+    """The smaller limit of a control route's body, or None for any other path.
+
+    *path* is the request path without the mount prefix or a trailing slash.
+    """
+    if path in AUTHENTICATED_BODY_PATHS:
+        return None
+    if path in CONTROL_PATHS:
+        return CONTROL_MAX_BODY_BYTES
+    for prefix, limit in CONTROL_PREFIXES:
+        if path.startswith(prefix):
+            return limit
+    return None
 
 
 def _route_path(scope: Scope) -> str:
@@ -130,19 +189,20 @@ async def _send_too_large(send: Send, path: str, limit: int) -> None:
 class RequestBodyLimitMiddleware:
     """Answer 413 for a request body over the limit; pass everything else through.
 
-    ``max_body_bytes`` fixes the limit; without it the limit is read from the
-    configuration on every request, so a changed setting applies to the next
-    request without a restart.
+    ``max_body_bytes`` fixes the general limit; without it the limit is read
+    from the configuration on every request, so a changed setting applies to
+    the next request without a restart. A control route's own limit applies
+    when it is smaller.
     """
 
     def __init__(self, app: ASGIApp, max_body_bytes: int | None = None) -> None:
         self.app = app
         self._fixed_limit = max_body_bytes
 
-    def _limit(self) -> int:
-        if self._fixed_limit is not None:
-            return self._fixed_limit
-        return configured_max_body_bytes()
+    def _limit(self, path: str) -> int:
+        limit = self._fixed_limit if self._fixed_limit is not None else configured_max_body_bytes()
+        control = control_limit(path)
+        return limit if control is None else min(limit, control)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Enforce the body limit on one HTTP request."""
@@ -154,7 +214,7 @@ class RequestBodyLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        limit = self._limit()
+        limit = self._limit(path)
         declared = _declared_length(scope)
         if declared is not None and declared > limit:
             logger.warning(

@@ -488,6 +488,62 @@ async def test_a_demoted_owner_can_still_read_cancel_and_delete(client, users):
     assert (await client.delete(path, headers=_auth())).status_code == 200
 
 
+class _CountedBody:
+    """A request body that records how many bytes of it were read."""
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.read = 0
+
+    async def __aiter__(self):
+        for start in range(0, len(self.payload), 4096):
+            chunk = self.payload[start : start + 4096]
+            self.read += len(chunk)
+            yield chunk
+
+
+async def test_a_caller_who_may_not_create_uploads_nothing_with_an_idempotency_key(client, store):
+    body = _CountedBody(json.dumps(_body(count=50)).encode())
+    headers = {**_auth("key-dave"), "Idempotency-Key": "k", "content-type": "application/json"}
+
+    response = await client.post("/v1/batches", content=body, headers=headers)
+
+    assert response.status_code == 403
+    assert body.read == 0
+    assert store.created == []
+
+
+async def test_a_demoted_owner_still_gets_the_batch_its_key_created(client, store, users):
+    batch = await _create(client, "key-alice")
+    digest = admission.request_digest(
+        "openai_inline",
+        requests=[_request("req-0")],
+        metadata=None,
+    )
+    records = {("alice", "openai_inline", "k"): batch["id"]}
+
+    async def find_idempotent(*, owner_id: str, api_surface: str, key: str):
+        batch_id = records.get((owner_id, api_surface, key))
+        if batch_id is None:
+            return None
+        return {"batch_id": batch_id, "request_digest": digest, "deleted": False}
+
+    store.find_idempotent = find_idempotent
+    users["key-alice"]["role"] = "free"
+
+    replay = await client.post(
+        "/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "k"}
+    )
+    other = await client.post(
+        "/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "other"}
+    )
+
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == batch["id"]
+    assert other.status_code == 403
+    assert len(store.created) == 1
+
+
 @pytest.mark.parametrize(
     ("method", "path"), [("POST", "/v1/batches"), ("GET", "/v1/batches")], ids=["create", "list"]
 )

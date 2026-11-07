@@ -202,6 +202,23 @@ msgstr ""
 msgid "`CORSMiddleware`."
 msgstr ""
 
+#: ../developer/architecture.md:119
+msgid ""
+"Control routes get a much smaller body limit: 256 KiB under `/auth/`, "
+"`/user/`, `/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 "
+"MiB under `/admin/`. FastAPI reads and decodes a route's declared body "
+"model before any dependency runs, authentication included, so an "
+"anonymous caller's body is decoded before the `401`. The routes that "
+"legitimately take a larger body (a configuration restore, the playground,"
+" the alert-history ingest) and `/v1/embeddings` read theirs only once the"
+" caller is authenticated, and keep `REQUEST_MAX_BODY_MB`."
+msgstr ""
+"控制类路由的请求体上限要小得多：`/auth/`、`/user/`、`/internal/` 和 `/v1/identity/` 之下以及 "
+"`/v1/batch_webhook` 上为 256 KiB，`/admin/` 之下为 1 MiB。FastAPI "
+"会在任何依赖项运行之前（包括身份验证）读取并解码路由声明的请求体模型，所以匿名调用方的请求体会在回复 `401` "
+"之前就被解码。确实需要更大请求体的路由（配置恢复、Playground、告警历史写入）以及 `/v1/embeddings` "
+"只在调用方通过身份验证之后才读取请求体，并沿用 `REQUEST_MAX_BODY_MB`。"
+
 #: ../developer/architecture.md:114
 msgid ""
 "Middleware order matters: streaming responses are `StreamingResponse` "

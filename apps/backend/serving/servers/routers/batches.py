@@ -489,13 +489,24 @@ async def _check_file(
     return upload
 
 
+def _role_refusal(config: BatchConfig) -> HTTPException:
+    """The 403 for a caller below ``BATCH_MIN_ROLE``."""
+    return HTTPException(403, f"Creating batches requires the {config.min_role!r} role or higher")
+
+
 def _may_create(request: Request, user_ctx: dict[str, Any], config: BatchConfig) -> None:
     """Refuse a caller below ``BATCH_MIN_ROLE`` (403) or out of daily quota (429)."""
     if not may_use_batch(user_ctx.get("role"), config):
-        raise HTTPException(
-            403, f"Creating batches requires the {config.min_role!r} role or higher"
-        )
+        raise _role_refusal(config)
     enforce_daily_quota(request, user_ctx)
+
+
+async def _key_names_a_batch(store: Any, owner: str, key: str) -> bool:
+    """Whether the owner already used *key* for a batch, by either input method."""
+    for surface in (SURFACE_OPENAI_INLINE, SURFACE_OPENAI_FILE):
+        if await store.find_idempotent(owner_id=owner, api_surface=surface, key=key) is not None:
+            return True
+    return False
 
 
 @router.post("/v1/batches", response_model=BatchObject)
@@ -517,6 +528,14 @@ async def create_batch(
         # them upload the body.
         _may_create(request, user_ctx, config)
         await admission.precheck_active(store, owner, config)
+    elif not may_use_batch(user_ctx.get("role"), config) and not await _key_names_a_batch(
+        store, owner, key
+    ):
+        # A caller whose role was lowered may still replay a batch it created
+        # under this key, so a replay is decided before the role check. With no
+        # batch under the key there is nothing to replay: refused before it
+        # uploads the body, as without a key.
+        raise _role_refusal(config)
     payload, _decoded = _parse_create_body(
         await admission.read_body(request, config.max_body_bytes)
     )

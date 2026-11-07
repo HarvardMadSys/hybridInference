@@ -17,6 +17,7 @@ from routing.protocols import RoutingRequestOptions
 from serving.exceptions import scrub_error_for_user
 from serving.pricing import require_route_pricing
 from serving.servers.deps import get_router, require_role
+from serving.servers.request_body import json_body_after, json_body_schema
 from serving.servers.routers.completions_stream import _extract_exception_status_code
 from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
 from serving.utils import context as req_ctx
@@ -288,10 +289,20 @@ def _error_frame(message: str, code: int) -> str:
     return f"data: {json.dumps({'error': error})}\n\n"
 
 
-@router.post("/chat")
+#: The playground's caller check, shared by the route and the body read below.
+_require_internal = require_role("internal")
+_chat_body = json_body_after(_require_internal, PlaygroundChatRequest)
+
+
+# A pasted document can make a long prompt, so this route keeps the general
+# body limit rather than the small one other /internal paths get
+# (RequestBodyLimitMiddleware). Its body is therefore not declared, which
+# FastAPI would read and decode before any dependency, the role check
+# included: a dependency reads it once the caller is known.
+@router.post("/chat", openapi_extra=json_body_schema(PlaygroundChatRequest))
 async def playground_chat(
-    body: PlaygroundChatRequest,
-    _admin: dict[str, Any] = Depends(require_role("internal")),
+    body: PlaygroundChatRequest = Depends(_chat_body),
+    _admin: dict[str, Any] = Depends(_require_internal),
     router_exec=Depends(get_router),
 ) -> StreamingResponse:
     """Stream a chat completion for admin testing."""
