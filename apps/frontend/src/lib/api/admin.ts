@@ -478,6 +478,10 @@ export interface AdminRequestMetricsBucket {
   error_count: number;
   client_disconnect_count?: number;
   avg_latency_ms?: number | null;
+  // The batch worker's requests in the bucket, and how many failed, whatever
+  // `source` the counts above are of. Omitted by a gateway that predates them.
+  batch_request_count?: number;
+  batch_error_count?: number;
 }
 
 export interface AdminRequestMetricsWindow {
@@ -490,16 +494,26 @@ export interface AdminRequestMetricsWindow {
   error_requests: number;
   client_disconnect_requests?: number;
   avg_latency_ms?: number | null;
+  batch_requests?: number;
+  batch_error_requests?: number;
   buckets: AdminRequestMetricsBucket[];
 }
 
 export interface AdminRequestMetricsResponse {
   generated_at: string;
+  // Whose requests the counts count. A gateway that predates the field counts
+  // every request, whatever was asked.
+  source?: RequestSource | 'all';
   windows: AdminRequestMetricsWindow[];
 }
 
-export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/request-metrics');
+export async function getRequestMetrics(
+  // Whose requests to count; the batch worker's are reported beside them in
+  // every bucket either way. Omitted: every request.
+  source?: RequestSource,
+): Promise<AdminRequestMetricsResponse> {
+  const query = source ? `?${new URLSearchParams({ source }).toString()}` : '';
+  const resp = await fetchWithAuth(API_BASE, `/admin/request-metrics${query}`);
   return jsonOrThrow<AdminRequestMetricsResponse>(resp);
 }
 
@@ -752,6 +766,13 @@ function setSourceParams(params: URLSearchParams, filter: RequestSourceFilter = 
   if (filter.batchId) params.set('batch_id', filter.batchId);
 }
 
+// One stretch of time, as ISO 8601 instants: from `start` (inclusive) to `end`
+// (exclusive), like a Request volume bar.
+export interface RequestWindow {
+  start: string;
+  end: string;
+}
+
 export async function listRecentRequests(
   limit = 50,
   offset = 0,
@@ -769,6 +790,9 @@ export async function listRecentRequests(
   refresh = false,
   // Interactive or batch requests, or one batch's. Omitted: both sources.
   sourceFilter: RequestSourceFilter = {},
+  // Only the requests of one stretch (a clicked Request volume bar). The
+  // backend widens `days` to reach its start.
+  window: RequestWindow | null = null,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
@@ -779,6 +803,10 @@ export async function listRecentRequests(
   if (sessionId) params.set('session_id', sessionId);
   if (refresh) params.set('refresh', 'true');
   setSourceParams(params, sourceFilter);
+  if (window) {
+    params.set('start_time', window.start);
+    params.set('end_time', window.end);
+  }
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
