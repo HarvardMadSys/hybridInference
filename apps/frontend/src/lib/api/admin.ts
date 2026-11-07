@@ -669,6 +669,9 @@ export interface AdminRecentRequestItem {
   num_turns?: number | null;
   num_user_turns?: number | null;
   num_tool_calls?: number | null;
+  // The batch whose worker ran this request (`api_logs.batch_job_id`); null
+  // for a request a caller made directly. An older gateway omits it.
+  batch_job_id?: string | null;
 }
 
 // Per-request RouteWise decision blob. The backend passes the raw persisted
@@ -731,6 +734,24 @@ export type RequestOutcome =
   | 'errors_excluding_disconnects'
   | 'client_disconnect';
 
+// Who ran a logged request. `interactive` is every request a caller made
+// directly (API, console, Playground) and is what Recent Requests lists;
+// `batch` is the batch worker's, listed under Batches → Requests. The backend
+// tells them apart by `api_logs.batch_job_id`.
+export type RequestSource = 'interactive' | 'batch';
+
+// The request views' filters on who ran a request: a source, and optionally
+// one batch (exact id).
+export interface RequestSourceFilter {
+  source?: RequestSource;
+  batchId?: string;
+}
+
+function setSourceParams(params: URLSearchParams, filter: RequestSourceFilter = {}): void {
+  if (filter.source) params.set('source', filter.source);
+  if (filter.batchId) params.set('batch_id', filter.batchId);
+}
+
 export async function listRecentRequests(
   limit = 50,
   offset = 0,
@@ -746,6 +767,8 @@ export async function listRecentRequests(
   // Count the total again instead of reusing the one the backend counted for
   // these filters moments ago. Set by an explicit Refresh, not by paging.
   refresh = false,
+  // Interactive or batch requests, or one batch's. Omitted: both sources.
+  sourceFilter: RequestSourceFilter = {},
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
@@ -755,6 +778,7 @@ export async function listRecentRequests(
   if (days != null) params.set('days', String(days));
   if (sessionId) params.set('session_id', sessionId);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, sourceFilter);
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
@@ -796,8 +820,10 @@ export async function getRecentRequestsPerformance({
   sessionId,
   modelId,
   requestType,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -814,6 +840,7 @@ export async function getRecentRequestsPerformance({
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -858,8 +885,10 @@ export async function getRecentRequestOffloads({
   sessionId,
   modelId,
   requestType,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -876,6 +905,7 @@ export async function getRecentRequestOffloads({
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -920,8 +950,10 @@ export async function getRecentRequestsPerformanceTrend({
   requestType,
   servedModel,
   servedEndpoint,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -943,6 +975,7 @@ export async function getRecentRequestsPerformanceTrend({
   if (servedModel) params.set('served_model', servedModel);
   if (servedEndpoint) params.set('served_endpoint', servedEndpoint);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -975,10 +1008,19 @@ export interface ClearErrorRequestsResponse {
   message: string;
 }
 
-export async function clearErrorRequests(hours = 1): Promise<ClearErrorRequestsResponse> {
-  const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests/clear-errors?hours=${hours}`, {
-    method: 'POST',
-  });
+export async function clearErrorRequests(
+  hours = 1,
+  // Whose errors: `interactive` clears what Recent Requests shows and leaves
+  // the batch worker's rows alone. Omitted: every source's.
+  source?: RequestSource,
+): Promise<ClearErrorRequestsResponse> {
+  const params = new URLSearchParams({ hours: String(hours) });
+  if (source) params.set('source', source);
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/recent-requests/clear-errors?${params.toString()}`,
+    { method: 'POST' },
+  );
   return jsonOrThrow<ClearErrorRequestsResponse>(resp);
 }
 
@@ -1461,6 +1503,9 @@ export interface ExportRequestsParams {
   modelId?: string;
   outcome?: RequestOutcome;
   requestType?: 'chat' | 'embedding';
+  // Interactive or batch requests, or one batch's, as on the list.
+  source?: RequestSource;
+  batchId?: string;
   includeContent?: boolean;
 }
 
@@ -1474,6 +1519,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.outcome && params.outcome !== 'all') qs.set('outcome', params.outcome);
   if (params.requestType) qs.set('request_type', params.requestType);
+  setSourceParams(qs, { source: params.source, batchId: params.batchId });
   if (params.includeContent) qs.set('include_content', 'true');
 
   const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);

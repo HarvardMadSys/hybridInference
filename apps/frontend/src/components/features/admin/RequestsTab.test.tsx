@@ -210,6 +210,8 @@ describe('RequestsTab row expansion', () => {
       userId: undefined,
       modelId: undefined,
       requestType: undefined,
+      // The rows the table lists: Recent Requests leaves the batch worker's out.
+      source: 'interactive',
       refresh: false,
     });
 
@@ -304,7 +306,8 @@ describe('RequestsTab session labelling', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete error requests' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(clearErrorRequests).toHaveBeenCalledTimes(1);
-    expect(clearErrorRequests).toHaveBeenCalledWith(1);
+    // Only the errors this tab lists: the batch worker's rows are kept.
+    expect(clearErrorRequests).toHaveBeenCalledWith(1, 'interactive');
   });
 
   it("shows a row's session, shortened, with the full value and its source in the title", async () => {
@@ -742,5 +745,137 @@ describe('RequestsTab total and paging', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(vi.mocked(listRecentRequests).mock.calls.at(-1)?.[8]).toBe(true));
+  });
+});
+
+describe('RequestsTab sources', () => {
+  // The source filter is listRecentRequests' 10th positional argument.
+  const sourceFilterOfLastList = () => vi.mocked(listRecentRequests).mock.calls.at(-1)?.[9];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getRequestMetrics).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      windows: [],
+    });
+    vi.mocked(getRecentRequestsPerformance).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      days: 1,
+      total_offloaded: 0,
+      groups: [],
+      truncated: false,
+    });
+    vi.mocked(getRecentRequestContent).mockResolvedValue({
+      prompt: null,
+      response: null,
+      reasoning_content: null,
+    });
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: [
+        makeRequest({
+          request_id: 'req_batch_1',
+          batch_job_id: 'batch_0123456789abcdef',
+          user_agent: 'hybridinference-batch-worker',
+        }),
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  afterEach(cleanup);
+
+  it('lists only interactive requests on Recent Requests and points to the batch list', async () => {
+    render(<RequestsTab />);
+
+    await screen.findByText('gpt-4o-mini');
+    expect(sourceFilterOfLastList()).toEqual({ source: 'interactive', batchId: undefined });
+    expect(screen.getByRole('link', { name: 'Batches → Requests' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/batches/requests',
+    );
+    expect(screen.getByText('Request volume')).toBeInTheDocument();
+    expect(getRequestMetrics).toHaveBeenCalled();
+  });
+
+  it('lists the batch requests of the batch the address names', async () => {
+    render(<RequestsTab source="batch" initialBatchId="batch_0123456789abcdef" />);
+
+    await screen.findByText('gpt-4o-mini');
+    expect(sourceFilterOfLastList()).toEqual({
+      source: 'batch',
+      batchId: 'batch_0123456789abcdef',
+    });
+    expect(screen.getByRole('heading', { name: 'Batch requests' })).toBeInTheDocument();
+    // What describes interactive traffic stays on Recent Requests.
+    expect(screen.queryByText('Request volume')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear last hour errors' })).toBeNull();
+    expect(getRequestMetrics).not.toHaveBeenCalled();
+    expect(getRecentRequestsPerformance).not.toHaveBeenCalled();
+    expect(getRecentRequestOffloads).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear batch filter' }));
+    await waitFor(() =>
+      expect(sourceFilterOfLastList()).toEqual({ source: 'batch', batchId: undefined }),
+    );
+  });
+
+  it("narrows to a row's batch when its batch is clicked, without expanding the row", async () => {
+    render(<RequestsTab source="batch" />);
+
+    const chip = await screen.findByTitle(/^batch batch_0123456789abcdef/);
+    expect(sourceFilterOfLastList()).toEqual({ source: 'batch', batchId: undefined });
+    fireEvent.click(chip);
+
+    await waitFor(() =>
+      expect(sourceFilterOfLastList()).toEqual({
+        source: 'batch',
+        batchId: 'batch_0123456789abcdef',
+      }),
+    );
+    expect(screen.getByRole('button', { name: 'Clear batch filter' })).toBeInTheDocument();
+    expect(getRecentRequestContent).not.toHaveBeenCalled();
+  });
+
+  it('names the batch in the expanded row', async () => {
+    render(<RequestsTab source="batch" />);
+
+    fireEvent.click(await screen.findByText('gpt-4o-mini'));
+    expect(await screen.findByText('Batch:')).toBeInTheDocument();
+  });
+
+  it('exports the batch requests of the selected batch', async () => {
+    vi.mocked(exportRequests).mockResolvedValue(undefined);
+    render(<RequestsTab source="batch" initialBatchId="batch_0123456789abcdef" />);
+
+    await screen.findByText('gpt-4o-mini');
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' }));
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-09-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+
+    await waitFor(() =>
+      expect(exportRequests).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'batch', batchId: 'batch_0123456789abcdef' }),
+      ),
+    );
+  });
+
+  it('says when there is no batch request', async () => {
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+    });
+    render(<RequestsTab source="batch" />);
+
+    expect(await screen.findByText('No batch requests found')).toBeInTheDocument();
   });
 });
