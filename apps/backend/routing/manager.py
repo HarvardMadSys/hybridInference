@@ -31,7 +31,16 @@ class RoutingManager:
 
     def load(self) -> None:
         """Load routing configuration and start health monitoring if enabled."""
-        self.conf = load_routing_config(self.config_path)
+        self.load_config(load_routing_config(self.config_path))
+
+    def load_config(self, conf: RoutingConfig) -> None:
+        """Use *conf* and start health monitoring when the config enables it.
+
+        Args:
+            conf: A document already loaded from a file or from the database
+                catalog. This does not read ``config_path``.
+        """
+        self.conf = conf
         if self.conf.health_check > 0:
             # Only monitor local deployments. Remote provider endpoints generally do not
             # expose our /health path and would be falsely marked unhealthy.

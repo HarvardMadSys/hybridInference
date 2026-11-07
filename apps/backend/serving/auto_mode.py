@@ -401,6 +401,31 @@ def load_auto_mode(path: Path, routes: Mapping[str, Any]) -> AutoMode | None:
     except (OSError, yaml.YAMLError) as exc:
         logger.error(f"Auto mode is off: could not read {path}: {exc}")
         return None
+    return _auto_mode_from_document(data, routes)
+
+
+def load_auto_mode_from_text(text: str, routes: Mapping[str, Any]) -> AutoMode | None:
+    """Load the ``auto:`` section of a stored model registry.
+
+    Args:
+        text: The route-catalog models document.
+        routes: The route table the section is checked against.
+
+    Returns:
+        The configured auto mode, or ``None`` when the document has no section
+        or the section cannot be used. A problem is logged and the models
+        themselves are left as they are.
+    """
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        logger.error(f"Auto mode is off: could not read the database route catalog: {exc}")
+        return None
+    return _auto_mode_from_document(data, routes)
+
+
+def _auto_mode_from_document(data: Any, routes: Mapping[str, Any]) -> AutoMode | None:
+    """Build auto mode from a parsed registry, or ``None`` to leave it off."""
     raw = data.get("auto") if isinstance(data, dict) else None
     if raw is None:
         return None

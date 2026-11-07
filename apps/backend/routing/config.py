@@ -205,6 +205,44 @@ def _drop_unset_deployments(expanded: dict[str, Any]) -> dict[str, Any]:
     return expanded
 
 
+def routing_config_from_data(raw: Any) -> RoutingConfig:
+    """Validate a parsed routing document and expand its ``${VAR}`` references.
+
+    Args:
+        raw: The parsed document. A mapping is required.
+
+    Returns:
+        Validated RoutingConfig object with references expanded.
+
+    Raises:
+        ValueError: If the document is not a mapping or fails validation.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid routing config: document must be a mapping")
+    expanded = _expand_env_value(raw)
+    expanded = _drop_unset_deployments(expanded)
+    try:
+        return cast("RoutingConfig", RoutingConfig.model_validate(expanded))
+    except ValidationError as e:
+        raise ValueError(f"Invalid routing config: {e}") from e
+
+
+def load_routing_config_text(text: str) -> RoutingConfig:
+    """Load and validate routing configuration from a YAML document.
+
+    Args:
+        text: YAML document. ``${VAR}`` references resolve the same way they do
+            when the document is read from a file.
+
+    Returns:
+        Validated RoutingConfig object with references expanded.
+
+    Raises:
+        ValueError: If the document is invalid.
+    """
+    return routing_config_from_data(yaml.safe_load(text) or {})
+
+
 def load_routing_config(path: Path) -> RoutingConfig:
     """Load and validate routing configuration from YAML file.
 
@@ -217,10 +255,4 @@ def load_routing_config(path: Path) -> RoutingConfig:
     Raises:
         ValueError: If configuration is invalid or file cannot be read.
     """
-    raw = yaml.safe_load(path.read_text()) or {}
-    expanded = _expand_env_value(raw)
-    expanded = _drop_unset_deployments(expanded)
-    try:
-        return cast("RoutingConfig", RoutingConfig.model_validate(expanded))
-    except ValidationError as e:
-        raise ValueError(f"Invalid routing config: {e}") from e
+    return routing_config_from_data(yaml.safe_load(path.read_text()) or {})
