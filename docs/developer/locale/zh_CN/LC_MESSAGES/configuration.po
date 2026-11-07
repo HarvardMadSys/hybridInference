@@ -1147,6 +1147,35 @@ msgid "`provider_route_states`"
 msgstr ""
 
 #: ../developer/configuration.md
+msgid "Choose which routes batch work may use"
+msgstr "选择批处理可以使用哪些路由"
+
+#: ../developer/configuration.md
+msgid ""
+"**Allow batch** / **Stop batch**, and **Batch default**; a **Batch** "
+"badge marks the routes it may use"
+msgstr ""
+"**Allow batch** / **Stop batch**，以及 **Batch default**；**Batch** "
+"标签标出批处理可以使用的路由"
+
+#: ../developer/configuration.md
+#, python-brace-format
+msgid ""
+"`PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` with "
+"`{\"batch_allowed\": true}`, `false`, or `null` to follow the route's "
+"locality again; by default only the gateway's own servers take batch "
+"work — see [Which routes batch work may use](batches.md#which-routes-"
+"batch-work-may-use)"
+msgstr ""
+"`PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}`，请求体 "
+"`{\"batch_allowed\": true}`、`false`，或 `null` 让路由重新按所在位置决定；默认只有网关自己的服务器执行批处理——参见[批处理可以使用哪些路由](batches.md#which-routes-"
+"batch-work-may-use)"
+
+#: ../developer/configuration.md
+msgid "`provider_route_batch_policies`"
+msgstr ""
+
+#: ../developer/configuration.md
 msgid "Delete a registry route from this deployment"
 msgstr "从当前部署中删除注册表里的一条路由"
 
