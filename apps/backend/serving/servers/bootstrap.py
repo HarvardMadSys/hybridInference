@@ -1053,9 +1053,10 @@ async def initialize() -> AppServices:
 
                         # Store the completed hours the admin Request volume
                         # cards read and the table lacks: a month of them on the
-                        # first start with the table, otherwise those that ended
-                        # while the server was down. Counting them here keeps
-                        # that work out of an admin's page load.
+                        # first start with the table or after what an hour
+                        # counts changes, otherwise those that ended while the
+                        # server was down. Counting them here keeps that work
+                        # out of an admin's page load.
                         async def _run_request_volume_backfill(pool=db_logger.pool):
                             try:
                                 await backfill_request_volume(pool)

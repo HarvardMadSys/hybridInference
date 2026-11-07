@@ -7,7 +7,7 @@ import hashlib
 import inspect
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import asyncpg
@@ -355,10 +355,19 @@ def _perf_distribution_from_row(row: Any, prefix: str) -> AdminRequestPerfDistri
 
 @router.get("/request-metrics", response_model=AdminRequestMetricsResponse)
 async def admin_get_request_metrics(
+    source: str | None = None,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminRequestMetricsResponse:
     """Return request count trends for admin dashboard lookback windows.
+
+    ``source`` narrows the counts as it narrows the request list:
+    ``"interactive"`` for the requests callers made directly, ``"batch"`` for
+    those the batch worker ran, ``"all"`` (or omission) for both, as before; any
+    other value is a 422. Whatever it is, every bucket and window also reports
+    the batch worker's requests in it (``batch_request_count`` /
+    ``batch_requests``) and how many of them failed, so a chart of the
+    interactive counts can stack them on top.
 
     Client disconnects — the caller hung up mid-stream — are counted in their own
     ``client_disconnect_*`` field and excluded from ``error_*``. They are split
@@ -375,6 +384,9 @@ async def admin_get_request_metrics(
     part of each window before its first whole hour are counted from
     ``api_logs`` per load. See :mod:`.request_volume`.
     """
+    # Validated (a 422) before any work, as the list validates it.
+    resolve_request_source_filter(source)
+    source = source or "all"
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
@@ -394,33 +406,40 @@ async def admin_get_request_metrics(
         buckets: list[AdminRequestMetricsBucket] = []
         for start_time, counts in bars:
             total.add(counts)
+            shown = counts.of_source(source)
             buckets.append(
                 AdminRequestMetricsBucket(
                     start_time=start_time,
-                    request_count=counts.request_count,
-                    success_count=counts.success_count,
-                    error_count=counts.error_count,
-                    client_disconnect_count=counts.client_disconnect_count,
-                    avg_latency_ms=counts.avg_latency_ms,
+                    request_count=shown.request_count,
+                    success_count=shown.success_count,
+                    error_count=shown.error_count,
+                    client_disconnect_count=shown.client_disconnect_count,
+                    avg_latency_ms=shown.avg_latency_ms,
+                    batch_request_count=counts.batch_request_count,
+                    batch_error_count=counts.batch_error_count,
                 )
             )
+        shown = total.of_source(source)
         windows.append(
             AdminRequestMetricsWindow(
                 key=key,
                 label=label,
                 window_minutes=window_minutes,
                 bucket_minutes=bucket_minutes,
-                total_requests=total.request_count,
-                success_requests=total.success_count,
-                error_requests=total.error_count,
-                client_disconnect_requests=total.client_disconnect_count,
-                avg_latency_ms=total.avg_latency_ms,
+                total_requests=shown.request_count,
+                success_requests=shown.success_count,
+                error_requests=shown.error_count,
+                client_disconnect_requests=shown.client_disconnect_count,
+                avg_latency_ms=shown.avg_latency_ms,
+                batch_requests=total.batch_request_count,
+                batch_error_requests=total.batch_error_count,
                 buckets=buckets,
             )
         )
 
     return AdminRequestMetricsResponse(
         generated_at=datetime.now(UTC),
+        source=source,
         windows=windows,
     )
 
@@ -842,6 +861,8 @@ def _build_recent_requests_filters(
     request_type: str | None = None,
     source: str | None = None,
     batch_id: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
 ) -> tuple[list[str], list[Any], bool]:
     """Build the WHERE clauses + bind params shared by the Recent Requests views.
 
@@ -861,6 +882,15 @@ def _build_recent_requests_filters(
     params: list[Any] = [days]
     clauses.append(f"l.timestamp >= NOW() - make_interval(days => ${len(params)}::int)")
     needs_user_join = False
+
+    # A stretch inside the lookback, half-open like a volume card's bar: the bar
+    # an admin clicks lists the requests it counted.
+    if start_time is not None:
+        params.append(start_time)
+        clauses.append(f"l.timestamp >= ${len(params)}")
+    if end_time is not None:
+        params.append(end_time)
+        clauses.append(f"l.timestamp < ${len(params)}")
 
     if user_id:
         # Substring match across the user id and the joined user's name, email
@@ -934,6 +964,26 @@ def _build_recent_requests_filters(
     return clauses, params, needs_user_join
 
 
+def _lookback_reaching(days: int, start_time: datetime | None, end_time: datetime | None) -> int:
+    """The lookback in days, widened to reach *start_time*, as far as 90 days.
+
+    A naive or inverted stretch is a 422, as the export's is: a naive time would
+    be read as the database server's local time, and a stretch that ends before
+    it starts can only answer with nothing.
+    """
+    for name, value in (("start_time", start_time), ("end_time", end_time)):
+        if value is not None and value.tzinfo is None:
+            raise HTTPException(422, f"{name} must be timezone-aware (e.g. 2024-01-01T00:00:00Z)")
+    if start_time is not None and end_time is not None and end_time <= start_time:
+        raise HTTPException(422, "end_time must be after start_time")
+    if start_time is None:
+        return days
+    # Whole days back to the start, and one more: the lookback is measured from
+    # the database's clock, which may run a little ahead of this one.
+    reach = (datetime.now(UTC) - start_time) // timedelta(days=1) + 1
+    return max(days, min(int(reach), 90))
+
+
 async def _count_recent_requests(pool: Any, count_sql: str, params: list[Any]) -> int | None:
     """Count the rows *count_sql* matches, or None once the budget runs out.
 
@@ -967,6 +1017,8 @@ async def admin_list_recent_requests(
     request_type: str | None = None,
     source: str | None = None,
     batch_id: str | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
     refresh: bool = False,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -999,6 +1051,10 @@ async def admin_list_recent_requests(
       ``"batch"`` for those the batch worker ran, ``"all"`` (or omission) for
       both; any other value is a 422
     - batch_id: Filter to one batch's requests (exact match)
+    - start_time, end_time: Only the requests logged from ``start_time``
+      (inclusive) to ``end_time`` (exclusive), each optional and
+      timezone-aware ISO 8601 -- a Request volume bar's stretch. A start before
+      the lookback widens it to reach the start, as far as 90 days
     - refresh: Count again rather than reuse a total counted moments ago for
       the same filters (the tab's Refresh)
 
@@ -1009,7 +1065,7 @@ async def admin_list_recent_requests(
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    days = max(1, min(days, 90))
+    days = _lookback_reaching(max(1, min(days, 90)), start_time, end_time)
 
     where_clauses, params, needs_user_join = _build_recent_requests_filters(
         days=days,
@@ -1022,6 +1078,8 @@ async def admin_list_recent_requests(
         request_type=request_type,
         source=source,
         batch_id=batch_id,
+        start_time=start_time,
+        end_time=end_time,
     )
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
