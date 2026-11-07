@@ -56,6 +56,13 @@ class ProviderDefinitionRow:
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
 
+USER_PREFERENCES_MAX_BYTES = 16 * 1024
+"""The most an account holder's own writes may leave in their preferences, as JSON text.
+
+Their saved prober layout, the largest entry, comes to a few KiB even listing
+every model of a deployment of dozens; the language choice is under 100 bytes.
+"""
+
 
 class CostIncrement(NamedTuple):
     """One addition to the cost counters (``user_daily_cost``, ``api_key_daily_cost``).
@@ -202,6 +209,11 @@ class OperationalStore(ABC):
         email_verified, created_at, last_login_at, password_hash, preferences.
         ``email`` is None for an account created without one (the first-run
         setup administrator), which signs in with ``login_name`` instead.
+
+        ``preferences`` holds only the entries a request acts on
+        (``disabled_models`` and ``locale``): every console request reads
+        this row, so it does not carry the rest. The whole document is
+        :meth:`get_user_preferences`.
         """
 
     @abstractmethod
@@ -1284,15 +1296,33 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """Return the preferences JSONB column for *user_id*, parsed as dict."""
+        """Return the preferences JSONB column for *user_id*, parsed as dict.
+
+        A document stored far over :data:`USER_PREFERENCES_MAX_BYTES`, which
+        only a write made before that bound existed can have left, reads as
+        just the entries ``get_user_by_id`` carries: decoding it must not cost
+        more than a bounded one, and the account holder's next save of the
+        oversized entry replaces it.
+        """
 
     # Preferences are written one key at a time, in the database. A whole-column
     # write from a value read earlier loses whatever another request wrote to a
     # different key in between, so there is deliberately no such method.
 
     @abstractmethod
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
-        """Set one preference key atomically; return False when there is no such user."""
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
+        """Set one preference key atomically; return False when there is no such user.
+
+        With *max_total_bytes*, the write is refused, leaving the row as it
+        was, when the account's whole preferences document would come out
+        larger than that as JSON text: it raises
+        :class:`~serving.exceptions.PreferencesTooLargeError`. Pass it for a
+        value the account holder chose (:data:`USER_PREFERENCES_MAX_BYTES`).
+        An administrator's write passes none, so an account holder cannot
+        block one by filling their own document.
+        """
 
     @abstractmethod
     async def delete_user_preference(self, user_id: str, key: str) -> bool:

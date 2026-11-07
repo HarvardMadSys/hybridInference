@@ -1161,9 +1161,13 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_user_auth_caches(user_id)
 
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
         """Delegate then invalidate user and auth caches."""
-        found = await self._store.set_user_preference(user_id, key, value)
+        found = await self._store.set_user_preference(
+            user_id, key, value, max_total_bytes=max_total_bytes
+        )
         await self._invalidate_preferences(user_id)
         return found
 

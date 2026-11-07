@@ -20,6 +20,7 @@ from serving.audit import AuditTarget
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
+    PreferencesTooLargeError,
     UserNotFoundError,
     generic_message_for_status,
     user_safe_error_for_log,
@@ -71,6 +72,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.models import _build_model_list_async
 from serving.servers.routers.reauth import confirm_account_owner
+from serving.storage.base import USER_PREFERENCES_MAX_BYTES
 from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
@@ -395,13 +397,30 @@ async def update_llm_prober_layout(
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> LLMProberLayoutResponse:
-    """Persist the current user's preferred llm-prober layout."""
+    """Persist the current user's preferred llm-prober layout.
+
+    Refused with 413, nothing stored, when it would take the account's saved
+    preferences over ``USER_PREFERENCES_MAX_BYTES``.
+    """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    if not await op_store.set_user_preference(
-        current_user["user_id"], LLM_PROBER_LAYOUT_KEY, body.model_dump()
-    ):
+    try:
+        found = await op_store.set_user_preference(
+            current_user["user_id"],
+            LLM_PROBER_LAYOUT_KEY,
+            body.model_dump(),
+            max_total_bytes=USER_PREFERENCES_MAX_BYTES,
+        )
+    except PreferencesTooLargeError as exc:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "The layout is too large to save: an account's saved preferences "
+                f"may take at most {exc.limit_bytes} bytes"
+            ),
+        ) from None
+    if not found:
         raise UserNotFoundError(current_user["user_id"])
 
     logger.info("llm_prober_layout_updated user_id=%s", current_user["user_id"])

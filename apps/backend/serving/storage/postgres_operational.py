@@ -20,6 +20,7 @@ from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
     HardDeleteStateChanged,
+    PreferencesTooLargeError,
     SelfDeleteRefused,
 )
 from serving.storage import user_usage_rollup
@@ -28,6 +29,7 @@ from serving.storage.audit_schema import (
     insert_audit_row,
 )
 from serving.storage.base import (
+    USER_PREFERENCES_MAX_BYTES,
     CostIncrement,
     CostWriteOutcomeUnknown,
     OperationalStore,
@@ -115,6 +117,27 @@ ORDER BY provider
 """
 
 
+def _preferences_subset(column: str, *keys: str) -> str:
+    """SQL for the entries *keys* of the preferences *column*, as a JSON object.
+
+    A key the document lacks is left out, as is every key when the column
+    holds no object (``->`` yields NULL there, and the nulls are stripped).
+    """
+    pairs = ", ".join(f"'{key}', {column} -> '{key}'" for key in keys)
+    return f"jsonb_strip_nulls(jsonb_build_object({pairs}))"
+
+
+# The preferences entries a request acts on: the models an administrator has
+# disabled for the account (serving.model_access.DISABLED_MODELS_PREFERENCE_KEY)
+# and, for the console, its interface language. The lookups every request makes
+# select these and never the whole document. Its other entries (the prober
+# layout) are the account holder's to fill, and decoding them on every request,
+# and copying them on every cache hit, would put work in proportion to their
+# size on the event loop each time.
+_REQUEST_PREFERENCE_KEYS = ("disabled_models", "locale")
+_USER_ROW_PREFERENCES = _preferences_subset("preferences", *_REQUEST_PREFERENCE_KEYS)
+_KEY_AUTH_PREFERENCES = f"{_preferences_subset('u.preferences', 'disabled_models')} AS preferences"
+
 # Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name),
 # in select order.
 _USER_COLUMNS = (
@@ -136,7 +159,17 @@ _USER_COLUMNS = (
     "admin_note",
     "suspension_message",
 )
-_USER_SELECT = ", ".join(_USER_COLUMNS)
+_USER_SELECT = ", ".join(
+    f"{_USER_ROW_PREFERENCES} AS preferences" if column == "preferences" else column
+    for column in _USER_COLUMNS
+)
+
+# A stored preferences document this large (its stored size, which reading
+# costs nothing) is one written before writes were bounded; a whole-document
+# read takes the request entries alone from it. Far above
+# USER_PREFERENCES_MAX_BYTES, so an administrator's entries added to a full
+# document never push it over.
+_PREFERENCES_READ_MAX_BYTES = 4 * USER_PREFERENCES_MAX_BYTES
 
 # The preferences column as a JSON object, whatever an older row holds there
 # (SQL NULL, or a JSON scalar), so a key can be set on it or removed from it.
@@ -1427,7 +1460,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 f"k.quota_monthly_cost_usd, {_AUTH_KEY_COLUMNS}, "
-                f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
+                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
+                "u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1461,7 +1495,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 "k.quota_monthly_cost_usd, am.account_spent_month_usd, "
                 f"{_AUTH_KEY_COLUMNS}, ks.key_spent_today_usd, ks.key_spent_month_usd, "
-                f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
+                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
+                "u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -1486,8 +1521,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = _JOINED_USER_IDENTITY
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
-                f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
-                "u.max_concurrent_requests, k.allowed_models "
+                f"SELECT k.user_id, {identity}, u.role, u.email_verified, "
+                f"{_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, k.allowed_models "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -2653,23 +2688,58 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     # -- user preferences ----------------------------------------------------
 
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """Return the preferences JSONB column for *user_id*, parsed as dict."""
+        """Return the preferences JSONB column for *user_id*, parsed as dict.
+
+        An oversized document (see ``_PREFERENCES_READ_MAX_BYTES``) reads as its
+        request entries. The CASE tries the stored size first, which costs no
+        read of the value, and measures the JSON text only of a document that
+        passes it.
+        """
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT preferences FROM users WHERE id = $1", user_id)
+            row = await conn.fetchrow(
+                "SELECT CASE "
+                f"WHEN pg_column_size(preferences) > $2 THEN {_USER_ROW_PREFERENCES} "
+                f"WHEN octet_length(preferences::text) > $2 THEN {_USER_ROW_PREFERENCES} "
+                "ELSE preferences END AS preferences FROM users WHERE id = $1",
+                user_id,
+                _PREFERENCES_READ_MAX_BYTES,
+            )
         coerced = _coerce_user_row(row)
         return coerced["preferences"] if coerced else {}
 
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
-        """Set one preference key in place, leaving every other key as it is."""
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
+        """Set one preference key in place, leaving every other key as it is.
+
+        The size bound is in the UPDATE's WHERE, so it is measured on the
+        document as it is when the write lands, other keys' concurrent writes
+        included.
+        """
+        updated = f"jsonb_set({_PREFERENCES_OBJECT}, ARRAY[$2::text], $3::jsonb, true)"
         async with self._pool.acquire() as conn:
-            status = await conn.execute(
-                f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
-                "ARRAY[$2::text], $3::jsonb, true) WHERE id = $1",
+            if max_total_bytes is None:
+                status = await conn.execute(
+                    f"UPDATE users SET preferences = {updated} WHERE id = $1",
+                    user_id,
+                    key,
+                    json.dumps(value),
+                )
+                return status == "UPDATE 1"
+            written = await conn.fetchval(
+                f"UPDATE users SET preferences = {updated} "
+                f"WHERE id = $1 AND octet_length({updated}::text) <= $4 RETURNING true",
                 user_id,
                 key,
                 json.dumps(value),
+                max_total_bytes,
             )
-        return status == "UPDATE 1"
+            if written:
+                return True
+            exists = await conn.fetchval("SELECT true FROM users WHERE id = $1", user_id)
+        if exists:
+            raise PreferencesTooLargeError(max_total_bytes)
+        return False
 
     async def delete_user_preference(self, user_id: str, key: str) -> bool:
         """Remove one preference key in place, leaving every other key as it is."""

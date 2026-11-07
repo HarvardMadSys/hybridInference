@@ -941,6 +941,32 @@ class TestLLMProberLayout:
             "layout": {"direct_models": [], "direct_providers": {}, "e2e_models": []}
         }
 
+    @pytest.mark.asyncio
+    async def test_a_layout_too_large_to_store_is_refused(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend
+    ):
+        operational_store, _, _, _ = auth_backend
+        saved = {"direct_models": ["glm-4.7"], "direct_providers": {}, "e2e_models": []}
+        assert (
+            await auth_app_client.put(
+                "/user/preferences/llm-prober-layout", headers=auth_headers, json=saved
+            )
+        ).status_code == 200
+        # Within every element bound, over the document's: 200 names of 100 bytes.
+        oversized = {
+            "direct_models": [f"{i:0100d}" for i in range(200)],
+            "direct_providers": {},
+            "e2e_models": [],
+        }
+
+        response = await auth_app_client.put(
+            "/user/preferences/llm-prober-layout", headers=auth_headers, json=oversized
+        )
+
+        assert response.status_code == 413
+        prefs = await operational_store.get_user_preferences(test_user["id"])
+        assert prefs["llm_prober_layout"] == saved
+
 
 class TestLocalePreference:
     """The account's interface language, through /user/me and its PUT."""
