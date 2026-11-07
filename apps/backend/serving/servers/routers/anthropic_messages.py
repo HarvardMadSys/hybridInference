@@ -1647,6 +1647,24 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     return None
 
 
+#: The answer to a body nested too deeply to copy (:func:`_copy_of`).
+_NESTED_TOO_DEEPLY = "Request body is nested too deeply"
+
+
+def _copy_of(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a deep copy of *body*, or None when it is nested too deeply to copy.
+
+    ``copy.deepcopy`` recurses for every level of nesting, and past about 500
+    levels it reaches the interpreter's recursion limit: a client's own
+    nesting raised ``RecursionError``, answered 500, which the 5xx-rate alert
+    counts against the gateway. The caller answers None with a 400.
+    """
+    try:
+        return copy.deepcopy(body)
+    except RecursionError:
+        return None
+
+
 # --- Protocol execution, shared with the batch worker (issue #1690) ----------
 
 #: The body of a request that was not valid JSON. ``execute_messages`` answers
@@ -1998,7 +2016,9 @@ async def execute_messages(
                 req_ctx.mark_model_not_found()
                 return _messages_error(404, model_not_found_detail(model_id, user_ctx=user_ctx))
             return _messages_error(exc.status_code, exc.detail or "")
-        client_request = copy.deepcopy(body)
+        client_request = _copy_of(body)
+        if client_request is None:
+            return _messages_error(400, _NESTED_TOO_DEEPLY)
         apply_to_anthropic_body(auto_selection, body)
         hide_served_model(auto_selection)
         model_id = auto_selection.model_id
@@ -2050,7 +2070,9 @@ async def execute_messages(
     # The request's one snapshot, what the client sent: logged as the body, and
     # the source of the logged messages further down. An auto request took it
     # before selection rewrote the body.
-    request_payload_for_log = client_request if client_request is not None else copy.deepcopy(body)
+    request_payload_for_log = client_request if client_request is not None else _copy_of(body)
+    if request_payload_for_log is None:
+        return _messages_error(400, _NESTED_TOO_DEEPLY)
 
     # Which session this request belongs to. This is the surface Claude Code
     # uses, and it sends no ``X-Session-ID``: it packs the run into

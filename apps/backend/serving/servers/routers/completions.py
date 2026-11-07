@@ -137,12 +137,20 @@ def _find_unsupported_modality(
         else:
             continue
         for block in blocks:
-            if not isinstance(block, dict):
-                continue
-            required = CONTENT_BLOCK_MODALITY.get(block.get("type"))
+            required = _block_modality(block)
             if required and required not in supported:
                 return required
     return None
+
+
+def _block_modality(block: Any) -> str | None:
+    """The modality a content block declares, or None.
+
+    A ``type`` that is not a string declares none: a client's list or object
+    there raised ``TypeError`` on the lookup, a 500 for the client's mistake.
+    """
+    kind = block.get("type") if isinstance(block, dict) else None
+    return CONTENT_BLOCK_MODALITY.get(kind) if isinstance(kind, str) else None
 
 
 def _required_modalities(messages: list[dict[str, Any]]) -> frozenset[str]:
@@ -161,9 +169,7 @@ def _required_modalities(messages: list[dict[str, Any]]) -> frozenset[str]:
         else:
             continue
         for block in blocks:
-            if not isinstance(block, dict):
-                continue
-            modality = CONTENT_BLOCK_MODALITY.get(block.get("type"))
+            modality = _block_modality(block)
             if modality and modality != "text":
                 required.add(modality)
     return frozenset(required)

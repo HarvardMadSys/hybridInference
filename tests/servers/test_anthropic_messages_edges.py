@@ -337,6 +337,46 @@ async def test_a_malformed_request_gets_an_anthropic_400(
     }
 
 
+def _nested(depth: int) -> list:
+    return json.loads("[" * depth + "]" * depth)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [NATIVE_MODEL, OPENAI_MODEL])
+@pytest.mark.parametrize("depth", [600, 5_000])
+@pytest.mark.parametrize(
+    "nest",
+    [
+        lambda body, nested: body.update(metadata={"user_id": "u", "x": nested}),
+        lambda body, nested: body["messages"][0].update(
+            content=[{"type": "text", "text": "hi", "x": nested}]
+        ),
+        lambda body, nested: body.update(pad=nested),
+    ],
+    ids=["metadata", "content-block", "unknown-field"],
+)
+async def test_a_body_nested_too_deeply_to_copy_is_a_400_not_a_500(
+    anthropic_test_client, model, depth, nest
+):
+    body = {"model": model, "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}
+    nest(body, _nested(depth))
+
+    r = await anthropic_test_client.post(
+        "/v1/messages",
+        content=json.dumps(body).encode(),
+        headers={**_auth(), "content-type": "application/json"},
+    )
+
+    assert r.status_code == 400
+    assert r.json() == {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "Request body is nested too deeply",
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_count_tokens_charges_for_tool_schemas(anthropic_test_client):
     body = {"model": OPENAI_MODEL, "messages": [{"role": "user", "content": "hi"}]}

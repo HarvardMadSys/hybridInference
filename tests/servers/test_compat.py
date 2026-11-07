@@ -182,3 +182,34 @@ async def test_a_request_over_an_element_limit_is_a_400_before_it_is_validated(
     assert resp.status_code == status.HTTP_400_BAD_REQUEST
     assert resp.json()["error"]["message"] == message
     assert adapter.last_messages is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/completions", "/completion"])
+@pytest.mark.parametrize("content", [b"{not json", b"[1, 2]", b'"prompt"'])
+async def test_a_malformed_body_is_a_400_on_both_legacy_routes(
+    compat_client: AsyncClient, path: str, content: bytes
+):
+    resp = await compat_client.post(
+        path, content=content, headers={"content-type": "application/json"}
+    )
+
+    assert resp.status_code == status.HTTP_400_BAD_REQUEST
+    assert resp.json()["error"]["message"] == "Invalid JSON or schema in request body"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("part_type", [["image_url"], {"kind": "image_url"}])
+async def test_a_content_part_whose_type_is_not_a_string_is_not_a_500(
+    compat_app: FastAPI, compat_client: AsyncClient, part_type: Any
+):
+    adapter = compat_app.state.services.router.routes["trk"].adapters[0][0]  # type: ignore[attr-defined]
+    content = [{"type": part_type, "text": "x"}]
+
+    resp = await compat_client.post(
+        "/v1/chat/completions",
+        json={"model": "trk", "messages": [{"role": "user", "content": content}]},
+    )
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert adapter.last_messages[0]["content"] == content
