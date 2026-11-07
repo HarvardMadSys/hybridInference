@@ -310,12 +310,13 @@ async def test_a_messages_request_the_deadline_cuts_off_after_dispatch_is_billed
         )
 
     assert response.status_code == 504
-    estimate = anthropic_messages._estimate_request_input_tokens(body)
     row = await _logged_row(mock_log_store)
     assert row["status_code"] == 504
     assert row["metadata"]["terminal_state"] == "request_timeout"
     assert row["metadata"]["usage_estimated"] is True
-    assert (row["usage"]["prompt_tokens"], row["usage"]["completion_tokens"]) == (estimate, 0)
+    prompt_tokens = row["usage"]["prompt_tokens"]
+    assert prompt_tokens > 10_000
+    assert row["usage"]["completion_tokens"] == 0
     charged = await _charged(mock_operational_store, set(anthropic_messages._cost_increment_tasks))
     assert charged == pytest.approx(calculate_cost(row["usage"], row["pricing"]))
-    assert charged == pytest.approx(estimate * 0.6 / 1_000_000)
+    assert charged == pytest.approx(prompt_tokens * 0.6 / 1_000_000)

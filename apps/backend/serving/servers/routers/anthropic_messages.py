@@ -37,9 +37,9 @@ from routing.prefill_load import (
     priority_for_prefill,
     prompt_anchor,
 )
+from serving.adapters import dispatch_watch
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
-from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
@@ -2835,7 +2835,7 @@ async def execute_messages(
     # kept out of the response the client receives.
     request_usage: dict[str, Any] = {}
     # Marked when the request leaves the gateway, for billing a cancellation.
-    dispatch = DispatchRecord()
+    dispatch = dispatch_watch.DispatchRecord()
     try:
         with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: dispatch}):
             resp = await adapter.messages(
