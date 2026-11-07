@@ -351,6 +351,25 @@ async def _sync_account_quota(
     )
 
 
+#: The key whose quota a key added to an account takes (``create_key`` with
+#: ``inherit_account_quota``). An unrevoked key when the account has one: each
+#: carries the account quota (:func:`_sync_account_quota`). Failing that, the
+#: most recently revoked key, which carried it when it was revoked: the quota is
+#: the account's, so revoking every key must not reset it, or a cut an admin
+#: made -- a lowered daily limit, a monthly cap -- would end with the next key
+#: the user creates. Revocation keeps no time of its own, so the most recently
+#: revoked key is taken to be the one last used or created: a key is used until
+#: it is revoked, and an account that holds one key at a time revokes each
+#: before it creates the next.
+ACCOUNT_QUOTA_SOURCE_SQL = (
+    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys WHERE user_id = $1 "
+    "ORDER BY status = 'revoked', "
+    "CASE WHEN status = 'revoked' THEN GREATEST(created_at, last_used_at) END DESC NULLS LAST, "
+    "created_at, id "
+    "LIMIT 1"
+)
+
+
 def _coerce_user_row(row: Any) -> Row | None:
     """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
 
@@ -1616,11 +1635,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Insert a new API key. Returns the inserted row.
 
         The quota is the account's (see :meth:`OperationalStore.create_key`).
-        With ``inherit_account_quota`` a key added to an account that already
-        has an unrevoked key takes that account's quota, and the given values
-        only seed a first key. Without it the given values become the
-        account's, and every other unrevoked key of the user is set to them in
-        the same transaction.
+        With ``inherit_account_quota`` a key added to an account that has held
+        a key takes the account's quota (:data:`ACCOUNT_QUOTA_SOURCE_SQL`),
+        and the given values only seed an account's first key. Without it the
+        given values become the account's, and every other unrevoked key of
+        the user is set to them in the same transaction.
 
         ``max_active_keys`` caps the account's active keys. Everything runs
         under the account lock (:func:`_lock_account_keys`), so two concurrent
@@ -1653,12 +1672,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     raise APIKeyLimitReachedError(max_active_keys)
             daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
             if inherit_account_quota:
-                current = await conn.fetchrow(
-                    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd "
-                    "FROM api_keys WHERE user_id = $1 AND status <> 'revoked' "
-                    "ORDER BY created_at, id LIMIT 1",
-                    user_id,
-                )
+                current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
                 if current is not None:
                     daily = current["quota_daily_cost_usd"]
                     monthly = current["quota_monthly_cost_usd"]

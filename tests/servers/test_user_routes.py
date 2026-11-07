@@ -478,6 +478,57 @@ class TestAPIKeyManagement:
         assert key_row is None
 
     @pytest.mark.asyncio
+    async def test_revoking_every_key_does_not_lift_an_admin_cut(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """A key made after every key was revoked keeps the account's cut and monthly cap."""
+        prefix = test_user_with_key["key_prefix"]
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET quota_daily_cost_usd = 2, quota_monthly_cost_usd = 20 "
+                "WHERE key_prefix = $1",
+                prefix,
+            )
+        revoked = await auth_app_client.delete(f"/user/api-keys/{prefix}", headers=auth_headers)
+        assert revoked.json()["status"] == "revoked"
+
+        created = (await auth_app_client.post("/user/api-keys", headers=auth_headers)).json()
+
+        async with auth_db_logger.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys "
+                "WHERE key_prefix = $1",
+                created["key_prefix"],
+            )
+        assert (float(row["quota_daily_cost_usd"]), float(row["quota_monthly_cost_usd"])) == (
+            2.0,
+            20.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_revoked_key_holding_a_cut_is_kept_while_no_key_is_live(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
+    ):
+        """Removing it would let the next key start without the cut."""
+        prefix = test_user_with_key["key_prefix"]
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked', quota_daily_cost_usd = 2 "
+                "WHERE key_prefix = $1",
+                prefix,
+            )
+
+        refused = await auth_app_client.delete(f"/user/api-keys/{prefix}", headers=auth_headers)
+
+        assert refused.status_code == 409
+        assert "Create a new key first" in refused.json()["detail"]
+        created = await auth_app_client.post("/user/api-keys", headers=auth_headers)
+        assert created.status_code == 201
+        removed = await auth_app_client.delete(f"/user/api-keys/{prefix}", headers=auth_headers)
+        assert removed.status_code == 200
+        assert removed.json()["status"] == "deleted"
+
+    @pytest.mark.asyncio
     async def test_regenerate_api_key_success(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
     ):

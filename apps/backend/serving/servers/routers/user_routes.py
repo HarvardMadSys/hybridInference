@@ -26,6 +26,7 @@ from serving.exceptions import (
     user_safe_error_for_log,
 )
 from serving.model_access import get_disabled_models_from_preferences, route_canonical_model_id
+from serving.quota import DEFAULT_DAILY_QUOTA_USD
 from serving.schemas import ModelList
 from serving.schemas_auth import (
     APIKeyCreateRequest,
@@ -896,6 +897,15 @@ async def update_api_key(
     return APIKeyUpdateResponse(key_prefix=key_prefix, **new)
 
 
+async def _new_key_daily_quota(current_user: dict[str, Any]) -> Decimal:
+    """The daily quota the current user's account would give a key it starts afresh."""
+    try:
+        runtime_settings = get_runtime_settings_instance()
+    except RuntimeError:
+        runtime_settings = None
+    return await get_default_daily_quota_for_role(current_user["role"], runtime_settings)
+
+
 @router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
 async def delete_api_key(
     request: Request,
@@ -904,7 +914,12 @@ async def delete_api_key(
     db_logger=Depends(get_db_logger),
     op_store=Depends(get_operational_store),
 ) -> APIKeyDeleteResponse:
-    """Revoke an active key or remove a revoked key owned by the current user."""
+    """Revoke an active key or remove a revoked key owned by the current user.
+
+    A revoked key is not removed (409) while it holds the account's quota for
+    the next key -- the account has no unrevoked key -- and that quota is
+    tighter than a new key's.
+    """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
 
@@ -952,15 +967,40 @@ async def delete_api_key(
                 key_prefix,
             )
             if existing and existing["status"] == "revoked":
+                # With no unrevoked key, the revoked keys are where the account's
+                # quota is kept: the next key takes it from them (the store's
+                # ``create_key``). One that holds a tighter limit than a new key
+                # would start with stays until the account has a live key again,
+                # or removing it would reset a limit an admin set.
                 deleted = await conn.fetchrow(
                     """
-                    DELETE FROM api_keys
-                    WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
-                    RETURNING key_prefix, user_id
+                    DELETE FROM api_keys AS k
+                    WHERE k.account_id = $1 AND k.key_prefix = $2 AND k.status = 'revoked'
+                      AND (
+                        EXISTS (
+                          SELECT 1 FROM api_keys AS live
+                          WHERE live.user_id = k.user_id AND live.status <> 'revoked'
+                        )
+                        OR (
+                          k.quota_monthly_cost_usd IS NULL
+                          AND COALESCE(k.quota_daily_cost_usd, $4::numeric) >= $3::numeric
+                        )
+                      )
+                    RETURNING k.key_prefix, k.user_id
                     """,
                     current_user["user_id"],
                     key_prefix,
+                    await _new_key_daily_quota(current_user),
+                    Decimal(str(DEFAULT_DAILY_QUOTA_USD)),
                 )
+                if deleted is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "This revoked key holds your account's limits while you have no "
+                            "other key. Create a new key first; this one can be removed then."
+                        ),
+                    )
                 key_owner = deleted.get("user_id") or key_owner
                 logger.info(
                     "Revoked API key removed for user: %s key_prefix=%s",

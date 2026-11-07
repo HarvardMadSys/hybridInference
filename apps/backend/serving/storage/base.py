@@ -661,9 +661,11 @@ class OperationalStore(ABC):
         account must therefore carry the same values. Implementations keep it
         that way:
 
-        - ``inherit_account_quota=True`` (a user adding a key): when the
-          account already holds an unrevoked key, the new key takes its quota
-          and the given values are ignored; they only seed a first key.
+        - ``inherit_account_quota=True`` (a user adding a key): the new key
+          takes the account's quota and the given values are ignored; they
+          only seed the account's first key. The account's quota is that of
+          its unrevoked keys, or with none of those, of its most recently
+          revoked key: revoking every key must not reset a limit an admin set.
         - ``inherit_account_quota=False`` (an admin setting one): the given
           values become the account's, written to every unrevoked key of the
           user in the same transaction.
