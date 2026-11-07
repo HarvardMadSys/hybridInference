@@ -118,9 +118,6 @@ if TYPE_CHECKING:
 #: Name of the erasure fence table.
 ERASURE_FENCE_TABLE = "erasure_fence"
 
-#: Column name of the digest primary key.
-ERASURE_FENCE_DIGEST_COLUMN = "account_digest"
-
 
 #: Setting key for the dedicated, stable erasure-fence derivation secret.
 #: This is separate from API_KEY_SECRET so that routine API-key rotation

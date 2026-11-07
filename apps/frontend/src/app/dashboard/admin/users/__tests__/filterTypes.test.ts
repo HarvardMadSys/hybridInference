@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DEFAULT_FILTER_STATE,
-  filterStateFromUrl,
-  filterStateToParams,
-  filterStateToUrl,
-} from '../lib/filterTypes';
+import { DEFAULT_FILTER_STATE, filterStateFromUrl, filterStateToUrl } from '../lib/filterTypes';
 
 describe('filterStateFromUrl / filterStateToUrl', () => {
   it('round-trips a populated state', () => {
@@ -44,33 +39,5 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
     const params = new URLSearchParams('?status=banana');
     const parsed = filterStateFromUrl(params);
     expect(parsed.status).toBeNull();
-  });
-});
-
-describe('filterStateToParams', () => {
-  it('omits null/empty values', () => {
-    const params = filterStateToParams(DEFAULT_FILTER_STATE);
-    expect(params.toString()).toBe('sort_by=created&limit=100&offset=0');
-  });
-
-  it('serialises all filters', () => {
-    const params = filterStateToParams({
-      ...DEFAULT_FILTER_STATE,
-      status: 'active',
-      minCostToday: 5,
-      provider: 'anthropic',
-      activeWithinHours: 24,
-      quotaState: 'near',
-      anomaly: true,
-    });
-    const obj = Object.fromEntries(params.entries());
-    expect(obj).toMatchObject({
-      status: 'active',
-      min_cost_today: '5',
-      provider: 'anthropic',
-      active_within_hours: '24',
-      quota_state: 'near',
-      anomaly: 'true',
-    });
   });
 });

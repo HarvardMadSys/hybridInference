@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from datetime import datetime
 
-#: What a code may be spent on. Every purpose but ``signup`` and ``login``
-#: belongs to a signed-in account, which must still be active when the code is
-#: sent and when it is spent. ``OWNER_PURPOSES`` confirm the account's owner
-#: for a sensitive change, so their codes go only to its own verified number.
+#: What a code may be spent on is ``PhoneCodeRequest.purpose``. Every purpose
+#: but ``signup`` and ``login`` belongs to a signed-in account, which must still
+#: be active when the code is sent and when it is spent. ``OWNER_PURPOSES``
+#: confirm the account's owner for a sensitive change, so their codes go only to
+#: its own verified number.
 OWNER_PURPOSES = ("delete_account", "bind_email", "set_password")
-PHONE_CODE_PURPOSES = ("signup", "login", "bind", *OWNER_PURPOSES)
 _ACCOUNT_PURPOSES = ("bind", *OWNER_PURPOSES)
 
 

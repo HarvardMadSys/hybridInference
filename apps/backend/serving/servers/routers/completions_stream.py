@@ -240,9 +240,6 @@ class ToolCallAccumulator:
         return [tc for _, tc in sorted(self._calls.items())]
 
 
-_ToolCallAccumulator = ToolCallAccumulator
-
-
 class _TTFTTracker:
     """Record the time-to-first-token measurement.
 

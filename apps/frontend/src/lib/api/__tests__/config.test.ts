@@ -4,7 +4,6 @@ import { setAccessToken } from '../client';
 import {
   checkBackendHealth,
   getConfig,
-  markConfigSecret,
   patchConfig,
   resetConfigKey,
   restartBackend,
@@ -131,20 +130,6 @@ describe('configuration client', () => {
     expect(init.method).toBe('POST');
   });
 
-  it('marks a stored variable secret with a PATCH that changes no value', async () => {
-    fetchMock.mockResolvedValueOnce(json(EMPTY));
-
-    await markConfigSecret('MY_ROUTE_HEADER');
-
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toMatch(/\/admin\/config$/);
-    expect(init.method).toBe('PATCH');
-    expect(JSON.parse(init.body as string)).toEqual({
-      values: {},
-      secrets: { MY_ROUTE_HEADER: true },
-    });
-  });
-
   it.each([
     'MY_KEY has no stored value to protect yet: set a value and mark it secret in the same save.',
     "SMTP_HOST: a built-in setting keeps the registry's secret flag.",
@@ -153,7 +138,9 @@ describe('configuration client', () => {
       json({ error: { type: 'invalid_request_error', message, code: 400 } }, 400),
     );
 
-    const error = await markConfigSecret('MY_KEY').catch((e: unknown) => e);
+    const error = await patchConfig({ values: {}, secrets: { MY_KEY: true } }).catch(
+      (e: unknown) => e,
+    );
 
     expect(error).toBeInstanceOf(APIError);
     expect((error as APIError).statusCode).toBe(400);
@@ -196,7 +183,6 @@ describe('configuration client', () => {
     for (const call of [
       () => getConfig(),
       () => patchConfig({ values: { SMTP_HOST: 'smtp.example.test' } }),
-      () => markConfigSecret('SMTP_PASSWORD'),
       () => resetConfigKey('SMTP_HOST'),
     ]) {
       fetchMock.mockResolvedValueOnce(json(leaky));

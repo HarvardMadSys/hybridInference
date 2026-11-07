@@ -345,24 +345,6 @@ export async function patchConfig(
 }
 
 /**
- * Mark a stored variable secret, leaving its value as it is: from then on the
- * console shows only whether it is set. One-way — nothing in the API makes a
- * secret readable again.
- *
- * For a discovered, numbered or custom variable with a row stored, a value or
- * a reset. 400 otherwise, verbatim: "K has no stored value to protect yet: …",
- * "K: a built-in setting keeps the registry's secret flag." A backend that
- * predates this sends entries without `origin`, and would answer 200 without
- * marking anything.
- */
-export async function markConfigSecret(
-  key: string,
-  options?: ConfigWriteOptions,
-): Promise<ConfigResponse> {
-  return patchConfig({ values: {}, secrets: { [key]: true } }, options);
-}
-
-/**
  * Remove a setting's database row: it falls back to the environment, then its
  * default, and a custom variable disappears. 409 for an immutable key.
  */

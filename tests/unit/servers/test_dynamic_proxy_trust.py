@@ -16,7 +16,7 @@ from starlette.routing import Route
 
 from serving.config.settings import Settings
 from serving.servers.middleware.proxy_trust import KubernetesProxyTrustMiddleware
-from serving.utils.request_ip import ClientIpInfo, get_client_ip_info, preset_client_ip_info
+from serving.utils.request_ip import ClientIpInfo, get_client_ip_info
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -198,10 +198,7 @@ async def test_network_admission_replaces_any_preexisting_identity(monkeypatch, 
         # admission must still derive identity from its fresh proxy snapshot,
         # even if a caller left a typed internal identity or malformed value.
         state = scope.setdefault("state", {})
-        if isinstance(preset, ClientIpInfo):
-            preset_client_ip_info(state, preset)
-        else:
-            state["_hybrid_inference_client_ip_info"] = preset
+        state["_hybrid_inference_client_ip_info"] = preset
         await app(scope, receive, send)
 
     response = await _request(seeded_scope)
