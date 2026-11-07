@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.request_limits import MAX_MESSAGES, MAX_PARTS_PER_MESSAGE
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -138,3 +139,46 @@ async def test_compat_endpoints_read_the_runtime_settings(
 
     assert resp.status_code == status.HTTP_200_OK
     settings.get_bool.assert_any_await("force_chat_completions_streaming")
+
+
+_TOO_MANY_MESSAGES = [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body", "message"),
+    [
+        (
+            "/v1/chat/completions",
+            {"model": "trk", "messages": _TOO_MANY_MESSAGES},
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/v1/chat/completions",
+            {"model": "no-such-model", "messages": _TOO_MANY_MESSAGES},
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/completion",
+            {"model": "trk", "messages": _TOO_MANY_MESSAGES},
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/v1/completions",
+            {"model": "trk", "prompt": ["x"] * (MAX_PARTS_PER_MESSAGE + 1)},
+            "Too many content parts and tool calls in messages[0]: "
+            f"more than {MAX_PARTS_PER_MESSAGE}",
+        ),
+    ],
+    ids=["chat", "chat-unknown-model", "completion", "v1-completions"],
+)
+async def test_a_request_over_an_element_limit_is_a_400_before_it_is_validated(
+    compat_app: FastAPI, compat_client: AsyncClient, path: str, body: dict[str, Any], message: str
+):
+    adapter = compat_app.state.services.router.routes["trk"].adapters[0][0]  # type: ignore[attr-defined]
+
+    resp = await compat_client.post(path, json=body)
+
+    assert resp.status_code == status.HTTP_400_BAD_REQUEST
+    assert resp.json()["error"]["message"] == message
+    assert adapter.last_messages is None

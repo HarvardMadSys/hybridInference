@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from serving.request_limits import responses_limit_problem
 from serving.responses_translator import (
     ResponsesStreamTranslator,
     assistant_message_from_chat,
@@ -259,6 +260,10 @@ async def execute_responses(
         raise HTTPException(400, "Missing required parameter: 'model'")
     if "input" not in body and "previous_response_id" not in body:
         raise HTTPException(400, "Missing required parameter: 'input'")
+    # Element counts before translation walks the input (serving/request_limits.py).
+    limit_problem = responses_limit_problem(body)
+    if limit_problem is not None:
+        raise HTTPException(400, limit_problem)
 
     # Normalise the owner key so anonymous/auth-disabled callers share a stable,
     # non-None identity — never let a None user_id bypass ownership scoping.

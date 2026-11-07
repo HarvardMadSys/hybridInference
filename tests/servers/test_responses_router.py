@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.request_limits import MAX_MESSAGES
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import AppServices
@@ -412,6 +413,22 @@ async def test_unknown_model_returns_404_error_envelope(responses_client):
 async def test_missing_model_returns_400(responses_client):
     r = await responses_client.post("/v1/responses", json={"input": "hi"}, headers=_auth())
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_input_over_an_element_limit_returns_400_before_translation(responses_client):
+    r = await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1),
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == (
+        f"Too many input items: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}"
+    )
 
 
 @pytest.mark.asyncio

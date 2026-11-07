@@ -18,6 +18,7 @@ import pytest
 from serving.adapters.anthropic import AnthropicAdapter
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
+from serving.request_limits import MAX_MESSAGES
 from serving.servers.routers import anthropic_messages as amod
 
 NATIVE_MODEL = "claude-opus-4.7"
@@ -283,6 +284,27 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
             json.dumps({"model": NATIVE_MODEL}).encode(),
             "Missing required field: messages",
         ),
+        (
+            "/v1/messages",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1),
+                    "max_tokens": 5,
+                }
+            ).encode(),
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/v1/messages/count_tokens",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1),
+                }
+            ).encode(),
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
     ],
     ids=[
         "not-json",
@@ -297,6 +319,8 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
         "count-not-json",
         "count-not-an-object",
         "count-no-messages",
+        "too-many-messages",
+        "count-too-many-messages",
     ],
 )
 async def test_a_malformed_request_gets_an_anthropic_400(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ from serving.grant_auth import ledger_attribution
 from serving.model_access import ModelAccessDenial, model_access_denial, route_canonical_model_id
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
 from serving.pricing import require_route_pricing
+from serving.request_limits import chat_limit_problem
 from serving.schemas import (
     CONTENT_BLOCK_MODALITY,
     ChatCompletionRequest,
@@ -833,6 +835,11 @@ async def execute_chat(
     completions_logger = services.completions_logger
     pricing_lookup = services.pricing_lookup
     cost_tracker = services.cost_tracker
+    # Element counts first: validation and every later step cost per element,
+    # and the byte limit alone admits millions of them (serving/request_limits.py).
+    limit_problem = chat_limit_problem(body)
+    if limit_problem is not None:
+        raise HTTPException(400, limit_problem)
     try:
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
@@ -870,15 +877,17 @@ async def execute_chat(
     model = payload.model
     messages = [m.model_dump() for m in payload.messages]
 
-    # Debug-only: log inbound message roles to verify client behavior.
-    try:
+    # Debug-only: log inbound message roles to verify client behavior. Built
+    # only when debug logging is on: the list is as long as the conversation.
+    if logger.isEnabledFor(logging.DEBUG):
         roles = [msg.get("role") for msg in messages]
-        tool_count = sum(1 for msg in messages if msg.get("role") == "tool")
         logger.debug(
-            f"Inbound roles: model={model}, roles={roles}, tool_messages={tool_count}, total={len(messages)}"
+            "Inbound roles: model=%s, roles=%s, tool_messages=%d, total=%d",
+            model,
+            roles,
+            roles.count("tool"),
+            len(roles),
         )
-    except Exception:
-        pass
 
     request_id = f"req_{uuid.uuid4().hex}"
     start_time = time.time()

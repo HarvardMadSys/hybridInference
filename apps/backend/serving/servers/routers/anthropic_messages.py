@@ -66,6 +66,7 @@ from serving.grant_auth import ledger_attribution
 from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.observability.rejection_log import RejectionSource, log_rejection_from
 from serving.pricing import effective_pricing, require_source_pricing
+from serving.request_limits import messages_limit_problem
 from serving.servers.auth import (
     _next_utc_midnight,
     verify_api_key,
@@ -1929,6 +1930,10 @@ async def execute_messages(
         return _messages_error(400, "Missing required field: messages")
     if body.get("max_tokens") is None:
         return _messages_error(400, "Missing required field: max_tokens")
+    # Element counts before anything walks the messages (serving/request_limits.py).
+    limit_problem = messages_limit_problem(body)
+    if limit_problem is not None:
+        return _messages_error(400, limit_problem)
     shape_error = _shape_error(body)
     if shape_error is not None:
         return _messages_error(400, shape_error)
@@ -2998,6 +3003,9 @@ async def anthropic_count_tokens(
         return _anthropic_error(400, "Missing required field: model")
     if "messages" not in body:
         return _anthropic_error(400, "Missing required field: messages")
+    limit_problem = messages_limit_problem(body)
+    if limit_problem is not None:
+        return _anthropic_error(400, limit_problem)
 
     # Enforce the same model visibility as /v1/messages: an unknown, admin-only,
     # or per-user-disabled model must 404 here too, so token counting can't be
