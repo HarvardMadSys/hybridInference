@@ -110,9 +110,14 @@ async def _refuse_mail_flood(request: Request, kind: MailKind, email: str) -> No
     """Raise 429 when *email* or this client has asked for too much mail of *kind*.
 
     One answer for either window, decided before any account is looked up, so
-    it says nothing about whether the address has one.
+    it says nothing about whether the address has one. A client whose address
+    could not be resolved is limited per address alone: counting every such
+    client together would let any one of them stop everyone's mail.
     """
-    allowed, _reason = await check_and_record_mail_request(kind, email, get_client_ip(request))
+    client = get_client_ip_info(request)
+    allowed, _reason = await check_and_record_mail_request(
+        kind, email, client.client_ip if client.resolved else None
+    )
     if not allowed:
         raise HTTPException(
             status_code=429,

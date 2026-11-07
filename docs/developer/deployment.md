@@ -558,7 +558,8 @@ reachable through that edge alone (see
 `admin` is the first username anyone tries. The pages that mail a link to an
 address anyone types, password reset and resending the verification email,
 are limited too: three of each kind an hour per address, whether or not an
-account has it, and ten an hour per client address. The counts are held
+account has it, and ten an hour per client address when the backend can tell
+clients apart (without that, the per-address limit alone). The counts are held
 in memory, so a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
 when set, still reaches the admin API, and the command-line tools work on the
 database directly.
