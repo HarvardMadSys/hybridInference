@@ -295,19 +295,44 @@ describe('RequestsTab session labelling', () => {
     } as never);
     render(<RequestsTab />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Clear last hour errors' }));
-    let dialog = screen.getByRole('dialog', { name: 'Delete the last hour of error requests?' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear errors…' }));
+    let dialog = screen.getByRole('dialog', { name: 'Delete error requests?' });
     expect(dialog).toHaveTextContent('cannot be undone');
+    // The narrower span is the one chosen until the administrator picks another.
+    expect(within(dialog).getByRole('radio', { name: 'The past hour' })).toBeChecked();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(clearErrorRequests).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clear last hour errors' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear errors…' }));
     dialog = screen.getByRole('dialog');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete error requests' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(clearErrorRequests).toHaveBeenCalledTimes(1);
     // Only the errors this tab lists: the batch worker's rows are kept.
     expect(clearErrorRequests).toHaveBeenCalledWith(1, 'interactive');
+  });
+
+  it('deletes the past day of errors when that span is chosen', async () => {
+    vi.mocked(clearErrorRequests).mockResolvedValue({
+      message: 'Deleted 12 error requests.',
+    } as never);
+    render(<RequestsTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear errors…' }));
+    let dialog = screen.getByRole('dialog', { name: 'Delete error requests?' });
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'The past day (24 hours)' }));
+    expect(within(dialog).getByRole('radio', { name: 'The past day (24 hours)' })).toBeChecked();
+    // A choice made and then cancelled is not kept for the next confirmation.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear errors…' }));
+    dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('radio', { name: 'The past hour' })).toBeChecked();
+
+    fireEvent.click(within(dialog).getByRole('radio', { name: 'The past day (24 hours)' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete error requests' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(clearErrorRequests).toHaveBeenCalledTimes(1);
+    expect(clearErrorRequests).toHaveBeenCalledWith(24, 'interactive');
   });
 
   it("shows a row's session, shortened, with the full value and its source in the title", async () => {
@@ -816,7 +841,7 @@ describe('RequestsTab sources', () => {
     expect(screen.getByRole('heading', { name: 'Batch requests' })).toBeInTheDocument();
     // What describes interactive traffic stays on Recent Requests.
     expect(screen.queryByText('Request volume')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Clear last hour errors' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Clear errors…' })).toBeNull();
     expect(getRequestMetrics).not.toHaveBeenCalled();
     expect(getRecentRequestsPerformance).not.toHaveBeenCalled();
     expect(getRecentRequestOffloads).not.toHaveBeenCalled();
