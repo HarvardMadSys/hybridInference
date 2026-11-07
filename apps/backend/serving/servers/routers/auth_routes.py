@@ -82,7 +82,7 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
-from serving.utils.login_rate_limit import check_and_record_login
+from serving.utils.login_rate_limit import check_and_record_login, refusal_worth_recording
 from serving.utils.mail_rate_limit import MailKind, check_and_record_mail_request
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
@@ -454,7 +454,10 @@ async def login(
         # address), "account" (from every address) and "device" (this
         # browser) are 15-minute windows.
         retry_after = "3600" if reason == "ip" else "900"
-        await _record("failure", failure_reason="rate_limited", user_id=None)
+        # One row a minute per address and window, not one per attempt: a
+        # source that keeps trying past a limit costs no database write each.
+        if refusal_worth_recording(client_ip, reason or ""):
+            await _record("failure", failure_reason="rate_limited", user_id=None)
         raise HTTPException(
             status_code=429,
             detail="Too many login attempts. Please try again later.",

@@ -165,7 +165,8 @@ async def test_fresh_device_entries_do_not_lift_the_account_limit():
     for n in range(50, 55):
         assert await check_and_record_login("admin", SHARED, device=f"entry-{n}") == (True, None)
     assert await check_and_record_login("admin", SHARED, device="entry-55") == (False, "email")
-    assert len(login_rate_limit._account_address_attempts[("admin", SHARED)]) == 6
+    # Counted in the address's window, which keeps no more than it counts to.
+    assert len(login_rate_limit._account_address_attempts[("admin", SHARED)]) == 5
     # Another account's browsers are untouched.
     assert await check_and_record_login("root@example.com", SHARED, device="r1") == (True, None)
 
@@ -270,22 +271,94 @@ async def test_device_attempts_do_not_count_in_the_other_windows():
     assert len(login_rate_limit._ip_attempts[SHARED]) == 1
 
 
-async def test_sweep_drops_expired_buckets_from_every_login_window(monkeypatch):
+async def test_expired_buckets_are_dropped_as_new_ones_are_made(monkeypatch):
+    """No sweep of every bucket on the loop: expired ones leave from the front."""
     now = [1_000_000.0]
     monkeypatch.setattr(login_rate_limit, "_now", lambda: now[0])
-    monkeypatch.setattr(login_rate_limit, "_SWEEP_EVERY", 3)
     await check_and_record_login("admin", ATTACKER)
     await check_and_record_login("admin", OWNER, device="d1")
 
     now[0] += 15 * 60 + 1
-    await check_and_record_login("root@example.com", OWNER)  # the third call sweeps
+    await check_and_record_login("root@example.com", OWNER)
+    await check_and_record_login("admin", OWNER, device="d2")
 
-    assert login_rate_limit._device_attempts == {}
-    assert login_rate_limit._account_device_attempts == {}
+    assert set(login_rate_limit._device_attempts) == {"d2"}
     assert set(login_rate_limit._account_address_attempts) == {("root@example.com", OWNER)}
     assert set(login_rate_limit._account_attempts) == {"root@example.com"}
     # The per-IP window is an hour, so the attacker's address is still counted.
     assert set(login_rate_limit._ip_attempts) == {ATTACKER, OWNER}
+
+
+async def test_an_address_past_its_limit_keeps_nothing_for_the_names_it_tries():
+    """Refused attempts used to cost a bucket each (about 1 KB, kept 15 minutes)."""
+    for n in range(20):
+        assert await check_and_record_login(f"user{n}@example.com", ATTACKER) == (True, None)
+
+    for n in range(20, 10_020):
+        assert await check_and_record_login(f"user{n}@example.com", ATTACKER) == (False, "ip")
+
+    assert len(login_rate_limit._account_address_attempts) == 20
+    assert len(login_rate_limit._account_attempts) == 20
+    assert len(login_rate_limit._ip_attempts[ATTACKER]) == 20
+
+
+async def test_a_bucket_keeps_no_more_attempts_than_its_limit_counts_to():
+    for _ in range(1000):
+        await check_and_record_login("admin", ATTACKER)
+        await check_and_record_login("admin", OWNER, device="d1")
+
+    assert len(login_rate_limit._ip_attempts[ATTACKER]) == 20
+    assert len(login_rate_limit._account_address_attempts[("admin", ATTACKER)]) <= 5
+    assert len(login_rate_limit._device_attempts["d1"]) == 5
+
+
+async def test_each_window_keeps_a_bounded_number_of_buckets(monkeypatch):
+    monkeypatch.setattr(login_rate_limit, "_MAX_BUCKETS", 10)
+
+    for n in range(300):
+        await check_and_record_login(f"user{n}@example.com", f"203.0.{n // 250}.{n % 250}")
+        await check_and_record_login("admin", OWNER, device=f"entry-{n}")
+
+    for buckets in (
+        login_rate_limit._ip_attempts,
+        login_rate_limit._account_address_attempts,
+        login_rate_limit._account_attempts,
+        login_rate_limit._device_attempts,
+    ):
+        assert len(buckets) == 10
+
+
+async def test_a_flood_of_fresh_names_does_not_evict_an_account_under_attack(monkeypatch):
+    """Eviction takes the emptiest of the oldest buckets, not the oldest outright."""
+    monkeypatch.setattr(login_rate_limit, "_MAX_BUCKETS", 10)
+    for n in range(9):
+        for _ in range(5):
+            assert await check_and_record_login("admin", f"203.0.113.{n + 1}") == (True, None)
+
+    for n in range(500):
+        await check_and_record_login(f"flood{n}@example.com", f"198.18.{n // 250}.{n % 250}")
+
+    assert len(login_rate_limit._account_attempts["admin"]) == 45
+    for n in range(5):
+        assert await check_and_record_login("admin", f"192.0.2.{n + 1}") == (True, None)
+    assert await check_and_record_login("admin", "192.0.2.200") == (False, "account")
+
+
+def test_a_refusal_is_worth_a_row_once_a_minute_per_address_and_reason(monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(login_rate_limit, "_now", lambda: now[0])
+    record = login_rate_limit.refusal_worth_recording
+
+    assert record(ATTACKER, "ip") is True
+    assert [record(ATTACKER, "ip") for _ in range(100)] == [False] * 100
+    assert record(ATTACKER, "email") is True
+    assert record(OWNER, "ip") is True
+    # An IPv6 address shares its /64's record.
+    assert record("2001:db8::1", "ip") is True
+    assert record("2001:db8::2", "ip") is False
+
+    now[0] += login_rate_limit.REFUSAL_RECORD_INTERVAL_SEC + 1
+    assert record(ATTACKER, "ip") is True
 
 
 async def test_reset_clears_every_login_window():

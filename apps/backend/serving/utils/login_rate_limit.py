@@ -56,13 +56,23 @@ State is per-process and lost on restart; with multiple uvicorn workers
 the effective limit multiplies by worker count, which is acceptable for
 this defense (the goal is throttling, not audit). Mirrors the design of
 ``serving.utils.signup_rate_limit``.
+
+What one source can make the process hold is bounded. An address past its
+own window is refused before anything is looked up or kept for the name it
+tried, and a refused attempt adds nothing a bucket does not already count:
+each keeps at most as many attempts as its limit, the most it ever needs to
+count. Each window keeps at most :data:`_MAX_BUCKETS` buckets, in the order
+they were last used, so expired ones are dropped from the front as new ones
+are made, with no scan of the rest on the event loop.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
+from bisect import bisect_left
+from collections import OrderedDict, deque
+from itertools import islice
 from typing import TYPE_CHECKING, TypeVar
 
 from serving.config.settings import settings
@@ -79,17 +89,31 @@ _SWEEP_EVERY = 1024
 # further wrong ones are answered 429.
 SETUP_ATTEMPTS_PER_15MIN = 10
 
-# Login attempts keyed by device-cookie nonce, by (identifier, password epoch)
-# for the attempts that carried a device entry, by (identifier, address
-# bucket), by identifier alone, and by address bucket alone.
-_device_attempts: dict[str, deque[float]] = {}
-_account_device_attempts: dict[tuple[str, str], deque[float]] = {}
-_account_address_attempts: dict[tuple[str, str], deque[float]] = {}
-_account_attempts: dict[str, deque[float]] = {}
-_ip_attempts: dict[str, deque[float]] = {}
+#: Buckets each login window keeps at most. Making one more replaces, among the
+#: :data:`_EVICTION_SAMPLE` used longest ago, the one counting the fewest
+#: attempts: a flood of fresh names or addresses, an attempt or two each,
+#: displaces its own buckets, not the full one of an account under attack.
+_MAX_BUCKETS = 50_000
+_EVICTION_SAMPLE = 8
+
+#: How often one address's refusals for one reason are each worth a
+#: ``login_events`` row: once a minute, not once an attempt.
+REFUSAL_RECORD_INTERVAL_SEC = 60
+
+# Login attempts, oldest first, keyed by device-cookie nonce, by (identifier,
+# password epoch) for the attempts that carried a device entry, by
+# (identifier, address bucket), by identifier alone, and by address bucket
+# alone. Each is in the order its buckets were last used: an OrderedDict,
+# whose front is reached in constant time however many have left it.
+_device_attempts: OrderedDict[str, list[float]] = OrderedDict()
+_account_device_attempts: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+_account_address_attempts: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+_account_attempts: OrderedDict[str, list[float]] = OrderedDict()
+_ip_attempts: OrderedDict[str, list[float]] = OrderedDict()
+# When a refusal was last recorded, by (address bucket, reason).
+_refusals_recorded: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
 _setup_attempts: dict[str, deque[float]] = {}
 _lock = asyncio.Lock()
-_sweep_counter = 0
 _setup_sweep_counter = 0
 
 _Key = TypeVar("_Key")
@@ -108,12 +132,43 @@ def _sweep_inactive(buckets: dict[_Key, deque[float]], cutoff: float) -> None:
             del buckets[key]
 
 
-def _window(buckets: dict[_Key, deque[float]], key: _Key, cutoff: float) -> deque[float]:
-    """Return *key*'s bucket, created if new, without the attempts before *cutoff*."""
-    bucket = buckets.setdefault(key, deque())
-    while bucket and bucket[0] < cutoff:
-        bucket.popleft()
+def _window(buckets: OrderedDict[_Key, list[float]], key: _Key, cutoff: float) -> list[float]:
+    """Return *key*'s bucket, created if new, without the attempts before *cutoff*.
+
+    The bucket moves to the end of *buckets*, which so stay in the order they
+    were last used: a new bucket is made after dropping expired ones from the
+    front, and over :data:`_MAX_BUCKETS` after evicting one (see there).
+    """
+    bucket = buckets.get(key)
+    if bucket is None:
+        _make_room(buckets, cutoff)
+        bucket = buckets[key] = []
+    else:
+        buckets.move_to_end(key)
+        if bucket and bucket[0] < cutoff:
+            del bucket[: bisect_left(bucket, cutoff)]
     return bucket
+
+
+def _make_room(buckets: OrderedDict[_Key, list[float]], cutoff: float) -> None:
+    """Drop up to two expired buckets from the front, then one more if still full."""
+    for _ in range(2):
+        if not buckets:
+            return
+        oldest, attempts = next(iter(buckets.items()))
+        if attempts and attempts[-1] >= cutoff:
+            break
+        del buckets[oldest]
+    if len(buckets) >= _MAX_BUCKETS:
+        sample = list(islice(buckets, _EVICTION_SAMPLE))
+        del buckets[min(sample, key=lambda key: len(buckets[key]))]
+
+
+def _record(bucket: list[float], now: float, keep: int) -> None:
+    """Add an attempt at *now*, keeping the latest *keep*: a window only counts to its limit."""
+    bucket.append(now)
+    if len(bucket) > keep:
+        del bucket[: len(bucket) - keep]
 
 
 async def check_and_record_login(
@@ -136,14 +191,14 @@ async def check_and_record_login(
 
     Recording happens on entry, in the same critical section as the check,
     so probing with varied payloads or concurrent requests cannot bypass the
-    limit. Both per-address buckets, and the per-device one, record every
-    attempt, refused or not, so a source that keeps trying stays refused. The
-    two account-wide buckets record only the attempts that are let through:
-    one address's or one browser's refused attempts never use them up, which
-    is what keeps that source from locking the owner out everywhere.
+    limit. The per-IP bucket, and the per-device one, record every attempt,
+    refused or not, so a source that keeps trying stays refused; the
+    per-account-per-address bucket records every attempt the per-IP one lets
+    through. The two account-wide buckets record only the attempts that are
+    let through: one address's or one browser's refused attempts never use
+    them up, which is what keeps that source from locking the owner out
+    everywhere.
     """
-    global _sweep_counter
-
     now = _now()
     window_cutoff = now - _FIFTEEN_MIN_SECONDS
     ip_cutoff = now - _HOUR_SECONDS
@@ -158,24 +213,13 @@ async def check_and_record_login(
     ip_key = normalize_ip_bucket(ip)
 
     async with _lock:
-        _sweep_counter += 1
-        if _sweep_counter >= _SWEEP_EVERY:
-            _sweep_counter = 0
-            # Sweep each bucket using its own window's cutoff (ip is the
-            # longer window, so use it for ip_attempts).
-            _sweep_inactive(_device_attempts, window_cutoff)
-            _sweep_inactive(_account_device_attempts, window_cutoff)
-            _sweep_inactive(_account_address_attempts, window_cutoff)
-            _sweep_inactive(_account_attempts, window_cutoff)
-            _sweep_inactive(_ip_attempts, ip_cutoff)
-
         if device is not None:
             device_key, epoch = (device, "") if isinstance(device, str) else device
             # Only the backend issues device entries, so these keys are as
             # many as the browsers that signed in, not as an attacker likes.
             device_bucket = _window(_device_attempts, device_key, window_cutoff)
             device_count = len(device_bucket)
-            device_bucket.append(now)
+            _record(device_bucket, now, per_account_address)
             if device_count >= per_account_address:
                 return False, "device"
             # Each sign-in issues a new entry, and a new device window with
@@ -188,20 +232,20 @@ async def check_and_record_login(
             # Full: entries this password's other holders kept may be what
             # filled it. Limited like any other client's attempt, not refused.
 
-        address_bucket = _window(_account_address_attempts, (account_key, ip_key), window_cutoff)
+        # The address first, and on entry so varied payloads cannot bypass
+        # the limit. Past it, nothing is kept for the name it tried: a source
+        # sending a new name each time adds nothing per name. Checked ahead of
+        # the 15-minute windows, it also makes Retry-After a realistic wait
+        # (telling an hour-blocked client to retry in 15 min would be wrong).
         ip_bucket = _window(_ip_attempts, ip_key, ip_cutoff)
-        address_count = len(address_bucket)
         ip_count = len(ip_bucket)
-
-        # Record on entry so varied payloads cannot bypass the limit.
-        address_bucket.append(now)
-        ip_bucket.append(now)
-
-        # Prefer the longer window when both trip so Retry-After reflects a
-        # realistic wait (telling an hour-blocked client to retry in 15 min
-        # would be wrong).
+        _record(ip_bucket, now, per_ip)
         if ip_count >= per_ip:
             return False, "ip"
+
+        address_bucket = _window(_account_address_attempts, (account_key, ip_key), window_cutoff)
+        address_count = len(address_bucket)
+        _record(address_bucket, now, per_account_address)
         if address_count >= per_account_address:
             return False, "email"
 
@@ -213,6 +257,23 @@ async def check_and_record_login(
         account_bucket.append(now)
 
     return True, None
+
+
+def refusal_worth_recording(ip: str, reason: str) -> bool:
+    """Whether a refused sign-in from *ip* should be written to ``login_events``.
+
+    True for the first refusal for *reason* from the address in
+    :data:`REFUSAL_RECORD_INTERVAL_SEC`: a source that keeps trying past a
+    limit is refused at no cost but its row, and one a minute still records
+    that it did, without a database write per attempt.
+    """
+    now = _now()
+    key = (normalize_ip_bucket(ip), reason)
+    bucket = _window(_refusals_recorded, key, now - REFUSAL_RECORD_INTERVAL_SEC)
+    if bucket:
+        return False
+    bucket.append(now)
+    return True
 
 
 async def record_failed_setup_attempt(ip: str) -> bool:
@@ -246,12 +307,12 @@ async def record_failed_setup_attempt(ip: str) -> bool:
 
 def reset_login_rate_limit_state() -> None:
     """Wipe all recorded attempts (login and setup). Test-only helper."""
-    global _sweep_counter, _setup_sweep_counter
+    global _setup_sweep_counter
     _device_attempts.clear()
     _account_device_attempts.clear()
     _account_address_attempts.clear()
     _account_attempts.clear()
     _ip_attempts.clear()
+    _refusals_recorded.clear()
     _setup_attempts.clear()
-    _sweep_counter = 0
     _setup_sweep_counter = 0
