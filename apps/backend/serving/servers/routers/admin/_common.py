@@ -213,6 +213,9 @@ def resolve_request_outcome_filter(
 # console and Playground traffic. The admin Recent Requests tab lists only that;
 # the Batches tab lists the batch requests on their own. Constant predicates, like
 # the outcome filters, so a caller appends them without renumbering placeholders.
+# ``idx_api_logs_source`` (timestamp, batch_job_id), built in the background by
+# ``serving.storage.perf_metrics_index``, keeps a window's count under either
+# predicate an index-only scan, as the unfiltered count is.
 REQUEST_SOURCE_FILTERS: dict[str, str] = {
     # No predicate: every row in the window.
     "all": "",
