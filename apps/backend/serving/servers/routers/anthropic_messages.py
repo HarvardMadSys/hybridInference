@@ -2662,6 +2662,18 @@ async def execute_messages(
                     },
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+            except (asyncio.CancelledError, GeneratorExit):
+                # The client went away (its task is cancelled, or this
+                # generator closed), or the gateway's own deadline cancelled
+                # the response. Neither is the upstream's failure, so the stream
+                # is not marked failed and is billed as before; but its row is
+                # not a 200 either. 499 or 504, as the chat surface logs them.
+                timed_out = False
+                if ctx.timeout_probe is not None:
+                    with contextlib.suppress(Exception):
+                        timed_out = bool(ctx.timeout_probe())
+                stream_status_code = 504 if timed_out else 499
+                raise
             finally:
                 # Idempotent: a stream that reached first content already
                 # returned this above. Everything else -- an upstream error, a
