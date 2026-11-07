@@ -668,12 +668,15 @@ class AsyncHTTPClient:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
+        max_body_bytes: int | None = None,
     ) -> tuple[int, bytes, str]:
         """Send an arbitrary HTTP request and return (status, body, content_type).
 
         Intended for proxy-style forwarding where we need the raw response.
         ``timeout=None`` falls back to the session default (see json_post).
-        The body is read up to :data:`MAX_RESPONSE_BODY_BYTES`.
+        The body is read up to *max_body_bytes*, by default
+        :data:`MAX_RESPONSE_BODY_BYTES`; a longer one raises
+        :class:`UpstreamPayloadTooLarge`.
         """
         session = await self._ensure_session()
         async with session.request(
@@ -683,7 +686,7 @@ class AsyncHTTPClient:
             headers=headers,
             timeout=timeout if timeout is not None else _aiohttp_sentinel,
         ) as resp:
-            body = await read_body(resp)
+            body = await read_body(resp, max_body_bytes)
             content_type = resp.headers.get("content-type", "application/json")
             return resp.status, body, content_type
 

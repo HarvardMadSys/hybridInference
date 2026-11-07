@@ -15,6 +15,17 @@ Security measures:
   checks, the scoping rewrites and Qdrant receives; a path the two could read
   differently (a leading slash, an empty or dot segment, an encoded slash) is
   refused.
+
+Every tenant shares one Qdrant, so what one account may make it do is bounded:
+- at most :data:`MAX_INFLIGHT_PER_USER` requests in flight per account, the
+  next refused with 429 rather than queued;
+- a response is read up to :data:`MAX_RESPONSE_BYTES`, not the 256 MiB an
+  inference response may take;
+- a collection is created or changed only with the options that shape its own
+  data (:func:`_sanitize_collection_options`): the ones that size the shared
+  instance -- shards, replication, the optimizer, the write-ahead log, strict
+  mode -- are dropped, and the HNSW graph is held to what IDE indexers ask for;
+- an account keeps at most :data:`MAX_COLLECTIONS_PER_USER` collections.
 """
 
 from __future__ import annotations
@@ -23,13 +34,15 @@ import hashlib
 import json
 import re
 import time
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
 from serving.config.settings import get_settings
-from serving.http import AsyncHTTPClient
+from serving.http import AsyncHTTPClient, UpstreamPayloadTooLarge
 from serving.servers.auth import verify_api_key
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -37,9 +50,57 @@ from serving.utils.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 #: Provider label for upstream Qdrant failures relayed to the client. This proxy
 #: has no ModelConfig, so the label is fixed rather than resolved from routing.
 _QDRANT_PROVIDER = "qdrant"
+
+#: Most requests one account may have in flight through the proxy. IDE indexers
+#: (Roo Code, Kilo Code) upsert about ten batches at a time; past this limit a
+#: request is refused with 429 rather than queued, so one account cannot hold
+#: the shared Qdrant's connections, or the gateway's memory, with as many
+#: requests as it opens.
+MAX_INFLIGHT_PER_USER = 16
+
+#: Largest Qdrant response the proxy reads. A search or a page of points with
+#: their payloads is well under a MiB; a scroll that returns the vectors of a
+#: thousand points is about ten. A larger one is answered with 502, and asking
+#: for fewer points (or no vectors) gets it through.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+#: Most collections one account may keep. An IDE indexer makes one per
+#: workspace it indexes and never deletes them.
+MAX_COLLECTIONS_PER_USER = 100
+
+#: Requests each account has in flight, for :data:`MAX_INFLIGHT_PER_USER`.
+_inflight: dict[str, int] = {}
+
+
+@contextmanager
+def _inflight_slot(user_id: str) -> Iterator[None]:
+    """Hold one of *user_id*'s proxy slots, or refuse with 429 when all are taken.
+
+    No ``await`` separates the check from the count, so this is race-free on
+    the one event loop.
+    """
+    count = _inflight.get(user_id, 0)
+    if count >= MAX_INFLIGHT_PER_USER:
+        raise HTTPException(
+            429,
+            f"Too many Qdrant requests in flight: at most {MAX_INFLIGHT_PER_USER} per account",
+            headers={"Retry-After": "1"},
+        )
+    _inflight[user_id] = count + 1
+    try:
+        yield
+    finally:
+        left = _inflight[user_id] - 1
+        if left:
+            _inflight[user_id] = left
+        else:
+            del _inflight[user_id]
 
 
 async def _verify_qdrant_user(request: Request) -> dict:
@@ -144,6 +205,87 @@ _BODY_COLLECTION_FIELDS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
 )
 
 
+#: The collection endpoint: PUT creates a collection, PATCH changes its options.
+_COLLECTION_PATH_RE = re.compile(r"^collections/[^/]+$")
+
+#: Collection options that size the shared instance rather than a tenant's own
+#: data -- its shards and replicas, its optimizer and write-ahead log, its
+#: quantized copies in RAM, strict mode -- dropped from what a tenant sends.
+#: ``params`` is the update endpoint's name for the replication settings.
+_INSTANCE_OPTIONS = frozenset(
+    {
+        "shard_number",
+        "sharding_method",
+        "replication_factor",
+        "write_consistency_factor",
+        "optimizers_config",
+        "wal_config",
+        "quantization_config",
+        "strict_mode_config",
+        "params",
+    }
+)
+
+#: The HNSW options a tenant may set, each up to the value IDE indexers ask for
+#: (Roo Code builds its index with ``m`` 64 and ``ef_construct`` 512); a larger
+#: graph costs the shared instance memory and indexing CPU for every point.
+_HNSW_LIMITS = {"m": 64, "payload_m": 64, "ef_construct": 512}
+_HNSW_FLAGS = frozenset({"on_disk"})
+
+
+def _sanitize_hnsw(config: Any) -> Any:
+    if not isinstance(config, dict):
+        return config
+    kept: dict[str, Any] = {}
+    for key, value in config.items():
+        if key in _HNSW_FLAGS:
+            kept[key] = value
+        elif key in _HNSW_LIMITS:
+            limit = _HNSW_LIMITS[key]
+            kept[key] = min(value, limit) if isinstance(value, int) else value
+    return kept
+
+
+def _sanitize_vector_params(params: Any) -> Any:
+    """One vector's options, without its own quantization and with a bounded HNSW graph."""
+    if not isinstance(params, dict):
+        return params
+    kept = {key: value for key, value in params.items() if key != "quantization_config"}
+    if "hnsw_config" in kept:
+        kept["hnsw_config"] = _sanitize_hnsw(kept["hnsw_config"])
+    return kept
+
+
+def _sanitize_collection_options(data: dict[str, Any]) -> list[str]:
+    """Drop or bound, in place, the options of a collection body that size the shared instance.
+
+    Returns what was dropped or bounded, for the log. What shapes the tenant's
+    own data -- its vectors' size and distance, sparse vectors, where payloads
+    live -- passes as sent.
+    """
+    changed = sorted(key for key in data if key in _INSTANCE_OPTIONS)
+    for key in changed:
+        del data[key]
+    if "hnsw_config" in data:
+        bounded = _sanitize_hnsw(data["hnsw_config"])
+        if bounded != data["hnsw_config"]:
+            changed.append("hnsw_config")
+        data["hnsw_config"] = bounded
+    vectors = data.get("vectors")
+    if isinstance(vectors, dict):
+        # One unnamed vector's options, or named vectors, each with its own.
+        named = not ("size" in vectors or "distance" in vectors)
+        bounded_vectors = (
+            {name: _sanitize_vector_params(params) for name, params in vectors.items()}
+            if named
+            else _sanitize_vector_params(vectors)
+        )
+        if bounded_vectors != vectors:
+            changed.append("vectors")
+        data["vectors"] = bounded_vectors
+    return changed
+
+
 def _is_collection_name(name: object) -> bool:
     """Whether *name* is a collection name a body may give, to be scoped like the path's."""
     return (
@@ -153,7 +295,9 @@ def _is_collection_name(name: object) -> bool:
     )
 
 
-def _scope_body(body: bytes, path: str, user_id: str) -> bytes | None:
+def _scope_body(
+    body: bytes, path: str, user_id: str, *, method: str = "PUT", changed: list[str] | None = None
+) -> bytes | None:
     """Return *body* with every collection it names scoped, or ``None`` if it cannot be.
 
     For an endpoint that takes no collection in its body, or an empty body,
@@ -161,10 +305,13 @@ def _scope_body(body: bytes, path: str, user_id: str) -> bytes | None:
     Qdrant reads exactly what was checked: one value per key, whatever the
     original repeated or escaped. ``None`` -- a refusal -- for a body that is
     not a JSON object, or a reference that is not an object with a collection
-    name.
+    name. A body that creates or changes a collection also loses the options
+    that size the shared instance (:func:`_sanitize_collection_options`); what
+    it lost is appended to *changed*.
     """
     fields = next((names for pattern, names in _BODY_COLLECTION_FIELDS if pattern.match(path)), ())
-    if not fields or not body.strip():
+    configures = method in ("PUT", "PATCH") and _COLLECTION_PATH_RE.match(path) is not None
+    if not (fields or configures) or not body.strip():
         return body
     try:
         data = json.loads(body)
@@ -172,6 +319,10 @@ def _scope_body(body: bytes, path: str, user_id: str) -> bytes | None:
         return None
     if not isinstance(data, dict):
         return None
+    if configures:
+        dropped = _sanitize_collection_options(data)
+        if changed is not None:
+            changed.extend(dropped)
     for field in fields:
         reference = data.get(field)
         if reference is None:
@@ -250,6 +401,40 @@ def _is_allowed(path: str) -> bool:
     return any(pattern.match(normalized) for pattern in _ALLOWED_PATTERNS)
 
 
+async def _refuse_past_collection_limit(
+    client: Any, base_url: str, headers: dict[str, str], scoped_name: str, user_id: str
+) -> None:
+    """Refuse (403) a new collection for an account that has its share already.
+
+    Reads the instance's collection list; a collection that already exists is
+    left for Qdrant to answer. Fails closed: when the list cannot be read, the
+    collection is not created.
+    """
+    status, body, _ = await client.request(
+        method="GET",
+        url=f"{base_url}/collections",
+        headers={key: value for key, value in headers.items() if key == "api-key"},
+        timeout=aiohttp.ClientTimeout(total=30),
+        max_body_bytes=MAX_RESPONSE_BYTES,
+    )
+    if not 200 <= status < 300:
+        raise HTTPException(502, "Qdrant backend unavailable")
+    try:
+        collections = json.loads(body)["result"]["collections"]
+        names = {entry["name"] for entry in collections}
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(502, "Qdrant backend unavailable") from None
+    if scoped_name in names:
+        return
+    owned = sum(1 for name in names if _unscope_collection(name, user_id) is not None)
+    if owned >= MAX_COLLECTIONS_PER_USER:
+        raise HTTPException(
+            403,
+            f"Collection limit reached: an account may keep at most {MAX_COLLECTIONS_PER_USER} "
+            "collections. Delete one before creating another",
+        )
+
+
 @router.api_route(
     "/v1/qdrant/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
@@ -289,19 +474,32 @@ async def qdrant_proxy(
         )
         raise HTTPException(403, f"Qdrant endpoint not allowed: /{path}")
 
+    # Held from before the body is read until the response is built.
+    with _inflight_slot(user_id):
+        return await _forward(request, path, normalized, user_id, request_id)
+
+
+async def _forward(
+    request: Request, path: str, normalized: str, user_id: str, request_id: str
+) -> Response:
+    """Forward one allowed request for *user_id* and answer with Qdrant's response."""
     settings = get_settings()
 
     # Rewrite collection names for tenant isolation
     rewritten_path = _rewrite_path(normalized, user_id)
 
     # Build upstream URL preserving query params
-    upstream_url = f"{settings.qdrant_base_url.rstrip('/')}/{rewritten_path}"
+    base_url = settings.qdrant_base_url.rstrip("/")
+    upstream_url = f"{base_url}/{rewritten_path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
 
     body = await request.body()
     body_bytes = len(body)
-    scoped_body = _scope_body(body, normalized, user_id)
+    changed_options: list[str] = []
+    scoped_body = _scope_body(
+        body, normalized, user_id, method=request.method, changed=changed_options
+    )
     if scoped_body is None:
         logger.warning(
             "qdrant_proxy body_blocked",
@@ -315,6 +513,17 @@ async def qdrant_proxy(
         raise HTTPException(
             403, "Qdrant request names a collection that cannot be scoped to your namespace"
         )
+    if changed_options:
+        logger.info(
+            "qdrant_proxy collection_options_bounded",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": path,
+                "user_id": user_id,
+                "detail": ",".join(changed_options),
+            },
+        )
     headers: dict[str, str] = {}
     if settings.qdrant_api_key:
         headers["api-key"] = settings.qdrant_api_key
@@ -325,6 +534,10 @@ async def qdrant_proxy(
     start = time.perf_counter()
     try:
         client = AsyncHTTPClient.shared()
+        if request.method == "PUT" and _COLLECTION_PATH_RE.match(normalized):
+            await _refuse_past_collection_limit(
+                client, base_url, headers, rewritten_path.removeprefix("collections/"), user_id
+            )
         timeout = aiohttp.ClientTimeout(total=30)
         status, resp_body, resp_content_type = await client.request(
             method=request.method,
@@ -332,6 +545,7 @@ async def qdrant_proxy(
             data=scoped_body if scoped_body else None,
             headers=headers,
             timeout=timeout,
+            max_body_bytes=MAX_RESPONSE_BYTES,
         )
 
         latency_ms = int((time.perf_counter() - start) * 1000)
@@ -369,6 +583,22 @@ async def qdrant_proxy(
             status_code=status,
             media_type=resp_content_type,
         )
+    except UpstreamPayloadTooLarge as exc:
+        logger.warning(
+            "qdrant_proxy response_too_large",
+            extra={
+                "request_id": request_id,
+                "method": request.method,
+                "path": path,
+                "user_id": user_id,
+                "limit": MAX_RESPONSE_BYTES,
+            },
+        )
+        raise HTTPException(
+            502,
+            f"Qdrant response exceeds the proxy's {MAX_RESPONSE_BYTES // (1024 * 1024)} MiB "
+            "limit; ask for fewer points, or leave out their vectors",
+        ) from exc
     except (aiohttp.ClientError, TimeoutError) as exc:
         latency_ms = int((time.perf_counter() - start) * 1000)
         logger.error(
