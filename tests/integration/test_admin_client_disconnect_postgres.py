@@ -36,11 +36,10 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from migrations.baseline.api_logs import ensure_api_logs_schema
 from routing.routers import FixedRouter
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
-from tests.fixtures import postgres
+from tests.fixtures import migrations as mig, postgres
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -92,7 +91,7 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
     )
     assert pool is not None
     async with pool.acquire() as conn:
-        await ensure_api_logs_schema(conn)
+        await mig.ensure_api_logs_tables(conn)
         # The list endpoint joins users; only the columns it reads are needed.
         await conn.execute(
             """

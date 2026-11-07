@@ -874,6 +874,15 @@ requests callers made directly. Both pages read the request log's admin
 endpoints with `source=batch` or `source=interactive`, and `batch_id` for one
 batch.
 
+The request volume counts (`GET /admin/request-metrics`) take the same
+`source`. Whatever it is, every bar also reports the batch worker's requests in
+it, `batch_request_count`, and how many failed, `batch_error_count`; each
+window reports both totals as `batch_requests` and `batch_error_requests`. So
+a chart of the interactive counts can stack the batch requests on top. The
+request list takes `start_time` and `end_time`, timezone-aware, to list the
+requests of one bar: the start is inclusive, the end is not, and a start older
+than the list's lookback widens the lookback to reach it, as far as 90 days.
+
 ### Upgrading a deployment
 
 A worker only runs the kinds of batch it knows: claims, expiry, finalizing,

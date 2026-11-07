@@ -28,7 +28,7 @@ async def test_the_index_goes(scratch):
     async with mig.connected(scratch) as conn:
         assert await conn.fetchval(_INDEX)
 
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, REVISION)
 
     async with mig.connected(scratch) as conn:
         assert not await conn.fetchval(_INDEX)

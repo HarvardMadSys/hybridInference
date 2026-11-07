@@ -593,6 +593,10 @@ class AdminRequestMetricsBucket(BaseModel):
     A client disconnect (status 499) is counted in ``client_disconnect_count``
     and never in ``error_count`` or ``success_count``; the two error/disconnect
     counts are disjoint by construction.
+
+    The counts are of the requests the response's ``source`` names. The
+    ``batch_*`` counts are the batch worker's requests in the bucket whatever
+    ``source`` is, so a chart of the interactive counts can stack them on top.
     """
 
     start_time: datetime
@@ -602,6 +606,9 @@ class AdminRequestMetricsBucket(BaseModel):
     # Defaulted so a client reading an older cached response still validates.
     client_disconnect_count: int = 0
     avg_latency_ms: float | None = None
+    batch_request_count: int = 0
+    # Of ``batch_request_count``, the failures (as ``error_count`` counts them).
+    batch_error_count: int = 0
 
 
 class AdminRequestMetricsWindow(BaseModel):
@@ -620,6 +627,8 @@ class AdminRequestMetricsWindow(BaseModel):
     error_requests: int
     client_disconnect_requests: int = 0
     avg_latency_ms: float | None = None
+    batch_requests: int = 0
+    batch_error_requests: int = 0
     buckets: list[AdminRequestMetricsBucket]
 
 
@@ -627,6 +636,8 @@ class AdminRequestMetricsResponse(BaseModel):
     """Request metrics for multiple admin dashboard lookback windows."""
 
     generated_at: datetime
+    # Whose requests the counts count: ``all``, ``interactive`` or ``batch``.
+    source: str = "all"
     windows: list[AdminRequestMetricsWindow]
 
 

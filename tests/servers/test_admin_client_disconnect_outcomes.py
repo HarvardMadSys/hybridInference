@@ -52,6 +52,8 @@ _BUCKET = {
     "client_disconnect_count": 3,
     "latency_count": 6,
     "latency_sum_ms": 1200,
+    # None of them run by the batch worker.
+    **{f"batch_{name}": 0 for name in request_volume.COUNT_COLUMNS[:6]},
 }
 
 
