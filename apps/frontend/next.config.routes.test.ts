@@ -70,7 +70,7 @@ async function rewriteTaking(path: string): Promise<Rewrite | undefined> {
 describe('the rewrites and the route handlers', () => {
   it('finds the gateway handlers this test is meant to protect', () => {
     expect(routeHandlers()).toEqual(
-      expect.arrayContaining(['/v1/[[...path]]', '/user/batch-files/[[...path]]']),
+      expect.arrayContaining(['/v1/[[...path]]', '/user/[[...path]]', '/admin/[[...path]]']),
     );
   });
 

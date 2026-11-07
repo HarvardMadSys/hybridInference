@@ -3,12 +3,14 @@
  * The route files that relay to the gateway: each answers every method with one
  * relay, mounted at its own URL prefix, and relays nothing outside it.
  *
- * `/user/batch-files` has a handler of its own because an upload is larger than
- * a rewrite forwards: Next copies every body it forwards through a rewrite,
- * holds the copy in memory, and cuts it off at `middlewareClientMaxBodySize`.
+ * Every gateway path that takes a request body is one of these rather than a
+ * rewrite: Next copies every body it forwards through a rewrite into memory and
+ * cuts it off at `middlewareClientMaxBodySize`, while these stream it.
  */
+import { readdirSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { join, sep } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -19,18 +21,61 @@ type RouteModule = Record<(typeof METHODS)[number], (request: Request) => Promis
   runtime: string;
 };
 
-const ROUTES: Array<[mount: string, load: () => Promise<RouteModule>]> = [
-  ['/v1', () => import('@/app/v1/[[...path]]/route') as Promise<RouteModule>],
-  ['/anthropic', () => import('@/app/anthropic/[[...path]]/route') as Promise<RouteModule>],
+/** Each gateway route file under src/app, the prefix it relays, and its module. */
+const ROUTES: Array<[file: string, mount: string, load: () => Promise<unknown>]> = [
+  ['v1/[[...path]]', '/v1', () => import('@/app/v1/[[...path]]/route')],
+  ['anthropic/[[...path]]', '/anthropic', () => import('@/app/anthropic/[[...path]]/route')],
+  ['auth/[[...path]]', '/auth', () => import('@/app/auth/[[...path]]/route')],
+  ['user/[[...path]]', '/user', () => import('@/app/user/[[...path]]/route')],
+  ['admin/[[...path]]', '/admin', () => import('@/app/admin/[[...path]]/route')],
   [
+    'internal/playground/[[...path]]',
     '/internal/playground',
-    () => import('@/app/internal/playground/[[...path]]/route') as Promise<RouteModule>,
+    () => import('@/app/internal/playground/[[...path]]/route'),
   ],
   [
-    '/user/batch-files',
-    () => import('@/app/user/batch-files/[[...path]]/route') as Promise<RouteModule>,
+    'internal/verify-admin',
+    '/internal/verify-admin',
+    () => import('@/app/internal/verify-admin/route'),
+  ],
+  [
+    'internal/model-catalog',
+    '/internal/model-catalog',
+    () => import('@/app/internal/model-catalog/route'),
+  ],
+  [
+    'internal/users/[userId]/status',
+    '/internal/users',
+    () => import('@/app/internal/users/[userId]/status/route'),
+  ],
+  [
+    'internal/users/[userId]/agent-access',
+    '/internal/users',
+    () => import('@/app/internal/users/[userId]/agent-access/route'),
+  ],
+  [
+    'internal/agent-grants/[[...path]]',
+    '/internal/agent-grants',
+    () => import('@/app/internal/agent-grants/[[...path]]/route'),
+  ],
+  [
+    'internal/alert-history/events',
+    '/internal/alert-history/events',
+    () => import('@/app/internal/alert-history/events/route'),
   ],
 ];
+
+/** The gateway's prefixes, under which every route file must be listed above. */
+const GATEWAY_PREFIXES = ['v1', 'anthropic', 'auth', 'user', 'admin', 'internal'];
+
+function routeFilesUnder(dir: string): string[] {
+  const app = join(__dirname, '../../app');
+  return readdirSync(join(app, dir), { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return routeFilesUnder(path);
+    return entry.name === 'route.ts' ? [dir.split(sep).join('/')] : [];
+  });
+}
 
 let server: http.Server;
 const seen: string[] = [];
@@ -52,7 +97,15 @@ afterAll(async () => {
   await new Promise((resolve) => server.close(resolve));
 });
 
-describe.each(ROUTES)('the %s route file', (mount, load) => {
+it('lists every route file under the gateway’s prefixes', () => {
+  expect(GATEWAY_PREFIXES.flatMap(routeFilesUnder).sort()).toEqual(
+    ROUTES.map(([file]) => file).sort(),
+  );
+});
+
+describe.each(ROUTES)('src/app/%s', (_file, mount, loadModule) => {
+  const load = () => loadModule() as Promise<RouteModule>;
+
   it('answers every method with one relay, on the Node runtime', async () => {
     const route = await load();
     for (const method of METHODS) expect(route[method], method).toBe(route.GET);

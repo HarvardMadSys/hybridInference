@@ -110,11 +110,9 @@ order from the outside in is:
    `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when
    `Content-Length` declares more, otherwise as soon as the bytes received pass
    the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`.
-   Behind the console, `/v1`, `/anthropic`, `/internal/playground` and
-   `/user/batch-files` stream through route handlers and are bounded only
-   here. The console's other paths are Next.js rewrites, which copy a body in
-   memory up to 32 MiB (`middlewareClientMaxBodySize`), this limit's default:
-   raising `REQUEST_MAX_BODY_MB` past it does not reach them.
+   Behind the console, every gateway path that takes a request body streams
+   through a route handler and is bounded only here, so raising
+   `REQUEST_MAX_BODY_MB` takes effect behind the console too.
 
 Middleware order matters: streaming responses are `StreamingResponse`
 objects that must not be buffered. Any new middleware that reads a response body
@@ -557,10 +555,11 @@ The repository ships Dockerfiles and Compose files under `deploy/docker/`:
 in `apps/frontend/`), and `docker-compose.yml`. Systemd units live in
 `deploy/systemd/`.
 
-The console and the API share one origin: the Next.js rewrites in
-`apps/frontend/next.config.js` proxy `/v1`, `/anthropic`, `/auth`, `/user`,
-`/admin`, `/health`, and `/site-config` to the backend, so a browser session and
-an API key reach the same paths on the same host. Those rewrites — not a reverse
+The console and the API share one origin: the console's route handlers forward
+`/v1`, `/anthropic`, `/auth`, `/user`, `/admin` and the published `/internal`
+paths to the backend, and the Next.js rewrites in `apps/frontend/next.config.js`
+forward `/health` and `/site-config`, so a browser session and an API key reach
+the same paths on the same host. Those handlers and rewrites — not a reverse
 proxy config — are [the public path table](public-path-table.md). The frontend
 has its own toolchain and quality gates, separate from the Python `make`
 targets.

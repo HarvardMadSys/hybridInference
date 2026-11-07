@@ -11,6 +11,7 @@ const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend
 // two machines. See the cloud agent repository's ENVIRONMENT.md.
 const AGENT_WEB_INTERNAL_URL = process.env.AGENT_WEB_INTERNAL_URL || '';
 const AGENT_CONTROL_PLANE_INTERNAL_URL = process.env.AGENT_CONTROL_PLANE_INTERNAL_URL || '';
+const LEGACY_AGENT_REWRITES = Boolean(AGENT_WEB_INTERNAL_URL && AGENT_CONTROL_PLANE_INTERNAL_URL);
 
 // Which public-site UI this build compiles in, and the generated files that
 // answer it. Resolved here, at config load, because that is the one moment all
@@ -92,24 +93,29 @@ const nextConfig = {
   // of every request a middleware sees, and of every request it forwards
   // through a rewrite below, keeps the copy in memory until the request ends,
   // and stops copying at this size -- forwarding what it has under the caller's
-  // original Content-Length, so the gateway waits for bytes that never come.
-  // That once failed every API call over the 10MB default (an image or two in
-  // base64), when the middleware matched every path, and the answer then was
-  // to raise this to 100MB: memory any anonymous caller could fill, per
-  // request, before the gateway checked anything.
+  // original Content-Length, so the upstream waits for bytes that never come.
+  // That once failed every API call over the 10MB default, when the middleware
+  // matched every path and the API went through rewrites; raising the limit to
+  // 100MB, later 32MiB, let any anonymous caller pin that much memory per
+  // request (twice on a page), and a few dozen stalled uploads were enough to
+  // end the container at its memory limit.
   //
-  // The API does not depend on it any more. `/v1`, `/anthropic`,
-  // `/internal/playground`, `/user/batch-files`, `/pgadmin` and `/agents` are
-  // route handlers the middleware does not match (src/middleware.ts), so Next
-  // never copies their bodies: they stream to their upstream whatever their
-  // size. What is left are the rewrites, which carry the console's own JSON.
-  // For them this equals the gateway's default body limit (REQUEST_MAX_BODY_MB,
-  // 32MiB): a body it would accept arrives whole, and a larger one is refused
-  // with 413 on its declared length before the missing bytes could matter
-  // (one sent without a length arrives cut short and fails to parse).
+  // Nothing that takes a body goes through either any more. Every gateway path
+  // that accepts one -- `/v1`, `/anthropic`, `/auth`, `/user`, `/admin` and
+  // the published `/internal` paths -- is a route handler the middleware does
+  // not match (src/middleware.ts), which streams the body to the gateway
+  // whatever its size; so are `/pgadmin` and `/agents`. What is left are the
+  // console's pages, which take no body (there are no Server Actions), and the
+  // rewrites below, which forward GETs. So the limit only has to cover what a
+  // page might be sent by mistake; a body past it reaches nothing that reads
+  // it. next.config.proxy.test.ts holds the table to that.
+  //
+  // The exception is an image built with the legacy `/agents` rewrites
+  // compiled in (above): they forward the agent's API bodies, so such a build
+  // keeps the old limit.
   experimental: {
     proxyTimeout: 60 * 60 * 1000,
-    middlewareClientMaxBodySize: 32 * 1024 * 1024,
+    middlewareClientMaxBodySize: LEGACY_AGENT_REWRITES ? 32 * 1024 * 1024 : 16 * 1024,
   },
   // Headers for every response this server sends of its own or relays from the
   // gateway: no MIME sniffing, no framing, and no full URL -- a reset token,
@@ -157,98 +163,42 @@ const nextConfig = {
     //
     // Job history did not move to the standalone service (decision DR5): it
     // has its own database, so `/agents` history there started empty.
-    const agentRewrites =
-      AGENT_WEB_INTERNAL_URL && AGENT_CONTROL_PLANE_INTERNAL_URL
-        ? [
-            // The API first: `/agents/api/*` is a prefix of `/agents/*`, and
-            // the more specific rule has to be matched first or every API call
-            // is served the web app's HTML.
-            //
-            // The prefix is stripped here — the control plane serves
-            // `/v1/agent/...` at its root and knows nothing about `/agents`.
-            {
-              source: '/agents/api/:path*',
-              destination: `${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*`,
-            },
-            // The prefix is *kept* here: that app is built with
-            // `basePath=/agents`, so it generates its own links and asset URLs
-            // already carrying it and expects to receive them.
-            { source: '/agents/:path*', destination: `${AGENT_WEB_INTERNAL_URL}/agents/:path*` },
-            { source: '/agents', destination: `${AGENT_WEB_INTERNAL_URL}/agents` },
-          ]
-        : [];
+    const agentRewrites = LEGACY_AGENT_REWRITES
+      ? [
+          // The API first: `/agents/api/*` is a prefix of `/agents/*`, and
+          // the more specific rule has to be matched first or every API call
+          // is served the web app's HTML.
+          //
+          // The prefix is stripped here — the control plane serves
+          // `/v1/agent/...` at its root and knows nothing about `/agents`.
+          {
+            source: '/agents/api/:path*',
+            destination: `${AGENT_CONTROL_PLANE_INTERNAL_URL}/:path*`,
+          },
+          // The prefix is *kept* here: that app is built with
+          // `basePath=/agents`, so it generates its own links and asset URLs
+          // already carrying it and expects to receive them.
+          { source: '/agents/:path*', destination: `${AGENT_WEB_INTERNAL_URL}/agents/:path*` },
+          { source: '/agents', destination: `${AGENT_WEB_INTERNAL_URL}/agents` },
+        ]
+      : [];
 
     return {
       beforeFiles: agentRewrites,
-      // `/v1`, `/anthropic` and `/internal/playground` reach the gateway too,
-      // but through route handlers (src/app/<prefix>/[[...path]]/route.ts),
-      // not rewrites: their responses stream, and the rewrite proxy neither
-      // reports a gateway that goes away mid-response nor tolerates 30s of
-      // silence. See src/lib/server/gatewayProxy.ts. So does
-      // `/user/batch-files`, because its uploads are larger than a rewrite
-      // forwards (`middlewareClientMaxBodySize`).
+      // Only the gateway's public GET documents are rewrites. Every gateway
+      // path that takes a request body -- `/v1`, `/anthropic`, `/auth`, `/user`,
+      // `/admin` and the published `/internal` paths, each named on its own --
+      // is a route handler under src/app instead (src/lib/server/gatewayProxy.ts):
+      // the rewrite proxy copies a body into memory, cut off at
+      // `middlewareClientMaxBodySize`, and never reports a gateway that goes
+      // away mid-response.
       //
       // Next checks these rules before any dynamic route, a `[[...path]]`
-      // handler included, so a rule here must not match a path such a handler
-      // serves: `/user` stops short of `batch-files`, which a plain
-      // `/user/:path*` took, leaving that handler unreachable.
-      // next.config.routes.test.ts checks every handler against this table.
+      // handler included, so a rule here must not match a path a handler
+      // serves: `/user/:path*` once took every `/user/batch-files` upload
+      // from its handler that way. next.config.routes.test.ts checks every
+      // handler against this table.
       afterFiles: [
-        { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
-        {
-          source: '/user/:path((?!batch-files(?:/|$)).*)',
-          destination: `${BACKEND_INTERNAL_URL}/user/:path`,
-        },
-        { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
-        {
-          source: '/internal/verify-admin',
-          destination: `${BACKEND_INTERNAL_URL}/internal/verify-admin`,
-        },
-        // The cloud agent's control plane runs on its own machine and reaches
-        // this gateway over its public origin. The Cloudflare tunnel routes that
-        // origin straight to this container, so a path with no rewrite in this
-        // table is answered by Next.js — and its 404 is an HTML page, which reads
-        // to the caller as "the gateway is down" rather than "this path is not
-        // forwarded". Every one of these was unreachable in production and
-        // staging until this entry existed.
-        //
-        // Named individually, because this prefix is shared: /internal/verify-admin
-        // authenticates a browser session by cookie, and a blanket
-        // /internal/:path* would forward whatever lands here next without anyone
-        // deciding it should be reachable from outside.
-        {
-          source: '/internal/model-catalog',
-          destination: `${BACKEND_INTERNAL_URL}/internal/model-catalog`,
-        },
-        {
-          source: '/internal/users/:userId/status',
-          destination: `${BACKEND_INTERNAL_URL}/internal/users/:userId/status`,
-        },
-        {
-          source: '/internal/users/:userId/agent-access',
-          destination: `${BACKEND_INTERNAL_URL}/internal/users/:userId/agent-access`,
-        },
-        // Whole prefix, unlike the lookups above: every route on that router carries
-        // the dispatch token as a router-level dependency, so a route added
-        // later is authorized by construction. Enumerating them here instead
-        // would mean the next one 404s at this layer with nothing to say why.
-        {
-          source: '/internal/agent-grants',
-          destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants`,
-        },
-        {
-          source: '/internal/agent-grants/:path*',
-          destination: `${BACKEND_INTERNAL_URL}/internal/agent-grants/:path*`,
-        },
-        // Alert history from sources outside this network (the status monitor).
-        // Exactly one path, not a prefix: the endpoint admits only a scoped
-        // writer credential (ALERT_HISTORY_WRITER_CREDENTIALS) and answers 404
-        // while alert history is off, so forwarding it publishes nothing a
-        // deployment has not configured. Reads stay under /admin/:path*.
-        {
-          source: '/internal/alert-history/events',
-          destination: `${BACKEND_INTERNAL_URL}/internal/alert-history/events`,
-        },
         { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
         // Public homepage updates. The tunnel routes every public path to this
         // container, so this rewrite forwards the request on to FastAPI (same
