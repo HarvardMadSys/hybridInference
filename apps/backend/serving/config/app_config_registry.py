@@ -727,6 +727,21 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         restart_required=True,
         one_time=True,
     ),
+    ConfigEntry(
+        "MODEL_QUEUE_STATUS_URL",
+        "providers",
+        "Queue status address of an on-demand model host, as this backend reaches it "
+        "(for example an HPC on-demand proxy's /status). Admin -> Batches -> Model queue "
+        "shows the jobs it reports and the batch requests waiting for each model. Empty "
+        "shows no queue.",
+    ),
+    ConfigEntry(
+        "MODEL_QUEUE_STATUS_API_KEY",
+        "providers",
+        "Bearer key the queue status address requires. Empty uses LOCAL_API_KEY.",
+        secret=True,
+        fallback_key="LOCAL_API_KEY",
+    ),
     # --- routing -----------------------------------------------------------
     _setting(
         "enable_routewise",
