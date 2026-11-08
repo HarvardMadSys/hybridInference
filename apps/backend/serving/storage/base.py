@@ -823,8 +823,12 @@ class OperationalStore(ABC):
         """Update the session with a new refresh token hash and JTI."""
 
     @abstractmethod
-    async def revoke_session(self, session_id: str) -> None:
-        """Set ``revoked = TRUE`` on the session."""
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Set ``revoked = TRUE`` on the session; return the account it belongs to.
+
+        ``None`` when there is no such session. A caching layer forgets that
+        account's cached session liveness, and no other account's.
+        """
 
     @abstractmethod
     async def delete_user_sessions(self, user_id: str) -> None:
@@ -915,8 +919,12 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Revoke every account's session in a browser, and the browser session."""
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Revoke every account's session in a browser, and the browser session.
+
+        Returns the accounts whose sessions were revoked, so a caching layer
+        forgets their cached session liveness and no other account's.
+        """
 
     # -- login events (audit) ------------------------------------------------
 

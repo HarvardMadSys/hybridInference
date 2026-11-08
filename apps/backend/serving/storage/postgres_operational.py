@@ -2137,11 +2137,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 session_id,
             )
 
-    async def revoke_session(self, session_id: str) -> None:
-        """Set ``revoked = TRUE`` on the session."""
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Set ``revoked = TRUE`` on the session; return its account, or None if none."""
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE auth_sessions SET revoked = TRUE WHERE id = $1",
+            return await conn.fetchval(
+                "UPDATE auth_sessions SET revoked = TRUE WHERE id = $1 RETURNING user_id",
                 session_id,
             )
 
@@ -2337,17 +2337,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
         return remaining
 
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Sign every account out of one browser and retire its cookie."""
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Sign every account out of one browser and retire its cookie.
+
+        Returns the accounts whose sessions were revoked.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             # Same lock as attach: a racing sign-in starts a fresh browser.
             await conn.execute(
                 "SELECT 1 FROM browser_sessions WHERE id = $1 FOR UPDATE", browser_session_id
             )
-            await conn.execute(
+            revoked = await conn.fetch(
                 "UPDATE auth_sessions SET revoked = TRUE WHERE id IN ("
                 "SELECT auth_session_id FROM browser_session_accounts "
-                "WHERE browser_session_id = $1)",
+                "WHERE browser_session_id = $1) RETURNING user_id",
                 browser_session_id,
             )
             await conn.execute(
@@ -2358,6 +2361,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "UPDATE browser_sessions SET revoked = TRUE, active_user_id = NULL WHERE id = $1",
                 browser_session_id,
             )
+        return sorted({row["user_id"] for row in revoked})
 
     # -- login events --------------------------------------------------------
 

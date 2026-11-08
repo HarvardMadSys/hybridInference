@@ -806,10 +806,15 @@ class CachedOperationalStore(OperationalStore):
             session_id, new_refresh_token_hash=new_refresh_token_hash, new_jti=new_jti
         )
 
-    async def revoke_session(self, session_id: str) -> None:
-        """Delegate, then forget every session's liveness (whose this was is not known)."""
-        await self._store.revoke_session(session_id)
-        await self._forget_sessions()
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Delegate, then forget the owning account's session liveness.
+
+        Every account's, as before, only when the store cannot say whose the
+        session was.
+        """
+        owner = await self._store.revoke_session(session_id)
+        await self._forget_sessions(owner if isinstance(owner, str) else None)
+        return owner
 
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delegate, then forget the account's session liveness."""
@@ -884,10 +889,20 @@ class CachedOperationalStore(OperationalStore):
         await self._forget_sessions(user_id)
         return remaining
 
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Delegate, then forget every session's liveness (the browser's accounts are not known)."""
-        await self._store.revoke_browser_session(browser_session_id)
-        await self._forget_sessions()
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Delegate, then forget the session liveness of the accounts it signed out.
+
+        Signing out of every account in one browser is any user's to ask for; it
+        must not flush every other account's cached answers with them. Every
+        account's, as before, only when the store cannot say whose they were.
+        """
+        accounts = await self._store.revoke_browser_session(browser_session_id)
+        if isinstance(accounts, list) and all(isinstance(a, str) for a in accounts):
+            for account in accounts:
+                await self._forget_sessions(account)
+        else:
+            await self._forget_sessions()
+        return accounts
 
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""

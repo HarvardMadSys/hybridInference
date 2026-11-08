@@ -187,12 +187,15 @@ class BrowserSessionFake:
                 row["revoked"] = revoked = True
         return revoked
 
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        revoked: set[str] = set()
         for key in [key for key in self.members if key[0] == browser_session_id]:
             auth_session_id = self.members.pop(key)
             if self._session(auth_session_id):
                 self.sessions[auth_session_id]["revoked"] = True
+                revoked.add(key[1])
         self.browsers[browser_session_id].update(revoked=True, active_user_id=None)
+        return sorted(revoked)
 
 
 def install(store: Any) -> BrowserSessionFake:
