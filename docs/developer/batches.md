@@ -621,7 +621,9 @@ are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 of
 `"{webhook-id}.{webhook-timestamp}.{body}"` with the secret's base64 part as the
 key). A delivery that is not answered with a `2xx` is retried with backoff, up
 to eight attempts; the same event can arrive more than once, so deduplicate on
-`webhook-id`.
+`webhook-id`. Your events go out one at a time, beside other users'. An
+endpoint that fails three deliveries in a row by timing out gets none for ten
+minutes, and longer each further time, up to an hour.
 
 A webhook URL must be HTTPS and reach a public address. Private, loopback,
 link-local and cloud-metadata addresses are refused when the URL is saved, again
