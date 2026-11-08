@@ -24,8 +24,8 @@ from serving.servers.middleware.timeout import TimeoutMiddleware
 from serving.servers.routers import batch_console, batch_console_create, batches, files
 
 PAGES = 6
-PAGE_DELAY = 0.2
-REQUEST_TIMEOUT = 0.5
+PAGE_DELAY = 0.1
+REQUEST_TIMEOUT = 0.25
 OWNER = "alice"
 
 
