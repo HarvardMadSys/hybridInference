@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -28,23 +30,153 @@ def arguments(tmp_path, **overrides):
     return argparse.Namespace(**values)
 
 
-def test_acceptance_failure_restores_previous_images_and_persists_selection(tmp_path, monkeypatch):
+OLD = {"backend": "sha256:" + "c" * 64, "frontend": "sha256:" + "d" * 64}
+
+
+def _switches(calls):
+    return [(i, kw) for i, (argv, kw) in enumerate(calls) if "--no-build" in argv]
+
+
+def test_acceptance_failure_restores_previous_images_and_records_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     args = arguments(tmp_path)
-    old = {"backend": "sha256:" + "c" * 64, "frontend": "sha256:" + "d" * 64}
-    monkeypatch.setattr(ops, "_running_images", lambda _: old)
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
     calls = []
     monkeypatch.setattr(ops, "command", lambda argv, **kw: calls.append((argv, kw)))
-    monkeypatch.setattr(ops, "_wait", Mock(side_effect=ValueError("not ready")))
-    with pytest.raises(ValueError, match="not ready"):
+    waits = Mock(side_effect=[ValueError("not ready"), None])
+    monkeypatch.setattr(ops, "_wait", waits)
+    with pytest.raises(ValueError, match=r"not ready\. The previous images are running again"):
         ops.deploy(args)
     migration = next(i for i, (argv, _) in enumerate(calls) if "upgrade" in argv)
-    switches = [(i, kw) for i, (argv, kw) in enumerate(calls) if "--no-build" in argv]
+    switches = _switches(calls)
     assert len(switches) == 2
     assert migration < switches[0][0] < switches[1][0]
-    assert switches[-1][1]["env"]["BACKEND_IMAGE"] == old["backend"]
-    assert old["frontend"] in Path(".ops/images.env").read_text()
-    assert json.loads((args.state / "previous.json").read_text()) == old
+    assert switches[-1][1]["env"]["BACKEND_IMAGE"] == OLD["backend"]
+    # The restored stack is accepted again before the deploy reports failure.
+    assert waits.call_count == 2
+    # A failed attempt is neither what later commands start nor what a
+    # rollback returns to: the release that keeps running stays recorded.
+    assert not args.state.exists()
+    assert not Path(".ops").exists()
+
+
+def test_an_accepted_deploy_is_pinned_and_recorded_only_after_acceptance(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
+    monkeypatch.setattr(ops, "command", Mock())
+    seen = []
+    monkeypatch.setattr(
+        ops, "_wait", lambda _: seen.append(sorted(p.name for p in tmp_path.rglob("*")))
+    )
+    ops.deploy(args)
+    assert seen == [[]], "nothing may be recorded before acceptance"
+    new = {"backend": args.backend_image, "frontend": args.frontend_image}
+    assert json.loads((args.state / "previous.json").read_text()) == OLD
+    assert json.loads((args.state / "current.json").read_text()) == new
+    pin = args.state / "images.env"
+    assert pin.read_text() == (
+        f"BACKEND_IMAGE={args.backend_image}\nFRONTEND_IMAGE={args.frontend_image}\n"
+    )
+    assert pin.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        http.client.IncompleteRead(b"partial", 10),
+        KeyboardInterrupt(),
+        subprocess.CalledProcessError(1, ["docker", "compose", "up"]),
+    ],
+    ids=["short-read", "ctrl-c", "compose"],
+)
+def test_any_failure_after_the_switch_restores_the_previous_images(tmp_path, monkeypatch, failure):
+    """Not only the errors a probe usually raises: a short read or Ctrl-C too."""
+    args = arguments(tmp_path)
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
+    calls = []
+    first = True
+
+    def run(argv, **kwargs):
+        nonlocal first
+        calls.append((argv, kwargs))
+        if "--no-build" in argv and first:
+            first = False
+            raise failure
+
+    monkeypatch.setattr(ops, "command", run)
+    monkeypatch.setattr(ops, "_wait", Mock())
+    with pytest.raises(ValueError) as raised:
+        ops.deploy(args)
+    assert [kw["env"]["BACKEND_IMAGE"] for _, kw in _switches(calls)] == [
+        args.backend_image,
+        OLD["backend"],
+    ]
+    assert ops.describe(failure) in str(raised.value)
+    assert not args.state.exists()
+
+
+def test_a_failed_restore_reports_both_failures(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
+    monkeypatch.setattr(ops, "command", Mock())
+    monkeypatch.setattr(
+        ops, "_wait", Mock(side_effect=[ValueError("new is down"), ValueError("old is down")])
+    )
+    with pytest.raises(ValueError) as raised:
+        ops.deploy(args)
+    assert "new is down" in str(raised.value)
+    assert "Restoring the previous images failed too: old is down" in str(raised.value)
+
+
+def test_acceptance_timeout_names_the_last_underlying_failure(tmp_path, monkeypatch):
+    """ "Timed out" alone sends the operator to the logs for what one line can say."""
+    args = arguments(tmp_path, timeout=0)
+    monkeypatch.setattr(ops, "smoke", Mock(side_effect=http.client.IncompleteRead(b"partial", 10)))
+    with pytest.raises(ValueError, match=r"within 0s; last check: IncompleteRead"):
+        ops._wait(args)
+
+
+def test_rollback_pins_what_it_started_and_records_it_once_accepted(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    ops._write_json(args.state / "previous.json", OLD)
+    monkeypatch.setattr(ops, "command", Mock())
+    monkeypatch.setattr(ops, "_wait", Mock(side_effect=ValueError("still starting")))
+    with pytest.raises(ValueError, match="still starting"):
+        ops.rollback(args)
+    # Running and pinned, so a later `make up` keeps the release rolled back to,
+    # but not recorded as accepted.
+    assert f"BACKEND_IMAGE={OLD['backend']}" in (args.state / "images.env").read_text()
+    assert not (args.state / "current.json").exists()
+
+    monkeypatch.setattr(ops, "_wait", Mock())
+    ops.rollback(args)
+    assert json.loads((args.state / "current.json").read_text()) == OLD
+
+
+def test_rollback_without_a_recorded_release_says_so(tmp_path, monkeypatch):
+    run = Mock()
+    monkeypatch.setattr(ops, "command", run)
+    with pytest.raises(ValueError, match="No release to return to is recorded"):
+        ops.rollback(arguments(tmp_path))
+    run.assert_not_called()
+
+
+def test_a_failed_command_is_reported_with_its_command_line(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["gateway_ops", "backup", "--backup", str(tmp_path / "x")])
+    monkeypatch.setattr(
+        ops,
+        "command",
+        Mock(side_effect=subprocess.CalledProcessError(2, ["docker", "compose", "exec"])),
+    )
+    assert ops.main() == 1
+    assert "`docker compose exec` exited with status 2" in capsys.readouterr().err
+
+
+def test_an_interrupted_operation_exits_without_a_traceback(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["gateway_ops", "smoke", "--base-url", "http://x"])
+    monkeypatch.setattr(ops, "smoke", Mock(side_effect=KeyboardInterrupt))
+    assert ops.main() == 130
+    assert capsys.readouterr().err == "smoke interrupted\n"
 
 
 def test_migration_failure_never_switches_running_services(tmp_path, monkeypatch):

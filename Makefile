@@ -307,7 +307,17 @@ LOCAL_ENV_ARGS := $(if $(wildcard .env),--env-file .env,)
 ifeq ($(_IS_EXAMPLE),yes)
 LOCAL_ENV_ARGS :=
 endif
-ARTIFACT_ENV_FILE := $(wildcard .ops/images.env)
+# Each deployment's lifecycle record: the images `make deploy` or `make
+# rollback` last started (images.env), the releases a rollback chooses between
+# and, by default, its database dumps. One directory per deployment -- the
+# selected distribution, and the Compose project when the shell names one -- so
+# the example, another overlay or a second project in this checkout never
+# starts this one's images. While images.env exists, every Compose command of
+# this deployment starts those images instead of building the checkout; `make
+# build` refuses until the file is removed (docs/developer/deployment.md).
+OPS_STATE := .ops/$(if $(DISTRIBUTION_PATH),$(DISTRIBUTION),none)$(if $(COMPOSE_PROJECT_NAME),/$(COMPOSE_PROJECT_NAME),)
+ARTIFACT_ENV_FILE := $(wildcard $(OPS_STATE)/images.env)
+ARTIFACT_ENV_ARGS := $(if $(ARTIFACT_ENV_FILE),--env-file $(ARTIFACT_ENV_FILE),)
 ifneq ($(ARTIFACT_ENV_FILE),)
 COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.artifacts.yml
 endif
@@ -316,7 +326,7 @@ export MODEL_CATALOG := $(shell python3 -c 'import json; print(json.dumps(json.l
 export ROUTING_POLICY := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/config/routing.json"))))')
 export SITE_CONFIGURATION := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/distribution.json"))))')
 endif
-COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)$(if $(ARTIFACT_ENV_FILE), --env-file $(ARTIFACT_ENV_FILE),)
+COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)$(if $(ARTIFACT_ENV_ARGS), $(ARTIFACT_ENV_ARGS),)
 # The full local demo is a third Compose layer on top of the runnable example.
 # Keep COMPOSE above untouched: `make up DISTRIBUTION=example` is the Stage 1
 # contract, while only the explicit demo targets opt into Postgres + frontend.
@@ -325,7 +335,7 @@ DEMO_COMPOSE_FILE_ARG := $(if $(DEMO_COMPOSE_FILE),-f $(DEMO_COMPOSE_FILE),)
 # The teaching lifecycle never inherits optional production profiles from a
 # caller's shell. `env` also keeps this usable as full_smoke's argv-based
 # recreate command, where a bare `NAME=value` token would not be executable.
-DEMO_COMPOSE := env COMPOSE_PROFILES= docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+DEMO_COMPOSE := env COMPOSE_PROFILES= docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)$(if $(ARTIFACT_ENV_ARGS), $(ARTIFACT_ENV_ARGS),)
 DOCKER_VOLUMES := hybridinference_postgres_data
 # The schema migrations, run with the backend's own service definition so they
 # use the very image (and DB_* settings) the backend is about to start with.
@@ -467,10 +477,21 @@ else
 	$(COMPOSE) logs -f --tail=500
 endif
 
+# A build runs this checkout's code. On a deployment pinned to the images a
+# deploy or rollback started, it would tag the build with a digest it does not
+# have and start a different artifact than the record says; returning to source
+# builds is a decision, made by removing the pin.
+_require-source-build:
+ifneq ($(ARTIFACT_ENV_FILE),)
+	@echo "This deployment runs the images pinned in $(ARTIFACT_ENV_FILE) by make deploy or make rollback." >&2
+	@echo "Deploy another release with make deploy, or remove that file to return to source builds." >&2
+	@exit 1
+endif
+
 # Keep rebuild semantics aligned with `up`: rebuilding the tutorial must not
 # unexpectedly turn it into the production full stack.
 ifeq ($(_IS_EXAMPLE),yes)
-build:  ## Rebuild images and restart (or: make build s=backend)
+build: _require-source-build  ## Rebuild images and restart (or: make build s=backend)
 	$(COMPOSE) up -d --wait example-provider
 ifdef s
 ifneq ($(filter-out backend example-provider,$(s)),)
@@ -481,7 +502,7 @@ else
 	$(COMPOSE) up -d --build --no-deps backend
 endif
 else
-build: docker-volumes
+build: _require-source-build docker-volumes
 ifdef s
 	$(COMPOSE) build $(s)
 	$(MIGRATE_DB)
@@ -495,18 +516,20 @@ else
 endif
 endif
 
-.PHONY: doctor deploy rollback backup restore-check
+.PHONY: doctor deploy rollback backup restore-check _require-source-build
 OPS_BASE_URL ?=
-BACKUP ?= gateway.dump
+# Inside the deployment's private record, which neither Git nor a Docker build
+# context includes: the dump holds every stored secret.
+BACKUP ?= $(OPS_STATE)/gateway.dump
 
 doctor:  ## Diagnose services, readiness, schema and missing configuration
 	$(SMOKE_PYTHON) -m ops.admin.gateway_ops doctor --base-url "$(OPS_BASE_URL)" --compose $(COMPOSE)
 
 deploy: docker-volumes  ## Deploy pinned BACKEND_IMAGE and FRONTEND_IMAGE with acceptance and rollback
-	$(SMOKE_PYTHON) -m ops.admin.gateway_ops deploy --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --backend-image "$(BACKEND_IMAGE)" --frontend-image "$(FRONTEND_IMAGE)" --compose $(COMPOSE)
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops deploy --state "$(OPS_STATE)" --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --backend-image "$(BACKEND_IMAGE)" --frontend-image "$(FRONTEND_IMAGE)" --compose $(COMPOSE)
 
 rollback:  ## Restore previously recorded images without running old migrations
-	$(SMOKE_PYTHON) -m ops.admin.gateway_ops rollback --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --compose $(COMPOSE)
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops rollback --state "$(OPS_STATE)" --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --compose $(COMPOSE)
 
 backup:  ## Write a private Postgres dump to BACKUP=<path>
 	$(SMOKE_PYTHON) -m ops.admin.gateway_ops backup --backup "$(BACKUP)" --compose $(COMPOSE)

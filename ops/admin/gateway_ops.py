@@ -1,17 +1,22 @@
 """Gateway diagnostics, pinned-artifact deployment and isolated recovery drills.
 
 Compose arguments come from the Makefile as an argv list, never a shell command.
-Only deploy and rollback recreate application services. A restore drill creates
-and drops its own randomly named database, never the deployment's database.
+Only deploy and rollback recreate application services. Each deployment keeps
+its record -- the images it is pinned to and the releases it ran -- in a state
+directory of its own, which the Makefile names after the selected distribution.
+A restore drill creates and drops its own randomly named database, never the
+deployment's database.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import http.client
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -19,10 +24,16 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 _DIGEST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$")
 _IMAGE_ID = re.compile(r"^sha256:[a-f0-9]{64}$")
+
+#: The overlay that starts the application services from pinned images.
+_ARTIFACTS = "deploy/docker/docker-compose.artifacts.yml"
+
+# What the operations themselves raise and report; anything else is a bug.
+_FAILURES = (OSError, ValueError, subprocess.CalledProcessError, http.client.HTTPException)
 
 
 def command(
@@ -85,6 +96,23 @@ def check_health(base_url: str) -> dict[str, Any]:
     return health
 
 
+def describe(exc: BaseException) -> str:
+    """Name a failure for the operator without the output of what failed.
+
+    Command lines carry file paths and image references, never a secret: values
+    reach Compose through the environment. HTTP and parsing errors name a
+    status or a position, not a body.
+    """
+    if isinstance(exc, KeyboardInterrupt):
+        return "interrupted"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return f"`{shlex.join(str(arg) for arg in exc.cmd)}` exited with status {exc.returncode}"
+    text = str(exc).strip()
+    if type(exc) is ValueError:
+        return text or "ValueError"
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
 def _records(text: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(text or "[]")
@@ -93,11 +121,16 @@ def _records(text: str) -> list[dict[str, Any]]:
         return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-def published_base_url(compose: list[str], service: str) -> str:
-    """Resolve the probe endpoint with the same overlays and env files as deployment."""
-    config = json.loads(
+def _compose_config(compose: list[str]) -> dict[str, Any]:
+    """Render the project with the same overlays and env files as every lifecycle command."""
+    return json.loads(
         command([*compose, "config", "--format", "json"], capture=True, text=True).stdout
     )
+
+
+def published_base_url(compose: list[str], service: str) -> str:
+    """Resolve the probe endpoint with the same overlays and env files as deployment."""
+    config = _compose_config(compose)
     target = {"backend": 8080, "frontend": 3001}[service]
     for port in config.get("services", {}).get(service, {}).get("ports", []):
         if port.get("target") != target or port.get("protocol", "tcp") != "tcp":
@@ -195,7 +228,7 @@ def doctor(args: argparse.Namespace) -> int:
             if name == "configuration" and (result.get("missing") or result.get("invalid")):
                 failed = True
             results[name] = result
-        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        except Exception as exc:  # one failed check, a short read included, hides no other
             failed = True
             results[name] = {"error": type(exc).__name__}
     print(json.dumps(results, indent=2))
@@ -206,12 +239,31 @@ def doctor(args: argparse.Namespace) -> int:
     return int(failed or bool(incomplete))
 
 
-def _write_json(path: Path, value: Any) -> None:
+def _write_private(path: Path, text: str) -> None:
+    """Replace *path* atomically with a file only its owner can read."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temp = path.with_name(path.name + ".tmp")
+    with contextlib.suppress(FileNotFoundError):
+        temp.unlink()
     with open(temp, "w", opener=lambda name, flags: os.open(name, flags, 0o600)) as stream:
-        json.dump(value, stream, indent=2)
+        stream.write(text)
     temp.replace(path)
+
+
+def _write_json(path: Path, value: Any) -> None:
+    _write_private(path, json.dumps(value, indent=2))
+
+
+def _pin(state: Path, images: dict[str, str]) -> None:
+    """Record the images this deployment's later lifecycle commands start.
+
+    The Makefile hands ``images.env`` to Compose, with the pinned-artifact
+    overlay, for this deployment alone.
+    """
+    _write_private(
+        state / "images.env",
+        "".join(f"{service.upper()}_IMAGE={images[service]}\n" for service in sorted(images)),
+    )
 
 
 def _running_images(compose: list[str]) -> dict[str, str]:
@@ -228,36 +280,58 @@ def _running_images(compose: list[str]) -> dict[str, str]:
 def _artifact_command(compose: list[str]) -> list[str]:
     # Options precede the Compose subcommand; its relative paths share the base
     # file's directory, as in every other lifecycle command.
-    path = "deploy/docker/docker-compose.artifacts.yml"
-    return compose if path in compose else [*compose, "-f", path]
+    return compose if _ARTIFACTS in compose else [*compose, "-f", _ARTIFACTS]
+
+
+def _image_environment(images: dict[str, str]) -> dict[str, str]:
+    # The shell outranks every --env-file, including a pin recorded earlier.
+    return {
+        **os.environ,
+        **{f"{service.upper()}_IMAGE": image for service, image in images.items()},
+    }
 
 
 def _switch(compose: list[str], images: dict[str, str]) -> None:
-    env = {**os.environ, **{f"{service.upper()}_IMAGE": image for service, image in images.items()}}
-    state = Path(".ops")
-    state.mkdir(mode=0o700, exist_ok=True)
-    selection = state / "images.env"
-    temp = state / "images.env.tmp"
-    temp.write_text(
-        "".join(f"{service.upper()}_IMAGE={image}\n" for service, image in images.items())
-    )
-    temp.replace(selection)
+    """Start the application services from *images*, without building or migrating."""
     command(
         [*_artifact_command(compose), "up", "-d", "--no-deps", "--no-build", "backend", "frontend"],
-        env=env,
+        env=_image_environment(images),
     )
 
 
 def _wait(args: argparse.Namespace) -> None:
+    """Repeat the acceptance smoke until it passes; on timeout, report its last failure."""
     deadline = time.monotonic() + args.timeout
     while True:
         try:
             smoke(args.base_url, args.model)
             return
-        except (OSError, ValueError):
+        except Exception as exc:  # any failed probe -- a reset, a short read -- is "not yet"
             if time.monotonic() >= deadline:
-                raise ValueError("Deployment acceptance timed out") from None
+                raise ValueError(
+                    f"acceptance did not pass within {args.timeout:g}s; last check: {describe(exc)}"
+                ) from exc
             time.sleep(2)
+
+
+def _restore_previous(
+    args: argparse.Namespace, previous: dict[str, str], failure: BaseException
+) -> NoReturn:
+    """Start the images that ran before the deploy again, accept them, and report why."""
+    reason = describe(failure)
+    print(f"Deployment not accepted ({reason}); restoring the previous images", file=sys.stderr)
+    try:
+        _switch(args.compose, previous)
+        _wait(args)
+    except BaseException as restore_failure:
+        raise ValueError(
+            f"deployment not accepted: {reason}. Restoring the previous images failed too: "
+            f"{describe(restore_failure)}"
+        ) from restore_failure
+    raise ValueError(
+        f"deployment not accepted: {reason}. The previous images are running again and "
+        "pass acceptance"
+    ) from failure
 
 
 def deploy(args: argparse.Namespace) -> None:
@@ -270,7 +344,7 @@ def deploy(args: argparse.Namespace) -> None:
         raise ValueError(
             "Start the stack before upgrading; both running artifacts must be recorded"
         )
-    env = {**os.environ, "BACKEND_IMAGE": images["backend"], "FRONTEND_IMAGE": images["frontend"]}
+    env = _image_environment(images)
     compose = _artifact_command(args.compose)
     command([*compose, "pull", "backend", "frontend"], env=env)
     command([*args.compose, "up", "-d", "--no-recreate", "--wait", "postgres"])
@@ -278,25 +352,36 @@ def deploy(args: argparse.Namespace) -> None:
         [*compose, "run", "--rm", "--no-deps", "backend", "python", "-m", "migrations", "upgrade"],
         env=env,
     )
-    _write_json(args.state / "previous.json", previous)
     try:
         _switch(args.compose, images)
         _wait(args)
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        _switch(args.compose, previous)
-        raise
+    except BaseException as failure:  # Ctrl-C and a short read too: never leave it half-switched
+        _restore_previous(args, previous, failure)
+    # Only an accepted release becomes the one later commands start, and the
+    # one before it what a rollback returns to; a failed attempt changes neither.
+    _write_json(args.state / "previous.json", previous)
     _write_json(args.state / "current.json", images)
+    _pin(args.state, images)
     print("Deployment accepted")
 
 
 def rollback(args: argparse.Namespace) -> None:
     """Restore recorded immutable artifacts; never run old-image migrations."""
-    previous = json.loads((args.state / "previous.json").read_text())
+    record = args.state / "previous.json"
+    if not record.exists():
+        raise ValueError(
+            f"No release to return to is recorded in {args.state}; a deploy records one once "
+            "it is accepted"
+        )
+    previous = json.loads(record.read_text())
     if set(previous) != {"backend", "frontend"} or not all(
         _IMAGE_ID.fullmatch(value) or _DIGEST.fullmatch(value) for value in previous.values()
     ):
         raise ValueError("Recorded rollback artifacts are invalid")
     _switch(args.compose, previous)
+    # Pinned as soon as they run, accepted or not: a later `make up` must keep
+    # what the operator rolled back to, never start the release they left.
+    _pin(args.state, previous)
     _wait(args)
     _write_json(args.state / "current.json", previous)
     print("Rollback accepted")
@@ -304,6 +389,7 @@ def rollback(args: argparse.Namespace) -> None:
 
 def backup(args: argparse.Namespace) -> None:
     """Create a private database dump without a TTY or secret command arguments."""
+    args.backup.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(args.backup, "xb", opener=lambda name, flags: os.open(name, flags, 0o600)) as stream:
         try:
             command(
@@ -323,7 +409,7 @@ def backup(args: argparse.Namespace) -> None:
             with contextlib.suppress(OSError):
                 args.backup.unlink()
             raise
-    print("Database backup completed")
+    print(f"Database backup completed: {args.backup}")
 
 
 def restore_check(args: argparse.Namespace) -> None:
@@ -373,8 +459,13 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--backend-image", default="")
     parser.add_argument("--frontend-image", default="")
-    parser.add_argument("--backup", type=Path, default=Path("gateway.dump"))
-    parser.add_argument("--state", type=Path, default=Path(".ops/releases"))
+    parser.add_argument("--backup", type=Path, default=Path(".ops/none/gateway.dump"))
+    parser.add_argument(
+        "--state",
+        type=Path,
+        default=Path(".ops/none"),
+        help="this deployment's record: its pinned images and release history",
+    )
     parser.add_argument("--compose", nargs=argparse.REMAINDER, default=["docker", "compose"])
     args = parser.parse_args()
     try:
@@ -393,10 +484,12 @@ def main() -> int:
                 "backup": backup,
                 "restore-check": restore_check,
             }[args.action](args)
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-        detail = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
-        print(f"{args.action} failed: {detail}", file=sys.stderr)
+    except _FAILURES as exc:
+        print(f"{args.action} failed: {describe(exc)}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print(f"{args.action} interrupted", file=sys.stderr)
+        return 130
     return 0
 
 
