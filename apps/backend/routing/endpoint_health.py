@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 import time
 from collections import Counter
@@ -409,6 +410,20 @@ def _fire_and_forget(coro: Any) -> bool:
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
     return True
+
+
+def _caller_key() -> str | None:
+    """An opaque, stable name for the credential behind the current request.
+
+    Every inference surface publishes ``affinity_key`` (the presented key's
+    hash, a grant, or an anonymous client's address bucket). Hashed again and
+    cut short here: enough to tell callers apart in a log line and count them
+    (``client_error_burst``), and no way back to the key's hash.
+    """
+    affinity = req_ctx.get().get("affinity_key")
+    if not affinity:
+        return None
+    return hashlib.sha256(str(affinity).encode()).hexdigest()[:12]
 
 
 def _caller_str() -> str | None:
@@ -1232,6 +1247,9 @@ class EndpointHealthRegistry:
                     "endpoint_id": endpoint_id,
                     "status": status,
                     "detail": _detail_str(detail),
+                    # Whose request it was, opaquely: the burst rule counts
+                    # distinct callers by it.
+                    "caller": _caller_key(),
                 },
             )
             return

@@ -84,6 +84,17 @@ served it on that line. The duration is the whole request, so a stream's runs
 to its last byte: set `threshold_ms`, and per-provider `overrides`, above the
 time a provider normally takes to finish your traffic.
 
+`failed_request_rate` counts a request as failed when it ends in a 5xx, or in a
+4xx an upstream returned. A 4xx the gateway issues itself, such as a 404 for a
+path that does not exist or a 422 for a body that does not validate, is not a
+service failure and does not count, and neither does a 429. `client_error_burst`
+counts the relayed client errors that bypass the circuit breaker, and
+`min_distinct_callers` (default `1`) sets how many API keys, grants or
+anonymous addresses they must come from before it pages. At `1`, one caller
+replaying a broken conversation pages, and so can any one key that sends
+malformed requests on purpose. A gateway that hands keys to the public can set
+it to `2` or more and then sees a single caller's loop only in the logs.
+
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded
