@@ -72,12 +72,19 @@ the same model and may slow down while that traffic is heavy (see
 [Running batch inference](#running-batch-inference)).
 
 Requests run in no particular order, and a request that fails for a reason
-that may pass — a timeout, a `408`, `425` or `429`, a `5xx` — is retried with
+that may pass — a `408`, `425` or `429`, a `5xx` — is retried with
 exponential backoff (5 seconds, doubling to at most 15 minutes, with jitter)
 for as long as the batch's window is open. Once the next try would start after
 the window closes, the request fails with the last error it got rather than
 expiring as though it never ran. A request the model rejects (any other `4xx`)
 fails at once.
+
+A request that times out (a `504`, or the upstream call's own timeout) also
+fails at once, with the error code `timeout`. It is generating for longer than
+any limit allows, usually a long or repetitive output with a large
+`max_tokens`, and sent again it would most likely do the same. Nor does it
+count toward pausing the model, which several failures in a row do: one
+runaway request says nothing about the model's health.
 
 A model served on demand (a cluster job, say) may answer that it is queued:
 its deployment is waiting for a GPU. That answer (a `503` with the error code
@@ -309,7 +316,7 @@ is `cancelled`, `expired` or `failed`. Error codes:
 | `model_not_found` | The model is gone, or you may no longer use it (`404`) |
 | `forbidden` | Refused (`403`) |
 | `rate_limited` | Still rate-limited after every retry (`429`) |
-| `timeout` | Still timing out after every retry (`504`) |
+| `timeout` | Ran out of time (`504`); not retried |
 | `service_unavailable` | No endpoint could serve it after every retry (`503`) |
 | `upstream_error` | Another server error after every retry |
 | `batch_failed` | Not run: the batch failed |
