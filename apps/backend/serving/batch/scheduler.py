@@ -293,8 +293,10 @@ class BatchScheduler:
         self._owner_running: Counter[str] = Counter()
         self._owner_slots: Counter[str] = Counter()
         self._owner_roles: dict[str, tuple[str, bool]] = {}
-        # Owners held back here for a moment (see _refused_spend), until when.
+        # Owners held back here for a moment (see _refused_spend), until when,
+        # and those whose hold ended: one item of theirs is tried before more.
         self._owner_held: dict[str, float] = {}
+        self._owner_probing: set[str] = set()
         self._failure_streak: Counter[str] = Counter()
         self._cooldown_until: dict[str, float] = {}
         # A model's current wait for capacity upstream: since when, the latest
@@ -819,15 +821,21 @@ class BatchScheduler:
             cap = self._owner_cap(owner, cfg)
             if cap is not None:
                 rooms[owner] = max(0, cap - self._owner_running[owner])
-        for owner in self._held_owners():
+        held = self._held_owners()
+        for owner in self._owner_probing:
+            rooms[owner] = 0 if self._owner_running[owner] else 1
+        for owner in held:
             rooms[owner] = 0
         return rooms
 
     def _held_owners(self) -> list[str]:
-        """The owners held back here for a moment, forgetting the holds that ended."""
+        """The owners held back here for a moment, moving those whose hold ended to probing."""
         now = self._clock()
         for owner in [o for o, until in self._owner_held.items() if until <= now]:
             del self._owner_held[owner]
+            if len(self._owner_probing) >= _MAX_REMEMBERED_OWNERS:
+                self._owner_probing.clear()
+            self._owner_probing.add(owner)
         return list(self._owner_held)
 
     def _remember_role(self, owner: str, user_ctx: dict[str, Any]) -> None:
@@ -1086,6 +1094,8 @@ class BatchScheduler:
                         entry, item, stored_key_quota_exceeded(refusal), check
                     )
                     return
+            # Admitted: an owner whose hold ended may have their items again.
+            self._owner_probing.discard(entry.user_id)
             marked = await self._store.mark_dispatched(
                 item_id=entry.item_id, worker_id=self._worker_id, attempt=entry.attempt
             )
@@ -1128,17 +1138,20 @@ class BatchScheduler:
         what the database holds. When the database alone still leaves room,
         the limit is not spent: the owner's items wait here for
         ``spend_retry_seconds``, until what is in flight has ended, instead of
-        pausing every batch of the owner until the limit renews. Refused
-        again on what the database holds, they pause as a spent limit does.
+        pausing every batch of the owner until the limit renews; then one item
+        of theirs is tried before the rest. Refused again on what the database
+        holds, they pause as a spent limit does.
         """
         if check is not None and dataclasses.replace(check, ledger=None).refusal() is None:
             logger.debug(
                 "batch item %s: refused only by what is in flight; retrying shortly",
                 entry.item_id,
             )
+            self._owner_probing.discard(entry.user_id)
             self._owner_held[entry.user_id] = self._clock() + self._timings.spend_retry_seconds
             await self._release(entry, delay=self._timings.spend_retry_seconds)
             return
+        self._owner_probing.discard(entry.user_id)
         await self._defer_for_spent_limit(entry, item, exc)
 
     async def _defer_for_spent_limit(

@@ -1792,3 +1792,19 @@ async def test_no_result_budget_when_it_is_turned_off(worker, dispatch, settings
     await until(lambda: store.count("completed") == 1)
 
     assert store.items[1]["max_batch_result_bytes"] is None
+
+
+async def test_after_a_spend_hold_one_item_tries_the_limit_before_the_rest(worker, settings):
+    clock = [100.0]
+    store = FakeStore()
+    scheduler = worker(store)
+    scheduler._clock = lambda: clock[0]
+    cfg = batch_config_module.batch_config()
+    scheduler._owner_held[OWNER] = 130.0
+
+    assert scheduler._owner_rooms(cfg) == {OWNER: 0}
+    clock[0] = 131.0
+    assert scheduler._owner_rooms(cfg) == {OWNER: 1}
+    # Once one of theirs is admitted, the owner is claimed as usual again.
+    scheduler._owner_probing.discard(OWNER)
+    assert scheduler._owner_rooms(cfg) == {}
