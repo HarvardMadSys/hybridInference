@@ -203,7 +203,9 @@ def verify_pkce(*, verifier: str, challenge: str) -> bool:
     """
     digest = hashlib.sha256(verifier.encode()).digest()
     computed = base64.urlsafe_b64encode(digest).decode().rstrip("=")
-    return hmac.compare_digest(computed, challenge)
+    # As bytes: a challenge with non-ASCII characters would make compare_digest
+    # raise (a 500) instead of answering no.
+    return hmac.compare_digest(computed.encode(), challenge.encode())
 
 
 def expires_at(*, seconds: int) -> datetime:

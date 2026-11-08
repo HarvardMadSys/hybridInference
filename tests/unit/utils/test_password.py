@@ -9,6 +9,8 @@ import pytest
 from serving.utils import password as password_module
 from serving.utils.password import (
     HASH_CONCURRENCY,
+    HASH_MAX_WAITERS,
+    PasswordWorkBusyError,
     hash_password,
     hash_password_async,
     validate_password_strength,
@@ -194,6 +196,126 @@ class TestHashingOffTheEventLoop:
         # verification, against a hash with the same parameters.
         assert len(verified) == 1
         assert verified[0].startswith("$argon2id$v=19$m=65536,t=3,p=4$")
+
+
+class _Blocking:
+    """A verification that holds its slot until released, counting how many run."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self._lock = threading.Lock()
+        self.running = 0
+
+    def __call__(self, plain, hashed):
+        with self._lock:
+            self.running += 1
+        self.release.wait(5)
+        with self._lock:
+            self.running -= 1
+        return True
+
+    def now_running(self) -> int:
+        with self._lock:
+            return self.running
+
+
+def _waiting() -> int:
+    return password_module._limiter().statistics().tasks_waiting
+
+
+class TestBoundedWaiting:
+    """A flood of checks is refused at once past a bound, not queued without one."""
+
+    async def test_past_the_bound_password_work_is_refused_at_once(self, monkeypatch):
+        blocking = _Blocking()
+        monkeypatch.setattr(password_module, "verify_password", blocking)
+        held = [
+            asyncio.create_task(verify_password_async(f"pw{i}", "stored"))
+            for i in range(HASH_CONCURRENCY + HASH_MAX_WAITERS)
+        ]
+        await _until(lambda: blocking.now_running() == HASH_CONCURRENCY)
+        await _until(lambda: _waiting() == HASH_MAX_WAITERS)
+
+        # The same answer whether the name has an account or not, and for a hash.
+        for hashed in ("stored", None):
+            with pytest.raises(PasswordWorkBusyError):
+                await asyncio.wait_for(verify_password_async("guess", hashed), timeout=1)
+        with pytest.raises(PasswordWorkBusyError):
+            await asyncio.wait_for(hash_password_async("NewPass123"), timeout=1)
+        assert _waiting() == HASH_MAX_WAITERS
+
+        # A signed-in session's check is not refused: it waits its turn.
+        owner = asyncio.create_task(verify_password_async("owner", "stored", shed=False))
+        await _until(lambda: _waiting() == HASH_MAX_WAITERS + 1)
+
+        blocking.release.set()
+        assert await owner is True
+        assert await asyncio.gather(*held) == [True] * len(held)
+        # Drained: work is admitted again.
+        password_module.ensure_password_capacity()
+
+    async def test_under_the_bound_nothing_is_refused(self, monkeypatch):
+        monkeypatch.setattr(password_module, "verify_password", lambda plain, hashed: True)
+
+        results = await asyncio.gather(
+            *(verify_password_async(f"pw{i}", "stored") for i in range(HASH_MAX_WAITERS))
+        )
+
+        assert results == [True] * HASH_MAX_WAITERS
+
+
+class TestStandInBudget:
+    """Checks for names nobody holds spend Argon2id only within a process-wide budget."""
+
+    async def test_past_the_budget_a_stand_in_check_waits_like_one_without_the_work(
+        self, monkeypatch
+    ):
+        verified = []
+        monkeypatch.setattr(
+            password_module, "verify_password", lambda plain, hashed: verified.append(hashed)
+        )
+        monkeypatch.setattr(
+            password_module, "_stand_in_budget", password_module._StandInBudget(0, 0)
+        )
+        password_module._recent_check_seconds.extend([0.05, 0.05])
+
+        started = asyncio.get_running_loop().time()
+        assert await verify_password_async("guess", None) is False
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert verified == []
+        # As long as a recent real check took.
+        assert 0.04 <= elapsed < 1.0
+
+    async def test_an_account_with_a_password_is_always_checked(self, monkeypatch):
+        verified = []
+
+        def spy(plain, hashed):
+            verified.append(hashed)
+            return False
+
+        monkeypatch.setattr(password_module, "verify_password", spy)
+        monkeypatch.setattr(
+            password_module, "_stand_in_budget", password_module._StandInBudget(0, 0)
+        )
+
+        assert await verify_password_async("guess", "stored") is False
+        assert verified == ["stored"]
+
+    def test_the_budget_refills_at_its_rate_up_to_its_burst(self, monkeypatch):
+        clock = [1000.0]
+        monkeypatch.setattr(password_module.time, "monotonic", lambda: clock[0])
+        budget = password_module._StandInBudget(per_sec=2.0, burst=3)
+
+        assert [budget.take() for _ in range(4)] == [True, True, True, False]
+        clock[0] += 0.5  # one token
+        assert [budget.take() for _ in range(2)] == [True, False]
+        clock[0] += 100  # never more than the burst
+        assert [budget.take() for _ in range(4)] == [True, True, True, False]
+
+    def test_the_budget_is_a_small_share_of_the_hashing_capacity(self):
+        # At ~60 ms a check, HASH_CONCURRENCY slots make ~33 checks a second.
+        assert password_module.STAND_IN_CHECKS_PER_SEC * 0.06 <= HASH_CONCURRENCY / 4
 
 
 # Performance test (skip by default)

@@ -50,7 +50,7 @@ from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
 from serving.observability import alert_runtime
 from serving.observability.alert_history import runtime as alert_history_runtime
-from serving.observability.alerts import flush_settling
+from serving.observability.alerts import flush_settling, redact_webhook_urls
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
     RouteWiseRouter,
@@ -1093,7 +1093,11 @@ async def initialize() -> AppServices:
                             backfill_missing as backfill_request_volume,
                             register_rollup_job as register_request_volume_job,
                         )
-                        from serving.storage import daily_activity_rollup, user_usage_rollup
+                        from serving.storage import (
+                            daily_activity_rollup,
+                            session_retention,
+                            user_usage_rollup,
+                        )
                         from serving.storage.responses_store import (
                             register_retention_job as register_responses_retention_job,
                         )
@@ -1107,6 +1111,8 @@ async def initialize() -> AppServices:
                             daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
                             # Stored Responses past their retention, hourly.
                             register_responses_retention_job(sched, db_logger.pool)
+                            # The rows of ended console sessions, hourly.
+                            session_retention.register_retention_job(sched, db_logger.pool)
 
                             # Failed-request alerter: one job, paused while
                             # neither SLACK_WEBHOOK_URL nor
@@ -1373,7 +1379,9 @@ async def initialize() -> AppServices:
         # logger's request pool, which nothing else uses, so slow work on the
         # general pool cannot hold up authentication (serving.storage.pools).
         pg_operational = PostgresOperationalStore(
-            db_logger.pool, request_pool=getattr(db_logger, "request_pool", None)
+            db_logger.pool,
+            request_pool=getattr(db_logger, "request_pool", None),
+            fence_secret=fence_secret,
         )
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
@@ -1390,8 +1398,12 @@ async def initialize() -> AppServices:
         # logging: in privacy mode (the default) ``persist_enabled`` is False, so
         # ``save`` no-ops and stateful /v1/responses degrades gracefully while
         # existing data stays purgeable.
+        # Its saves check the erasure fence, as the log store's writes do: a
+        # stream that outlives its account's hard delete stores nothing.
         responses_store = ResponseStore(
-            db_logger.pool, persist_enabled=settings.db_store_full_content
+            db_logger.pool,
+            persist_enabled=settings.db_store_full_content,
+            fence_secret=fence_secret,
         )
         logger.info(
             "Responses store initialized (Postgres; persist_enabled=%s)",
@@ -2158,7 +2170,12 @@ async def shutdown(services: AppServices) -> None:
     try:
         await asyncio.wait_for(flush_settling(), timeout=_SETTLE_FLUSH_BUDGET_SEC)
     except Exception as exc:
-        logger.warning(f"Settling circuit recoveries were not all announced: {exc!r}")
+        # Scrubbed: an exception raised by a post can quote its webhook URL,
+        # which is the credential (an aiohttp ClientResponseError's repr does).
+        logger.warning(
+            "Settling circuit recoveries were not all announced: %s",
+            redact_webhook_urls(_describe_exc(exc)),
+        )
 
     # Alert history last among the alert producers' dependents: every producer
     # above has stopped, so it waits for sends still in flight, writes its open

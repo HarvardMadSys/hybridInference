@@ -61,16 +61,26 @@ UPSTREAM_QUEUE_DEADLINE = "upstream_queue_deadline"
 # auto model instead (``serving.exceptions.conceal_served_model``).
 CONCEALED_MODEL = "concealed_model"
 
-# req_ctx key holding the dispatch's first-token watch
-# (``routing.engine_wait.FirstTokenWatch``), or ``None``. FixedRouter pushes it
-# around each streaming attempt it would offload if the engine did not start
-# answering in time, and ``None`` around every other attempt. The serving layer
-# reports to it (``serving.adapters.dispatch_watch``): ``upstream_limiter`` when
-# the request starts waiting for an outbound slot and when it gets one, so the
-# engine's wait starts when the request actually leaves the gateway, and a
-# streaming adapter when it reads the upstream's first output. Only ever pushed,
-# like the deadline above.
+# req_ctx key holding what a dispatch's progress is reported to, or ``None``.
+# FixedRouter pushes its report around each attempt: the attempt's prefill lease
+# counts against other callers only once the request has left the gateway, and
+# each report is passed on to the attempt's first-token watch
+# (``routing.engine_wait.FirstTokenWatch``) when it is a streaming attempt the
+# router would offload if the engine did not start answering in time. The
+# serving layer reports to it (``serving.adapters.dispatch_watch``):
+# ``upstream_limiter`` when the request starts waiting for an outbound slot and
+# when it gets one, so the engine's wait starts when the request actually leaves
+# the gateway, and a streaming adapter when it reads the upstream's first
+# output. Only ever pushed, like the deadline above.
 UPSTREAM_DISPATCH_WATCH = "upstream_dispatch_watch"
+
+# req_ctx key holding a handler's record of whether its upstream call has left
+# the gateway (``serving.adapters.dispatch_watch.DispatchRecord``). A
+# non-streaming handler pushes one around each upstream call, and
+# ``upstream_limiter`` marks it when it gives the request its slot, so a call
+# cut off by a cancellation is billed only once the upstream was asked. Only
+# ever pushed, like the watch above.
+UPSTREAM_DISPATCH_RECORD = "upstream_dispatch_record"
 
 # req_ctx key holding the dispatch's place in line for a local engine
 # (``serving.adapters.upstream_limiter.EngineHold``), or ``None``. FixedRouter
@@ -123,6 +133,10 @@ REQUEST_SCOPED_KEYS = (
     PRICING_SNAPSHOT,
     CLIENT_ERROR_KIND,
     PROVIDER,
+    # The model that served, published with PROVIDER once routing resolves
+    # (``routing_info.publish_served_route``); a leftover would put the last
+    # request's model on the next request's log line.
+    "model",
     # Trusted-probe verdict published by the inference handlers.
     # RequestLogMiddleware demotes probe request lines from it, so a leftover
     # True would demote the *next* request on the task — a request to a path

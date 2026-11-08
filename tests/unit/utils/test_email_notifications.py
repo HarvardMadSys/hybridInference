@@ -10,6 +10,7 @@ whom to contact, and quotes user-controlled text escaped in the HTML part.
 
 from __future__ import annotations
 
+import ssl
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar
 
@@ -37,8 +38,14 @@ class FakeSMTP:
     def __exit__(self, *exc: object) -> None:
         return None
 
-    def starttls(self) -> None:
-        type(self).calls.append("starttls")
+    def starttls(self, context: ssl.SSLContext | None = None) -> None:
+        # Without a context, starttls() checks neither certificate nor name.
+        verifying = (
+            context is not None
+            and context.verify_mode == ssl.CERT_REQUIRED
+            and context.check_hostname
+        )
+        type(self).calls.append("starttls" if verifying else "starttls (unverified)")
 
     def login(self, user: str, password: str) -> None:
         type(self).calls.append(f"login {user}")

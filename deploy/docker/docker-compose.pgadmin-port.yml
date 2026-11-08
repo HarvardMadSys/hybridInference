@@ -1,0 +1,14 @@
+# Publishes pgAdmin on the host's loopback, for an SSH tunnel.
+#
+# Opt-in: `make up COMPOSE_PROFILES=admin PGADMIN_PUBLISH=1`, on every command
+# that touches pgAdmin, as with the profile; a `make up` without it recreates
+# pgAdmin with no port. The base file publishes none: the console reaches
+# pgAdmin on the `pgadmin` network, behind its admin session check.
+#
+# This port skips that check. Every account on the host can reach it, so
+# pgAdmin's own login (SERVER_MODE, True unless set otherwise) is the only gate
+# here: do not use this with SERVER_MODE False.
+services:
+  pgadmin:
+    ports:
+      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"

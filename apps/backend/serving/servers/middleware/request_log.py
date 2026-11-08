@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 
@@ -16,6 +18,76 @@ if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = get_logger(__name__)
+
+#: Longest request value -- a header, the path -- a request log line keeps. The
+#: client chooses these, up to the server's 16 KiB header limit, and the line is
+#: written for every request, an anonymous 404 included; the formatter's JSON
+#: escaping turns each byte over 0x7f into six characters. Real values (a user
+#: agent, an address chain, a URL) are a few hundred characters at most.
+MAX_LOGGED_VALUE_CHARS = 256
+
+#: The path gets more room: an admin path can carry a model and route id.
+MAX_LOGGED_PATH_CHARS = 512
+
+_TRUNCATED = "…"
+
+#: Request headers the DEBUG header dump shows only as ``***``: credentials, and
+#: whom a request acts for. A name that merely looks like one of these is masked
+#: too (:data:`_CREDENTIAL_NAME`), so a header added later is not printed until
+#: someone notices.
+MASKED_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "api-key",
+        "cookie",
+        "x-on-behalf-of",
+    }
+)
+_CREDENTIAL_NAME = re.compile(r"auth|cookie|key|token|secret|passw|session|signature", re.I)
+
+
+def loggable(value: str | None, max_chars: int = MAX_LOGGED_VALUE_CHARS) -> str | None:
+    r"""*value* as a log line keeps it: cut to *max_chars*, control characters escaped.
+
+    Escaped as ``repr`` writes them (``\n``, ``\x85``, ``\u202e``), so a value
+    cannot break a line, reorder what a terminal shows (bidirectional
+    overrides), or pass for another field.
+    """
+    if value is None:
+        return None
+    clipped = value[:max_chars]
+    if not clipped.isprintable():
+        clipped = "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in clipped)
+    return clipped + _TRUNCATED if len(value) > max_chars else clipped
+
+
+def _is_masked(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in MASKED_HEADERS or _CREDENTIAL_NAME.search(lowered) is not None
+
+
+def loggable_url(value: str | None) -> str | None:
+    """A ``Referer`` or ``Origin`` as a log line keeps it: scheme, host and path.
+
+    The query and fragment are dropped, and so is any user name or password in
+    the address: a browser sends the full address of the page a request came
+    from, and the page that resets a password carries its live token in the
+    query (``/reset-password?token=...``). What is left is cut and escaped by
+    :func:`loggable`.
+    """
+    if value is None:
+        return None
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        # Not a URL Python can split (an unbalanced IPv6 bracket): keep only
+        # what precedes a query or a fragment.
+        return loggable(re.split(r"[?#]", value, maxsplit=1)[0])
+    host = parts.netloc.rpartition("@")[2]
+    prefix = f"{parts.scheme}://{host}" if parts.scheme and host else ""
+    return loggable(prefix + parts.path)
 
 
 class RequestLogMiddleware:
@@ -63,15 +135,16 @@ class RequestLogMiddleware:
         request_id = ctx.get("request_id")
         canonical_session_id = request.headers.get("X-Session-ID")
 
+        # Every value a client chooses is cut and escaped (``loggable``).
         log_extra = {
-            "method": request.method,
-            "path": request.url.path,
+            "method": loggable(request.method),
+            "path": loggable(request.url.path, MAX_LOGGED_PATH_CHARS),
             "status_code": status_code,
             "duration_ms": duration_ms,
             # Proxy discovery runs outside this middleware, so it is not part
             # of duration_ms; reported separately, None when it did not run.
             "proxy_discovery_ms": proxy_discovery_ms(request),
-            "model": ctx.get("model"),
+            "model": loggable(ctx.get("model")),
             "provider": ctx.get(req_ctx.PROVIDER),
             "remote_ip": remote_ip,
             "peer_ip": ip_info.peer_ip,
@@ -79,16 +152,16 @@ class RequestLogMiddleware:
             "ip_resolved": ip_info.resolved,
             "trusted_forwarded_headers": ip_info.trusted_forwarded_headers,
             "trusted_cloudflare_headers": ip_info.trusted_cloudflare_headers,
-            "x_forwarded_for": ip_info.x_forwarded_for,
-            "x_real_ip": ip_info.x_real_ip,
-            "cf_connecting_ip": ip_info.cf_connecting_ip,
-            "cf_connecting_ipv6": ip_info.cf_connecting_ipv6,
-            "user_agent": user_agent,
-            "host": host,
-            "origin": origin,
-            "referer": referer,
-            "request_id": request_id,
-            "session_id": canonical_session_id,
+            "x_forwarded_for": loggable(ip_info.x_forwarded_for),
+            "x_real_ip": loggable(ip_info.x_real_ip),
+            "cf_connecting_ip": loggable(ip_info.cf_connecting_ip),
+            "cf_connecting_ipv6": loggable(ip_info.cf_connecting_ipv6),
+            "user_agent": loggable(user_agent),
+            "host": loggable(host),
+            "origin": loggable_url(origin),
+            "referer": loggable_url(referer),
+            "request_id": loggable(request_id),
+            "session_id": loggable(canonical_session_id),
             # Gateway-generated client-error tag (e.g. model-not-found), set by the
             # handler via req_ctx so failure-rate alerts can exclude user-driven 404s.
             "client_error_kind": ctx.get(req_ctx.CLIENT_ERROR_KIND),
@@ -112,7 +185,7 @@ class RequestLogMiddleware:
         is_auth_challenge = status_code == 401 and not ctx.get(req_ctx.PROVIDER)
 
         if exc_to_raise:
-            log_extra["error"] = str(exc_to_raise)
+            log_extra["error"] = loggable(str(exc_to_raise), MAX_LOGGED_PATH_CHARS)
             log_extra["error_type"] = type(exc_to_raise).__name__
             logger.error("http_request", extra=log_extra)
         elif is_quiet_path or is_synthetic_probe or is_auth_challenge:
@@ -123,12 +196,12 @@ class RequestLogMiddleware:
         if logger.isEnabledFor(10):
             masked_headers: dict[str, str] = {}
             for k, v in request.headers.items():
-                key_lower = k.lower()
-                if key_lower in {"authorization", "x-api-key"}:
-                    masked_headers[k] = "***"
+                if _is_masked(k):
+                    masked_headers[loggable(k) or ""] = "***"
+                elif k.lower() in ("referer", "origin"):
+                    masked_headers[loggable(k) or ""] = loggable_url(v) or ""
                 else:
-                    val = v if v is not None else ""
-                    masked_headers[k] = (val[:256] + "…") if len(val) > 256 else val
+                    masked_headers[loggable(k) or ""] = loggable(v or "") or ""
             logger.debug("http_request_headers", extra={"headers": masked_headers})
 
         if exc_to_raise:

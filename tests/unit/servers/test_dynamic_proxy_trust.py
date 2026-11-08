@@ -282,6 +282,7 @@ def _readiness_app(monkeypatch, settings, discovery, stores_healthy, **middlewar
     from fastapi import FastAPI
 
     from serving.servers.routers import health
+    from serving.utils.single_flight import SingleFlightCache
 
     monkeypatch.setattr("serving.servers.middleware.proxy_trust.get_settings", lambda: settings)
     monkeypatch.setattr("serving.utils.request_ip.get_settings", lambda: settings)
@@ -295,6 +296,10 @@ def _readiness_app(monkeypatch, settings, discovery, stores_healthy, **middlewar
         }
     )
     monkeypatch.setattr(health, "_test_store_health", store_check)
+    # Readiness shares /health's probe: start each app without one kept.
+    monkeypatch.setattr(
+        health, "_HEALTH_PROBES", SingleFlightCache(health.HEALTH_PROBE_TTL_SEC, max_entries=1)
+    )
     inner = FastAPI()
     inner.include_router(health.router)
     inner.dependency_overrides[health.get_operational_store] = lambda: None

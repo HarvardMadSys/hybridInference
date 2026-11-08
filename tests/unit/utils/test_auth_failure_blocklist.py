@@ -552,8 +552,7 @@ async def test_block_events_keep_their_bucket_through_log_formatting(small_limit
 async def test_a_spray_from_many_addresses_does_not_grow_memory_forever(
     small_limits, clock, monkeypatch
 ):
-    """Every recorded address is a dict entry; the periodic sweep must drop stale ones."""
-    monkeypatch.setattr(afb, "_SWEEP_EVERY", 10)
+    """Every recorded address is an entry; expired ones leave as failures arrive."""
     for _ in range(3):  # one address goes on to be blocked
         await record_auth_failure("198.51.100.200")
     for i in range(6):
@@ -561,30 +560,70 @@ async def test_a_spray_from_many_addresses_does_not_grow_memory_forever(
     assert len(afb._failures) == 6  # a blocked address keeps no history
     assert "198.51.100.200" in afb._blocked_until
 
-    clock["t"] += 101  # the counting window has passed for all of them
-    await record_auth_failure("192.0.2.1")  # the 10th call runs the sweep
+    clock["t"] += 101  # the counting window has closed for all of them
+    for i in range(3):  # each failure drops a couple of expired buckets
+        await record_auth_failure(f"192.0.2.{i}")
 
-    assert set(afb._failures) == {"192.0.2.1"}
+    assert set(afb._failures) == {"192.0.2.0", "192.0.2.1", "192.0.2.2"}
     assert "198.51.100.200" in afb._blocked_until  # a live block is kept
 
     clock["t"] += 1000  # and is dropped once it lapses
-    for i in range(10):
-        await record_auth_failure(f"192.0.2.{10 + i}")
+    await record_auth_failure("192.0.2.50")
     assert "198.51.100.200" not in afb._blocked_until
 
 
 @pytest.mark.asyncio
-async def test_the_sweep_keeps_recent_failures_counting(small_limits, clock, monkeypatch):
-    monkeypatch.setattr(afb, "_SWEEP_EVERY", 3)
+async def test_an_open_window_keeps_counting(small_limits, clock):
     ip = "203.0.113.90"
     await record_auth_failure(ip)
     clock["t"] += 50
     await record_auth_failure(ip)
+    for i in range(10):  # other failures drop what has expired; this has not
+        await record_auth_failure(f"192.0.2.{i}")
 
-    clock["t"] += 60  # the first failure is now outside the window, the second is not
-    await record_auth_failure("192.0.2.50")  # sweep
+    assert await record_auth_failure(ip) is True  # the third in its window
 
-    assert list(afb._failures[ip]) == [clock["t"] - 60]
+
+@pytest.mark.asyncio
+async def test_a_closed_window_starts_counting_again(small_limits, clock):
+    """The window opens at a bucket's first failure: older ones stop counting with it."""
+    ip = "203.0.113.91"
+    await record_auth_failure(ip)
+    clock["t"] += 60
+    await record_auth_failure(ip)
+    clock["t"] += 41  # 101 s after the first failure: that window has closed
+
+    assert await record_auth_failure(ip) is False  # the first of a new window
+    assert await record_auth_failure(ip) is False
+    assert await record_auth_failure(ip) is True
+
+
+@pytest.mark.asyncio
+async def test_the_tracked_buckets_are_capped(small_limits, clock, monkeypatch):
+    """A flood of fresh sources cannot grow the table, nor push out a persistent one."""
+    monkeypatch.setattr(afb, "_MAX_TRACKED_BUCKETS", 50)
+    persistent = "198.51.100.7"
+    assert await record_auth_failure(persistent) is False
+    assert await record_auth_failure(persistent) is False
+    for i in range(5_000):
+        await record_auth_failure(f"2001:db8:{i >> 16:x}:{i & 0xFFFF:x}::1")
+
+    assert len(afb._failures) == 50
+    # The bucket counting two failures outlasted 5,000 that counted one.
+    assert afb._failures[persistent][1] == 2
+    assert await record_auth_failure(persistent) is True
+
+
+@pytest.mark.asyncio
+async def test_a_failure_does_bounded_work_however_many_buckets_expired(small_limits, clock):
+    """No pass over the table: each failure drops at most a couple of expired buckets."""
+    for i in range(1_000):
+        await record_auth_failure(f"2001:db8:0:{i:x}::1")
+    clock["t"] += 101
+
+    await record_auth_failure("192.0.2.1")
+
+    assert len(afb._failures) == 1_000 - afb._EXPIRE_PER_CALL + 1
 
 
 def _unresolved():

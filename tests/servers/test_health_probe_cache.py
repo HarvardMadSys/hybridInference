@@ -1,9 +1,10 @@
-"""Anonymous ``/health`` shares one store probe; ``/health/ready`` still probes every call.
+"""The anonymous health endpoints share one store probe.
 
-``/health`` used to run a ``SELECT 1`` per store, and schedule the outage and
-recovery alert checks, on every call -- from anyone, as often as they liked.
-One probe now answers every caller for a couple of seconds, and callers that
-arrive while it runs wait for it instead of starting their own.
+``/health``, ``/health/ready`` and ``/health/deep`` each ran a ``SELECT 1`` per
+store, and scheduled the outage and recovery alert checks, on every call -- from
+anyone, as often as they liked. One probe now answers every caller of any of
+them for a couple of seconds, and callers that arrive while it runs wait for it
+instead of starting their own.
 """
 
 from __future__ import annotations
@@ -118,13 +119,30 @@ async def test_alerts_are_evaluated_once_per_probe(test_client, app_services, cl
     assert len(reports) == 2
 
 
-async def test_readiness_still_probes_on_every_call(test_client, app_services, clock):
+async def test_readiness_and_the_deep_check_share_the_probe(test_client, app_services, clock):
     _healthy(app_services)
 
-    await test_client.get("/health/ready")
+    responses = [
+        await test_client.get(path)
+        for path in ("/health/ready", "/health/ready", "/health/deep", "/health")
+    ]
+
+    assert [r.status_code for r in responses] == [200, 200, 200, 200]
+    assert _probes(app_services) == (1, 1)
+
+
+async def test_readiness_sees_an_outage_once_the_window_has_passed(
+    test_client, app_services, clock
+):
+    _healthy(app_services)
     await test_client.get("/health/ready")
 
-    assert _probes(app_services) == (2, 2)
+    clock.now += health.HEALTH_PROBE_TTL_SEC + 0.1
+    app_services.log_store.health_check = AsyncMock(return_value=False)
+    resp = await test_client.get("/health/ready")
+
+    assert resp.status_code == 503
+    assert resp.json()["reason"] == "store_degraded"
 
 
 async def test_a_caller_cannot_change_what_the_next_one_is_told(app_services, clock):

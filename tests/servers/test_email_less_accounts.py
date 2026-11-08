@@ -327,8 +327,18 @@ class TestAdminEndpoints:
 
     async def test_can_change_another_users_role(self, client, op_store, users):
         users[OTHER_ID]["status"] = "active"
-        resp = await client.patch(
+        # Raising a role needs the administrator's password, which an account
+        # without an email confirms like any other: by its login name's limits.
+        refused = await client.patch(
             f"/admin/users/{OTHER_ID}", headers=_admin_headers(), json={"role": "pro"}
+        )
+        assert refused.status_code == 400, refused.text
+        op_store.update_user_fields.assert_not_awaited()
+
+        resp = await client.patch(
+            f"/admin/users/{OTHER_ID}",
+            headers=_admin_headers(),
+            json={"role": "pro", "password": PASSWORD},
         )
 
         assert resp.status_code == 200, resp.text

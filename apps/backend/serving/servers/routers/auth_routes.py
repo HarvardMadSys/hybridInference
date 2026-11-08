@@ -82,7 +82,7 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
-from serving.utils.login_rate_limit import check_and_record_login
+from serving.utils.login_rate_limit import check_and_record_login, refusal_worth_recording
 from serving.utils.mail_rate_limit import MailKind, check_and_record_mail_request
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
@@ -110,9 +110,14 @@ async def _refuse_mail_flood(request: Request, kind: MailKind, email: str) -> No
     """Raise 429 when *email* or this client has asked for too much mail of *kind*.
 
     One answer for either window, decided before any account is looked up, so
-    it says nothing about whether the address has one.
+    it says nothing about whether the address has one. A client whose address
+    could not be resolved is limited per address alone: counting every such
+    client together would let any one of them stop everyone's mail.
     """
-    allowed, _reason = await check_and_record_mail_request(kind, email, get_client_ip(request))
+    client = get_client_ip_info(request)
+    allowed, _reason = await check_and_record_mail_request(
+        kind, email, client.client_ip if client.resolved else None
+    )
     if not allowed:
         raise HTTPException(
             status_code=429,
@@ -443,13 +448,21 @@ async def login(
     # Only rate limiting differs for a recognized browser: the password is
     # checked, and every outcome answered, exactly as for any other client.
     device = recognized_device(request, identifier)
+    if device is None:
+        # With as many password checks waiting as may (a flood of guesses),
+        # refuse before counting the attempt or looking the name up. The same
+        # for every name; and a recognized browser is never refused this way.
+        password_utils.ensure_password_capacity()
     allowed, reason = await check_and_record_login(identifier, client_ip, device=device)
     if not allowed:
         # "ip" is the hourly per-IP window; "email" (this account from this
         # address), "account" (from every address) and "device" (this
         # browser) are 15-minute windows.
         retry_after = "3600" if reason == "ip" else "900"
-        await _record("failure", failure_reason="rate_limited", user_id=None)
+        # One row a minute per address and window, not one per attempt: a
+        # source that keeps trying past a limit costs no database write each.
+        if refusal_worth_recording(client_ip, reason or ""):
+            await _record("failure", failure_reason="rate_limited", user_id=None)
         raise HTTPException(
             status_code=429,
             detail="Too many login attempts. Please try again later.",
@@ -466,7 +479,9 @@ async def login(
     # account made by phone has none): answering an unknown name before the
     # hash a known one costs would tell from the timing who holds an account.
     password_matches = await password_utils.verify_password_async(
-        body.password, user_row.get("password_hash") if user_row else None
+        body.password,
+        user_row.get("password_hash") if user_row else None,
+        shed=device is None,
     )
 
     if not user_row:
@@ -599,6 +614,11 @@ async def logout(
     still holds the account when the cookie was rotated by another tab, and
     leaving it would let the account be chosen again without a password;
     signing the browser's other accounts out is the safe way to fail.
+
+    The session the access token was issued for (its ``sid``) is revoked
+    either way. A cookie that no longer resolves may have been rotated by
+    whoever copied it, and clearing it here alone would leave them signed
+    in, refreshing on the stolen browser session after the owner signed out.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -608,6 +628,8 @@ async def logout(
         await _sign_out_of_browser(op_store, response, browser, current_user["user_id"])
     else:
         delete_refresh_token_cookie(response)
+    if current_user.get("sid"):
+        await op_store.revoke_session_by_sid(current_user["user_id"], current_user["sid"])
 
     logger.info(f"User logged out: {current_user['user_id']}")
 

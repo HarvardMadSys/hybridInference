@@ -439,6 +439,28 @@ msgstr ""
 "无法读取模型目录时则不生成按模型的部分。语言部分需要消息原文，因此只有在 `DB_STORE_FULL_CONTENT=true` 时才会生成。"
 "在繁忙的网关上统计 10 周数据约需一分钟。任务只保留最新的 30 个快照。"
 
+#: ../developer/distribution-customization.md:173
+msgid ""
+"The hourly country rollup keeps 90 days, less than the window. A week the"
+" rollup no longer holds keeps the weekly country counts the previous "
+"snapshot recorded for it. The country totals, the top shares and the map "
+"cover only the days the rollup holds, from the day `countries.since` "
+"names."
+msgstr ""
+"每小时的国家汇总表只保留 90 天，短于统计窗口。汇总表中已不再保存的某一周，沿用上一个快照为该周记录的每周国家计数。"
+"国家总数、占比排名和地图只涵盖汇总表仍保存的那些天，起始日期见 `countries.since`。"
+
+#: ../developer/distribution-customization.md:178
+msgid ""
+"Each stored run checkpoints the language sample and the client totals of"
+" the weeks it reads. A week that had closed before the previous stored "
+"run ended is read from that checkpoint instead of from `api_logs`, so a "
+"daily run samples message text only for the current week and any week "
+"that closed since."
+msgstr ""
+"每次写入快照的运行，都会为它读取的各周保存语言抽样和客户端汇总的存档。在上一次写入快照的运行结束之前就已结束的某一周，改从该存档读取，而不再读取 "
+"`api_logs`，因此每天的运行只为本周以及之后新结束的周抽样消息原文。"
+
 #: ../developer/distribution-customization.md:169
 msgid "Activating a manifest"
 msgstr "启用 manifest"

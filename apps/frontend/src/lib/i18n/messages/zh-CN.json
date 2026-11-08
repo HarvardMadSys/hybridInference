@@ -2219,6 +2219,10 @@
     "source": "Log out",
     "text": "退出登录"
   },
+  "chrome.account_menu.log_out_failed": {
+    "source": "You are still signed in: signing out did not finish. {reason}",
+    "text": "你仍处于登录状态：退出登录没有完成。{reason}"
+  },
   "chrome.account_menu.settings": {
     "source": "My settings",
     "text": "我的设置"

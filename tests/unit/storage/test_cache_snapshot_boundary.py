@@ -8,11 +8,16 @@ dict that auth rows carry.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 
+from serving.storage import cache_backend
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
+from serving.storage.cache_backend import _snapshot
 
 
 @pytest.fixture
@@ -92,3 +97,63 @@ async def test_audit_row_not_aliased(cache, inner, cached):
     first["role"] = "hacker"
     second = await cached.get_key_owner_for_audit("kh")
     assert second["role"] == "admin"
+
+
+# ---------------------------------------------------------------------------
+# The copy itself: every mutable container, never a deepcopy of a database row
+# ---------------------------------------------------------------------------
+
+
+def _row() -> dict:
+    return {
+        "user_id": "u1",
+        "quota_daily_cost_usd": Decimal("5.000000"),
+        "created_at": datetime(2026, 11, 7, tzinfo=UTC),
+        "key_uuid": UUID(int=7),
+        "allowed_models": ["m1", "m2"],
+        "preferences": {"disabled_models": ["m3"], "locale": {"value": "en"}},
+        "routes": [{"id": "r1", "weights": [1, 2]}],
+        "verified": True,
+        "note": None,
+    }
+
+
+def test_a_snapshot_shares_no_mutable_object_with_the_row():
+    row = _row()
+    copy = _snapshot(row)
+
+    assert copy == row
+    for path in (
+        ("allowed_models",),
+        ("preferences",),
+        ("preferences", "disabled_models"),
+        ("preferences", "locale"),
+        ("routes",),
+        ("routes", 0),
+        ("routes", 0, "weights"),
+    ):
+        original, copied = row, copy
+        for step in path:
+            original, copied = original[step], copied[step]
+        assert copied is not original, path
+
+
+def test_a_snapshot_of_a_database_row_never_deep_copies(monkeypatch):
+    """deepcopy cost every cache hit ~20 us a row, and 0.51 s for one stored layout."""
+
+    def _refuse(_value, *_args):
+        raise AssertionError("deepcopy on the cache-hit path")
+
+    monkeypatch.setattr(cache_backend, "deepcopy", _refuse)
+    row = _row()
+    copy = _snapshot(row)
+    # Immutable leaves are shared rather than rebuilt.
+    assert copy["quota_daily_cost_usd"] is row["quota_daily_cost_usd"]
+    assert copy["created_at"] is row["created_at"]
+
+
+def test_a_value_of_another_kind_is_still_deep_copied():
+    nested = {"tags": {"a", "b"}}
+    copy = _snapshot(nested)
+    copy["tags"].add("c")
+    assert nested["tags"] == {"a", "b"}

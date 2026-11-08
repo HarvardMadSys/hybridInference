@@ -10,13 +10,18 @@ from typing import Any
 import pytest
 
 from serving.storage.bounded_log import (
+    LOGGED_CONTENT_MAX_CHARS,
     LOGGED_ERROR_MAX_CHARS,
+    LOGGED_FIELDS_MAX_CHARS,
     LOGGED_MODEL_ID_MAX_CHARS,
     REJECTED_LOG_MAX_CHARS,
+    bound_log_payload,
+    bound_payload_leftovers,
     bound_rejected_log_payload,
     bounded_json,
     elide_middle,
     is_client_rejection,
+    json_size_within,
 )
 
 #: The failed-request alerter's exclusion for not-found rows
@@ -197,3 +202,161 @@ def test_a_small_refused_row_is_stored_as_it_was_sent() -> None:
 def test_rows_that_are_not_refusals_are_stored_whole(status: int) -> None:
     row = _row(status)
     assert bound_rejected_log_payload(row) is row
+
+
+# --- every other row: the conversation kept, the rest bounded -----------------
+#
+# A served request is billed for its conversation, which is what the stored
+# prompts are read for. Any other field it sent is not: the gateway ignores a
+# field no request schema declares, so a cheap request could carry an ignored
+# 32 MiB field into its row.
+
+
+def _served(status: int = 200, **payload: Any) -> dict[str, Any]:
+    messages = [{"role": "user", "content": "hi"}]
+    return {
+        "request_id": "r1",
+        "model_id": "m",
+        "provider": "p",
+        "prompt": messages,
+        "response": {"id": "x"},
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        "latency_ms": 1,
+        "status_code": status,
+        "params": {"stream": False},
+        "metadata": {"user_id": "u1"},
+        "pricing": None,
+        "request_payload": {"model": "m", "messages": messages, "max_tokens": 1, **payload},
+    }
+
+
+@pytest.mark.parametrize("status", [200, 499, 500, 504])
+def test_an_ignored_large_field_is_not_stored(status: int) -> None:
+    row = _served(status, pad="p" * (32 * 1024 * 1024), user="alice", n=1)
+    original_payload = dict(row["request_payload"])
+
+    stored = bound_log_payload(row)
+
+    body = stored["request_payload"]
+    assert "pad" not in body
+    # Every other field is kept whole, in the order it was sent.
+    assert list(body) == ["model", "messages", "max_tokens", "user", "n"]
+    assert body["messages"] is row["request_payload"]["messages"]
+    assert stored["prompt"] is row["prompt"]
+    assert stored["metadata"] == {"user_id": "u1", "payload_truncated": True}
+    assert row["request_payload"] == original_payload
+    assert row["metadata"] == {"user_id": "u1"}
+
+
+def test_fields_outside_the_conversation_share_one_budget_smallest_first() -> None:
+    third = LOGGED_FIELDS_MAX_CHARS // 3
+    row = _served(
+        a="a" * third,
+        b="b" * third,
+        big="z" * LOGGED_FIELDS_MAX_CHARS,
+        c="c" * third,
+        tiny=True,
+    )
+    body = bound_log_payload(row)["request_payload"]
+    # The small fields and the first two thirds fit; the third does not, and
+    # a field is kept whole or not at all.
+    assert set(body) == {"model", "messages", "max_tokens", "a", "b", "tiny"}
+    assert body["a"] == row["request_payload"]["a"]
+
+
+def test_a_real_conversation_is_stored_whole() -> None:
+    # About 3.5 MiB of text, tools and a system prompt: under the bound.
+    messages = _messages(700, 5000)
+    tools = [{"name": f"t{i}", "description": "d" * 2000} for i in range(50)]
+    row = _served(system="s" * 20_000, tools=tools)
+    row["prompt"] = messages
+    row["request_payload"]["messages"] = messages
+    row["params"] = {"tools": tools}
+    assert bound_log_payload(row) is row
+
+
+def test_a_conversation_over_its_bound_is_summarized() -> None:
+    messages = _messages(3, LOGGED_CONTENT_MAX_CHARS // 2)
+    row = _served()
+    row["prompt"] = messages
+    row["request_payload"]["messages"] = messages
+
+    stored = bound_log_payload(row)
+
+    assert len(repr(stored["prompt"])) < 1.1 * LOGGED_CONTENT_MAX_CHARS
+    assert stored["prompt"][0]["content"].startswith("0:")
+    assert stored["prompt"][-1]["content"].startswith("2:")
+    assert len(repr(stored["request_payload"])) < 1.1 * LOGGED_CONTENT_MAX_CHARS
+    assert stored["request_payload"]["max_tokens"] == 1
+    assert stored["metadata"]["payload_truncated"] is True
+
+
+def test_a_large_ignored_key_is_dropped_too() -> None:
+    row = _served()
+    row["request_payload"]["k" * 100_000] = 1
+    assert list(bound_log_payload(row)["request_payload"]) == ["model", "messages", "max_tokens"]
+
+
+def test_a_body_with_countless_fields_keeps_the_first_ones() -> None:
+    row = _served(**{f"f{i}": i for i in range(100_000)})
+    started = time.perf_counter()
+    body = bound_log_payload(row)["request_payload"]
+    assert time.perf_counter() - started < 0.5
+    assert body["model"] == "m"
+    assert 0 < len(body) < 1000
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        ["x"] * 5_000_000,
+        {f"k{i}": i for i in range(1_000_000)},
+        "s" * 50_000_000,
+    ],
+    ids=["long-list", "wide-dict", "long-text"],
+)
+def test_measuring_a_value_stops_at_the_budget(value: Any) -> None:
+    started = time.perf_counter()
+    assert json_size_within(value, LOGGED_FIELDS_MAX_CHARS) is None
+    assert time.perf_counter() - started < 0.1
+
+
+def test_measuring_refuses_nesting_past_what_a_summary_follows() -> None:
+    deep: Any = "leaf"
+    for _ in range(5000):
+        deep = [deep]
+    assert json_size_within(deep, LOGGED_CONTENT_MAX_CHARS) is None
+    assert json_size_within([[["x"]]], 100) == 2 + 1 + 2 + 1 + 2 + 1 + 3
+
+
+def test_the_old_name_is_the_same_function() -> None:
+    assert bound_rejected_log_payload is bound_log_payload
+
+
+# --- what a stored body repeats of the prompt column -------------------------
+
+
+def test_ignored_per_message_fields_are_bounded_once_deduplicated() -> None:
+    residuals = [{"pad": "q" * 1_000_000}, {}]
+    body, cut = bound_payload_leftovers(
+        {"model": "m", "messages_extra": residuals}, prompt_stored=True
+    )
+    assert cut is True
+    assert len(repr(body["messages_extra"])) < 1.1 * LOGGED_FIELDS_MAX_CHARS
+    assert body["model"] == "m"
+
+
+def test_messages_the_dedup_left_are_bounded_only_when_the_prompt_holds_them() -> None:
+    messages = _messages(10, 20_000)
+    bounded, cut = bound_payload_leftovers({"messages": messages}, prompt_stored=True)
+    assert cut is True
+    assert len(repr(bounded["messages"])) < 1.1 * LOGGED_FIELDS_MAX_CHARS
+
+    kept, kept_cut = bound_payload_leftovers({"messages": messages}, prompt_stored=False)
+    assert kept_cut is False
+    assert kept["messages"] is messages
+
+
+def test_small_leftovers_are_left_alone() -> None:
+    body = {"model": "m", "messages_extra": [{"cache_control": {"type": "ephemeral"}}, {}]}
+    assert bound_payload_leftovers(body, prompt_stored=True) == (body, False)

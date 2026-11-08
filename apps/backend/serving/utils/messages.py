@@ -114,17 +114,18 @@ def move_tool_media(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     translates (``anthropic_translator``).
 
     Returns the argument itself (no copy) when no tool message carries media,
-    which is nearly all traffic.
+    which is nearly all traffic. Linear in the parts: each is looked at once
+    to sort it into text and media.
     """
-    if not any(_media_parts(m) for m in messages if m.get("role") == "tool"):
+    if not any(_has_media(m) for m in messages if m.get("role") == "tool"):
         return messages
     out: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     for message in messages:
         if message.get("role") == "tool":
-            media = _media_parts(message)
+            kept, media = _split_media(message)
             if media:
-                message, label = _tool_text_only(message, media)
+                message, label = _tool_text_only(message, kept, media)
                 pending.extend([label, *media])
             out.append(message)
             continue
@@ -150,19 +151,35 @@ def _as_parts(content: Any) -> list[Any]:
     return []
 
 
-def _media_parts(message: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        part
-        for part in _as_parts(message.get("content"))
-        if isinstance(part, dict) and part.get("type") in MEDIA_PART_TYPES
-    ]
+def _is_media(part: Any) -> bool:
+    if not isinstance(part, dict):
+        return False
+    kind = part.get("type")
+    return isinstance(kind, str) and kind in MEDIA_PART_TYPES
+
+
+def _has_media(message: dict[str, Any]) -> bool:
+    return any(_is_media(part) for part in _as_parts(message.get("content")))
+
+
+def _split_media(message: dict[str, Any]) -> tuple[list[Any], list[dict[str, Any]]]:
+    """A message's content parts other than media, and its media, in their order.
+
+    Each part goes to one side by its own type, in one pass. Removing the media
+    from the parts by value (``part not in media``) was quadratic: 5,000 text
+    and 5,000 image parts took 1.6 s on the event loop, on every attempt.
+    """
+    kept: list[Any] = []
+    media: list[dict[str, Any]] = []
+    for part in _as_parts(message.get("content")):
+        (media if _is_media(part) else kept).append(part)
+    return kept, media
 
 
 def _tool_text_only(
-    message: dict[str, Any], media: list[dict[str, Any]]
+    message: dict[str, Any], kept: list[Any], media: list[dict[str, Any]]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The tool message without its media, and the label introducing them."""
-    kept = [part for part in _as_parts(message.get("content")) if part not in media]
+    """The tool message with only its *kept* parts, and the label introducing its *media*."""
     text = flatten_text_content(kept)
     images = all(part.get("type") in _IMAGE_PART_TYPES for part in media)
     noun, article = ("image", "an") if images else ("media part", "a")

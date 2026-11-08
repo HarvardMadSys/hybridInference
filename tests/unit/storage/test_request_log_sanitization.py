@@ -74,3 +74,59 @@ async def test_postgres_log_request_strips_null_bytes_from_all_serialized_fields
     assert json.loads(metadata_str)["user_id"] == "user-1"
     assert json.loads(metadata_str)["nested"]["note"] == "note"
     assert json.loads(tools_str)[0]["name"] == "tool"
+
+
+@pytest.mark.asyncio
+async def test_a_field_nested_past_the_recursion_limit_does_not_drop_the_row() -> None:
+    """A served, billed request whose body nests a field 5000 deep is still logged."""
+    from serving.storage.utils import DEPTH_ELIDED, MAX_STORED_DEPTH
+
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="INSERT 0 1")
+    acquire_cm = MagicMock()
+    acquire_cm.__aenter__ = AsyncMock(return_value=conn)
+    acquire_cm.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = acquire_cm
+    store = PostgresLogStore(pool, store_full_prompts=True)
+
+    deep: object = "leaf"
+    for _ in range(5000):
+        deep = [deep]
+    await store.log_request(
+        request_id="req-deep",
+        model_id="m",
+        provider="p",
+        prompt=[{"role": "user", "content": [{"type": "text", "text": "hi", "x": deep}]}],
+        response={"id": "r", "deep": deep},
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        latency_ms=1,
+        status_code=200,
+        params={"tools": [{"name": "t", "parameters": deep}]},
+        metadata={"user_id": "u1", "deep": deep},
+        request_payload={"model": "m", "x": deep},
+    )
+
+    args = conn.execute.await_args.args
+    stored = json.loads(args[20])
+    depth = 1
+    node = stored["x"]
+    while isinstance(node, list):
+        node = node[0]
+        depth += 1
+    assert node == DEPTH_ELIDED
+    assert depth == MAX_STORED_DEPTH
+    for index in (18, 19, 25, 26):
+        json.loads(args[index])
+
+
+def test_strip_null_bytes_keeps_what_it_kept() -> None:
+    from serving.storage.utils import strip_null_bytes
+
+    value = {"a\x00": ["x\x00y", 1, None, (2, "z\x00"), {"k": [{"q": "w\x00"}]}], "b": 1.5}
+    assert strip_null_bytes(value) == {
+        "a": ["xy", 1, None, [2, "z"], {"k": [{"q": "w"}]}],
+        "b": 1.5,
+    }
+    assert strip_null_bytes("n\x00") == "n"
+    assert strip_null_bytes(7) == 7

@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import math
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -79,6 +80,7 @@ from serving.servers.deps import (
     get_services,
     verify_admin_access,
 )
+from serving.servers.request_body import json_body_after, json_body_schema
 from serving.servers.routers.admin.provider_definitions import (
     _config_managed_provider_names,
     _configured_provider_specs,
@@ -92,11 +94,11 @@ from serving.servers.routers.admin.provider_routes import (
     _normalize_runtime_model_pricing,
     reconcile_live_routes_from_store,
 )
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 from serving.servers.routers.admin.usage_insights import (
     _SETTING_API_KEY as USAGE_INSIGHTS_API_KEY,
     _SETTING_MODEL as USAGE_INSIGHTS_MODEL,
 )
-from serving.servers.routers.reauth import confirm_account_owner
 from serving.setup_state import SETUP_CODE_KEY, SETUP_MARKER_KEY
 
 if TYPE_CHECKING:
@@ -113,35 +115,37 @@ _SECRET_SITE_SETTING_KEYS: frozenset[str] = frozenset({USAGE_INSIGHTS_API_KEY})
 
 # What a restore changes only once the administrator confirms the change and
 # gives the account's password: what signs and encrypts, who administers and
-# who may sign in, which networks are trusted, and where the gateway sends
-# requests, credentials, mail and users. For ``app_config`` that is every
-# secret, every setting of these categories, every variable a configuration
-# file references, every ``*_URL`` setting and these keys
-# (:func:`_security_relevant_setting`); for ``site_settings``, these keys.
-_SECURITY_CATEGORIES: frozenset[str] = frozenset({"security", "network"})
-_SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
-    {
-        "EMAIL_PROVIDER",
-        "SMTP_HOST",
-        "SMTP_PORT",
-        "SMTP_USER",
-        "SMTP_FROM_EMAIL",
-        "IDENTITY_ISSUER",
-        "IDENTITY_ALLOWED_REDIRECTS",
-        "IDENTITY_JWT_RETIRING_PUBLIC_KEYS",
-        "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
-        "DB_STORE_FULL_CONTENT",
-    }
-)
+# who may sign in or use what, which networks are trusted, where the gateway
+# sends requests, credentials, mail and users, and whether it reports trouble.
+# For ``app_config`` that is :func:`app_config.security_relevant`; for
+# ``site_settings``, these keys and the keys under these prefixes: a runtime
+# model's required role, and an alert type's mute. The plan also lists a
+# change to who may use a model or a provider key, and to where and how a
+# route sends requests and keys (:func:`_restore_plan`).
 _SECURITY_SITE_SETTING_KEYS: frozenset[str] = frozenset(
     {
         "user_auth_enabled",
         "signup_enabled",
         "signup_require_email_verification",
         "log_full_payload",
+        SNOOZE_SETTING_KEY,
         *_SECRET_SITE_SETTING_KEYS,
     }
 )
+_SECURITY_SITE_SETTING_PREFIXES: tuple[str, ...] = (
+    MODEL_REQUIRED_ROLE_SETTING_PREFIX,
+    alert_mutes.MUTE_SETTING_PREFIX,
+)
+
+#: The longest a restored alert snooze may run: what ``POST /admin/alerts/snooze``
+#: allows, and a minute for clocks that disagree. Past it a snooze silences the
+#: gateway's alerts for good (``inf`` never ends).
+_MAX_RESTORED_SNOOZE_SECONDS = 7 * 24 * 60 * 60 + 60
+
+
+def _security_relevant_site_setting(key: str) -> bool:
+    """Whether changing ``site_settings`` *key* from a backup needs confirmation and the password."""
+    return key in _SECURITY_SITE_SETTING_KEYS or key.startswith(_SECURITY_SITE_SETTING_PREFIXES)
 
 
 def _jsonb_value(raw: Any) -> Any:
@@ -282,7 +286,25 @@ def _validate_site_setting(item: ConfigBackupSiteSetting) -> tuple[str, str | No
             raise HTTPException(status_code=400, detail=f"{key}: {exc}") from exc
         return key, value, alert_mutes.MUTE_VALUE_TYPE
 
-    if key in {USAGE_INSIGHTS_API_KEY, USAGE_INSIGHTS_MODEL, SNOOZE_SETTING_KEY}:
+    if key == SNOOZE_SETTING_KEY:
+        # Read as a float deadline on every alert (alert_snooze): "inf", or a
+        # deadline centuries away, would silence every alert for good.
+        try:
+            until = float(value)
+        except ValueError:
+            until = math.nan
+        if not math.isfinite(until) or until < 0:
+            raise HTTPException(
+                status_code=400, detail=f"{key}: must be a deadline in epoch seconds"
+            )
+        if until > time.time() + _MAX_RESTORED_SNOOZE_SECONDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key}: an alert snooze ends within 7 days of when it was set",
+            )
+        return key, value, "float"
+
+    if key in {USAGE_INSIGHTS_API_KEY, USAGE_INSIGHTS_MODEL}:
         return key, value, value_type
 
     return key, value, value_type
@@ -715,47 +737,9 @@ async def _build_backup(
     )
 
 
-async def _confirm_administrator(
-    request: Request, op_store: Any, password: str | None, *, action: str
-) -> None:
-    """Raise unless the administrator behind this request gives the account's password.
-
-    A bearer token proves a session, not a person, and what this guards
-    outlives any session: secret values handed out, or the deployment's
-    security settings replaced. The password is checked by
-    :func:`confirm_account_owner`, as revealing a saved API key checks it, so
-    every attempt counts against the sign-in limits. An ``ADMIN_TOKEN`` caller
-    has no account to confirm, and an account without a password (made by
-    phone) is refused: confirming by phone code would need a new code purpose.
-
-    Raises:
-        HTTPException: 403 for the admin token; 400 for an account without a
-            password or a wrong or missing one; 429 when rate-limited.
-    """
-    user_id = get_admin_user_id(request)
-    if user_id is None:
-        raise HTTPException(
-            status_code=403,
-            detail=f"{action} needs an administrator's password. Sign in to the console as an "
-            "administrator: the admin token cannot confirm it.",
-        )
-    user_row = await op_store.get_user_by_id(user_id) if op_store else None
-    if not user_row:
-        raise HTTPException(status_code=403, detail="Admin account not found.")
-    if not user_row.get("password_hash"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"{action} needs your password, and this account has none. Set one in "
-            "Settings first.",
-        )
-    await confirm_account_owner(
-        request,
-        op_store,
-        user_row,
-        password=password,
-        phone_code=None,
-        purpose="config_backup",
-    )
+#: Secret values handed out, or the deployment's security settings replaced,
+#: outlive any session: both ask for the administrator's password again.
+_confirm_administrator = confirm_administrator
 
 
 async def _export(
@@ -850,27 +834,27 @@ async def _kept_provider_key_values(op_store: Any, keys: list[Any]) -> dict[str,
 
 def _security_relevant_setting(key: str) -> bool:
     """Whether changing ``app_config`` *key* from a backup needs confirmation and the password."""
-    entry = app_config.entry(key)
-    if entry is None:
-        # A variable the restore adds: a configuration file reads it.
-        return True
-    return (
-        entry.secret
-        or entry.category in _SECURITY_CATEGORIES
-        or entry.origin != "static"
-        or key in _SECURITY_SETTING_KEYS
-        or key.endswith("_URL")
-    )
+    return app_config.security_relevant(key)
 
 
-def _route_target_changed(current: Any, target: Any) -> bool:
-    """Whether a route would send requests, or a key, somewhere it does not now."""
+def _route_target_changed(
+    current: Any, target: Any, *, default_deployment_type: str | None
+) -> bool:
+    """Whether a route would send requests, or a key, somewhere or some way it does not now.
+
+    The deployment type decides whether a route is the gateway's own engine,
+    which is given only remote media the gateway fetched itself: a
+    ``self_hosted`` route made ``provider_api`` is sent clients' media URLs to
+    fetch from inside the deployment's network.
+    """
     if current is None:
         return True
     return (
         str(current.get("base_url") or "") != target.base_url
         or str(current.get("provider") or "") != target.provider
         or current.get("api_key_id") != target.api_key_id
+        or (current.get("deployment_type") or default_deployment_type)
+        != (target.deployment_type or default_deployment_type)
     )
 
 
@@ -890,6 +874,18 @@ async def _restore_plan(
     summary = await app_config.preview_restore_rows(
         [row.model_dump() for row in payload.app_config]
     )
+    changes, not_restored = await _restore_labels(payload, op_store, summary)
+    return changes, not_restored, summary
+
+
+async def _restore_labels(
+    payload: ConfigBackupPayload, op_store: Any, summary: app_config.RestoreSummary
+) -> tuple[list[str], list[str]]:
+    """The security-relevant changes and unrestorable secrets of *payload*, as sorted labels.
+
+    *summary* is the ``app_config`` plan; *op_store* reads the other tables, on
+    the restore transaction's connection when it is given one.
+    """
     changes = {f"app_config:{key}" for key in summary.changed if _security_relevant_setting(key)}
     not_restored = {f"app_config:{key}" for key in summary.not_restored}
 
@@ -898,7 +894,11 @@ async def _restore_plan(
         for row in await _call_store(op_store, "list_settings", default=[])
     }
     target_settings = {item.key.strip(): item.value for item in _restorable_site_settings(payload)}
-    for key in _SECURITY_SITE_SETTING_KEYS:
+    for key in sorted(
+        name
+        for name in current_settings.keys() | target_settings.keys()
+        if _security_relevant_site_setting(name)
+    ):
         if key not in target_settings:
             if key in current_settings:
                 changes.add(f"site_settings:{key}")
@@ -909,6 +909,33 @@ async def _restore_plan(
                 not_restored.add(f"site_settings:{key}")
         elif current_settings.get(key) != value:
             changes.add(f"site_settings:{key}")
+
+    # Who may use a model: a lower tier opens it to more accounts.
+    current_visibility = {
+        str(row["model_id"]): str(row["required_role"])
+        for row in await _call_store(op_store, "list_model_visibility_overrides", default=[])
+    }
+    target_visibility = {v.model_id: v.required_role for v in payload.model_visibility_overrides}
+    for model_id in current_visibility.keys() | target_visibility.keys():
+        if current_visibility.get(model_id) != target_visibility.get(model_id):
+            changes.add(f"model_visibility_overrides:{model_id}")
+
+    # Which tiers may spend an environment key; a key with no row is everyone's.
+    current_env_roles = {
+        (str(provider), str(key_hash)): (str(prefix), str(min_role))
+        for provider, key_hash, prefix, min_role in await _call_store(
+            op_store, "list_all_provider_env_key_reservations", default=[]
+        )
+    }
+    target_env_roles = {
+        (item.provider.strip(), item.key_hash.strip()): (item.key_prefix, item.min_role)
+        for item in payload.provider_env_key_min_roles
+    }
+    for env_key in current_env_roles.keys() | target_env_roles.keys():
+        before = current_env_roles.get(env_key, ("", "free"))
+        after = target_env_roles.get(env_key, ("", "free"))
+        if before[1] != after[1]:
+            changes.add(f"provider_env_key_min_roles:{env_key[0]}/{after[0] or before[0]}")
 
     current_defs = {
         defn.provider: defn
@@ -930,28 +957,35 @@ async def _restore_plan(
     for k in payload.provider_keys:
         key_id, provider = k.id.strip(), k.provider.strip()
         label = f"provider_keys:{provider}/{key_id}"
+        current_key = current_keys.get(key_id)
+        same_key = current_key is not None and current_key.provider == provider
+        if same_key and (current_key.min_role or "free") != k.min_role:
+            # Which tiers may spend it, whether or not the backup holds its value.
+            changes.add(label)
         if k.api_key is None:
             if key_id not in kept:
                 not_restored.add(label)
             continue
-        current_key = current_keys.get(key_id)
-        if current_key is None or current_key.provider != provider:
+        if not same_key:
             changes.add(label)
             continue
         full = await _call_store(op_store, "get_provider_key_full", key_id, default=None)
         if full is None or full[1] != k.api_key:
             changes.add(label)
 
-    for domain, method, routes in (
+    for domain, method, routes, default_deployment_type in (
         (
             "provider_route_candidates",
             "list_all_provider_route_candidates",
             payload.provider_route_candidates,
+            "auto",
         ),
         (
+            # A route override without a deployment type keeps the route's own.
             "provider_route_configs",
             "list_all_provider_route_configs",
             payload.provider_route_configs,
+            None,
         ),
     ):
         current_routes = {
@@ -959,7 +993,11 @@ async def _restore_plan(
             for row in await _call_store(op_store, method, default=[])
         }
         for route in routes:
-            if _route_target_changed(current_routes.get((route.model_id, route.route_id)), route):
+            if _route_target_changed(
+                current_routes.get((route.model_id, route.route_id)),
+                route,
+                default_deployment_type=default_deployment_type,
+            ):
                 changes.add(f"{domain}:{route.model_id}/{route.route_id}")
 
     current_domains = {
@@ -972,7 +1010,7 @@ async def _restore_plan(
         # Who may sign up: an empty allowlist admits every address.
         changes.add("signup_allowed_domains")
 
-    return sorted(changes), sorted(not_restored), summary
+    return sorted(changes), sorted(not_restored)
 
 
 @contextlib.asynccontextmanager
@@ -1005,6 +1043,39 @@ async def _stores_in(
 
     async with connection() as conn:
         yield bound(op_store, conn), bound(batch_store, conn)
+
+
+async def _check_confirmed_plan(
+    transaction: Any,
+    summary: app_config.RestoreSummary,
+    *,
+    payload: ConfigBackupPayload,
+    op_store: Any,
+    batch_store: Any,
+    confirmed: list[str],
+) -> None:
+    """Refuse a restore whose security-relevant changes are no longer *confirmed*.
+
+    What was confirmed was planned before the password check, outside the
+    restore transaction; another administrator's change since -- a setting the
+    bundle would now overwrite -- must not be reverted unconfirmed. So the plan
+    is made again under the transaction's write lock (*summary*), the other
+    tables read on its connection, before anything is written.
+
+    Raises:
+        app_config.ConfigUpdateError: 409 when the changes differ; nothing is
+            written.
+    """
+    async with _stores_in(transaction, op_store, batch_store) as (tx_op_store, _tx_batch):
+        now, _not_restored = await _restore_labels(payload, tx_op_store, summary)
+    if now != confirmed:
+        moved = sorted(set(now) ^ set(confirmed))
+        raise app_config.ConfigUpdateError(
+            409,
+            "The configuration changed while this backup was being restored, so it would no "
+            f"longer change exactly what was confirmed ({', '.join(moved)}). Nothing was "
+            "restored: preview the restore again.",
+        )
 
 
 async def _apply_operational_and_batch_stores(
@@ -1505,10 +1576,22 @@ async def _plan_or_refuse(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
 
 
-@router.post("/admin/config/restore/preview", response_model=ConfigRestorePreview)
+# A bundle can be large, so the two restore routes keep the general body limit
+# rather than the small one other /admin paths get (RequestBodyLimitMiddleware),
+# and read it only once the caller is known to be an administrator: a declared
+# body is read and decoded before any dependency, authentication included.
+_bundle_body = json_body_after(verify_admin_access, ConfigBackupPayload)
+_restore_body = json_body_after(verify_admin_access, ConfigRestoreRequest)
+
+
+@router.post(
+    "/admin/config/restore/preview",
+    response_model=ConfigRestorePreview,
+    openapi_extra=json_body_schema(ConfigBackupPayload),
+)
 async def preview_config_restore(
-    payload: ConfigBackupPayload,
     response: Response,
+    payload: ConfigBackupPayload = Depends(_bundle_body),
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ConfigRestorePreview:
@@ -1526,11 +1609,15 @@ async def preview_config_restore(
     )
 
 
-@router.post("/admin/config/restore", response_model=ConfigRestoreResponse)
+@router.post(
+    "/admin/config/restore",
+    response_model=ConfigRestoreResponse,
+    openapi_extra=json_body_schema(ConfigRestoreRequest),
+)
 async def restore_config_backup(
-    payload: ConfigRestoreRequest,
     request: Request,
     response: Response,
+    payload: ConfigRestoreRequest = Depends(_restore_body),
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
@@ -1549,6 +1636,11 @@ async def restore_config_backup(
     connection, so a failure anywhere rolls all of it back: nothing is
     restored. A secret the bundle withholds keeps this deployment's value; one
     this deployment lacks is left unset and named in ``secrets_not_restored``.
+
+    Once the transaction has committed, the restore is made and audited even
+    when this process then fails to load it: that answers 503, saying the
+    backup was restored and how it comes into force, never that nothing was
+    changed.
     """
     response.headers["Cache-Control"] = "no-store"
 
@@ -1570,15 +1662,36 @@ async def restore_config_backup(
     app_config_dicts = [row.model_dump() for row in payload.app_config]
     admin_user_id = get_admin_user_id(request)
 
+    async def check_plan(transaction: Any, summary: app_config.RestoreSummary) -> None:
+        await _check_confirmed_plan(
+            transaction,
+            summary,
+            payload=payload,
+            op_store=op_store,
+            batch_store=batch_store,
+            confirmed=security_changes,
+        )
+
     async def apply_in_transaction(transaction: Any) -> None:
         async with _stores_in(transaction, op_store, batch_store) as (tx_op_store, tx_batch):
             await _apply_operational_and_batch_stores(
                 tx_op_store, tx_batch, payload, admin_id, admin_user_id
             )
 
+    # Why this process could not load the committed restore, if it could not.
+    not_loaded: str | None = None
     try:
         summary = await app_config.restore_rows(
-            app_config_dicts, updated_by=admin_id, before_commit=apply_in_transaction
+            app_config_dicts,
+            updated_by=admin_id,
+            check_plan=check_plan,
+            before_commit=apply_in_transaction,
+        )
+    except app_config.RestoreNotLoaded as exc:
+        summary = exc.summary
+        not_loaded = (
+            f"reading the configuration back failed ({type(exc.cause).__name__}); the next "
+            "configuration refresh, within about ten seconds, or a restart applies it"
         )
     except app_config.ConfigUpdateError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
@@ -1594,7 +1707,14 @@ async def restore_config_backup(
             detail=f"The backup could not be restored ({type(exc).__name__}); nothing was changed.",
         ) from exc
 
-    await _refresh_live_caches(services, op_store)
+    try:
+        await _refresh_live_caches(services, op_store)
+    except Exception as exc:
+        logger.warning("Refreshing caches after a committed restore failed", exc_info=True)
+        not_loaded = not_loaded or (
+            f"refreshing its in-memory routes, keys and settings failed "
+            f"({type(exc).__name__}); restart the backend to apply all of it"
+        )
 
     # The app_config rows' own answer, from inside the transaction, wins over
     # the plan's for that domain.
@@ -1618,8 +1738,15 @@ async def restore_config_backup(
             "immutable_keys_preserved": list(summary.preserved_immutable),
             "security_changes": security_changes,
             "secrets_not_restored": not_restored,
+            **({"not_loaded": not_loaded} if not_loaded is not None else {}),
         },
     )
+    if not_loaded is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"The backup was restored, but this backend has not loaded it yet: "
+            f"{not_loaded}. Reload the page to see the restored configuration.",
+        )
 
     return ConfigRestoreResponse(
         config=ConfigResponse(

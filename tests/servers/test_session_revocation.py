@@ -211,3 +211,37 @@ async def test_an_admin_token_whose_session_ended_is_refused():
     assert (exc.value.status_code, exc.value.detail) == (401, ENDED)
     store.session_is_live.assert_awaited_once_with("u-admin", "sess_gone")
     store.get_user_by_id.assert_not_awaited()
+
+
+async def test_signing_out_ends_the_session_a_stolen_cookie_keeps_refreshing(app, op_store):
+    """The reported case: a copied cookie survived its owner's sign-out.
+
+    Whoever copied the cookie refreshes first, which rotates it: the owner's
+    copy no longer names the browser session, so signing out used to clear it
+    and nothing else, and the copy kept refreshing tokens for the account.
+    Signing out now ends the session the owner's token was issued for, which
+    is the session the copy refreshes.
+    """
+    # A cookie naming no browser session is looked up as a legacy one, too.
+    op_store.get_session_by_token_hash = AsyncMock(return_value=None)
+    async with _browser(app) as owner, _browser(app) as thief:
+        token = await _sign_in(owner)
+        thief.cookies.update(owner.cookies)
+        assert (await thief.post("/auth/refresh")).status_code == 200
+        # The owner's cookie is stale now; the owner signs out all the same.
+        assert (await owner.post("/auth/refresh")).status_code == 401
+        assert (await owner.post("/auth/logout", headers=token)).status_code == 200
+
+        refused = await thief.post("/auth/refresh")
+    assert refused.status_code == 401
+
+
+async def test_signing_out_without_a_cookie_ends_the_tokens_session(app):
+    async with _browser(app) as browser, _browser(app) as api_client:
+        token = await _sign_in(browser)
+
+        assert (await api_client.post("/auth/logout", headers=token)).status_code == 200
+
+        refused = await _me(browser, token)
+        assert (refused.status_code, refused.json()["detail"]) == (401, ENDED)
+        assert (await browser.post("/auth/refresh")).status_code == 401

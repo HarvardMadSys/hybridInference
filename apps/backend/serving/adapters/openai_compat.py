@@ -14,7 +14,8 @@ import aiohttp
 from serving.config.app_config import config_value, on_change
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
-from serving.stream import done_sentinel
+from serving.http import MAX_RESPONSE_BODY_BYTES
+from serving.stream import StreamText, done_sentinel
 from serving.structured_output import requested_format, with_instruction
 from serving.utils.logging import get_logger
 from serving.utils.messages import (
@@ -22,7 +23,7 @@ from serving.utils.messages import (
     merge_leading_system_messages,
     move_tool_media,
 )
-from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import estimate_prompt_tokens_bounded, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
 from .dispatch_watch import report_first_token, report_queued
@@ -48,6 +49,7 @@ from .upstream_limiter import (
     UpstreamSlot,
     acquire_upstream_slot,
     is_local_endpoint,
+    try_acquire_upstream_slot,
 )
 
 if TYPE_CHECKING:
@@ -196,6 +198,28 @@ def completion_timeout_s() -> float:
     loaded and through every later change.
     """
     return _COMPLETION_TIMEOUT_S
+
+
+#: The response bytes an embeddings request may bring back per input: one
+#: vector of 8,192 dimensions written as JSON floats (about 200 KB) and the
+#: object around it. Floats come back at most about 24 bytes each.
+EMBEDDING_RESPONSE_BYTES_PER_INPUT = 256 * 1024
+#: ... and once per response, for the list's own fields (``model``, ``usage``).
+_EMBEDDING_RESPONSE_BASE_BYTES = 64 * 1024
+
+
+def embeddings_response_limit(input_data: str | list[str]) -> int:
+    """Return the most response bytes read for an embeddings request of *input_data*.
+
+    An embeddings response is one vector per input, so its size follows from
+    the request: a few inputs cannot make the gateway read and decode hundreds
+    of MiB. Never more than the limit on any response body.
+    """
+    count = len(input_data) if isinstance(input_data, list) else 1
+    return min(
+        MAX_RESPONSE_BODY_BYTES,
+        _EMBEDDING_RESPONSE_BASE_BYTES + count * EMBEDDING_RESPONSE_BYTES_PER_INPUT,
+    )
 
 
 async def _iter_with_idle_timeout(
@@ -849,7 +873,41 @@ class OpenAICompatAdapter(BaseAdapter):
             deployment_type=self.config.deployment_type,
         )
 
-    async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _try_upstream_slot(self, api_key: str | None) -> UpstreamSlot | None:
+        """Take an outbound slot for *api_key* if one is free now; None otherwise."""
+        return try_acquire_upstream_slot(
+            self._key_pool_provider_label,
+            api_key,
+            base_url=self.config.base_url,
+            deployment_type=self.config.deployment_type,
+        )
+
+    def _lease_key(
+        self, affinity_key: str | None, role: str | None, tried: set[int]
+    ) -> tuple[str, Any, UpstreamSlot | None]:
+        """Lease the next key to send on: one with an outbound slot free now, if any.
+
+        Returns ``(api_key, lease, slot)``. Every key the caller may use and has
+        not tried is asked for a free slot first, in the pool's order, so a
+        request does not queue on a full key while a sibling has room (the
+        caller's binding stays on its key). When none has one, the slot is None
+        and the key is the one :meth:`KeyPool.acquire` picks, for the caller to
+        wait on.
+
+        Raises:
+            KeyPoolExhausted: No key is left for this caller.
+        """
+        pool = self._key_pool
+        assert pool is not None
+        picked = pool.acquire_with(affinity_key, self._try_upstream_slot, role=role, exclude=tried)
+        if picked is not None:
+            return picked
+        api_key, lease = pool.acquire(affinity_key, role=role, exclude=tried)
+        return api_key, lease, None
+
+    async def _post_with_pool(
+        self, url: str, payload: dict[str, Any], *, max_body_bytes: int | None = None
+    ) -> dict[str, Any]:
         """POST JSON with sequential key-pool rotation on any upstream error.
 
         When ``self._key_pool`` is None, falls through to the legacy single-key
@@ -871,7 +929,12 @@ class OpenAICompatAdapter(BaseAdapter):
         rotates like any other key-specific failure — a sibling key may have
         room — and only a request that finds every usable key saturated fails
         with ``UpstreamSaturated``.
+
+        ``max_body_bytes``, when given, bounds the response body read (see
+        ``AsyncHTTPClient.json_post``); otherwise the client's default applies.
         """
+        # Passed only when set: the chat path's call is unchanged.
+        limit = {} if max_body_bytes is None else {"max_body_bytes": max_body_bytes}
         if self._key_pool is None:
             headers = self._build_headers()
             slot = await self._acquire_upstream_slot(self.config.api_key)
@@ -891,6 +954,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
                     retries=1,
+                    **limit,
                 )
             except (TimeoutError, aiohttp.ClientError) as e:
                 slot.release(
@@ -922,7 +986,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
+                api_key, lease, slot = self._lease_key(affinity_key, role, tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -946,18 +1010,22 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
-            try:
-                slot = await self._acquire_upstream_slot(api_key)
-            except UpstreamSaturated as saturated:
-                # This key's outbound allowance is full. Rotate rather than
-                # fail: sibling keys are separate accounts with their own
-                # allowances, and ``tried`` already holds this one so the next
-                # pass picks a different key. The lease is released neutrally —
-                # nothing was sent, so the key is neither credited with a
-                # success nor charged with a failure, and it must not be muted.
-                self._key_pool.release(lease, status_code=None)
-                last_error = saturated
-                continue
+            if slot is None:
+                # Every key this caller may use is at its outbound limit: wait
+                # in line for this one.
+                try:
+                    slot = await self._acquire_upstream_slot(api_key)
+                except UpstreamSaturated as saturated:
+                    # This key's outbound allowance stayed full. Rotate rather
+                    # than fail: sibling keys are separate accounts with their
+                    # own allowances, and ``tried`` already holds this one so the
+                    # next pass picks a different key. The lease is released
+                    # neutrally — nothing was sent, so the key is neither
+                    # credited with a success nor charged with a failure, and it
+                    # must not be muted.
+                    self._key_pool.release(lease, status_code=None)
+                    last_error = saturated
+                    continue
 
             headers = self._build_headers(api_key_override=api_key)
             try:
@@ -966,6 +1034,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                    **limit,
                 )
             except (TimeoutError, aiohttp.ClientError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
@@ -1096,7 +1165,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
+                api_key, lease, slot = self._lease_key(affinity_key, role, tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -1121,16 +1190,17 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
-            try:
-                slot = await self._acquire_upstream_slot(api_key)
-            except UpstreamSaturated as saturated:
-                # Same rotation as the non-streaming path: this key's outbound
-                # allowance is full, a sibling's may not be. Neutral lease
-                # release — nothing was sent, so the key is neither credited nor
-                # muted.
-                self._key_pool.release(lease, status_code=None)
-                last_error = saturated
-                continue
+            if slot is None:
+                try:
+                    slot = await self._acquire_upstream_slot(api_key)
+                except UpstreamSaturated as saturated:
+                    # Same rotation as the non-streaming path: this key's
+                    # outbound allowance stayed full, a sibling's may not be.
+                    # Neutral lease release — nothing was sent, so the key is
+                    # neither credited nor muted.
+                    self._key_pool.release(lease, status_code=None)
+                    last_error = saturated
+                    continue
 
             headers = self._build_headers(api_key_override=api_key)
             stream_iter = self.http.stream_post(
@@ -1442,11 +1512,12 @@ class OpenAICompatAdapter(BaseAdapter):
         processor = get_processor(self._processor_model_id, override=self._processor_override)
 
         # The output so far, for the usage estimate when the upstream reports
-        # none: content and reasoning, and tool-call names and arguments. Lists
-        # of pieces, joined once at the end -- appending to a string the closure
-        # below rebinds copies all of it on every token, quadratic in the answer.
-        content_pieces: list[str] = []
-        tool_text_pieces: list[str] = []
+        # none: content and reasoning, and tool-call names and arguments. Kept
+        # as ``StreamText``, read once at the end -- appending to a string the
+        # closure below rebinds copies all of it on every token, quadratic in
+        # the answer.
+        content_text = StreamText()
+        tool_text = StreamText()
         finish_reason = "stop"
         upstream_usage: dict[str, Any] | None = None
         prompt_tokens_override: int | None = None
@@ -1480,13 +1551,13 @@ class OpenAICompatAdapter(BaseAdapter):
             # Accumulate visible content and reasoning independently for the fallback
             content = delta.get("content")
             if isinstance(content, str) and content:
-                content_pieces.append(content)
+                content_text.append(content)
 
             reasoning = (
                 delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             )
             if isinstance(reasoning, str) and reasoning:
-                content_pieces.append(reasoning)
+                content_text.append(reasoning)
 
             has_reasoning = (
                 bool(delta.get("reasoning_content"))
@@ -1511,9 +1582,9 @@ class OpenAICompatAdapter(BaseAdapter):
                         name = fn.get("name") or ""
                         args = fn.get("arguments") or ""
                         if isinstance(name, str):
-                            tool_text_pieces.append(name)
+                            tool_text.append(name)
                         if isinstance(args, str):
-                            tool_text_pieces.append(args)
+                            tool_text.append(args)
                 return self._format_passthrough_chunk(processed_chunk)
 
             if isinstance(content, str) and content:
@@ -1758,9 +1829,9 @@ class OpenAICompatAdapter(BaseAdapter):
             usage_info = None
             final_usage = self._build_fallback_usage(
                 messages=cleaned_messages,
-                total_content="".join(content_pieces),
+                total_content=content_text.text,
                 prompt_tokens_override=prompt_tokens_override,
-                tool_text="".join(tool_text_pieces),
+                tool_text=tool_text.text,
             )
         final_chunk_str = self._build_final_chunk(
             usage=final_usage,
@@ -1803,7 +1874,9 @@ class OpenAICompatAdapter(BaseAdapter):
 
         logger.debug(f"[OpenAICompat] POST {url} model={payload['model']}")
 
-        return await self._post_with_pool(url, payload)
+        return await self._post_with_pool(
+            url, payload, max_body_bytes=embeddings_response_limit(input_data)
+        )
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""
@@ -1835,10 +1908,12 @@ class OpenAICompatAdapter(BaseAdapter):
         prompt_tokens_override: int | None,
         tool_text: str = "",
     ) -> dict[str, int]:
+        # Bounded: this runs on the event loop at the end of the stream, and the
+        # prompt is the caller's size. Exact up to the inline bound, sampled past it.
         prompt_tokens = (
             int(prompt_tokens_override)
             if prompt_tokens_override is not None and prompt_tokens_override > 0
-            else int(estimate_prompt_tokens(messages))
+            else int(estimate_prompt_tokens_bounded(messages))
         )
         # The tool-text estimate intentionally skews low: it counts only the
         # function name + arguments text, not the per-call function-calling

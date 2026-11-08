@@ -68,6 +68,32 @@ async def test_one_client_sends_at_most_ten_an_hour_over_both_kinds():
     )
 
 
+async def test_unresolved_clients_do_not_share_one_window():
+    """The reported case: behind an unresolving proxy, ten requests stopped every reset.
+
+    Every such client used to count as ``"unknown"``, one window for the whole
+    deployment. Without an address to tell them apart they are limited per
+    address asked about alone.
+    """
+    for n in range(MAIL_REQUESTS_PER_IP_PER_HOUR * 3):
+        assert await check_and_record_mail_request(
+            "password_reset", f"junk{n}@example.com", None
+        ) == (True, None)
+
+    assert await check_and_record_mail_request("password_reset", "owner@example.com", None) == (
+        True,
+        None,
+    )
+    assert mail_rate_limit._ip_requests == {}
+    # Each inbox still receives at most its three an hour.
+    for _ in range(2):
+        await check_and_record_mail_request("password_reset", "owner@example.com", None)
+    assert await check_and_record_mail_request("password_reset", "owner@example.com", None) == (
+        False,
+        "address",
+    )
+
+
 async def test_an_ipv6_client_is_counted_by_its_slash_64():
     for n in range(10):
         assert await check_and_record_mail_request(

@@ -335,6 +335,8 @@ export interface RouteWiseDecision {
 interface RecentRequestsResponse {
   requests: RecentRequestItem[];
   total: number;
+  /** The account has requests older than the ones listed; `total` is a lower bound. */
+  total_capped?: boolean;
   limit: number;
   offset: number;
 }

@@ -6,20 +6,25 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
+from serving.audit import AuditActor
 from serving.config import app_config, live, live_control
 from serving.config.app_config_registry import ALERTS_RUNTIME_GROUP
 from serving.config.settings import get_settings
 from serving.observability import alert_runtime
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
 from serving.servers.routers.admin import config as config_routes
+from serving.utils import password as password_utils
+from serving.utils.login_rate_limit import reset_login_rate_limit_state
 from tests.fixtures.app_config_store import FakeAppConfigStore
 
 AUTH = {"Authorization": "Bearer test-admin"}
 WEBHOOK = "https://hooks.slack.test/services/T9/B9/fictional-live-secret"
+#: A webhook is a secret, so a save of one needs the administrator's password.
+PASSWORD = "correct-admin-password"
 
 
 @pytest.fixture
@@ -38,10 +43,25 @@ async def client(monkeypatch, tmp_path):
     audit = AsyncMock()
     monkeypatch.setattr(config_routes, "log_admin_action", audit)
     app = FastAPI()
-    app.state.services = AppServices(router=MagicMock(), operational_store=MagicMock())
+    op_store = MagicMock()
+    app.state.services = AppServices(router=MagicMock(), operational_store=op_store)
     app.include_router(admin_router.router)
+
+    # An administrator signed in to the console, whose password is PASSWORD.
+    async def console_session(request: Request) -> str:
+        request.state.admin_user_id = "u-admin"
+        request.state.audit_actor = AuditActor.admin("u-admin", "127.0.0.1")
+        return "admin@example.com"
+
+    app.dependency_overrides[verify_admin_access] = console_session
+    op_store.get_user_by_id = AsyncMock(
+        return_value={"id": "u-admin", "email": "admin@example.com", "password_hash": "h"}
+    )
+    monkeypatch.setattr(password_utils, "verify_password", lambda plain, _hash: plain == PASSWORD)
+    reset_login_rate_limit_state()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as http:
         yield http, store, audit
+    reset_login_rate_limit_state()
 
 
 @pytest.mark.asyncio
@@ -86,7 +106,10 @@ async def test_a_stale_if_match_is_refused_and_stores_nothing(client) -> None:
     response = await http.patch(
         "/admin/config",
         headers={**AUTH, "If-Match": stale},
-        json={"values": {"SITE_NAME": "Second", "SLACK_WEBHOOK_URL": WEBHOOK}},
+        json={
+            "values": {"SITE_NAME": "Second", "SLACK_WEBHOOK_URL": WEBHOOK},
+            "password": PASSWORD,
+        },
     )
     assert response.status_code == 409
     assert "changed since it was loaded" in response.json()["detail"]
@@ -136,7 +159,9 @@ async def test_live_status_never_carries_a_secret(client, monkeypatch) -> None:
     http, store, audit = client
     store.set_contract(ALERTS_RUNTIME_GROUP, active=True)
     saved = await http.patch(
-        "/admin/config", headers=AUTH, json={"values": {"SLACK_WEBHOOK_URL": WEBHOOK}}
+        "/admin/config",
+        headers=AUTH,
+        json={"values": {"SLACK_WEBHOOK_URL": WEBHOOK}, "password": PASSWORD},
     )
     assert saved.status_code == 200
     await alert_runtime.GROUP.run_once()

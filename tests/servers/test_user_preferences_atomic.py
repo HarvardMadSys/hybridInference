@@ -10,6 +10,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from serving.exceptions import PreferencesTooLargeError
+from serving.storage.base import USER_PREFERENCES_MAX_BYTES
+
 pytest_plugins = ["tests.servers.conftest_auth"]
 
 pytestmark = pytest.mark.dbtest
@@ -124,3 +127,101 @@ async def test_a_row_without_an_object_and_a_missing_user(auth_backend, test_use
     assert not await store.set_user_preference("no-such-user", "k", 1)
     assert not await store.delete_user_preference("no-such-user", "k")
     assert await store.set_user_preference_if_newer("no-such-user", "locale", {}, T0) is None
+
+
+# ---------------------------------------------------------------------------
+# Bounded writes, and reads that never carry a whole document per request
+# ---------------------------------------------------------------------------
+
+
+def _layout(names: int, length: int = 40) -> dict:
+    return {
+        "direct_models": [f"{i:0{length}d}" for i in range(names)],
+        "direct_providers": {},
+        "e2e_models": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_would_overfill_the_document_is_refused_and_changes_nothing(
+    auth_backend, test_user
+):
+    store, _, db_logger, _ = auth_backend
+    user_id = test_user["id"]
+    await store.set_user_preference_if_newer(user_id, "locale", _choice("en", T0), T0)
+    small = _layout(3)
+    assert await store.set_user_preference(
+        user_id, "llm_prober_layout", small, max_total_bytes=USER_PREFERENCES_MAX_BYTES
+    )
+
+    # Fits on its own, but not beside what the document already holds.
+    alone = len(json.dumps(_layout(160)))
+    assert alone < 8000
+    with pytest.raises(PreferencesTooLargeError):
+        await store.set_user_preference(
+            user_id, "llm_prober_layout", _layout(160), max_total_bytes=alone
+        )
+
+    stored = await _stored(db_logger.pool, user_id)
+    assert stored["llm_prober_layout"] == small
+    assert stored["locale"]["value"] == "en"
+    # A missing user is still "no such user", not "too large".
+    assert not await store.set_user_preference(
+        "no-such-user", "llm_prober_layout", small, max_total_bytes=USER_PREFERENCES_MAX_BYTES
+    )
+
+
+@pytest.mark.asyncio
+async def test_lookups_carry_only_the_entries_a_request_reads(auth_backend, test_user_with_key):
+    from serving.servers.auth import hash_api_key
+    from serving.storage.postgres_operational import PostgresOperationalStore
+
+    _, _, db_logger, _ = auth_backend
+    # The statements themselves, without the cache in front of them.
+    store = PostgresOperationalStore(db_logger.pool)
+    user_id = test_user_with_key["id"]
+    key_hash = hash_api_key(test_user_with_key["api_key"])
+    await store.set_user_preference(user_id, "disabled_models", ["m-off"])
+    await store.set_user_preference_if_newer(user_id, "locale", _choice("zh-CN", T0), T0)
+    await store.set_user_preference(user_id, "llm_prober_layout", _layout(5))
+
+    for lookup in (
+        store.get_auth_context_by_key_hash,
+        store.get_auth_context_with_spend,
+        store.get_auth_context_lightweight,
+    ):
+        row = await lookup(key_hash)
+        assert row["preferences"] == {"disabled_models": ["m-off"]}, lookup.__name__
+
+    expected = {"disabled_models": ["m-off"], "locale": _choice("zh-CN", T0)}
+    assert (await store.get_user_by_id(user_id))["preferences"] == expected
+    assert (await store.get_user_by_email(test_user_with_key["email"]))["preferences"] == expected
+    # The whole document is still there for the one reader that asks for it.
+    assert (await store.get_user_preferences(user_id))["llm_prober_layout"] == _layout(5)
+
+    # An account with none of these entries reads as an empty object, as before.
+    await db_logger.pool.execute(
+        "UPDATE users SET preferences = '\"x\"'::jsonb WHERE id = $1", user_id
+    )
+    assert (await store.get_auth_context_with_spend(key_hash))["preferences"] == {}
+    assert (await store.get_user_by_id(user_id))["preferences"] == {}
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_document_stored_earlier_reads_as_its_request_entries(
+    auth_backend, test_user
+):
+    """A layout saved before writes were bounded: no migration trims it, so reads must."""
+    store, _, db_logger, _ = auth_backend
+    user_id = test_user["id"]
+    await store.set_user_preference(user_id, "disabled_models", ["m-off"])
+    await store.set_user_preference(user_id, "llm_prober_layout", _layout(20_000))
+    assert len(json.dumps(await _stored(db_logger.pool, user_id))) > 800_000
+
+    assert await store.get_user_preferences(user_id) == {"disabled_models": ["m-off"]}
+
+    # The account holder's next save replaces it: the bound is on the result.
+    assert await store.set_user_preference(
+        user_id, "llm_prober_layout", _layout(2), max_total_bytes=USER_PREFERENCES_MAX_BYTES
+    )
+    assert (await store.get_user_preferences(user_id))["llm_prober_layout"] == _layout(2)

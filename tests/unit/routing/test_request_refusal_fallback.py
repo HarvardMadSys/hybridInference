@@ -6,10 +6,10 @@ Without a bound it tried every weighted route: a malformed request reached each
 fallback weighted at 1%, the staging canary and any other gateway on the route,
 each paying a full upload and tokenization to refuse it again.
 
-The bound under test: once two routes have refused the request itself (a
-request-describing status other than a context-window refusal), the walk stops.
-Context-window refusals keep their own rule, and every other failure (5xx, 429,
-transport) walks on as before.
+The bound under test: once two routes have refused the request itself (a 400 or
+a 422 other than a context-window refusal), the walk stops. Context-window
+refusals keep their own rule, and every other failure (5xx, 429, transport, and
+the route-specific 404 and 413) walks on as before.
 """
 
 from __future__ import annotations
@@ -129,8 +129,8 @@ def test_two_request_refusals_end_the_walk():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("status", [404, 413, 422])
-def test_every_request_describing_status_counts(status):
+@pytest.mark.parametrize("status", [400, 422])
+def test_every_refusal_of_the_payload_counts(status):
     assert request_refusals_end_fallback(
         "m", [("a", _UpstreamStatusError(400)), ("b", _UpstreamStatusError(status))]
     )
@@ -144,10 +144,12 @@ def test_every_request_describing_status_counts(status):
         _UpstreamStatusError(403),
         _UpstreamStatusError(401),
         _UpstreamStatusError(503),
+        _UpstreamStatusError(404, "The model `m` does not exist."),
+        _UpstreamStatusError(413, "Request Entity Too Large"),
         _TransportError("Cannot connect"),
         _window_refusal(262144),
     ],
-    ids=["429", "403", "401", "503", "transport", "context-window"],
+    ids=["429", "403", "401", "503", "404", "413", "transport", "context-window"],
 )
 def test_other_failures_do_not_count(error):
     assert not request_refusals_end_fallback(
@@ -212,6 +214,56 @@ async def test_failures_that_say_nothing_about_the_request_walk_on(stream):
     dead = _Adapter(_cfg("d"), _TransportError("Cannot connect"))
     healthy = _Adapter(_cfg("e"))
     router = _router(primary, unavailable, busy, dead, healthy)
+
+    await _run(router, stream=stream)
+
+    assert healthy.calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@_PATHS
+@pytest.mark.parametrize(
+    ("status", "message"),
+    [(404, "The model `m` does not exist."), (413, "Request Entity Too Large")],
+    ids=["404", "413"],
+)
+async def test_route_specific_refusals_do_not_end_the_walk(stream, status, message):
+    """Two routes that do not serve the model, or cap the body, before a healthy one.
+
+    A 404 from a server that does not serve the model (an on-demand deployment
+    not loaded, a ``provider_model_id`` set wrong for the route) and a 413 from
+    one route's proxy describe the route, not the request, and are never charged
+    to the breaker: counted as refusals they ended the walk before the healthy
+    route, on every request.
+    """
+    first = _Adapter(_cfg("vllm-a"), _UpstreamStatusError(status, message))
+    second = _Adapter(_cfg("vllm-b"), _UpstreamStatusError(status, message))
+    healthy = _Adapter(_cfg("cloud"))
+    router = _router(first, second, healthy)
+
+    result = await _run(router, stream=stream)
+
+    assert (first.calls, second.calls, healthy.calls) == (1, 1, 1)
+    if stream:
+        assert _CONTENT_CHUNK in result
+    else:
+        assert result["_routing"]["endpoint_id"] == "cloud"
+        assert [a["provider"] for a in result["_routing"]["failed_attempts"]] == [
+            "vllm-a",
+            "vllm-b",
+        ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@_PATHS
+async def test_a_route_specific_404_does_not_use_up_the_bound(stream):
+    """A payload refusal on either side of a 404 still needs a second one to stop."""
+    refused = _Adapter(_cfg("first"), _UpstreamStatusError(400, "first refusal"))
+    missing = _Adapter(_cfg("missing"), _UpstreamStatusError(404, "model not found"))
+    healthy = _Adapter(_cfg("healthy"))
+    router = _router(refused, missing, healthy)
 
     await _run(router, stream=stream)
 

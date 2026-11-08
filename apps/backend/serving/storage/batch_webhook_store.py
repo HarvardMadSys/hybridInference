@@ -133,12 +133,21 @@ class BatchWebhookStore:
         return [dict(row) for row in rows]
 
     async def claim_due_events(
-        self, *, worker_id: str, limit: int, lease_seconds: int, max_attempts: int = 8
+        self,
+        *,
+        worker_id: str,
+        limit: int,
+        lease_seconds: int,
+        max_attempts: int = 8,
+        exclude_users: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Lease due events (with their webhook's URL and secret) for delivery.
 
         Each lease counts as an attempt; an event out of attempts (its last
         holder died after taking it) is given up by :meth:`fail_exhausted`.
+        The events of the users in ``exclude_users`` are left for later: the
+        worker is already sending one of theirs, or holding their endpoint
+        back.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             rows = await conn.fetch(
@@ -156,6 +165,7 @@ class BatchWebhookStore:
                     WHERE pending.status = 'pending' AND pending.next_attempt_at <= now()
                       AND pending.attempts < $4
                       AND (pending.lease_expires_at IS NULL OR pending.lease_expires_at <= now())
+                      AND pending.user_id <> ALL($5::text[])
                     ORDER BY pending.next_attempt_at, pending.id
                     LIMIT $3
                     FOR UPDATE OF pending SKIP LOCKED
@@ -168,6 +178,7 @@ class BatchWebhookStore:
                 float(lease_seconds),
                 limit,
                 max_attempts,
+                list(exclude_users or ()),
             )
         return [dict(row) for row in rows]
 

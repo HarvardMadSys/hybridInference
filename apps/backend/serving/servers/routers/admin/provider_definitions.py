@@ -274,12 +274,38 @@ def _merge_config_provider_spec(
     )
 
 
+#: The model registry file as last parsed: its path, the (modification time,
+#: size, inode) it was read at, and what it held.
+_MODELS_CONFIG_PARSE: tuple[Path, tuple[int, int, int], Any] | None = None
+
+
+def _parsed_models_config(path: Path) -> Any:
+    """The model registry file at *path*, parsed again only once it changes on disk.
+
+    PyYAML parses it in pure Python, about 90 ms for a 93 KB ``models.yaml``,
+    and every provider view of the admin console asks for it. The parse is
+    kept while the file's modification time, size and inode stay the same, so
+    an edit or a replacement is read again on the next call. What it returns
+    is shared: callers read it and never change it.
+    """
+    global _MODELS_CONFIG_PARSE
+    stat = path.stat()
+    signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+    cached = _MODELS_CONFIG_PARSE
+    if cached is not None and cached[0] == path and cached[1] == signature:
+        return cached[2]
+    # Stat before reading: a file changed in between is read again next time.
+    data = yaml.safe_load(path.read_text()) or {}
+    _MODELS_CONFIG_PARSE = (path, signature, data)
+    return data
+
+
 def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
     path = _models_config_path()
     if not path.exists():
         return {}
 
-    data = yaml.safe_load(path.read_text()) or {}
+    data = _parsed_models_config(path)
     models = data.get("models") if isinstance(data, dict) else []
     if not isinstance(models, list):
         return {}

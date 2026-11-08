@@ -201,6 +201,9 @@ async def test_on_behalf_of_ignores_the_service_keys_limits(monkeypatch):
             "max_concurrent_requests": None,
         }
     )
+    store.get_quota_context_for_user = AsyncMock(
+        return_value=[{"quota_daily_cost_usd": 10.0, "quota_monthly_cost_usd": None}]
+    )
 
     ctx = await _verify(store, x_on_behalf_of="end-user-1")
 

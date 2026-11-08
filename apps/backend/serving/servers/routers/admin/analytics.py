@@ -25,7 +25,11 @@ from serving.servers.deps import (
     get_db_logger,
     verify_admin_access,
 )
-from serving.storage import daily_activity_rollup
+from serving.storage import admin_view_results, daily_activity_rollup
+from serving.utils.logging import get_logger
+from serving.utils.single_flight import SingleFlightCache
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/admin")
 
@@ -45,6 +49,17 @@ _ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
 # (ranked by user-attributed request volume), each with its busiest users.
 _TOP_USERS_MODEL_LIMIT = 20
 _TOP_USERS_PER_MODEL = 10
+
+# One view runs nine range scans over api_logs, a month of it for "month";
+# the tab asks again on every visit, from every administrator. Each summary is
+# answered from memory for this long, and concurrent misses share one run. It
+# says when it was computed (generated_at). The key holds the erasure
+# generation a user's hard delete advances, so no summary from before one --
+# naming the deleted user -- is served after it.
+_ANALYTICS_TTL_SECONDS = 30.0
+_ANALYTICS_CACHE: SingleFlightCache[AdminAnalyticsResponse] = SingleFlightCache(
+    _ANALYTICS_TTL_SECONDS, max_entries=16
+)
 
 
 @router.get("/analytics/geo")
@@ -127,10 +142,29 @@ async def admin_get_analytics(
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminAnalyticsResponse:
-    """Return analytics summary for the admin analytics tab."""
+    """Return analytics summary for the admin analytics tab.
+
+    Served from a short shared cache (:data:`_ANALYTICS_TTL_SECONDS`): one
+    computation per database, period and erasure generation at a time.
+    """
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
+    pool = db_logger.pool
+    try:
+        generation = await admin_view_results.generation(pool)
+    except Exception as exc:
+        # Without the generation a cached summary could outlive a hard delete:
+        # compute this one afresh.
+        logger.warning(f"admin analytics: erasure generation unreadable, not cached: {exc!r}")
+        return await _load_analytics(pool, period)
+    return await _ANALYTICS_CACHE.get(
+        (pool, period, generation), lambda: _load_analytics(pool, period)
+    )
+
+
+async def _load_analytics(pool, period: str) -> AdminAnalyticsResponse:
+    """Compute the analytics summary for *period* from ``api_logs``."""
     lookback_minutes, bucket_minutes = _ANALYTICS_PERIODS[period]
     # ``email`` is the user's display label: the email, else the login name
     # of an account created without one, else the id of a deleted account.
@@ -140,7 +174,7 @@ async def admin_get_analytics(
     # Acquire ONE connection and run all queries sequentially. Acquiring 5
     # connections via asyncio.gather can starve the pool when two admin
     # analytics requests arrive concurrently (pool max_size is small).
-    async with db_logger.pool.acquire() as conn:
+    async with pool.acquire() as conn:
         # active_users and the mean conversation depth share the same
         # time-window scan over api_logs, so they run as a single query.
         # COUNT(DISTINCT user_id) already ignores NULL user_ids, and AVG()

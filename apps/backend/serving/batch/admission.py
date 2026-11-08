@@ -16,7 +16,9 @@ goes through the same sequence:
    below, so an owner whose quota ran out or whose role was lowered can still
    learn what their earlier request created; it never changes the batch, and
    in particular never the key it runs under. The key is never part of the
-   digest, so the owner's other keys replay it too.
+   digest, so the owner's other keys replay it too. A caller who may not
+   create, and whose key names none of its batches, has nothing to replay: it
+   is refused before step 2, without uploading the body.
 4. **Role, daily quota, feature switch** -- only for a request that creates.
 5. **Validation** of the requests (:mod:`serving.batch.targets`).
 6. **The create transaction**, under the owner's admission lock: the

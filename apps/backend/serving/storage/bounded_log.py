@@ -1,4 +1,4 @@
-"""Bounded copies of what an ``api_logs`` row stores for a refused request.
+"""Bounded copies of what an ``api_logs`` row stores.
 
 A request the gateway or its upstream refuses with a 4xx is not billed, yet its
 row used to store the whole body: the prompt column, ``request_payload`` and the
@@ -9,19 +9,29 @@ however much it sent. A refused request's row keeps a summary instead: the same
 fields, holding at most :data:`REJECTED_LOG_MAX_CHARS` characters each, with
 ``metadata.payload_truncated`` set when anything was cut.
 
+Any other row -- served, cut off by the client (499), or failed (5xx) -- keeps
+the conversation it carried, which is what the request was billed for and what
+the stored prompts are read for, up to :data:`LOGGED_CONTENT_MAX_CHARS`: more
+text than any context window takes, so a real request is stored whole. The rest
+of its body is a different matter. The gateway ignores a field no request
+schema declares, so it costs nothing to send one, and a cheap request carrying
+an ignored 32 MiB field used to store all of it. Those fields now share
+:data:`LOGGED_FIELDS_MAX_CHARS`: each is kept whole while they fit, smallest
+first, and dropped when it does not.
+
 The summaries are built by walking the value under a character budget, so their
 cost is bounded by the budget and not by the size of what was sent. Lists keep
 their head and their tail, so a conversation keeps its system prompt and its
 latest turn; text cut in the middle keeps both ends, so a stored error still
 reads ``Model '…' not found`` (the failed-request alerter matches that text).
-
-Successful requests, and any other status, are stored as before.
 """
 
 from __future__ import annotations
 
 import itertools
 from typing import TYPE_CHECKING, Any
+
+from serving.storage.payload_dedup import MESSAGE_RESIDUAL_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,8 +49,27 @@ LOGGED_MODEL_ID_MAX_CHARS = 256
 #: errors at 4000 characters already).
 LOGGED_ERROR_MAX_CHARS = 4096
 
+#: Characters of a served request's conversation a row keeps: its prompt column,
+#: the tool definitions, and the body fields in :data:`CONTENT_FIELDS`. About a
+#: million tokens of text, so any request a model accepted is stored whole.
+LOGGED_CONTENT_MAX_CHARS = 4 * 1024 * 1024
+
+#: Characters a served request's body keeps outside its conversation: the model,
+#: sampling parameters, and any other field the client sent, smallest first.
+#: The same bound applies to what the body repeats of the prompt column (see
+#: :func:`bound_payload_leftovers`).
+LOGGED_FIELDS_MAX_CHARS = 65_536
+
+#: The body fields that carry a request's conversation, on every surface: the
+#: upstream reads them as the input it bills.
+CONTENT_FIELDS = frozenset({"messages", "system", "tools", "input", "instructions", "prompt"})
+
+#: Most body fields outside the conversation a row considers; a body with more
+#: keeps the first ones. No request schema has a tenth of this.
+_MAX_FIELDS = 256
+
 #: Status logged for a client that disconnected mid-stream: a request that was
-#: served, not refused, so its row is kept whole.
+#: served, not refused, so its row keeps its content.
 _CLIENT_DISCONNECT_STATUS = 499
 
 #: How deep a summary follows nested containers. A decoded JSON body is at most
@@ -204,17 +233,168 @@ def bounded_json(
     return copied, summary.cut
 
 
-def bound_rejected_log_payload(log_data: dict[str, Any]) -> dict[str, Any]:
+def json_size_within(value: Any, max_chars: int) -> int | None:
+    """The characters *value* takes as a summary counts them, or None past *max_chars*.
+
+    None also for a value nested deeper than a summary follows, or that is not
+    a JSON value. Iterative, and it stops once the count passes *max_chars*, so
+    its cost is bounded by the budget, never by the size of *value*.
+    """
+    left = max_chars
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, str):
+            left -= len(node) + 2
+        elif node is None or isinstance(node, bool | int | float):
+            left -= 4
+        elif depth >= _MAX_DEPTH:
+            return None
+        elif isinstance(node, dict):
+            left -= 2
+            for key, item in node.items():
+                left -= (len(key) if isinstance(key, str) else _MAX_KEY_CHARS) + 4
+                # Text and numbers are counted here rather than pushed: most of
+                # a conversation is a list of messages of a few short fields.
+                if isinstance(item, str):
+                    left -= len(item) + 2
+                elif item is None or isinstance(item, bool | int | float):
+                    left -= 4
+                else:
+                    stack.append((item, depth + 1))
+                if left < 0:
+                    return None
+        elif isinstance(node, list | tuple):
+            left -= 2
+            for item in node:
+                if isinstance(item, str):
+                    left -= len(item) + 3
+                elif item is None or isinstance(item, bool | int | float):
+                    left -= 5
+                else:
+                    left -= 1
+                    stack.append((item, depth + 1))
+                if left < 0:
+                    return None
+        else:
+            return None
+        if left < 0:
+            return None
+    return max_chars - left
+
+
+def bounded_value(value: Any, max_chars: int) -> tuple[Any, bool]:
+    """*value* itself when it fits in *max_chars*, else its summary; and whether it was cut."""
+    if json_size_within(value, max_chars) is not None:
+        return value, False
+    return bounded_json(value, max_chars)
+
+
+def _bound_served_body(payload: dict[Any, Any]) -> tuple[dict[Any, Any], bool]:
+    """A served request's body: its conversation bounded, any other field whole or dropped."""
+    content = {key: value for key, value in payload.items() if key in CONTENT_FIELDS}
+    cut = False
+    if content:
+        content, cut = bounded_value(content, LOGGED_CONTENT_MAX_CHARS)
+    sized: list[tuple[int, Any]] = []
+    others = (item for item in payload.items() if item[0] not in CONTENT_FIELDS)
+    for count, (key, value) in enumerate(others):
+        if count >= _MAX_FIELDS:
+            cut = True
+            break
+        name_chars = (len(key) if isinstance(key, str) else _MAX_KEY_CHARS) + 4
+        size = json_size_within(value, LOGGED_FIELDS_MAX_CHARS - name_chars)
+        if size is None:
+            cut = True
+            continue
+        sized.append((size + name_chars, key))
+    kept: set[Any] = set()
+    left = LOGGED_FIELDS_MAX_CHARS
+    for size, key in sorted(sized, key=lambda entry: entry[0]):
+        if size > left:
+            cut = True
+            break
+        left -= size
+        kept.add(key)
+    if not cut:
+        return payload, False
+    return {
+        key: content[key] if key in CONTENT_FIELDS else value
+        for key, value in payload.items()
+        if key in kept or key in content
+    }, True
+
+
+def _bound_served(log_data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    out = dict(log_data)
+    cut = False
+    prompt = out.get("prompt")
+    if prompt is not None:
+        out["prompt"], prompt_cut = bounded_value(prompt, LOGGED_CONTENT_MAX_CHARS)
+        cut = cut or prompt_cut
+    payload = out.get("request_payload")
+    if isinstance(payload, dict):
+        out["request_payload"], payload_cut = _bound_served_body(payload)
+        cut = cut or payload_cut
+    elif payload is not None:
+        out["request_payload"], payload_cut = bounded_value(payload, LOGGED_CONTENT_MAX_CHARS)
+        cut = cut or payload_cut
+    params = out.get("params")
+    if isinstance(params, dict) and params.get("tools") is not None:
+        tools, tools_cut = bounded_value(params["tools"], LOGGED_CONTENT_MAX_CHARS)
+        if tools_cut:
+            out["params"] = {**params, "tools": tools}
+            cut = True
+    return out, cut
+
+
+def bound_payload_leftovers(payload: Any, *, prompt_stored: bool) -> tuple[Any, bool]:
+    """A stored body with what it repeats of the prompt column bounded; and whether it was cut.
+
+    For the body :func:`serving.storage.payload_dedup.strip_duplicated_payload_keys`
+    left: ``messages_extra`` holds the fields of each message the prompt column
+    did not keep, which on the chat surfaces are fields the gateway ignored, and
+    ``messages`` is still there when the dedup could not align it with the
+    prompt column (which then holds the conversation, when *prompt_stored*).
+    Each is held to :data:`LOGGED_FIELDS_MAX_CHARS`.
+    """
+    if not isinstance(payload, dict):
+        return payload, False
+    keys = [MESSAGE_RESIDUAL_KEY] + (["messages"] if prompt_stored else [])
+    out = payload
+    cut = False
+    for key in keys:
+        if key not in payload:
+            continue
+        value, value_cut = bounded_value(payload[key], LOGGED_FIELDS_MAX_CHARS)
+        if value_cut:
+            if out is payload:
+                out = dict(payload)
+            out[key] = value
+            cut = True
+    return out, cut
+
+
+def bound_log_payload(log_data: dict[str, Any]) -> dict[str, Any]:
     """Return the ``LogStore.log_request`` kwargs to store for *log_data*.
 
-    *log_data* itself when its status is not a client rejection
-    (:func:`is_client_rejection`); otherwise a copy whose prompt, request body,
-    tool definitions, model id and error are bounded. The body leaves out
-    ``messages`` when the row has a prompt, which holds them: the convention of
-    :mod:`serving.storage.payload_dedup`. The caller's dicts are not modified.
+    For a client rejection (:func:`is_client_rejection`), a copy whose prompt,
+    request body, tool definitions, model id and error are bounded summaries.
+    The body leaves out ``messages`` when the row has a prompt, which holds
+    them: the convention of :mod:`serving.storage.payload_dedup`.
+
+    For any other row, a copy whose conversation is held to
+    :data:`LOGGED_CONTENT_MAX_CHARS` and whose other body fields share
+    :data:`LOGGED_FIELDS_MAX_CHARS`, kept whole or dropped; and *log_data*
+    itself when nothing was over. ``metadata.payload_truncated`` marks a row
+    from which anything was cut. The caller's dicts are not modified.
     """
     if not is_client_rejection(log_data.get("status_code")):
-        return log_data
+        out, cut = _bound_served(log_data)
+        if not cut:
+            return log_data
+        out["metadata"] = {**(out.get("metadata") or {}), "payload_truncated": True}
+        return out
     out = dict(log_data)
     cut = False
     prompt = out.get("prompt")
@@ -242,3 +422,7 @@ def bound_rejected_log_payload(log_data: dict[str, Any]) -> dict[str, Any]:
     if cut:
         out["metadata"] = {**(out.get("metadata") or {}), "payload_truncated": True}
     return out
+
+
+#: The name this function had while only refused requests were bounded.
+bound_rejected_log_payload = bound_log_payload

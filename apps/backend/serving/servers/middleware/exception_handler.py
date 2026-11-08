@@ -26,6 +26,7 @@ legitimate client rather than protect anyone:
   to the suspended user.
 """
 
+import time
 from datetime import UTC, datetime
 
 from fastapi import FastAPI, HTTPException, Request
@@ -55,6 +56,7 @@ from serving.storage.pools import (
     DatabaseBusyError,
 )
 from serving.utils.logging import get_logger
+from serving.utils.password import PASSWORD_BUSY_RETRY_AFTER_SEC, PasswordWorkBusyError
 from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
@@ -87,6 +89,19 @@ def _log_domain_exception(
             "detail": str(exc),
         },
     )
+
+
+_PASSWORD_BUSY_LOG_EVERY_SEC = 60.0
+
+
+class _PasswordBusyLog:
+    """Refusals of password work since the last log line, and when that was."""
+
+    refused = 0
+    logged_at = float("-inf")
+
+
+_password_busy_log = _PasswordBusyLog()
 
 
 def install_exception_handlers(app: FastAPI) -> None:
@@ -314,6 +329,34 @@ def install_exception_handlers(app: FastAPI) -> None:
             status_code=503,
             detail=DATABASE_BUSY_DETAIL,
             headers={"Retry-After": str(DATABASE_BUSY_RETRY_AFTER_SEC)},
+        )
+        return await _http_exception_handler(request.app)(request, busy)
+
+    @app.exception_handler(PasswordWorkBusyError)
+    async def password_work_busy_handler(request: Request, exc: PasswordWorkBusyError):
+        # Too many password checks were already waiting (serving.utils.password):
+        # refused at once rather than queued behind them, the same for every
+        # account name. This happens many times a second during a flood, so it
+        # is logged once a minute with a count, not once a request.
+        _password_busy_log.refused += 1
+        now = time.monotonic()
+        if now - _password_busy_log.logged_at >= _PASSWORD_BUSY_LOG_EVERY_SEC:
+            logger.warning(
+                "password_work_busy",
+                extra={
+                    "error_code": "PASSWORD_WORK_BUSY",
+                    "status_code": 503,
+                    "path": request.url.path,
+                    "method": request.method,
+                    "detail": f"{exc}; {_password_busy_log.refused} refused since last logged",
+                },
+            )
+            _password_busy_log.logged_at = now
+            _password_busy_log.refused = 0
+        busy = HTTPException(
+            status_code=503,
+            detail="Sign-in is busy. Please try again in a few seconds.",
+            headers={"Retry-After": str(PASSWORD_BUSY_RETRY_AFTER_SEC)},
         )
         return await _http_exception_handler(request.app)(request, busy)
 

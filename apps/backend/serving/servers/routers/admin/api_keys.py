@@ -27,11 +27,13 @@ from serving.servers.auth import (
 )
 from serving.servers.deps import (
     get_admin_audit_actor,
+    get_admin_user_id,
     get_log_store,
     get_operational_store,
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 
 router = APIRouter(prefix="/admin")
 
@@ -47,10 +49,24 @@ async def create_api_key(
 
     Returns the plaintext API key ONLY ONCE. Save it immediately.
 
-    Requires: Authorization: Bearer {ADMIN_TOKEN}
+    A key for an account other than the caller's own is a credential that
+    acts as that account, kept by whoever minted it and lasting past any
+    session, so minting one needs the signed-in administrator's ``password``:
+    400 when it is missing or wrong, 403 for the admin token, which has no
+    account of its own.
+
+    Requires: Admin authentication (JWT)
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
+
+    if payload.user_id != get_admin_user_id(request):
+        await confirm_administrator(
+            request,
+            op_store,
+            payload.password,
+            action=f"Creating an API key for {payload.user_id}",
+        )
 
     # A key row's target is the user who owns the key, so filtering by that
     # user and erasing them both keep reaching these rows.

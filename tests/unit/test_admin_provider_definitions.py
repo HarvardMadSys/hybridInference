@@ -1378,3 +1378,41 @@ async def test_an_unknown_provider_is_404(wiring, call):
             )
 
     assert caught.value.status_code == 404
+
+
+def test_the_model_registry_is_parsed_again_only_once_it_changes(tmp_path, monkeypatch):
+    """A pure-Python parse of a 93 KB models.yaml took about 90 ms on every provider view."""
+    import os
+
+    models_config = tmp_path / "models.yaml"
+    models_config.write_text("models:\n  - id: aa\n    provider: kimi\n", encoding="utf-8")
+    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    monkeypatch.setattr(provider_definitions, "_MODELS_CONFIG_PARSE", None)
+    parses: list[str] = []
+    real_safe_load = provider_definitions.yaml.safe_load
+
+    def counting_safe_load(text):
+        parses.append(text)
+        return real_safe_load(text)
+
+    monkeypatch.setattr(provider_definitions.yaml, "safe_load", counting_safe_load)
+
+    first = _configured_provider_specs()
+    assert _configured_provider_specs() == first
+    assert len(parses) == 1
+    assert first["kimi"].model_ids == frozenset(["aa"])
+
+    # An edit that keeps the size is seen by its modification time...
+    stamp = models_config.stat().st_mtime_ns
+    models_config.write_text("models:\n  - id: bb\n    provider: kimi\n", encoding="utf-8")
+    os.utime(models_config, ns=(stamp + 10**9, stamp + 10**9))
+    assert _configured_provider_specs()["kimi"].model_ids == frozenset(["bb"])
+    assert len(parses) == 2
+
+    # ...and a file replaced under the same time and size by its inode.
+    replacement = tmp_path / "models.yaml.new"
+    replacement.write_text("models:\n  - id: cc\n    provider: kimi\n", encoding="utf-8")
+    os.utime(replacement, ns=(stamp + 10**9, stamp + 10**9))
+    os.replace(replacement, models_config)
+    assert _configured_provider_specs()["kimi"].model_ids == frozenset(["cc"])
+    assert len(parses) == 3

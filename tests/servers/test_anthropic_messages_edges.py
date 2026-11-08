@@ -18,6 +18,7 @@ import pytest
 from serving.adapters.anthropic import AnthropicAdapter
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
+from serving.request_limits import MAX_MESSAGES
 from serving.servers.routers import anthropic_messages as amod
 
 NATIVE_MODEL = "claude-opus-4.7"
@@ -283,6 +284,27 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
             json.dumps({"model": NATIVE_MODEL}).encode(),
             "Missing required field: messages",
         ),
+        (
+            "/v1/messages",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1),
+                    "max_tokens": 5,
+                }
+            ).encode(),
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/v1/messages/count_tokens",
+            json.dumps(
+                {
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1),
+                }
+            ).encode(),
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
     ],
     ids=[
         "not-json",
@@ -297,6 +319,8 @@ def test_a_stream_that_never_separates_its_events_is_not_buffered_forever():
         "count-not-json",
         "count-not-an-object",
         "count-no-messages",
+        "too-many-messages",
+        "count-too-many-messages",
     ],
 )
 async def test_a_malformed_request_gets_an_anthropic_400(
@@ -310,6 +334,46 @@ async def test_a_malformed_request_gets_an_anthropic_400(
     assert r.json() == {
         "type": "error",
         "error": {"type": "invalid_request_error", "message": message},
+    }
+
+
+def _nested(depth: int) -> list:
+    return json.loads("[" * depth + "]" * depth)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", [NATIVE_MODEL, OPENAI_MODEL])
+@pytest.mark.parametrize("depth", [600, 5_000])
+@pytest.mark.parametrize(
+    "nest",
+    [
+        lambda body, nested: body.update(metadata={"user_id": "u", "x": nested}),
+        lambda body, nested: body["messages"][0].update(
+            content=[{"type": "text", "text": "hi", "x": nested}]
+        ),
+        lambda body, nested: body.update(pad=nested),
+    ],
+    ids=["metadata", "content-block", "unknown-field"],
+)
+async def test_a_body_nested_too_deeply_to_copy_is_a_400_not_a_500(
+    anthropic_test_client, model, depth, nest
+):
+    body = {"model": model, "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}
+    nest(body, _nested(depth))
+
+    r = await anthropic_test_client.post(
+        "/v1/messages",
+        content=json.dumps(body).encode(),
+        headers={**_auth(), "content-type": "application/json"},
+    )
+
+    assert r.status_code == 400
+    assert r.json() == {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "Request body is nested too deeply",
+        },
     }
 
 

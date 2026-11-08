@@ -28,6 +28,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from routing.endpoint_health import http_status_of
+from routing.telemetry import is_uncharged_failure
 
 if TYPE_CHECKING:
     from routing.decisions import RoutingTarget
@@ -50,8 +51,9 @@ def attempt_record(
     """Return the routing-metadata record for one failed attempt.
 
     The shape keeps the fields the single router's ``failed_attempt`` produced --
-    ``provider``, ``endpoint_id``, ``error_type``, ``error``, and ``status_code``
-    when the failure carried one -- because consumers read them: the DB log and the fallback diagnostic both resolve an attempt's
+    ``provider``, ``endpoint_id``, ``error_type``, ``error``, ``status_code``
+    when the failure carried one, and ``uncharged`` for a failure no endpoint
+    is charged with -- because consumers read them: the DB log and the fallback diagnostic both resolve an attempt's
     provider from here, and a record without one loses the attribution rather
     than failing loudly. ``backend`` is added, since once one request can span two
     execution domains "which domain" is worth recording and no legacy field
@@ -76,6 +78,8 @@ def attempt_record(
     status = http_status_of(exc)
     if status is not None:
         record["status_code"] = status
+    if is_uncharged_failure(exc):
+        record["uncharged"] = True
     record["backend"] = backend_name
     return record
 

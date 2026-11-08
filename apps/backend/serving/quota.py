@@ -32,6 +32,7 @@ effect before it was enforced. Month spend is the sum of the month's
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -41,10 +42,39 @@ from typing import Any, Literal
 DEFAULT_DAILY_QUOTA_USD = 1000.0
 
 #: Charged optimistically before the call, since the real cost is not known
-#: until it returns. Same value the direct path uses. It is also what an
+#: until it returns. Same value the direct path uses. It is also the least an
 #: admitted request reserves while it runs (:mod:`serving.spend_ledger`), so
 #: requests in flight count against the limits they may yet exceed.
 ESTIMATED_REQUEST_COST_USD = 0.01
+
+#: The most one request reserves while it runs, whatever its estimate
+#: (:func:`estimate_request_cost`): more than the largest request of a typical
+#: model costs, and little enough that one mispriced or oversized estimate
+#: holds back only a few dollars of the caller's budget.
+MAX_RESERVED_REQUEST_COST_USD = 5.0
+
+
+def estimate_request_cost(
+    *,
+    prompt_tokens: int,
+    output_tokens: int,
+    prompt_price: float,
+    completion_price: float,
+) -> float:
+    """What a request may cost, for reserving it while it runs.
+
+    Its prompt and the output it allows, at its model's prices (USD per
+    million tokens), within [:data:`ESTIMATED_REQUEST_COST_USD`,
+    :data:`MAX_RESERVED_REQUEST_COST_USD`]; the most, when a price is not a
+    number.
+    """
+    estimate = (
+        max(prompt_tokens, 0) * max(prompt_price, 0.0)
+        + max(output_tokens, 0) * max(completion_price, 0.0)
+    ) / 1_000_000
+    if not math.isfinite(estimate):
+        return MAX_RESERVED_REQUEST_COST_USD
+    return min(max(estimate, ESTIMATED_REQUEST_COST_USD), MAX_RESERVED_REQUEST_COST_USD)
 
 
 def next_utc_midnight(now: datetime | None = None) -> datetime:

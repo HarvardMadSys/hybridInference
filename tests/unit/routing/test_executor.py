@@ -243,9 +243,10 @@ async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_record
         reason: str,
         detail: str | None = None,
         exc: BaseException | None = None,
+        charge: bool = True,
     ) -> None:
         recorded.append(endpoint_id)
-        original_on_failure(endpoint_id, reason=reason, detail=detail, exc=exc)
+        original_on_failure(endpoint_id, reason=reason, detail=detail, exc=exc, charge=charge)
 
     original_push = routers_mod.req_ctx.push
 

@@ -552,6 +552,40 @@ describe('step 2: configure', () => {
     expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
   });
 
+  it('asks for the password a security-relevant setting needs, and sends it', async () => {
+    // A backend that marks them: the mail settings decide where sign-in links go.
+    const guarded: ConfigResponse = {
+      ...CONFIG,
+      entries: CONFIG.entries.map((item) => ({
+        ...item,
+        security_relevant: item.category === 'email',
+      })),
+    };
+    vi.mocked(getConfig).mockResolvedValue(guarded);
+    vi.mocked(patchConfig).mockResolvedValue(guarded);
+    await reachConfigureStep();
+    expect(screen.queryByLabelText('Your password')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('SMTP_HOST'), {
+      target: { value: 'smtp.example.test' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Enter your password to save these settings.',
+    );
+    expect(patchConfig).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'Secret123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: { SMTP_HOST: 'smtp.example.test' },
+        password: 'Secret123',
+      }),
+    );
+    expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
+  });
+
   it('stays on the step with the reason when a value is refused', async () => {
     vi.mocked(patchConfig).mockRejectedValueOnce(
       new APIError('HTTP_400', 'SMTP_PORT: must be between 1 and 65535', 400),

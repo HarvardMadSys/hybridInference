@@ -463,6 +463,78 @@ def _validate_model_router_strategy(
     return canonical_model_id, route
 
 
+def _routes_routewise_would_take_in_full(
+    services: AppServices,
+    model_id: str,
+) -> list[tuple[str, float]]:
+    """Return each route weighted above 0 but below the model's heaviest route.
+
+    As ``(endpoint id, weight / heaviest weight)``, from the effective route
+    table RouteWise itself reads: weight overrides and disabled routes and
+    providers applied. A ratio, because the table may hold renormalised weights.
+    """
+    snapshot_for_transition = getattr(services.router, "snapshot_for_transition", None)
+    if not callable(snapshot_for_transition):
+        return []
+    adapters: tuple[tuple[Any, float], ...] = ()
+    for effective_route in snapshot_for_transition(model_id).iter_effective_routes():
+        if effective_route.canonical_model_id == model_id:
+            adapters = effective_route.adapters
+            break
+    weighted = [
+        (endpoint_id_for_adapter(adapter), float(weight))
+        for adapter, weight in adapters
+        if float(weight) > 0
+    ]
+    if not weighted:
+        return []
+    heaviest = max(weight for _endpoint_id, weight in weighted)
+    return [
+        (endpoint_id, weight / heaviest)
+        for endpoint_id, weight in weighted
+        if weight < heaviest * (1.0 - 1e-9)
+    ]
+
+
+def _refuse_routewise_over_weighted_routes(services: AppServices, model_id: str) -> None:
+    """Refuse switching a model to RouteWise while its route weights mean something.
+
+    RouteWise does not split traffic by weight. It chooses each request's route
+    by cost and latency from every route weighted above 0, so a route weighted
+    to take a small share -- a 1% staging canary, a last-resort fallback --
+    would become a full peer and could take all of the model's traffic,
+    production prompts sent to staging included. ``optional: true`` cannot be
+    told apart at runtime: it only decides whether a route whose environment is
+    unset is skipped at startup, and production routes use it too.
+
+    Only this interactive switch refuses. Boot and a config restore re-apply a
+    persisted override through the same transition, and refusing there would
+    silently put a running model back on its configured router on the next
+    restart; RouteWise logs those weightings instead. A model already on
+    RouteWise is not switched, so it is not refused either.
+    """
+    registry = services.model_router_registry
+    if registry is not None and registry.get_router_name(model_id) == "routewise":
+        return
+    lighter = _routes_routewise_would_take_in_full(services, model_id)
+    if not lighter:
+        return
+    named = ", ".join(
+        f"{endpoint_id} ({share * 100:.3g}% of the heaviest route's weight)"
+        for endpoint_id, share in lighter
+    )
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "routewise does not split traffic by route weight: it can send any "
+            "share of the traffic to every route weighted above 0, so these routes "
+            f"would no longer be held to a smaller share: {named}. Set their weight "
+            "to 0 to keep them out of routewise, or give every route the same "
+            "weight, then switch again"
+        ),
+    )
+
+
 def _managed_router_ids(services: AppServices) -> set[int]:
     return {id(router_obj) for router_obj in services.managed_routers}
 
@@ -3504,6 +3576,94 @@ async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCand
         raise HTTPException(status_code=400, detail=_verification_error_detail(exc)) from exc
 
 
+def _url_host(url: str | None) -> str | None:
+    """The lower-cased host of *url*, without a trailing dot; None when it names none."""
+    if not url:
+        return None
+    try:
+        host = urlparse(url if "://" in url else f"https://{url.lstrip('/')}").hostname
+    except ValueError:
+        return None
+    return host.rstrip(".").lower() if host else None
+
+
+def _hosts_given_keys(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> set[str]:
+    """The hosts the gateway already sends *prepared*'s keys to.
+
+    The provider's own host, its default base URL (which a deployment's
+    ``*_BASE_URL`` setting or a custom provider's definition sets), and the host
+    of every live route that draws on the same provider's keys.
+    """
+    hosts = {
+        host
+        for url in dynamic_keys.get_registered_base_urls(prepared.key_provider)
+        if (host := _url_host(url)) is not None
+    }
+    try:
+        own_host = _url_host(_target_for_provider(prepared.upstream_provider).default_base_url)
+    except HTTPException:
+        own_host = None
+    if own_host is not None:
+        hosts.add(own_host)
+    return hosts
+
+
+async def _verify_dry_run(
+    op_store,
+    actor: AuditActor,
+    *,
+    model_id: str,
+    route_id: str | None,
+    prepared: PreparedRouteUpdate | PreparedRouteCandidate,
+) -> None:
+    """Check *prepared* against its upstream, saving nothing, and record that it was checked.
+
+    A check sends the provider's stored key -- the one named, or the provider's
+    own -- to the route's base URL. Saving nothing, it left nothing to see, so a
+    base URL of anyone's choosing collected the key unnoticed. A check now goes
+    only where those keys already go: the provider's own host, or the host of a
+    live route that sends them. Saving a route checks its upstream the same way,
+    and the audit log records where it points.
+
+    Raises:
+        HTTPException: 422 for a host the keys do not go to; 400 when the
+            upstream refuses the check.
+    """
+    details: dict[str, Any] = {
+        "model_id": model_id,
+        "route_id": route_id,
+        "upstream_provider": prepared.upstream_provider,
+        "base_url": prepared.base_url,
+        "api_key_id": prepared.api_key_id,
+    }
+
+    async def audit(error: str | None = None) -> None:
+        await log_admin_action(
+            op_store,
+            action="routing.provider_routes.verify",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details=details if error is None else {**details, "error": error},
+            success=error is None,
+        )
+
+    host = _url_host(prepared.base_url)
+    if host is None or host not in _hosts_given_keys(prepared):
+        await audit("the provider's keys do not go to this host")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Verify would send {prepared.key_provider}'s stored API keys to {host}, "
+            "where no route of that provider sends them. Save the route instead: saving checks "
+            "it against the upstream the same way, and the audit log records where it points.",
+        )
+    try:
+        await _verify_provider_route(prepared)
+    except HTTPException as exc:
+        await audit(str(exc.detail))
+        raise
+    await audit()
+
+
 async def _prepare_candidate_from_payload(
     services,
     op_store,
@@ -4229,6 +4389,8 @@ async def update_provider_route_strategy(
         model_id,
         payload.strategy,
     )
+    if payload.strategy == "routewise":
+        _refuse_routewise_over_weighted_routes(services, canonical_model_id)
     strategy_key = _model_strategy_setting_key(canonical_model_id)
     previous_setting: Any = None
     previous_setting_loaded = False
@@ -4518,10 +4680,14 @@ async def create_provider_route_model(
 async def verify_provider_route_model(
     payload: CreateProviderRouteModelRequest,
     _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> VerifyProviderRouteResponse:
-    """Verify a new runtime model route without registering or persisting it."""
+    """Verify a new runtime model route without registering or persisting it.
+
+    Audited, and only where the provider's keys already go (:func:`_verify_dry_run`).
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     if payload.strategy != "fixed" and services.model_router_registry is None:
@@ -4532,7 +4698,13 @@ async def verify_provider_route_model(
         op_store,
         payload=payload,
     )
-    await _verify_provider_route(candidate)
+    await _verify_dry_run(
+        op_store,
+        actor,
+        model_id=payload.model_id,
+        route_id=candidate.route_id,
+        prepared=candidate,
+    )
     return VerifyProviderRouteResponse(ok=True)
 
 
@@ -4686,10 +4858,14 @@ async def verify_provider_route_candidate(
     model_id: str,
     payload: CreateProviderRouteRequest,
     _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> VerifyProviderRouteResponse:
-    """Verify a runtime provider route candidate without persisting it."""
+    """Verify a runtime provider route candidate without persisting it.
+
+    Audited, and only where the provider's keys already go (:func:`_verify_dry_run`).
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
@@ -4699,7 +4875,13 @@ async def verify_provider_route_candidate(
         model_id=model_id,
         payload=payload,
     )
-    await _verify_provider_route(candidate)
+    await _verify_dry_run(
+        op_store,
+        actor,
+        model_id=candidate.adapter.config.id,
+        route_id=candidate.route_id,
+        prepared=candidate,
+    )
     return VerifyProviderRouteResponse(ok=True)
 
 
@@ -5411,13 +5593,15 @@ async def verify_provider_route_update(
     model_route_path: str,
     payload: UpdateProviderRouteRequest,
     _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> VerifyProviderRouteResponse:
     """Verify a provider route edit without persisting or installing it.
 
     Serves the edit form for both route kinds: a runtime-added route is
-    prepared exactly as its candidate PATCH would build it.
+    prepared exactly as its candidate PATCH would build it. Audited, and only
+    where the provider's keys already go (:func:`_verify_dry_run`).
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -5433,7 +5617,9 @@ async def verify_provider_route_update(
             route=route,
             edit=_candidate_edit_from_update(payload, runtime_adapter),
         )
-        await _verify_provider_route(edit.candidate)
+        await _verify_dry_run(
+            op_store, actor, model_id=model_id, route_id=route_id, prepared=edit.candidate
+        )
         return VerifyProviderRouteResponse(ok=True)
 
     context = await _prepare_update_context_from_payload(
@@ -5442,7 +5628,13 @@ async def verify_provider_route_update(
         model_route_path=model_route_path,
         payload=payload,
     )
-    await _verify_provider_route(context.update)
+    await _verify_dry_run(
+        op_store,
+        actor,
+        model_id=context.model_id,
+        route_id=context.route_id,
+        prepared=context.update,
+    )
     return VerifyProviderRouteResponse(ok=True)
 
 
@@ -6757,6 +6949,12 @@ async def reconcile_live_routes_from_store(services, op_store) -> None:
             _set_route_entries(services, route, list(baseline))
             for current_adapter, _weight, _endpoint_id in current_entries:
                 _unregister_replaced_dynamic_adapter(route, current_adapter)
+            if not _has_runtime_strategy_override(services, model_id):
+                # Already on its configured router: keep that instance. A
+                # RouteWise router keeps its learned state, its background
+                # tasks and its place in managed_routers; detaching it would
+                # stop it and leave a cold replacement built on first use.
+                continue
             previous_router = _detach_model_router_strategy_override(services, model_id)
             if previous_router is not None:
                 active_router = None
@@ -6779,3 +6977,94 @@ async def reconcile_live_routes_from_store(services, op_store) -> None:
     await sync_route_capability_overrides(services, op_store)
     apply_persisted_provider_route_removals(services)
     _rebuild_routewise_routers(services)
+    await _start_restored_routewise_routers(services)
+
+
+def _has_runtime_strategy_override(services, model_id: str) -> bool:
+    """Return whether ``model_id`` is served by a runtime strategy override.
+
+    True when the registry cannot say, so the caller falls back to resetting it.
+    """
+    registry = services.model_router_registry
+    if registry is None:
+        return False
+    try:
+        current = registry.get_cached_router(model_id)
+        if current is None:
+            return True
+        return registry.runtime_override_for_router(current) is not None
+    except Exception:
+        return True
+
+
+async def _start_restored_routewise_routers(services) -> None:
+    """Bring every RouteWise router a reconcile leaves serving into the state boot gives it.
+
+    A reconcile resets each model to its configured router and re-applies the
+    persisted strategy overrides and runtime routes from the store. That can leave
+    a model on a RouteWise router built lazily by ``get_router`` or with
+    ``start_managed=False`` -- the way boot builds them, which starts them only
+    later. After a live restore nothing did: the router had no operational store
+    and was not tracked for shutdown, and with no quota refresh loop its quota
+    legs never became ready, so traffic went to paid legs until a restart.
+
+    Each one is attached to the operational store, given the model's RouteWise
+    settings, tracked and started. ``start`` is idempotent, so a router that was
+    already running only picks up the restored settings and any quota source a
+    restored route added.
+    """
+    registry = services.model_router_registry
+    routes = getattr(getattr(services, "router", None), "routes", None)
+    if registry is None or not isinstance(routes, dict):
+        return
+    handled: set[int] = set()
+    for model_id, route in list(routes.items()):
+        if not _is_canonical_model(model_id, route):
+            continue
+        try:
+            if registry.get_router_name(model_id) != "routewise":
+                continue
+            router_obj = registry.get_router(model_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load the RouteWise router for model=%s after restore: %s",
+                model_id,
+                exc,
+            )
+            continue
+        if not isinstance(router_obj, RouteWiseRouter) or id(router_obj) in handled:
+            continue
+        handled.add(id(router_obj))
+        router_obj.attach_operational_store(services.operational_store)
+        settings_resolver = services.routewise_settings_resolver
+        if settings_resolver is not None:
+            try:
+                await apply_routewise_settings_to_router(
+                    settings_resolver,
+                    registry,
+                    model_id,
+                    router_obj,
+                    refresh_probe_task=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to apply RouteWise settings for model=%s after restore: %s",
+                    model_id,
+                    exc,
+                )
+        if id(router_obj) not in _managed_router_ids(services):
+            services.managed_routers.append(router_obj)
+        try:
+            await router_obj.start()
+        except EnvelopeNotCalibratedError as exc:
+            logger.error(
+                "RouteWise router for model=%s cannot start after restore: %s",
+                model_id,
+                exc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to start the RouteWise router for model=%s after restore: %s",
+                model_id,
+                exc,
+            )

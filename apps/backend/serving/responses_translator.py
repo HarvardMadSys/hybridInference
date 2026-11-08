@@ -28,6 +28,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from serving.stream import StreamText
 from serving.utils.messages import merge_leading_system_messages
 from serving.utils.token_utils import normalize_usage
 
@@ -560,17 +561,17 @@ class ResponsesStreamTranslator:
         # text → tool call → text). Each is tracked as its own output item.
         self._cur_text_id: str | None = None
         self._cur_text_index: int | None = None
-        # The open item's text, and the reasoning, as the pieces they arrived
-        # in, joined once when read: appending to a string held in an attribute
-        # or a dict copies all of it on every delta, quadratic in the answer.
-        # Tool-call arguments below are kept the same way.
-        self._cur_text: list[str] = []
+        # The open item's text, and the reasoning, kept as ``StreamText`` and
+        # read once: appending to a string held in an attribute or a dict copies
+        # all of it on every delta, quadratic in the answer. Tool-call arguments
+        # below are kept the same way.
+        self._cur_text = StreamText()
         # Completed text segments: {"item_id", "output_index", "text"}.
         self._text_segments: list[dict[str, Any]] = []
         # Accumulated reasoning_content (not emitted as Responses output, but
         # carried into the persisted assistant message for chaining — some
         # providers require it echoed in thinking-mode tool flows).
-        self._reasoning_accum: list[str] = []
+        self._reasoning_accum = StreamText()
 
         # Tool call accumulation, keyed by chat delta index.
         self._tool_calls: dict[int, dict[str, Any]] = {}
@@ -708,7 +709,7 @@ class ResponsesStreamTranslator:
             self._cur_text_id = _msg_item_id()
             self._cur_text_index = self._next_output_index
             self._next_output_index += 1
-            self._cur_text = []
+            self._cur_text = StreamText()
             item = {
                 "type": "message",
                 "id": self._cur_text_id,
@@ -757,7 +758,7 @@ class ResponsesStreamTranslator:
                     "output_index": self._next_output_index,
                     "call_id": "",
                     "name": "",
-                    "arguments": [],
+                    "arguments": StreamText(),
                 }
                 self._next_output_index += 1
                 self._tool_order.append(idx)
@@ -803,11 +804,11 @@ class ResponsesStreamTranslator:
         if item_id is None:
             return
         text_oi = self._cur_text_index
-        text = "".join(self._cur_text)
+        text = self._cur_text.text
         # Reset current-item state so a later text run opens a fresh item.
         self._cur_text_id = None
         self._cur_text_index = None
-        self._cur_text = []
+        self._cur_text = StreamText()
         yield self._emit(
             "response.output_text.done",
             {
@@ -886,7 +887,7 @@ class ResponsesStreamTranslator:
         tool_calls_for_msg: list[dict[str, Any]] = []
         for idx in self._tool_order:
             st = self._tool_calls[idx]
-            st["arguments"] = "".join(st["arguments"])
+            st["arguments"] = st["arguments"].text
             item = {
                 "type": "function_call",
                 "id": st["item_id"],
@@ -934,7 +935,7 @@ class ResponsesStreamTranslator:
         }
         if tool_calls_for_msg:
             assistant_msg["tool_calls"] = tool_calls_for_msg
-        reasoning = "".join(self._reasoning_accum)
+        reasoning = self._reasoning_accum.text
         if reasoning:
             assistant_msg["reasoning_content"] = reasoning
         self._assistant_message = assistant_msg

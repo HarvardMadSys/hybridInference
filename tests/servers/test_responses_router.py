@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.request_limits import MAX_MESSAGES
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import AppServices
@@ -163,6 +164,19 @@ class _FakeResponseStore:
 
     async def get(self, response_id: str) -> dict[str, Any] | None:
         return self.data.get(response_id)
+
+    async def get_response(self, response_id: str, *, user_id: str) -> bytes | None:
+        row = self.data.get(response_id)
+        if not row or row["user_id"] != user_id:
+            return None
+        return json.dumps(row["response"]).encode()
+
+    async def get_conversation(self, response_id: str, *, user_id: str) -> tuple[Any, int] | None:
+        row = self.data.get(response_id)
+        if not row or row["user_id"] != user_id:
+            return None
+        text = json.dumps(row["messages"])
+        return text, row.get("messages_bytes", len(text.encode()))
 
     async def delete(self, response_id: str, *, user_id: str | None = None) -> bool:
         row = self.data.get(response_id)
@@ -412,6 +426,22 @@ async def test_unknown_model_returns_404_error_envelope(responses_client):
 async def test_missing_model_returns_400(responses_client):
     r = await responses_client.post("/v1/responses", json={"input": "hi"}, headers=_auth())
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_input_over_an_element_limit_returns_400_before_translation(responses_client):
+    r = await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1),
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == (
+        f"Too many input items: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}"
+    )
 
 
 @pytest.mark.asyncio
@@ -678,6 +708,43 @@ async def test_another_user_cannot_read_a_stored_response(responses_client):
 
     assert g.status_code == 404
     assert "my secret" not in g.text
+
+
+@pytest.mark.asyncio
+async def test_a_stored_response_is_served_as_stored_without_its_conversation(
+    responses_client, responses_store, monkeypatch
+):
+    resp_id = await _stored_by_test_user(responses_client)
+
+    async def whole_row(response_id: str) -> None:
+        raise AssertionError("GET read the whole row, conversation and all")
+
+    monkeypatch.setattr(responses_store, "get", whole_row)
+    g = await responses_client.get(f"/v1/responses/{resp_id}", headers=_auth())
+
+    assert g.status_code == 200
+    assert g.headers["content-type"] == "application/json"
+    assert g.json() == responses_store.data[resp_id]["response"]
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_conversation_is_refused_before_it_is_decoded(
+    responses_client, responses_store, monkeypatch
+):
+    resp_id = await _stored_by_test_user(responses_client)
+    responses_store.data[resp_id]["messages_bytes"] = 64 * 1024 * 1024
+
+    def decode(value: Any) -> list[dict[str, Any]]:
+        raise AssertionError("decoded a conversation it was about to refuse")
+
+    monkeypatch.setattr(responses, "decode_conversation", decode)
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "and then?", "previous_response_id": resp_id},
+        headers=_auth(),
+    )
+
+    assert r.status_code == 400
 
 
 @pytest.mark.asyncio

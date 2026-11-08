@@ -256,6 +256,21 @@ def _reset_dynamic_keys_registry():
 
 
 @pytest.fixture(autouse=True)
+def _reset_password_work_state():
+    """Give each test the stand-in hash budget unspent.
+
+    ``serving.utils.password`` spends Argon2id on names nobody holds only
+    within a process-wide budget; a test that signs in with several unknown
+    names must not leave the next one answered without the work.
+    """
+    from serving.utils.password import reset_password_work_state
+
+    reset_password_work_state()
+    yield
+    reset_password_work_state()
+
+
+@pytest.fixture(autouse=True)
 def _reset_request_context():
     """Start each test with an empty request context, and restore it afterwards.
 

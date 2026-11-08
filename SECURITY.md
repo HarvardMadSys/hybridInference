@@ -40,7 +40,14 @@ of this software rather than the software itself.
   restoring one changes a secret, the security, network or sign-up settings,
   or where requests, mail and users are sent only after the administrator
   confirms each change and gives the password; check what a file changes
-  before you confirm it. Without a database the secrets come from the environment,
+  before you confirm it. Changing or resetting one of those settings on the
+  Settings tab asks for the password too, and so do raising an account's role
+  and creating an API key for another account. The admin token gives no
+  password, so it does none of these; on the host,
+  `python -m serving.config.manage` still changes any setting. Checking a
+  provider route sends the provider's stored keys only to the provider's own
+  host or to one its routes already use, and every check is in the audit log.
+  Without a database the secrets come from the environment,
   and empty or whitespace-only ones stop the gateway before it opens stores or
   starts background tasks whenever user authentication is enabled; only a
   gateway with both `DB_ENABLED=false` and `USER_AUTH_ENABLED=false` can start

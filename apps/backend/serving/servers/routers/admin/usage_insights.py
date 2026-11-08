@@ -19,6 +19,7 @@ report is based on.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -47,6 +48,7 @@ from serving.utils.logging import get_logger
 from serving.utils.prompt_sampling import (
     as_payload_dict,
     block_text,
+    messages_of,
     referer_from_metadata,
     system_opener,
     user_agent_from_metadata,
@@ -253,23 +255,33 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
     rows = dated + undated
     samples: list[dict] = []
     for r in rows:
-        body = as_payload_dict(r["request_payload"])
-        # The turns live in the prompt column; request_payload keeps a copy only
-        # on rows logged before the de-duplication, which the extractors fall
-        # back to on their own.
-        turns = r["prompt"]
-        samples.append(
-            {
-                "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
-                "model_id": r["model_id"],
-                "provider": r["provider"],
-                "user_agent": user_agent_from_metadata(r["metadata"]),
-                "referer": referer_from_metadata(r["metadata"]),
-                "system_opener": system_opener(body, payload.max_chars, turns),
-                "user_messages": user_messages(body, payload.max_chars, turns),
-            }
-        )
+        samples.append(_sample_of(r, payload.max_chars))
+        # Up to 200 stored conversations, each up to megabytes, are decoded
+        # here: one per step, with the event loop given back between them.
+        await asyncio.sleep(0)
     return samples
+
+
+def _sample_of(row, max_chars: int) -> dict:
+    """What one sampled row shows: its client, its system opener and its user turns.
+
+    Each stored value is decoded once. The turns live in the prompt column;
+    request_payload keeps a copy only on rows logged before the
+    de-duplication, which :func:`messages_of` falls back to. Both extractors
+    take the decoded list as it is.
+    """
+    body = as_payload_dict(row["request_payload"])
+    turns = messages_of(body, row["prompt"])
+    metadata = as_payload_dict(row["metadata"])
+    return {
+        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
+        "model_id": row["model_id"],
+        "provider": row["provider"],
+        "user_agent": user_agent_from_metadata(metadata),
+        "referer": referer_from_metadata(metadata),
+        "system_opener": system_opener(body, max_chars, turns),
+        "user_messages": user_messages(body, max_chars, turns),
+    }
 
 
 def _render_samples(samples: list[dict]) -> tuple[str, int]:

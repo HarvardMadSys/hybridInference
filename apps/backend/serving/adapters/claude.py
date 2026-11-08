@@ -469,8 +469,9 @@ class ClaudeAdapter(BaseAdapter):
             upstream_outcome = outcome_status(e)
             logger.error(f"[CLAUDE STREAM ERROR] {type(e).__name__}: {e}")
             if isinstance(e, aiohttp.ClientResponseError):
+                # Not ``e.request_info`` (nor ``repr(e)``, which embeds it): it
+                # carries the request's headers, this adapter's ``api-key`` among them.
                 logger.error(f"Response status: {e.status}, message: {e.message}")
-                logger.error(f"Request info: {e.request_info}")
                 # Try to get detailed error message from attached error_body
                 error_body = getattr(e, "error_body", None)
                 if error_body:

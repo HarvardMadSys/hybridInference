@@ -213,6 +213,41 @@ class FakeBatchStore:
             for item in items[:limit]
         ]
 
+    async def result_page(
+        self,
+        batch_id: str,
+        *,
+        max_bytes: int,
+        after: int = 0,
+        limit: int = 200,
+        statuses: frozenset[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """As the store pages: by count and by the size of each stored response."""
+        items = [
+            i
+            for i in self.items.get(batch_id, [])
+            if i["id"] > after and (statuses is None or i["status"] in statuses)
+        ]
+        page, total = [], 0
+        for item in items[:limit]:
+            text = json.dumps(item["response"]) if item["response"] is not None else None
+            size = len(text or "")
+            if page and total + size > max_bytes:
+                break
+            page.append(
+                {
+                    **{
+                        k: v
+                        for k, v in item.items()
+                        if k not in ("model_id", "request", "response")
+                    },
+                    "response_text": text,
+                    "bytes": size,
+                }
+            )
+            total += size
+        return page, len(page) < len(items)
+
     async def cancel_batch(self, batch_id: str, *, user_id: str | None = None) -> dict | None:
         row = self.batches.get(batch_id)
         if row is None or (user_id is not None and row["user_id"] != user_id):
@@ -486,6 +521,62 @@ async def test_a_demoted_owner_can_still_read_cancel_and_delete(client, users):
     cancelled = await client.post(f"{path}/cancel", headers=_auth())
     assert cancelled.json()["status"] == "cancelled"
     assert (await client.delete(path, headers=_auth())).status_code == 200
+
+
+class _CountedBody:
+    """A request body that records how many bytes of it were read."""
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.read = 0
+
+    async def __aiter__(self):
+        for start in range(0, len(self.payload), 4096):
+            chunk = self.payload[start : start + 4096]
+            self.read += len(chunk)
+            yield chunk
+
+
+async def test_a_caller_who_may_not_create_uploads_nothing_with_an_idempotency_key(client, store):
+    body = _CountedBody(json.dumps(_body(count=50)).encode())
+    headers = {**_auth("key-dave"), "Idempotency-Key": "k", "content-type": "application/json"}
+
+    response = await client.post("/v1/batches", content=body, headers=headers)
+
+    assert response.status_code == 403
+    assert body.read == 0
+    assert store.created == []
+
+
+async def test_a_demoted_owner_still_gets_the_batch_its_key_created(client, store, users):
+    batch = await _create(client, "key-alice")
+    digest = admission.request_digest(
+        "openai_inline",
+        requests=[_request("req-0")],
+        metadata=None,
+    )
+    records = {("alice", "openai_inline", "k"): batch["id"]}
+
+    async def find_idempotent(*, owner_id: str, api_surface: str, key: str):
+        batch_id = records.get((owner_id, api_surface, key))
+        if batch_id is None:
+            return None
+        return {"batch_id": batch_id, "request_digest": digest, "deleted": False}
+
+    store.find_idempotent = find_idempotent
+    users["key-alice"]["role"] = "free"
+
+    replay = await client.post(
+        "/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "k"}
+    )
+    other = await client.post(
+        "/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "other"}
+    )
+
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == batch["id"]
+    assert other.status_code == 403
+    assert len(store.created) == 1
 
 
 @pytest.mark.parametrize(
@@ -1539,6 +1630,49 @@ async def test_results_carry_each_requests_outcome(client, store):
     assert second["response"] is None
     assert second["error"] == {"code": "invalid_request", "message": "bad", "status": 400}
     assert (third["status"], third["response"], third["error"]) == ("queued", None, None)
+
+
+async def test_a_page_of_results_stops_at_its_size_budget(client, store, monkeypatch):
+    """Large results come a few to a page, each page still saying more follow."""
+    monkeypatch.setattr(batches, "RESULTS_PAGE_BYTES", 2500)
+    batch = await _create(client, body=_body(5))
+    for item in store.items[batch["id"]]:
+        item.update(
+            status="completed",
+            status_code=200,
+            response={"object": "list", "data": [{"embedding": [0.5] * 200}]},
+        )
+
+    seen: list[str] = []
+    after = None
+    pages = 0
+    while True:
+        params = {"limit": 1000, **({"after": after} if after else {})}
+        page = (
+            await client.get(f"/v1/batches/{batch['id']}/results", params=params, headers=_auth())
+        ).json()
+        pages += 1
+        seen += [r["custom_id"] for r in page["data"]]
+        assert len(page["data"]) <= 2
+        if not page["has_more"]:
+            break
+        after = page["last_id"]
+
+    assert seen == [f"req-{i}" for i in range(5)]
+    assert pages == 3
+
+
+async def test_a_result_larger_than_the_budget_still_comes_alone(client, store, monkeypatch):
+    monkeypatch.setattr(batches, "RESULTS_PAGE_BYTES", 10)
+    batch = await _create(client, body=_body(2))
+    for item in store.items[batch["id"]]:
+        item.update(status="completed", status_code=200, response={"text": "x" * 100})
+
+    page = (await client.get(f"/v1/batches/{batch['id']}/results", headers=_auth())).json()
+
+    assert [r["custom_id"] for r in page["data"]] == ["req-0"]
+    assert page["data"][0]["response"]["body"] == {"text": "x" * 100}
+    assert page["has_more"] is True
 
 
 @pytest.mark.parametrize("after", ["12", "req_12", "batch_req_x", "batch_req_" + "9" * 19])

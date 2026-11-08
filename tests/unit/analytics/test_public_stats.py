@@ -378,6 +378,8 @@ def _fake_conn(
     retained_languages=None,
     retained_language_samples=None,
     retained_clients=None,
+    geo_from=None,
+    previous=None,
 ):
     sample_texts = sample_texts or []
 
@@ -431,10 +433,14 @@ def _fake_conn(
             return overrides_table
         if sql is ps.RETAINED_FIRST_DAY_SQL:
             return first_retained
+        if sql is ps.GEO_COVERED_FROM_SQL:
+            return geo_from
         assert sql is ps.FIRST_LOG_SQL
         return first_log
 
     async def fetchrow(sql, *args):
+        if sql is ps.PREVIOUS_SNAPSHOT_SQL:
+            return previous
         assert sql is ps.REGISTRATIONS_SQL
         return {"approved": 40, "waiting": 9}
 
@@ -714,3 +720,213 @@ async def test_purge_retained_account_deletes_language_and_client_rows():
     assert statements[1][0] is ps.DELETE_RETAINED_CLIENT_ACCOUNT_SQL
     assert statements[0][1] == ps.account_key("same-account")
     assert "user_id" not in statements[0][0]
+
+
+# --- country weeks older than the country rollup ----------------------------------
+
+
+def _previous(weeks: list[date], weekly: list[dict], end: str = "2026-08-11T00:00:00+00:00"):
+    """A previous snapshot row as asyncpg returns it: jsonb as text."""
+    return {
+        "window_end": end,
+        "weeks": json.dumps([w.isoformat() for w in weeks]),
+        "country_weekly": json.dumps(weekly),
+    }
+
+
+def test_weeks_the_rollup_still_covers_keep_their_live_counts():
+    live = [{"any": 0, "min_requests": 0}, {"any": 2, "min_requests": 1}]
+    carried = {W1: {"any": 9, "min_requests": 4}, W2: {"any": 9, "min_requests": 4}}
+
+    merged, filled = ps.merge_country_weeks([W1, W2], live, covered_from=W1, carried=carried)
+
+    assert merged == live
+    assert filled == 0
+
+
+def test_a_week_the_rollup_dropped_takes_the_previous_snapshots_counts():
+    live = [
+        {"any": 0, "min_requests": 0},
+        {"any": 1, "min_requests": 0},
+        {"any": 2, "min_requests": 1},
+    ]
+    carried = {W1: {"any": 7, "min_requests": 3}, W2: {"any": 5, "min_requests": 2}}
+
+    # The rollup holds from the Wednesday of W2: W1 is gone, W2 partly.
+    merged, filled = ps.merge_country_weeks(
+        [W1, W2, W3], live, covered_from=date(2026, 8, 5), carried=carried
+    )
+
+    assert merged == [
+        {"any": 7, "min_requests": 3},
+        {"any": 5, "min_requests": 2},
+        {"any": 2, "min_requests": 1},
+    ]
+    assert filled == 2
+
+
+def test_what_is_left_of_a_week_wins_over_a_smaller_record():
+    live = [{"any": 4, "min_requests": 1}]
+    merged, _ = ps.merge_country_weeks(
+        [W2], live, covered_from=date(2026, 8, 5), carried={W2: {"any": 3, "min_requests": 2}}
+    )
+    assert merged == [{"any": 4, "min_requests": 2}]
+
+
+def test_the_previous_snapshot_is_read_from_text_or_decoded_json():
+    row = _previous([W1, W2], [{"any": 3, "min_requests": 1}, {"any": 4, "min_requests": 2}])
+    decoded = {
+        **row,
+        "weeks": json.loads(row["weeks"]),
+        "country_weekly": json.loads(row["country_weekly"]),
+    }
+    for candidate in (row, decoded):
+        previous = ps.previous_snapshot(candidate)
+        assert previous is not None
+        assert previous.window_end == datetime(2026, 8, 11, tzinfo=UTC)
+        assert previous.country_weekly == {
+            W1: {"any": 3, "min_requests": 1},
+            W2: {"any": 4, "min_requests": 2},
+        }
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        {"window_end": "not a date", "weeks": "[]", "country_weekly": "[]"},
+        {"window_end": None, "weeks": '["2026-07-27"]', "country_weekly": "[]"},
+        {"window_end": None, "weeks": '["2026-07-27"]', "country_weekly": '[{"any": 1}]'},
+    ],
+)
+def test_an_unreadable_previous_snapshot_is_not_reused(row):
+    assert ps.previous_snapshot(row) is None
+
+
+@pytest.mark.asyncio
+async def test_the_country_line_keeps_weeks_the_rollup_has_dropped():
+    # The rollup now holds only from W2: W1's countries come from the record.
+    conn = _fake_conn(
+        geo_from=datetime(2026, 8, 3, tzinfo=UTC),
+        previous=_previous(
+            [W1, W2], [{"any": 6, "min_requests": 2}, {"any": 1, "min_requests": 0}]
+        ),
+    )
+    payload = await ps.compute_snapshot(conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC))
+
+    countries = payload["countries"]
+    assert countries["weekly"] == [
+        {"any": 6, "min_requests": 2},  # carried
+        {"any": 1, "min_requests": 0},  # covered: live
+        {"any": 0, "min_requests": 0},
+    ]
+    # The totals are what the rollup holds, and say from when.
+    assert countries["since"] == "2026-08-03"
+    assert countries["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_without_a_previous_snapshot_or_rollup_nothing_is_carried():
+    payload = await ps.compute_snapshot(_fake_conn(), now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC))
+    assert payload["countries"]["weekly"] == [
+        {"any": 0, "min_requests": 0},
+        {"any": 1, "min_requests": 0},
+        {"any": 0, "min_requests": 0},
+    ]
+    assert "since" not in payload["countries"]
+
+
+# --- closed weeks the previous run already checkpointed ---------------------------
+
+
+def test_a_week_is_settled_once_the_previous_run_saw_it_whole():
+    weeks = [W1, W2, W3]
+    assert ps.settled_weeks(weeks, None) == frozenset()
+    assert ps.settled_weeks(weeks, datetime(2026, 8, 10, tzinfo=UTC)) == {W1, W2}
+    # The previous run ended inside W2: W2 was still open then.
+    assert ps.settled_weeks(weeks, datetime(2026, 8, 6, 9, tzinfo=UTC)) == {W1}
+
+
+def test_a_settled_week_reads_its_client_checkpoint_not_the_logs():
+    retained = [_client(W2, ps.account_key("old"), "Claude", "claude-cli/1.0", 30, 400)]
+    live = [_client(W2, "someone", "codex", "codex-tui/1.0", 5, 50)]
+
+    rows, rewrite, from_checkpoint = ps.merge_client_rows(
+        weeks=[W2],
+        pruned_before=None,
+        live_rows=live,
+        retained_rows=retained,
+        settled=frozenset({W2}),
+    )
+
+    assert rows == retained
+    assert rewrite == ()
+    assert from_checkpoint == 1
+
+
+def _checkpointed_conn(**overrides):
+    """W1 and W2 closed before the previous run ended, and were checkpointed then."""
+    overrides.setdefault("previous", _previous([W1, W2, W3], [{"any": 0, "min_requests": 0}] * 3))
+    return _fake_conn(
+        retained_languages=[
+            {"week": W1, "account_key": ps.account_key("u1"), "language": "de"},
+            {"week": W2, "account_key": ps.account_key("u1"), "language": "fr"},
+        ],
+        retained_language_samples=[
+            {"week": W1, "messages_sampled": 2},
+            {"week": W2, "messages_sampled": 3},
+        ],
+        retained_clients=[
+            {
+                "week": W2,
+                "account_key": ps.account_key("u1"),
+                "agent": "Claude",
+                "user_agent": "claude-cli/2.1",
+                "requests": 20,
+                "tokens": 55,
+            }
+        ],
+        live_clients=[],
+        sample_by_week={W1: _FRENCH, W2: _FRENCH, W3: _FRENCH},
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_weeks_not_yet_settled_are_read_from_the_logs():
+    conn = _checkpointed_conn()
+    held: list[ps.RetentionWrite] = []
+
+    payload = await ps.compute_snapshot(
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC), retention_out=held
+    )
+
+    samples = [c.args for c in conn.fetch.await_args_list if "jsonb_array_elements" in c.args[0]]
+    assert [ps.week_start(args[1].date()) for args in samples] == [W3]
+    [clients] = [c.args for c in conn.fetch.await_args_list if c.args[0] is ps.CLIENTS_SQL]
+    # W1 has no client checkpoint, so the scan starts there; W2 is read from its own.
+    assert clients[1] == START
+    # The settled weeks still count, from their checkpoints.
+    assert [item["code"] for item in payload["languages"]["items"]] == ["de", "fr"]
+    assert payload["languages"]["messages_sampled"] == 2 + 3 + 2
+    assert payload["agents"]["products"][0]["tokens"] == 55
+    # And are not rewritten.
+    assert held[0].language_weeks == (W3,)
+    assert W2 not in held[0].client_weeks
+
+
+@pytest.mark.asyncio
+async def test_without_a_stored_run_every_week_is_read_from_the_logs():
+    conn = _checkpointed_conn(previous=None)
+    await ps.compute_snapshot(conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC))
+    samples = [c.args for c in conn.fetch.await_args_list if "jsonb_array_elements" in c.args[0]]
+    assert len(samples) == 3
+
+
+def test_the_language_query_parses_each_prompt_once():
+    sql = ps.LANGUAGE_SAMPLE_SQL.format(valid_json="pg_input_is_valid(l.prompt, 'jsonb')")
+    # One cast, in a lateral subquery the planner cannot fold back into each use.
+    assert sql.count("l.prompt::jsonb") == 1
+    assert "OFFSET 0" in sql
+    assert "jsonb_array_elements(d.doc)" in sql
+    assert "jsonb_typeof(d.doc) = 'array'" in sql

@@ -88,6 +88,12 @@ Code. Anthropic-hosted product surfaces are not part of the Messages API the
 gateway implements, and Claude sessions elsewhere — the web app, other clients
 — read none of this local configuration.
 
+Server tools — web search, web fetch, code execution, MCP connectors and the
+others Anthropic runs and bills per use — are not available through the
+gateway, which cannot bill them: on a model served by Anthropic's API, a request
+that asks for one gets `400 invalid_request_error`. Tools Claude Code runs
+itself are not affected.
+
 ## Troubleshooting
 
 | Error | Cause | Fix |

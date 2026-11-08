@@ -101,6 +101,14 @@ function ChatView() {
       const controller = new AbortController();
       abortRef.current = controller;
       let acc = '';
+      // The reply is drawn once per animation frame, with every token that
+      // arrived in it, rather than once per token.
+      let frame: number | null = null;
+      const draw = () => {
+        frame = null;
+        const content = acc;
+        setMessages((prev) => updateLast(prev, { content }));
+      };
 
       try {
         await streamRagChat({
@@ -109,7 +117,7 @@ function ChatView() {
           onSources: (sources) => setMessages((prev) => updateLast(prev, { sources })),
           onToken: (delta) => {
             acc += delta;
-            setMessages((prev) => updateLast(prev, { content: acc }));
+            if (frame === null) frame = requestAnimationFrame(draw);
           },
         });
       } catch (err) {
@@ -124,7 +132,12 @@ function ChatView() {
           }
         }
       } finally {
-        setMessages((prev) => updateLast(prev, { streaming: false }));
+        // Whatever arrived since the last frame, with the end of the stream.
+        if (frame !== null) cancelAnimationFrame(frame);
+        const content = acc;
+        setMessages((prev) =>
+          updateLast(prev, content ? { content, streaming: false } : { streaming: false }),
+        );
         setIsStreaming(false);
         abortRef.current = null;
       }

@@ -5,6 +5,8 @@ import {
   bindPhone,
   login,
   loginPhone,
+  logout,
+  logoutAll,
   resendVerification,
   sendPhoneCode,
   signupPhone,
@@ -237,5 +239,83 @@ describe('endAgentSession', () => {
     } finally {
       timeoutSpy.mockRestore();
     }
+  });
+});
+
+// The console signs an account out only once the server has: anything else
+// leaves the server's session and its 30-day cookie behind, and a console that
+// said "signed out" would sign the next person at this computer straight in.
+describe('logout', () => {
+  function sessionToken(expiresInSeconds: number): string {
+    const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+    return `header.${btoa(JSON.stringify({ sub: 'user-a', exp }))}.signature`;
+  }
+
+  function answer(status: number): Response {
+    return new Response(JSON.stringify({ detail: 'answer' }), { status });
+  }
+
+  it('lets the token go once the server has signed the account out', async () => {
+    setAccessToken(sessionToken(900));
+    fetchMock.mockResolvedValueOnce(answer(200));
+
+    await logout();
+
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/auth\/logout$/);
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it('counts a session that had already ended as signed out', async () => {
+    setAccessToken(sessionToken(900));
+    fetchMock.mockResolvedValueOnce(answer(401)); // the logout
+    fetchMock.mockResolvedValueOnce(answer(401)); // the renewal it tries
+
+    await expect(logout()).resolves.toBeUndefined();
+
+    expect(getAccessToken()).toBeNull();
+  });
+
+  it.each([500, 502, 503, 429])('throws on a %s and keeps the token', async (status) => {
+    const held = sessionToken(900);
+    setAccessToken(held);
+    fetchMock.mockResolvedValueOnce(answer(status));
+
+    await expect(logout()).rejects.toMatchObject({ statusCode: status });
+
+    expect(getAccessToken()).toBe(held);
+  });
+
+  it('throws and keeps the token when the gateway cannot be reached', async () => {
+    const held = sessionToken(900);
+    setAccessToken(held);
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    await expect(logout()).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+
+    expect(getAccessToken()).toBe(held);
+  });
+
+  it('throws and keeps the token when renewing it fails with a 503', async () => {
+    const held = sessionToken(-60);
+    setAccessToken(held);
+    fetchMock.mockResolvedValueOnce(answer(503)); // the renewal
+
+    await expect(logout()).rejects.toMatchObject({ code: 'SERVICE_UNAVAILABLE' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getAccessToken()).toBe(held);
+  });
+
+  it('signs every account out only on the server\u2019s word too', async () => {
+    const held = sessionToken(900);
+    setAccessToken(held);
+    fetchMock.mockResolvedValueOnce(answer(503));
+
+    await expect(logoutAll()).rejects.toBeInstanceOf(APIError);
+    expect(getAccessToken()).toBe(held);
+
+    fetchMock.mockResolvedValueOnce(answer(200));
+    await logoutAll();
+    expect(getAccessToken()).toBeNull();
   });
 });

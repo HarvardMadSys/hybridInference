@@ -333,6 +333,8 @@ export interface UpdateUserData {
   max_concurrent_requests?: number | null;
   admin_note?: string | null;
   suspension_message?: string | null;
+  /** The signed-in administrator's password: needed to raise `role`. */
+  password?: string;
 }
 
 export async function updateUser(

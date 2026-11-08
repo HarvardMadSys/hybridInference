@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from serving.adapters.anthropic_translator import (
+    INPUT_SEED_SINK_KEY,
     OPENAI_USAGE_SINK_KEY,
     OpenAIToAnthropicStreamTranslator,
     anthropic_output_tokens,
@@ -271,7 +272,11 @@ async def test_a_stream_closed_before_usage_arrives_leaves_the_sink_unflushed():
             break
     await stream.aclose()
 
-    # The router recovers this case by estimation; nothing was reported.
+    # The router recovers this case by estimation; nothing was reported. The
+    # estimate message_start was seeded with is declared as one, not as a count.
+    seed = sink.pop(INPUT_SEED_SINK_KEY)
+    assert isinstance(seed, int)
+    assert seed > 0
     assert sink == {"input_tokens": 0, "output_tokens": 0}
 
 

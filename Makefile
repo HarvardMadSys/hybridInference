@@ -280,6 +280,14 @@ endif
 ifeq ($(CLOUD_AGENT_NETWORK),1)
 COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.cloud-agent.yml
 endif
+# pgAdmin publishes no host port unless asked: the console reaches it on its
+# own network, behind the admin session check, and a host port skips that
+# check. PGADMIN_PUBLISH=1 publishes it on 127.0.0.1, port PGADMIN_PORT (5050
+# unless set), for an SSH tunnel. Pass it with COMPOSE_PROFILES=admin on every
+# command, or the next one recreates pgAdmin without the port.
+ifeq ($(PGADMIN_PUBLISH),1)
+COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.pgadmin-port.yml
+endif
 # A host-local `.env` remains last whenever it exists, preserving its override
 # precedence. Public runnable examples deliberately need no secret file, so do
 # not hand Compose a path that is absent on a fresh clone.
@@ -305,7 +313,15 @@ DOCKER_VOLUMES := hybridinference_postgres_data
 # use the very image (and DB_* settings) the backend is about to start with.
 # A one-off container, never a dependency of `backend`: restoring the previous
 # image must not run that image's migrations against a newer schema.
-MIGRATE := $(COMPOSE) run --rm backend python -m migrations upgrade
+#
+# --no-deps, with the database started first by MIGRATE_DB: without it
+# `compose run` brings the backend's dependencies up itself, recreating
+# Postgres whenever its configuration changed, under the backend still
+# serving and before a migration that may then fail. MIGRATE_DB starts
+# Postgres only when it is not running, never recreates it, and waits until it
+# is healthy; the `up -d` after a migration recreates it if it must.
+MIGRATE_DB := $(COMPOSE) up -d --no-recreate --wait postgres
+MIGRATE := $(COMPOSE) run --rm --no-deps backend python -m migrations upgrade
 DEMO_MIGRATE := $(DEMO_COMPOSE) run --rm --no-deps backend python -m migrations upgrade
 
 docker-volumes:  ## Create external Docker volumes required by production compose
@@ -326,11 +342,13 @@ up:  ## Start all services
 	$(COMPOSE) up -d --no-deps backend
 else
 up: docker-volumes  ## Start all services, after applying the schema migrations
+	$(MIGRATE_DB)
 	$(MIGRATE)
 	$(COMPOSE) up -d
 endif
 
 migrate: docker-volumes  ## Apply the schema migrations with the backend image (a deploy runs this first)
+	$(MIGRATE_DB)
 	$(MIGRATE)
 
 # The port has one source of truth: the distribution's own env file, which is
@@ -433,10 +451,12 @@ else
 build: docker-volumes
 ifdef s
 	$(COMPOSE) build $(s)
+	$(MIGRATE_DB)
 	$(MIGRATE)
 	$(COMPOSE) up -d $(s)
 else
 	$(COMPOSE) build
+	$(MIGRATE_DB)
 	$(MIGRATE)
 	$(COMPOSE) up -d
 endif

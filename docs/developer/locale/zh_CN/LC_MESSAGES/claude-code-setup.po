@@ -189,6 +189,19 @@ msgstr ""
 "API；其他地方的 Claude 会话——网页版、别的客户端——都不会读这份本地配置。"
 
 #: ../developer/claude-code-setup.md:91
+msgid ""
+"Server tools — web search, web fetch, code execution, MCP connectors and "
+"the others Anthropic runs and bills per use — are not available through "
+"the gateway, which cannot bill them: on a model served by Anthropic's API,"
+" a request that asks for one gets `400 invalid_request_error`. Tools "
+"Claude Code runs itself are not affected."
+msgstr ""
+"服务端工具——网页搜索、网页抓取、代码执行、MCP 连接器，以及其他由 Anthropic "
+"运行并按次计费的工具——无法通过网关使用，因为网关无法为它们计费：对由 Anthropic API "
+"提供服务的模型，请求这类工具会得到 `400 invalid_request_error`。Claude Code "
+"自己运行的工具不受影响。"
+
+#: ../developer/claude-code-setup.md:91
 msgid "Troubleshooting"
 msgstr "故障排查"
 

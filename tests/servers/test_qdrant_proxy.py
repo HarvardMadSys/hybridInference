@@ -53,9 +53,13 @@ class _MockQdrantUpstream:
 
     def __init__(self) -> None:
         self.last_request: dict[str, Any] | None = None
+        self.requests: list[dict[str, Any]] = []
         self._status = 200
         self._body = b"{}"
         self._content_type = "application/json"
+        #: What ``GET /collections`` answers: the instance's collections, which
+        #: the proxy also reads before it creates one.
+        self.listing = b'{"result":{"collections":[]}}'
 
     def set_response(
         self, status: int = 200, body: bytes = b"{}", content_type: str = "application/json"
@@ -72,13 +76,18 @@ class _MockQdrantUpstream:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: Any = None,
+        max_body_bytes: int | None = None,
     ) -> tuple[int, bytes, str]:
         self.last_request = {
             "method": method,
             "url": url,
             "data": data,
             "headers": headers,
+            "max_body_bytes": max_body_bytes,
         }
+        self.requests.append(self.last_request)
+        if method == "GET" and url.endswith("/collections"):
+            return 200, self.listing, "application/json"
         return self._status, self._body, self._content_type
 
 
@@ -524,7 +533,7 @@ class TestNamespaceResponses:
                 }
             }
         ).encode()
-        mock_upstream.set_response(200, body)
+        mock_upstream.listing = body
         resp = await client.get("/v1/qdrant/collections")
         data = resp.json()
         names = [c["name"] for c in data["result"]["collections"]]
@@ -738,3 +747,206 @@ class TestBodyCollectionScoping:
         )
 
         assert mock_upstream.last_request["data"] == raw
+
+
+# ============================================================================
+# What one account may make the shared instance do
+# ============================================================================
+
+
+class TestTenantLimits:
+    """Slots, the response limit, collection options and the collection count."""
+
+    @pytest.mark.asyncio
+    async def test_an_account_has_a_bounded_number_of_requests_in_flight(
+        self, qdrant_app: FastAPI, mock_upstream, monkeypatch
+    ):
+        import asyncio
+
+        from serving.servers.routers import qdrant_proxy
+
+        release = asyncio.Event()
+        entered = 0
+
+        async def stalled(method, url, **kwargs):
+            nonlocal entered
+            entered += 1
+            await release.wait()
+            return 200, b'{"result":{}}', "application/json"
+
+        monkeypatch.setattr(mock_upstream, "request", stalled)
+        limit = qdrant_proxy.MAX_INFLIGHT_PER_USER
+        transport = ASGITransport(app=qdrant_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            held = [
+                asyncio.create_task(c.post("/v1/qdrant/collections/x/points/search", json={}))
+                for _ in range(limit)
+            ]
+            while entered < limit:
+                await asyncio.sleep(0.01)
+            refused = await c.post("/v1/qdrant/collections/x/points/search", json={})
+
+            # Another account is not affected.
+            qdrant_app.dependency_overrides[_verify_qdrant_user] = lambda: {
+                "user_id": OTHER_USER_ID,
+                "authenticated": True,
+            }
+            other = asyncio.create_task(c.get("/v1/qdrant/collections/y"))
+            while entered < limit + 1:
+                await asyncio.sleep(0.01)
+            release.set()
+            done = await asyncio.gather(*held, other)
+
+        assert refused.status_code == status.HTTP_429_TOO_MANY_REQUESTS
+        assert refused.headers["retry-after"] == "1"
+        assert {response.status_code for response in done} == {200}
+        # Every slot is given back.
+        assert qdrant_proxy._inflight == {}
+
+    @pytest.mark.asyncio
+    async def test_a_slot_is_given_back_when_the_request_fails(
+        self, client: AsyncClient, mock_upstream, monkeypatch
+    ):
+        from serving.servers.routers import qdrant_proxy
+
+        async def broken(method, url, **kwargs):
+            raise aiohttp.ClientConnectionError("down")
+
+        monkeypatch.setattr(mock_upstream, "request", broken)
+        for _ in range(qdrant_proxy.MAX_INFLIGHT_PER_USER + 2):
+            resp = await client.get("/v1/qdrant/collections/x")
+            assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+        assert qdrant_proxy._inflight == {}
+
+    @pytest.mark.asyncio
+    async def test_a_response_is_read_up_to_a_much_smaller_limit(
+        self, client: AsyncClient, mock_upstream, monkeypatch
+    ):
+        from serving.http import UpstreamPayloadTooLarge
+        from serving.servers.routers import qdrant_proxy
+
+        await client.get("/v1/qdrant/collections/x")
+        assert mock_upstream.last_request["max_body_bytes"] == qdrant_proxy.MAX_RESPONSE_BYTES
+        assert qdrant_proxy.MAX_RESPONSE_BYTES <= 16 * 1024 * 1024
+
+        async def huge(method, url, **kwargs):
+            raise UpstreamPayloadTooLarge("too large")
+
+        monkeypatch.setattr(mock_upstream, "request", huge)
+        resp = await client.post("/v1/qdrant/collections/x/points/scroll", json={"limit": 9999})
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+        assert "fewer points" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_options_that_size_the_shared_instance_are_dropped(
+        self, client: AsyncClient, mock_upstream
+    ):
+        body = {
+            "vectors": {
+                "size": 1024,
+                "distance": "Cosine",
+                "on_disk": True,
+                "quantization_config": {"scalar": {"type": "int8", "always_ram": True}},
+                "hnsw_config": {"m": 512},
+            },
+            "shard_number": 64,
+            "sharding_method": "custom",
+            "replication_factor": 9,
+            "write_consistency_factor": 9,
+            "optimizers_config": {"max_optimization_threads": 64},
+            "wal_config": {"wal_capacity_mb": 100000},
+            "quantization_config": {"binary": {"always_ram": True}},
+            "strict_mode_config": {"enabled": False},
+            "hnsw_config": {
+                "m": 10000,
+                "ef_construct": 100000,
+                "payload_m": 900,
+                "max_indexing_threads": 64,
+                "full_scan_threshold": 1,
+                "on_disk": True,
+            },
+            "on_disk_payload": True,
+        }
+        resp = await client.put("/v1/qdrant/collections/big", json=body)
+        assert resp.status_code == status.HTTP_200_OK
+        sent = json.loads(mock_upstream.last_request["data"])
+        assert sent == {
+            "vectors": {
+                "size": 1024,
+                "distance": "Cosine",
+                "on_disk": True,
+                "hnsw_config": {"m": 64},
+            },
+            "hnsw_config": {"m": 64, "ef_construct": 512, "payload_m": 64, "on_disk": True},
+            "on_disk_payload": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_ide_indexers_collection_passes_as_sent(
+        self, client: AsyncClient, mock_upstream
+    ):
+        body = {
+            "vectors": {"size": 1536, "distance": "Cosine", "on_disk": True},
+            "hnsw_config": {"m": 64, "ef_construct": 512, "on_disk": True},
+        }
+        resp = await client.put("/v1/qdrant/collections/ws-abc123", json=body)
+        assert resp.status_code == status.HTTP_200_OK
+        assert json.loads(mock_upstream.last_request["data"]) == body
+
+    @pytest.mark.asyncio
+    async def test_an_update_cannot_change_them_either(self, client: AsyncClient, mock_upstream):
+        body = {
+            "params": {"replication_factor": 5},
+            "optimizers_config": {"indexing_threshold": 0},
+            "vectors": {"": {"on_disk": True, "hnsw_config": {"ef_construct": 9000}}},
+        }
+        resp = await client.patch("/v1/qdrant/collections/mine", json=body)
+        assert resp.status_code == status.HTTP_200_OK
+        sent = json.loads(mock_upstream.last_request["data"])
+        assert sent == {"vectors": {"": {"on_disk": True, "hnsw_config": {"ef_construct": 512}}}}
+
+    @pytest.mark.asyncio
+    async def test_points_are_forwarded_unchanged(self, client: AsyncClient, mock_upstream):
+        raw = b'{"points":[{"id":1,"vector":[0.1],"payload":{"shard_number":3}}]}'
+        await client.put("/v1/qdrant/collections/mine/points", content=raw)
+        assert mock_upstream.last_request["data"] == raw
+
+    def _listing(self, own: int, others: int = 5) -> bytes:
+        names = [_scoped(f"ws-{i}") for i in range(own)]
+        names += [_scoped(f"ws-{i}", OTHER_USER_ID) for i in range(others)]
+        return json.dumps({"result": {"collections": [{"name": n} for n in names]}}).encode()
+
+    @pytest.mark.asyncio
+    async def test_an_account_keeps_a_bounded_number_of_collections(
+        self, client: AsyncClient, mock_upstream
+    ):
+        from serving.servers.routers import qdrant_proxy
+
+        limit = qdrant_proxy.MAX_COLLECTIONS_PER_USER
+        mock_upstream.listing = self._listing(limit - 1, others=500)
+        body = {"vectors": {"size": 4, "distance": "Dot"}}
+
+        created = await client.put("/v1/qdrant/collections/new-one", json=body)
+        assert created.status_code == status.HTTP_200_OK
+
+        mock_upstream.listing = self._listing(limit)
+        mock_upstream.requests.clear()
+        refused = await client.put("/v1/qdrant/collections/one-more", json=body)
+        assert refused.status_code == status.HTTP_403_FORBIDDEN
+        assert "at most" in refused.json()["detail"]
+        # Only the listing was read: nothing was created.
+        assert [r["method"] for r in mock_upstream.requests] == ["GET"]
+
+        # An existing collection is Qdrant's to answer.
+        existing = await client.put("/v1/qdrant/collections/ws-3", json=body)
+        assert existing.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    async def test_a_collection_is_not_created_when_the_count_cannot_be_read(
+        self, client: AsyncClient, mock_upstream
+    ):
+        mock_upstream.listing = b"not json"
+        mock_upstream.requests.clear()
+        resp = await client.put("/v1/qdrant/collections/x", json={"vectors": {"size": 4}})
+        assert resp.status_code == status.HTTP_502_BAD_GATEWAY
+        assert [r["method"] for r in mock_upstream.requests] == ["GET"]

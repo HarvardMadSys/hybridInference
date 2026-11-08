@@ -13,6 +13,8 @@ For distribution manifests, branding, UI modules and backend extensions, see
 
 `EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings in **Admin > Configuration**. Without a provider beyond the built-in one, it does not list `EMAIL_PROVIDER` or `SMS_PROVIDER` either, which would have only one value to choose, and without an SMS provider it lists none of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
 
+SMTP mail travels over TLS that checks the server's certificate before the password is sent. Port 465 uses TLS from the first byte; any other `SMTP_PORT` must offer STARTTLS. The certificate must be valid for `SMTP_HOST` and issued by an authority the backend trusts. A server with a self-signed or privately issued certificate is refused, and the backend log names the server and says why. Give it a certificate from a public authority, or set `SSL_CERT_FILE` in the backend's environment to a bundle that holds the system's authorities and the one that signed it.
+
 Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
 
 ### Tencent Cloud SES and SMS
@@ -73,6 +75,25 @@ covers less than `window_sec`, and a rate alert says
 `failed_request_rate` tracks at most 256 distinct paths per window. Failures on
 any other path still count toward the rate, and the line says how many it left
 out.
+
+`p95_latency_per_provider` reads each request's duration from its request-log
+line, per upstream provider, for successful requests and failures alike. A
+request served through the chat completions router (`/v1/chat/completions`, its
+compatibility routes and `/v1/responses`) names the model and the provider that
+served it on that line. The duration is the whole request, so a stream's runs
+to its last byte: set `threshold_ms`, and per-provider `overrides`, above the
+time a provider normally takes to finish your traffic.
+
+`failed_request_rate` counts a request as failed when it ends in a 5xx, or in a
+4xx an upstream returned. A 4xx the gateway issues itself, such as a 404 for a
+path that does not exist or a 422 for a body that does not validate, is not a
+service failure and does not count, and neither does a 429. `client_error_burst`
+counts the relayed client errors that bypass the circuit breaker, and
+`min_distinct_callers` (default `1`) sets how many API keys, grants or
+anonymous addresses they must come from before it pages. At `1`, one caller
+replaying a broken conversation pages, and so can any one key that sends
+malformed requests on purpose. A gateway that hands keys to the public can set
+it to `2` or more and then sees a single caller's loop only in the logs.
 
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
@@ -606,7 +627,13 @@ refused when the environment value it would fall back to is not valid. A
 setting that was already invalid never blocks an unrelated change. The names that stay in the
 environment, such as `DB_PASSWORD` or `MODELS_CONFIG_PATH`, cannot be set here.
 Behind the tab are `GET` and `PATCH /admin/config` and
-`DELETE /admin/config/{key}`.
+`DELETE /admin/config/{key}`. A save or a **Reset** of a security-relevant
+setting, one a restore lists for confirmation (see
+[Backup and restore](#backup-and-restore)) and each entry marks with
+`security_relevant`, asks for your password, which the API takes as `password`
+(in the JSON body of a `DELETE`). The admin token gives no password, so it
+changes only the other settings; `python -m serving.config.manage` still
+changes any of them on the host.
 
 ### Backup and restore
 
@@ -627,15 +654,19 @@ the file withholds keeps the value this deployment has; one the deployment has
 no value for stays unset, and the response names it under
 `secrets_not_restored`. A backup file is not signed, so a restore that changes
 anything security-relevant needs a confirmation and the password: any secret,
-the Security and Network settings, every `*_URL` setting and every variable a
-configuration file references, mail delivery, the identity issuer, keys and
-redirects, user authentication, the sign-up switches and allowlist, full
-request logging, private batch webhook targets, and where a custom provider or
-a route sends requests and keys. The console lists those changes before it
-restores, from `POST /admin/config/restore/preview`; a script sends that list
-back as `confirm_security_changes`, with `password`, and a restore whose changes
-differ from the confirmed list is refused with 409. The admin token can restore
-only a file that changes none of them.
+the Security, Network, Phone authentication and Privacy settings, every `*_URL`
+setting and every variable a configuration file references, mail delivery, who
+is told about new accounts and the support address, the identity issuer, keys
+and redirects, user authentication, the sign-up switches and allowlist, full
+request logging, who may submit batches and private batch webhook targets,
+whether alerts are sent and which are snoozed or muted, the request body
+limit, the tier a model or a provider key is reserved for, and where a custom
+provider or a route sends requests and keys, and as which deployment type. An
+alert snooze in the file must end within seven days. The console lists those
+changes before it restores, from `POST /admin/config/restore/preview`; a script
+sends that list back as `confirm_security_changes`, with `password`, and a
+restore whose changes differ from the confirmed list is refused with 409. The
+admin token can restore only a file that changes none of them.
 
 ### When a change applies
 

@@ -304,8 +304,8 @@ async def test_a_miss_sweeps_a_bounded_window(monkeypatch):
 async def test_a_revocation_naming_no_account_forgets_sessions_without_a_scan(
     cached, inner, cache, write, args
 ):
-    """A sign-out names a session, not an account: every session entry goes, via the index."""
-    setattr(inner, write, AsyncMock())
+    """A store that cannot say whose sessions they were: every session entry goes, via the index."""
+    setattr(inner, write, AsyncMock(return_value=None))
     await cached.session_is_live("u1", "s1")
     await cached.session_is_live("u2", "s2")
     await cached.get_auth_context_by_key_hash("h1")

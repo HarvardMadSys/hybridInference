@@ -91,6 +91,32 @@ async def test_an_unknown_model_with_a_large_body_logs_a_bounded_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_billed_request_does_not_store_a_field_the_gateway_ignored() -> None:
+    log_store = MagicMock()
+    log_store.log_request = AsyncMock()
+    messages = [{"role": "user", "content": "hi"}]
+
+    async with AsyncClient(transport=ASGITransport(app=_app(log_store)), base_url="http://t") as c:
+        response = await c.post(
+            "/v1/chat/completions",
+            json={
+                "model": "real-model",
+                "messages": messages,
+                "max_tokens": 1,
+                "pad": "p" * (8 * 1024 * 1024),
+            },
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    row = await _logged(log_store)
+    assert row["status_code"] == 200
+    assert "pad" not in row["request_payload"]
+    assert row["request_payload"]["max_tokens"] == 1
+    assert row["request_payload"]["messages"] == messages
+    assert row["metadata"]["payload_truncated"] is True
+
+
+@pytest.mark.asyncio
 async def test_a_served_request_keeps_its_whole_prompt() -> None:
     log_store = MagicMock()
     log_store.log_request = AsyncMock()

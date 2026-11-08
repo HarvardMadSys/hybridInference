@@ -717,18 +717,17 @@ msgid ""
 "Sign-in limits are a consumer you will notice. They count attempts per "
 "address — five per username from one address in 15 minutes, twenty per "
 "address in an hour — and every browser whose address resolves to "
-"`\"unknown\"` shares one. Behind the bundled Compose file's console "
-"proxy, without `TRUST_PROXY_HEADERS` and a `TRUSTED_PROXIES` entry for "
-"the console, that is every browser: anyone's wrong passwords then count "
-"against everyone else's sign-ins. Only a browser that has signed in to "
-"the account before escapes this, with the device cookie that gives it "
-"attempts of its own; see [The first admin account](deployment.md#the-"
-"first-admin-account)."
+"`\"unknown\"` shares one. Behind the bundled Compose file's console, unless "
+"the gateway trusts the header your edge sets (see [Behind the "
+"console](#behind-the-console)), that is every browser: anyone's wrong "
+"passwords then count against everyone else's sign-ins. Only a browser that "
+"has signed in to the account before escapes this, with the device cookie "
+"that gives it attempts of its own; see [The first admin "
+"account](deployment.md#the-first-admin-account)."
 msgstr ""
 "登录限制就是一个你会注意到的使用方。它们按地址为尝试计数——同一个用户名从同一个地址每 15 分钟五次，每个地址每小时二十次——而所有地址解析为 "
-"`\"unknown\"` 的浏览器共用同一个地址。在仓库自带 Compose 文件的控制台代理后面，如果没有设置 "
-"`TRUST_PROXY_HEADERS` 并在 `TRUSTED_PROXIES` "
-"里写上控制台，那就是所有浏览器：任何人输错的密码都会算到其他所有人的登录头上。只有以前登录过这个账号的浏览器能免于此，靠的是让它拥有自己尝试额度的设备"
+"`\"unknown\"` 的浏览器共用同一个地址。在仓库自带 Compose "
+"文件的控制台后面，除非网关信任你的边缘层所设置的那个头（见[在控制台后面](#behind-the-console)），那就是所有浏览器：任何人输错的密码都会算到其他所有人的登录头上。只有以前登录过这个账号的浏览器能免于此，靠的是让它拥有自己尝试额度的设备"
 " cookie；见[第一个管理员账号](deployment.md#the-first-admin-account)。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:293
@@ -896,14 +895,29 @@ msgid ""
 "said."
 msgstr "原始请求头和判定结果记在一起，地址判错了才查得出原因：你能看到是哪一级命中的，其他几级又各自给出了什么。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:373
+#: ../developer/trusted-proxies-and-client-ips.md:422
+msgid ""
+"The client chooses these values, so the line keeps a bounded copy of "
+"each: cut to 256 characters (the path to 512), with control characters "
+"escaped. `origin` and `referer` keep only the scheme, host and path: a "
+"page's address can carry a secret in its query, as a password-reset link "
+"does."
+msgstr ""
+"这些值由客户端决定，所以日志行只保留每个值的有界副本：截断到 256 个字符（路径为 512 个），并转义控制字符。`origin` 和 "
+"`referer` 只保留协议、主机和路径：页面地址的查询部分可能带着机密，密码重置链接就是这样。"
+
+#: ../developer/trusted-proxies-and-client-ips.md:427
 msgid ""
 "At `DEBUG` the middleware additionally emits an `http_request_headers` "
-"line with every request header, truncated to 256 characters each and with"
-" `authorization` and `x-api-key` replaced by `***`."
+"line with every request header, cut and escaped the same way. A "
+"credential is replaced by `***`: `authorization`, `proxy-authorization`, "
+"`x-api-key`, `api-key`, `cookie`, `x-on-behalf-of`, and any header whose "
+"name mentions a key, token, secret, password, session, signature, cookie "
+"or auth."
 msgstr ""
-"在 `DEBUG` 级别下，中间件还会额外输出一行 `http_request_headers`，带上全部请求头，每个截断到 256 个字符，并把"
-" `authorization` 和 `x-api-key` 替换成 `***`。"
+"在 `DEBUG` 级别下，中间件还会额外输出一行 `http_request_headers`，带上全部请求头，同样截断并转义。凭据会被替换成 "
+"`***`：`authorization`、`proxy-authorization`、`x-api-key`、`api-key`、`cookie`、`x-on-behalf-of`，以及名称中提到"
+" key、token、secret、password、session、signature、cookie 或 auth 的任何请求头。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:377
 msgid "What is persisted"
@@ -1410,3 +1424,135 @@ msgstr "要检查正在运行的网关，可以故意发一个转发头明显离
 
 #~ msgid "An invalid CIDR stops the gateway at startup."
 #~ msgstr "CIDR 无效时，网关会在启动阶段直接报错退出。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "The bundled Compose file's console, and your edge in front of it"
+msgstr "仓库自带 Compose 文件里的控制台，以及它前面你的边缘层"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Trust the console only for the header your edge sets: see [Behind the "
+"console](#behind-the-console)"
+msgstr "只就你的边缘层所设置的那个头信任控制台：见[在控制台后面](#behind-the-console)"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Behind the console"
+msgstr "在控制台后面"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"In the bundled Compose file the Next.js console stands in front of the "
+"gateway, so every request through it reaches the gateway from the console's "
+"address. The console relays; it does not vouch:"
+msgstr ""
+"在仓库自带的 Compose 文件里，Next.js "
+"控制台站在网关前面，所以每个经过它的请求到达网关时，来源地址都是控制台的地址。控制台只转发，不担保："
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"It forwards `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and "
+"`CF-Connecting-IPv6` exactly as it received them."
+msgstr ""
+"它把 `X-Forwarded-For`、`X-Real-IP`、`CF-Connecting-IP` 和 `CF-Connecting-IPv6` "
+"原样转发，收到什么就转发什么。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"It does not add the address it received the request from, and it cannot tell"
+" a request that came through your edge from one that did not: a Next.js "
+"route handler cannot see the connection's address once the caller has sent "
+"an `X-Forwarded-For`. When the caller sent none, Next fills in that address "
+"on the gateway's API paths (`/v1`, `/anthropic`, `/auth`, `/user`, `/admin` "
+"and the published `/internal` paths); the rewritten `/health`, "
+"`/site-updates`, `/site-config` and `/public-stats` carry none at all."
+msgstr ""
+"它不会加上自己收到请求时对端的地址，也分辨不出一个请求是不是经过了你的边缘层：调用方一旦带了 `X-Forwarded-For`，Next.js 的 "
+"route handler 就看不到这条连接的地址。调用方没带时，Next 会在网关的 API "
+"路径（`/v1`、`/anthropic`、`/auth`、`/user`、`/admin` 以及公开的那几条 `/internal` "
+"路径）上把这个地址补上；经 rewrite 转发的 `/health`、`/site-updates`、`/site-config` 和 "
+"`/public-stats` 则什么都不带。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Naming the console in `TRUSTED_PROXIES` or `TRUSTED_CLOUDFLARE_NETWORKS` "
+"therefore trusts whatever reached the console, as it arrived. That is right "
+"only when every request reaches the console through one edge, and that edge "
+"sets the header the gateway reads:"
+msgstr ""
+"所以，把控制台写进 `TRUSTED_PROXIES` 或 "
+"`TRUSTED_CLOUDFLARE_NETWORKS`，就等于原样信任到达控制台的一切。只有当每个请求都经由同一个边缘层到达控制台，并且网关读取的那个头是由这个边缘层设置的，这样做才对："
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "In front of the console"
+msgstr "控制台前面是什么"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "What to trust"
+msgstr "信任什么"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Why it holds"
+msgstr "为什么成立"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Cloudflare, as a proxy or a tunnel"
+msgstr "Cloudflare（作为代理或隧道）"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"`CF-Connecting-IP`: `TRUST_PROXY_HEADERS=1`, `TRUST_CLOUDFLARE_HEADERS=1`, "
+"`TRUSTED_CLOUDFLARE_NETWORKS=<the console's address>/32`"
+msgstr ""
+"`CF-Connecting-IP`：`TRUST_PROXY_HEADERS=1`、`TRUST_CLOUDFLARE_HEADERS=1`、`TRUSTED_CLOUDFLARE_NETWORKS=<the"
+" console's address>/32`"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Cloudflare overwrites that header on every request"
+msgstr "Cloudflare 会在每个请求上覆盖这个头"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"A reverse proxy that writes `X-Forwarded-For` (nginx's "
+"`$proxy_add_x_forwarded_for` or `$remote_addr`)"
+msgstr ""
+"会写 `X-Forwarded-For` 的反向代理（nginx 的 `$proxy_add_x_forwarded_for` 或 "
+"`$remote_addr`）"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"`X-Forwarded-For`: `TRUST_PROXY_HEADERS=1`, `TRUSTED_PROXIES=<the console's "
+"address>/32`"
+msgstr ""
+"`X-Forwarded-For`：`TRUST_PROXY_HEADERS=1`、`TRUSTED_PROXIES=<the console's "
+"address>/32`"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"the right-most entry, the one the gateway reads, is the one that proxy wrote"
+msgstr "网关读取的是最右边那一项，而它正是这个代理写进去的"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Nothing: clients reach the console directly"
+msgstr "什么都没有：客户端直接连到控制台"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Nothing"
+msgstr "什么都不信任"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "a client chooses every header the console relays"
+msgstr "控制台转发的每个头都由客户端自己决定"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid ""
+"Keep the console's port reachable from that edge alone. The bundled Compose "
+"file publishes it on `127.0.0.1` (`FRONTEND_HOST`), which still leaves every"
+" process on the host and every container on its network able to reach it, "
+"and any of them can claim any address. Without such an edge, leave the "
+"console untrusted: every browser then resolves to `\"unknown\"`, with the "
+"shared sign-in limits described under [The \"unknown\" "
+"outcome](#the-unknown-outcome)."
+msgstr ""
+"让控制台的端口只能从这个边缘层访问。仓库自带的 Compose 文件把它发布在 "
+"`127.0.0.1`（`FRONTEND_HOST`）上，但主机上的每个进程、它所在网络里的每个容器仍然能连到它，而它们中的任何一个都可以声称自己是任何地址。没有这样的边缘层时，就不要信任控制台：这时所有浏览器都会解析为"
+" `\"unknown\"`，共用[返回「unknown」的情况](#the-unknown-outcome)一节里讲到的登录限制。"

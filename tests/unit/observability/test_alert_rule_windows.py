@@ -335,14 +335,17 @@ class _LegacyClientErrorBurst:
         if getattr(record, "event", None) != "client_error_skip_breaker":
             return
         now = time.time()
+        caller = getattr(record, "caller", None)
         self._window.add(
             now,
             {
                 "endpoint_id": getattr(record, "endpoint_id", None),
                 "status": getattr(record, "status", None),
+                "caller": str(caller) if caller else "unknown",
             },
         )
         items = self._window.items(now)
+        callers = len({it["caller"] for it in items})
 
         def breach_context() -> dict[str, Any]:
             endpoint_counts: collections.Counter[str] = collections.Counter(
@@ -354,6 +357,7 @@ class _LegacyClientErrorBurst:
             return {
                 "count": len(items),
                 "window_sec": self._cfg.window_sec,
+                "distinct_callers": callers,
                 "top_endpoints": _top_offenders(endpoint_counts),
                 "top_status_codes": _top_offenders(status_counts),
                 "note": (
@@ -367,7 +371,9 @@ class _LegacyClientErrorBurst:
 
         await self._send(
             key="client_error_burst",
-            breached=len(items) > self._cfg.threshold_count,
+            breached=(
+                len(items) > self._cfg.threshold_count and callers >= self._cfg.min_distinct_callers
+            ),
             severity=AlertSeverity.WARN,
             title="Client-error burst relayed from upstream",
             context=breach_context,
@@ -507,6 +513,7 @@ def _random_client_error(rng: random.Random, i: int) -> logging.LogRecord:
         event="client_error_skip_breaker",
         endpoint_id=rng.choice([None, "", 0, 7, "m:local-1", "m:zai-api", "m:zai-api"]),
         status=rng.choice([None, 400, 404, 422, 422, "400"]),
+        caller=rng.choice([None, "", "k1", "k1", "k1", "k2", "k3"]),
     )
 
 
@@ -688,7 +695,10 @@ async def test_tracked_task_failure_rate_matches_the_rescan_it_replaced(seed, mo
 async def test_client_error_burst_matches_the_rescan_it_replaced(seed, monkeypatch):
     rng = random.Random(seed)
     cfg = ClientErrorBurstConfig(
-        window_sec=60, threshold_count=rng.choice([5, 20, 40]), cooldown_sec=0
+        window_sec=60,
+        threshold_count=rng.choice([5, 20, 40]),
+        cooldown_sec=0,
+        min_distinct_callers=rng.choice([1, 2, 3]),
     )
     new_calls: list[dict[str, Any]] = []
     old_calls: list[dict[str, Any]] = []
@@ -1021,10 +1031,11 @@ async def test_a_scan_of_random_paths_cannot_grow_the_path_tally(monkeypatch):
     rule = FailedRequestRateRule(RateRule(window_sec=3600, min_samples=1, threshold_pct=1.0))
     cap = alert_rules._MAX_TRACKED_PATHS
 
-    # One failure a second: a scan of distinct paths, then a real outage.
+    # One failure a second: failures on a scan of distinct paths (a 5xx counts
+    # whoever answered it), then a real outage.
     for i in range(cap + 100):
         clock[0] += 1
-        await rule.on_record(_request(404, provider="", path=f"/scan/{i}"))
+        await rule.on_record(_request(502, provider="", path=f"/scan/{i}"))
     for _ in range(5):
         clock[0] += 1
         await rule.on_record(_request(500, path="/v1/chat/completions"))
@@ -1034,7 +1045,7 @@ async def test_a_scan_of_random_paths_cannot_grow_the_path_tally(monkeypatch):
     # The rate still counts every failure; only the path tally is capped, and
     # its line says how much it left out.
     assert card["rate"] == f"100.0% ({cap + 105} of {cap + 105} requests, last 3600s)"
-    assert card["top_status_codes"] == f"404 ({cap + 100}), 500 (5)"
+    assert card["top_status_codes"] == f"502 ({cap + 100}), 500 (5)"
     assert (
         card["top_paths"] == "/scan/0 (1), /scan/1 (1), /scan/2 (1), +105 on other paths (capped)"
     )

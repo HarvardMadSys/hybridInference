@@ -15,6 +15,21 @@
 # Volumes will always be: hybridinference_postgres_data, hybridinference_pgadmin_data, etc.
 name: hybridinference
 
+# Every service rotates its log. Docker's json-file driver otherwise keeps a
+# container's whole log, on the disk Postgres uses, and the backend logs
+# request headers at INFO: a client sending large headers could fill that
+# disk. The driver stays json-file, so `docker logs` and anything reading the
+# files work as before; each container keeps at most 5 files of 100 MB.
+#
+# A service's logging is part of its configuration, so the first `make up`
+# after this recreates each running service once, Postgres included: a
+# restart of a few seconds.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "5"
+
 services:
   # ===== Application =====
 
@@ -24,6 +39,14 @@ services:
       dockerfile: deploy/docker/Dockerfile.backend
     container_name: hybridinference-backend
     restart: unless-stopped
+    logging: *logging
+    # A deploy or a restart stops the backend with SIGTERM, then SIGKILL once
+    # the grace period ends (10 s unless set). Open requests get 5 s
+    # (--timeout-graceful-shutdown in Dockerfile.backend), and the shutdown
+    # that writes queued request-log rows and unflushed costs has the rest.
+    # A container keeps the grace period it was created with, so the first
+    # `make up` after this still stops the old backend at 10 s.
+    stop_grace_period: 30s
     # Source-revision stamp on the running container. A digest deploy sets
     # BUILD_SHA to the image's revision label. The digest path's last-known-good
     # restore reads this label back from the container it is about to replace
@@ -197,12 +220,12 @@ services:
     container_name: hybridinference-frontend
     restart: unless-stopped
     # A ceiling on what this container can take from the host. The console
-    # fronts the whole API, and request bodies pass through its memory -- the
-    # rewrites' up to 32MiB each (middlewareClientMaxBodySize in
-    # apps/frontend/next.config.js). Past the ceiling the kernel ends this
-    # container, which `restart` brings back, instead of starving the backend
-    # and the database on the same host. FRONTEND_MEM_LIMIT raises it for a
-    # deployment that needs more.
+    # fronts the whole API; request bodies stream through it to the gateway,
+    # and of a body sent to anything else Next copies no more than
+    # middlewareClientMaxBodySize (apps/frontend/next.config.js). Past the
+    # ceiling the kernel ends this container, which `restart` brings back,
+    # instead of starving the backend and the database on the same host.
+    # FRONTEND_MEM_LIMIT raises it for a deployment that needs more.
     mem_limit: ${FRONTEND_MEM_LIMIT:-1g}
     environment:
       NODE_ENV: production
@@ -230,6 +253,7 @@ services:
       SITE_ASSETS_DIR: ${SITE_ASSETS_DIR-}
     ports:
       - "${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}:3001"
+    logging: *logging
     # The image runs as an unprivileged user and needs no capability at all.
     security_opt:
       - no-new-privileges:true
@@ -252,10 +276,18 @@ services:
 
   # ===== Database =====
 
+  # An exact release, so that no pull changes the database under a running
+  # stack: 16.15 is what `postgres:16` named when this was pinned. On a host
+  # whose local `postgres:16` is older, the first `make up` after this pulls
+  # 16.15 and restarts the database on it, a minor upgrade. Bump it by hand,
+  # after reading that release's notes. Pinning the digest too
+  # (`postgres:16.15@sha256:...`) closes the tag moving under it; Dependabot
+  # (.github/dependabot.yml) then keeps tag and digest current.
   postgres:
-    image: postgres:16
+    image: postgres:16.15
     container_name: hybridinference-postgres
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: ${DB_NAME:?DB_NAME must be set in .env file}
       POSTGRES_USER: ${DB_USER:?DB_USER must be set in .env file}
@@ -296,14 +328,26 @@ services:
       # pgAdmin reaches the database here, not on `hybridinference`.
       - pgadmin
 
-  # Reached two ways: directly on the published port (an SSH tunnel to
-  # 127.0.0.1:5050 needs nothing else), and through the console at /pgadmin/,
-  # which gates it on an admin session — see
-  # apps/frontend/src/app/pgadmin/[[...path]]/route.ts. SERVER_MODE below
-  # defaults to False, which serves pgAdmin with no login of its own — leave it
-  # there and the console's check is the only gate; set it True in .env and
-  # pgAdmin asks for its own credentials behind that check. Changing
-  # SCRIPT_NAME means changing the path the route handler serves.
+  # Reached through the console at /pgadmin/, which gates it on an admin
+  # session — see apps/frontend/src/app/pgadmin/[[...path]]/route.ts — and
+  # pgAdmin asks for its own login behind that check: SERVER_MODE defaults to
+  # True. False serves pgAdmin with no login of its own, leaving the console's
+  # check the only gate. Changing SCRIPT_NAME means changing the path the
+  # route handler serves.
+  #
+  # It publishes no host port. A loopback port handed pgAdmin, its saved
+  # database connection included, to every account on the host, past the
+  # console's check; `PGADMIN_PUBLISH=1` adds one for an SSH tunnel
+  # (docker-compose.pgadmin-port.yml).
+  #
+  # The login is PGADMIN_EMAIL / PGADMIN_PASSWORD, and there is no fallback
+  # password: with none set, pgAdmin refuses to set up a new volume and says
+  # so in its log. A `${PGADMIN_PASSWORD:?}` here would say it sooner but stop
+  # every Compose command, since Compose reads every service, those of
+  # profiles not in use included. pgAdmin keeps the login it first started
+  # with in its volume and ignores these afterwards: a volume first started
+  # with no password has admin@local.dev / admin, and one first started with
+  # SERVER_MODE False has no login at all (docs/developer/database.md).
   #
   # The `admin` profile means nothing starts this unless a profile is named:
   # `make up COMPOSE_PROFILES=admin`, or an env file the deploy reads (a
@@ -324,14 +368,13 @@ services:
     image: dpage/pgadmin4:9.19
     container_name: hybridinference-pgadmin
     restart: unless-stopped
+    logging: *logging
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@local.dev}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
-      PGADMIN_CONFIG_SERVER_MODE: "${PGADMIN_CONFIG_SERVER_MODE:-False}"
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD-}
+      PGADMIN_CONFIG_SERVER_MODE: "${PGADMIN_CONFIG_SERVER_MODE:-True}"
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
       SCRIPT_NAME: /pgadmin
-    ports:
-      - "127.0.0.1:${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:

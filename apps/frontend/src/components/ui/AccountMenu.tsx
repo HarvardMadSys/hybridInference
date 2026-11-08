@@ -182,9 +182,40 @@ export function AccountMenu() {
     });
   };
 
-  const signOut = () =>
+  const signOut = (): Promise<void> =>
     run(async () => {
-      await logout();
+      try {
+        await logout();
+      } catch (err) {
+        // The server did not sign the account out, so its session and cookie
+        // are still here, and so is the account in this tab. Say so, and offer
+        // to try again.
+        toast.error(
+          (shown) => (
+            <span>
+              {fill(
+                t(
+                  'chrome.account_menu.log_out_failed',
+                  'You are still signed in: signing out did not finish. {reason}',
+                ),
+                { reason: getErrorMessage(err) },
+              )}{' '}
+              <button
+                type="button"
+                className="font-medium underline"
+                onClick={() => {
+                  toast.remove(shown.id);
+                  void signOut();
+                }}
+              >
+                {t('chrome.error.retry', 'Try again')}
+              </button>
+            </span>
+          ),
+          { id: 'log-out-failed', duration: 10_000 },
+        );
+        return;
+      }
       router.replace(others.length > 0 ? '/login' : '/');
     });
 

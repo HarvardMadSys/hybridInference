@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from typing import Any
 
 import pytest
@@ -119,14 +120,14 @@ async def test_clearing_provider_preserves_reader_defaults() -> None:
 async def test_reset_keeps_keys_outside_the_request_scope() -> None:
     """Only per-request keys are cleared; unrelated context is left alone.
 
-    ``model`` and similar are scoped by the self-unwinding ``req_ctx.push``
-    around the adapter call rather than by this reset, so a blanket wipe would
-    be clearing state the middleware has no business owning.
+    ``upstream_queue_deadline`` and similar are scoped by the self-unwinding
+    ``req_ctx.push`` around the adapter call rather than by this reset, so a
+    blanket wipe would be clearing state the middleware has no business owning.
     """
-    req_ctx.update({"model": "kept-model"})
+    req_ctx.update({req_ctx.UPSTREAM_QUEUE_DEADLINE: "kept-deadline"})
     captured: dict = {}
     await _drive([], captured)
-    assert captured.get("model") == "kept-model"
+    assert captured.get(req_ctx.UPSTREAM_QUEUE_DEADLINE) == "kept-deadline"
 
 
 #: The per-request keys as of this change, spelled out here rather than read from
@@ -146,6 +147,9 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "affinity_key",
         "client_error_kind",
         "provider",
+        # Published with ``provider`` once routing resolves, for the request
+        # log's line; a leftover would name the last request's model.
+        "model",
         "pricing_time",
         "pricing_snapshot",
         # Written durably by the Anthropic Messages surface, which has no
@@ -208,3 +212,52 @@ async def test_every_request_scoped_key_is_cleared() -> None:
             assert pricing_time.utcoffset() == dt.timedelta(0)
             continue
         assert captured.get(key) is None, f"{key} leaked from the previous request"
+
+
+# --- the client's own request id ----------------------------------------------
+
+
+async def _seen_id(headers: list[tuple[bytes, bytes]]) -> tuple[dict, bytes]:
+    seen: dict = {}
+    sent: list[dict] = []
+
+    async def app(scope, receive, send):
+        seen.update(req_ctx.get())
+        seen["state"] = scope["state"]["request_id"]
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": headers}
+    await RequestIdMiddleware(app)(scope, None, send)
+    echoed = dict(sent[0]["headers"])[b"x-request-id"]
+    return seen, echoed
+
+
+@pytest.mark.asyncio
+async def test_a_short_printable_request_id_is_adopted_and_echoed() -> None:
+    seen, echoed = await _seen_id([(b"x-request-id", b"req-support-1234")])
+    assert seen["request_id"] == seen["state"] == "req-support-1234"
+    assert seen["client_request_id"] == "req-support-1234"
+    assert echoed == b"req-support-1234"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [b"x" * 129, b"has space", b"tab\there", b"line\nbreak", b"\xe9t\xe9", b""],
+    ids=["too-long", "space", "tab", "newline", "latin-1", "empty"],
+)
+async def test_any_other_request_id_is_replaced_by_one_the_gateway_mints(value: bytes) -> None:
+    seen, echoed = await _seen_id([(b"x-request-id", value)])
+    assert re.fullmatch(r"[0-9a-f]{24}", seen["request_id"])
+    assert seen["client_request_id"] is None
+    assert echoed == seen["request_id"].encode()
+
+
+@pytest.mark.asyncio
+async def test_a_minted_request_id_is_not_marked_as_the_clients() -> None:
+    seen, _ = await _seen_id([])
+    assert seen["client_request_id"] is None

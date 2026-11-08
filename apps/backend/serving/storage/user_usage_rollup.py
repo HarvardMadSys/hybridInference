@@ -63,14 +63,13 @@ from __future__ import annotations
 
 import hashlib
 import time
-from datetime import UTC
+from datetime import UTC, date
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from datetime import date
 
     import asyncpg
 
@@ -84,6 +83,23 @@ ADVISORY_LOCK_KEY = 0x757372757367  # ascii "usrusg" packed
 # write starts, and the write can commit a little later, so a day is stored only
 # once it has been over for an hour.
 SETTLED_DAY_SQL = "(date_trunc('day', (NOW() - interval '1 hour') AT TIME ZONE 'UTC'))::date"
+
+#: How long each statement of one day's fill may take, in seconds, instead of
+#: the general pool's minute: counting a busy day reads all of its rows, and
+#: waiting for the advisory lock may mean waiting out another writer's day.
+#: Generous, not unbounded, so a wedged fill is still abandoned.
+FILL_DAY_TIMEOUT_SEC = 600.0
+
+#: A day whose fill failed is not tried again for this long, doubling with each
+#: failure in a row up to :data:`FILL_RETRY_MAX_SEC`: a day that cannot be
+#: filled costs a try an hour at first and a try a day at most, rather than
+#: :data:`FILL_DAY_TIMEOUT_SEC` of the database every hour. Per process; a
+#: restart tries every day again.
+FILL_RETRY_FIRST_SEC = 3600.0
+FILL_RETRY_MAX_SEC = 86400.0
+
+# Day -> (failures in a row, monotonic time before which it is not tried again).
+_failed_days: dict[date, tuple[int, float]] = {}
 
 
 # Ask-question adoption is measured over each user's *early-conversation*
@@ -565,22 +581,57 @@ async def fill_days(conn: asyncpg.Connection, days: Iterable[date]) -> int:
     """Count *days* into the table, skipping any another writer stored meanwhile.
 
     Each day is its own transaction under the advisory lock, so the lock is never
-    held across more than one day's rows. Returns how many days this call wrote.
+    held across more than one day's rows, and each of its statements may take
+    :data:`FILL_DAY_TIMEOUT_SEC`. A day that fails -- one too busy to count in
+    that time, say -- is rolled back, logged and left to be counted live, and
+    the days after it are still filled: one slow day used to stop every fill
+    from reaching the days older than it. It is tried again after a back-off
+    (:data:`FILL_RETRY_FIRST_SEC`). A connection that is gone ends the call.
+    Returns how many days this call wrote.
     """
     written = 0
     for day in days:
-        async with conn.transaction():
-            await conn.execute(NO_JIT_SQL)
-            await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY)
-            if not await conn.fetchval(_DAY_DUE_SQL, day):
-                continue
-            # Rows without a current coverage row are left over from an
-            # invalidation or were counted under an earlier definition.
-            await conn.execute("DELETE FROM user_usage_daily WHERE day = $1", day)
-            await conn.execute(_FILL_DAY_SQL, day)
-            await conn.execute(_MARK_FILLED_SQL, day)
-            written += 1
+        failure = _failed_days.get(day)
+        if failure is not None and time.monotonic() < failure[1]:
+            continue
+        try:
+            filled = await _fill_day(conn, day)
+        except Exception as exc:
+            if conn.is_closed():
+                raise
+            failures = (failure[0] if failure is not None else 0) + 1
+            retry_in = min(FILL_RETRY_MAX_SEC, FILL_RETRY_FIRST_SEC * 2 ** (failures - 1))
+            _failed_days[day] = (failures, time.monotonic() + retry_in)
+            logger.warning(
+                "rollup_user_usage: day %s not filled (%s, %d in a row); counted live, "
+                "tried again in %ds",
+                day,
+                type(exc).__name__,
+                failures,
+                int(retry_in),
+            )
+            continue
+        _failed_days.pop(day, None)
+        written += filled
     return written
+
+
+async def _fill_day(conn: asyncpg.Connection, day: date) -> int:
+    """Fill one day, in a transaction of its own; 1 if it wrote it, 0 if it was not due."""
+    timeout = FILL_DAY_TIMEOUT_SEC
+    async with conn.transaction():
+        await conn.execute(NO_JIT_SQL)
+        await conn.execute("SELECT pg_advisory_xact_lock($1)", ADVISORY_LOCK_KEY, timeout=timeout)
+        if not await conn.fetchval(_DAY_DUE_SQL, day):
+            return 0
+        # Rows without a current coverage row are left over from an
+        # invalidation or were counted under an earlier definition. One probe
+        # of idx_user_usage_daily_day (0007_storage_indexes), not a read of
+        # the whole table for each day refilled.
+        await conn.execute("DELETE FROM user_usage_daily WHERE day = $1", day, timeout=timeout)
+        await conn.execute(_FILL_DAY_SQL, day, timeout=timeout)
+        await conn.execute(_MARK_FILLED_SQL, day)
+    return 1
 
 
 async def backfill_missing(pool: asyncpg.Pool) -> int:

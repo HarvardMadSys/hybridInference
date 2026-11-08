@@ -1187,7 +1187,11 @@ def test_full_smoke_configures_the_upstream_from_its_environment(
     full_smoke._configure_upstream("http://localhost:13001", "not-printed", time.monotonic() + 10)
 
     assert logins == [("admin", "not-printed")]
-    assert requests == [("PATCH", "/admin/config", {"values": values}, "jwt")]
+    # Security-relevant settings: the gateway refuses the change (400) without
+    # the administrator's password.
+    assert requests == [
+        ("PATCH", "/admin/config", {"values": values, "password": "not-printed"}, "jwt")
+    ]
 
     # A value the API did not store is a failure, not a silent no-op.
     stored["entries"] = stored["entries"][:2]

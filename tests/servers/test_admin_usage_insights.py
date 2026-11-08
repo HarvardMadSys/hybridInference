@@ -634,6 +634,76 @@ class TestFetchSamples:
         assert samples[0]["model_id"] == "minimax-m3"  # the 12:05 row, now first
 
 
+class TestSamplingWork:
+    """Up to 200 stored conversations are decoded per request (review L31)."""
+
+    @staticmethod
+    def _rows(count: int) -> list[dict]:
+        rows = []
+        for i in range(count):
+            row = _sample_rows_new_shape()[0]
+            # A payload without ``system``: the opener comes from the turns.
+            row["timestamp"] = datetime(2026, 6, 25, 12, i % 60, tzinfo=UTC)
+            row["metadata"] = json.dumps({"user_agent": f"agent/{i}", "referer": "r"})
+            rows.append(row)
+        return rows
+
+    @pytest.mark.asyncio
+    async def test_each_stored_value_is_decoded_once(self, monkeypatch):
+        rows = self._rows(3)
+        conn = MagicMock()
+        conn.fetch = AsyncMock(return_value=rows)
+        decoded: list[str] = []
+        real_loads = json.loads
+
+        def counting_loads(text, *args, **kwargs):
+            decoded.append(text)
+            return real_loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", counting_loads)
+        samples = await usage_insights._fetch_samples(
+            conn, None, usage_insights.UsageInsightsRequest(limit=3)
+        )
+
+        # Once each: the prompt column was decoded twice per row, and the
+        # metadata twice, when the payload had no system prompt.
+        assert decoded.count(rows[0]["prompt"]) == 3
+        assert sum(1 for text in decoded if "user_agent" in text) == 3
+        assert {s["system_opener"] for s in samples} == {"You are Claude Code."}
+        assert all(s["user_messages"] == ["Fix the bug in foo.py"] for s in samples)
+        assert sorted(s["user_agent"] for s in samples) == ["agent/0", "agent/1", "agent/2"]
+        assert {s["referer"] for s in samples} == {"r"}
+
+    @pytest.mark.asyncio
+    async def test_the_event_loop_runs_between_samples(self):
+        import asyncio
+
+        rows = self._rows(20)
+        conn = MagicMock()
+        conn.fetch = AsyncMock(return_value=rows)
+        ticks = 0
+        done = False
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not done:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        task = asyncio.create_task(ticker())
+        await asyncio.sleep(0)
+        start = ticks
+        samples = await usage_insights._fetch_samples(
+            conn, None, usage_insights.UsageInsightsRequest(limit=20)
+        )
+        turns = ticks - start
+        done = True
+        await task
+
+        assert len(samples) == 20
+        assert turns >= 19
+
+
 class TestRenderSamples:
     def test_render_budget_truncates(self):
         """_render_samples stops adding requests once the char budget is hit."""

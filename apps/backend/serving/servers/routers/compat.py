@@ -92,7 +92,13 @@ async def legacy_completions(
     _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ):
     """OpenAI-style legacy completions endpoint: convert to chat format."""
-    body = await request.json()
+    # A client's malformed body is a 400 here as on /completion, not a 500.
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, "Invalid JSON or schema in request body") from e
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Invalid JSON or schema in request body")
     prompt = body.get("prompt", "")
     messages = [{"role": "user", "content": prompt}]
     body["messages"] = messages

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 import time
 from collections import Counter
@@ -10,12 +11,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+import aiohttp
+
 from routing.engine_wait import EngineWaitExpired
 from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value
-from serving.exceptions import UpstreamModelQueued, UpstreamRequestTimedOut, operator_safe_error
+from serving.exceptions import (
+    UpstreamModelQueued,
+    UpstreamRequestTimedOut,
+    UpstreamStreamIdleError,
+    operator_safe_error,
+)
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition, interrupt_settle
 from serving.observability.state_alert_policy import circuit_open_policy
@@ -331,6 +339,38 @@ def failure_may_lose_prefix_cache(exc: BaseException | None) -> bool:
     return status is None or status >= 500
 
 
+def failed_handling_request(exc: BaseException) -> bool:
+    """Return whether ``exc`` reads as an endpoint failing on a request it had received.
+
+    A 5xx answer, or a connection that dropped once it was open -- a reset, a
+    disconnect, a truncated body: what an engine that crashed, ran out of
+    memory or restarted on the request looks like from outside, as well as an
+    endpoint that would have failed any request. A router that walks on after
+    such a failure cannot tell the two apart from one attempt, which is why the
+    caller pairs this with whether the request had left the gateway, and bounds
+    what one request may do on the strength of it.
+
+    False for a failure to connect at all (``ClientConnectorError``: the request
+    never reached the endpoint), for a timeout or a stalled stream (the endpoint
+    is slow, not failing on the request), for every 4xx, and for every failure
+    no endpoint is charged with (``_uncharged_failure_event``).
+    """
+    if _uncharged_failure_event(exc) is not None:
+        return False
+    status = _http_status_of(exc)
+    if status is not None:
+        return status >= 500
+    return not isinstance(
+        exc,
+        (
+            aiohttp.ClientConnectorError,
+            ConnectionRefusedError,
+            TimeoutError,
+            UpstreamStreamIdleError,
+        ),
+    )
+
+
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     """Normalize an upstream error message for inclusion in alerts."""
     if not s:
@@ -370,6 +410,20 @@ def _fire_and_forget(coro: Any) -> bool:
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
     return True
+
+
+def _caller_key() -> str | None:
+    """An opaque, stable name for the credential behind the current request.
+
+    Every inference surface publishes ``affinity_key`` (the presented key's
+    hash, a grant, or an anonymous client's address bucket). Hashed again and
+    cut short here: enough to tell callers apart in a log line and count them
+    (``client_error_burst``), and no way back to the key's hash.
+    """
+    affinity = req_ctx.get().get("affinity_key")
+    if not affinity:
+        return None
+    return hashlib.sha256(str(affinity).encode()).hexdigest()[:12]
 
 
 def _caller_str() -> str | None:
@@ -1193,6 +1247,9 @@ class EndpointHealthRegistry:
                     "endpoint_id": endpoint_id,
                     "status": status,
                     "detail": _detail_str(detail),
+                    # Whose request it was, opaquely: the burst rule counts
+                    # distinct callers by it.
+                    "caller": _caller_key(),
                 },
             )
             return

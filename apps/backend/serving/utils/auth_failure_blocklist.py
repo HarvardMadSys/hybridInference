@@ -31,6 +31,19 @@ CIDR ranges) are exempt: their failures are never counted and an existing
 block never applies to them. Exemption matches the raw client address, not the
 bucket, so an exempt ``/128`` stays reachable even when the rest of its ``/64``
 has blocked itself.
+
+What a flood of sources can make the process hold is bounded. A bucket is a
+count and the moment its window opened, not a timestamp per failure, and its
+window opens at its first failure and closes ``auth_failure_block_window_sec``
+later, so a block never comes sooner than the threshold within one window. A
+source pacing failures across the edge of a window can get up to twice the
+threshold through before the block, which a shed-load defense can afford. At
+most :data:`_MAX_TRACKED_BUCKETS` buckets are counted, in the order they last
+failed; expired ones leave from the front a few at a time as failures arrive,
+with no pass over the rest on the event loop, and when the table is full the
+emptiest of the few that failed longest ago makes room. A spray of fresh
+addresses, one failure each, therefore displaces itself and not the bucket of a
+source that keeps failing.
 """
 
 from __future__ import annotations
@@ -38,8 +51,9 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
+from itertools import islice
 
 from serving.config.settings import settings
 from serving.utils.logging import get_logger
@@ -47,20 +61,27 @@ from serving.utils.request_ip import ClientIpInfo, normalize_ip_bucket
 
 logger = get_logger(__name__)
 
-#: Amortized cleanup cadence: sweep expired state once every N recorded
-#: failures rather than on every call. Matches the login/signup limiters.
-_SWEEP_EVERY = 1024
+#: Buckets counted at most. Making one more replaces, among the
+#: :data:`_EVICTION_SAMPLE` that failed longest ago, the one counting the fewest
+#: failures. About 300 bytes each: a flood of sources costs at most ~15 MB.
+_MAX_TRACKED_BUCKETS = 50_000
+_EVICTION_SAMPLE = 8
+#: Expired buckets, and lapsed blocks, dropped from the front per recorded
+#: failure: enough to keep pace with the ones arriving, never a full pass.
+_EXPIRE_PER_CALL = 2
 
-#: Per-bucket failure timestamps within the counting window.
-_failures: dict[str, deque[float]] = {}
-#: Per-bucket wall-clock deadline until which the source is blocked.
-_blocked_until: dict[str, float] = {}
+#: Per bucket, when its counting window opened and how many failures it holds,
+#: in the order the buckets last failed (an OrderedDict, whose front is reached
+#: in constant time however many have left it).
+_failures: OrderedDict[str, tuple[float, int]] = OrderedDict()
+#: Per-bucket wall-clock deadline until which the source is blocked, in the
+#: order the blocks began (so, for a fixed duration, the order they lapse in).
+_blocked_until: OrderedDict[str, float] = OrderedDict()
 #: Coarse process-local protection for auth failures without resolved
 #: provenance. This is traffic protection, never a client identity.
 _unresolved_failures: deque[float] = deque()
 _unresolved_blocked_until: float | None = None
 _lock = asyncio.Lock()
-_sweep_counter = 0
 
 #: Parsed exemption networks, cached against the raw setting string so a
 #: changed value (tests, a future runtime reload) reparses instead of serving
@@ -118,18 +139,29 @@ def _is_exempt(ip: str) -> bool:
     return any(parsed in net for net in networks)
 
 
-def _sweep_inactive(now: float, window_sec: int) -> None:
-    """Drop stale failure history and lapsed blocks. Caller holds ``_lock``."""
-    cutoff = now - window_sec
-    for key in list(_failures):
-        bucket = _failures[key]
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        if not bucket:
-            del _failures[key]
-    for key in list(_blocked_until):
-        if _blocked_until[key] <= now:
-            del _blocked_until[key]
+def _drop_expired(now: float, window_sec: int) -> None:
+    """Drop a few expired buckets and lapsed blocks from the front. Caller holds ``_lock``.
+
+    Bounded work per call, where the sweep this replaced passed over every
+    bucket (81 ms on the event loop at 300,000). The front bucket is the one
+    that failed longest ago; once its window has closed it counts nothing and
+    goes. A bucket further back whose window has closed resets on its next
+    failure, or makes room when the table is full.
+    """
+    for _ in range(_EXPIRE_PER_CALL):
+        if not _failures:
+            break
+        key, (window_start, _count) = next(iter(_failures.items()))
+        if now - window_start < window_sec:
+            break
+        del _failures[key]
+    for _ in range(_EXPIRE_PER_CALL):
+        if not _blocked_until:
+            break
+        key, until = next(iter(_blocked_until.items()))
+        if until > now:
+            break
+        del _blocked_until[key]
     global _unresolved_blocked_until
     unresolved_cutoff = now - settings.unresolved_auth_failure_block_window_sec
     while _unresolved_failures and _unresolved_failures[0] < unresolved_cutoff:
@@ -203,7 +235,7 @@ async def record_auth_failure(provenance: str | ClientIpInfo) -> bool:
     failures are recorded only in a separate coarse global budget, never under
     the transport peer or the string ``"unknown"``.
     """
-    global _sweep_counter, _unresolved_blocked_until
+    global _unresolved_blocked_until
     if not settings.auth_failure_block_enabled:
         return False
     ip = _client_ip(provenance)
@@ -246,14 +278,10 @@ async def record_auth_failure(provenance: str | ClientIpInfo) -> bool:
 
     key = normalize_ip_bucket(ip)
     now = _now()
-    cutoff = now - window_sec
     blocked_now = False
 
     async with _lock:
-        _sweep_counter += 1
-        if _sweep_counter >= _SWEEP_EVERY:
-            _sweep_counter = 0
-            _sweep_inactive(now, window_sec)
+        _drop_expired(now, window_sec)
 
         until = _blocked_until.get(key)
         if until is not None and until > now:
@@ -261,19 +289,26 @@ async def record_auth_failure(provenance: str | ClientIpInfo) -> bool:
             # accruing history for it. Not a fresh transition.
             return False
 
-        bucket = _failures.get(key)
-        if bucket is None:
-            bucket = deque()
-            _failures[key] = bucket
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        bucket.append(now)
+        entry = _failures.get(key)
+        if entry is None:
+            _make_room()
+            window_start, count = now, 0
+        elif now - entry[0] >= window_sec:
+            # Its window has closed: this failure opens the next one.
+            window_start, count = now, 0
+        else:
+            window_start, count = entry
+        count += 1
 
-        if len(bucket) >= threshold:
+        if count >= threshold:
             _blocked_until[key] = now + duration_sec
+            _blocked_until.move_to_end(key)
             # The block is now authoritative; the counted history is spent.
             _failures.pop(key, None)
             blocked_now = True
+        else:
+            _failures[key] = (window_start, count)
+            _failures.move_to_end(key)
 
     if blocked_now:
         # Emit outside the lock. Structured so operators (and any future alert
@@ -289,6 +324,20 @@ async def record_auth_failure(provenance: str | ClientIpInfo) -> bool:
             },
         )
     return blocked_now
+
+
+def _make_room() -> None:
+    """Free a slot for a new bucket when the table is full. Caller holds ``_lock``.
+
+    Of the :data:`_EVICTION_SAMPLE` buckets that failed longest ago, the one
+    counting the fewest failures goes: a spray of fresh sources, one failure
+    each, replaces its own buckets, not the full one of a source that keeps
+    failing.
+    """
+    if len(_failures) < _MAX_TRACKED_BUCKETS:
+        return
+    sample = list(islice(_failures, _EVICTION_SAMPLE))
+    del _failures[min(sample, key=lambda key: _failures[key][1])]
 
 
 @dataclass(frozen=True)
@@ -414,10 +463,9 @@ async def clear_block(ip: str) -> bool:
 
 def reset_auth_failure_block_state() -> None:
     """Wipe all recorded failures, blocks and parsed exemptions. Test-only helper."""
-    global _sweep_counter, _exempt_cache, _unresolved_blocked_until
+    global _exempt_cache, _unresolved_blocked_until
     _failures.clear()
     _blocked_until.clear()
     _unresolved_failures.clear()
     _unresolved_blocked_until = None
-    _sweep_counter = 0
     _exempt_cache = None

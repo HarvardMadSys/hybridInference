@@ -13,6 +13,7 @@ from serving.utils import device_cookie
 from serving.utils.device_cookie import (
     LIFETIME_SECONDS,
     MAX_ENTRIES,
+    RecognizedDevice,
     device_cookie_name,
     recognized_device,
     remember_device,
@@ -52,7 +53,7 @@ def _issue(account, carried: str | None = None) -> str:
     return _set_cookie(account, carried).split(";", 1)[0].split("=", 1)[1]
 
 
-def _recognized(value: str | None, identifier: str) -> str | None:
+def _recognized(value: str | None, identifier: str) -> RecognizedDevice | None:
     return recognized_device(_request(value), identifier)
 
 
@@ -60,7 +61,7 @@ def test_an_entry_recognizes_its_account_however_the_identifier_is_typed():
     cookie = _issue(ALICE)
 
     nonce = _recognized(cookie, "alice@example.com")
-    assert nonce is not None and len(nonce) == 32
+    assert nonce is not None and len(nonce.key) == 32
     assert _recognized(cookie, " ALICE@Example.com ") == nonce
 
     admin_cookie = _issue(ADMIN)
@@ -171,6 +172,47 @@ def test_expired_entries_are_dropped_when_the_cookie_is_rewritten(monkeypatch):
     cookie = _issue(ALICE, old)
 
     assert "." not in cookie
+
+
+def test_an_entry_carries_the_password_it_was_issued_under(monkeypatch):
+    """A password change or reset gives later entries an epoch of their own."""
+    before = _recognized(_issue({**ADMIN, "password_hash": "$argon2id$old"}), "admin")
+    again = _recognized(_issue({**ADMIN, "password_hash": "$argon2id$old"}), "admin")
+    after = _recognized(_issue({**ADMIN, "password_hash": "$argon2id$new"}), "admin")
+
+    assert before is not None and again is not None and after is not None
+    assert len(before.epoch) == 8
+    assert again.epoch == before.epoch and again.key != before.key
+    assert after.epoch != before.epoch
+    # Keyed by the server's secret: the same password hash elsewhere gives another.
+    monkeypatch.setattr(device_cookie, "get_jwt_secret", lambda: "another-deployment")
+    elsewhere = _recognized(_issue({**ADMIN, "password_hash": "$argon2id$old"}), "admin")
+    assert elsewhere is not None and elsewhere.epoch != before.epoch
+
+
+def test_an_entry_whose_epoch_was_changed_is_not_recognized():
+    raw = bytearray(base64.urlsafe_b64decode(_issue(ADMIN) + "=="))
+    raw[20] ^= 1  # the first byte of the epoch, which the tag covers
+    value = base64.urlsafe_b64encode(bytes(raw)).rstrip(b"=").decode()
+
+    assert _recognized(value, "admin") is None
+
+
+def test_an_entry_of_the_earlier_format_is_not_recognized():
+    """v1 entries carried no epoch; after the upgrade they sign in as any browser."""
+    import hashlib
+    import hmac
+    import struct
+
+    key = hmac.new(
+        b"unit-test-jwt-secret", b"hybridinference/login-device-cookie/v1", hashlib.sha256
+    ).digest()
+    nonce, expires = b"\x01" * 16, device_cookie._now() + 3600
+    message = nonce + struct.pack(">I", expires) + b"admin"
+    tag = hmac.new(key, message, hashlib.sha256).digest()
+    value = base64.urlsafe_b64encode(nonce + struct.pack(">I", expires) + tag).rstrip(b"=")
+
+    assert _recognized(value.decode(), "admin") is None
 
 
 def test_the_cookie_stays_small():

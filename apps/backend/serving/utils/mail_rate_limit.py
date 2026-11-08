@@ -19,9 +19,12 @@ someone else's address cannot keep that person from resetting a password
 either, because every request let through mails a working link to that
 person's own inbox (the route resends a live link rather than minting another).
 
-A backend that cannot resolve client addresses -- every browser behind the
-console's proxy without trusted-proxy settings is ``"unknown"`` -- counts every
-client in one per-address window, which then caps the deployment as a whole.
+A request whose client address could not be resolved -- every browser behind
+the console's proxy without trusted-proxy settings is ``"unknown"`` -- is not
+counted per client at all. One window shared by every such client would be a
+cap on the whole deployment that any one of them could use up, and ten
+requests an hour would stop every password reset. The per-address window
+still applies, so an inbox still receives at most its few mails an hour.
 
 State is per-process and lost on restart; with several uvicorn workers the
 limits multiply by the worker count. Mirrors
@@ -75,11 +78,13 @@ def _window(buckets: dict, key: object, cutoff: float) -> deque[float]:
 
 
 async def check_and_record_mail_request(
-    kind: MailKind, email: str, ip: str
+    kind: MailKind, email: str, ip: str | None
 ) -> tuple[bool, str | None]:
     """Return whether a request to mail *kind* to *email* from *ip* may go ahead.
 
-    Returns (True, None) and records the request when both windows have room,
+    *ip* is the client's resolved address, or None when it could not be
+    resolved; such a request is counted in the per-address window alone.
+    Returns (True, None) and records the request when its windows have room,
     or (False, reason) without recording it: ``"ip"`` for the client address,
     ``"address"`` for the address asked about. The check runs before the
     account is looked up, so the answer is the same whether one exists.
@@ -89,7 +94,7 @@ async def check_and_record_mail_request(
     now = _now()
     cutoff = now - _HOUR_SECONDS
     address_key = (kind, email.strip().lower())
-    ip_key = normalize_ip_bucket(ip)
+    ip_key = normalize_ip_bucket(ip) if ip is not None else None
 
     async with _lock:
         _sweep_counter += 1
@@ -98,13 +103,14 @@ async def check_and_record_mail_request(
             _sweep_inactive(_address_requests, cutoff)
             _sweep_inactive(_ip_requests, cutoff)
 
-        ip_bucket = _window(_ip_requests, ip_key, cutoff)
-        if len(ip_bucket) >= MAIL_REQUESTS_PER_IP_PER_HOUR:
+        ip_bucket = _window(_ip_requests, ip_key, cutoff) if ip_key is not None else None
+        if ip_bucket is not None and len(ip_bucket) >= MAIL_REQUESTS_PER_IP_PER_HOUR:
             return False, "ip"
         address_bucket = _window(_address_requests, address_key, cutoff)
         if len(address_bucket) >= MAIL_REQUESTS_PER_ADDRESS_PER_HOUR:
             return False, "address"
-        ip_bucket.append(now)
+        if ip_bucket is not None:
+            ip_bucket.append(now)
         address_bucket.append(now)
 
     return True, None

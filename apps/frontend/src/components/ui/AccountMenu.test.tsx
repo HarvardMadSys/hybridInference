@@ -3,6 +3,8 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import toast, { type Toast } from 'react-hot-toast';
+import { APIError } from '@/lib/utils/errors';
 import { AccountMenu } from './AccountMenu';
 
 const push = vi.fn();
@@ -35,7 +37,9 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/settings',
 }));
 
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('react-hot-toast', () => ({
+  default: { success: vi.fn(), error: vi.fn(), remove: vi.fn() },
+}));
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
@@ -156,6 +160,30 @@ describe('AccountMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Log out' }));
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/'));
+  });
+
+  // The gateway kept the session and its cookie: the account is still signed in.
+  it('says so when logging out fails, and offers to try again', async () => {
+    logout.mockRejectedValueOnce(new APIError('SERVICE_UNAVAILABLE', 'HTTP 503', 503));
+    render(<AccountMenu />);
+    openMenu();
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Log out' }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    expect(replace).not.toHaveBeenCalled();
+    const [message] = vi.mocked(toast.error).mock.calls[0];
+    const shown = { id: 'log-out-failed' } as Toast;
+    render(<>{typeof message === 'function' ? message(shown) : message}</>);
+    expect(
+      screen.getByText(/You are still signed in: signing out did not finish\./),
+    ).toHaveTextContent('Service temporarily unavailable');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/login'));
+    expect(logout).toHaveBeenCalledTimes(2);
+    expect(toast.remove).toHaveBeenCalledWith('log-out-failed');
   });
 
   it('closes on Escape', () => {

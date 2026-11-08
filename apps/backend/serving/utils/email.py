@@ -2,6 +2,7 @@
 
 import html as html_lib
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote, urlparse
@@ -14,6 +15,24 @@ from serving.utils.delivery import EmailMessage, get_email_provider
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+#: The submission port that speaks TLS from the first byte (RFC 8314). Every
+#: other port is plain SMTP upgraded with STARTTLS, which a server that does not
+#: offer it refuses, as it always did.
+SMTP_IMPLICIT_TLS_PORT = 465
+
+
+def _smtp_tls_context() -> ssl.SSLContext:
+    """Return the TLS settings for the SMTP connection: the server must prove its name.
+
+    ``starttls()`` without a context checks neither the certificate nor the
+    host name, so anyone on the path could present their own certificate and
+    read the SMTP password and every reset link. The default context checks
+    both against the system's trusted authorities, or against the bundle the
+    standard ``SSL_CERT_FILE`` variable names (how a server with a private
+    authority's certificate is trusted).
+    """
+    return ssl.create_default_context()
 
 
 def get_smtp_config() -> dict[str, str | int]:
@@ -104,14 +123,42 @@ def send_email(
             msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
 
-        # Send email
-        with smtplib.SMTP(config["host"], config["port"], timeout=10) as server:
-            server.starttls()
+        # Send email, over TLS that checks the server's certificate and name.
+        context = _smtp_tls_context()
+        port = int(config["port"])
+        if port == SMTP_IMPLICIT_TLS_PORT:
+            connection = smtplib.SMTP_SSL(config["host"], port, timeout=10, context=context)
+        else:
+            connection = smtplib.SMTP(config["host"], port, timeout=10)
+        with connection as server:
+            if port != SMTP_IMPLICIT_TLS_PORT:
+                try:
+                    server.starttls(context=context)
+                except ssl.SSLError:
+                    # A failed handshake leaves no channel to say QUIT on:
+                    # closed here, the failure reported is the handshake's.
+                    server.close()
+                    raise
             server.login(config["user"], config["password"])
             server.send_message(msg)
 
         logger.info(f"Email sent successfully to {to_email}")
         return True
+
+    except ssl.SSLCertVerificationError as e:
+        # Said in full: until this check existed any certificate was accepted,
+        # so a server with a self-signed one worked and now stops sending.
+        logger.error(
+            "Failed to send email to %s: the SMTP server %s:%s did not present a certificate "
+            "this host trusts for its name (%s). Give it a certificate from a public "
+            "authority, or point SSL_CERT_FILE at a bundle with the system's authorities "
+            "and the one that signed it.",
+            to_email,
+            config["host"],
+            config["port"],
+            e.verify_message or e,
+        )
+        return False
 
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")

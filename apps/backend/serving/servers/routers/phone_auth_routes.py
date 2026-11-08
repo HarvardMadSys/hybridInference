@@ -1,6 +1,9 @@
 """Optional phone registration, login, and explicit account binding."""
 
+import asyncio
 import secrets
+import time
+from collections import deque
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
@@ -40,13 +43,36 @@ from serving.utils.jwt import (
 )
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import hash_phone_code, phone_identity_unverified
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip, normalize_ip_bucket
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.sms import is_sms_enabled, send_verification_sms
 from serving.utils.turnstile import verify_turnstile_token
 
 router = APIRouter(prefix="/phone")
 logger = get_logger(__name__)
+
+# How long recent code sends took, the provider's call included. A request
+# that sends nothing -- a login code for a number with no account, a signup
+# code for one that has an account -- waits as long as one of them, so the
+# time to answer does not tell whether a number is registered.
+_recent_send_seconds: deque[float] = deque(maxlen=32)
+# Before any send has been timed.
+_DEFAULT_SEND_SECONDS = 0.3
+
+
+def _limit_key(request: Request) -> str:
+    """The client address the code quotas count by: an IPv6 address by its /64.
+
+    Counted by the raw address, a client rotating through the prefix it was
+    delegated escaped every per-address quota.
+    """
+    return normalize_ip_bucket(get_client_ip(request))
+
+
+async def _wait_like_a_send() -> None:
+    await asyncio.sleep(
+        secrets.choice(_recent_send_seconds) if _recent_send_seconds else _DEFAULT_SEND_SECONDS
+    )
 
 
 def _require_enabled(op_store) -> None:
@@ -82,7 +108,7 @@ async def verify_phone_code(
         purpose=purpose,
         user_id=user_id,
         code_hash=hash_phone_code(body.phone, purpose, user_id, body.code),
-        ip=get_client_ip(request),
+        ip=_limit_key(request),
         max_attempts=settings.sms_otp_max_attempts,
         phone_limit=settings.sms_otp_verify_per_phone_15min,
         ip_limit=settings.sms_otp_verify_per_ip_hour,
@@ -124,7 +150,7 @@ async def send_phone_code(
         user_id=user_id,
         challenge_id=challenge_id,
         code_hash=hash_phone_code(body.phone, body.purpose, user_id, code),
-        ip=client_ip,
+        ip=_limit_key(request),
         limits={
             "cooldown": settings.sms_otp_send_cooldown_seconds,
             "expire": settings.sms_otp_expire_seconds,
@@ -154,6 +180,7 @@ async def send_phone_code(
     elif existing_user and existing_user["id"] != user_id:
         eligible = False
     if eligible:
+        started = time.monotonic()
         try:
             sent = await run_in_threadpool(send_verification_sms, body.phone, code)
         except Exception:
@@ -162,10 +189,12 @@ async def send_phone_code(
         if not sent:
             await op_store.invalidate_phone_code(challenge_id)
             raise HTTPException(503, "Could not send verification code. Please try again later.")
+        _recent_send_seconds.append(time.monotonic() - started)
         if not await op_store.activate_phone_code(challenge_id):
             raise HTTPException(503, "Verification code expired. Please request another code.")
     else:
         await op_store.invalidate_phone_code(challenge_id)
+        await _wait_like_a_send()
     return PhoneCodeResponse(
         message="If this phone number is eligible, a verification code has been sent.",
         retry_after=settings.sms_otp_send_cooldown_seconds,

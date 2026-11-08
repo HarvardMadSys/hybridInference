@@ -28,6 +28,7 @@ def inner() -> MagicMock:
         "revoke_session",
         "delete_user_sessions",
         "revoke_user_sessions",
+        "revoke_session_by_sid",
         "attach_browser_session_account",
         "detach_browser_session_account",
         "revoke_browser_session",
@@ -81,6 +82,7 @@ async def test_the_answer_expires(cached, inner, monkeypatch):
     [
         ("delete_user_sessions", ("u1",), {}),
         ("revoke_user_sessions", ("u1",), {"except_sid": "sess_keep"}),
+        ("revoke_session_by_sid", ("u1", "sess_a"), {}),
         ("detach_browser_session_account", ("browser-1", "u1"), {}),
         (
             "attach_browser_session_account",
@@ -109,10 +111,51 @@ async def test_an_accounts_revocation_forgets_its_sessions_only(cached, inner, w
 
 
 @pytest.mark.parametrize(
+    ("write", "args", "revoked"),
+    [
+        ("revoke_session", ("auth-session-1",), "u1"),
+        # Signing out of every account in one browser: any user may ask for it.
+        ("revoke_browser_session", ("browser-1",), ["u1"]),
+    ],
+)
+async def test_a_revocation_forgets_only_the_accounts_it_revoked(
+    cached, inner, write, args, revoked
+):
+    getattr(inner, write).return_value = revoked
+    await cached.session_is_live("u1", "sess_a")
+    await cached.session_is_live("u2", "sess_b")
+    inner.session_is_live.reset_mock()
+    inner.session_is_live.return_value = False
+
+    assert await getattr(cached, write)(*args) == revoked
+
+    assert await cached.session_is_live("u1", "sess_a") is False
+    inner.session_is_live.assert_awaited_once_with("u1", "sess_a")
+    # Another account's sessions are still answered from the cache.
+    assert await cached.session_is_live("u2", "sess_b") is True
+    assert inner.session_is_live.await_count == 1
+
+
+async def test_a_browser_with_several_accounts_forgets_each_of_them(cached, inner):
+    inner.revoke_browser_session.return_value = ["u1", "u2"]
+    for user in ("u1", "u2", "u3"):
+        await cached.session_is_live(user, f"sess_{user}")
+    inner.session_is_live.reset_mock()
+
+    await cached.revoke_browser_session("browser-1")
+
+    for user in ("u1", "u2", "u3"):
+        await cached.session_is_live(user, f"sess_{user}")
+    assert [c.args[0] for c in inner.session_is_live.await_args_list] == ["u1", "u2"]
+
+
+@pytest.mark.parametrize(
     ("write", "args"),
     [("revoke_session", ("auth-session-1",)), ("revoke_browser_session", ("browser-1",))],
 )
 async def test_a_revocation_that_names_no_account_forgets_every_session(cached, inner, write, args):
+    """A store that cannot say whose sessions they were: every account's, to be safe."""
+    getattr(inner, write).return_value = None
     await cached.session_is_live("u1", "sess_a")
     await cached.session_is_live("u2", "sess_b")
     inner.session_is_live.return_value = False

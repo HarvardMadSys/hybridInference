@@ -1,42 +1,54 @@
 // The one alert-history ingestion path reaches the gateway — and only it.
 //
-// Executes the real config, like next.config.agents.test.ts: what matters is
-// the resolved `afterFiles` table, not how the file spells it.
+// It is published by a route file for exactly that path
+// (src/app/internal/alert-history/events/route.ts), not by a prefix: the
+// endpoint admits only a scoped writer credential and answers 404 while alert
+// history is off, so relaying it publishes nothing a deployment has not
+// configured. Reads stay under /admin. That the file relays to the gateway is
+// src/lib/server/gatewayRoutes.test.ts's to check; this one checks that nothing
+// else under the prefix is published.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { existsSync, readdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
-const BACKEND = 'http://backend:8000';
+import { describe, expect, it } from 'vitest';
 
-async function afterFiles() {
-  process.env.BACKEND_INTERNAL_URL = BACKEND;
+const INTERNAL = join(__dirname, 'src/app/internal');
+
+/** Every route file under `dir`, relative to src/app/internal. */
+function routeFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return routeFiles(path);
+    return entry.name === 'route.ts' ? [relative(INTERNAL, path)] : [];
+  });
+}
+
+async function rewriteSources(): Promise<string[]> {
   const path = require.resolve('./next.config.js');
   delete require.cache[path];
   // eslint-disable-next-line @typescript-eslint/no-require-imports -- the real, executed config.
-  const config = require('./next.config.js');
-  const rewrites = await config.rewrites();
-  return rewrites.afterFiles as Array<{ source: string; destination: string }>;
+  const { beforeFiles, afterFiles, fallback = [] } = await require('./next.config.js').rewrites();
+  return [...beforeFiles, ...afterFiles, ...fallback].map(
+    (rule: { source: string }) => rule.source,
+  );
 }
 
-describe('the alert-history rewrite', () => {
-  const saved = { ...process.env };
-  afterEach(() => {
-    process.env = { ...saved };
-  });
-
-  it('forwards POST /internal/alert-history/events to the gateway, path unchanged', async () => {
-    const rules = await afterFiles();
-    expect(rules).toContainEqual({
-      source: '/internal/alert-history/events',
-      destination: `${BACKEND}/internal/alert-history/events`,
-    });
+describe('the alert-history ingestion path', () => {
+  it('is published by a route file for POST /internal/alert-history/events alone', () => {
+    expect(routeFiles(join(INTERNAL, 'alert-history'))).toEqual([
+      join('alert-history', 'events', 'route.ts'),
+    ]);
   });
 
   it('does not open the /internal prefix or any other alert-history path', async () => {
-    const rules = await afterFiles();
-    const sources = rules.map((rule) => rule.source);
-    expect(sources).not.toContain('/internal/:path*');
-    expect(sources.filter((source) => source.includes('alert-history'))).toEqual([
-      '/internal/alert-history/events',
-    ]);
+    // A catch-all directly under /internal would publish every route the
+    // gateway adds there.
+    const catchAll = readdirSync(INTERNAL).filter((name) => name.startsWith('['));
+    expect(catchAll).toEqual([]);
+
+    const sources = await rewriteSources();
+    expect(sources.filter((source) => source.startsWith('/internal'))).toEqual([]);
   });
 });

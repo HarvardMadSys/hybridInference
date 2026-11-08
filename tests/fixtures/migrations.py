@@ -78,6 +78,7 @@ API_LOGS_REVISIONS = (
     "0004_user_usage_sums",
     "0005_drop_request_id_index",
     "0007_request_volume_by_source",
+    "0010_storage_indexes",
 )
 
 

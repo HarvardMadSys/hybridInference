@@ -69,6 +69,14 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
         "2002:7f00:1::1",  # 6to4 of 127.0.0.1
         "2002:a00:1::1",  # 6to4 of 10.0.0.1
         "64:ff9b::a00:1",  # NAT64 of 10.0.0.1
+        "::127.0.0.1",  # IPv4-compatible
+        "::7f00:1",  # the same, written in hex
+        "::10.0.0.1",
+        "::192.168.1.1",
+        "::169.254.169.254",
+        "::ffff:0:7f00:1",  # IPv4-translated 127.0.0.1
+        "::ffff:0:a00:1",  # IPv4-translated 10.0.0.1
+        "::ffff:0:a9fe:a9fe",  # IPv4-translated 169.254.169.254
         "2001:0:4136:e378:8000:63bf:3fff:fdd2",  # Teredo
         "fe80::1%eth0",
         "not-an-address",
@@ -79,7 +87,16 @@ def test_the_guard_refuses_every_address_that_is_not_public(address):
 
 
 @pytest.mark.parametrize(
-    "address", ["93.184.215.14", "8.8.8.8", "2606:4700:4700::1111", "64:ff9b::808:808"]
+    "address",
+    [
+        "93.184.215.14",
+        "8.8.8.8",
+        "2606:4700:4700::1111",
+        "64:ff9b::808:808",
+        # Embedded IPv4 is judged as the IPv4 address it is.
+        "::8.8.8.8",
+        "::ffff:0:808:808",
+    ],
 )
 def test_the_guard_admits_public_addresses(address):
     assert is_public_address(address)

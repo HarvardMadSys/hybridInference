@@ -5,12 +5,24 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from routing.endpoint_health import http_status_of
+from routing.endpoint_health import _uncharged_failure_event, http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from serving.pricing import effective_pricing
 
 if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
+
+
+def is_uncharged_failure(exc: BaseException | None) -> bool:
+    """Return whether ``exc`` ended an attempt with no evidence against its endpoint.
+
+    The breaker's own classification (``endpoint_health``): nothing was sent --
+    no outbound slot (``UpstreamSaturated``), no usable key (``KeyPoolExhausted``)
+    -- or the endpoint answered exactly as designed. Read from one place so the
+    breaker and a learning router never disagree about which failures are the
+    endpoint's.
+    """
+    return exc is not None and _uncharged_failure_event(exc) is not None
 
 
 def failed_attempt(
@@ -22,6 +34,8 @@ def failed_attempt(
     ``status_code`` is present when the failure carried an upstream HTTP status,
     so whoever reads the attempt later -- a learning router's feedback, the
     request log -- can tell a refused request from an endpoint fault.
+    ``uncharged`` is present, and True, for a failure no endpoint is charged
+    with (``is_uncharged_failure``), so the same readers can leave it out.
     """
     if adapter is None:
         provider = "unknown-backup"
@@ -38,6 +52,8 @@ def failed_attempt(
     status = http_status_of(exc)
     if status is not None:
         attempt["status_code"] = status
+    if is_uncharged_failure(exc):
+        attempt["uncharged"] = True
     return attempt
 
 
