@@ -110,6 +110,12 @@ logger = get_logger(__name__)
 QUEUED_GAP_SECONDS = 3600.0
 #: The long-wait alert repeats at most daily while the wait goes on.
 QUEUED_ALERT_COOLDOWN_SECONDS = 86400
+#: The longest one "model queued" answer stops this worker claiming the model's
+#: other items. The answered item waits out the upstream's own ``Retry-After``
+#: (capped at a week); the hold only keeps every slot from asking again at
+#: once, so a long or bogus hint costs a probe per hold here, not a week of
+#: the model's batch work on this worker.
+MAX_MODEL_HOLD_SECONDS = 15 * 60.0
 #: Owners whose role the worker remembers between claims (see ``_owner_rooms``).
 _MAX_REMEMBERED_OWNERS = 4096
 
@@ -883,7 +889,12 @@ class BatchScheduler:
         )
 
     def _hold_model(self, model_id: str, seconds: float) -> None:
-        """Give the model no new claims for ``seconds``: its upstream queued it."""
+        """Give the model no new claims for ``seconds``: its upstream queued it.
+
+        At most :data:`MAX_MODEL_HOLD_SECONDS`; only a deadline that comes later
+        replaces the current one.
+        """
+        seconds = min(seconds, MAX_MODEL_HOLD_SECONDS)
         until = self._clock() + seconds
         if until <= self._cooldown_until.get(model_id, 0.0):
             return

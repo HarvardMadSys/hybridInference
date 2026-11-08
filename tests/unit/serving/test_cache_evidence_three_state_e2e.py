@@ -1,20 +1,24 @@
 """End-to-end three-state cache evidence: UNKNOWN / MISS / HIT.
 
-One test walks the whole chain a request takes and asserts each of the
-three cache-evidence states survives it intact, using the real
-production functions at every hop — not re-implementations of them:
+One test walks the chain a ``/v1/responses`` request's usage takes and asserts
+each of the three cache-evidence states survives it intact, using the real
+production functions at every hop -- not re-implementations of them:
 
-    provider usage
-      -> normalize_usage                (serving/utils/token_utils.py)
+    the chat usage an adapter reports   (``UsageInfo.to_dict``)
       -> the Responses translator        (serving/responses_translator.py)
       -> the usage payload the client (and the FI Gateway) receives
-      -> RoutingObservation.cached_tokens (routing/routers.py, built by
-         serving/servers/routers/completions_logging.py)
+      -> the batch worker reading it back (``extract_cache_tokens`` in
+         serving/batch/dispatch.py, the item's cache count)
+
+and, from the same chat usage before translation, the count the completions
+router hands RouteWise (``RoutingObservation.cached_tokens``). The gateway's
+own api_logs, billing and RouteWise read the chat usage, never the translated
+payload.
 
 The defect this pins: an unreported measurement (UNKNOWN) was serialized
-as a literal 0, so every consumer scored a miss that was never measured.
-A consumer that reads only `cached_tokens` cannot tell UNKNOWN from
-MISS — the state has to survive as an explicit signal.
+as a literal 0, so a reader of the Responses usage scored a miss that was
+never measured. A reader that sees only ``cached_tokens`` cannot tell
+UNKNOWN from MISS -- the state has to survive as an explicit signal.
 """
 
 from __future__ import annotations
@@ -24,31 +28,29 @@ import json
 import pytest
 
 from routing.routers import RoutingObservation
+from serving.adapters.base import UsageInfo
 from serving.responses_translator import chat_response_to_responses
-from serving.utils.token_utils import normalize_usage
+from serving.utils.token_utils import extract_cache_tokens, normalize_usage
 
-# The three states, as a provider would report them (or not report them).
-UNKNOWN_USAGE = {
-    "prompt_tokens": 241678,
-    "completion_tokens": 164,
-    "total_tokens": 241842,
-    "input_tokens_details": {"cached_tokens": 0},
-    "cache_read_reported": False,
-}
-MISS_USAGE = {
-    "prompt_tokens": 241678,
-    "completion_tokens": 164,
-    "total_tokens": 241842,
-    "input_tokens_details": {"cached_tokens": 0},
-    "cache_read_reported": True,
-}
-HIT_USAGE = {
-    "prompt_tokens": 241678,
-    "completion_tokens": 164,
-    "total_tokens": 241842,
-    "input_tokens_details": {"cached_tokens": 241000},
-    "cache_read_reported": True,
-}
+# The three states, in the shape an adapter reports them: no cache fields at
+# all when the provider measured nothing, a count (even 0) when it did.
+UNKNOWN_USAGE = UsageInfo(
+    prompt_tokens=241678, completion_tokens=164, total_tokens=241842
+).to_dict()
+MISS_USAGE = UsageInfo(
+    prompt_tokens=241678,
+    completion_tokens=164,
+    total_tokens=241842,
+    cache_read_tokens=0,
+    cache_read_reported=True,
+).to_dict()
+HIT_USAGE = UsageInfo(
+    prompt_tokens=241678,
+    completion_tokens=164,
+    total_tokens=241842,
+    cache_read_tokens=241000,
+    cache_read_reported=True,
+).to_dict()
 
 
 def _responses_payload(usage: dict) -> dict:
@@ -121,6 +123,10 @@ class TestThreeStatesSurviveEndToEnd:
         wire = json.loads(json.dumps(payload["usage"]))
         assert wire["cache_read_reported"] is expected_reported
 
+        # 2b. The batch worker reads the item's Responses usage back for its
+        #     cache count: UNKNOWN is None there, never 0.
+        assert extract_cache_tokens(wire)[0] == expected_cached
+
         # 3. RouteWise receives UNKNOWN as None (no observation), never 0.
         observed = _observed_cached_tokens(usage)
         assert observed == expected_cached
@@ -157,11 +163,14 @@ class TestThreeStatesSurviveEndToEnd:
         assert "cache_read_tokens" not in normalized, (
             "an unreported measurement must not become a cache_read_tokens of 0"
         )
-        assert normalized.get("cache_read_reported") is False
+        assert normalized.get("cache_read_reported") is not True
 
         # Responses translator
         emitted = _responses_payload(UNKNOWN_USAGE)["usage"]
         assert emitted["cache_read_reported"] is False
+
+        # The batch worker reading that payload back
+        assert extract_cache_tokens(emitted)[0] is None
 
         # RouteWise
         assert _observed_cached_tokens(UNKNOWN_USAGE) is None
