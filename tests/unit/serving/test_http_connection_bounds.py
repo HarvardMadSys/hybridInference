@@ -20,6 +20,7 @@ from serving.http import (
     STREAM_SOCK_CONNECT_TIMEOUT_S,
     AsyncHTTPClient,
     stream_timeout,
+    upstream_connection_limit,
 )
 from serving.utils.metadata_addresses import refuse_metadata_socket
 
@@ -63,12 +64,13 @@ class _DoneResp:
 
 
 @pytest.mark.asyncio
-async def test_the_shared_connector_has_no_pool_limit_and_keeps_its_socket_guard():
+async def test_the_shared_connector_has_no_per_host_limit_and_keeps_its_socket_guard():
     client = AsyncHTTPClient()
     try:
         session = await client._ensure_session()
         connector = session.connector
-        assert connector.limit == 0
+        # Only a safety net in total, far above the gateway's own limits.
+        assert connector.limit == upstream_connection_limit() >= 256
         assert connector.limit_per_host == 0
         # The metadata refusal still applies to every upstream socket.
         assert connector._socket_factory is refuse_metadata_socket
@@ -182,3 +184,120 @@ async def test_more_streams_than_the_old_per_host_limit_all_open():
         await runner.cleanup()
 
     assert all(lines == ['data: {"x":1}', "data: [DONE]"] for lines in results)
+
+
+# ---------------------------------------------------------------------------
+# A safety net on the pool's size, and bounded opens for non-streaming calls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("soft", "expected"),
+    [(1024, 512), (65536, 4096), (100, 256), (None, 4096)],
+    ids=["docker-default", "raised", "tiny", "unlimited"],
+)
+def test_the_pool_holds_at_most_half_the_open_file_limit(monkeypatch, soft, expected):
+    """Each relayed request also holds its client's socket; EMFILE fails the whole process."""
+    import resource
+
+    limit = resource.RLIM_INFINITY if soft is None else soft
+    monkeypatch.setattr(resource, "getrlimit", lambda _which: (limit, resource.RLIM_INFINITY))
+
+    assert upstream_connection_limit() == expected
+
+
+class _JsonResp:
+    def __init__(self) -> None:
+        self.status = 200
+        self.headers = {"Content-Type": "application/json"}
+        self.content_length = None
+        self.charset = None
+        self.content = self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def iter_chunked(self, _n: int):
+        yield b'{"ok": true}'
+
+
+@pytest.mark.asyncio
+async def test_a_non_streaming_post_opens_with_the_connect_bounds(monkeypatch):
+    """A completion's 600 s total was all that bounded its connect: ~127 s per dead key."""
+    seen: list[dict] = []
+
+    class _Session:
+        def post(self, *_a, **kwargs):
+            seen.append(kwargs)
+            return _JsonResp()
+
+    async def _ensure(_self):
+        return _Session()
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _ensure)
+
+    out = await AsyncHTTPClient.shared().json_post(
+        "http://up/v1/chat/completions", json={}, timeout=aiohttp.ClientTimeout(total=600)
+    )
+
+    assert out == {"ok": True}
+    (kwargs,) = seen
+    assert kwargs["timeout"].total == 600
+    assert kwargs["timeout"].connect == STREAM_CONNECT_TIMEOUT_S
+    assert kwargs["timeout"].sock_connect == STREAM_SOCK_CONNECT_TIMEOUT_S
+
+
+@pytest.mark.asyncio
+async def test_the_session_default_bounds_the_connect_too():
+    client = AsyncHTTPClient()
+    try:
+        session = await client._ensure_session()
+        assert session.timeout.total == 60
+        assert session.timeout.connect == STREAM_CONNECT_TIMEOUT_S
+        assert session.timeout.sock_connect == STREAM_SOCK_CONNECT_TIMEOUT_S
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_request_past_the_pool_limit_fails_over_within_its_connect_timeout(monkeypatch):
+    """It waits for a pooled connection only as long as it may wait to connect."""
+    import serving.http as http_mod
+
+    monkeypatch.setattr(http_mod, "upstream_connection_limit", lambda: 1)
+    release = asyncio.Event()
+
+    async def handle(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(b'data: {"x":1}\n\n')
+        await release.wait()
+        await response.write(b"data: [DONE]\n\n")
+        return response
+
+    app = web.Application()
+    app.router.add_post("/sse", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/sse"
+    client = AsyncHTTPClient()
+    stream = client.stream_post(url, json={})
+    try:
+        assert await stream.__anext__() == 'data: {"x":1}'  # holds the only connection
+        with pytest.raises(aiohttp.ConnectionTimeoutError):
+            await asyncio.wait_for(
+                client.json_post(
+                    url, json={}, timeout=aiohttp.ClientTimeout(total=30, connect=0.2)
+                ),
+                5,
+            )
+    finally:
+        release.set()
+        await stream.aclose()
+        await client.close()
+        await runner.cleanup()

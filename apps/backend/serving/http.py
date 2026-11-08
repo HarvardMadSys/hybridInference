@@ -139,6 +139,35 @@ _YIELDING_DECODE_SLICE_CHARS = 256 * 1024
 STREAM_CONNECT_TIMEOUT_S = 30.0
 STREAM_SOCK_CONNECT_TIMEOUT_S = 10.0
 
+#: The most connections the shared upstream pool keeps open at once. A safety
+#: net, far above what the gateway's own limits let through (64 per provider
+#: key): at the per-process open-file limit, a connection's ``EMFILE`` failed
+#: every request in the process, client sockets and database connections
+#: included, not only the upstream one. Capped at half that limit, since each
+#: relayed request also holds its client's socket (see
+#: :func:`upstream_connection_limit`).
+MAX_UPSTREAM_CONNECTIONS = 4096
+_MIN_UPSTREAM_CONNECTIONS = 256
+
+
+def upstream_connection_limit() -> int:
+    """Return how many connections the shared upstream pool may open at once.
+
+    Half the process's soft open-file limit, between 256 and
+    :data:`MAX_UPSTREAM_CONNECTIONS`. A request past it waits for a pooled
+    connection, within its connect timeout, instead of failing on a file
+    descriptor it cannot get.
+    """
+    try:
+        import resource
+
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ImportError, OSError, ValueError):
+        return MAX_UPSTREAM_CONNECTIONS
+    if soft == resource.RLIM_INFINITY or soft <= 0:
+        return MAX_UPSTREAM_CONNECTIONS
+    return max(_MIN_UPSTREAM_CONNECTIONS, min(MAX_UPSTREAM_CONNECTIONS, soft // 2))
+
 
 class UpstreamPayloadTooLarge(aiohttp.ClientPayloadError):
     """An upstream response body, or one frame of a stream, passed the size read.
@@ -162,6 +191,17 @@ def stream_timeout(timeout: aiohttp.ClientTimeout | None = None) -> aiohttp.Clie
     """
     if timeout is None:
         timeout = aiohttp.ClientTimeout(total=None)
+    return connect_bounded(timeout)
+
+
+def connect_bounded(timeout: aiohttp.ClientTimeout) -> aiohttp.ClientTimeout:
+    """Return *timeout* with a bounded ``connect`` / ``sock_connect`` where it has none.
+
+    Non-streaming requests need the bounds as much as streams do: their total
+    timeout (600 s for a completion) was all that bounded opening the
+    connection, so a black-holed host held a request for as long as the kernel
+    retried its SYN, about 127 s per key, before it could fail over.
+    """
     return aiohttp.ClientTimeout(
         total=timeout.total,
         connect=STREAM_CONNECT_TIMEOUT_S if timeout.connect is None else timeout.connect,
@@ -426,23 +466,27 @@ class AsyncHTTPClient:
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             # Set a conservative default timeout; callers can override per request.
-            timeout = aiohttp.ClientTimeout(total=60)
+            timeout = connect_bounded(aiohttp.ClientTimeout(total=60))
             # Every adapter's upstream request goes through this connector, so
             # it is where a Base URL whose name now resolves to a cloud metadata
             # endpoint is refused -- whatever it resolved to when it was saved.
             #
-            # No connection limit, in total or per host. What bounds the
-            # gateway's upstream concurrency is its own admission -- each
-            # user's concurrency limit, the per-account outbound limiter
-            # (``upstream_limiter``), engine holds for local servers -- and a
-            # request holds its slots there while it waits here. A pool limit
-            # under those ceilings only made the next request queue behind the
-            # pool instead: the 51st concurrent stream to one provider host
-            # waited, with no timeout at all, for one of fifty streams that
-            # each run for minutes. Every connection belongs to a request one of
-            # those limits admitted, so the count is theirs to bound.
+            # No connection limit per host, and only a safety net in total.
+            # What bounds the gateway's upstream concurrency is its own
+            # admission -- each user's concurrency limit, the per-account
+            # outbound limiter (``upstream_limiter``), engine holds for local
+            # servers -- and a request holds its slots there while it waits
+            # here. A pool limit under those ceilings only made the next
+            # request queue behind the pool instead: the 51st concurrent stream
+            # to one provider host waited, with no timeout at all, for one of
+            # fifty streams that each run for minutes. The total limit sits far
+            # above them, and below the open-file limit, where a connection
+            # failing with EMFILE took the rest of the process down with it; a
+            # request past it waits within its connect timeout.
             connector = aiohttp.TCPConnector(
-                limit=0, limit_per_host=0, socket_factory=refuse_metadata_socket
+                limit=upstream_connection_limit(),
+                limit_per_host=0,
+                socket_factory=refuse_metadata_socket,
             )
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
@@ -469,7 +513,8 @@ class AsyncHTTPClient:
         ``timeout=None`` means "use the session default" (60s). It must NOT be
         forwarded verbatim: aiohttp treats an explicit ``None`` as *no timeout
         at all*, which would let a black-holed upstream hold the request (and
-        its connection-pool slot) forever.
+        its connection-pool slot) forever. Opening the connection is bounded
+        either way (:func:`connect_bounded`).
 
         The body is read up to ``max_body_bytes``, by default
         :data:`MAX_RESPONSE_BODY_BYTES` (a longer one raises
@@ -481,7 +526,7 @@ class AsyncHTTPClient:
             url,
             json=json,
             headers=headers,
-            timeout=timeout if timeout is not None else _aiohttp_sentinel,
+            timeout=connect_bounded(timeout) if timeout is not None else _aiohttp_sentinel,
         ) as resp:
             if resp.status >= 400:
                 from contextlib import suppress
