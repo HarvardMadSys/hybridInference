@@ -826,7 +826,7 @@ and to the worker's next round.
 | `BATCH_MAX_RESULT_KB` | 4096 | Largest response one batch request may store |
 | `BATCH_MAX_RESULTS_MB_PER_BATCH` | 8192 | Responses one batch may store in all, in MiB. Once they reach it, a response that does not fit fails with `result_too_large`, and so does every request of that batch still to run, without running. Counted in each gateway process from the results it records; after a restart, what a batch already stored counts at its stored, compressed size. `0` removes the limit |
 | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` | 512 | Uploaded input files one user may keep |
-| `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour |
+| `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour, uploads that failed included (those counted in each gateway process on its own) |
 | `BATCH_FILE_RETENTION_DAYS` | 30 | Days an uploaded input file is kept |
 | `BATCH_ANTHROPIC_VERSIONS` | `2023-06-01,2026-10-21` | `anthropic-version` values a new `/v1/messages` batch may name. A stored batch keeps running under its own, and a create it made still replays |
 | `BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS` | off | Let webhooks reach private and loopback addresses. For isolated test deployments only |

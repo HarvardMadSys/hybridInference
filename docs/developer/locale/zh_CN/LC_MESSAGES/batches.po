@@ -1966,8 +1966,10 @@ msgid "60"
 msgstr ""
 
 #: ../developer/batches.md:41
-msgid "Input files one user may upload per hour"
-msgstr "一个用户每小时可以上传的输入文件数"
+msgid ""
+"Input files one user may upload per hour, uploads that failed included "
+"(those counted in each gateway process on its own)"
+msgstr "一个用户每小时可以上传的输入文件数，失败的上传也计入（失败的上传由每个网关进程各自计数）"
 
 #: ../developer/batches.md:41
 msgid "`BATCH_FILE_RETENTION_DAYS`"

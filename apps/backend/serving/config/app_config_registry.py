@@ -1188,7 +1188,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_FILE_UPLOADS_PER_HOUR",
         "batch",
-        "Batch input files one user may upload per hour.",
+        "Batch input files one user may upload per hour, uploads that failed included.",
         type="int",
         default="60",
         minimum=1,
