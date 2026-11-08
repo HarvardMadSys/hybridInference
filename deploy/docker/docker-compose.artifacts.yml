@@ -1,0 +1,6 @@
+# Shared pinned artifacts for deploy and rollback; --no-build prevents a source build.
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?Specify the pinned backend image}
+  frontend:
+    image: ${FRONTEND_IMAGE:?Specify the pinned frontend image}

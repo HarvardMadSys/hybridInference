@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -84,7 +86,7 @@ def test_active_manifest_supplies_identity(monkeypatch):
     assert identity.support_email == "help@acme.example"
 
 
-def test_dark_mode_ignores_manifest(monkeypatch):
+def test_retired_dark_mode_does_not_hide_database_identity(monkeypatch):
     _force_mode(monkeypatch, "dark")
     _force_manifest(
         monkeypatch,
@@ -92,7 +94,7 @@ def test_dark_mode_ignores_manifest(monkeypatch):
         base_url="https://acme.example",
         support="help@acme.example",
     )
-    assert get_site_identity() == NEUTRAL_DEFAULT
+    assert get_site_identity().name == "Acme"
 
 
 def test_env_beats_active_manifest(monkeypatch):
@@ -231,3 +233,39 @@ def test_no_module_hardcodes_openrouter_attribution():
         "these send a fixed OpenRouter attribution instead of the deployment's "
         f"own; call openrouter_attribution_headers() instead: {offenders}"
     )
+
+
+async def test_an_invalid_site_document_leaves_the_neutral_identity(monkeypatch, caplog):
+    # OpenRouter attribution and every email read the identity: an invalid
+    # stored document must not fail them, and is reported once per change.
+    from serving.adapters.openrouter import openrouter_attribution_headers
+    from serving.config import app_config
+    from tests.fixtures.app_config_store import FakeAppConfigStore, row
+
+    stored = {
+        "schema_version": 1,
+        "distribution": {"id": "previous", "display_name": "Previous"},
+        "api_token": "site-document-credential",
+    }
+    store = FakeAppConfigStore([row("SITE_CONFIGURATION", json.dumps(stored))])
+    monkeypatch.setenv("SITE_PUBLIC_BASE_URL", "https://gateway.example")
+    with caplog.at_level("ERROR", logger="serving.config.distribution"):
+        await app_config.load(store, bootstrap=False)
+        app_config.attach(store)
+        assert get_site_identity() == replace(
+            NEUTRAL_DEFAULT, public_base_url="https://gateway.example"
+        )
+        assert openrouter_attribution_headers() == {
+            "HTTP-Referer": "https://gateway.example",
+            "X-Title": "HybridInference",
+        }
+    assert caplog.text.count("The public site configuration is not valid") == 1
+    assert "SITE_CONFIGURATION: /api_token Extra inputs are not permitted" in caplog.text
+    assert "site-document-credential" not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("ERROR", logger="serving.config.distribution"):
+        await app_config.update({"SITE_NAME": "Renamed"}, updated_by="admin")
+        assert get_site_identity().name == "Renamed"
+        get_site_identity()
+    assert caplog.text.count("The public site configuration is not valid") == 1

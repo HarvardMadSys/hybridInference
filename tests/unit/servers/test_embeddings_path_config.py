@@ -1,7 +1,5 @@
 """Configuration-error regressions for route-level embeddings paths."""
 
-from types import SimpleNamespace
-
 import pytest
 import yaml
 
@@ -137,7 +135,7 @@ def test_optional_missing_env_does_not_hide_invalid_path(tmp_path, monkeypatch, 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_kind", ["type", "missing-env", "model-level"])
 async def test_bootstrap_does_not_serve_partial_registry_on_invalid_path(
-    tmp_path, monkeypatch, invalid_kind
+    tmp_path, monkeypatch, caplog, invalid_kind
 ):
     monkeypatch.delenv(_PATH_ENV, raising=False)
     invalid = _model(123, model_id="invalid-middle")
@@ -154,27 +152,25 @@ async def test_bootstrap_does_not_serve_partial_registry_on_invalid_path(
             _model("/embeddings", model_id="valid-after"),
         ],
     )
-    monkeypatch.setattr(
-        bootstrap, "resolve_config_path", lambda _: SimpleNamespace(path=path, source="env")
-    )
+    monkeypatch.setattr(bootstrap, "get_document", lambda _: yaml.safe_load(path.read_text()))
+    router = FixedRouter()
 
-    with pytest.raises(ValueError, match="invalid-middle"):
-        await bootstrap._init_router_and_models(FixedRouter())
+    # Neither the models before the bad entry nor a stopped startup: nothing.
+    assert await bootstrap._init_router_and_models(router) == ({}, [])
+    assert router.embedding_routes == {}
+    assert "invalid-middle" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_other_model_loading_errors_keep_existing_bootstrap_behavior(
-    tmp_path, monkeypatch, caplog
-):
+async def test_any_other_registration_failure_also_registers_nothing(tmp_path, monkeypatch, caplog):
     path = _write_models(tmp_path, [_model("/embeddings")])
-    monkeypatch.setattr(
-        bootstrap, "resolve_config_path", lambda _: SimpleNamespace(path=path, source="env")
-    )
+    monkeypatch.setattr(bootstrap, "get_document", lambda _: yaml.safe_load(path.read_text()))
 
     def fail(*args, **kwargs):
         raise ValueError("unrelated config error")
 
-    monkeypatch.setattr(bootstrap, "register_from_models_yaml", fail)
+    monkeypatch.setattr(bootstrap, "register_from_models_document", fail)
 
     assert await bootstrap._init_router_and_models(FixedRouter()) == ({}, [])
-    assert "Failed to load models.yaml: unrelated config error" in caplog.text
+    assert "was not registered: unrelated config error" in caplog.text
+    assert any(record.levelname == "ERROR" for record in caplog.records)

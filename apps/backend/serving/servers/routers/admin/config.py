@@ -209,8 +209,17 @@ async def live_config_status(
     status["this_instance"] = restart.INSTANCE_ID
     for row in (row for group in status["groups"] for row in group["instances"]):
         row["this_process"] = row["instance_id"] == restart.INSTANCE_ID
+    from serving.config.routing_sync import status_group
+
+    try:
+        routing_status = await status_group(store)
+    except Exception:
+        routing_status = None
+        logger.warning("Routing application status unavailable", exc_info=True)
     local = live.COORDINATOR.local_status()
     for group in status["groups"]:
         group["local"] = local["groups"].get(group["name"])
         group["preview"] = live_control.preview(status, entries, group["name"])
+    if routing_status is not None:
+        status["groups"].append(routing_status)
     return LiveConfigStatusResponse(database=True, read_ok=local["read_ok"], **status)

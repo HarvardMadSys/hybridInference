@@ -8,7 +8,7 @@ import yaml
 from serving.config.branding import BrandingConfigError, load_branding_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_EXAMPLE = _REPO_ROOT / "config" / "examples" / "branding.example.yaml"
+_EXAMPLE = _REPO_ROOT / "config" / "examples" / "branding.example.json"
 
 
 def test_example_branding_is_valid_and_complete() -> None:

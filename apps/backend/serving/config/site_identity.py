@@ -8,9 +8,8 @@ hardcoded strings:
 1. explicit settings (``SITE_NAME``, ``SITE_PUBLIC_BASE_URL``,
    ``SITE_DOCS_URL``, ``SITE_SUPPORT_EMAIL``), stored in the database or set in
    the environment;
-2. the active distribution manifest (``distribution.display_name`` plus the
-   ``site:`` section) — only when ``DISTRIBUTION_CONFIG_MODE=active``,
-   mirroring the gating of ``GET /site-config``;
+2. the database site document (``distribution.display_name`` plus the
+   ``site`` section), matching ``GET /site-config``;
 3. a neutral default that names no distribution.
 
 A deployment supplies its own identity through ``SITE_*``, which
@@ -18,7 +17,7 @@ A deployment supplies its own identity through ``SITE_*``, which
 ``.env`` still overrides), so a configured site's rendered output is unchanged
 by the neutral default. The manifest's versioned branding document supplies
 ``docs_url`` while ``SITE_DOCS_URL`` remains the higher-precedence operational
-override.
+override. The path and active/dark selectors are retired.
 """
 
 from __future__ import annotations
@@ -89,29 +88,36 @@ def _pick_docs_url(manifest_value: str | None) -> str:
 
 
 def get_site_identity() -> SiteIdentity:
-    """Resolve the identity as env > active manifest > legacy defaults.
+    """Resolve the identity from explicit settings, site documents and neutral defaults.
 
     Resolved per call (no cache): the values feed rendered content, not hot
     request paths, and per-call resolution keeps tests and env changes simple.
+
+    An invalid site document is passed over, as if none were stored: the
+    explicit settings still apply, then the neutral default. OpenRouter
+    attribution and every email read the identity, and an administrator's
+    mistake in the site document must not fail them. The distribution module
+    logs the problem once per configuration change.
     """
     # Imported lazily to keep this module import-cycle-free and importable in
     # isolation (e.g. by offline tools).
-    from serving.config.distribution import get_distribution_config
-    from serving.config.settings import get_settings
+    from serving.config.distribution import DistributionConfigError, get_distribution_config
 
     manifest_name: str | None = None
     manifest_base_url: str | None = None
     manifest_docs_url: str | None = None
     manifest_support: str | None = None
-    if get_settings().distribution_config_mode.strip().lower() == "active":
+    try:
         config = get_distribution_config()
-        if config is not None:
-            manifest_name = config.distribution.display_name
-            manifest_base_url = config.site.public_base_url
-            manifest_support = config.site.support_email
-            branding = getattr(config, "branding_config", None)
-            if branding is not None:
-                manifest_docs_url = branding.links.docs_url
+    except DistributionConfigError:
+        config = None
+    if config is not None:
+        manifest_name = config.distribution.display_name
+        manifest_base_url = config.site.public_base_url
+        manifest_support = config.site.support_email
+        branding = getattr(config, "branding_config", None)
+        if branding is not None:
+            manifest_docs_url = branding.links.docs_url
 
     return SiteIdentity(
         name=_pick("SITE_NAME", manifest_name, NEUTRAL_DEFAULT.name),

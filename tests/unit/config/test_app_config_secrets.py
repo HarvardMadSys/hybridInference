@@ -9,9 +9,12 @@ administrator asked for but did not get, and a flag lost to a reset.
 from __future__ import annotations
 
 import contextlib
+import json
+import os
 import textwrap
 
 import pytest
+import yaml
 
 from serving.config import app_config, manage
 from serving.config.app_config_registry import static_entries
@@ -47,6 +50,7 @@ def config_env(tmp_path, monkeypatch):
         monkeypatch.delenv(entry.key, raising=False)
     for key in ("ENVIRONMENT", "DISTRIBUTION_CONFIG_PATH", *_CREDENTIAL_VALUES, _PLAIN_NAME):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MODEL_CATALOG", "{}")
     (tmp_path / "models.yaml").write_text("models: []\n")
     monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "models.yaml"))
     monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
@@ -56,7 +60,7 @@ def config_env(tmp_path, monkeypatch):
 
 
 def _write_models(path, text: str) -> None:
-    (path / "models.yaml").write_text(textwrap.dedent(text))
+    os.environ["MODEL_CATALOG"] = json.dumps(yaml.safe_load(textwrap.dedent(text)) or {})
 
 
 async def _boot(store: FakeAppConfigStore) -> None:
@@ -66,7 +70,8 @@ async def _boot(store: FakeAppConfigStore) -> None:
 
 async def _rediscover(store: FakeAppConfigStore) -> None:
     """Pick up an edited models.yaml, as the next start would."""
-    app_config._STATE.discovered = app_config._discover()
+    store.rows["MODEL_CATALOG"] = row("MODEL_CATALOG", os.environ["MODEL_CATALOG"])
+    app_config._STATE.discovered = app_config._discover(store.rows)
     await app_config._reload(store)
 
 

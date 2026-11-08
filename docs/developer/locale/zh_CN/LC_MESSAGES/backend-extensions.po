@@ -333,3 +333,6 @@ msgstr ""
 "对接你自己的数据源时，复制这个扩展，把其中的本地 HTTP "
 "查询和字段映射换成你获得授权的数据源。保持结果契约不变，给网络请求加上超时，显式处理失败，并确保凭据不出现在响应和日志中。至于能以什么方式查询 "
 "provider 的用量，仍以该 provider 自己的条款为准。"
+
+msgid "Finally start the gateway with the opt-in [quota registry](../../config/examples/models.routewise.quota.json). Name the demo token once so the admin call below can reuse it:"
+msgstr "最后使用显式选择的[配额目录](../../config/examples/models.routewise.quota.json)启动网关。先定义一次演示令牌，以便下方管理调用复用："

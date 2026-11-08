@@ -871,3 +871,15 @@ msgid ""
 "To see a saved key again later, select **Show key** and enter your "
 "password."
 msgstr "在仪表盘上创建一个 API key 并复制它，下面的 API 调用要用。之后想再次查看已保存的 key，选择 **显示 key** 并输入你的密码。"
+
+msgid "The response contains the public model id `example-chat`. This explicitly selected tutorial seeds the `MODEL_CATALOG` setting from `distributions/example/config/models.json`. Stage 1 has no database, so the setting is supplied in its container environment; there is no implicit file fallback in the gateway. Normal deployments configure the catalog in Admin."
+msgstr "响应包含公共模型 ID `example-chat`。此显式选择的教程从 `distributions/example/config/models.json` 为 `MODEL_CATALOG` 设置提供种子值。第一阶段没有数据库，因此通过容器环境传入设置；网关没有隐式文件回退。普通部署在 Admin 中配置目录。"
+
+msgid "For this stateless teaching stage only, change the example model's `name`, run `make up DISTRIBUTION=example` to recreate the container with its updated JSON seed, and list the models again. Restore the sample before continuing. Once Stage 2 uses PostgreSQL, edit stored settings in Admin instead."
+msgstr "仅在这个无状态教学阶段，可以修改示例模型的 `name`，再运行 `make up DISTRIBUTION=example`，以更新后的 JSON 种子值重建容器，然后再次列出模型。继续前恢复示例。第二阶段开始使用 PostgreSQL 后，应在 Admin 中编辑已保存设置。"
+
+msgid "`distribution.json` seeds Stage 1 site settings with public signup off. `distribution.demo.json` supplies the demo site settings after auth and the frontend are enabled. Both stages reuse the model and routing JSON seeds."
+msgstr "`distribution.json` 为第一阶段站点设置提供种子值，并关闭公共注册。`distribution.demo.json` 在启用认证和前端后提供演示站点设置。两个阶段复用模型和路由 JSON 种子值。"
+
+msgid "In Stage 1, confirm that you passed `DISTRIBUTION=example` and that the checked-in JSON seeds are valid. Run `make up DISTRIBUTION=example` to recreate the backend with those explicit seeds, then inspect `make logs s=backend DISTRIBUTION=example`. In Stage 2, use Admin Settings and Routing to check saved and applied configuration; stored database values take precedence over environment seeds."
+msgstr "第一阶段中，请确认传入了 `DISTRIBUTION=example`，且仓库中的 JSON 种子值有效。运行 `make up DISTRIBUTION=example`，以这些显式种子值重建后端，然后查看 `make logs s=backend DISTRIBUTION=example`。第二阶段中，在 Admin Settings 和 Routing 检查已保存及已应用配置；数据库保存值优先于环境种子值。"

@@ -2,9 +2,10 @@
 
 ``_resolve_key_material`` picks the key material for every route, candidate and
 model install: all of the provider's active keys, one settings ("env") key by
-id, or one row from the Keys tab. A disabled key must not be selectable, a row
-belonging to another provider must not be borrowed, and a store failure must
-be a 503 rather than an install with fewer keys than the admin thinks.
+id, or one row from the Keys tab. A disabled key must not be selectable, by id
+or otherwise, a row belonging to another provider must not be borrowed, and a
+store failure must be a 503 rather than an install with fewer keys than the
+admin thinks.
 
 ``_verify_provider_route`` sends one tiny request before a target change is
 accepted; its failure detail is what the admin reads, so it is checked too.
@@ -188,10 +189,28 @@ async def test_a_disabled_settings_key_cannot_be_chosen_by_id(keys):
 
 
 async def test_a_key_row_is_used_alone_and_marked_as_db_sourced(keys):
-    store = Store(rows={"row-1": ("zai", DB_C)})
+    store = Store(rows={"row-1": ("zai", DB_C)}, db_keys=[DB_C])
 
     assert await _resolve(store, "row-1") == (None, [DB_C])
     assert keys["marked"] == [("zai", DB_C)]
+
+
+async def test_a_disabled_key_row_is_not_key_material(keys):
+    # A restart restores every stored route through here: building one with a
+    # disabled row would serve the revoked credential again.
+    store = Store(rows={"row-1": ("zai", DB_C)})
+
+    assert await _status(store, "row-1") == (409, "Provider key is disabled")
+    assert keys["marked"] == []
+
+
+async def test_a_key_row_whose_status_cannot_be_read_is_a_503(keys):
+    store = Store(rows={"row-1": ("zai", DB_C)}, db_keys=[DB_C], fail={"db"})
+
+    assert await _status(store, "row-1") == (
+        503,
+        "Failed to load provider keys for zai: keys table down",
+    )
 
 
 async def test_another_providers_key_row_is_not_borrowed(keys):

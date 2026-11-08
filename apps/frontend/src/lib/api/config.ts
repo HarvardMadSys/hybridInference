@@ -179,6 +179,8 @@ export interface LiveGroupCoverage {
 
 export interface LiveGroupStatus {
   name: string;
+  source?: string | null;
+  version?: ConfigSourceVersion | null;
   keys: string[];
   schema_version: number;
   contract: {

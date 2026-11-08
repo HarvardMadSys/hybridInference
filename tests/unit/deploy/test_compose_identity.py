@@ -91,7 +91,6 @@ def test_no_compose_default_names_a_deployment() -> None:
         ("SMTP_FROM_NAME", "HybridInference"),
         ("BASE_URL", ""),
         ("FRONTEND_URL", "http://localhost:3001"),
-        ("DISTRIBUTION_CONFIG_MODE", "dark"),
     ],
 )
 def test_compose_neutral_default_matches_the_code_default(
@@ -195,50 +194,3 @@ def test_the_makefile_accepts_extra_env_files_before_the_server_env() -> None:
         "$(COMPOSE_EXTRA_ENV_ARGS)"
     )
     assert compose_line.index("$(COMPOSE_EXTRA_ENV_ARGS)") < compose_line.index("$(LOCAL_ENV_ARGS)")
-
-
-def test_the_bottom_of_the_precedence_names_files_that_exist() -> None:
-    """A checkout with no distribution and no environment must still resolve.
-
-    #1104 checked this one layer too high. Compose is not where the neutral
-    case is decided: a value there is an environment variable for every
-    deployment, and env returns before the manifest is read — so pinning a
-    working path there fixed the clone and quietly made every deployment's
-    manifest decorative. The clone's fallback belongs at the bottom of the
-    precedence instead, which is this table.
-
-    Alerts is deliberately not asserted: there is no example alerts file to
-    name, and a missing one resolves to the built-in thresholds, which is the
-    neutral answer.
-    """
-    from serving.config.distribution import _LEGACY_DEFAULTS
-
-    for kind in ("models", "routing"):
-        default = _LEGACY_DEFAULTS[kind]
-        assert (REPO / default).is_file(), (
-            f"the {kind} fallback is {default!r}, which this repository does not ship"
-        )
-
-
-def test_compose_preserves_dark_mode_default_without_hiding_empty_mode() -> None:
-    """Unset mode must stay dark; explicitly empty mode must remain an error."""
-    environment = _compose()["services"]["backend"]["environment"]
-    assert environment["DISTRIBUTION_CONFIG_MODE"] == "${DISTRIBUTION_CONFIG_MODE-dark}"
-
-
-def test_compose_leaves_the_config_paths_to_the_precedence() -> None:
-    """Compose must supply none of them, or the manifest can never win.
-
-    `resolve_config_path` returns on the env branch before reading the
-    manifest, in active mode too. A non-empty default here is an env value for
-    every deployment, so it would make DISTRIBUTION_CONFIG_MODE=active do
-    nothing at all — silently, because the resolved paths would still be
-    plausible files.
-    """
-    text = COMPOSE.read_text()
-    for var in ("MODELS_CONFIG_PATH", "ROUTING_CONFIG_PATH", "ALERTS_CONFIG_PATH"):
-        match = re.search(rf"^\s*{var}: \$\{{{var}-([^}}]*)\}}", text, re.M)
-        assert match, f"{var} lost its neutral default in the compose file"
-        assert not match.group(1).strip(), (
-            f"{var} defaults to {match.group(1)!r}; a value here outranks the manifest"
-        )

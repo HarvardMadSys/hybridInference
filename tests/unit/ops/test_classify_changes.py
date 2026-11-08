@@ -43,7 +43,7 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
     "path",
     [
         "distributions/example/README.md",
-        "distributions/example/config/models.yaml",
+        "distributions/example/config/models.json",
         "distributions/example/smoke.py",
         "distributions/example/fixtures/fake-openai-provider/server.py",
         "distributions/example/fixtures/fake-openai-provider/Dockerfile",

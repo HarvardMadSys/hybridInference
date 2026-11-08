@@ -213,7 +213,7 @@ def test_non_boolean_scalar_is_refused(tmp_path, scalar: str) -> None:
             include_usage_in_stream: {scalar}
     """
 
-    with pytest.raises(ValueError, match="must be a YAML boolean"):
+    with pytest.raises(ValueError, match="must be a boolean"):
         _load(tmp_path, body)
 
 
@@ -240,7 +240,7 @@ def test_bad_value_on_optional_route_is_refused_before_credential_skip(
             base_url: http://ollama.local:11434/v1
     """
 
-    with pytest.raises(ValueError, match="must be a YAML boolean"):
+    with pytest.raises(ValueError, match="must be a boolean"):
         _load(tmp_path, body)
 
 
@@ -352,20 +352,17 @@ def _bootstrap_model(model_id: str, **route_extra: object) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_kind", ["quoted-false", "null", "model-level"])
-async def test_bootstrap_refuses_a_malformed_declaration_instead_of_dropping_later_models(
-    tmp_path, monkeypatch, invalid_kind
+async def test_bootstrap_registers_nothing_from_a_catalog_with_a_malformed_declaration(
+    tmp_path, monkeypatch, caplog, invalid_kind
 ):
-    """A malformed flag stops startup; it must not serve only the models before it.
+    """A malformed flag must not serve only the models before it, nor stop startup.
 
-    Registration ends at the first entry it refuses, so a plain error there
-    left the gateway running with every later model missing and one WARNING.
+    Registration once ended at the first entry it refused, leaving the gateway
+    running with every later model missing and one WARNING; then startup
+    stopped, which also locked out Admin, where the catalog is corrected. Now
+    nothing of the catalog registers, and an ERROR names the model.
     """
-    from types import SimpleNamespace
-
-    import yaml
-
     from serving.servers import bootstrap
-    from serving.servers.registry import RegistryConfigError
 
     if invalid_kind == "model-level":
         invalid = _bootstrap_model("invalid-middle")
@@ -373,21 +370,18 @@ async def test_bootstrap_refuses_a_malformed_declaration_instead_of_dropping_lat
     else:
         value = "false" if invalid_kind == "quoted-false" else None
         invalid = _bootstrap_model("invalid-middle", include_usage_in_stream=value)
-    path = tmp_path / "models.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "models": [
-                    _bootstrap_model("valid-before"),
-                    invalid,
-                    _bootstrap_model("valid-after"),
-                ]
-            }
-        )
-    )
-    monkeypatch.setattr(
-        bootstrap, "resolve_config_path", lambda _: SimpleNamespace(path=path, source="env")
-    )
+    document = {
+        "models": [
+            _bootstrap_model("valid-before"),
+            invalid,
+            _bootstrap_model("valid-after"),
+        ]
+    }
+    monkeypatch.setattr(bootstrap, "get_document", lambda _: document)
+    router = FixedRouter()
 
-    with pytest.raises(RegistryConfigError, match="invalid-middle"):
-        await bootstrap._init_router_and_models(FixedRouter())
+    assert await bootstrap._init_router_and_models(router) == ({}, [])
+
+    assert router.routes == {}
+    assert "invalid-middle" in caplog.text
+    assert any(record.levelname == "ERROR" for record in caplog.records)

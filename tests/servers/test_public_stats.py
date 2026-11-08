@@ -13,6 +13,7 @@ from serving.config.distribution import get_distribution_config
 from serving.config.settings import get_settings
 from serving.servers.deps import get_db_logger
 from serving.servers.routers import public_stats, site_config
+from tests.fixtures.application_documents import seed_site
 
 MANIFEST = """\
 schema_version: 1
@@ -41,7 +42,7 @@ def _clean(monkeypatch):
 def _activate(monkeypatch, tmp_path, extra: str = "") -> None:
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST.format(extra=extra))
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()

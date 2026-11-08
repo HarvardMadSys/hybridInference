@@ -138,6 +138,7 @@ class AppServices:
     disabled_provider_refresh_task: Any | None = None
     route_state_refresh_task: Any | None = None
     offload_route_refresh_task: Any | None = None
+    routing_sync: Any | None = None
 
 
 def model_router_transition_lock(

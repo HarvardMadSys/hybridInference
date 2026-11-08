@@ -22,7 +22,8 @@ an operator has activated it. Creating the schema never activates anything;
 the revision in the same transaction.
 
 Nothing here stores a configuration value, a secret, or anything derived from
-one. Only ``app_config`` is a source today; ``site_settings`` is to follow.
+one. Application settings use ``app_config``; the ``routing`` source covers
+runtime provider, key and model edits across the routing tables.
 """
 
 from __future__ import annotations

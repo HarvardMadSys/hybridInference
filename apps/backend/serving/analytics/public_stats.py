@@ -48,8 +48,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-import yaml
-
 from routing.model_selection import (
     AUTO_MODEL_ID,
     AUTO_MODEL_PREFIX,
@@ -1307,19 +1305,30 @@ async def compute_snapshot(
     return payload
 
 
-def load_models_config() -> dict[str, Any] | None:
-    """Read the gateway's ``models.yaml``, or return None when it cannot be read."""
-    from serving.config.distribution import resolve_config_path
+async def load_models_config(conn: Any) -> dict[str, Any] | None:
+    """Return the model catalog the gateway serves, read on the job's connection.
+
+    The job runs in a process of its own, which has read no configuration:
+    load it first, extensions included (their adapter kinds are part of a
+    valid catalog), as a command-line tool does, or every model counts as
+    "other". ``None`` when nothing could be read or no catalog is stored; the
+    snapshot then has no per-model section, as before a catalog existed.
+    """
+    from serving.config import app_config
+    from serving.config.app_config_store import AppConfigStore
+    from serving.config.documents import get
+    from serving.extensions import load_backend_extensions
 
     try:
-        path = resolve_config_path("models").path
-        data = yaml.safe_load(path.read_text())
+        load_backend_extensions()
+        await app_config.load(AppConfigStore(conn), bootstrap=False)
+        models = get("models")
     except Exception:
         logger.warning(
             "public_stats: cannot read the model catalog; leaving out models", exc_info=True
         )
         return None
-    return data if isinstance(data, dict) else None
+    return models or None
 
 
 async def store_snapshot(
@@ -1359,7 +1368,7 @@ async def _main(args: argparse.Namespace) -> int:
         payload = await compute_snapshot(
             conn,
             lookback_weeks=args.weeks,
-            models_config=load_models_config(),
+            models_config=await load_models_config(conn),
             retention_out=None if args.dry_run else retained,
         )
         if args.dry_run:

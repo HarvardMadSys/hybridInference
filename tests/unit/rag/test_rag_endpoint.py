@@ -16,6 +16,7 @@ from serving.rag.embedder import HashEmbedder
 from serving.rag.store import VectorStore
 from serving.servers.deps import get_current_user
 from serving.servers.routers import rag as rag_module
+from tests.fixtures.application_documents import seed_site
 
 # --------------------------------------------------------------------------- #
 # Fakes for the gateway-as-a-user HTTP helpers (monkeypatched onto rag_module).
@@ -138,7 +139,7 @@ def _configure_distribution(tmp_path, monkeypatch, *, mode="active", features=" 
     manifest.write_text(
         "schema_version: 1\ndistribution:\n  id: test\nfeatures:\n" + features + "\n"
     )
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -179,7 +180,7 @@ def test_disabled_rag_rejects_before_index_or_upstream(
         ("active", "  rag: true"),
         ("active", "  rag: null"),
         ("active", "  {}"),
-        ("dark", "  rag: false"),
+        ("dark", "  rag: true"),
     ],
 )
 @pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
@@ -198,7 +199,7 @@ def test_rag_preserves_enabled_and_legacy_paths(
 @pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
 @pytest.mark.parametrize(
     "problem",
-    ["empty-mode", "typo-mode", "no-path", "missing-file", "bad-yaml", "typo-key", "root-key"],
+    ["bad-yaml", "typo-key", "root-key"],
 )
 def test_invalid_rag_policy_fails_closed(client, tmp_path, monkeypatch, endpoint, problem):
     manifest = _configure_distribution(tmp_path, monkeypatch)
@@ -216,6 +217,8 @@ def test_invalid_rag_policy_fails_closed(client, tmp_path, monkeypatch, endpoint
         manifest.write_text(manifest.read_text().replace("rag:", "RAG:"))
     elif problem == "root-key":
         manifest.write_text(manifest.read_text().replace("features:\n  rag:", "rag:"))
+    seed_site(monkeypatch, manifest)
+    get_distribution_config.cache_clear()
     get_settings.cache_clear()
     index = AsyncMock(return_value=None)
     monkeypatch.setattr(rag_module, "_load_store", index)

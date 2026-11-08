@@ -412,11 +412,15 @@ async def test_a_new_epoch_removes_every_registration(pool, store) -> None:
     )
     assert await reporter.report_once()
     version = await _version(pool)
+    async with pool.acquire() as connection:
+        routing_before, _ = await revisions.lock_version(connection, "routing")
     fresh = await live_control.reset_epoch(store, expected=version)
     assert fresh.epoch != version.epoch
     assert fresh.revision == version.revision + 1
     async with pool.acquire() as connection:
         assert await connection.fetchval("SELECT COUNT(*) FROM config_instances") == 0
+        routing_after, _ = await revisions.read_version(connection, "routing")
+        assert routing_after.epoch != routing_before.epoch
     # The process registers again on its next report.
     assert await reporter.report_once()
     async with pool.acquire() as connection:

@@ -1,6 +1,6 @@
 """The neutral OpenRouter reference registry must load through the real path.
 
-config/examples/models.openrouter.yaml is the out-of-the-box catalog for a
+config/examples/models.openrouter.json is the out-of-the-box catalog for a
 fresh deployment (the "default route": one OPENROUTER_API_KEY and requests
 flow, plus a local-first hybrid demo). This test freezes that promise: the
 example registers through ``register_from_models_yaml`` exactly like the
@@ -16,7 +16,7 @@ from routing.routers import FixedRouter
 from serving.servers import registry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE_YAML = REPO_ROOT / "config" / "examples" / "models.openrouter.yaml"
+EXAMPLE_YAML = REPO_ROOT / "config" / "examples" / "models.openrouter.json"
 
 
 def test_example_registry_registers_with_one_key(monkeypatch):
@@ -85,7 +85,7 @@ def test_quickstart_routing_example_declares_no_endpoint():
     """
     import yaml
 
-    example = REPO_ROOT / "config" / "examples" / "routing.minimal.yaml"
+    example = REPO_ROOT / "config" / "examples" / "routing.minimal.json"
     assert example.exists(), "README.md#quickstart points ROUTING_CONFIG_PATH here"
 
     config = yaml.safe_load(example.read_text())
@@ -97,4 +97,4 @@ def test_quickstart_routing_example_declares_no_endpoint():
     assert "routing_parameter" not in config
 
     readme = (REPO_ROOT / "README.md").read_text()
-    assert "ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml" in readme
+    assert 'ROUTING_POLICY="$(cat config/examples/routing.minimal.json)"' in readme

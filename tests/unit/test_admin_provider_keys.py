@@ -982,6 +982,52 @@ async def test_delete_db_key_preserves_value_shared_by_another_db_row(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("revoke", ["disable", "delete"])
+async def test_revoking_a_key_a_runtime_route_pins_takes_it_out_of_every_pool_at_once(
+    client, revoke
+):
+    """A runtime route pinned to a DB key carries it in its config, not as an env key.
+
+    Counted as an env copy, the value stayed in every pool of this process
+    after the row was disabled or deleted, until another refresh removed it.
+    """
+    http, _store = client
+    pinned_key = "zai-pinned-db-key-cccccccccccc"
+    configured = _registered_provider_adapter("zai", api_key="zai-env-key-dddddddddddd")
+    dynamic_keys.register_adapter_for_provider("zai", configured)
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": pinned_key},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+    runtime_route = OpenAICompatAdapter(
+        ModelConfig(
+            id="runtime-model",
+            name="runtime-model",
+            provider="zai",
+            base_url="https://zai.example/v1",
+            api_keys=[pinned_key],
+            provider_model_id="Provider/Test-Model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider(
+        "zai", runtime_route, allow_db_key_injection=False, api_key_id=key_id
+    )
+    assert pinned_key in configured._key_pool.snapshot_keys()
+
+    if revoke == "disable":
+        resp = await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+    else:
+        resp = await http.delete(f"/admin/provider-keys/{key_id}", headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pools_updated"] == 2
+    assert pinned_key not in runtime_route._key_pool.snapshot_keys()
+    assert configured._key_pool.snapshot_keys() == ["zai-env-key-dddddddddddd"]
+
+
+@pytest.mark.asyncio
 async def test_enable_env_key_only_restores_to_owning_pool(client):
     """Re-enabling an env key re-adds it only to adapters configured with it.
 

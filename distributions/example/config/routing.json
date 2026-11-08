@@ -1,0 +1,7 @@
+{
+  "default_router": "fixed",
+  "timeout": 2,
+  "health_check": 300,
+  "local_deployment": [],
+  "remote_deployment": []
+}

@@ -16,7 +16,7 @@ Alias
   the model.
 
 Model registry
-: The YAML file, usually `models.yaml`, that lists every model id and the
+: The `MODEL_CATALOG` database setting that lists every model id and the
   routes behind it. [Configuration](configuration.md) explains how the gateway
   finds it.
 
@@ -86,31 +86,30 @@ Offload route
   time. See [Queue-wait offload](routing.md#queue-wait-offload).
 
 Routing file
-: The optional `routing.yaml`. It holds health-probe settings and a
+: The optional `ROUTING_POLICY` database setting. It holds health-probe settings and a
   local/remote weight split; see [The routing file](configuration.md#the-routing-file)
   for what it does and does not change.
 
 ## Deployments
 
 Distribution
-: One deployment's own files — its manifest, model registry, routing file,
-  branding and Compose settings — kept together in `distributions/<name>/`
-  instead of in the source. `distributions/example/` is the one this
-  repository ships.
+: One deployment's code, assets and Compose settings, kept together in
+  `distributions/<name>/`. Application settings, including identity, branding
+  and the model catalog, live in the database. `distributions/example/` is
+  the tutorial this repository ships.
 
 Overlay
 : The `distributions/<name>/` directory itself. It is called an overlay
   because it is mounted over the neutral image rather than built into it.
 
 Manifest
-: `distribution.yaml`, the file in a distribution that names it and says where
-  its configuration files are.
+: The retired application configuration file `distribution.yaml`. Its identity
+  and feature settings now live in Admin's `SITE_CONFIGURATION` document;
+  application file paths are no longer used at startup.
 
 Dry run and active
-: The two modes of `DISTRIBUTION_CONFIG_MODE`. In a dry run — the default,
-  written `dark` in the setting — the gateway reads and checks the manifest
-  and logs what it would change, but uses nothing from it. `active` applies
-  it.
+: Retired modes of `DISTRIBUTION_CONFIG_MODE`. Saved database settings now
+  determine the site configuration, without a manifest mode switch.
 
 Operational store
 : The Postgres tables that hold accounts, API keys and everything changed from

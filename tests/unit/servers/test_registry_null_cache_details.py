@@ -138,7 +138,7 @@ def test_non_boolean_scalar_is_refused(tmp_path, monkeypatch, scalar):
             null_cache_details_means_miss: {scalar}
     """
 
-    with pytest.raises(ValueError, match="must be a YAML boolean"):
+    with pytest.raises(ValueError, match="must be a boolean"):
         _load(tmp_path, monkeypatch, body)
 
 

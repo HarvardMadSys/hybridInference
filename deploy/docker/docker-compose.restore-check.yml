@@ -1,0 +1,56 @@
+# The throwaway database server `make restore-check` restores a backup into
+# (ops/admin/gateway_ops.py), never the deployment's own: a restore there adds
+# the load, the WAL and a second copy of the data to the server the gateway
+# serves from. gateway_ops names the container, its volume and its network
+# per run, through RESTORE_CHECK_NAME, and removes all three afterwards.
+#
+# The volume still lives where Docker keeps volumes, normally the disk of the
+# deployment's own database volume, so the drill checks the free space there
+# before it restores anything.
+#
+# Same image, database, user and password as the deployment's `postgres`
+# service: the dump restores under the gateway's own database user, and the
+# backend's migrations reach it with the deployment's settings, DB_HOST aside.
+services:
+  restore-check:
+    image: ${RESTORE_CHECK_IMAGE:?set by gateway_ops restore-check}
+    container_name: ${RESTORE_CHECK_NAME:?set by gateway_ops restore-check}
+    # As the base file rotates every service's log.
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
+    environment:
+      POSTGRES_DB: ${DB_NAME:?DB_NAME must be set in .env file}
+      POSTGRES_USER: ${DB_USER:?DB_USER must be set in .env file}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env file}
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C.UTF-8"
+    volumes:
+      - restore_check_data:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP: the image's first-start server listens on its socket alone
+      # and restarts once initialisation is done.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - restore-check
+
+  # Only the one-off backend that migrates the restored database joins it.
+  backend:
+    networks:
+      - restore-check
+
+volumes:
+  restore_check_data:
+    name: ${RESTORE_CHECK_NAME:?set by gateway_ops restore-check}
+
+networks:
+  # Internal: neither the restored copy nor the migration reaches out.
+  restore-check:
+    name: ${RESTORE_CHECK_NAME:?set by gateway_ops restore-check}
+    internal: true

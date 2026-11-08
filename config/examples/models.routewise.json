@@ -1,0 +1,62 @@
+{
+  "models": [
+    {
+      "id": "routewise-demo",
+      "name": "RouteWise Demo (two providers, one model)",
+      "provider": "openai_compat",
+      "context_length": 8192,
+      "max_output_length": 2048,
+      "supports_tools": false,
+      "supported_params": [
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "stop",
+        "stream"
+      ],
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "pricing": {
+        "prompt": "0",
+        "completion": "0",
+        "image": "0",
+        "request": "0"
+      },
+      "router": "routewise",
+      "router_params": {
+        "budget_alpha": 0.0,
+        "routewise_probe_enabled": true,
+        "routewise_probe_interval_sec": 5.0,
+        "routewise_probe_idle_only": false
+      },
+      "route": [
+        {
+          "kind": "openai_compat",
+          "weight": 1.0,
+          "base_url": "http://127.0.0.1:18351/v1",
+          "api_key": "",
+          "provider_model_id": "example-upstream",
+          "pricing": {
+            "prompt": "3.00",
+            "completion": "12.00"
+          }
+        },
+        {
+          "kind": "openai_compat",
+          "weight": 1.0,
+          "base_url": "http://127.0.0.1:18352/v1",
+          "api_key": "",
+          "provider_model_id": "example-upstream",
+          "pricing": {
+            "prompt": "0.10",
+            "completion": "0.40"
+          }
+        }
+      ]
+    }
+  ]
+}

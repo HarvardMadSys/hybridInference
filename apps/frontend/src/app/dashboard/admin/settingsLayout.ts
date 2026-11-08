@@ -97,7 +97,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
   {
     key: 'models',
     label: 'Models',
-    blocks: [panel('model-visibility'), panel('model-concurrency')],
+    blocks: [config('application'), panel('model-visibility'), panel('model-concurrency')],
   },
   {
     key: 'batch',

@@ -319,4 +319,6 @@ async def reset_epoch(
         store.transaction(expected=expected) as transaction,
         transaction.connection() as conn,
     ):
-        return await revisions.reset_epoch(conn, expected=expected)
+        version = await revisions.reset_epoch(conn, expected=expected)
+        await revisions.reset_epoch(conn, expected=None, source="routing")
+        return version

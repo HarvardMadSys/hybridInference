@@ -37,13 +37,19 @@ def test_every_service_rotates_its_log() -> None:
 
 
 def test_the_overlays_keep_the_base_log_rotation() -> None:
-    """A service an overlay adds, or whose logging it sets, would escape the rotation."""
+    """A service an overlay adds, or whose logging it sets, would escape the rotation.
+
+    So an overlay never sets a base service's logging, and a service of its own
+    -- the restore drill's throwaway database server -- rotates the same way.
+    """
     assert OVERLAYS, "the overlay scan went blind"
     base = _services()
     for overlay in OVERLAYS:
         for name, service in _services(overlay).items():
-            assert name in base, f"{overlay.name} adds {name}, which the base does not rotate"
-            assert "logging" not in service, f"{overlay.name} overrides {name}'s logging"
+            if name in base:
+                assert "logging" not in service, f"{overlay.name} overrides {name}'s logging"
+            else:
+                assert service.get("logging") == ROTATED, f"{overlay.name} adds {name} unrotated"
 
 
 def test_the_env_example_writes_no_log_file() -> None:
