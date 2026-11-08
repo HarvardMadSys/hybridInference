@@ -56,6 +56,7 @@ from serving.batch.admission import has_invalid_unicode
 from serving.batch.delivery import READ_LEASE_SECONDS, LeaseKeeper
 from serving.batch.targets import TARGET_URLS, ItemRejected, resolve_model
 from serving.batch.validation import LineTooLong, iter_lines
+from serving.request_limits import chat_limit_problem
 from serving.schemas import ChatCompletionRequest, EmbeddingRequest
 from serving.storage.batch_file_store import CHUNK_BYTES
 from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
@@ -930,6 +931,15 @@ class ConsoleScan:
                 continue
             custom_id = _custom_id_of(entry) or ""
             body = dict(entry["body"])
+            if target == TARGET_CHAT and (problem := chat_limit_problem(body)) is not None:
+                self._errors.add(
+                    "invalid_request",
+                    problem,
+                    line=line_no,
+                    custom_id=custom_id,
+                    field="body",
+                )
+                continue
             row_ok = True
             for path in unsupported_fields(body, request_model, "body"):
                 key = path.split(".", 2)[1].split("[")[0] if path.count(".") == 1 else ""

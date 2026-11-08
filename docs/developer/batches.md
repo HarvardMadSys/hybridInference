@@ -58,6 +58,11 @@ starts its requests as soon as their models have room. From then on each
 request succeeds or fails on its own: a request the model rejects, or that
 still fails after its retries, fails alone, and the others keep running.
 
+Validation, including console preflight, applies the same per-request limits
+on messages, content parts, tools and stop sequences as interactive requests.
+Every JSON number must be finite, including numbers nested in tool arguments
+or schemas.
+
 Each request then runs exactly as if you had sent it to its endpoint yourself:
 the same models, routing and fallback, the same price, logged under your
 account. It counts toward your daily cost quota. It does **not** take a slot of
@@ -86,6 +91,10 @@ any limit allows, usually a long or repetitive output with a large
 count toward pausing the model, which several failures in a row do: one
 runaway request says nothing about the model's health.
 
+If a provider's response cannot be encoded as valid JSON and UTF-8, the request
+fails permanently with `upstream_error` (`502`). It is not retried, and any
+known charge remains recorded.
+
 A model served on demand (a cluster job, say) may answer that it is queued:
 its deployment is waiting for a GPU. That answer (a `503` with the error code
 `model_queued`) is not a failure and uses up no attempt. The request goes back
@@ -94,6 +103,8 @@ to the queue, the model takes no new batch requests for the deployment's
 this until the model is up or the batch's completion window ends. The same
 answer reaches an interactive caller as a `503` with the deployment's message,
 and neither the circuit breaker nor the failed-request alerts count it.
+Negative or non-finite `Retry-After` values use the two-minute default; finite
+delays are capped at 168 hours.
 
 An operator may lift the window altogether by setting
 `BATCH_COMPLETION_WINDOW_HOURS` to `0` (see

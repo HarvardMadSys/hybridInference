@@ -30,6 +30,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from serving.batch.admission import declared_length_exceeds
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import DownloadInterrupted, stream_lines, stream_upload
 from serving.batch.multipart import MultipartError, boundary_of, limited, read_multipart
@@ -238,12 +239,7 @@ async def store_upload(
         raise HTTPException(
             400, "Content-Type must be multipart/form-data with a boundary"
         ) from None
-    declared = request.headers.get("content-length")
-    if (
-        declared is not None
-        and declared.isdigit()
-        and int(declared) > config.max_body_bytes + _MULTIPART_OVERHEAD
-    ):
+    if declared_length_exceeds(request, config.max_body_bytes + _MULTIPART_OVERHEAD):
         raise HTTPException(
             413,
             f"The file exceeds the batch size limit of {config.max_body_bytes // (1024 * 1024)} MiB",
