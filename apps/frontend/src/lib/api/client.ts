@@ -23,6 +23,10 @@ let accountChanged = false;
 let keptSignedOut = false;
 // Set once this document has asked to be replaced. See reloadDocument.
 let reloading = false;
+// The generation notifyAuthExpired left behind. While it is still the current
+// one, this tab's session ended on its own -- refused at a refresh -- rather
+// than giving way to another; see sessionGoneError.
+let expiredGeneration = -1;
 
 // These events are ephemeral within one loaded console bundle, not persisted
 // distribution state. Keeping a stable neutral name lets storageKeyPrefix be
@@ -57,6 +61,7 @@ export async function safeFetch(input: string, init?: RequestInit): Promise<Resp
 
 function notifyAuthExpired(): void {
   setAccessToken(null);
+  expiredGeneration = sessionGeneration;
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
   }
@@ -175,6 +180,22 @@ function tokenSubject(token: string | null): string | null {
   return typeof sub === 'string' && sub ? sub : null;
 }
 
+/** The account this tab's token names -- expired or not -- or null without one. */
+export function tokenAccount(): string | null {
+  return tokenSubject(getAccessToken());
+}
+
+/**
+ * Whether `error`, from a request that needed this tab's session, says the
+ * session is gone -- refused (401, 403), ended or replaced -- rather than only
+ * that the request failed: a 5xx, a 429, no answer at all.
+ */
+export function isSessionGone(error: unknown): boolean {
+  if (!(error instanceof APIError)) return false;
+  if (error.statusCode === 401 || error.statusCode === 403) return true;
+  return ['ACCOUNT_CHANGED', 'TOKEN_EXPIRED', 'SESSION_NOT_FOUND'].includes(error.code);
+}
+
 /**
  * Run a request that rotates the session cookie with every other tab's held off.
  *
@@ -212,9 +233,20 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
           signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
         });
         if (generation !== sessionGeneration) return false;
-        if (!resp.ok) {
+        if (resp.status === 401 || resp.status === 403) {
+          // The server refused the session: it has ended.
           notifyAuthExpired();
           return false;
+        }
+        if (!resp.ok) {
+          // Anything else says nothing about the session -- the gateway
+          // restarting, its pool busy, a rate limit -- so the tab keeps it, and
+          // the request that needed a token fails with an error it can retry.
+          throw new APIError(
+            httpStatusToErrorCode(resp.status),
+            `HTTP ${resp.status}: ${resp.statusText}`,
+            resp.status,
+          );
         }
         const data = await resp.json();
         if (generation !== sessionGeneration) return false;
@@ -248,6 +280,17 @@ function accountChangedError(): APIError {
   return new APIError('ACCOUNT_CHANGED', ERROR_MESSAGES.ACCOUNT_CHANGED);
 }
 
+/**
+ * Why a request's session is gone: it ended on its own (a refresh was refused,
+ * and nothing replaced it since), or another account or session took its place.
+ */
+function sessionGoneError(): APIError {
+  if (!accountChanged && sessionGeneration === expiredGeneration && !getAccessToken()) {
+    return new APIError('TOKEN_EXPIRED', ERROR_MESSAGES.TOKEN_EXPIRED, 401);
+  }
+  return accountChangedError();
+}
+
 export async function fetchWithAuth(
   apiBase: string,
   input: string,
@@ -261,7 +304,7 @@ export async function fetchWithAuth(
     await refreshAccessToken(apiBase);
     // Sending without a token now would earn a 401 whose retry runs as the
     // other account, the very switch the refresh just refused.
-    if (accountChanged || generation !== sessionGeneration) throw accountChangedError();
+    if (accountChanged || generation !== sessionGeneration) throw sessionGoneError();
     token = getAccessToken();
   }
 
@@ -277,10 +320,10 @@ export async function fetchWithAuth(
   if (resp.status !== 401) return resp;
   // A 401 for a session that has since been replaced: refreshing now would
   // refresh the new session and send this request again as it.
-  if (generation !== sessionGeneration) throw accountChangedError();
+  if (generation !== sessionGeneration) throw sessionGoneError();
 
   const refreshed = await refreshAccessToken(apiBase);
-  if (accountChanged || generation !== sessionGeneration) throw accountChangedError();
+  if (accountChanged || generation !== sessionGeneration) throw sessionGoneError();
   if (!refreshed) {
     notifyAuthExpired();
     return resp;
@@ -380,21 +423,21 @@ export async function uploadWithAuth(
     await refreshAccessToken(apiBase);
     token = getAccessToken();
   }
-  if (!owns()) throw accountChangedError();
+  if (!owns()) throw sessionGoneError();
   const generation = sessionGeneration;
   const same = () => owns() && generation === sessionGeneration;
   const url = `${apiBase}${input}`;
   const resp = await xhrSend(url, body, token, options.onProgress, options.signal);
-  if (!same()) throw accountChangedError();
+  if (!same()) throw sessionGoneError();
   if (resp.status !== 401) return resp;
   const refreshed = await refreshAccessToken(apiBase);
-  if (!same()) throw accountChangedError();
+  if (!same()) throw sessionGoneError();
   if (!refreshed) {
     notifyAuthExpired();
     return resp;
   }
   const retried = await xhrSend(url, body, getAccessToken(), options.onProgress, options.signal);
-  if (!same()) throw accountChangedError();
+  if (!same()) throw sessionGoneError();
   return retried;
 }
 
