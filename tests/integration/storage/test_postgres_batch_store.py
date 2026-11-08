@@ -831,6 +831,33 @@ async def test_an_expired_lease_is_reclaimed_and_the_attempt_counts(pool, store)
     assert await _complete(store, reclaimed, worker="worker-2") is True
 
 
+async def test_an_expired_claim_cannot_start_an_upstream_request(pool, store):
+    model = _model()
+    await _create(store, _items(model, 1))
+    (item,) = await _claim(store, model)
+    await _expire_lease(pool, item["id"])
+
+    # Authentication or admission may have outlasted this claim. The worker
+    # must not start generation now that another worker may take the item.
+    assert not await store.mark_dispatched(
+        item_id=item["id"], worker_id="worker-1", attempt=item["attempt_seq"]
+    )
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT dispatched_at FROM batch_attempts WHERE item_id = $1 AND attempt_no = $2",
+                item["id"],
+                item["attempt_seq"],
+            )
+            is None
+        )
+
+    (reclaimed,) = await _claim(store, model, worker="worker-2")
+    assert await store.mark_dispatched(
+        item_id=reclaimed["id"], worker_id="worker-2", attempt=reclaimed["attempt_seq"]
+    )
+
+
 async def test_a_claim_never_takes_an_item_the_claimant_says_it_is_running(pool, store):
     model = _model()
     await _create(store, _items(model, 2))

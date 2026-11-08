@@ -154,3 +154,37 @@ async def test_suspended_download_renews_lease_and_resource_horizon(monkeypatch)
                 await conn.execute("DELETE FROM batch_read_leases WHERE file_id = $1", file_id)
             await conn.execute("DELETE FROM batch_files WHERE user_id = $1", owner)
         await pool.close()
+
+
+async def test_request_export_does_not_silently_truncate_after_owner_erasure(monkeypatch):
+    pool = await postgres.create_pool(min_size=1, max_size=4)
+    store = BatchStore(pool)
+    owner = f"review-request-export-{uuid.uuid4().hex}"
+    batch_id = f"batch_{uuid.uuid4().hex}"
+    stream = None
+    monkeypatch.setattr(delivery, "PAGE", 1)
+    try:
+        await store.create_batch(
+            batch_id=batch_id,
+            user_id=owner,
+            key_hash=None,
+            endpoint="/v1/embeddings",
+            model_ids=["m"],
+            items=[
+                {"custom_id": str(i), "model_id": "m", "request": {"model": "m", "input": str(i)}}
+                for i in range(3)
+            ],
+            metadata=None,
+            completion_window_seconds=None,
+            target="embeddings",
+        )
+        stream = delivery.stream_requests(store=store, batch_id=batch_id, url="/v1/embeddings")
+        assert b'"custom_id":"0"' in await anext(stream)
+        assert await store.delete_user_batches(owner) == 1
+        with pytest.raises(delivery.DownloadInterrupted):
+            await anext(stream)
+    finally:
+        if stream is not None:
+            await stream.aclose()
+        await store.delete_user_batches(owner)
+        await pool.close()

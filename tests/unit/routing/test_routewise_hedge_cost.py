@@ -161,11 +161,14 @@ def test_a_checkpoint_reads_the_primary_cdf_once_per_value(monkeypatch):
 @pytest.mark.unit
 def test_a_request_is_estimated_once_and_boundedly(monkeypatch):
     calls: list[Any] = []
+    estimates: list[int] = []
     bounded = router_module.estimate_prompt_tokens_bounded
 
     def counting(messages, **kwargs):
         calls.append(messages)
-        return bounded(messages, **kwargs)
+        estimate = bounded(messages, **kwargs)
+        estimates.append(estimate)
+        return estimate
 
     monkeypatch.setattr(router_module, "estimate_prompt_tokens_bounded", counting)
     assert not hasattr(router_module, "estimate_prompt_tokens")
@@ -177,4 +180,6 @@ def test_a_request_is_estimated_once_and_boundedly(monkeypatch):
     router._select_decision("m", context).release()
 
     assert calls == [messages]
-    assert context["prompt_tokens_estimate"] == (messages, bounded(messages))
+    # The estimator has a time budget, so a second computation need not
+    # produce the same estimate. The cache must retain the first computation.
+    assert context["prompt_tokens_estimate"] == (messages, estimates[0])

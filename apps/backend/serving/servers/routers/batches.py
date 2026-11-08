@@ -321,7 +321,11 @@ def _envelope_error(exc: ValidationError, decoded: Any) -> str:
 def _parse_create_body(raw: bytes | bytearray) -> tuple[BatchCreateRequest, Any]:
     """Decode and validate the create body, parsing the JSON once."""
     try:
-        decoded = json.loads(raw, parse_constant=admission.reject_json_constant)
+        decoded = json.loads(
+            raw,
+            parse_constant=admission.reject_json_constant,
+            parse_float=admission.finite_json_float,
+        )
     except (ValueError, RecursionError) as exc:
         raise HTTPException(400, "Request body is not valid JSON") from exc
     if admission.has_invalid_unicode(decoded):
