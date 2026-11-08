@@ -356,7 +356,7 @@ def deploy(args: argparse.Namespace) -> None:
         [*compose, "run", "--rm", "--no-deps", "backend", "python", "-m", "migrations", "upgrade"],
         env=env,
     )
-    if args.legacy_manifest:
+    if args.legacy_manifest or args.legacy_import_option:
         # Before the switch, with the new image, so the release starts on the
         # site policy and alert rules its predecessor read from files. Settings
         # already stored are kept, so running it again changes nothing.
@@ -372,7 +372,7 @@ def deploy(args: argparse.Namespace) -> None:
                 "serving.config.manage",
                 "import-legacy",
                 *args.legacy_import_option,
-                args.legacy_manifest,
+                *([args.legacy_manifest] if args.legacy_manifest else []),
             ],
             env=env,
         )
@@ -573,7 +573,8 @@ def main() -> int:
         "--legacy-import-option",
         action="append",
         default=[],
-        help="deploy: pass an option to import-legacy; repeat for several",
+        help="deploy: pass an option to import-legacy, which then runs even without a "
+        "manifest; repeat for several",
     )
     parser.add_argument("--backup", type=Path, default=Path(".ops/none/gateway.dump"))
     parser.add_argument(

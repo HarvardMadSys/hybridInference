@@ -79,10 +79,17 @@ def test_a_legacy_manifest_is_imported_after_the_migrations_and_before_the_start
     starts = [i for i, line in enumerate(lines) if " up -d" in line and not line.endswith(DATABASE)]
     assert migration < imported < min(starts), lines
     assert lines[imported].endswith(
-        "run --rm --no-deps backend python -m serving.config.manage import-legacy  "
+        "run --rm --no-deps backend python -m serving.config.manage import-legacy "
         '"distributions/site/distribution.yaml"'
     )
     assert not any("import-legacy" in line for line in _compose_lines(target))
+    # Files the environment names, or an explicit one, need no manifest.
+    (options_only,) = [
+        line
+        for line in _compose_lines(target, "LEGACY_IMPORT_OPTIONS=--alerts=/app/alerts.yaml")
+        if "import-legacy" in line
+    ]
+    assert options_only.endswith("import-legacy --alerts=/app/alerts.yaml")
 
 
 def test_deploy_hands_the_legacy_manifest_and_its_options_to_gateway_ops():

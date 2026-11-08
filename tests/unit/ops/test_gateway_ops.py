@@ -246,6 +246,17 @@ def test_a_failed_legacy_import_never_switches_running_services(tmp_path, monkey
     switch.assert_not_called()
 
 
+def test_import_options_alone_import_the_files_the_environment_names(tmp_path, monkeypatch):
+    args = arguments(tmp_path, legacy_import_option=["--alerts=/app/alerts.yaml"])
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
+    calls = []
+    monkeypatch.setattr(ops, "command", lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(ops, "_wait", Mock())
+    ops.deploy(args)
+    (imported,) = [argv for argv in calls if "import-legacy" in argv]
+    assert imported[-2:] == ["import-legacy", "--alerts=/app/alerts.yaml"]
+
+
 def test_no_legacy_manifest_imports_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
     calls = []

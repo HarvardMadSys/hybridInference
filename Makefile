@@ -359,10 +359,11 @@ DEMO_MIGRATE := $(DEMO_COMPOSE) run --rm --no-deps backend python -m migrations 
 # container sees it (distributions/<name>/distribution.yaml, or the deployment's
 # DISTRIBUTION_CONFIG_PATH), and the image about to start imports it after the
 # migrations, before it serves. Settings already stored are kept, so a repeat
-# changes nothing. LEGACY_IMPORT_OPTIONS passes options on to import-legacy.
+# changes nothing. LEGACY_IMPORT_OPTIONS passes options on to import-legacy
+# (--include-dark, --alerts=<file>), and runs it even without a manifest.
 LEGACY_MANIFEST ?=
 LEGACY_IMPORT_OPTIONS ?=
-LEGACY_IMPORT := $(if $(LEGACY_MANIFEST),$(COMPOSE) run --rm --no-deps backend python -m serving.config.manage import-legacy $(LEGACY_IMPORT_OPTIONS) "$(LEGACY_MANIFEST)",)
+LEGACY_IMPORT := $(if $(LEGACY_MANIFEST)$(LEGACY_IMPORT_OPTIONS),$(COMPOSE) run --rm --no-deps backend python -m serving.config.manage import-legacy$(if $(LEGACY_IMPORT_OPTIONS), $(LEGACY_IMPORT_OPTIONS))$(if $(LEGACY_MANIFEST), "$(LEGACY_MANIFEST)"),)
 
 docker-volumes:  ## Create external Docker volumes required by production compose
 	@for volume in $(DOCKER_VOLUMES); do \
