@@ -333,6 +333,14 @@ msgid "if your role no longer allows batches, they pause until it does."
 msgstr "如果你的角色不再允许使用批量推理，批次会暂停，直到重新允许为止。"
 
 #: ../developer/batches.md:88
+msgid ""
+"The quotas and budgets count your requests still running at what they may"
+" cost. When those alone stand in the way, and what has been charged leaves"
+" room, nothing pauses: the request waits half a minute and is checked "
+"again."
+msgstr "配额和预算会把你仍在运行的请求按其可能的费用计入。如果只是这些请求挡住了去路，而已计费的金额仍有余量，就不会暂停：该请求等待半分钟后再次检查。"
+
+#: ../developer/batches.md:88
 msgid "So keep the key you created a batch with until the batch finishes."
 msgstr "所以在批次完成之前，请保留创建它所用的 key。"
 

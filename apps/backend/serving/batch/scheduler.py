@@ -61,6 +61,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import os
 import random
 import secrets
@@ -100,6 +101,7 @@ if TYPE_CHECKING:
     from serving.batch.config import BatchConfig
     from serving.batch.dispatch import DispatchResult
     from serving.batch.interactive_load import SharedInteractiveLoad
+    from serving.spend_ledger import SpendCheck
 
 logger = get_logger(__name__)
 
@@ -154,6 +156,11 @@ class SchedulerTimings:
     #: How long the batches of an owner whose role no longer qualifies stay
     #: paused before the role is checked again.
     role_pause_seconds: float = 300.0
+    #: How long an owner's items wait when a cost limit refuses them only
+    #: because of what is still in flight (the reservations of requests
+    #: running, costs not written yet), while what the database holds leaves
+    #: room: those end soon, and the limit is checked again then.
+    spend_retry_seconds: float = 30.0
     #: At most how long batches paused on a spent key budget or a spent monthly
     #: quota wait before the limit is checked again: a budget or quota can be
     #: raised any time, and a monthly one renews only at the start of the month.
@@ -286,6 +293,8 @@ class BatchScheduler:
         self._owner_running: Counter[str] = Counter()
         self._owner_slots: Counter[str] = Counter()
         self._owner_roles: dict[str, tuple[str, bool]] = {}
+        # Owners held back here for a moment (see _refused_spend), until when.
+        self._owner_held: dict[str, float] = {}
         self._failure_streak: Counter[str] = Counter()
         self._cooldown_until: dict[str, float] = {}
         # A model's current wait for capacity upstream: since when, the latest
@@ -810,7 +819,16 @@ class BatchScheduler:
             cap = self._owner_cap(owner, cfg)
             if cap is not None:
                 rooms[owner] = max(0, cap - self._owner_running[owner])
+        for owner in self._held_owners():
+            rooms[owner] = 0
         return rooms
+
+    def _held_owners(self) -> list[str]:
+        """The owners held back here for a moment, forgetting the holds that ended."""
+        now = self._clock()
+        for owner in [o for o, until in self._owner_held.items() if until <= now]:
+            del self._owner_held[owner]
+        return list(self._owner_held)
 
     def _remember_role(self, owner: str, user_ctx: dict[str, Any]) -> None:
         """Note the role an owner just authenticated with, for the next claim's rooms."""
@@ -994,6 +1012,9 @@ class BatchScheduler:
             # owner up only to find that out.
             await self._defer_for_slot(entry)
             return
+        if entry.user_id in self._held_owners():
+            await self._release(entry, delay=self._timings.spend_retry_seconds)
+            return
         try:
             user_ctx = await authenticate_stored_key(
                 item.get("key_hash"), getattr(self._services, "operational_store", None)
@@ -1003,7 +1024,7 @@ class BatchScheduler:
             await self._fail_batch(batch_id, exc.reason)
             return
         except StoredKeyQuotaExceeded as exc:
-            await self._defer_for_spent_limit(entry, item, exc)
+            await self._refused_spend(entry, item, exc, getattr(exc, "check", None))
             return
         except Exception:
             logger.warning(
@@ -1061,8 +1082,8 @@ class BatchScheduler:
             if check is not None:
                 reservation, refusal = check.admit()
                 if refusal is not None:
-                    await self._defer_for_spent_limit(
-                        entry, item, stored_key_quota_exceeded(refusal)
+                    await self._refused_spend(
+                        entry, item, stored_key_quota_exceeded(refusal), check
                     )
                     return
             marked = await self._store.mark_dispatched(
@@ -1092,6 +1113,33 @@ class BatchScheduler:
                 reservation.release()
             give_back()
         await self._settle(entry, result, attempts, cfg)
+
+    async def _refused_spend(
+        self,
+        entry: _InFlight,
+        item: dict[str, Any],
+        exc: StoredKeyQuotaExceeded,
+        check: SpendCheck | None,
+    ) -> None:
+        """Hand back an item a cost limit refused, and hold back what the refusal covers.
+
+        A refusal counts the requests in flight (each holds a reservation of
+        its estimated cost while it runs) and costs not written yet, besides
+        what the database holds. When the database alone still leaves room,
+        the limit is not spent: the owner's items wait here for
+        ``spend_retry_seconds``, until what is in flight has ended, instead of
+        pausing every batch of the owner until the limit renews. Refused
+        again on what the database holds, they pause as a spent limit does.
+        """
+        if check is not None and dataclasses.replace(check, ledger=None).refusal() is None:
+            logger.debug(
+                "batch item %s: refused only by what is in flight; retrying shortly",
+                entry.item_id,
+            )
+            self._owner_held[entry.user_id] = self._clock() + self._timings.spend_retry_seconds
+            await self._release(entry, delay=self._timings.spend_retry_seconds)
+            return
+        await self._defer_for_spent_limit(entry, item, exc)
 
     async def _defer_for_spent_limit(
         self, entry: _InFlight, item: dict[str, Any], exc: StoredKeyQuotaExceeded

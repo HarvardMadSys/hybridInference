@@ -121,7 +121,9 @@ class StoredKeyQuotaExceeded(Exception):
     Raised by :func:`authenticate_stored_key`. ``scope`` says whose limit ran
     out: the account's quota (``"account"``) or the key's own budget
     (``"key"``); ``window`` is ``"day"`` or ``"month"``, and ``reset_at`` is
-    when that window renews.
+    when that window renews. ``check`` is the gate's reading the refusal was
+    made on, when there was one: it tells a limit the database shows spent
+    from one taken only by requests still in flight.
     """
 
     def __init__(
@@ -132,6 +134,7 @@ class StoredKeyQuotaExceeded(Exception):
         reset_at: datetime,
         scope: quota.Scope = "account",
         window: quota.Window = "day",
+        check: SpendCheck | None = None,
     ) -> None:
         """Record the limit, the spend, and when and for whom it renews."""
         super().__init__(
@@ -143,6 +146,7 @@ class StoredKeyQuotaExceeded(Exception):
         self.reset_at = reset_at
         self.scope = scope
         self.window = window
+        self.check = check
 
 
 def _quota_contact() -> str:
@@ -1170,7 +1174,7 @@ async def authenticate_stored_key(
         )
         refusal = check.refusal()
         if refusal is not None:
-            raise stored_key_quota_exceeded(refusal)
+            raise stored_key_quota_exceeded(refusal, check=check)
     context = _user_context(
         user,
         key_hash=key_hash,
@@ -1184,14 +1188,17 @@ async def authenticate_stored_key(
     return context
 
 
-def stored_key_quota_exceeded(refusal: quota.BudgetRefusal) -> StoredKeyQuotaExceeded:
-    """The :class:`StoredKeyQuotaExceeded` that reports *refusal*."""
+def stored_key_quota_exceeded(
+    refusal: quota.BudgetRefusal, *, check: SpendCheck | None = None
+) -> StoredKeyQuotaExceeded:
+    """The :class:`StoredKeyQuotaExceeded` that reports *refusal*, made on *check*."""
     return StoredKeyQuotaExceeded(
         quota_usd=refusal.limit_usd,
         spent_usd=refusal.spent_usd,
         reset_at=refusal.reset_at(),
         scope=refusal.scope,
         window=refusal.window,
+        check=check,
     )
 
 

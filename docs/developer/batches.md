@@ -122,6 +122,10 @@ again:
   key's budget lets them resume; batches of your other keys keep running;
 - if your role no longer allows batches, they pause until it does.
 
+The quotas and budgets count your requests still running at what they may
+cost. When those alone stand in the way, and what has been charged leaves
+room, nothing pauses: the request waits half a minute and is checked again.
+
 So keep the key you created a batch with until the batch finishes.
 
 ## Create a batch

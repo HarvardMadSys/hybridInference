@@ -9,6 +9,7 @@ itself, not because a timer fired.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import types
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -1614,7 +1615,11 @@ async def test_an_items_estimated_cost_is_reserved_while_it_runs(worker, dispatc
 async def test_an_item_that_no_longer_fits_is_deferred_and_its_slot_given_back(
     worker, dispatch, auth
 ):
-    """The owner's interactive requests took the rest of the budget since the check."""
+    """The owner's interactive requests took the rest of the budget since the check.
+
+    Only their reservation refuses it: the quota is not spent, so the item
+    waits a moment rather than pausing the owner's batches until it renews.
+    """
     ledger = SpendLedger(object())
     check = _spend_check(ledger, quota_usd=0.015)
     interactive, _ = check.admit()  # in flight elsewhere
@@ -1622,17 +1627,98 @@ async def test_an_item_that_no_longer_fits_is_deferred_and_its_slot_given_back(
     store = FakeStore()
     store.add(1)
     scheduler = worker(store)
+    before = datetime.now(UTC)
 
     scheduler.start()
-    await until(lambda: OWNER in store.paused)
+    await until(lambda: store.calls["release_item"] == 1)
     await settle()
 
-    assert store.pause_reasons[OWNER] == "quota"
+    assert OWNER not in store.paused
     assert store.status(1) == "queued"
+    assert store.items[1]["next_attempt_at"] >= before + timedelta(seconds=SLOW.spend_retry_seconds)
     assert dispatch.calls == []
     assert scheduler._role_slots._slots[OWNER].in_use == 0
     interactive.release()
     assert ledger._reserved_users == {}
+
+
+async def test_a_limit_spent_in_the_database_still_pauses_at_admission(worker, dispatch, auth):
+    ledger = SpendLedger(object())
+    check = dataclasses.replace(_spend_check(ledger, quota_usd=1.0), account_spent_usd=1.0)
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: check})
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+
+    assert store.pause_reasons[OWNER] == "quota"
+    assert dispatch.calls == []
+
+
+async def test_reservations_alone_never_pause_the_owner_until_midnight(worker, dispatch, auth):
+    """$1.00 quota, $0.50 spent, and the owner's own items in flight hold $0.01 each.
+
+    Once enough are in flight, the next is refused on their reservations; the
+    quota is half unspent, so the owner's items wait a moment, not until the
+    day renews, and the next ones run once those in flight are done.
+    """
+    ledger = SpendLedger(object())
+    check = dataclasses.replace(_spend_check(ledger, quota_usd=1.0), account_spent_usd=0.5)
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: check})
+    store = FakeStore()
+    store.add(80)
+    gate = dispatch.hold("m1")
+    scheduler = worker(
+        store,
+        timings=dataclasses.replace(SLOW, spend_retry_seconds=0.05, poll_seconds=0.02),
+    )
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] >= 1)
+    in_flight = dispatch.running["m1"]
+    assert 0 < in_flight < 80
+    assert OWNER not in store.paused
+    gate.set()
+    await until(lambda: store.count("completed") == 80, timeout=10.0)
+    assert OWNER not in store.paused
+
+
+async def test_a_refusal_at_authentication_on_reservations_alone_waits_a_moment(
+    worker, dispatch, auth
+):
+    """The stored key's check refuses first, counting what is in flight; same rule."""
+    ledger = SpendLedger(object())
+    check = _spend_check(ledger, quota_usd=0.015)
+    interactive, _ = check.admit()
+    refusal = check.refusal()
+    assert refusal is not None
+    auth.outcome = scheduler_module.stored_key_quota_exceeded(refusal, check=check)
+    store = FakeStore()
+    store.add(2)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] >= 1)
+    await settle()
+
+    assert OWNER not in store.paused
+    assert store.count("queued") == 2
+    # The owner is held back here meanwhile: claims give them no room.
+    scheduler.notify()
+    await until(lambda: len(store.claims) >= 2)
+    assert store.claims[-1]["user_rooms"].get(OWNER) == 0
+    # Spent in the database, the same refusal pauses as before.
+    spent = dataclasses.replace(check, account_spent_usd=0.015)
+    auth.outcome = scheduler_module.stored_key_quota_exceeded(spent.refusal(), check=spent)
+    scheduler._owner_held.clear()
+    for item in store.items.values():
+        item["next_attempt_at"] = None
+    scheduler.notify()
+    await until(lambda: OWNER in store.paused)
+    assert store.pause_reasons[OWNER] == "quota"
+    interactive.release()
 
 
 async def test_a_failed_dispatch_gives_the_reservation_back(worker, dispatch, auth, monkeypatch):
