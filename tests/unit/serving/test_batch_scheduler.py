@@ -42,6 +42,12 @@ INVALID = DispatchResult(
     status_code=400,
     error={"code": "invalid_request", "message": "bad", "status": 400},
 )
+TIMED_OUT = DispatchResult(
+    status_code=504,
+    error={"code": "timeout", "message": "slow", "status": 504},
+    retryable=True,
+    timed_out=True,
+)
 
 # Long waits unless a test shortens them: progress must come from wake-ups.
 SLOW = SchedulerTimings(
@@ -900,6 +906,24 @@ async def test_a_caller_error_fails_at_once_and_never_cools_the_model(worker, di
     assert {item["attempts"] for item in store.items.values()} == {1}
     assert store.calls["retry_item"] == 0
     assert store.items[1]["error"] == INVALID.error
+
+
+async def test_a_timeout_fails_at_once_and_never_cools_the_model(worker, dispatch):
+    # A request generating past every limit: a retry would only run it away
+    # again, and it says nothing about the model, which keeps taking work.
+    dispatch.results["m1"] = TIMED_OUT
+    store = FakeStore()
+    store.add(4)
+    scheduler = worker(store, caps={"m1": 1}, timings=_fast_retries(cooldown_failures=1))
+
+    scheduler.start()
+    await until(lambda: store.count("failed") == 4)
+
+    assert {item["attempts"] for item in store.items.values()} == {1}
+    assert store.calls["retry_item"] == 0
+    assert store.items[1]["error"] == TIMED_OUT.error
+    assert store.items[1]["status_code"] == 504
+    assert scheduler._cooldown_until == {}
 
 
 @pytest.mark.parametrize("threshold", [1, 2])
