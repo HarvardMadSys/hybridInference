@@ -319,8 +319,9 @@ _FAILED_ITEM_COPY_COLUMNS = (
 # work into more batches earns no extra turns. A user the claimant names a
 # room for ($3 the user ids, $4 the room of each) gets at most that many
 # items, and none at a room of 0: the claimant's own count of the user's
-# running cap. Anyone else may get up to the claim's limit ($2). Read
-# without locks; the claim re-checks.
+# running cap. Anyone else may get up to the claim's limit ($2). Items the
+# claimant names as its own running ones ($5) are never candidates, even with
+# their lease run out. Read without locks; the claim re-checks.
 _CLAIM_CANDIDATES_SQL = f"""
     WITH rooms AS (
         SELECT t.user_id, t.room FROM unnest($3::text[], $4::int[]) AS t(user_id, room)
@@ -351,6 +352,7 @@ _CLAIM_CANDIDATES_SQL = f"""
                    AND (bi.next_attempt_at IS NULL OR bi.next_attempt_at <= now()))
                   OR (bi.status = 'running' AND bi.lease_expires_at <= now())
               )
+              AND bi.id <> ALL($5::bigint[])
             ORDER BY bi.id
             LIMIT jobs.user_room
         ) AS i
@@ -1801,6 +1803,7 @@ class BatchStore:
         max_running: int,
         lease_seconds: int,
         user_rooms: dict[str, int] | None = None,
+        exclude_ids: list[int] | None = None,
     ) -> list[dict[str, Any]]:
         """Claim up to *limit* items of one model for *worker_id*.
 
@@ -1813,6 +1816,10 @@ class BatchStore:
         own count of how many more of that user's items it may run: a user at
         0 is skipped, so the claimant is not handed work it can only give
         back. A user not named in it is not capped here.
+
+        ``exclude_ids`` are items the claimant is running itself: never claimed,
+        not even once their lease has run out, so a worker whose heartbeat
+        lapsed never starts a second run of an item it is still running.
 
         A claimed item becomes ``running`` under a lease of *lease_seconds*,
         with its attempt counted and an attempt record opened; an item taken
@@ -1852,6 +1859,7 @@ class BatchStore:
                 room,
                 list(rooms),
                 [max(0, int(value)) for value in rooms.values()],
+                [int(item_id) for item_id in exclude_ids or ()],
             )
             if not candidates:
                 return []

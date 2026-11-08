@@ -767,6 +767,30 @@ async def test_an_expired_lease_is_reclaimed_and_the_attempt_counts(pool, store)
     assert await _complete(store, reclaimed, worker="worker-2") is True
 
 
+async def test_a_claim_never_takes_an_item_the_claimant_says_it_is_running(pool, store):
+    model = _model()
+    await _create(store, _items(model, 2))
+    (running,) = await _claim(store, model, limit=1)
+    await _expire_lease(pool, running["id"])
+
+    async def claim(exclude: list[int]) -> list[dict[str, Any]]:
+        return await store.claim_items(
+            model_id=model,
+            worker_id="worker-1",
+            limit=10,
+            max_running=100,
+            lease_seconds=300,
+            exclude_ids=exclude,
+        )
+
+    # Its lease ran out, but its worker still runs it: only the other item.
+    (other,) = await claim([running["id"]])
+    assert other["id"] != running["id"]
+    assert await claim([running["id"], other["id"]]) == []
+    # Its own run still records its outcome under the claim it holds.
+    assert await _complete(store, running) is True
+
+
 async def test_paused_expired_and_cancelled_batches_give_nothing(pool, store):
     model = _model()
     paused = await _create(store, _items(model, 1), user="carol")

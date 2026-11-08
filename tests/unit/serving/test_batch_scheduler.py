@@ -138,11 +138,25 @@ class FakeStore:
         )
 
     async def claim_items(
-        self, *, model_id, worker_id, limit, max_running, lease_seconds, user_rooms=None
+        self,
+        *,
+        model_id,
+        worker_id,
+        limit,
+        max_running,
+        lease_seconds,
+        user_rooms=None,
+        exclude_ids=None,
     ):
         rooms = dict(user_rooms or {})
         self.claims.append(
-            {"model_id": model_id, "limit": limit, "max_running": max_running, "user_rooms": rooms}
+            {
+                "model_id": model_id,
+                "limit": limit,
+                "max_running": max_running,
+                "user_rooms": rooms,
+                "exclude_ids": sorted(exclude_ids or ()),
+            }
         )
         now = datetime.now(UTC)
         live = self.count("running", model_id)
@@ -1225,6 +1239,183 @@ async def test_heartbeats_extend_the_leases_of_running_items(worker, dispatch):
     scheduler.start()
     await until(lambda: any(sorted(ids) == [1, 2] for ids in store.heartbeats))
     gate.set()
+
+
+class LeasedStore(FakeStore):
+    """FakeStore with leases as the SQL keeps them.
+
+    A running item whose lease ran out is claimable again unless the claimant
+    names it as its own (``honor_exclusions``), and a heartbeat extends only
+    leases still live. A sweep takes ``sweep_delay`` seconds.
+    """
+
+    def __init__(self, *, sweep_delay: float = 0.0, honor_exclusions: bool = True) -> None:
+        super().__init__()
+        self.lease_until: dict[int, datetime] = {}
+        self.sweep_delay = sweep_delay
+        self.honor_exclusions = honor_exclusions
+
+    async def claim_items(
+        self,
+        *,
+        model_id,
+        worker_id,
+        limit,
+        max_running,
+        lease_seconds,
+        user_rooms=None,
+        exclude_ids=None,
+    ):
+        self.claims.append({"model_id": model_id, "exclude_ids": sorted(exclude_ids or ())})
+        now = datetime.now(UTC)
+        excluded = set(exclude_ids or ()) if self.honor_exclusions else set()
+        live = sum(
+            1
+            for item_id, item in self.items.items()
+            if item["status"] == "running"
+            and item["model_id"] == model_id
+            and self.lease_until.get(item_id, now) > now
+        )
+        room = min(limit, max_running - live)
+        claimed = []
+        for item_id, item in self.items.items():
+            if len(claimed) >= room:
+                break
+            if item["model_id"] != model_id or item_id in excluded:
+                continue
+            lapsed = item["status"] == "running" and self.lease_until.get(item_id, now) <= now
+            waiting = item["next_attempt_at"] is not None and item["next_attempt_at"] > now
+            if not (lapsed or (item["status"] == "queued" and not waiting)):
+                continue
+            item.update(
+                status="running",
+                attempts=item["attempts"] + 1,
+                attempt_seq=item["attempt_seq"] + 1,
+                claimed_by=worker_id,
+                next_attempt_at=None,
+            )
+            self.lease_until[item_id] = now + timedelta(seconds=lease_seconds)
+            claimed.append(dict(item))
+        return claimed
+
+    async def heartbeat(self, *, worker_id, item_ids, lease_seconds):
+        now = datetime.now(UTC)
+        for item_id in item_ids:
+            item = self.items[item_id]
+            if (
+                item["status"] == "running"
+                and item["claimed_by"] == worker_id
+                and self.lease_until[item_id] > now
+            ):
+                self.lease_until[item_id] = now + timedelta(seconds=lease_seconds)
+        self.heartbeats.append(list(item_ids))
+        return len(item_ids)
+
+    async def sweep(self, *, retention_days):
+        self.sweeps.append(retention_days)
+        await asyncio.sleep(self.sweep_delay)
+        return {"expired": 0, "finalized": 0, "purged": 0}
+
+
+def _leases(*, lease: int = 1, heartbeat: float = 0.2, sweep: float = 0.05) -> SchedulerTimings:
+    """Production's lease, heartbeat and sweep (300 s, 60 s, 60 s), scaled down."""
+    return SchedulerTimings(
+        poll_seconds=0.02,
+        idle_poll_seconds=0.02,
+        sweep_seconds=sweep,
+        lease_seconds=lease,
+        heartbeat_seconds=heartbeat,
+        stop_grace_seconds=0.05,
+        record_retry_seconds=(0.0,),
+    )
+
+
+async def test_a_slow_sweep_holds_up_neither_claims_nor_leases(worker, dispatch):
+    store = LeasedStore(sweep_delay=1.5)
+    store.add(1, model="m1", batch="b1")
+    gate = dispatch.hold("m1")
+    scheduler = worker(store, timings=_leases())
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1 and store.sweeps)
+    # The sweep is still running: the worker claims new work all the same ...
+    store.add(1, model="m2", batch="b2")
+    await until(lambda: store.count("completed", "m2") == 1)
+    assert len(store.sweeps) == 1
+    # ... and keeps the running item's lease, which outlasts the sweep.
+    await asyncio.sleep(1.6)
+    assert len(dispatch.calls) == 2
+    assert store.items[1]["attempt_seq"] == 1
+    assert len(store.heartbeats) >= 4
+    gate.set()
+    await until(lambda: store.count("completed", "m1") == 1)
+
+
+async def test_the_heartbeat_keeps_leases_while_a_round_is_stuck(worker, dispatch):
+    store = LeasedStore()
+    store.add(1)
+    gate = dispatch.hold("m1")
+    stuck = asyncio.Event()
+    active_models = store.active_models
+
+    async def slow_active_models():
+        if dispatch.calls:
+            await stuck.wait()
+        return await active_models()
+
+    store.active_models = slow_active_models
+    scheduler = worker(store, timings=_leases(heartbeat=0.1))
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+    beats = len(store.heartbeats)
+    await asyncio.sleep(0.5)
+
+    assert len(store.heartbeats) >= beats + 3
+    stuck.set()
+    gate.set()
+    await until(lambda: store.count("completed") == 1)
+
+
+async def test_an_item_running_here_is_never_claimed_again(worker, dispatch):
+    """Not even once its lease has run out (the heartbeat failing all along)."""
+    store = LeasedStore()
+    store.add(1)
+
+    async def heartbeat_fails(**_kwargs):
+        raise ConnectionError("db blip")
+
+    store.heartbeat = heartbeat_fails
+    gate = dispatch.hold("m1")
+    scheduler = worker(store, timings=_leases(heartbeat=0.05))
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+    await asyncio.sleep(1.3)  # past the 1 s lease
+
+    assert len(dispatch.calls) == 1
+    assert store.claims[-1]["exclude_ids"] == [1]
+    gate.set()
+    await until(lambda: store.count("completed") == 1)
+
+
+async def test_a_claim_that_takes_back_a_running_item_does_not_run_it_twice(worker, dispatch):
+    """The run in progress goes on under the newer claim, and its outcome counts."""
+    store = LeasedStore(honor_exclusions=False)
+    store.add(1)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store, timings=_leases(heartbeat=3600))
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+    await until(lambda: store.items[1]["attempt_seq"] == 2, timeout=3.0)
+    await asyncio.sleep(0.1)
+
+    assert len(dispatch.calls) == 1
+    gate.set()
+    await until(lambda: store.count("completed") == 1)
+    assert store.calls["mark_dispatched"] == 2
+    assert len(dispatch.calls) == 1
 
 
 def _queued(retry_after: float) -> DispatchResult:

@@ -19,9 +19,10 @@ while ``BATCH_SHARED_INTERACTIVE_LOAD`` is on, else this process's own. When the
 shared view cannot be read, no new item starts that round.
 ``BATCH_INTERACTIVE_RESERVE`` keeps that many more slots of every cap free.
 Users take turns before batches do; how many of a user's items run at once is
-their role's batch quota (below). Claimed items carry a lease the loop keeps
-extending; when a process dies its leases run out and any process claims those
-items again.
+their role's batch quota (below). Claimed items carry a lease that a task of
+its own keeps extending, however long a round takes; when a process dies its
+leases run out and any process claims those items again. A process never
+claims an item it is still running, even should its lease have run out.
 
 Before every attempt the item's owner is authenticated afresh from the stored
 key (:func:`~serving.servers.auth.authenticate_stored_key`): a revoked key or
@@ -46,9 +47,10 @@ out however long it lasts. Only such failures count toward cooling a model down;
 upstream call's timeout, the item's deadline), without cooling the model down:
 the request generates past every limit and a retry would only repeat it.
 
-The same loop also does the background work batches need besides inference,
-each in at most one task per process at a time: validating uploaded input
-files (:mod:`serving.batch.validation`), sealing finished file batches
+The same loop also starts the background work batches need besides
+inference, each in at most one task per process at a time and none of it
+holding up a claim: validating uploaded input files
+(:mod:`serving.batch.validation`), sealing finished file batches
 (:mod:`serving.batch.delivery`), delivering webhooks
 (:mod:`serving.batch.webhooks`), and, every sweep, expiry, retention and file
 collection.
@@ -272,6 +274,7 @@ class BatchScheduler:
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._publisher: asyncio.Task[None] | None = None
+        self._heartbeater: asyncio.Task[None] | None = None
         self._background: dict[str, asyncio.Task[Any]] = {}
         self._stopping = False
         self._in_flight: dict[int, _InFlight] = {}
@@ -292,7 +295,6 @@ class BatchScheduler:
         self._queued_alerted: set[str] = set()
         self._alerts: set[asyncio.Task[Any]] = set()
         self._next_sweep = 0.0
-        self._next_heartbeat = 0.0
         self._next_webhooks = 0.0
         self._enabled: bool | None = None
         self._shared_unavailable = False
@@ -313,6 +315,12 @@ class BatchScheduler:
         if self._shared_load is not None and (self._publisher is None or self._publisher.done()):
             self._publisher = asyncio.create_task(
                 self._publish_load(), name="batch_load_publisher", context=contextvars.Context()
+            )
+        if self._heartbeater is None or self._heartbeater.done():
+            # A task of its own, so leases are kept however long a round, a
+            # sweep or a claim takes.
+            self._heartbeater = asyncio.create_task(
+                self._keep_leases(), name="batch_lease_heartbeat", context=contextvars.Context()
             )
 
     def notify(self) -> None:
@@ -339,6 +347,10 @@ class BatchScheduler:
             if self._shared_load is not None:
                 with contextlib.suppress(Exception):
                     await self._shared_load.withdraw()
+        heartbeater, self._heartbeater = self._heartbeater, None
+        if heartbeater is not None:
+            heartbeater.cancel()
+            await asyncio.gather(heartbeater, return_exceptions=True)
         background = list(self._background.values())
         self._background.clear()
         for task in background:
@@ -389,7 +401,6 @@ class BatchScheduler:
         logger.info(
             "batch worker %s started", self._worker_id, extra={"event": "batch_worker_started"}
         )
-        self._next_heartbeat = self._clock() + self._timings.heartbeat_seconds
         while not self._stopping:
             try:
                 delay = await self._round()
@@ -398,15 +409,22 @@ class BatchScheduler:
                     "batch worker round failed", extra={"event": "batch_worker_round_failed"}
                 )
                 delay = self._timings.idle_poll_seconds
+            await self._sleep(delay)
+
+    async def _keep_leases(self) -> None:
+        """Extend the leases of this process's running items, every heartbeat interval."""
+        while not self._stopping:
+            await asyncio.sleep(self._timings.heartbeat_seconds)
+            if self._stopping:
+                return
             try:
-                await self._heartbeat_if_due()
+                await self._heartbeat()
             except Exception:
                 logger.warning(
                     "batch lease heartbeat failed",
                     extra={"event": "batch_heartbeat_failed"},
                     exc_info=True,
                 )
-            await self._sleep(delay)
 
     async def _publish_load(self) -> None:
         """Keep this process's interactive counts in the shared view."""
@@ -438,10 +456,10 @@ class BatchScheduler:
         if not cfg.enabled:
             return self._timings.idle_poll_seconds
         now = self._clock()
-        if now >= self._next_sweep:
+        sweep = now >= self._next_sweep
+        if sweep:
             self._next_sweep = now + self._timings.sweep_seconds
-            await self._sweep(cfg)
-        self._spawn_background(cfg, now)
+        self._spawn_background(cfg, now, sweep=sweep)
         models = await self._store.active_models()
         if not models:
             return self._timings.idle_poll_seconds
@@ -536,11 +554,17 @@ class BatchScheduler:
                 extra={"event": "batch_sweep"},
             )
 
-    def _spawn_background(self, cfg: BatchConfig, now: float) -> None:
-        """Start each kind of background work that is not already running here."""
+    def _spawn_background(self, cfg: BatchConfig, now: float, *, sweep: bool = False) -> None:
+        """Start each kind of background work that is not already running here.
+
+        The sweep too, when it is due: off the round, so however long it takes
+        (a purge of large batches, say) it holds up no claim.
+        """
         if self._stopping:
             return
         jobs: dict[str, Callable[[], Awaitable[Any]]] = {}
+        if sweep:
+            jobs["sweep"] = lambda: self._sweep(cfg)
         if self._file_store is not None:
             jobs["validate"] = lambda: self._work_phase("validating", cfg)
         jobs["seal"] = lambda: self._work_phase("sealing", cfg)
@@ -635,11 +659,18 @@ class BatchScheduler:
             max_running=cap,
             lease_seconds=self._timings.lease_seconds,
             user_rooms=self._owner_rooms(cfg),
+            # Never what runs here already, even should its lease have run out
+            # (the heartbeat failing for a while): it is still running.
+            exclude_ids=[e.item_id for e in self._in_flight.values() if not e.settled],
         )
         if not items:
             return
         logger.debug("batch: claimed %d item(s) of model %s", len(items), model_id)
         for item in items:
+            running = self._in_flight.get(int(item["id"]))
+            if running is not None and not running.settled:
+                await self._adopt(running, item)
+                continue
             entry = self._track(item)
             if self._stopping:
                 # Stopping while the claim was in flight: hand them straight back.
@@ -652,6 +683,36 @@ class BatchScheduler:
                 context=contextvars.Context(),
             )
             entry.task.add_done_callback(lambda _task, entry=entry: self._forget(entry))
+
+    async def _adopt(self, entry: _InFlight, item: dict[str, Any]) -> None:
+        """Take over a new claim of an item this process is still running.
+
+        Its lease ran out while it ran here and a claim took it again (a store
+        that did not leave it out). Running it a second time would make a
+        second upstream call, billed twice; instead the run in progress goes on
+        under the newer claim, and its outcome is recorded with that claim's
+        fencing token.
+        """
+        attempt = int(item.get("attempt_seq") or item["attempts"])
+        logger.warning(
+            "batch item %s was claimed again while it runs here; "
+            "its run carries on under the new claim",
+            entry.item_id,
+            extra={"event": "batch_item_reclaimed_while_running", "model": entry.model_id},
+        )
+        entry.attempt = attempt
+        if not entry.dispatched:
+            return
+        try:
+            await self._store.mark_dispatched(
+                item_id=entry.item_id, worker_id=self._worker_id, attempt=attempt
+            )
+        except Exception:
+            logger.warning(
+                "batch item %s: marking the adopted attempt dispatched failed",
+                entry.item_id,
+                exc_info=True,
+            )
 
     def _canonical(self, model_id: str) -> str:
         """Return the canonical id interactive load is counted under for *model_id*."""
@@ -675,11 +736,7 @@ class BatchScheduler:
         )
         return False
 
-    async def _heartbeat_if_due(self) -> None:
-        now = self._clock()
-        if now < self._next_heartbeat:
-            return
-        self._next_heartbeat = now + self._timings.heartbeat_seconds
+    async def _heartbeat(self) -> None:
         item_ids = [e.item_id for e in self._in_flight.values() if not e.settled]
         if item_ids:
             await self._store.heartbeat(
