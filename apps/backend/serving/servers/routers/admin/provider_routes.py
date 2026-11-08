@@ -9,7 +9,7 @@ import math
 import re
 import socket
 import time
-from collections.abc import Collection, MutableMapping
+from collections.abc import Collection, Mapping, MutableMapping
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -100,6 +100,10 @@ CAPABILITY_OVERRIDES_ATTR = "_provider_route_capability_overrides"
 # serving when it was deleted. Its endpoint id is where the route's saved edit
 # puts it back, so it stays reserved along with the route's models.yaml ids.
 REMOVED_ENTRIES_ATTR = "_provider_route_removed_entries"
+# Adapter attribute holding the stored override row a config route's adapter
+# was built from (see _override_row_key). The adapter does not say which key
+# row it uses, so this is how a reconcile tells that it already serves the row.
+OVERRIDE_ROW_ATTR = "_provider_route_override_row"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_REQUIRED_ROLE_SETTING_PREFIX = "model_required_role:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
@@ -850,36 +854,43 @@ def _baseline_route_entries(route) -> list[tuple[object, float, str]]:
     return list(baseline)
 
 
-def _removed_baseline_entries(route) -> list[tuple[object, float, str]]:
+def _removed_baseline_entries(
+    route, entries: list[tuple[object, float, str]] | None = None
+) -> list[tuple[object, float, str]]:
     """Return the config routes an admin removed from this deployment.
 
     Only a removal takes a models.yaml route out of the live table (edits and
     resets replace it in place), so a baseline route missing from it is one.
+    ``entries`` stands in for the live table, for a table about to be published.
     """
     baseline = getattr(route, BASELINE_ENTRIES_ATTR, None) or []
     live_ids = {
         _route_id_for_entry(adapter, endpoint_id)
-        for adapter, _weight, endpoint_id in _raw_route_entries(route)
+        for adapter, _weight, endpoint_id in (
+            _raw_route_entries(route) if entries is None else entries
+        )
     }
     return [entry for entry in baseline if _route_id_for_entry(entry[0], entry[2]) not in live_ids]
 
 
-def _identity_entries(route) -> list[tuple[object, float, str]]:
+def _identity_entries(
+    route, entries: list[tuple[object, float, str]] | None = None
+) -> list[tuple[object, float, str]]:
     """Return the routes whose ids a new or edited route must not take.
 
     A removed config route keeps its ids reserved, its models.yaml ids and the
     endpoint id it served on when deleted (where its saved edit restores it),
     so restoring it never collides with a route added while it was gone.
+    ``entries`` stands in for the live table, for a table about to be published.
     """
-    removed = _removed_baseline_entries(route)
+    entries = _raw_route_entries(route) if entries is None else list(entries)
+    removed = _removed_baseline_entries(route, entries)
     removed_ids = {
         _route_id_for_entry(adapter, endpoint_id) for adapter, _w, endpoint_id in removed
     }
     served = getattr(route, REMOVED_ENTRIES_ATTR, None) or {}
     return (
-        _raw_route_entries(route)
-        + removed
-        + [entry for route_id, entry in served.items() if route_id in removed_ids]
+        entries + removed + [entry for route_id, entry in served.items() if route_id in removed_ids]
     )
 
 
@@ -1641,6 +1652,14 @@ def _route_type(adapter) -> str:
     )
 
 
+class _BaseUrlNotResolved(HTTPException):
+    """A base URL whose host did not resolve: a passing fault, not a bad URL.
+
+    Answered like any other refused URL. A live reconcile retries the route
+    instead of leaving it out as it leaves out a stored route that cannot be built.
+    """
+
+
 async def _validate_base_url(base_url: str) -> str:
     cleaned = base_url.strip()
     if not cleaned:
@@ -1688,12 +1707,12 @@ async def _validate_base_url(base_url: str) -> str:
                 timeout=BASE_URL_DNS_TIMEOUT_SEC,
             )
         except TimeoutError as exc:
-            raise HTTPException(
+            raise _BaseUrlNotResolved(
                 status_code=422,
                 detail="base_url host resolution timed out",
             ) from exc
         except socket.gaierror as exc:
-            raise HTTPException(
+            raise _BaseUrlNotResolved(
                 status_code=422,
                 detail="base_url host could not be resolved",
             ) from exc
@@ -2295,6 +2314,31 @@ def _apply_capability_overrides(route, entries: list[tuple[object, float, str]])
         config.route_metadata = route_metadata
 
 
+def _capability_overrides_by_model(
+    rows: Collection[Any],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return stored capability overrides as ``{model id: {route id: capabilities}}``.
+
+    A row that no longer validates is skipped with a warning, so its route
+    keeps its baseline.
+    """
+    by_model: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        try:
+            capabilities = _normalize_runtime_model_capabilities(row["capabilities"])
+        except ValueError as exc:
+            logger.warning(
+                "Ignoring invalid capability override for model=%s route_id=%s: %s",
+                row.get("model_id"),
+                row.get("route_id"),
+                exc,
+            )
+            continue
+        if capabilities is not None:
+            by_model.setdefault(str(row["model_id"]), {})[str(row["route_id"])] = capabilities
+    return by_model
+
+
 async def sync_route_capability_overrides(
     services,
     op_store,
@@ -2315,20 +2359,7 @@ async def sync_route_capability_overrides(
         if model_id is None
         else await op_store.list_route_capability_overrides_for_model(model_id)
     )
-    by_model: dict[str, dict[str, dict[str, Any]]] = {}
-    for row in rows:
-        try:
-            capabilities = _normalize_runtime_model_capabilities(row["capabilities"])
-        except ValueError as exc:
-            logger.warning(
-                "Ignoring invalid capability override for model=%s route_id=%s: %s",
-                row.get("model_id"),
-                row.get("route_id"),
-                exc,
-            )
-            continue
-        if capabilities is not None:
-            by_model.setdefault(str(row["model_id"]), {})[str(row["route_id"])] = capabilities
+    by_model = _capability_overrides_by_model(rows)
 
     served: dict[str, set[str]] = {}
     model_ids = list(services.router.routes) if model_id is None else [model_id]
@@ -2568,22 +2599,28 @@ async def _prepare_route_candidate(
     endpoint_id: str | None = None,
     replacing_route_id: str | None = None,
     validate_url: bool = True,
+    strategy: str | None = None,
+    identity_entries: list[tuple[object, float, str]] | None = None,
     restoring: bool = False,
 ) -> PreparedRouteCandidate:
     """Build a runtime route for an existing model, cloning its first route's config.
 
     ``replacing_route_id`` builds a replacement for that route (an edit), so it
     is left out of the identity check. ``validate_url=False`` is only for an
-    edit that keeps the route's exact registered URL and target. ``restoring``
-    builds a stored route, which keeps a disabled pinned key's binding without
-    serving the key.
+    edit that keeps the route's exact registered URL and target. ``strategy``
+    and ``identity_entries`` stand in for the model's live strategy and route
+    table, for a reconcile that publishes the route together with them.
+    ``restoring`` builds a stored route, which keeps a disabled pinned key's
+    binding without serving the key.
     """
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
     if route_type not in {"quota", "concurrency", "on_demand"}:
         raise HTTPException(status_code=422, detail="unknown route_type")
     canonical_model_id = entries[0][0].config.id
-    _validate_route_type_for_strategy(route_type, _strategy_for_model(services, canonical_model_id))
+    _validate_route_type_for_strategy(
+        route_type, strategy or _strategy_for_model(services, canonical_model_id)
+    )
     if route_type == "quota" and quota_limit is None:
         raise HTTPException(status_code=422, detail="quota_limit is required for quota routes")
     if route_type != "quota" and quota_limit is not None:
@@ -2621,7 +2658,7 @@ async def _prepare_route_candidate(
         endpoint_id=endpoint_id,
     )
     _ensure_route_id_available(
-        _identity_entries(route),
+        _identity_entries(route) if identity_entries is None else identity_entries,
         candidate_route_id,
         candidate_endpoint_id,
         replacing_route_id=replacing_route_id,
@@ -2889,7 +2926,8 @@ async def _prepare_route_update(
     """Build a config route's edited adapter without installing it.
 
     ``removed_entry`` is the models.yaml entry of a deleted route, for a restore
-    that prepares the route's saved edit before the route is served again.
+    that prepares the route's saved edit before the route is served again, or
+    the route's models.yaml entry for a reconcile that rebuilds its saved edit.
     ``restoring`` builds a saved edit, which keeps a disabled pinned key's
     binding without serving the key.
     """
@@ -3381,6 +3419,49 @@ def _candidate_row_describes(row: dict[str, Any], adapter: Any, endpoint_id: str
         and (row.get("deployment_type") or "auto") == adapter.config.deployment_type
         and (row.get("endpoint_id") or row["route_id"]) == endpoint_id
     )
+
+
+def _candidate_row_serves(row: Mapping[str, Any], entry: tuple[object, float, str]) -> bool:
+    """Whether a live route already serves this stored runtime route row, weight included.
+
+    A route that does keeps its adapter through a reconcile: its key pool, the
+    key it resolved and its endpoint stay as they are.
+    """
+    adapter, weight, endpoint_id = entry
+    try:
+        declared = _normalize_runtime_model_capabilities(row.get("capabilities"))
+    except ValueError:
+        declared = None
+    return (
+        _is_runtime_candidate(adapter)
+        and _candidate_row_describes(dict(row), adapter, endpoint_id)
+        and str(row["route_type"]) == _route_type(adapter)
+        and float(row["weight"]) == float(weight)
+        and declared == _declared_capabilities(adapter)
+    )
+
+
+def _override_row_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Return what a stored config route override row says, in one comparable value."""
+
+    def limit(value: Any) -> int | None:
+        return None if value is None else int(value)
+
+    return (
+        str(row["provider"]),
+        row.get("openrouter_sort") or None,
+        str(row["base_url"]),
+        row.get("api_key_id") or None,
+        str(row["provider_model_id"]),
+        limit(row.get("quota_limit")),
+        limit(row.get("concurrency_limit")),
+        row.get("deployment_type") or None,
+    )
+
+
+def _remember_override_row(adapter: Any, row: Mapping[str, Any]) -> None:
+    """Record on a config route's adapter the stored override row it serves."""
+    setattr(adapter, OVERRIDE_ROW_ATTR, _override_row_key(row))
 
 
 def _put_weight_override_snapshot(
@@ -5576,29 +5657,40 @@ async def update_provider_route(
             route=current_route,
             adapter=current_adapter,
         )
+        stored_row = {
+            "provider": update.upstream_provider,
+            "openrouter_sort": update.openrouter_sort,
+            "base_url": update.base_url,
+            "api_key_id": update.api_key_id,
+            "provider_model_id": update.provider_model_id,
+            "quota_limit": update.quota_limit,
+            "concurrency_limit": update.concurrency_limit,
+            "deployment_type": (
+                update.deployment_type_declaration
+                if update.deployment_type_declaration is not None
+                else stored_deployment_type
+            ),
+        }
 
         async def persist_and_install() -> None:
             try:
                 await op_store.upsert_provider_route_config(
                     model_id,
                     route_id,
-                    update.upstream_provider,
-                    update.openrouter_sort,
-                    update.base_url,
-                    update.api_key_id,
-                    update.provider_model_id,
-                    update.quota_limit,
-                    update.concurrency_limit,
+                    stored_row["provider"],
+                    stored_row["openrouter_sort"],
+                    stored_row["base_url"],
+                    stored_row["api_key_id"],
+                    stored_row["provider_model_id"],
+                    stored_row["quota_limit"],
+                    stored_row["concurrency_limit"],
                     admin_id,
-                    deployment_type=(
-                        update.deployment_type_declaration
-                        if update.deployment_type_declaration is not None
-                        else stored_deployment_type
-                    ),
+                    deployment_type=stored_row["deployment_type"],
                 )
                 if capability_write is not None:
                     await capability_write.persist(op_store, admin_id)
                     capability_write.publish()
+                _remember_override_row(update.adapter, stored_row)
                 _install_route_update(services, update)
             except BaseException:
                 if capability_write is not None:
@@ -6561,6 +6653,7 @@ async def _prepare_restored_route_edit(
             exc,
         )
         return None
+    _remember_override_row(update.adapter, override_row)
     return update
 
 
@@ -6744,14 +6837,7 @@ def apply_persisted_provider_route_removals(
             )
 
 
-async def apply_persisted_provider_route_candidates(
-    services,
-    op_store,
-    *,
-    model_ids: set[str] | None = None,
-    strict: bool = False,
-    lock_held: bool = False,
-) -> set[str]:
+async def apply_persisted_provider_route_candidates(services, op_store) -> set[str]:
     """Apply persisted runtime provider route candidates to the in-process router.
 
     Returns ids for runtime-created models restored with a RouteWise strategy so
@@ -6787,8 +6873,6 @@ async def apply_persisted_provider_route_candidates(
 
     for row in rows:
         model_id = str(row["model_id"])
-        if model_ids is not None and model_id not in model_ids:
-            continue
         route_id = str(row["route_id"])
         installed_runtime_candidate: PreparedRouteCandidate | None = None
         try:
@@ -6861,11 +6945,7 @@ async def apply_persisted_provider_route_candidates(
                 installed_runtime_candidate = candidate
                 strategy = strategy_overrides.get(model_id, "fixed")
                 if services.model_router_registry is not None:
-                    await (
-                        _apply_model_router_strategy_locked
-                        if lock_held
-                        else _apply_model_router_strategy
-                    )(
+                    await _apply_model_router_strategy(
                         services,
                         model_id,
                         strategy,
@@ -6922,7 +7002,7 @@ async def apply_persisted_provider_route_candidates(
                         )
                     )
                 restored_routewise_model_ids.discard(model_id)
-            if strict or not isinstance(exc, Exception):
+            if not isinstance(exc, Exception):
                 raise
             logger.warning(
                 "Failed to apply provider route candidate for model=%s route_id=%s: %s",
@@ -6933,15 +7013,11 @@ async def apply_persisted_provider_route_candidates(
     return restored_routewise_model_ids
 
 
-async def apply_persisted_provider_route_configs(
-    services, op_store, *, model_ids: set[str] | None = None, strict: bool = False
-) -> None:
+async def apply_persisted_provider_route_configs(services, op_store) -> None:
     """Apply persisted provider route configs to the in-process router at boot."""
     rows = await op_store.list_all_provider_route_configs()
     for row in rows:
         model_id = str(row["model_id"])
-        if model_ids is not None and model_id not in model_ids:
-            continue
         route_id = str(row["route_id"])
         try:
             update = await _prepare_route_update(
@@ -6964,10 +7040,9 @@ async def apply_persisted_provider_route_configs(
             # and the route serves its models.yaml target, the same on every
             # start and for either router.
             _ensure_endpoint_free(update.route, route_id, update.endpoint_id)
+            _remember_override_row(update.adapter, row)
             _install_route_update(services, update)
         except Exception as exc:
-            if strict:
-                raise
             logger.warning(
                 "Failed to apply provider route config for model=%s route_id=%s: %s",
                 model_id,
@@ -6991,39 +7066,23 @@ async def apply_persisted_provider_route_configs(
                     )
 
 
-async def apply_persisted_model_router_strategy_overrides(
-    services,
-    op_store,
-    *,
-    model_ids: set[str] | None = None,
-    strict: bool = False,
-    lock_held: bool = False,
-) -> None:
+async def apply_persisted_model_router_strategy_overrides(services, op_store) -> None:
     """Apply persisted per-model router strategy overrides at boot."""
     rows = await op_store.list_settings()
     for row in rows:
         key = str(row["key"])
         model_id = _model_id_from_strategy_setting_key(key)
-        if model_id is None or (model_ids is not None and model_id not in model_ids):
-            continue
-        # A runtime model is installed by its candidate rows below. It has no
-        # route yet on a newly observing worker, so its strategy is restored
-        # with that model rather than treated as an invalid existing route.
-        if strict and model_id not in services.router.routes:
+        if model_id is None:
             continue
         strategy = str(row["value"])
         try:
-            await (
-                _apply_model_router_strategy_locked if lock_held else _apply_model_router_strategy
-            )(
+            await _apply_model_router_strategy(
                 services,
                 model_id,
                 strategy,
                 start_managed=False,
             )
         except Exception as exc:
-            if strict:
-                raise
             logger.warning(
                 "Failed to apply model router strategy override for model=%s strategy=%s: %s",
                 model_id,
@@ -7032,14 +7091,7 @@ async def apply_persisted_model_router_strategy_overrides(
             )
 
 
-async def reconcile_live_routes_from_store(
-    services,
-    op_store,
-    *,
-    model_ids: set[str] | None = None,
-    strict: bool = False,
-    lock_held: bool = False,
-) -> None:
+async def reconcile_live_routes_from_store(services, op_store) -> None:
     """Reconcile the in-memory route table and router strategies with persisted state."""
     router = getattr(services, "router", None)
     routes = getattr(router, "routes", None)
@@ -7047,8 +7099,6 @@ async def reconcile_live_routes_from_store(
         return
 
     for model_id, route in list(routes.items()):
-        if model_ids is not None and model_id not in model_ids:
-            continue
         if not _is_canonical_model(model_id, route):
             continue
         if _is_runtime_created_route(route):
@@ -7095,23 +7145,557 @@ async def reconcile_live_routes_from_store(
                     stop_managed=True,
                 )
 
-    await apply_persisted_model_router_strategy_overrides(
-        services, op_store, model_ids=model_ids, strict=strict, lock_held=lock_held
-    )
-    await apply_persisted_provider_route_candidates(
-        services, op_store, model_ids=model_ids, strict=strict, lock_held=lock_held
-    )
-    await apply_persisted_provider_route_configs(
-        services, op_store, model_ids=model_ids, strict=strict
-    )
-    if model_ids is None:
-        await sync_route_capability_overrides(services, op_store)
-    else:
-        for model_id in sorted(model_ids):
-            await sync_route_capability_overrides(services, op_store, model_id)
-    apply_persisted_provider_route_removals(services, model_ids)
+    await apply_persisted_model_router_strategy_overrides(services, op_store)
+    await apply_persisted_provider_route_candidates(services, op_store)
+    await apply_persisted_provider_route_configs(services, op_store)
+    await sync_route_capability_overrides(services, op_store)
+    apply_persisted_provider_route_removals(services)
     _rebuild_routewise_routers(services)
     await _start_restored_routewise_routers(services)
+
+
+@dataclass
+class StoredModelRoutes:
+    """One model's routing rows, as one read of the store holds them."""
+
+    candidates: list[dict[str, Any]]
+    configs: dict[str, dict[str, Any]]
+    capability_rows: list[dict[str, Any]]
+    strategy: str | None = None
+    required_role: str | None = None
+
+
+async def read_stored_model_routes(op_store) -> dict[str, StoredModelRoutes]:
+    """Read every model's routing rows in one pass, by model id.
+
+    A synchronizer passes a store bound to one snapshot, so the rows of every
+    model it reconciles agree with each other and with the counters it read.
+    """
+    stored: dict[str, StoredModelRoutes] = {}
+
+    def rows_for(model_id: str) -> StoredModelRoutes:
+        return stored.setdefault(model_id, StoredModelRoutes([], {}, []))
+
+    for row in sorted(
+        await op_store.list_all_provider_route_candidates(), key=_candidate_restore_sort_key
+    ):
+        rows_for(str(row["model_id"])).candidates.append(row)
+    for row in await op_store.list_all_provider_route_configs():
+        rows_for(str(row["model_id"])).configs[str(row["route_id"])] = row
+    for row in await op_store.list_all_route_capability_overrides():
+        rows_for(str(row["model_id"])).capability_rows.append(row)
+    for row in await op_store.list_settings():
+        key, value = str(row["key"]), str(row["value"])
+        model_id = _model_id_from_strategy_setting_key(key)
+        if model_id is not None:
+            if value in MODEL_ROUTER_STRATEGIES:
+                rows_for(model_id).strategy = value
+            continue
+        model_id = _model_id_from_required_role_setting_key(key)
+        if model_id is not None and value in VALID_ROLES:
+            rows_for(model_id).required_role = value
+    return stored
+
+
+def _is_unbuildable_route(exc: BaseException) -> bool:
+    """Whether a stored route fails to build for what is stored, not for a passing fault.
+
+    Boot leaves such a route out with a warning, and so does a live reconcile:
+    a deleted pinned key, a provider that no longer exists, a row that no
+    longer validates. A failed read or name lookup can pass, so the reconcile
+    that met it is retried instead.
+    """
+    if isinstance(exc, HTTPException):
+        return 400 <= exc.status_code < 500 and not isinstance(exc, _BaseUrlNotResolved)
+    return isinstance(exc, ValueError)
+
+
+def _candidate_row_args(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the build arguments a stored runtime route row gives, as boot passes them."""
+    return {
+        "model_id": str(row["model_id"]),
+        "route_id": str(row["route_id"]),
+        "route_type": str(row["route_type"]),
+        "upstream_provider": str(row["provider"]),
+        "openrouter_sort": row.get("openrouter_sort"),
+        "base_url": str(row["base_url"]),
+        "api_key_id": row.get("api_key_id"),
+        "provider_model_id": str(row["provider_model_id"]),
+        "quota_limit": row.get("quota_limit"),
+        "concurrency_limit": row.get("concurrency_limit"),
+        "weight": float(row["weight"]),
+        "deployment_type": row.get("deployment_type") or "auto",
+        "endpoint_id": row.get("endpoint_id"),
+        "capabilities": _stored_capabilities(dict(row)),
+    }
+
+
+def _stored_strategy_change(services, model_id: str, stored_strategy: str | None) -> str | None:
+    """Return the strategy a model must move to for its stored override, None to keep its router."""
+    registry = services.model_router_registry
+    if registry is None:
+        return None
+    if stored_strategy is not None:
+        return None if stored_strategy == registry.get_router_name(model_id) else stored_strategy
+    # No override is stored: one this process still serves gives way to the
+    # model's configured router, as a restart would.
+    try:
+        current = registry.get_cached_router(model_id)
+        override = registry.runtime_override_for_router(current) if current is not None else None
+    except Exception:
+        return None
+    return override.configured_strategy if override is not None else None
+
+
+def _stored_strategy_applies(services, model_id: str, strategy: str) -> bool:
+    """Whether the model can take its stored strategy; a warning, as at boot, when not."""
+    try:
+        _validate_model_router_strategy(services, model_id, strategy)
+    except (HTTPException, ValueError) as exc:
+        if not _is_unbuildable_route(exc):
+            raise
+        logger.warning(
+            "Failed to apply model router strategy override for model=%s strategy=%s: %s",
+            model_id,
+            strategy,
+            exc,
+        )
+        return False
+    return True
+
+
+async def _apply_stored_strategy(services, model_id: str, strategy: str) -> None:
+    """Move a model onto its stored strategy, starting the new router before it serves.
+
+    A stored strategy the model cannot take is left alone. A router that does
+    not start raises: the model keeps the router it has, and the reconcile is
+    retried.
+    """
+    if _stored_strategy_applies(services, model_id, strategy):
+        await _apply_model_router_strategy_locked(services, model_id, strategy)
+
+
+async def _retire_runtime_model(services, model_id: str, route) -> None:
+    """Take a runtime model the store no longer holds out of this process."""
+    entries = _raw_route_entries(route)
+    previous_router = _detach_model_router_strategy_override(services, model_id)
+    _mutate_router_routes(services, lambda: services.router.routes.pop(model_id, None))
+    for adapter, _weight, _endpoint_id in entries:
+        _unregister_dynamic_adapter(adapter)
+    try:
+        _rebuild_routewise_routers(services)
+    except Exception:
+        logger.error(
+            "Failed to refresh RouteWise while removing runtime model=%s", model_id, exc_info=True
+        )
+    if previous_router is not None:
+        await _retire_previous_managed_router(
+            services,
+            model_id=model_id,
+            previous_router=previous_router,
+            active_router=None,
+            stop_managed=True,
+        )
+
+
+async def _install_runtime_model(
+    services, op_store, model_id: str, stored: StoredModelRoutes
+) -> None:
+    """Install a runtime model this process does not serve yet, from its stored rows.
+
+    As boot restores it: its first row that builds creates it and the others
+    join it. It stays unpublished until every route is in place and its router
+    has started, so the model appears whole or not at all.
+    """
+    strategy = stored.strategy or "fixed"
+    registry = services.model_router_registry
+    staged: list[PreparedRouteCandidate] = []
+    published = False
+
+    def publish() -> None:
+        nonlocal published
+        _publish_provider_route_model(
+            services,
+            staged[0],
+            active_router=registry.get_router(model_id) if registry is not None else None,
+        )
+        published = True
+
+    try:
+        for row in stored.candidates:
+            args = _candidate_row_args(row)
+            try:
+                if not staged:
+                    candidate = await _prepare_model_route_candidate(
+                        services,
+                        op_store,
+                        **args,
+                        pricing=row.get("pricing"),
+                        strategy=strategy,
+                        restoring=True,
+                    )
+                    _install_provider_route_model(
+                        services,
+                        candidate,
+                        required_role=stored.required_role,
+                        published=False,
+                    )
+                else:
+                    candidate = await _prepare_route_candidate(
+                        services, op_store, **args, strategy=strategy, restoring=True
+                    )
+                    _install_route_candidate(services, candidate)
+            except Exception as exc:
+                if not _is_unbuildable_route(exc):
+                    raise
+                logger.warning(
+                    "Failed to apply provider route candidate for model=%s route_id=%s: %s",
+                    model_id,
+                    args["route_id"],
+                    exc,
+                )
+                continue
+            staged.append(candidate)
+        if not staged:
+            return
+        if registry is None:
+            publish()
+        else:
+            await _apply_model_router_strategy_locked(
+                services, model_id, strategy, on_commit=publish
+            )
+    except BaseException:
+        if staged and not published:
+            previous_router = _detach_model_router_strategy_override(services, model_id)
+            for candidate in staged[1:]:
+                _unregister_dynamic_adapter(candidate.adapter)
+            _discard_provider_route_model_install(services, staged[0])
+            if previous_router is not None:
+                await _finish_router_transition_on_cancellation(
+                    _retire_previous_managed_router(
+                        services,
+                        model_id=model_id,
+                        previous_router=previous_router,
+                        active_router=None,
+                        stop_managed=True,
+                    )
+                )
+        raise
+
+
+def _removed_route_ids(services, model_id: str) -> set[str] | None:
+    """Return the ids of the model's config routes deleted from this deployment.
+
+    None while route states are unknown: a reconcile then keeps the table's
+    config routes as they are rather than guess which are deleted.
+    """
+    resolver = _route_state_resolver(services)
+    if resolver is None or not resolver.ready:
+        return None
+    return {route_id for owner, route_id in resolver.removed_routes() if owner == model_id}
+
+
+def _publish_reconciled_entries(
+    services,
+    route,
+    entries: list[tuple[object, float, str]],
+    *,
+    capability_overrides: dict[str, dict[str, Any]],
+    required_role: str | None,
+    prepared: list[PreparedRouteCandidate | PreparedRouteUpdate],
+) -> None:
+    """Publish a model's reconciled routes, capability overrides and role in one swap.
+
+    The new adapters register their key pools first. If the swap fails, the
+    previous table, overrides and role are put back and the new pools leave.
+    """
+    previous = _raw_route_entries(route)
+    previous_overrides = getattr(route, CAPABILITY_OVERRIDES_ATTR, None)
+    previous_role = route.required_role
+    in_use = {id(adapter) for adapter, _weight, _endpoint_id in entries}
+    registered: list[PreparedRouteCandidate | PreparedRouteUpdate] = []
+    for item in prepared:
+        if id(item.adapter) not in in_use:
+            continue
+        dynamic_keys.register_known_provider(item.key_provider)
+        if getattr(item.adapter, "_key_pool", None) is not None:
+            dynamic_keys.register_adapter_for_provider(
+                item.key_provider,
+                item.adapter,
+                allow_db_key_injection=item.api_key_id is None,
+                api_key_id=item.api_key_id,
+            )
+            registered.append(item)
+
+    def put_back() -> None:
+        setattr(route, CAPABILITY_OVERRIDES_ATTR, previous_overrides)
+        _mutate_router_routes(services, lambda: setattr(route, "required_role", previous_role))
+
+    setattr(route, CAPABILITY_OVERRIDES_ATTR, capability_overrides)
+    if required_role is not None:
+        _mutate_router_routes(services, lambda: setattr(route, "required_role", required_role))
+    try:
+        if [(id(a), float(w), e) for a, w, e in entries] != [
+            (id(a), float(w), e) for a, w, e in previous
+        ]:
+            _replace_route_entries(services, route, entries, rollback=put_back)
+        else:
+            _apply_capability_overrides(route, entries)
+    except BaseException:
+        put_back()
+        _apply_capability_overrides(route, previous)
+        for item in registered:
+            dynamic_keys.unregister_adapter_for_provider(item.key_provider, item.adapter)
+        raise
+    _apply_capability_overrides(route, _removed_baseline_entries(route))
+    for adapter, _weight, _endpoint_id in previous:
+        if id(adapter) not in in_use:
+            _unregister_replaced_dynamic_adapter(route, adapter)
+
+
+async def _reconcile_live_model(
+    services, op_store, model_id: str, route, stored: StoredModelRoutes, *, runtime: bool
+) -> None:
+    """Reconcile a model this process serves: keep what matches, rebuild what changed."""
+    strategy_change = _stored_strategy_change(services, model_id, stored.strategy)
+    if strategy_change == "routewise" and not _stored_strategy_applies(
+        services, model_id, strategy_change
+    ):
+        # Routes are built for the strategy they will serve under.
+        strategy_change = None
+    strategy = strategy_change or _strategy_for_model(services, model_id)
+    live = _raw_route_entries(route)
+    live_ids = [_route_id_for_entry(adapter, endpoint_id) for adapter, _w, endpoint_id in live]
+    live_by_id = dict(zip(live_ids, live, strict=True))
+
+    # Config routes in models.yaml order: unchanged, back on their models.yaml
+    # target, or with an override still to build.
+    config_ids: list[str] = []
+    config_entries: dict[str, tuple[object, float, str]] = {}
+    pending_configs: list[tuple[str, tuple[object, float, str], Mapping[str, Any]]] = []
+    if not runtime:
+        removed = _removed_route_ids(services, model_id)
+        for baseline_entry in _baseline_route_entries(route):
+            route_id = _route_id_for_entry(baseline_entry[0], baseline_entry[2])
+            current = live_by_id.get(route_id)
+            if removed is not None and route_id in removed:
+                # Deleted from this deployment: one still in the table leaves it
+                # below as it is, and one already out stays out.
+                if current is not None:
+                    config_ids.append(route_id)
+                    config_entries[route_id] = current
+                continue
+            if current is None and removed is None:
+                continue
+            config_ids.append(route_id)
+            row = stored.configs.get(route_id)
+            if row is None:
+                served = current is not None and current[0] is baseline_entry[0]
+                config_entries[route_id] = current if served else baseline_entry
+            elif current is not None and getattr(
+                current[0], OVERRIDE_ROW_ATTR, None
+            ) == _override_row_key(row):
+                config_entries[route_id] = current
+            else:
+                pending_configs.append((route_id, baseline_entry, row))
+
+    candidate_entries: dict[str, tuple[object, float, str]] = {}
+    pending_candidates: list[Mapping[str, Any]] = []
+    for row in stored.candidates:
+        route_id = str(row["route_id"])
+        current = live_by_id.get(route_id)
+        if current is not None and _candidate_row_serves(row, current):
+            candidate_entries[route_id] = current
+        else:
+            pending_candidates.append(row)
+
+    def identity_view() -> list[tuple[object, float, str]]:
+        # A config route whose override is still to build holds its models.yaml
+        # ids meanwhile, as at boot, where runtime routes are restored first.
+        return _identity_entries(
+            route,
+            [
+                *config_entries.values(),
+                *(baseline_entry for _route_id, baseline_entry, _row in pending_configs),
+                *candidate_entries.values(),
+            ],
+        )
+
+    prepared: list[PreparedRouteCandidate | PreparedRouteUpdate] = []
+    template_route_id = live_ids[0] if runtime and live_ids else None
+    for row in pending_candidates:
+        args = _candidate_row_args(row)
+        route_id = args["route_id"]
+        current = live_by_id.get(route_id)
+        replacing = route_id if current is not None and _is_runtime_candidate(current[0]) else None
+        try:
+            if route_id == template_route_id:
+                # The route a runtime model was created from is rebuilt from
+                # its own row, as boot and an edit rebuild it.
+                candidate = await _prepare_model_route_candidate(
+                    services,
+                    op_store,
+                    **args,
+                    pricing=row.get("pricing"),
+                    strategy=strategy,
+                    existing_model=True,
+                    restoring=True,
+                )
+                _ensure_route_id_available(
+                    identity_view(),
+                    candidate.route_id,
+                    candidate.endpoint_id,
+                    replacing_route_id=replacing,
+                )
+                candidate.route = route
+            else:
+                candidate = await _prepare_route_candidate(
+                    services,
+                    op_store,
+                    **args,
+                    replacing_route_id=replacing,
+                    strategy=strategy,
+                    identity_entries=identity_view(),
+                    restoring=True,
+                )
+        except Exception as exc:
+            if not _is_unbuildable_route(exc):
+                raise
+            logger.warning(
+                "Failed to apply provider route candidate for model=%s route_id=%s: %s",
+                model_id,
+                route_id,
+                exc,
+            )
+            continue
+        candidate_entries[route_id] = (candidate.adapter, candidate.weight, candidate.endpoint_id)
+        prepared.append(candidate)
+
+    while pending_configs:
+        route_id, baseline_entry, row = pending_configs.pop(0)
+        try:
+            update = await _prepare_route_update(
+                services,
+                op_store,
+                model_id=model_id,
+                route_id=route_id,
+                upstream_provider=str(row["provider"]),
+                openrouter_sort=row.get("openrouter_sort"),
+                base_url=str(row["base_url"]),
+                api_key_id=row.get("api_key_id"),
+                provider_model_id_override=str(row["provider_model_id"]),
+                quota_limit_override=row.get("quota_limit"),
+                concurrency_limit_override=row.get("concurrency_limit"),
+                deployment_type_override=row.get("deployment_type"),
+                removed_entry=baseline_entry,
+                restoring=True,
+            )
+            # A runtime route holding the endpoint this edit moves to keeps it,
+            # and the route serves its models.yaml target, as at boot.
+            holder = _endpoint_holder(identity_view(), update.endpoint_id, except_route_id=route_id)
+            if holder is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"route {holder!r} already uses endpoint id {update.endpoint_id!r}",
+                )
+        except Exception as exc:
+            if not _is_unbuildable_route(exc):
+                raise
+            logger.warning(
+                "Failed to apply provider route config for model=%s route_id=%s: %s",
+                model_id,
+                route_id,
+                exc,
+            )
+            config_entries[route_id] = baseline_entry
+            continue
+        _remember_override_row(update.adapter, row)
+        config_entries[route_id] = (update.adapter, float(baseline_entry[1]), update.endpoint_id)
+        prepared.append(update)
+
+    # Runtime routes after the config routes, in the order they are served,
+    # and new ones after them, in the order boot restores them.
+    entries = [config_entries[route_id] for route_id in config_ids]
+    entries += [
+        candidate_entries[route_id] for route_id in live_ids if route_id in candidate_entries
+    ]
+    entries += [
+        candidate_entries[str(row["route_id"])]
+        for row in stored.candidates
+        if str(row["route_id"]) in candidate_entries and str(row["route_id"]) not in live_by_id
+    ]
+    if runtime and not entries:
+        # No stored route builds: boot would not install the model either.
+        await _retire_runtime_model(services, model_id, route)
+        return
+
+    model_overrides = _capability_overrides_by_model(stored.capability_rows)
+    capability_overrides = model_overrides.get(model_id, {})
+    required_role = (
+        stored.required_role if runtime and stored.required_role != route.required_role else None
+    )
+    changed = (
+        [(id(a), float(w), e) for a, w, e in entries] != [(id(a), float(w), e) for a, w, e in live]
+        or capability_overrides != (getattr(route, CAPABILITY_OVERRIDES_ATTR, None) or {})
+        or required_role is not None
+    )
+    # Toward RouteWise first, which serves every route type; toward Fixed last,
+    # once the routes it cannot serve are gone.
+    if strategy_change == "routewise":
+        await _apply_stored_strategy(services, model_id, strategy_change)
+    if changed:
+        _publish_reconciled_entries(
+            services,
+            route,
+            entries,
+            capability_overrides=capability_overrides,
+            required_role=required_role,
+            prepared=prepared,
+        )
+    if strategy_change is not None and strategy_change != "routewise":
+        await _apply_stored_strategy(services, model_id, strategy_change)
+    if not runtime:
+        apply_persisted_provider_route_removals(services, {model_id})
+
+
+async def reconcile_model_from_store(
+    services, op_store, model_id: str, stored: StoredModelRoutes | None
+) -> None:
+    """Bring one model's live routes, router and capability overrides to its stored rows.
+
+    Run by the routing synchronizer of every process, with the model's
+    transition lock held. What already matches stays as it is: a route whose
+    row is unchanged keeps its adapter, and a model whose strategy is unchanged
+    keeps its router, with what it learned and the reservations it holds. What
+    changed is built first and published in one swap, so no request sees a
+    partly applied model or a target the store has replaced.
+
+    A stored route that cannot be built is left out with a warning, as boot
+    leaves it out. Any other failure raises before the model's table changes,
+    so the model keeps serving what it served until a later reconcile.
+    """
+    stored = stored or StoredModelRoutes([], {}, [])
+    route = services.router.routes.get(model_id)
+    if route is not None and (
+        not _is_canonical_model(model_id, route) or not getattr(route, "published", True)
+    ):
+        # An alias follows its canonical model; an unpublished route is a
+        # runtime model this process is still creating.
+        return
+    if route is not None and not _is_runtime_created_route(route):
+        await _reconcile_live_model(services, op_store, model_id, route, stored, runtime=False)
+        return
+    committed = bool(stored.candidates) and stored.required_role is not None
+    if services.model_router_registry is not None and stored.strategy is None:
+        committed = False
+    if not committed:
+        if route is not None:
+            await _retire_runtime_model(services, model_id, route)
+        return
+    if route is None:
+        await _install_runtime_model(services, op_store, model_id, stored)
+        return
+    await _reconcile_live_model(services, op_store, model_id, route, stored, runtime=True)
 
 
 def _has_runtime_strategy_override(services, model_id: str) -> bool:
