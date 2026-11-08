@@ -1324,9 +1324,12 @@ async def test_a_restore_lists_what_silences_alerts_widens_access_or_unguards_a_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["inf", "nan", "-1", "soon", str(time.time() + 30 * 86400)])
+@pytest.mark.parametrize("value", ["inf", "nan", "-1", "soon", "a month away"])
 async def test_a_restore_refuses_an_alert_snooze_that_never_ends(config_client, value) -> None:
     client, store, audit = config_client
+    if value == "a month away":
+        # Computed here, not at collection: every worker collects the same tests.
+        value = str(time.time() + 30 * 86400)
     bundle = {
         "schema_version": 1,
         "site_settings": [
