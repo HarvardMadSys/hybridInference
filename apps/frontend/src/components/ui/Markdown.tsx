@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { rehypeImagesAsLinks } from '@/lib/utils/markdownImages';
@@ -88,8 +89,7 @@ const REMARK_PLUGINS = [remarkGfm];
 // rehypeImagesAsLinks. It reaches the `a` renderer above as a link.
 const REHYPE_PLUGINS = [rehypeImagesAsLinks];
 
-/** Render a Markdown string (GitHub-flavored) as styled HTML. */
-export function Markdown({ text, tone = 'light' }: { text: string; tone?: MarkdownTone }) {
+function MarkdownText({ text, tone = 'light' }: { text: string; tone?: MarkdownTone }) {
   return (
     <div className="break-words text-sm leading-relaxed [&>*:last-child]:mb-0">
       <ReactMarkdown
@@ -102,3 +102,13 @@ export function Markdown({ text, tone = 'light' }: { text: string; tone?: Markdo
     </div>
   );
 }
+
+/**
+ * Render a Markdown string (GitHub-flavored) as styled HTML.
+ *
+ * Memoized on its text and tone. A conversation draws again on every streamed
+ * frame and every keystroke, and parsing each of its messages anew each time
+ * made a stream's cost grow with the square of its length; a message whose
+ * text has not changed is not parsed again.
+ */
+export const Markdown = memo(MarkdownText);
