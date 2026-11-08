@@ -142,12 +142,13 @@ async def test_catalog_saves_remain_readable_by_a_previous_image():
                 )["models"][0]["id"]
                 == "new"
             )
+            # A reset is never mirrored: the legacy row is what a rollback runs on.
             await conn.execute(
                 "UPDATE app_config SET source='reset',value='' WHERE key='MODEL_CATALOG'"
             )
             assert (
                 json.loads(
                     await conn.fetchval("SELECT body FROM route_catalog WHERE kind='models'")
-                )
-                == {}
+                )["models"][0]["id"]
+                == "new"
             )
