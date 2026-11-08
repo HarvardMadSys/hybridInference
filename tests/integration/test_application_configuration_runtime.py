@@ -29,11 +29,13 @@ def free_port():
         return listener.getsockname()[1]
 
 
-@pytest.mark.timeout(90)
+@pytest.mark.timeout(150)
 async def test_database_configuration_across_real_processes(tmp_path):
     held = threading.Event()
     release = threading.Event()
     revocation_probes = []
+    # The credential of every request the upstreams receive, in order.
+    upstream_credentials = []
 
     class Provider(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -42,6 +44,7 @@ async def test_database_configuration_across_real_processes(tmp_path):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             model = body["model"]
+            upstream_credentials.append(self.headers.get("Authorization"))
             if body["messages"][-1]["content"] in ("disabled-probe", "deleted-probe"):
                 revocation_probes.append(model)
             if body["messages"][-1]["content"] == "hold":
@@ -85,6 +88,9 @@ async def test_database_configuration_across_real_processes(tmp_path):
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
     thread.start()
+    # A second upstream, so a route added to a model gets an endpoint of its own.
+    second_upstream = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
+    threading.Thread(target=second_upstream.serve_forever, daemon=True).start()
     processes = []
     logs = []
     ports = [free_port(), free_port()]
@@ -404,6 +410,117 @@ async def test_database_configuration_across_real_processes(tmp_path):
                 before = len(revocation_probes)
                 assert (await runtime_response("deleted-probe")).status_code != 200
                 assert len(revocation_probes) == before
+
+                # The runtime route keeps pinning the deleted key. A route added to
+                # its model, a restarted process and a revocation made afterwards
+                # still reach every process: a route that cannot be built holds
+                # back neither its model nor the credential state.
+                second_key = await first.post(
+                    "/admin/provider-keys",
+                    headers=auth,
+                    json={
+                        "provider": "openai_compat",
+                        "api_key": "runtime-provider-second-key",
+                        "label": "second",
+                    },
+                )
+                assert second_key.status_code == 201, second_key.text
+                second_key_id = second_key.json()["key"]["id"]
+                added = await first.post(
+                    "/admin/routing/provider-route-candidates/runtime-chat",
+                    headers=auth,
+                    json={
+                        "route_type": "on_demand",
+                        "upstream_provider": "openai_compat",
+                        "base_url": f"http://127.0.0.1:{second_upstream.server_port}/v1",
+                        "provider_model_id": "second",
+                        "api_key_id": second_key_id,
+                        "capabilities": {
+                            "context_length": 8192,
+                            "max_output_length": 4096,
+                            "input_modalities": ["text"],
+                            "supports_tools": False,
+                        },
+                    },
+                )
+                assert added.status_code == 200, added.text
+
+                async def chat(client, model, message):
+                    return await client.post(
+                        "/v1/chat/completions",
+                        headers=inference_auth,
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": message}],
+                            "max_tokens": 4,
+                        },
+                    )
+
+                async def await_served(client, model, content):
+                    deadline = time.monotonic() + 10
+                    while True:
+                        response = await chat(client, model, "served")
+                        if (
+                            response.status_code == 200
+                            and response.json()["choices"][0]["message"]["content"] == content
+                        ):
+                            return
+                        assert time.monotonic() < deadline, response.text
+                        await asyncio.sleep(0.1)
+
+                async def await_routing_applied(client):
+                    # What the process reports: every stored change applied,
+                    # none left failing.
+                    deadline = time.monotonic() + 20
+                    while True:
+                        status = (await client.get("/admin/config/live", headers=auth)).json()
+                        group = next(
+                            group
+                            for group in status["groups"]
+                            if group["name"] == "routing.runtime"
+                        )
+                        report = next(
+                            (
+                                instance["status"] or {}
+                                for instance in group["instances"]
+                                if instance["instance_id"] == status["this_instance"]
+                            ),
+                            {},
+                        )
+                        if (
+                            report.get("state") == "applied"
+                            and report.get("reconciled_revision") == group["version"]["revision"]
+                        ):
+                            return
+                        assert time.monotonic() < deadline, report
+                        await asyncio.sleep(0.2)
+
+                await await_served(second, "runtime-chat", "second")
+                processes[1].terminate()
+                await asyncio.to_thread(processes[1].wait, 10)
+                processes[1] = start(1)
+                await ready(second)
+                await await_served(second, "runtime-chat", "second")
+                for client in (first, second):
+                    await await_routing_applied(client)
+                disabled = await first.post(
+                    f"/admin/provider-keys/{second_key_id}/disable", headers=auth
+                )
+                assert disabled.status_code == 200, disabled.text
+                for client in (first, second):
+                    deadline = time.monotonic() + 10
+                    while (await chat(client, "runtime-chat", "revoked")).status_code == 200:
+                        assert time.monotonic() < deadline
+                        await asyncio.sleep(0.1)
+                sent = len(upstream_credentials)
+                for client in (first, second):
+                    for model in ("fixed-chat", "routewise-chat", "runtime-chat"):
+                        for _ in range(3):
+                            await chat(client, model, "after-revocation")
+                assert len(upstream_credentials) > sent
+                assert "Bearer runtime-provider-second-key" not in upstream_credentials[sent:]
+                for client in (first, second):
+                    await await_routing_applied(client)
                 previous_root = os.environ.get("PREVIOUS_GATEWAY_SOURCE")
                 if previous_root:
                     processes[1].terminate()
@@ -432,5 +549,6 @@ async def test_database_configuration_across_real_processes(tmp_path):
                     await asyncio.to_thread(process.wait, 10)
             for stream in logs:
                 stream.close()
-            upstream.shutdown()
-            upstream.server_close()
+            for server in (upstream, second_upstream):
+                server.shutdown()
+                server.server_close()
