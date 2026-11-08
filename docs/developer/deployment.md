@@ -180,7 +180,9 @@ make migrate             # apply the schema migrations only
 the external volume `hybridinference_postgres_data` when it is missing, and then
 apply the schema migrations with the backend image before they start the
 services. `make restart` starts the existing containers again and migrates
-nothing.
+nothing. On a deployment that `make deploy` pinned to published images, these
+commands start the pinned images, and `make build` refuses until you return to
+source builds; see [Diagnostics, deployment and recovery](#diagnostics-deployment-and-recovery).
 
 To start an optional profile, pass it on the `make` command line — a variable
 set there is exported into the environment of the recipe, and a shell variable
@@ -206,16 +208,44 @@ make backup BACKUP=/private/path/gateway.dump
 make restore-check BACKUP=/private/path/gateway.dump
 ```
 
-Set `GATEWAY_API_KEY` for authenticated inference checks. Deployment records the
-running artifacts, pulls the pinned pair, migrates before switching, then checks
-readiness and smoke acceptance. Failed acceptance restores the previous images;
-rollback does not run old-image migrations. Later lifecycle commands retain the
-recorded image selection in `.ops/images.env`.
+Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the
+distribution's own `smoke.py` when it ships one.
 
-Copy `.ops.env.example` to `.ops.env` to persist optional Compose profiles,
-cloud-agent networking and the pgAdmin host-port choice across commands.
-A restore check creates and drops its own randomly named database; it never
-restores over the deployment database.
+A deploy records the running artifacts, pulls the pinned pair and migrates with
+the new backend image. With `LEGACY_MANIFEST` set it then imports the previous
+release's file-based configuration with that image; see
+[Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database).
+Only then does it switch the services and run the acceptance smoke. Any failure
+after the switch, an interrupted command included, restores the previous images
+and runs the acceptance on them again; the command then exits with the deploy's
+own error and whether the restore passed. A rollback starts the recorded
+previous images without running their migrations.
+
+Each deployment keeps its record in `.ops/<distribution>/` (`.ops/none/` without
+a distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the
+shell sets it): `images.env`, the images it is pinned to, and `previous.json`
+and `current.json`. A deploy writes them only once its release is accepted, so
+a failed attempt changes neither the pin nor the release a rollback returns to;
+a rollback pins the images it starts. While `images.env` exists, that
+deployment's `make up`, `make migrate` and other lifecycle commands start the
+pinned images instead of building the checkout, and `make build` refuses. To
+return to source builds, delete that `images.env` and run `make build`. No other
+distribution, the example included, uses the pin.
+
+Copy `.ops.env.example` to `.ops.env` and uncomment the options this host needs
+to persist optional Compose profiles, cloud-agent networking and the pgAdmin
+host-port choice across commands; the copy alone changes nothing.
+
+Without `BACKUP`, the dump goes to `.ops/<distribution>/gateway.dump`. It holds
+every stored secret: keep it private and copy it off the host. A restore check
+never touches the deployment's database server. It restores the dump into a
+throwaway PostgreSQL container of the same image, with its own volume and
+internal network, migrates the copy to this release, as a deploy would migrate a
+backup taken before the upgrade, and removes the container, volume and network
+afterwards. For its duration it adds a second database server's CPU and I/O,
+and it needs free disk where Docker keeps volumes, normally the disk of the
+deployment's own database: it refuses to start unless about twice the
+database's size plus 1 GiB is free there.
 
 ### What a change actually requires
 
@@ -225,7 +255,7 @@ taking effect:
 | You changed | Do this |
 |---|---|
 | A setting on the admin **Configuration** tab | Nothing, unless it is marked **Restart required**: then select **Restart backend** on that tab, or run `make restart s=backend` |
-| A value in `.env` that stays in the environment — the database connection, ports, config paths, console values | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
+| A value in `.env` that stays in the environment — the database connection, ports, the configuration selectors a rollback needs, console values | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
 | Any other value in `.env` | Nothing happens once the database has the setting: change it on the **Configuration** tab instead. See [Upgrading a deployment that kept its settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env) |
 | Model catalog, routing policy or alert rules in Admin Settings | Follow the **Restart required** marker; no image rebuild is needed |
 | Site configuration or branding in Admin Settings | Applies when settings refresh; no rebuild or restart |
@@ -312,8 +342,12 @@ the tab.
 
 Models, routing, alert rules, site identity and branding are database settings,
 not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections
-have no effect. See [Configuration](configuration.md) for the document controls
-and the explicit import command for an existing deployment.
+have no effect on this release, which warns at startup while one is set. Keep
+them in the deployment's env files through the rollback window anyway: Compose
+passes them to the backend, where a rolled-back previous release reads its files
+through them and the legacy import learns what that release had in force. See
+[Configuration](configuration.md) for the document controls and the import an
+existing deployment runs during its upgrade.
 
 ### Local inference servers
 

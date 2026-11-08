@@ -206,7 +206,7 @@ Beyond the model fields above, a route entry accepts:
 | `provider` / `provider_display_name` | string | Analytics label override only — it renames the row in the dashboard and does **not** select an adapter; that is `kind`. See [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
 | `deployment_type` | string | Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency) |
-| `include_usage_in_stream` | bool | Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a YAML boolean: a model-wide or non-boolean value (`"false"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields |
+| `include_usage_in_stream` | bool | Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: a model-wide or non-boolean value (`"false"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
 
 A route reports its `kind` as the provider label — the value recorded in
@@ -299,10 +299,11 @@ gateway without a database; see [The routing file](configuration.md#the-routing-
 
 ### Model not appearing in `/v1/models`
 
-- Confirm the registry the backend actually loaded. It logs
-  `Registered N routes from <path>` at startup, and logs an error naming the
-  path when no registry is there.
-- Check the YAML syntax and indentation under `models:`.
+- Confirm the catalog the backend actually loaded. It logs
+  `Registered N routes from the database route catalog` at startup, and logs
+  an error when the catalog has no models.
+- Check that the model is an entry of the catalog's `models` list. Admin
+  validates the JSON when you save it and names the field it refuses.
 - Check for skipped models: a route whose `${VAR}`-backed key or `base_url`
   resolves empty drops the model, and the log names both the model and the unset
   variable.
@@ -331,4 +332,4 @@ gateway without a database; see [The routing file](configuration.md#the-routing-
   request to local server
 - [Routing through OpenRouter](openrouter.md) — architecture and endpoints
 - [Routing](routing.md) — central weight overrides and strategies
-- [Configuration](configuration.md) — environment and YAML configuration
+- [Configuration](configuration.md) — where each setting lives, and the application documents

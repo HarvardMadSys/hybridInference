@@ -534,10 +534,8 @@ msgstr ""
 "块的简写模型）是配置错误，因为这个声明说的是某一台服务器的启动参数，而继承会把它带到每一条回退路由上。"
 
 #: ../developer/add-local-model.md:400
-msgid ""
-"**Real YAML booleans only.** A quoted `\"false\"` is a config error, so "
-"it can never turn the flag on by accident."
-msgstr "**只接受真正的 YAML 布尔值**。带引号的 `\"false\"` 会被判为配置错误，因此它永远不会意外地把这个 flag 打开。"
+msgid "**Booleans only.** In the JSON catalog, a quoted `\"false\"` is a config error, so it can never turn the flag on by accident."
+msgstr "**只接受布尔值**。在 JSON 目录中，带引号的 `\"false\"` 会被判为配置错误，因此它永远不会意外地把这个 flag 打开。"
 
 #: ../developer/add-local-model.md:403
 #, python-brace-format
@@ -574,23 +572,16 @@ msgid "Model Does Not Appear in `/v1/models`"
 msgstr "模型没有出现在 `/v1/models` 中"
 
 #: ../developer/add-local-model.md:413
-msgid ""
-"Confirm which registry the backend loaded, from the `Registered N routes "
-"from <path>` startup log line. If no registry is found at the resolved "
-"path, it logs an error naming that path, `/v1/models` is empty, and every"
-" request reports the model as not found."
-msgstr ""
-"从启动日志的 `Registered N routes from <path>` "
-"一行确认后端加载了哪个注册表。如果解析出的路径下找不到注册表，它会记一条 error 并指出该路径，`/v1/models` "
-"为空，而且每个请求都会报模型不存在。"
+msgid "Confirm which catalog the backend loaded, from the `Registered N routes from the database route catalog` startup log line. When the catalog has no models, it logs an error, `/v1/models` is empty, and every request reports the model as not found."
+msgstr "从启动日志的 `Registered N routes from the database route catalog` 一行确认后端加载了哪个目录。如果目录中没有模型，它会记一条 error，`/v1/models` 为空，而且每个请求都会报模型不存在。"
 
 #: ../developer/add-local-model.md:417
-msgid "Check YAML indentation under `models:`."
-msgstr "检查 `models:` 下的 YAML 缩进。"
+msgid "Check that the model is an entry of the catalog's `models` list."
+msgstr "检查该模型是否是目录 `models` 列表中的一项。"
 
 #: ../developer/add-local-model.md:418
-msgid "Restart the backend after editing the registry."
-msgstr "编辑注册表之后要重启后端。"
+msgid "Restart the backend after saving the catalog."
+msgstr "保存目录之后要重启后端。"
 
 #: ../developer/add-local-model.md:419
 msgid "Confirm `id` and `aliases` do not collide with another model."

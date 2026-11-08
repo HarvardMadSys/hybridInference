@@ -51,17 +51,46 @@ Embedded credentials become separate secret settings. Legacy rows remain for
 previous-release compatibility, and later edits to those rows have no effect on
 the new release.
 
-Existing external site, branding and alert files require one explicit import:
+Site identity, branding and alert rules kept in files need one explicit import,
+with the new image, after the migrations and before it serves. Until then the
+new release runs with a neutral site and the built-in alert thresholds, so
+public signup or RAG that the old manifest turned off is on. The standard
+lifecycle commands import in that order when you name the old manifest as the
+backend container sees it: the value of the deployment's
+`DISTRIBUTION_CONFIG_PATH`, or its path in the checkout, such as
+`distributions/<name>/distribution.yaml`.
 
 ```bash
-python -m serving.config.manage import-legacy /path/to/distribution.yaml
+make deploy BACKEND_IMAGE=<image@sha256:...> FRONTEND_IMAGE=<image@sha256:...> LEGACY_MANIFEST=distributions/<name>/distribution.yaml
+make build LEGACY_MANIFEST=distributions/<name>/distribution.yaml
 ```
 
-Run this where the backend can read the old manifest and its referenced files.
-The command validates the resulting documents and stores missing settings in one
-conditional update. Existing settings remain unchanged. Check Admin Settings,
-restart the backend for catalog/rule changes, and keep the old files through the
-rollback window. Normal startup never invokes this importer.
+The second form is for a stack built from source. Both run
+`python -m serving.config.manage import-legacy <manifest>` in a one-off container
+of the new backend image, with the deployment's environment. With another
+deployment method, run that command at the same point, where the backend can
+read the old files.
+
+The import takes only what the previous release had in force, judged as that
+release judged it:
+
+- The manifest's site identity, features, branding and documents, when the
+  previous release ran it with `DISTRIBUTION_CONFIG_MODE=active`. A dark
+  manifest was compared but never applied, so the import skips it with a
+  warning. `--include-dark` (`LEGACY_IMPORT_OPTIONS=--include-dark`) imports it
+  anyway, which applies those settings for the first time.
+- The alert rules from `ALERTS_CONFIG_PATH` when the environment names it, as it
+  won over the manifest, and otherwise from the manifest. `--alerts=<file>`
+  names a file explicitly; `LEGACY_IMPORT_OPTIONS` runs the import without a
+  manifest too.
+
+The command validates every document and stores the missing settings in one
+conditional update. Settings already stored remain unchanged, so running it
+again changes nothing. Check Admin Settings; a manual import into a running
+backend needs a restart for catalog and rule changes. Keep the old files and the
+deployment's `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE` and
+`*_CONFIG_PATH` values through the rollback window: the import reads them, and a
+rolled-back release needs them. Normal startup never invokes this importer.
 
 ## What a fresh clone does with no configuration at all
 
@@ -111,6 +140,13 @@ The retired model/routing/alert path variables and distribution active/dark mode
 no longer select configuration. Use the application documents instead. The
 standalone cloud agent owns its own settings; obsolete gateway `AGENT_*` values
 do not configure it.
+
+The backend still receives `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE`,
+`MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH` and `ALERTS_CONFIG_PATH` from Compose
+when the deployment sets them, and warns at startup that they do nothing. They
+are kept for the rollback window: a failed deploy or `make rollback` starts the
+previous release, which reads its manifest and files through them. Remove them,
+and the files, once no earlier release will run.
 
 ## Runtime configuration from the admin console
 

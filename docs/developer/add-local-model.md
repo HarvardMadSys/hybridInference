@@ -473,8 +473,8 @@ Two loader rules keep a wrong declaration from passing quietly:
 - **Route-level only.** Declaring it on the model (including a shorthand model
   with no `route:` block) is a config error, because the claim is about one
   server's startup flags and inheritance would carry it to every fallback.
-- **Real YAML booleans only.** A quoted `"false"` is a config error, so it can
-  never turn the flag on by accident.
+- **Booleans only.** In the JSON catalog, a quoted `"false"` is a config error,
+  so it can never turn the flag on by accident.
 
 What the client sees differs by surface: a non-streaming response carries
 `cache_read_tokens: 0` (the `Usage` response model drops the rest), while a
@@ -502,12 +502,12 @@ It needs outbound internet access for this and does not use an HTTP proxy.
 
 ### Model Does Not Appear in `/v1/models`
 
-- Confirm which registry the backend loaded, from the
-  `Registered N routes from <path>` startup log line. If no registry is found at
-  the resolved path, it logs an error naming that path, `/v1/models` is empty,
-  and every request reports the model as not found.
-- Check YAML indentation under `models:`.
-- Restart the backend after editing the registry.
+- Confirm which catalog the backend loaded, from the
+  `Registered N routes from the database route catalog` startup log line. When
+  the catalog has no models, it logs an error, `/v1/models` is empty, and every
+  request reports the model as not found.
+- Check that the model is an entry of the catalog's `models` list.
+- Restart the backend after saving the catalog.
 - Confirm `id` and `aliases` do not collide with another model.
 - A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` resolves to
   empty drops the whole model; the log names the skipped models and the unset

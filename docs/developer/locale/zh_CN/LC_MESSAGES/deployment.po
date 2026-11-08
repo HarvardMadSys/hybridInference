@@ -353,16 +353,8 @@ msgid "All from the repository root:"
 msgstr "以下命令都在仓库根目录执行："
 
 #: ../developer/deployment.md
-msgid ""
-"`make up` and `make build` first run the `docker-volumes` target, which "
-"creates the external volume `hybridinference_postgres_data` when it is "
-"missing, and then apply the schema migrations with the backend image "
-"before they start the services. `make restart` starts the existing "
-"containers again and migrates nothing."
-msgstr ""
-"`make up` 和 `make build` 会先执行 `docker-volumes` 这个 target，外部卷 "
-"`hybridinference_postgres_data` 不存在时由它创建；然后在启动服务之前，用后端镜像执行表结构迁移。`make "
-"restart` 只是把现有容器重新启动，不做任何迁移。"
+msgid "`make up` and `make build` first run the `docker-volumes` target, which creates the external volume `hybridinference_postgres_data` when it is missing, and then apply the schema migrations with the backend image before they start the services. `make restart` starts the existing containers again and migrates nothing. On a deployment that `make deploy` pinned to published images, these commands start the pinned images, and `make build` refuses until you return to source builds; see [Diagnostics, deployment and recovery](#diagnostics-deployment-and-recovery)."
+msgstr "`make up` 和 `make build` 会先执行 `docker-volumes` 这个 target，外部卷 `hybridinference_postgres_data` 不存在时由它创建；然后在启动服务之前，用后端镜像执行表结构迁移。`make restart` 只是把现有容器重新启动，不做任何迁移。如果 `make deploy` 已把部署固定到已发布的镜像，这些命令会启动固定的镜像，而 `make build` 会拒绝执行，直到你回到源码构建；见[诊断、部署与恢复](#diagnostics-deployment-and-recovery)。"
 
 #: ../developer/deployment.md:136
 msgid ""
@@ -414,10 +406,8 @@ msgstr ""
 "`make restart s=backend`"
 
 #: ../developer/deployment.md
-msgid ""
-"A value in `.env` that stays in the environment — the database "
-"connection, ports, config paths, console values"
-msgstr "`.env` 里留在环境变量中的值——数据库连接、端口、配置文件路径、控制台的取值"
+msgid "A value in `.env` that stays in the environment — the database connection, ports, the configuration selectors a rollback needs, console values"
+msgstr "`.env` 里留在环境变量中的值——数据库连接、端口、回退所需的配置选择变量、控制台的取值"
 
 #: ../developer/deployment.md
 msgid ""
@@ -2061,11 +2051,11 @@ msgstr ""
 msgid "Diagnostics, deployment and recovery"
 msgstr "诊断、部署与恢复"
 
-msgid "Set `GATEWAY_API_KEY` for authenticated inference checks. Deployment records the running artifacts, pulls the pinned pair, migrates before switching, then checks readiness and smoke acceptance. Failed acceptance restores the previous images; rollback does not run old-image migrations. Later lifecycle commands retain the recorded image selection in `.ops/images.env`."
-msgstr "为需要认证的推理检查设置 `GATEWAY_API_KEY`。部署会记录正在运行的镜像，拉取固定的一对镜像，在切换前运行迁移，然后检查就绪状态并执行冒烟验收。验收失败会恢复上一组镜像；回退不会运行旧镜像的迁移。后续生命周期命令保留 `.ops/images.env` 中记录的镜像选择。"
+msgid "Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the distribution's own `smoke.py` when it ships one."
+msgstr "为需要认证的推理检查设置 `GATEWAY_API_KEY`。如果发行版自带 `smoke.py`，`make smoke` 会运行它。"
 
-msgid "Copy `.ops.env.example` to `.ops.env` to persist optional Compose profiles, cloud-agent networking and the pgAdmin host-port choice across commands. A restore check creates and drops its own randomly named database; it never restores over the deployment database."
-msgstr "将 `.ops.env.example` 复制到 `.ops.env`，即可在各命令间保留可选 Compose profiles、云代理网络和 pgAdmin 主机端口选择。恢复检查仅创建并删除自己随机命名的数据库，绝不会覆盖部署数据库。"
+msgid "Copy `.ops.env.example` to `.ops.env` and uncomment the options this host needs to persist optional Compose profiles, cloud-agent networking and the pgAdmin host-port choice across commands; the copy alone changes nothing."
+msgstr "将 `.ops.env.example` 复制到 `.ops.env`，并取消注释本主机需要的选项，即可在各命令间保留可选 Compose profiles、云代理网络和 pgAdmin 主机端口选择；仅复制文件不会改变任何设置。"
 
 msgid "Model catalog, routing policy or alert rules in Admin Settings"
 msgstr "Admin Settings 中的模型目录、路由策略或告警规则"
@@ -2082,8 +2072,17 @@ msgstr "设置刷新时应用；无需重新构建或重启"
 msgid "Application configuration"
 msgstr "应用配置"
 
-msgid "Models, routing, alert rules, site identity and branding are database settings, not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections have no effect. See [Configuration](configuration.md) for the document controls and the explicit import command for an existing deployment."
-msgstr "模型、路由、告警规则、站点标识和品牌信息均为数据库设置，不是运行时文件。已停用的 `*_CONFIG_PATH` 和 active/dark 清单选择无效。文档管理及现有部署的显式导入命令见[配置](configuration.md)。"
+msgid "Models, routing, alert rules, site identity and branding are database settings, not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections have no effect on this release, which warns at startup while one is set. Keep them in the deployment's env files through the rollback window anyway: Compose passes them to the backend, where a rolled-back previous release reads its files through them and the legacy import learns what that release had in force. See [Configuration](configuration.md) for the document controls and the import an existing deployment runs during its upgrade."
+msgstr "模型、路由、告警规则、站点标识和品牌信息均为数据库设置，不是运行时文件。已停用的 `*_CONFIG_PATH` 和 active/dark 清单选择对当前版本无效；只要设置了其中任何一项，当前版本就会在启动时发出警告。尽管如此，在回退窗口结束前仍要把它们保留在部署的 env 文件中：Compose 会把它们传给后端，回退后的上一版本通过它们读取自己的文件，旧版配置导入也通过它们得知上一版本实际生效的配置。文档管理以及现有部署在升级期间运行的导入，见[配置](configuration.md)。"
 
 msgid "Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings. Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in `apps/backend/serving/observability/`."
 msgstr "在 Admin Settings 中通过 `ALERT_RULES` JSON 文档设置规则和阈值。留空时使用内置阈值；修改会标记为 Restart required。规则类型及求值逻辑位于 `apps/backend/serving/observability/`。"
+
+msgid "A deploy records the running artifacts, pulls the pinned pair and migrates with the new backend image. With `LEGACY_MANIFEST` set it then imports the previous release's file-based configuration with that image; see [Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database). Only then does it switch the services and run the acceptance smoke. Any failure after the switch, an interrupted command included, restores the previous images and runs the acceptance on them again; the command then exits with the deploy's own error and whether the restore passed. A rollback starts the recorded previous images without running their migrations."
+msgstr "部署会记录正在运行的镜像，拉取固定的一对镜像，并用新的后端镜像执行迁移。设置了 `LEGACY_MANIFEST` 时，它接着用该镜像导入上一版本基于文件的配置；见[数据库中的模型和路由文档](configuration.md#model-and-routing-documents-in-the-database)。之后才切换服务并执行冒烟验收。切换之后的任何失败（包括命令被中断）都会恢复上一组镜像，并对它们重新执行验收；命令随后以部署本身的错误退出，并说明恢复是否通过。回退会启动记录的上一组镜像，不运行它们的迁移。"
+
+msgid "Each deployment keeps its record in `.ops/<distribution>/` (`.ops/none/` without a distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the shell sets it): `images.env`, the images it is pinned to, and `previous.json` and `current.json`. A deploy writes them only once its release is accepted, so a failed attempt changes neither the pin nor the release a rollback returns to; a rollback pins the images it starts. While `images.env` exists, that deployment's `make up`, `make migrate` and other lifecycle commands start the pinned images instead of building the checkout, and `make build` refuses. To return to source builds, delete that `images.env` and run `make build`. No other distribution, the example included, uses the pin."
+msgstr "每个部署都把自己的记录保存在 `.ops/<distribution>/` 中（没有发行版时为 `.ops/none/`；shell 设置了 `COMPOSE_PROJECT_NAME` 时，位于以它命名的子目录中）：`images.env`（部署固定使用的镜像），以及 `previous.json` 和 `current.json`。部署只有在新版本通过验收后才写入这些文件，因此失败的尝试既不会改变固定的镜像，也不会改变回退要返回的版本；回退会固定它启动的镜像。只要 `images.env` 存在，该部署的 `make up`、`make migrate` 及其他生命周期命令都会启动固定的镜像，而不是构建检出的代码，`make build` 则会拒绝执行。要回到源码构建，删除该 `images.env` 并运行 `make build`。其他发行版（包括示例）都不会使用这个固定。"
+
+msgid "Without `BACKUP`, the dump goes to `.ops/<distribution>/gateway.dump`. It holds every stored secret: keep it private and copy it off the host. A restore check never touches the deployment's database server. It restores the dump into a throwaway PostgreSQL container of the same image, with its own volume and internal network, migrates the copy to this release, as a deploy would migrate a backup taken before the upgrade, and removes the container, volume and network afterwards. For its duration it adds a second database server's CPU and I/O, and it needs free disk where Docker keeps volumes, normally the disk of the deployment's own database: it refuses to start unless about twice the database's size plus 1 GiB is free there."
+msgstr "未指定 `BACKUP` 时，转储写入 `.ops/<distribution>/gateway.dump`。它包含所有已保存的秘密：请妥善保管，并复制到主机之外。恢复检查绝不会触碰部署的数据库服务器。它把转储恢复到一个使用相同镜像的一次性 PostgreSQL 容器中，该容器有自己的卷和内部网络；然后把副本迁移到当前版本（就像部署会迁移升级前的备份那样），最后删除容器、卷和网络。检查期间会额外占用第二个数据库服务器的 CPU 和 I/O，并需要 Docker 存放卷的磁盘上有空闲空间（通常就是部署自身数据库所在的磁盘）：除非那里约有数据库大小两倍再加 1 GiB 的空闲空间，否则它会拒绝启动。"

@@ -934,17 +934,12 @@ msgid "Model not appearing in `/v1/models`"
 msgstr "模型没有出现在 `/v1/models` 里"
 
 #: ../developer/adding-models.md:312
-msgid ""
-"Confirm the registry the backend actually loaded. It logs `Registered N "
-"routes from <path>` at startup, and logs an error naming the path when no"
-" registry is there."
-msgstr ""
-"确认后端实际加载的是哪份注册表。它在启动时会记录 `Registered N routes from "
-"<path>`；如果那个路径上没有注册表，则会记录一条写明路径的错误日志。"
+msgid "Confirm the catalog the backend actually loaded. It logs `Registered N routes from the database route catalog` at startup, and logs an error when the catalog has no models."
+msgstr "确认后端实际加载的目录。它在启动时会记录 `Registered N routes from the database route catalog`；如果目录中没有模型，则会记录一条错误日志。"
 
 #: ../developer/adding-models.md:315
-msgid "Check the YAML syntax and indentation under `models:`."
-msgstr "检查 `models:` 下的 YAML 语法和缩进。"
+msgid "Check that the model is an entry of the catalog's `models` list. Admin validates the JSON when you save it and names the field it refuses."
+msgstr "检查该模型是否是目录 `models` 列表中的一项。保存时 Admin 会验证 JSON，并指出被拒绝的字段。"
 
 #: ../developer/adding-models.md:316
 #, python-brace-format
@@ -1023,8 +1018,8 @@ msgid "[Routing](routing.md) — central weight overrides and strategies"
 msgstr "[路由](routing.md)——集中式权重覆盖与策略"
 
 #: ../developer/adding-models.md:344
-msgid "[Configuration](configuration.md) — environment and YAML configuration"
-msgstr "[配置](configuration.md)——环境变量与 YAML 配置"
+msgid "[Configuration](configuration.md) — where each setting lives, and the application documents"
+msgstr "[配置](configuration.md)——各项设置存放在哪里，以及应用文档"
 
 #~ msgid ""
 #~ "Provider/adapter kind; also the default "
@@ -1613,5 +1608,5 @@ msgid "`include_usage_in_stream`"
 msgstr "`include_usage_in_stream`"
 
 #: ../developer/adding-models.md
-msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a YAML boolean: a model-wide or non-boolean value (`\"false\"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
-msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是 YAML 布尔值：在模型级配置或使用非布尔值（`\"false\"`、`null`）属于配置错误，会使服务无法启动。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"
+msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: a model-wide or non-boolean value (`\"false\"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
+msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是布尔值：在模型级配置或使用非布尔值（`\"false\"`、`null`）属于配置错误，会使服务无法启动。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"
