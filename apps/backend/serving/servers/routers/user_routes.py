@@ -148,7 +148,7 @@ def _build_user_recent_requests_filters(
     queries cannot drift if a future filter is added.
 
     The key filter reads ``metadata->>'api_key_id'`` after ``user_id`` has
-    narrowed the scan to the account's rows (``idx_api_logs_user``): the key
+    narrowed the scan to the account's rows (``idx_api_logs_user_cost``): the key
     is not a column of its own, so that a log write never depends on a
     migration of ``api_logs``.
     """
