@@ -627,15 +627,19 @@ the file withholds keeps the value this deployment has; one the deployment has
 no value for stays unset, and the response names it under
 `secrets_not_restored`. A backup file is not signed, so a restore that changes
 anything security-relevant needs a confirmation and the password: any secret,
-the Security and Network settings, every `*_URL` setting and every variable a
-configuration file references, mail delivery, the identity issuer, keys and
-redirects, user authentication, the sign-up switches and allowlist, full
-request logging, private batch webhook targets, and where a custom provider or
-a route sends requests and keys. The console lists those changes before it
-restores, from `POST /admin/config/restore/preview`; a script sends that list
-back as `confirm_security_changes`, with `password`, and a restore whose changes
-differ from the confirmed list is refused with 409. The admin token can restore
-only a file that changes none of them.
+the Security, Network, Phone authentication and Privacy settings, every `*_URL`
+setting and every variable a configuration file references, mail delivery, who
+is told about new accounts and the support address, the identity issuer, keys
+and redirects, user authentication, the sign-up switches and allowlist, full
+request logging, who may submit batches and private batch webhook targets,
+whether alerts are sent and which are snoozed or muted, the request body
+limit, the tier a model or a provider key is reserved for, and where a custom
+provider or a route sends requests and keys, and as which deployment type. An
+alert snooze in the file must end within seven days. The console lists those
+changes before it restores, from `POST /admin/config/restore/preview`; a script
+sends that list back as `confirm_security_changes`, with `password`, and a
+restore whose changes differ from the confirmed list is refused with 409. The
+admin token can restore only a file that changes none of them.
 
 ### When a change applies
 

@@ -53,6 +53,10 @@ logger = get_logger(__name__)
 
 MAX_BODY_SETTING = "REQUEST_MAX_BODY_MB"
 DEFAULT_MAX_BODY_MB = 32
+#: The most ``REQUEST_MAX_BODY_MB`` may raise the limit to, as the registry
+#: bounds a stored value. An environment value past it is held to it here: a body
+#: is parsed in one piece on the event loop, about 6 s per 100 MiB.
+MAXIMUM_MAX_BODY_MB = 256
 _MIB = 1024 * 1024
 
 #: Routes that stream an upload into storage and enforce their own, larger
@@ -106,13 +110,14 @@ def configured_max_body_bytes() -> int:
     """Return the body limit in bytes from ``REQUEST_MAX_BODY_MB``.
 
     A missing, malformed or non-positive value falls back to the default: a
-    typo must not lift the limit, and the setting has no "unlimited" value.
+    typo must not lift the limit, and the setting has no "unlimited" value. A
+    value past :data:`MAXIMUM_MAX_BODY_MB` is held to it.
     """
     raw = config_value(MAX_BODY_SETTING)
     if raw is None or not raw.strip():
         return DEFAULT_MAX_BODY_MB * _MIB
     try:
-        megabytes = int(raw.strip())
+        megabytes = min(int(raw.strip()), MAXIMUM_MAX_BODY_MB)
     except ValueError:
         return DEFAULT_MAX_BODY_MB * _MIB
     return (megabytes if megabytes > 0 else DEFAULT_MAX_BODY_MB) * _MIB

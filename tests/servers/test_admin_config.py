@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1180,3 +1181,143 @@ async def test_a_backup_carries_the_batch_route_choices_and_a_restore_puts_them_
     assert any(
         c.args == ("chat", "chat:api-api") and c.kwargs["batch_allowed"] is False for c in calls
     )
+
+
+# --- the security classification (review L8) --------------------------------
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "SIGNUP_NOTIFY_EMAILS",
+        "SITE_SUPPORT_EMAIL",
+        "ALERTS_ENABLED",
+        "REQUEST_MAX_BODY_MB",
+        "BATCH_MIN_ROLE",
+        "SMS_AUTH_ENABLED",
+        "SMS_OTP_MAX_ATTEMPTS",
+        "ERASURE_FENCE_PROTOCOL_READY",
+    ],
+)
+async def test_settings_that_send_mail_silence_alerts_or_widen_access_are_security_relevant(
+    config_client, key
+) -> None:
+    assert app_config.security_relevant(key)
+
+
+@pytest.mark.parametrize(
+    "key", ["SITE_NAME", "LOG_LEVEL", "BATCH_MAX_REQUESTS", "FAILED_REQUEST_ALERT_THRESHOLD"]
+)
+async def test_routine_settings_are_not_security_relevant(config_client, key) -> None:
+    assert not app_config.security_relevant(key)
+
+
+@pytest.mark.asyncio
+async def test_the_request_body_limit_has_a_maximum(config_client) -> None:
+    client, store, _audit = config_client
+
+    refused = await client.patch(
+        "/admin/config", json={"values": {"REQUEST_MAX_BODY_MB": 100000}}, headers=AUTH
+    )
+
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == "REQUEST_MAX_BODY_MB: must be at most 256."
+    assert "REQUEST_MAX_BODY_MB" not in store.rows
+
+
+def _route(**overrides: Any) -> dict[str, Any]:
+    route = {
+        "model_id": "chat",
+        "route_id": "r1",
+        "route_type": "quota",
+        "provider": "acme",
+        "openrouter_sort": None,
+        "deployment_type": "self_hosted",
+        "base_url": "http://10.0.0.5:8000/v1",
+        "api_key_id": "key-1",
+        "provider_model_id": "acme-chat",
+        "quota_limit": None,
+        "concurrency_limit": None,
+        "weight": 1.0,
+        "pricing": None,
+        "capabilities": None,
+        "endpoint_id": None,
+    }
+    route.update(overrides)
+    return route
+
+
+@pytest.mark.asyncio
+async def test_a_restore_lists_what_silences_alerts_widens_access_or_unguards_a_route(
+    config_client,
+) -> None:
+    """Each of these is listed for confirmation; the same bundle without them is not."""
+    client, _store, _audit = config_client
+    op_store = client._transport.app.state.services.operational_store
+    _stock_backup_sources(op_store)
+    op_store.list_model_visibility_overrides = AsyncMock(
+        return_value=[{"model_id": "chat", "required_role": "admin"}]
+    )
+    op_store.list_all_provider_env_key_reservations = AsyncMock(
+        return_value=[("acme", "hash-1", "sk-acme...", "internal")]
+    )
+    op_store.list_all_provider_route_candidates = AsyncMock(return_value=[_route()])
+    bundle = await _exported(client)
+    bundle["provider_keys"][0]["api_key"] = "sk-acme-plaintext-1234"
+
+    async def preview() -> list[str]:
+        response = await client.post("/admin/config/restore/preview", headers=AUTH, json=bundle)
+        assert response.status_code == 200, response.text
+        return response.json()["security_changes"]
+
+    assert await preview() == []
+
+    bundle["app_config"] += [
+        {"key": "SIGNUP_NOTIFY_EMAILS", "value": "spy@example.com", "secret": False},
+        {"key": "ALERTS_ENABLED", "value": "false", "secret": False},
+    ]
+    bundle["site_settings"] += [
+        {
+            "key": "slack_alerts_snooze_until",
+            "value": str(time.time() + 3600),
+            "value_type": "float",
+        },
+        {"key": "model_required_role:runtime-model", "value": "free", "value_type": "str"},
+        {"key": "slack_alert_mute:provider_down", "value": '{"until": null}', "value_type": "json"},
+    ]
+    bundle["model_visibility_overrides"] = [{"model_id": "chat", "required_role": "free"}]
+    bundle["provider_env_key_min_roles"] = []
+    bundle["provider_keys"][0]["min_role"] = "free"
+    bundle["provider_route_candidates"][0]["deployment_type"] = "provider_api"
+
+    assert await preview() == [
+        "app_config:ALERTS_ENABLED",
+        "app_config:SIGNUP_NOTIFY_EMAILS",
+        "model_visibility_overrides:chat",
+        "provider_env_key_min_roles:acme/sk-acme...",
+        "provider_keys:acme/key-1",
+        "provider_route_candidates:chat/r1",
+        "site_settings:model_required_role:runtime-model",
+        "site_settings:slack_alert_mute:provider_down",
+        "site_settings:slack_alerts_snooze_until",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["inf", "nan", "-1", "soon", str(time.time() + 30 * 86400)])
+async def test_a_restore_refuses_an_alert_snooze_that_never_ends(config_client, value) -> None:
+    client, store, audit = config_client
+    bundle = {
+        "schema_version": 1,
+        "site_settings": [
+            {"key": "slack_alerts_snooze_until", "value": value, "value_type": "float"}
+        ],
+    }
+    before = dict(store.rows)
+
+    for path in ("/admin/config/restore/preview", "/admin/config/restore"):
+        response = await client.post(path, headers=AUTH, json=bundle)
+        assert response.status_code == 400, (path, response.text)
+        assert "slack_alerts_snooze_until" in response.json()["detail"]
+    assert store.rows == before
+    audit.assert_not_awaited()

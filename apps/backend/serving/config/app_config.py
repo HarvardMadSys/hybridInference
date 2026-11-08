@@ -2134,6 +2134,59 @@ def entry(key: str) -> ConfigEntry | None:
     return _STATE.entries.get(key) or registry.numbered_key_entry(key)
 
 
+#: Categories every setting of which is security-relevant (:func:`security_relevant`).
+SECURITY_CATEGORIES: frozenset[str] = frozenset({"security", "network", "phone", "privacy"})
+
+#: Security-relevant settings outside :data:`SECURITY_CATEGORIES`: where mail goes,
+#: who hears about new accounts and where users are told to write, the identity
+#: issuer's keys and redirects, private batch webhook targets and who may submit
+#: batches, request content storage, whether alerts are sent at all, and the
+#: request body limit.
+SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "EMAIL_PROVIDER",
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_USER",
+        "SMTP_FROM_EMAIL",
+        "SIGNUP_NOTIFY_EMAILS",
+        "SITE_SUPPORT_EMAIL",
+        "IDENTITY_ISSUER",
+        "IDENTITY_ALLOWED_REDIRECTS",
+        "IDENTITY_JWT_RETIRING_PUBLIC_KEYS",
+        "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
+        "BATCH_MIN_ROLE",
+        "DB_STORE_FULL_CONTENT",
+        "ALERTS_ENABLED",
+        "REQUEST_MAX_BODY_MB",
+    }
+)
+
+
+def security_relevant(key: str) -> bool:
+    """Whether changing *key* needs the signed-in administrator's confirmation and password.
+
+    What signs and encrypts, who administers and who may sign in, which networks
+    are trusted, where the gateway sends requests, credentials, mail and users,
+    what it stores and whether it reports trouble: every secret, every setting
+    of :data:`SECURITY_CATEGORIES`, every variable a configuration file
+    references or an administrator adds, every ``*_URL`` setting and the keys in
+    :data:`SECURITY_SETTING_KEYS`. A name with no entry is a variable a change
+    would add, which a configuration file reads. A configuration restore lists
+    a change to any of them for confirmation.
+    """
+    setting = entry(key)
+    if setting is None:
+        return True
+    return (
+        setting.secret
+        or setting.category in SECURITY_CATEGORIES
+        or setting.origin != "static"
+        or key in SECURITY_SETTING_KEYS
+        or key.endswith("_URL")
+    )
+
+
 def source_version() -> revisions.SourceVersion | None:
     """Return the source version of the configuration this process last read."""
     return _STATE.version
