@@ -1607,3 +1607,11 @@ msgstr "如需别名或其他元数据，请在 **Admin → Settings → Models*
 
 msgid "Set `GATEWAY_API_KEY` in the shell when authentication is enabled. The smoke uses the real inference path and normal quota. Check streaming separately when clients depend on it. A catalog change marked **Restart required** needs `make restart s=backend`; ordinary Admin route edits do not."
 msgstr "启用认证后，请在 shell 中设置 `GATEWAY_API_KEY`。冒烟检查使用真实推理路径并消耗正常配额。客户端依赖流式响应时，请单独验证流式请求。标记为 **Restart required** 的目录修改需要执行 `make restart s=backend`；普通 Admin 路由修改无需重启。"
+
+#: ../developer/adding-models.md
+msgid "`include_usage_in_stream`"
+msgstr "`include_usage_in_stream`"
+
+#: ../developer/adding-models.md
+msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a YAML boolean: a model-wide or non-boolean value (`\"false\"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
+msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是 YAML 布尔值：在模型级配置或使用非布尔值（`\"false\"`、`null`）属于配置错误，会使服务无法启动。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"

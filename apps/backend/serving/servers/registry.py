@@ -100,7 +100,17 @@ def resolve_reference(name: str) -> str | None:
     return entry.default if entry is not None and entry.default else None
 
 
-class EmbeddingsPathConfigError(ValueError):
+class RegistryConfigError(ValueError):
+    """A registry entry that is wrong, not merely unready: startup must stop.
+
+    Registration otherwise ends at the first bad entry and the process serves
+    whatever was registered before it, which drops every later model without
+    an error. A missing environment value is different: that model is skipped
+    (see :class:`MissingEnvBackedKeyError`).
+    """
+
+
+class EmbeddingsPathConfigError(RegistryConfigError):
     """Reject an invalid embeddings path without serving a partial model registry."""
 
 
@@ -255,6 +265,29 @@ def parse_openrouter_kind(kind: str) -> tuple[str, str | None]:
     return (kind, None)
 
 
+# Kinds whose upstream answers ``stream_options.include_usage`` with a final
+# usage chunk. This is a *default* only: a route may set
+# ``include_usage_in_stream`` explicitly, true or false, and that value wins.
+# The set is a statement about the protocol each kind speaks, never about who
+# owns the endpoint -- a provider label in the catalog says nothing about it.
+_STREAM_USAGE_DEFAULT_KINDS = frozenset({"deepseek", "zai", "kimi", "minimax", "sglang", "vllm"})
+
+
+def _require_yaml_bool(value: Any, *, field: str, where: str) -> bool:
+    """Return a configured capability flag, refusing non-boolean YAML values.
+
+    ``bool("false")`` is True, so accepting a quoted scalar here would turn an
+    explicit opt-out into an opt-in with nothing in the log. ``null`` is
+    refused too: an absent value means "keep the kind default", which is a
+    different statement from "explicitly off".
+    """
+    if not isinstance(value, bool):
+        raise RegistryConfigError(
+            f"{field} for {where} must be a YAML boolean, got {type(value).__name__} ({value!r})"
+        )
+    return value
+
+
 def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
@@ -290,26 +323,30 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "provider_profile": "openrouter"}
 
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile.
-    # Request upstream usage in the stream so tool-call-only responses report
-    # non-zero completion tokens instead of falling back to a text estimate.
     if kind == "deepseek":
-        cfg = {**cfg, "provider_profile": "deepseek", "include_usage_in_stream": True}
+        cfg = {**cfg, "provider_profile": "deepseek"}
     # ZAI uses an OpenAI-compatible API with a non-/v1 chat path.
     elif kind == "zai":
         cfg = {
             **cfg,
             "provider_profile": "zai",
             "chat_path": "/chat/completions",
-            "include_usage_in_stream": True,
         }
     elif kind == "kimi":
-        cfg = {**cfg, "provider_profile": "kimi", "include_usage_in_stream": True}
+        cfg = {**cfg, "provider_profile": "kimi"}
     elif kind == "minimax":
-        cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
-    elif kind == "sglang":
-        cfg = {**cfg, "include_usage_in_stream": True}
+        cfg = {**cfg, "provider_profile": "minimax"}
     elif kind == "vllm":
-        cfg = {**cfg, "include_usage_in_stream": True, "vllm_structured_outputs": True}
+        cfg = {**cfg, "vllm_structured_outputs": True}
+
+    # Request upstream usage in the stream so cached tokens, and completion
+    # tokens on tool-call-only responses, are measured instead of estimated.
+    # Presence, not truthiness: `include_usage_in_stream` is a route-level
+    # capability, so a value the deployment configured -- including False on a
+    # backend that rejects unknown body fields -- must never be overwritten by
+    # a kind default. The kinds below are only where it is assumed on.
+    if kind in _STREAM_USAGE_DEFAULT_KINDS and "include_usage_in_stream" not in cfg:
+        cfg = {**cfg, "include_usage_in_stream": True}
 
     model_cfg = ModelConfig(**cfg)
 
@@ -573,6 +610,14 @@ def register_from_models_document(
                     f"embeddings_path for model {m.get('id')!r} must be declared on a route, "
                     "not on the model (including shorthand models without a route list)"
                 )
+            if "include_usage_in_stream" in m:
+                raise RegistryConfigError(
+                    f"include_usage_in_stream for model {m.get('id')!r} must be "
+                    "declared on a route, not on the model (including shorthand "
+                    "models without a route list): whether an upstream answers "
+                    "stream_options.include_usage is a fact about one endpoint, "
+                    "not about every route a model has"
+                )
 
             # ${VAR} expansion for base_url/api_key in both top-level and route
             # entries: the database-backed setting, then the environment, then
@@ -661,6 +706,20 @@ def register_from_models_document(
                 # route, keeping the rest of the model, instead of dropping the
                 # whole model via the model-level MissingEnvBackedKeyError catch.
                 route_optional = bool(r.get("optional", False))
+
+                # Validate the stream-usage capability before missing
+                # credentials can skip an optional route and hide a malformed
+                # declaration, the same reason embeddings_path validates early.
+                include_usage_declared = "include_usage_in_stream" in r
+                include_usage_value = (
+                    _require_yaml_bool(
+                        r["include_usage_in_stream"],
+                        field="include_usage_in_stream",
+                        where=(f"route {r.get('base_url')!r} on model {top_cfg.get('id')!r}"),
+                    )
+                    if include_usage_declared
+                    else False
+                )
 
                 # Validate this opt-in field before missing credentials can
                 # skip an optional route and hide a malformed declaration.
@@ -910,6 +969,21 @@ def register_from_models_document(
                     adapter_cfg["null_cache_details_means_miss"] = flag
                 else:
                     adapter_cfg.pop("null_cache_details_means_miss", None)
+
+                # Whether this upstream answers `stream_options.include_usage`
+                # with a final usage chunk. Route-level, because it is a fact
+                # about one endpoint's protocol: the same model routinely has a
+                # deepseek route and an ollama fallback that disagree, and a
+                # deployment may run an OpenAI-compatible stack that rejects
+                # unknown body fields.
+                #
+                # Presence, not truthiness. `_make_adapter` assumes the flag on
+                # for its default kinds only when the key is absent, so an
+                # explicit `false` survives even on a kind that normally
+                # requests usage, and an explicit `true` opts in a kind that
+                # normally does not.
+                if include_usage_declared:
+                    adapter_cfg["include_usage_in_stream"] = include_usage_value
 
                 # Route-level input_modalities override (default: inherit the
                 # model-level declaration). Lets a narrower fallback (e.g. a

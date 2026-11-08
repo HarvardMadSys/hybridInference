@@ -67,9 +67,9 @@ from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices, database_enabled
 from .model_availability import record_skipped_models
 from .registry import (
-    EmbeddingsPathConfigError,
     ModelLoadReport,
     ModelRegistrationInfo,
+    RegistryConfigError,
     register_from_models_document,
 )
 from .routewise_rebuild import rebuild_cached_routewise_routers
@@ -783,9 +783,10 @@ async def _init_router_and_models(
                     f"Registered {len(embedding_adapters)} embedding adapter(s): "
                     f"{list(embedding_adapters.keys())}"
                 )
-    except EmbeddingsPathConfigError:
-        # A rejected explicit path must abort startup, not leave the server
-        # running on whatever models were registered before the bad entry.
+    except RegistryConfigError:
+        # An entry the registry refuses outright (an explicit embeddings path,
+        # a capability flag that is not a boolean) must abort startup, not
+        # leave the server running on whatever models were registered before it.
         raise
     except Exception as exc:
         source = "the Admin model catalog"
