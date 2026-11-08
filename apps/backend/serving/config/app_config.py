@@ -2103,6 +2103,7 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 "custom": entry.origin == "custom",
                 "invalid": invalid,
                 "used_by": list(entry.used_by),
+                "security_relevant": _security_relevant_entry(key, entry),
                 "updated_at": stamped.updated_at if stamped is not None else None,
                 "updated_by": stamped.updated_by if stamped is not None else None,
                 "group": registry.managed_group(key),
@@ -2173,9 +2174,13 @@ def security_relevant(key: str) -> bool:
     references or an administrator adds, every ``*_URL`` setting and the keys in
     :data:`SECURITY_SETTING_KEYS`. A name with no entry is a variable a change
     would add, which a configuration file reads. A configuration restore lists
-    a change to any of them for confirmation.
+    a change to any of them for confirmation, and ``PATCH /admin/config`` and
+    ``DELETE /admin/config/{key}`` ask for the password before they store one.
     """
-    setting = entry(key)
+    return _security_relevant_entry(key, entry(key))
+
+
+def _security_relevant_entry(key: str, setting: ConfigEntry | None) -> bool:
     if setting is None:
         return True
     return (

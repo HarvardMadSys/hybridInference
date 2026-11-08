@@ -606,7 +606,13 @@ refused when the environment value it would fall back to is not valid. A
 setting that was already invalid never blocks an unrelated change. The names that stay in the
 environment, such as `DB_PASSWORD` or `MODELS_CONFIG_PATH`, cannot be set here.
 Behind the tab are `GET` and `PATCH /admin/config` and
-`DELETE /admin/config/{key}`.
+`DELETE /admin/config/{key}`. A save or a **Reset** of a security-relevant
+setting, one a restore lists for confirmation (see
+[Backup and restore](#backup-and-restore)) and each entry marks with
+`security_relevant`, asks for your password, which the API takes as `password`
+(in the JSON body of a `DELETE`). The admin token gives no password, so it
+changes only the other settings; `python -m serving.config.manage` still
+changes any of them on the host.
 
 ### Backup and restore
 

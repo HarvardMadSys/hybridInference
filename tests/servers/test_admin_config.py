@@ -130,11 +130,14 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "custom",
         "invalid",
         "used_by",
+        "security_relevant",
         "updated_at",
         "updated_by",
         "group",
         "apply_mode",
     }
+    assert smtp["security_relevant"] is True
+    assert entries["SITE_NAME"]["security_relevant"] is False
     secrets = [
         "env-smtp-password",
         *(stored.value for stored in store.rows.values() if stored.secret),
@@ -174,13 +177,14 @@ async def test_get_leaves_out_settings_with_nothing_to_choose(config_client) -> 
 
 
 @pytest.mark.asyncio
-async def test_patch_stores_and_returns_the_full_configuration(config_client) -> None:
-    client, store, audit = config_client
+async def test_patch_stores_and_returns_the_full_configuration(console_admin) -> None:
+    client, store, audit, _account = console_admin
 
     response = await client.patch(
         "/admin/config",
         json={
             "values": {"SITE_NAME": "Acme Gateway", "SMTP_PORT": 2525, "CHAT_UPSTREAM_KEY": "k"},
+            "password": ADMIN_PASSWORD,
         },
         headers=AUTH,
     )
@@ -207,15 +211,20 @@ async def test_patch_stores_and_returns_the_full_configuration(config_client) ->
     for call in audit.await_args_list:
         assert call.kwargs["target"] == AuditTarget("config", call.kwargs["details"]["key"])
     assert '"k"' not in repr(details)
+    assert ADMIN_PASSWORD not in repr(audit.await_args_list)
 
 
 @pytest.mark.asyncio
-async def test_patch_marks_new_custom_variables_secret_on_request(config_client) -> None:
-    client, store, _audit = config_client
+async def test_patch_marks_new_custom_variables_secret_on_request(console_admin) -> None:
+    client, store, _audit, _account = console_admin
 
     response = await client.patch(
         "/admin/config",
-        json={"values": {"BOX_TOKEN": "s3cret"}, "secrets": {"BOX_TOKEN": True}},
+        json={
+            "values": {"BOX_TOKEN": "s3cret"},
+            "secrets": {"BOX_TOKEN": True},
+            "password": ADMIN_PASSWORD,
+        },
         headers=AUTH,
     )
 
@@ -240,12 +249,14 @@ async def test_patch_marks_new_custom_variables_secret_on_request(config_client)
         ({"API_KEY_SECRET": "new"}, 409, "API_KEY_SECRET is already set and cannot be changed."),
     ],
 )
-async def test_patch_refusals_store_nothing(config_client, values, status, detail) -> None:
-    client, store, audit = config_client
+async def test_patch_refusals_store_nothing(console_admin, values, status, detail) -> None:
+    client, store, audit, _account = console_admin
     writes = len(store.writes)
 
     response = await client.patch(
-        "/admin/config", json={"values": {"SITE_NAME": "ok", **values}}, headers=AUTH
+        "/admin/config",
+        json={"values": {"SITE_NAME": "ok", **values}, "password": ADMIN_PASSWORD},
+        headers=AUTH,
     )
 
     assert response.status_code == status, response.text
@@ -257,8 +268,8 @@ async def test_patch_refusals_store_nothing(config_client, values, status, detai
 
 
 @pytest.mark.asyncio
-async def test_delete_falls_back_and_custom_variables_disappear(config_client) -> None:
-    client, store, audit = config_client
+async def test_delete_falls_back_and_custom_variables_disappear(console_admin) -> None:
+    client, store, audit, _account = console_admin
     store.rows["SITE_NAME"] = row("SITE_NAME", "Stored")
     store.rows["BOX_REGION"] = row("BOX_REGION", "east")
     await app_config.refresh()
@@ -269,7 +280,9 @@ async def test_delete_falls_back_and_custom_variables_disappear(config_client) -
     assert entry["source"] == "default"
     assert entry["value"] is None
 
-    response = await client.delete("/admin/config/BOX_REGION", headers=AUTH)
+    response = await client.request(
+        "DELETE", "/admin/config/BOX_REGION", headers=AUTH, json={"password": ADMIN_PASSWORD}
+    )
     assert response.status_code == 200
     assert "BOX_REGION" not in _entries(response.json())
     assert [call.kwargs["action"] for call in audit.await_args_list] == [
@@ -283,10 +296,12 @@ async def test_delete_falls_back_and_custom_variables_disappear(config_client) -
     "key,status",
     [("API_KEY_SECRET", 409), ("ERASURE_FENCE_SECRET", 409), ("SITE_NAME", 404), ("DB_HOST", 403)],
 )
-async def test_delete_refusals(config_client, key, status) -> None:
-    client, _store, audit = config_client
+async def test_delete_refusals(console_admin, key, status) -> None:
+    client, _store, audit, _account = console_admin
 
-    response = await client.delete(f"/admin/config/{key}", headers=AUTH)
+    response = await client.request(
+        "DELETE", f"/admin/config/{key}", headers=AUTH, json={"password": ADMIN_PASSWORD}
+    )
 
     assert response.status_code == status
     audit.assert_not_awaited()
@@ -309,9 +324,9 @@ async def test_get_names_each_entrys_origin(config_client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_marks_an_immutable_setting_locked_once_it_is_settled(config_client) -> None:
+async def test_get_marks_an_immutable_setting_locked_once_it_is_settled(console_admin) -> None:
     """The fence secret has no value of its own, but API_KEY_SECRET stands in for it."""
-    client, _store, _audit = config_client
+    client, _store, _audit, _account = console_admin
 
     entries = _entries((await client.get("/admin/config", headers=AUTH)).json())
 
@@ -323,7 +338,9 @@ async def test_get_marks_an_immutable_setting_locked_once_it_is_settled(config_c
     assert entries["SITE_NAME"]["locked"] is False
     # Locked is exactly what a save of it answers with 409.
     response = await client.patch(
-        "/admin/config", json={"values": {"ERASURE_FENCE_SECRET": "dedicated"}}, headers=AUTH
+        "/admin/config",
+        json={"values": {"ERASURE_FENCE_SECRET": "dedicated"}, "password": ADMIN_PASSWORD},
+        headers=AUTH,
     )
     assert response.status_code == 409
 
@@ -507,6 +524,14 @@ def console_admin(config_client, monkeypatch):
     reset_login_rate_limit_state()
 
 
+async def _store_chat_upstream_key(client, store) -> None:
+    """Store the model's key as a secret, as a confirmed save would."""
+    store.rows["CHAT_UPSTREAM_KEY"] = row("CHAT_UPSTREAM_KEY", "sk-chat-secret", secret=True)
+    await app_config.refresh()
+    entries = _entries((await client.get("/admin/config", headers=AUTH)).json())
+    assert entries["CHAT_UPSTREAM_KEY"]["is_set"] is True
+
+
 def _stock_backup_sources(op_store) -> None:
     """Give the mocked operational store one row of every secret kind a backup carries."""
     op_store.list_settings = AsyncMock(
@@ -552,11 +577,8 @@ async def test_backup_names_secrets_without_their_values_and_excludes_setup_mark
     config_client,
 ) -> None:
     client, store, audit = config_client
-    await client.patch(
-        "/admin/config",
-        headers=AUTH,
-        json={"values": {"SITE_NAME": "Backup Lab", "CHAT_UPSTREAM_KEY": "sk-chat-secret"}},
-    )
+    await _store_chat_upstream_key(client, store)
+    await client.patch("/admin/config", headers=AUTH, json={"values": {"SITE_NAME": "Backup Lab"}})
     audit.reset_mock()
     op_store = client._transport.app.state.services.operational_store
     _stock_backup_sources(op_store)
@@ -647,10 +669,8 @@ async def test_the_admin_token_cannot_export_secret_values(config_client) -> Non
 async def test_a_backup_with_secret_values_needs_the_administrators_password(
     console_admin,
 ) -> None:
-    client, _store, audit, _account = console_admin
-    await client.patch(
-        "/admin/config", headers=AUTH, json={"values": {"CHAT_UPSTREAM_KEY": "sk-chat-secret"}}
-    )
+    client, store, audit, _account = console_admin
+    await _store_chat_upstream_key(client, store)
     audit.reset_mock()
     _stock_backup_sources(client._transport.app.state.services.operational_store)
 
@@ -708,9 +728,7 @@ async def test_restoring_a_bundle_without_secret_values_keeps_this_deployments_s
 ) -> None:
     """A withheld secret is never blanked; one with nothing to keep is named, not invented."""
     client, store, audit = config_client
-    await client.patch(
-        "/admin/config", headers=AUTH, json={"values": {"CHAT_UPSTREAM_KEY": "sk-chat-secret"}}
-    )
+    await _store_chat_upstream_key(client, store)
     op_store = client._transport.app.state.services.operational_store
     _stock_backup_sources(op_store)
     op_store.delete_setting = AsyncMock()
@@ -1213,11 +1231,13 @@ async def test_routine_settings_are_not_security_relevant(config_client, key) ->
 
 
 @pytest.mark.asyncio
-async def test_the_request_body_limit_has_a_maximum(config_client) -> None:
-    client, store, _audit = config_client
+async def test_the_request_body_limit_has_a_maximum(console_admin) -> None:
+    client, store, _audit, _account = console_admin
 
     refused = await client.patch(
-        "/admin/config", json={"values": {"REQUEST_MAX_BODY_MB": 100000}}, headers=AUTH
+        "/admin/config",
+        json={"values": {"REQUEST_MAX_BODY_MB": 100000}, "password": ADMIN_PASSWORD},
+        headers=AUTH,
     )
 
     assert refused.status_code == 400
@@ -1321,3 +1341,96 @@ async def test_a_restore_refuses_an_alert_snooze_that_never_ends(config_client, 
         assert "slack_alerts_snooze_until" in response.json()["detail"]
     assert store.rows == before
     audit.assert_not_awaited()
+
+
+# --- the password gate on security-relevant settings (review M1) ------------
+
+ATTACKER_TOKEN = "attacker-chosen-admin-token-0123456789abcdef"
+
+
+@pytest.mark.asyncio
+async def test_the_admin_token_cannot_rewrite_the_secrets_a_backup_withholds(config_client):
+    """A known ADMIN_TOKEN or JWT_SECRET_KEY is administrator access that never expires."""
+    client, store, audit = config_client
+    before = dict(store.rows)
+
+    refused = await client.patch(
+        "/admin/config",
+        headers=AUTH,
+        json={
+            "values": {"ADMIN_TOKEN": ATTACKER_TOKEN, "JWT_SECRET_KEY": "k" * 64},
+            "password": "anything",
+        },
+    )
+
+    assert refused.status_code == 403
+    assert "admin token cannot confirm" in refused.json()["detail"]
+    assert store.rows == before
+    audit.assert_not_awaited()
+    stolen = await client.get(
+        "/admin/config", headers={"Authorization": f"Bearer {ATTACKER_TOKEN}"}
+    )
+    assert stolen.status_code == 401
+
+    # Nor reset one to whatever the environment holds.
+    reset = await client.request(
+        "DELETE", "/admin/config/TRUSTED_PROXIES", headers=AUTH, json={"password": "x"}
+    )
+    assert reset.status_code == 403
+
+    # The other settings stay the admin token's to change.
+    allowed = await client.patch(
+        "/admin/config", headers=AUTH, json={"values": {"SITE_NAME": "Token Lab"}}
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert store.rows["SITE_NAME"].value == "Token Lab"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"IDENTITY_ALLOWED_REDIRECTS": "https://collector.example/cb"},
+        {"TRUSTED_PROXIES": "0.0.0.0/0"},
+        {"SITE_PUBLIC_BASE_URL": "https://collector.example"},
+        {"SITE_NAME": "Mixed", "SMTP_HOST": "smtp.collector.example"},
+    ],
+)
+async def test_a_security_setting_needs_the_administrators_password(console_admin, values):
+    client, store, audit, _account = console_admin
+    before = dict(store.rows)
+
+    for extra in ({}, {"password": "wrong"}):
+        refused = await client.patch(
+            "/admin/config", headers=AUTH, json={"values": values, **extra}
+        )
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == "Current password is incorrect."
+    assert store.rows == before
+    audit.assert_not_awaited()
+
+    response = await client.patch(
+        "/admin/config", headers=AUTH, json={"values": values, "password": ADMIN_PASSWORD}
+    )
+
+    assert response.status_code == 200, response.text
+    for key, value in values.items():
+        assert store.rows[key].value == value
+    assert ADMIN_PASSWORD not in repr(audit.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_resetting_a_security_setting_needs_the_password_too(console_admin) -> None:
+    client, store, _audit, _account = console_admin
+    store.rows["TRUSTED_PROXIES"] = row("TRUSTED_PROXIES", "10.0.0.0/8")
+    await app_config.refresh()
+
+    refused = await client.delete("/admin/config/TRUSTED_PROXIES", headers=AUTH)
+    assert refused.status_code == 400
+    assert "TRUSTED_PROXIES" in store.rows
+
+    response = await client.request(
+        "DELETE", "/admin/config/TRUSTED_PROXIES", headers=AUTH, json={"password": ADMIN_PASSWORD}
+    )
+    assert response.status_code == 200, response.text
+    assert store.rows["TRUSTED_PROXIES"].source == "reset"

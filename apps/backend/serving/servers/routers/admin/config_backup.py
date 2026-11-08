@@ -94,11 +94,11 @@ from serving.servers.routers.admin.provider_routes import (
     _normalize_runtime_model_pricing,
     reconcile_live_routes_from_store,
 )
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 from serving.servers.routers.admin.usage_insights import (
     _SETTING_API_KEY as USAGE_INSIGHTS_API_KEY,
     _SETTING_MODEL as USAGE_INSIGHTS_MODEL,
 )
-from serving.servers.routers.reauth import confirm_account_owner
 from serving.setup_state import SETUP_CODE_KEY, SETUP_MARKER_KEY
 
 if TYPE_CHECKING:
@@ -737,47 +737,9 @@ async def _build_backup(
     )
 
 
-async def _confirm_administrator(
-    request: Request, op_store: Any, password: str | None, *, action: str
-) -> None:
-    """Raise unless the administrator behind this request gives the account's password.
-
-    A bearer token proves a session, not a person, and what this guards
-    outlives any session: secret values handed out, or the deployment's
-    security settings replaced. The password is checked by
-    :func:`confirm_account_owner`, as revealing a saved API key checks it, so
-    every attempt counts against the sign-in limits. An ``ADMIN_TOKEN`` caller
-    has no account to confirm, and an account without a password (made by
-    phone) is refused: confirming by phone code would need a new code purpose.
-
-    Raises:
-        HTTPException: 403 for the admin token; 400 for an account without a
-            password or a wrong or missing one; 429 when rate-limited.
-    """
-    user_id = get_admin_user_id(request)
-    if user_id is None:
-        raise HTTPException(
-            status_code=403,
-            detail=f"{action} needs an administrator's password. Sign in to the console as an "
-            "administrator: the admin token cannot confirm it.",
-        )
-    user_row = await op_store.get_user_by_id(user_id) if op_store else None
-    if not user_row:
-        raise HTTPException(status_code=403, detail="Admin account not found.")
-    if not user_row.get("password_hash"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"{action} needs your password, and this account has none. Set one in "
-            "Settings first.",
-        )
-    await confirm_account_owner(
-        request,
-        op_store,
-        user_row,
-        password=password,
-        phone_code=None,
-        purpose="config_backup",
-    )
+#: Secret values handed out, or the deployment's security settings replaced,
+#: outlive any session: both ask for the administrator's password again.
+_confirm_administrator = confirm_administrator
 
 
 async def _export(
