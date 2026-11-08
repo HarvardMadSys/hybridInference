@@ -8,6 +8,7 @@ legacy file and environment registration functions remain compatibility APIs.
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -273,19 +274,278 @@ def parse_openrouter_kind(kind: str) -> tuple[str, str | None]:
 _STREAM_USAGE_DEFAULT_KINDS = frozenset({"deepseek", "zai", "kimi", "minimax", "sglang", "vllm"})
 
 
-def _require_yaml_bool(value: Any, *, field: str, where: str) -> bool:
-    """Return a configured capability flag, refusing non-boolean YAML values.
+#: The largest context or output length a catalog entry may declare.
+_MAX_TOKENS = 10_000_000
 
-    ``bool("false")`` is True, so accepting a quoted scalar here would turn an
-    explicit opt-out into an opt-in with nothing in the log. ``null`` is
-    refused too: an absent value means "keep the kind default", which is a
-    different statement from "explicitly off".
+# Fields that state a fact about one endpoint, each with why a model cannot
+# hold it -- not even a shorthand model, whose one synthesized route has no
+# `route:` block for a reviewer to see the declaration on.
+_ROUTE_ONLY_FIELDS = {
+    "deployment_type": "",
+    "embeddings_path": "",
+    "include_usage_in_stream": (
+        ": whether an upstream answers stream_options.include_usage is a fact about "
+        "one endpoint, not about every route a model has"
+    ),
+    "null_cache_details_means_miss": (
+        ": it states that one server was started with cache reporting on, which "
+        "cannot be true of every route a model has"
+    ),
+}
+
+
+def _json_type(value: object) -> str:
+    """Name a value's JSON type, for a message that must not show the value."""
+    if value is None:
+        return "null"
+    for kind, name in (
+        (bool, "a boolean"),
+        (str, "a string"),
+        ((int, float), "a number"),
+        (list, "a list"),
+        (dict, "an object"),
+    ):
+        if isinstance(value, kind):
+            return name
+    return type(value).__name__
+
+
+def check_models_document(data: Any) -> list[Any]:
+    """Check a whole catalog the way :func:`check_model_entry` checks one entry.
+
+    Keys other than ``models`` are left to their own readers (``auto``) or
+    ignored, as registration ignores them: a catalog carried over from YAML
+    keeps its anchor blocks. A name claimed by two models is registration's to
+    warn about, not a reason to refuse the catalog.
+
+    Returns:
+        The model entries; an absent or null ``models`` is an empty catalog.
+
+    Raises:
+        RegistryConfigError: The first entry registration would refuse.
     """
-    if not isinstance(value, bool):
+    if not isinstance(data, dict):
+        raise RegistryConfigError("the model catalog must be an object")
+    models = data.get("models")
+    if models is None:
+        return []
+    if not isinstance(models, list):
+        raise RegistryConfigError("models must be a list")
+    for index, model in enumerate(models):
+        check_model_entry(model, index=index)
+    return models
+
+
+def check_model_entry(model: Any, *, index: int = 0) -> None:
+    """Refuse a catalog entry that registration would refuse or build wrongly.
+
+    The one rule set for an entry. Registration runs it over every entry
+    before it builds anything, and Admin runs it (through
+    ``serving.config.documents.validate``) before a catalog is saved, so a
+    saved catalog registers and one registration refuses is never saved. It
+    is pure: it reads no setting and touches no router, so a ``${VAR}`` that
+    is unset or resolves to something unusable stays registration's to report.
+
+    Each message names the entry, the route and the field, and what is wrong
+    with it; never a configured value, so the Settings tab can show it.
+
+    Args:
+        model: One entry of the catalog's ``models`` list.
+        index: Its position, to name an entry whose ``id`` is unusable.
+
+    Raises:
+        RegistryConfigError: The entry is not one registration accepts.
+    """
+    if not isinstance(model, dict):
+        raise RegistryConfigError(f"each model must be an object (models[{index}])")
+    model_id = model.get("id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise RegistryConfigError(f"id must be a non-empty string (models[{index}])")
+    where = f"model {model_id!r}"
+    for name, reason in _ROUTE_ONLY_FIELDS.items():
+        if name in model:
+            error = EmbeddingsPathConfigError if name == "embeddings_path" else RegistryConfigError
+            raise error(
+                f"{name} must be declared on a route, not on the model (including shorthand "
+                f"models without a route list){reason} ({where})"
+            )
+    aliases = model.get("aliases")
+    if aliases and (
+        not isinstance(aliases, list)
+        or not all(isinstance(alias, str) and alias.strip() for alias in aliases)
+    ):
+        raise RegistryConfigError(f"aliases must be a list of non-empty strings ({where})")
+    # An embedding model produces no output tokens, so it declares 0.
+    for name, least in (("context_length", 1), ("max_output_length", 0)):
+        limit = model.get(name)
+        if limit is not None and (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not least <= limit <= _MAX_TOKENS
+        ):
+            raise RegistryConfigError(
+                f"{name} must be a whole number of tokens from {least} to {_MAX_TOKENS:,} ({where})"
+            )
+    # Registration copies these into every route's adapter configuration.
+    for name in ("extra_body", "route_metadata"):
+        if model.get(name) and not isinstance(model[name], dict):
+            raise RegistryConfigError(f"{name} must be an object ({where})")
+    if model.get("router") is not None:
+        _check_router(model["router"], model.get("router_params"), where)
+    routes = model.get("route")
+    if not routes:
+        # Registration gives a model without a route list one route of the
+        # kind its provider names.
+        _check_route(model, {}, where)
+        return
+    if not isinstance(routes, list) or not all(isinstance(route, dict) for route in routes):
+        raise RegistryConfigError(f"route must be a list of objects ({where})")
+    for number, route in enumerate(routes, start=1):
+        _check_route(model, route, f"{where}, route {number}")
+
+
+def _check_router(name: Any, params: Any, where: str) -> None:
+    """Refuse a model's ``router`` / ``router_params`` the strategy would refuse at boot."""
+    from pydantic import ValidationError
+
+    from routing.strategies import validate_router_config
+    from serving.config.documents import describe_validation_error
+
+    try:
+        validate_router_config(name, params)
+    except ValidationError as exc:
         raise RegistryConfigError(
-            f"{field} for {where} must be a YAML boolean, got {type(value).__name__} ({value!r})"
+            f"router_params is not valid for this router: {describe_validation_error(exc)} "
+            f"({where})"
+        ) from None
+    except (TypeError, ValueError):
+        raise RegistryConfigError(
+            f"router names no routing strategy this gateway has ({where})"
+        ) from None
+
+
+def _check_route(model: dict[str, Any], route: dict[str, Any], where: str) -> None:
+    """Refuse one route the way registration would; ``{}`` stands for a synthesized one."""
+    # A route without a kind is served by the adapter its model's provider names.
+    kind, kind_field = (
+        (route["kind"], "kind") if route.get("kind") else (model.get("provider"), "provider")
+    )
+    if not kind:
+        raise RegistryConfigError(
+            f"kind is required: name the route's adapter, or the model's provider ({where})"
         )
-    return value
+    if not isinstance(kind, str):
+        raise RegistryConfigError(f"{kind_field} must be a string ({where})")
+    try:
+        base_kind, _pinned = parse_openrouter_kind(kind)
+    except ValueError:
+        raise RegistryConfigError(
+            f"{kind_field} must be openrouter or openrouter[<provider slug>] to pin an "
+            f"OpenRouter upstream ({where})"
+        ) from None
+    if base_kind not in _BUILT_IN_ADAPTER_KINDS and base_kind not in ADAPTER_FACTORIES:
+        raise RegistryConfigError(
+            f"{kind_field} names no adapter kind this gateway has; another kind needs a "
+            f"backend extension that registers it ({where})"
+        )
+    weight = route.get("weight", 1.0)
+    if (
+        isinstance(weight, bool)
+        or not isinstance(weight, (int, float))
+        or not math.isfinite(weight)
+        or weight < 0
+    ):
+        raise RegistryConfigError(f"weight must be a number, 0 or more ({where})")
+    if "deployment_type" in route:
+        try:
+            validate_deployment_type(route["deployment_type"])
+        except ValueError as exc:
+            raise RegistryConfigError(f"{exc} ({where})") from None
+    for flag in ("include_usage_in_stream", "null_cache_details_means_miss"):
+        # `bool("false")` is True: a quoted scalar would turn an explicit
+        # opt-out into an opt-in with nothing in the log. null is refused too:
+        # absent means "keep the kind default", which is not "explicitly off".
+        if flag in route and not isinstance(route[flag], bool):
+            raise RegistryConfigError(
+                f"{flag} must be a boolean, not {_json_type(route[flag])} ({where})"
+            )
+    if route.get("embeddings_path") is not None:
+        _check_embeddings_path(route["embeddings_path"], where)
+    _check_provider_label(model, route, kind, base_kind, where)
+    api_keys = route.get("api_keys")
+    if api_keys is not None:
+        if route.get("api_key") is not None:
+            raise RegistryConfigError(f"api_key and api_keys are both set; pick one ({where})")
+        if not isinstance(api_keys, list):
+            raise RegistryConfigError(f"api_keys must be a list ({where})")
+        if any(key is not None and not isinstance(key, str) for key in api_keys):
+            raise RegistryConfigError(f"api_keys entries must be strings ({where})")
+    # A route-level value replaces the model's, as registration copies them.
+    processor = route["processor"] if "processor" in route else model.get("processor")
+    if processor:
+        # The table get_processor dispatches on; an unknown name fails there.
+        from serving.adapters.processors import _PROCESSOR_MAP
+
+        if not isinstance(processor, str) or processor not in _PROCESSOR_MAP:
+            raise RegistryConfigError(
+                f"processor must be one of: {', '.join(sorted(_PROCESSOR_MAP))} ({where})"
+            )
+    schedule = (
+        route["pricing_schedule"] if "pricing_schedule" in route else model.get("pricing_schedule")
+    )
+    source = route["pricing_source"] if "pricing_source" in route else model.get("pricing_source")
+    if schedule is not None or source is not None:
+        # The adapter configuration validates them together; its messages
+        # name fields and keys, never values.
+        try:
+            ModelConfig(
+                id="",
+                name="",
+                provider="",
+                base_url="",
+                pricing_schedule=schedule,
+                pricing_source=source,
+            )
+        except (TypeError, ValueError) as exc:
+            raise RegistryConfigError(f"{exc} ({where})") from None
+
+
+def _check_embeddings_path(path: Any, where: str) -> None:
+    """Refuse an explicit embeddings path; a ``${VAR}`` is checked once it resolves."""
+    if not isinstance(path, str):
+        raise EmbeddingsPathConfigError(f"embeddings_path must be a string or null ({where})")
+    template = path.strip()
+    if path and not template:
+        raise EmbeddingsPathConfigError(f"embeddings_path must not be whitespace-only ({where})")
+    if _template_var(template) is None and ".." in template.split("/"):
+        raise EmbeddingsPathConfigError(
+            f"embeddings_path must not contain '..' path segments ({where})"
+        )
+
+
+def _check_provider_label(
+    model: dict[str, Any], route: dict[str, Any], kind: str, base_kind: str, where: str
+) -> None:
+    """Refuse a route label :func:`parse_route_provider_label` would refuse."""
+    display_name = route.get("provider_display_name")
+    if display_name is not None and not (isinstance(display_name, str) and display_name.strip()):
+        raise RegistryConfigError(f"provider_display_name must be a non-empty string ({where})")
+    label = route.get("provider")
+    if label is None:
+        return
+    if not isinstance(label, str) or not _PROVIDER_LABEL_RE.fullmatch(label):
+        raise RegistryConfigError(
+            "provider must use lowercase letters, numbers, dashes or underscores "
+            f"(at most 64 characters) ({where})"
+        )
+    canonical = (
+        "openai" if kind == "openai_compat" and model.get("provider") == "openai" else base_kind
+    )
+    if label != canonical and label in RESERVED_PROVIDER_LABELS:
+        raise RegistryConfigError(
+            f"provider is reserved by a built-in provider; pick a distinct label such as "
+            f"{canonical}-1 ({where})"
+        )
 
 
 def _make_adapter(kind: str, cfg: dict[str, Any]):
@@ -583,8 +843,12 @@ def register_from_models_document(
     report: ModelLoadReport | None = None,
     origin: str = "Admin model catalog",
 ) -> tuple[int, list[ModelRegistrationInfo]]:
-    """Register a database model document through the existing adapter boundary."""
-    models: list[dict[str, Any]] = data.get("models", [])
+    """Register a database model document through the existing adapter boundary.
+
+    Every entry is checked first (:func:`check_model_entry`), so an entry
+    registration refuses is refused before any model is registered.
+    """
+    models: list[dict[str, Any]] = check_models_document(data)
     count = 0
     model_infos: list[ModelRegistrationInfo] = []
     # A model whose credential is unset is skipped, one warning per model, deep
@@ -600,25 +864,6 @@ def register_from_models_document(
     alias_owner: dict[str, str] = {}
     for m in models:
         try:
-            if "deployment_type" in m:
-                raise ValueError(
-                    f"deployment_type for model {m.get('id')!r} must be declared on a route, "
-                    "not on the model (including shorthand models without a route list)"
-                )
-            if "embeddings_path" in m:
-                raise EmbeddingsPathConfigError(
-                    f"embeddings_path for model {m.get('id')!r} must be declared on a route, "
-                    "not on the model (including shorthand models without a route list)"
-                )
-            if "include_usage_in_stream" in m:
-                raise RegistryConfigError(
-                    f"include_usage_in_stream for model {m.get('id')!r} must be "
-                    "declared on a route, not on the model (including shorthand "
-                    "models without a route list): whether an upstream answers "
-                    "stream_options.include_usage is a fact about one endpoint, "
-                    "not about every route a model has"
-                )
-
             # ${VAR} expansion for base_url/api_key in both top-level and route
             # entries: the database-backed setting, then the environment, then
             # the setting's registered default (resolve_reference).
@@ -677,6 +922,9 @@ def register_from_models_document(
             # guard, and the model was registered with no credential.
             if top_cfg.get("provider_model_id"):
                 top_cfg["provider_model_id"] = expand_env(top_cfg["provider_model_id"])  # type: ignore
+            # The display name defaults to the id, as Admin's catalog check assumes.
+            if top_cfg.get("name") is None:
+                top_cfg["name"] = top_cfg["id"]
 
             # If no explicit route list, use a single route targeting the primary config
             routes = m.get("route") or [
@@ -690,13 +938,11 @@ def register_from_models_document(
             adapters_with_weights = []
             dynamic_key_registrations: list[tuple[str, object]] = []
             dynamic_key_providers: set[str] = set()
+            # check_models_document has refused every malformed declaration
+            # already, so a missing credential that skips an optional route
+            # below can no longer hide one.
             for route_index, r in enumerate(routes, start=1):
-                try:
-                    deployment_type = validate_deployment_type(r.get("deployment_type", "auto"))
-                except ValueError as exc:
-                    raise ValueError(
-                        f"{exc} (model {top_cfg.get('id')!r}, route {route_index})"
-                    ) from exc
+                deployment_type = validate_deployment_type(r.get("deployment_type", "auto"))
                 kind = r.get("kind") or top_cfg.get("provider")
                 raw_base_url = r.get("base_url") or top_cfg.get("base_url")
                 base_url = expand_env(raw_base_url)
@@ -707,35 +953,11 @@ def register_from_models_document(
                 # whole model via the model-level MissingEnvBackedKeyError catch.
                 route_optional = bool(r.get("optional", False))
 
-                # Validate the stream-usage capability before missing
-                # credentials can skip an optional route and hide a malformed
-                # declaration, the same reason embeddings_path validates early.
-                include_usage_declared = "include_usage_in_stream" in r
-                include_usage_value = (
-                    _require_yaml_bool(
-                        r["include_usage_in_stream"],
-                        field="include_usage_in_stream",
-                        where=(f"route {r.get('base_url')!r} on model {top_cfg.get('id')!r}"),
-                    )
-                    if include_usage_declared
-                    else False
-                )
-
-                # Validate this opt-in field before missing credentials can
-                # skip an optional route and hide a malformed declaration.
                 if "embeddings_path" in r:
                     path_context = f"model {top_cfg.get('id')!r}, route {route_index}"
                     embeddings_path = r["embeddings_path"]
-                    if embeddings_path is not None and not isinstance(embeddings_path, str):
-                        raise EmbeddingsPathConfigError(
-                            f"embeddings_path must be a string or null ({path_context})"
-                        )
                     if embeddings_path is not None:
                         template = embeddings_path.strip()
-                        if embeddings_path and not template:
-                            raise EmbeddingsPathConfigError(
-                                f"embeddings_path must not be whitespace-only ({path_context})"
-                            )
                         embeddings_path = expand_env(template)
                         if (
                             template.startswith("${")
@@ -790,17 +1012,9 @@ def register_from_models_document(
                 raw_api_keys = r.get("api_keys")
                 raw_api_key = r.get("api_key") or top_cfg.get("api_key")
 
-                if raw_api_keys is not None and r.get("api_key") is not None:
-                    raise ValueError(
-                        f"Route for model {top_cfg.get('id')!r} sets both "
-                        f"api_key and api_keys; pick one."
-                    )
-
                 api_key: str | None = None
                 api_keys: list[str] | None = None
                 if raw_api_keys is not None:
-                    if not isinstance(raw_api_keys, list):
-                        raise ValueError(f"api_keys for {top_cfg.get('id')!r} must be a list")
                     expanded = [expand_env(k) for k in raw_api_keys]
                     kept: list[str] = []
                     for raw, val in zip(raw_api_keys, expanded, strict=True):
@@ -948,25 +1162,12 @@ def register_from_models_document(
                 # including a synthesized shorthand route with no `route:` block to
                 # review. Fabricating a measured 0 on an endpoint that reports
                 # nothing is the failure this whole field exists to prevent, so an
-                # inheritable spelling is refused rather than quietly honored.
-                if "null_cache_details_means_miss" in m:
-                    raise ValueError(
-                        f"null_cache_details_means_miss for model {top_cfg.get('id')!r} "
-                        "must be declared on a route, not on the model: it states that "
-                        "one server was started with cache reporting on, which cannot "
-                        "be true of every route a model has."
-                    )
+                # inheritable spelling is refused (check_model_entry) rather than
+                # quietly honored, and so is a value that is not a boolean.
                 if "null_cache_details_means_miss" in r:
-                    flag = r["null_cache_details_means_miss"]
-                    if not isinstance(flag, bool):
-                        # `bool("false")` is True: a quoted YAML scalar would turn an
-                        # explicit opt-out into an opt-in, silently.
-                        raise ValueError(
-                            "null_cache_details_means_miss for route "
-                            f"{r.get('base_url')!r} on model {top_cfg.get('id')!r} must "
-                            f"be a YAML boolean, got {type(flag).__name__} ({flag!r})"
-                        )
-                    adapter_cfg["null_cache_details_means_miss"] = flag
+                    adapter_cfg["null_cache_details_means_miss"] = r[
+                        "null_cache_details_means_miss"
+                    ]
                 else:
                     adapter_cfg.pop("null_cache_details_means_miss", None)
 
@@ -982,8 +1183,8 @@ def register_from_models_document(
                 # explicit `false` survives even on a kind that normally
                 # requests usage, and an explicit `true` opts in a kind that
                 # normally does not.
-                if include_usage_declared:
-                    adapter_cfg["include_usage_in_stream"] = include_usage_value
+                if "include_usage_in_stream" in r:
+                    adapter_cfg["include_usage_in_stream"] = r["include_usage_in_stream"]
 
                 # Route-level input_modalities override (default: inherit the
                 # model-level declaration). Lets a narrower fallback (e.g. a

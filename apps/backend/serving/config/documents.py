@@ -10,9 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import fields
 from datetime import date
 from typing import TYPE_CHECKING, Any
+
+from pydantic import ValidationError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -27,6 +28,45 @@ DOCUMENT_KEYS = {
 KEY_KINDS = {key: kind for kind, key in DOCUMENT_KEYS.items()}
 _REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 _CREDENTIAL = re.compile(r"(^|_)(api_keys?|token|password|secret|authorization|headers)(_|$)", re.I)
+_TITLES = {
+    "models": "model catalog",
+    "routing": "routing policy",
+    "alerts": "alert rules document",
+    "distribution": "site configuration",
+    "branding": "site branding",
+}
+
+
+class DocumentError(ValueError):
+    """Why a document cannot be saved, in words an administrator can be shown.
+
+    The message names where the problem is -- a field, a model, a route -- and
+    what kind of problem it is, never a value from the document: a credential
+    typed into the wrong field must not travel on, to the Settings tab or the
+    log, in the error that refuses it.
+    """
+
+
+#: How many of a Pydantic error's reasons :func:`describe_validation_error` names.
+_REASONS_SHOWN = 3
+
+
+def describe_validation_error(exc: ValidationError) -> str:
+    """Name the fields a Pydantic error is about and what is wrong, never their input.
+
+    Each reason is a JSON pointer and the message, as Admin words a refused
+    setting (``app_config._validator_problem``): ``/timeout value must be
+    non-negative``.
+    """
+    errors = exc.errors(include_url=False, include_context=False, include_input=False)
+    reasons = []
+    for error in errors[:_REASONS_SHOWN]:
+        location = "/".join(str(part) for part in error.get("loc") or ())
+        message = str(error.get("msg") or "invalid value").removeprefix("Value error, ")
+        reasons.append(f"/{location} {message}" if location else message)
+    if len(errors) > _REASONS_SHOWN:
+        reasons.append(f"{len(errors) - _REASONS_SHOWN} more")
+    return "; ".join(reasons)
 
 
 def parse(text: str) -> dict[str, Any]:
@@ -34,9 +74,9 @@ def parse(text: str) -> dict[str, Any]:
     try:
         value = json.loads(text) if text.strip() else {}
     except (ValueError, TypeError):
-        raise ValueError("must be a valid JSON object") from None
+        raise DocumentError("must be a valid JSON object") from None
     if not isinstance(value, dict):
-        raise ValueError("must be a JSON object")
+        raise DocumentError("must be a JSON object")
     return value
 
 
@@ -74,75 +114,62 @@ def _credentials(value: Any, *, path: str = "", credential: bool = False) -> Non
         for index, item in enumerate(value):
             _credentials(item, path=f"{path}/{index}", credential=credential)
     elif credential and value and (not isinstance(value, str) or not _REFERENCE.fullmatch(value)):
-        raise ValueError(f"{path} must reference a separate secret setting as ${{NAME}}")
+        raise DocumentError(f"{path} must reference a separate secret setting as ${{NAME}}")
 
 
 def validate(key: str, text: str) -> None:
-    """Validate a document without upstream I/O or mutating the running router."""
-    kind = KEY_KINDS[key]
-    value = parse(text)
+    """Validate a document without upstream I/O or mutating the running router.
+
+    Raises:
+        DocumentError: Naming where the problem is and what kind it is, never
+            a value from the document, so Admin can show the message as it is.
+    """
+    check(KEY_KINDS[key], parse(text))
+
+
+def check(kind: str, value: dict[str, Any]) -> None:
+    """Validate a document of *kind* that has already been read, as :func:`validate` does.
+
+    The model catalog is held to the registry's own rules
+    (``serving.servers.registry.check_models_document``): what registration
+    accepts is accepted here, so a catalog carried over from YAML -- anchor
+    blocks, a route without a kind, an alias two models claim -- stays usable,
+    and what it refuses is refused here, with the same reason.
+
+    Raises:
+        DocumentError: As :func:`validate`.
+    """
+    from serving.servers.registry import RegistryConfigError
+
+    try:
+        _check(kind, value)
+    except DocumentError:
+        raise
+    except ValidationError as exc:
+        raise DocumentError(describe_validation_error(exc)) from None
+    except RegistryConfigError as exc:
+        # Worded for this: the model, the route and the field, never a value.
+        raise DocumentError(str(exc)) from None
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc.__cause__, ValidationError):
+            raise DocumentError(describe_validation_error(exc.__cause__)) from None
+        # Any other message may quote the document; say only which one it is.
+        raise DocumentError(f"not a valid {_TITLES[kind]}") from None
+    try:
+        encode(value)
+    except (TypeError, ValueError):
+        raise DocumentError("numbers must be finite: JSON has no NaN or Infinity") from None
+
+
+def _check(kind: str, value: dict[str, Any]) -> None:
     # The public documents have strict, closed schemas. In particular,
     # branding's api_key_env_var is a displayed variable name, not a secret.
     if kind not in ("distribution", "branding"):
         _credentials(value)
     if kind == "models":
-        from routing.strategies import validate_router_config
-        from serving.adapters.base import ModelConfig, validate_deployment_type
-        from serving.servers.registry import (
-            _BUILT_IN_ADAPTER_KINDS,
-            ADAPTER_FACTORIES,
-            parse_openrouter_kind,
-        )
+        from serving.servers.registry import check_models_document
 
-        if set(value) - {"models", "auto"}:
-            raise ValueError("model catalog accepts only models and auto")
-        models = value.get("models", [])
-        if not isinstance(models, list):
-            raise ValueError("models must be a list")
-        names: set[str] = set()
-        for model in models:
-            if not isinstance(model, dict) or not isinstance(model.get("id"), str):
-                raise ValueError("every model needs an id")
-            allowed = {field.name for field in fields(ModelConfig)}
-            candidate = {key: val for key, val in model.items() if key in allowed}
-            candidate.setdefault("name", model["id"])
-            candidate.setdefault("provider", "openai_compat")
-            candidate.setdefault("base_url", "")
-            ModelConfig(**candidate)
-            if "deployment_type" in model or "embeddings_path" in model:
-                raise ValueError("deployment type and embeddings path belong on individual routes")
-            for length in ("context_length", "max_output_length"):
-                limit = model.get(length)
-                if limit is not None and (
-                    isinstance(limit, bool)
-                    or not isinstance(limit, int)
-                    or not 0 < limit <= 10_000_000
-                ):
-                    raise ValueError(f"{length} must be a positive whole number of tokens")
-            if model.get("router") is not None:
-                validate_router_config(model["router"], model.get("router_params"))
-            for name in [model["id"], *(model.get("aliases") or [])]:
-                if not isinstance(name, str) or not name.strip() or name in names:
-                    raise ValueError("model ids and aliases must be nonempty and unique")
-                names.add(name)
-            routes = model.get("route", [])
-            if not isinstance(routes, list) or any(not isinstance(r, dict) for r in routes):
-                raise ValueError("route must be a list of objects")
-            for route in routes:
-                if not isinstance(route.get("kind"), str) or not route["kind"].strip():
-                    raise ValueError("every route needs an adapter kind")
-                kind, _ = parse_openrouter_kind(route["kind"])
-                if kind not in _BUILT_IN_ADAPTER_KINDS and kind not in ADAPTER_FACTORIES:
-                    raise ValueError("unknown adapter kind")
-                if "deployment_type" in route:
-                    validate_deployment_type(route["deployment_type"])
-                if route.get("embeddings_path") is not None and not isinstance(
-                    route["embeddings_path"], str
-                ):
-                    raise ValueError("embeddings path must be a string or null")
-                weight = route.get("weight", 1)
-                if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight < 0:
-                    raise ValueError("route weights must be nonnegative numbers")
+        check_models_document(value)
     elif kind == "routing":
         from routing.config import routing_config_from_data
 
@@ -157,13 +184,14 @@ def validate(key: str, text: str) -> None:
         if value:
             config = DistributionConfig.model_validate(value)
             if any(config.paths.model_dump().values()) or config.site.branding:
-                raise ValueError("file paths are retired; configure application documents in Admin")
+                raise DocumentError(
+                    "file paths are retired; configure application documents in Admin"
+                )
     elif kind == "branding":
         from serving.config.branding import BrandingConfig
 
         if value:
             BrandingConfig.model_validate(value)
-    encode(value)
 
 
 def separate_secrets(

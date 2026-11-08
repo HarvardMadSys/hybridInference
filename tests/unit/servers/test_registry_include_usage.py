@@ -213,7 +213,7 @@ def test_non_boolean_scalar_is_refused(tmp_path, scalar: str) -> None:
             include_usage_in_stream: {scalar}
     """
 
-    with pytest.raises(ValueError, match="must be a YAML boolean"):
+    with pytest.raises(ValueError, match="must be a boolean"):
         _load(tmp_path, body)
 
 
@@ -240,7 +240,7 @@ def test_bad_value_on_optional_route_is_refused_before_credential_skip(
             base_url: http://ollama.local:11434/v1
     """
 
-    with pytest.raises(ValueError, match="must be a YAML boolean"):
+    with pytest.raises(ValueError, match="must be a boolean"):
         _load(tmp_path, body)
 
 

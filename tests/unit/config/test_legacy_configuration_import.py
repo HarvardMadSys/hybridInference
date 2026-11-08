@@ -113,7 +113,8 @@ async def test_import_preserves_unquoted_pricing_schedule_dates(tmp_path):
         "schema_version: 1\ndistribution: {id: imported}\npaths: {models: models.yaml}\n"
     )
     (tmp_path / "models.yaml").write_text(
-        "models:\n- id: scheduled\n  pricing_schedule:\n"
+        "models:\n- id: scheduled\n  provider: vllm\n  base_url: http://localhost:9/v1\n"
+        "  pricing_schedule:\n"
         "    effective_at: '2026-11-01T00:00:00Z'\n"
         "    excluded_dates: [2026-12-25]\n"
         "    default: {prompt: '0.15'}\n    windows: []\n"

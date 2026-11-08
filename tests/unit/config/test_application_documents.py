@@ -10,7 +10,7 @@ import pytest
 from routing.routers import FixedRouter
 from serving.config import app_config
 from serving.config.distribution import get_active_distribution_config
-from serving.config.documents import get, separate_secrets, validate
+from serving.config.documents import DocumentError, get, separate_secrets, validate
 from serving.servers.routers import site_config
 from tests.fixtures.app_config_store import FakeAppConfigStore
 
@@ -125,21 +125,26 @@ async def test_branding_can_be_configured_without_a_site_document(configuration)
 
 
 @pytest.mark.parametrize(
-    "key,text",
+    "key,text,reason",
     [
-        ("MODEL_CATALOG", "models: []"),
-        ("MODEL_CATALOG", '[{"models": []}]'),
-        ("MODEL_CATALOG", '{"models": [{"id": "duplicate"}, {"id": "duplicate"}]}'),
-        ("MODEL_CATALOG", '{"models": [{"id": "one", "route": [{"kind": "vllm", "weight": -1}]}]}'),
+        ("MODEL_CATALOG", "models: []", "valid JSON object"),
+        ("MODEL_CATALOG", '[{"models": []}]', "must be a JSON object"),
+        ("MODEL_CATALOG", '{"models": [{"id": "no-adapter"}]}', "kind is required"),
+        (
+            "MODEL_CATALOG",
+            '{"models": [{"id": "one", "route": [{"kind": "vllm", "weight": -1}]}]}',
+            r"weight must be a number, 0 or more \(model 'one', route 1\)",
+        ),
         (
             "SITE_CONFIGURATION",
             '{"schema_version":1,"distribution":{"id":"x"},"paths":{"models":"models.yaml"}}',
+            "file paths are retired",
         ),
-        ("SITE_BRANDING", '{"unexpected_secret": "secret"}'),
+        ("SITE_BRANDING", '{"unexpected_secret": "secret"}', "Field required"),
     ],
 )
-def test_invalid_documents_are_refused(key, text):
-    with pytest.raises((ValueError, TypeError)):
+def test_invalid_documents_are_refused(key, text, reason):
+    with pytest.raises(DocumentError, match=reason):
         validate(key, text)
 
 
@@ -175,6 +180,7 @@ def test_token_limits_are_numbers_rather_than_credentials():
         "models": [
             {
                 "id": "limits",
+                "provider": "vllm",
                 "router": "routewise",
                 "router_params": {"output_default_tokens": 512},
                 "extra_body": {"max_tokens": 1024},
