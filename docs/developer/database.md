@@ -55,8 +55,12 @@ lookups a request makes before it is served — API-key authentication and spend
 session checks, quotas, and the runtime settings read on the way. Slow work on
 the general pool (reports, exports, rollups) cannot hold those up, and a request
 that cannot get a request-pool connection within 3 seconds is answered with a
-503 and `Retry-After` instead of waiting. With the alert-history pool's 4, a
-process holds at most 18 connections; size `max_connections` for that times
+503 and `Retry-After` instead of waiting; a statement on the request pool is
+stopped after 5 seconds. On the general pool, users' reads of their own request
+history (`/user/recent-requests`, `/user/usage`) hold at most 4 connections at
+once, and those reads and the Responses API's loads and saves wait at most 5
+seconds for a connection before the same 503. With the alert-history pool's 4,
+a process holds at most 18 connections; size `max_connections` for that times
 the number of gateway processes, plus the tools you run beside them.
 
 The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`,
@@ -160,7 +164,7 @@ settings govern this:
 |---|---|---|
 | Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats`, `provider_hourly_coverage`, `request_volume_hourly`, `user_usage_daily`, `user_usage_daily_coverage`, `daily_activity`, `admin_view_results`, `admin_view_state` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly and daily rollups used by the dashboards, the admin Users table and the user dashboard's usage figures, and the last computed result of the admin console's slowest views |
 | Settings | `app_config` | The settings on the admin console's Settings tab, secrets included; see [Settings and first-run setup](#settings-and-first-run-setup) |
-| Accounts and auth | `users`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, hashed API keys with their quotas and their own budgets and model allowlists, refresh sessions and the accounts signed in on each browser, sign-in history |
+| Accounts and auth | `users`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, hashed API keys with their quotas and their own budgets and model allowlists, refresh sessions (each deleted a day after it expires or is signed out) and the accounts signed in on each browser, sign-in history |
 | Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings and the first-run setup marker, announcements, broadcast delivery state |
 | Runtime routing overrides | `provider_definitions`, `provider_api_keys`, `provider_route_configs`, `provider_route_candidates`, `provider_weight_overrides`, `disabled_providers`, `disabled_provider_env_keys`, `provider_env_key_min_roles`, `model_visibility_overrides`, `model_concurrency_exemptions` | Everything the admin console can change about routing without editing YAML — see [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console) |
 | Cost and quota | `user_daily_cost`, `api_key_daily_cost` | Per-user daily spend used for quota enforcement, and the same per API key for the console's per-key spend |
