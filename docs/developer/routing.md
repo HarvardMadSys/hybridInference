@@ -231,6 +231,11 @@ selection signal.
   them.
 - A lease is released at the first token, not at end of stream: a long cheap
   decode is not prefill pressure.
+- A lease is taken when selection commits, so concurrent selections spread,
+  but it counts toward the affinity ceiling only once its request has left the
+  gateway. A request still fetching remote media or waiting for an outbound
+  slot is in no engine's queue. No lease counts for more than its route's
+  context window, the most one request can make an engine prefill.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -238,7 +243,7 @@ selection signal.
 | `ROUTING_PREFILL_INTERVENE_TOKENS` | `50000` | Backlog at which load starts overriding the weighted draw. |
 | `ROUTING_PREFILL_ELEPHANT_TOKENS` | `200000` | Estimated un-cached tokens at which a prompt counts as an elephant. |
 | `ROUTING_PREFILL_ELEPHANT_LIMIT` | `1` | Concurrent elephants allowed per endpoint. |
-| `ROUTING_PREFILL_AFFINITY_CEILING` | `150000` | Backlog above which an affinity pin is abandoned. |
+| `ROUTING_PREFILL_AFFINITY_CEILING` | `150000` | Backlog above which a request skips its affinity pin. |
 | `ROUTING_PREFILL_HINT_TTL_SEC` | `1200` | Lifetime of the per-(caller, endpoint) prompt-size memory. |
 
 This module never blocks, rejects, or queues a request. The worst it does is
@@ -280,9 +285,10 @@ the admin playground) publishes nothing and shares one anonymous binding.
 4. If the pinned endpoint is no longer admissible — weight `0`, or its circuit
    is open — the entry is dropped and a fresh weighted pick runs.
 5. If the pinned endpoint's prefill backlog is above
-   `ROUTING_PREFILL_AFFINITY_CEILING`, the pin is abandoned for this request and
-   selection re-runs *excluding* that endpoint, then re-pins to whatever it
-   picks. A pin is a cache-locality optimisation, not a promise to queue.
+   `ROUTING_PREFILL_AFFINITY_CEILING`, the pin is skipped for this request and
+   selection re-runs *excluding* that endpoint. The pin stays, so the next
+   request returns to the endpoint holding the caller's prefix. A pin is a
+   cache-locality optimisation, not a promise to queue.
 6. After the TTL elapses with no traffic the entry expires. Expired entries are
    swept lazily once the table exceeds `AFFINITY_SWEEP_THRESHOLD` (1000).
 7. However busy its caller, a pin lasts at most one day from when it was made

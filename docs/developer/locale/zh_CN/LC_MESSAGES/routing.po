@@ -550,6 +550,17 @@ msgid ""
 "cheap decode is not prefill pressure."
 msgstr "租约在收到第一个 token 时就释放，不等到流结束：decode 阶段哪怕很长，开销也小，不算 prefill 压力。"
 
+#: ../developer/routing.md:234
+msgid ""
+"A lease is taken when selection commits, so concurrent selections spread, "
+"but it counts toward the affinity ceiling only once its request has left "
+"the gateway. A request still fetching remote media or waiting for an "
+"outbound slot is in no engine's queue. No lease counts for more than its "
+"route's context window, the most one request can make an engine prefill."
+msgstr ""
+"租约在选路确定时就取得，这样并发的选路会相互错开；但只有在请求离开网关之后，它才计入亲和上限。还在拉取远程媒体、或者还在等出站槽位的请求，"
+"不在任何引擎的队列里。任何租约计入的量都不超过它所在路由的上下文窗口，这是一个请求最多能让引擎 prefill 的量。"
+
 #: ../developer/routing.md
 msgid "`ROUTING_PREFILL_AWARE_ENABLED`"
 msgstr ""
@@ -603,8 +614,8 @@ msgid "`150000`"
 msgstr ""
 
 #: ../developer/routing.md
-msgid "Backlog above which an affinity pin is abandoned."
-msgstr "积压超过该值时，放弃亲和 pin。"
+msgid "Backlog above which a request skips its affinity pin."
+msgstr "积压超过该值时，请求不走它的亲和 pin。"
 
 #: ../developer/routing.md
 msgid "`ROUTING_PREFILL_HINT_TTL_SEC`"
@@ -718,13 +729,14 @@ msgstr "如果 pin 住的端点已经不能准入（权重为 `0`，或者熔断
 #: ../developer/routing.md:267
 msgid ""
 "If the pinned endpoint's prefill backlog is above "
-"`ROUTING_PREFILL_AFFINITY_CEILING`, the pin is abandoned for this request"
-" and selection re-runs *excluding* that endpoint, then re-pins to "
-"whatever it picks. A pin is a cache-locality optimisation, not a promise "
-"to queue."
+"`ROUTING_PREFILL_AFFINITY_CEILING`, the pin is skipped for this request and "
+"selection re-runs *excluding* that endpoint. The pin stays, so the next "
+"request returns to the endpoint holding the caller's prefix. A pin is a "
+"cache-locality optimisation, not a promise to queue."
 msgstr ""
-"如果 pin 住的端点 prefill 积压超过 `ROUTING_PREFILL_AFFINITY_CEILING`，这个请求就不走 "
-"pin，而是*排除*那个端点重新选路，再把 pin 改到新选中的端点上。pin 只是为缓存局部性做的优化，不承诺一定排队等那个端点。"
+"如果 pin 住的端点 prefill 积压超过 `ROUTING_PREFILL_AFFINITY_CEILING`，"
+"这个请求就不走 pin，而是*排除*那个端点重新选路。pin 保留不变，所以下一个请求会回到存有调用方前缀的那个端点。pin 只是为缓存局部性做的优化，"
+"不承诺一定排队等那个端点。"
 
 #: ../developer/routing.md:271
 msgid ""

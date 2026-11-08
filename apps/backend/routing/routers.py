@@ -39,6 +39,7 @@ from routing.offload import (
     abandoned_for_offload,
 )
 from routing.prefill_load import (
+    PrefillLease,
     PrefillLoadTracker,
     _env_int,
     conversation_fingerprint,
@@ -837,6 +838,60 @@ class _PromptAnchor:
             except Exception:
                 logger.warning("prompt anchor failed; storing the hint without one", exc_info=True)
         return self._anchor
+
+
+class _DispatchReport:
+    """What the serving layer reports about one attempt's request, for this router.
+
+    Pushed as ``req_ctx.UPSTREAM_DISPATCH_WATCH`` around every attempt, streaming
+    or not. ``serving.adapters.dispatch_watch`` reports when the request waits in
+    the gateway (``on_queued``: a remote-media fetch, an outbound slot), when it
+    leaves it (``on_sent``) and when the upstream starts answering
+    (``on_first_token``). Each report is passed on to the attempt's first-token
+    watch (``routing.engine_wait``), when it has one.
+
+    The attempt's prefill lease counts against other callers' affinity ceiling
+    only while its request is out of the gateway
+    (``PrefillLoadTracker.mark_dispatched``). Counted from selection, a request
+    held here up to half a minute moved every caller pinned to its endpoint onto
+    a cold one, without ever reaching the engine.
+
+    ``sent`` is whether the request was out of the gateway when the report last
+    heard. ``watch`` is the attempt's first-token watch, or None.
+    """
+
+    __slots__ = ("_lease", "_tracker", "sent", "watch")
+
+    def __init__(self, tracker: PrefillLoadTracker, watch: FirstTokenWatch | None = None) -> None:
+        self._tracker = tracker
+        self.watch = watch
+        self._lease: PrefillLease | None = None
+        self.sent = False
+
+    def attach(self, lease: PrefillLease | None) -> None:
+        """Report on ``lease`` from now on, as dispatched if the request already left."""
+        self._lease = lease
+        if self.sent:
+            self._tracker.mark_dispatched(lease)
+
+    def on_queued(self) -> None:
+        """The request waits in the gateway: its lease stops counting against others."""
+        self.sent = False
+        self._tracker.mark_dispatched(self._lease, dispatched=False)
+        if self.watch is not None:
+            self.watch.on_queued()
+
+    def on_sent(self) -> None:
+        """The request has left the gateway: its lease counts against others."""
+        self.sent = True
+        self._tracker.mark_dispatched(self._lease)
+        if self.watch is not None:
+            self.watch.on_sent()
+
+    def on_first_token(self) -> None:
+        """The upstream has started answering; only a first-token watch cares."""
+        if self.watch is not None:
+            self.watch.on_first_token()
 
 
 class FixedRouter:
@@ -2133,8 +2188,8 @@ class FixedRouter:
         # caller's key to the prefill-aware draw below.
         pin_key = affinity_key if use_affinity else None
 
-        # Set when a pin is dropped for backlog, so selection does not simply
-        # hand the caller straight back to the endpoint it was moved off.
+        # Set when a pin is passed over for backlog, so this selection does not
+        # simply hand the caller straight back to the endpoint it was moved off.
         avoid_endpoint_id: str | None = None
         # A required target outranks affinity. Affinity remembers what served
         # this conversation last, and honoring it here would hand back an
@@ -2153,9 +2208,8 @@ class FixedRouter:
                             # but not into a queue: one high-volume key holding
                             # a binding is exactly how a single replica ends up
                             # absorbing every request while its siblings idle.
-                            # Falling through re-runs selection and re-pins to
-                            # whatever it picks, so the caller rebuilds locality
-                            # on an endpoint that can actually serve it.
+                            # Falling through re-runs selection for this
+                            # request only; the pin stays (see below).
                             if self._prefill_load.should_keep_affinity(
                                 entry.endpoint_id, affinity_key=pin_key
                             ):
@@ -2167,6 +2221,13 @@ class FixedRouter:
                         del self._affinity[(pin_key, model_id)]
                 elif entry is not None:
                     del self._affinity[(pin_key, model_id)]
+        # The pin a backlog passed over is kept, not overwritten by this
+        # request's pick: the caller goes back to the endpoint holding its prefix
+        # once the queue there drains, which is what ``should_keep_affinity``
+        # promises. Re-pinning moved every caller on an endpoint to a cold one
+        # for good each time another caller's large prompt passed through it.
+        if avoid_endpoint_id is not None:
+            pin_key = None
 
         # A caller-supplied target outranks affinity: it was asked for now,
         # while affinity only remembers what served this conversation last. It
@@ -2455,6 +2516,31 @@ class FixedRouter:
         """Return the leaf that executes ``binding``."""
         return LeafBackend.for_binding(binding)
 
+    def _acquire_lease(
+        self,
+        adapter: BaseAdapter,
+        prefill_tokens: int,
+        affinity_key: str | None,
+        fingerprint: str | None,
+        anchor: tuple[int, str] | None = None,
+    ) -> PrefillLease:
+        """Charge one attempt's prefill to ``adapter``'s endpoint, pending dispatch.
+
+        Taken inside the routing transaction, so a concurrent selection sees it
+        and spreads. It counts against other callers' affinity ceiling only once
+        the attempt's ``_DispatchReport`` hears the request leave the gateway,
+        and never for more than the route's context window.
+        """
+        return self._prefill_load.acquire(
+            endpoint_id_for_adapter(adapter),
+            prefill_tokens,
+            affinity_key=affinity_key,
+            fingerprint=fingerprint,
+            anchor=anchor,
+            dispatched=False,
+            context_window=_configured_context_window(adapter),
+        )
+
     def _dispatch_priority(
         self,
         execution: BaseAdapter,
@@ -2571,12 +2657,7 @@ class FixedRouter:
                     use_affinity=use_affinity,
                 )
                 if primary is not None:
-                    lease = self._prefill_load.acquire(
-                        endpoint_id_for_adapter(primary),
-                        prefill_tokens,
-                        affinity_key=affinity_key,
-                        fingerprint=fingerprint,
-                    )
+                    lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)
         except BaseException:
             if primary_claim is not None:
                 self._health_registry.end_dispatch(primary_claim)
@@ -2601,6 +2682,9 @@ class FixedRouter:
         # routing transaction every request's selection waits on, because it is
         # a pass over the whole prompt.
         lease.anchor = anchors.for_endpoint(execution)
+        # A response that arrives whole has no first token to watch.
+        primary_report = _DispatchReport(self._prefill_load)
+        primary_report.attach(lease)
         primary_plan = self._primary_offload(
             model_id,
             primary,
@@ -2622,9 +2706,9 @@ class FixedRouter:
                         execution, endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
-                    # A response that arrives whole has no first token to watch,
-                    # nor one to give its place at the engine up on.
-                    req_ctx.UPSTREAM_DISPATCH_WATCH: None,
+                    req_ctx.UPSTREAM_DISPATCH_WATCH: primary_report,
+                    # A response that arrives whole has no first token to give
+                    # its place at the engine up on.
                     req_ctx.UPSTREAM_ENGINE_HOLD: None,
                 },
             ):
@@ -2742,6 +2826,7 @@ class FixedRouter:
                     self._log_offload(
                         model_id, adapter, offload_reason, offload_policy, failed_attempts
                     )
+                fallback_report = _DispatchReport(self._prefill_load)
                 try:
                     with req_ctx.push(
                         model=model_id,
@@ -2766,7 +2851,7 @@ class FixedRouter:
                                     refused_window=refused_window,
                                 )
                             ),
-                            req_ctx.UPSTREAM_DISPATCH_WATCH: None,
+                            req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_report,
                             req_ctx.UPSTREAM_ENGINE_HOLD: None,
                         },
                     ):
@@ -2774,13 +2859,10 @@ class FixedRouter:
                         # Before the transaction: a pass over the whole prompt.
                         fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
-                            lease = self._prefill_load.acquire(
-                                endpoint_id,
-                                prefill_tokens,
-                                affinity_key=affinity_key,
-                                fingerprint=fingerprint,
-                                anchor=fallback_anchor,
+                            lease = self._acquire_lease(
+                                adapter, prefill_tokens, affinity_key, fingerprint, fallback_anchor
                             )
+                        fallback_report.attach(lease)
                         try:
                             resp = await leaf.chat_completion(messages, **params)
                             self._prefill_load.release(lease, prefill_confirmed=True)
@@ -2897,12 +2979,7 @@ class FixedRouter:
                     use_affinity=use_affinity,
                 )
                 if primary is not None:
-                    lease = self._prefill_load.acquire(
-                        endpoint_id_for_adapter(primary),
-                        prefill_tokens,
-                        affinity_key=affinity_key,
-                        fingerprint=fingerprint,
-                    )
+                    lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)
         except BaseException:
             if primary_claim is not None:
                 self._health_registry.end_dispatch(primary_claim)
@@ -2933,11 +3010,14 @@ class FixedRouter:
         # For every stream of this request, whatever its offload plan says.
         engine_queue_limit = self._engine_queue_limit(model_id)
         chunks_yielded = False
+        primary_report = _DispatchReport(self._prefill_load)
+        primary_report.attach(lease)
         try:
             primary_endpoint_id = endpoint_id_for_adapter(primary)
             if primary_plan.reason is not None:
                 self._log_offload(model_id, primary, primary_plan.reason, primary_plan.policy, ())
             primary_watch = self._watch_for(primary, primary_plan.policy, primary_plan.deadline)
+            primary_report.watch = primary_watch
             with req_ctx.push(
                 model=model_id,
                 provider=execution.config.provider,
@@ -2951,7 +3031,7 @@ class FixedRouter:
                         messages,
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
-                    req_ctx.UPSTREAM_DISPATCH_WATCH: primary_watch,
+                    req_ctx.UPSTREAM_DISPATCH_WATCH: primary_report,
                     req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
                 },
             ):
@@ -3098,6 +3178,7 @@ class FixedRouter:
                     self._log_offload(
                         model_id, adapter, offload_reason, offload_policy, failed_attempts
                     )
+                fallback_report = _DispatchReport(self._prefill_load)
                 try:
                     # The offload attempt queues normally and is not watched:
                     # there is nowhere left to send it.
@@ -3111,6 +3192,7 @@ class FixedRouter:
                         )
                     )
                     fallback_watch = self._watch_for(adapter, offload_policy, queue_deadline)
+                    fallback_report.watch = fallback_watch
                     with req_ctx.push(
                         model=model_id,
                         provider=execution.config.provider,
@@ -3124,7 +3206,7 @@ class FixedRouter:
                                 messages,
                             ),
                             req_ctx.UPSTREAM_QUEUE_DEADLINE: queue_deadline,
-                            req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_watch,
+                            req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_report,
                             req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
                         },
                     ):
@@ -3143,13 +3225,10 @@ class FixedRouter:
                         # Before the transaction: a pass over the whole prompt.
                         fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
-                            lease = self._prefill_load.acquire(
-                                adapter_endpoint_id,
-                                prefill_tokens,
-                                affinity_key=affinity_key,
-                                fingerprint=fingerprint,
-                                anchor=fallback_anchor,
+                            lease = self._acquire_lease(
+                                adapter, prefill_tokens, affinity_key, fingerprint, fallback_anchor
                             )
+                        fallback_report.attach(lease)
                         stream = aiter(leaf.stream_chat_completion(messages, **params))
                         if fallback_watch is not None:
                             held = await self._await_first_token(stream, fallback_watch)

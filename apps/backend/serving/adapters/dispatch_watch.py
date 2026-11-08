@@ -1,10 +1,12 @@
 """What the serving layer tells a dispatch's first-token watch.
 
-``FixedRouter`` pushes a watch (``routing.engine_wait.FirstTokenWatch``) around a
-streaming attempt it would offload if the engine did not start answering in
-time, as ``req_ctx.UPSTREAM_DISPATCH_WATCH``, and ``None`` around every other
-attempt. The router sees only what the attempt yields; these report what only
-the serving layer knows:
+``FixedRouter`` pushes a report around every attempt, as
+``req_ctx.UPSTREAM_DISPATCH_WATCH``: it counts the attempt's prefill lease
+against other callers only once the request has left the gateway, and passes
+each report on to a first-token watch (``routing.engine_wait.FirstTokenWatch``)
+around a streaming attempt it would offload if the engine did not start
+answering in time. The router sees only what the attempt yields; these report
+what only the serving layer knows:
 
 - :func:`report_queued` and :func:`report_sent` -- the outbound limiter
   (``upstream_limiter``) is making the request wait for a slot, or has given it
