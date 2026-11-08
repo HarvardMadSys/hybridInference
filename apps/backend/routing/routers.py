@@ -211,6 +211,14 @@ class RoutingObservation:
     own content (``routing.endpoint_health.is_client_error_status``) from an
     endpoint that is slow, overloaded or down.
     """
+    uncharged: bool = False
+    """Whether the failure is one no endpoint is charged with.
+
+    True when nothing was sent -- no outbound slot, no usable key -- or the
+    endpoint answered exactly as designed (``routing.telemetry
+    .is_uncharged_failure``). The breaker leaves such a failure out, and a
+    learning router must too: it says nothing about the endpoint it names.
+    """
 
 
 @dataclass

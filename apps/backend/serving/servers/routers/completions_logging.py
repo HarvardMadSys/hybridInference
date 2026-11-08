@@ -427,6 +427,7 @@ class CompletionsLogger:
         success: bool,
         cached_tokens: int | None = None,
         status_code: int | None = None,
+        uncharged: bool = False,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -445,6 +446,11 @@ class CompletionsLogger:
         carries its own in its ``failed_attempts`` record. Both reach the
         observation, so a learning router can leave a request refused for its
         own content out of what it learns about the endpoint.
+
+        ``uncharged`` says the failure that ended the request is one no
+        endpoint is charged with (``routing.telemetry.is_uncharged_failure``:
+        nothing was sent, say); each earlier failed attempt says so in its
+        record. Both reach the observation for the same reason.
         """
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         terminal_key = endpoint_id or provider or "unknown"
@@ -483,6 +489,7 @@ class CompletionsLogger:
                     cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
                     status_code=_status_or_none(attempt.get("status_code")),
+                    uncharged=attempt.get("uncharged") is True,
                 )
             )
 
@@ -500,6 +507,7 @@ class CompletionsLogger:
             cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
             status_code=None if success else status_code,
+            uncharged=not success and uncharged,
         )
         active_router.record_observation(obs)
 

@@ -66,7 +66,12 @@ from routing.routers import (
     describe_route_refusals,
 )
 from routing.streaming import has_non_empty_content
-from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
+from routing.telemetry import (
+    adapter_pricing_snapshot,
+    failed_attempt,
+    is_uncharged_failure,
+    routing_chunk,
+)
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -362,7 +367,16 @@ def _exception_status_code(exc: BaseException) -> int | None:
 
 
 def _is_routewise_retryable_error(exc: BaseException) -> bool:
-    """Return whether RouteWise should re-solve after this provider failure."""
+    """Return whether RouteWise should re-solve after this provider failure.
+
+    A failure no endpoint is charged with (``is_uncharged_failure``) is always
+    re-solved: this gateway refused the attempt before sending it -- no
+    outbound slot, no usable key for the caller -- so another candidate may
+    well serve it. Those refusals carry no status, and read by status alone
+    they ended the request in a 500 or 429 while other candidates sat idle.
+    """
+    if is_uncharged_failure(exc):
+        return True
     status = _exception_status_code(exc)
     if status is not None:
         return status in _RETRYABLE_ROUTEWISE_STATUS_CODES or 500 <= status <= 599
@@ -483,12 +497,14 @@ def _failure_is_endpoint_evidence(obs: RoutingObservation) -> bool:
     """Return whether a failed observation says something about the endpoint's latency.
 
     Left out: a refusal the upstream blamed on the request
-    (``_refused_for_its_content``), and a terminal failure of an attempt the
-    router saw complete -- the serving layer judging a finished response
-    unusable, an empty completion above all, which any caller can produce with
-    a stop sequence.
+    (``_refused_for_its_content``); a failure no endpoint is charged with
+    (``RoutingObservation.uncharged``: this gateway refused it before sending,
+    so the endpoint it names was never asked); and a terminal failure of an
+    attempt the router saw complete -- the serving layer judging a finished
+    response unusable, an empty completion above all, which any caller can
+    produce with a stop sequence.
     """
-    if _refused_for_its_content(obs):
+    if _refused_for_its_content(obs) or getattr(obs, "uncharged", False) is True:
         return False
     return not (
         getattr(obs, "terminal", True)
@@ -2967,14 +2983,21 @@ class RouteWiseRouter:
                     row.get("provider")
                 )
                 success = self._is_success_status(row.get("status_code"), row.get("error"))
+                failed_attempts = self._bootstrap_failed_attempts(row)
 
                 # Replayed under the same rule as a live observation
-                # (``_refused_for_its_content``), so a restart does not bring
-                # back the samples the live path leaves out.
+                # (``_failure_is_endpoint_evidence``), so a restart does not
+                # bring back the samples the live path leaves out.
                 if (
                     endpoint_id
                     and endpoint_id in self._latency_profiles
-                    and (success or not _row_refused_for_its_content(row.get("status_code")))
+                    and (
+                        success
+                        or not (
+                            _row_refused_for_its_content(row.get("status_code"))
+                            or self._row_ended_uncharged(endpoint_id, failed_attempts)
+                        )
+                    )
                 ):
                     latency_ms = self._bootstrap_latency_ms(row, success)
                     error_type = None if success else self._bootstrap_error_type(row)
@@ -2984,7 +3007,7 @@ class RouteWiseRouter:
                         prior_samples.setdefault(endpoint_id, []).append(latency_ms)
                         counts["latency_prior_samples"] += 1
 
-                for attempt in self._bootstrap_failed_attempts(row):
+                for attempt in failed_attempts:
                     failed_endpoint = (
                         self._string_or_none(attempt.get("endpoint_id"))
                         or self._string_or_none(attempt.get("base_url"))
@@ -2993,6 +3016,8 @@ class RouteWiseRouter:
                     if not failed_endpoint or failed_endpoint not in self._latency_profiles:
                         continue
                     if _row_refused_for_its_content(attempt.get("status_code")):
+                        continue
+                    if attempt.get("uncharged") is True:
                         continue
                     error_type = self._string_or_none(attempt.get("error_type")) or "error"
                     self._latency_profiles[failed_endpoint].record(ts, -1.0, error_type)
@@ -3108,6 +3133,23 @@ class RouteWiseRouter:
         if error:
             return error[:120]
         return "error"
+
+    @staticmethod
+    def _row_ended_uncharged(
+        endpoint_id: str,
+        failed_attempts: tuple[Mapping[str, Any], ...],
+    ) -> bool:
+        """Return whether a failed row's own final attempt was an uncharged failure.
+
+        A RouteWise request lists the attempt that ended it among its failed
+        attempts as well as naming its endpoint, and that record carries the
+        ``uncharged`` marker the live observation was given.
+        """
+        for attempt in reversed(failed_attempts):
+            endpoint = attempt.get("endpoint_id") or attempt.get("base_url")
+            if endpoint == endpoint_id:
+                return attempt.get("uncharged") is True
+        return False
 
     @staticmethod
     def _bootstrap_failed_attempts(row: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:

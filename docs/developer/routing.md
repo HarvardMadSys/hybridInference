@@ -1031,7 +1031,8 @@ execution failure may try another candidate), `bound_endpoint` (the resolved
 adapter binding), `require_target`, and `required_modalities`.
 `RoutingObservation` (`routers.py`) is how the serving layer reports a
 completed request — endpoint id, TTFT, total latency, token counts, success,
-the upstream HTTP status of a failure (`status_code`, when it had one), and a
+the upstream HTTP status of a failure (`status_code`, when it had one), whether
+the failure is one no endpoint is charged with (`uncharged`), and a
 `strategy_metadata` dict the strategy itself populated during selection.
 RouteWise learns only what an attempt shows about its endpoint. Its latency
 sample is the attempt's own time to first content, which the router measures
@@ -1043,7 +1044,10 @@ toward an endpoint's error share but not toward its latency mean. RouteWise
 leaves a failure whose status blames the request itself (the breaker's
 client-error rule: a 4xx other than 408, 429, 401 and 407) out of its latency
 profiles, and likewise a failure of an attempt it saw complete, such as an
-empty completion.
+empty completion, and an uncharged one. An uncharged failure means this gateway
+refused the attempt before sending it — no outbound slot, no usable key for
+the caller — so RouteWise re-solves over the other candidates instead of
+failing the request.
 A stateless strategy returns `None` from `record_observation`; an
 online-learning one updates its model there.
 

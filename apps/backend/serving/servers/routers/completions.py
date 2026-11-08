@@ -20,6 +20,7 @@ from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import conversation_fingerprint
 from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, ProviderPinError, TargetUnavailableError
+from routing.telemetry import is_uncharged_failure
 from serving.adapters.dispatch_watch import DispatchRecord
 from serving.auto_mode import (
     AutoModelUnavailable,
@@ -1781,6 +1782,9 @@ async def execute_chat(
                     # The upstream's own status, or None: not the 500 the
                     # response below defaults a status-less failure to.
                     status_code=http_status_of(exc),
+                    # Nothing sent (no outbound slot, no usable key): no
+                    # evidence about the endpoint the failure names.
+                    uncharged=is_uncharged_failure(exc),
                 )
             except Exception:
                 logger.exception(
