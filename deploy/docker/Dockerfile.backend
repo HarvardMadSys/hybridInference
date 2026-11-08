@@ -58,6 +58,14 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
 # "socket peer". Forwarded headers are interpreted in exactly one place, behind
 # that flag. Consequence: request.url.scheme is always http here, so any
 # deployment that builds absolute URLs (auth emails) must set BASE_URL.
+#
+# --timeout-graceful-shutdown bounds the wait for open requests after SIGTERM.
+# uvicorn otherwise waits for every one, a stream outlasts any stop timeout,
+# and the SIGKILL that ends the wait came before the lifespan shutdown that
+# writes queued request-log rows and the costs the spend ledger still holds.
+# Open requests now get 5 s and are then cancelled, and the shutdown runs in
+# what is left of the Compose service's 30 s stop_grace_period, and of the
+# admin restart's 30 s watchdog (serving/servers/restart.py).
 CMD ["uvicorn", "serving.servers.app:app", \
      "--host", "0.0.0.0", "--port", "8080", "--no-server-header", \
-     "--no-proxy-headers"]
+     "--no-proxy-headers", "--timeout-graceful-shutdown", "5"]

@@ -40,6 +40,13 @@ services:
     container_name: hybridinference-backend
     restart: unless-stopped
     logging: *logging
+    # A deploy or a restart stops the backend with SIGTERM, then SIGKILL once
+    # the grace period ends (10 s unless set). Open requests get 5 s
+    # (--timeout-graceful-shutdown in Dockerfile.backend), and the shutdown
+    # that writes queued request-log rows and unflushed costs has the rest.
+    # A container keeps the grace period it was created with, so the first
+    # `make up` after this still stops the old backend at 10 s.
+    stop_grace_period: 30s
     # Source-revision stamp on the running container. A digest deploy sets
     # BUILD_SHA to the image's revision label. The digest path's last-known-good
     # restore reads this label back from the container it is about to replace

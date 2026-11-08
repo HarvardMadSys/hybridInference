@@ -18,11 +18,14 @@ Environment=PYTHONPATH=__REPO_ROOT__
 # --no-proxy-headers: uvicorn defaults it ON (trusting 127.0.0.1). Forwarded
 # headers are interpreted only by the application's TRUST_PROXY_HEADERS gate
 # (serving/utils/request_ip.py), never by the server in front of it.
+# --timeout-graceful-shutdown: open requests get 5 s after SIGTERM, then the
+# shutdown that writes queued request-log rows and unflushed costs runs.
 ExecStart=__REPO_ROOT__/.venv/bin/uvicorn serving.servers.app:app \
   --host 0.0.0.0 \
   --port 8000 \
   --no-server-header \
-  --no-proxy-headers
+  --no-proxy-headers \
+  --timeout-graceful-shutdown 5
 
 Restart=on-failure
 RestartSec=5s
