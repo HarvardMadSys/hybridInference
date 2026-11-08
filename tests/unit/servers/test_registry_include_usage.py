@@ -352,16 +352,17 @@ def _bootstrap_model(model_id: str, **route_extra: object) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_kind", ["quoted-false", "null", "model-level"])
-async def test_bootstrap_refuses_a_malformed_declaration_instead_of_dropping_later_models(
-    tmp_path, monkeypatch, invalid_kind
+async def test_bootstrap_registers_nothing_from_a_catalog_with_a_malformed_declaration(
+    tmp_path, monkeypatch, caplog, invalid_kind
 ):
-    """A malformed flag stops startup; it must not serve only the models before it.
+    """A malformed flag must not serve only the models before it, nor stop startup.
 
-    Registration ends at the first entry it refuses, so a plain error there
-    left the gateway running with every later model missing and one WARNING.
+    Registration once ended at the first entry it refused, leaving the gateway
+    running with every later model missing and one WARNING; then startup
+    stopped, which also locked out Admin, where the catalog is corrected. Now
+    nothing of the catalog registers, and an ERROR names the model.
     """
     from serving.servers import bootstrap
-    from serving.servers.registry import RegistryConfigError
 
     if invalid_kind == "model-level":
         invalid = _bootstrap_model("invalid-middle")
@@ -377,6 +378,10 @@ async def test_bootstrap_refuses_a_malformed_declaration_instead_of_dropping_lat
         ]
     }
     monkeypatch.setattr(bootstrap, "get_document", lambda _: document)
+    router = FixedRouter()
 
-    with pytest.raises(RegistryConfigError, match="invalid-middle"):
-        await bootstrap._init_router_and_models(FixedRouter())
+    assert await bootstrap._init_router_and_models(router) == ({}, [])
+
+    assert router.routes == {}
+    assert "invalid-middle" in caplog.text
+    assert any(record.levelname == "ERROR" for record in caplog.records)

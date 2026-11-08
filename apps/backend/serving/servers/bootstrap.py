@@ -32,7 +32,7 @@ from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
 from serving.config.batch_routes import BatchRouteResolver
 from serving.config.disabled_providers import DisabledProviderResolver
-from serving.config.documents import get as get_document
+from serving.config.documents import check as check_document, get as get_document
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.offload_routes import AppliedOffloadPolicies, OffloadRouteResolver
@@ -69,7 +69,6 @@ from .model_availability import record_skipped_models
 from .registry import (
     ModelLoadReport,
     ModelRegistrationInfo,
-    RegistryConfigError,
     register_from_models_document,
 )
 from .routewise_rebuild import rebuild_cached_routewise_routers
@@ -746,52 +745,61 @@ def _init_db_logger() -> DatabaseLogger | None:
 async def _init_router_and_models(
     router: FixedRouter,
 ) -> tuple[dict, list[ModelRegistrationInfo]]:
-    """Register models from the Admin/database catalog.
+    """Register the models of the Admin/database catalog: all of them, or none.
 
     Supports hybrid mode where a single model can have multiple adapters
     (e.g., local VLLM and remote API) for failover and load balancing.
+
+    A stored catalog never stops startup: Admin, where it is corrected, runs
+    in this process, so a catalog every worker refused to start on would lock
+    the administrator out with it. One that cannot be read or registered
+    registers nothing instead -- an ERROR names the model and what is wrong,
+    and the console asks an administrator to configure the deployment. Never
+    a part of it: that would drop the models after the bad entry, and the
+    RouteWise settings of those before it, without a word.
 
     Returns:
         Tuple of (embedding adapters dict, list of ModelRegistrationInfo).
     """
     embedding_adapters: dict = {}
-    model_infos: list[ModelRegistrationInfo] = []
-
-    # Empty configuration registers no models; Admin runtime models load below.
-    stored_models = get_document("models")
+    load_report = ModelLoadReport()
     try:
-        if stored_models is not None:
-            load_report = ModelLoadReport()
-            registered, model_infos = register_from_models_document(
-                router,
-                stored_models,
-                embedding_adapters=embedding_adapters,
-                continue_on_missing_env=True,
-                report=load_report,
-            )
-            record_skipped_models(load_report)
-            if registered:
-                logger.info(f"Registered {registered} routes from the database route catalog")
-            elif not load_report.skipped_models:
-                logger.error(
-                    "The database route catalog has no models, so no models are "
-                    "available: /v1/models will be empty and every request will "
-                    "report the model as not found."
-                )
-            if embedding_adapters:
-                logger.info(
-                    f"Registered {len(embedding_adapters)} embedding adapter(s): "
-                    f"{list(embedding_adapters.keys())}"
-                )
-    except RegistryConfigError:
-        # An entry the registry refuses outright (an explicit embeddings path,
-        # a capability flag that is not a boolean) must abort startup, not
-        # leave the server running on whatever models were registered before it.
-        raise
+        # Empty configuration registers no models; Admin runtime models load below.
+        stored_models = get_document("models")
+        # Admin's check, for a catalog that did not pass through Admin: one
+        # that holds an inline credential, say, is not served either.
+        check_document("models", stored_models)
+        registered, model_infos = register_from_models_document(
+            router,
+            stored_models,
+            embedding_adapters=embedding_adapters,
+            continue_on_missing_env=True,
+            report=load_report,
+        )
     except Exception as exc:
-        source = "the Admin model catalog"
-        logger.warning(f"Failed to load {source}: {exc}")
-
+        # Registration is all or nothing, so nothing of the catalog is served.
+        logger.error(
+            "The model catalog (MODEL_CATALOG in Admin > Settings) was not registered: "
+            f"{str(exc) or repr(exc)}. No model from it is served until an administrator "
+            "corrects it; the console asks one to configure the deployment meanwhile."
+        )
+        return {}, []
+    record_skipped_models(load_report)
+    if registered:
+        logger.info(f"Registered {registered} routes from the database route catalog")
+    elif not load_report.skipped_models:
+        problem = app_config.validation_problem("MODEL_CATALOG")
+        logger.error(
+            "The database route catalog has no models"
+            + (f" (the stored one cannot be used: {problem})" if problem else "")
+            + ", so no models are available: /v1/models will be empty and every "
+            "request will report the model as not found."
+        )
+    if embedding_adapters:
+        logger.info(
+            f"Registered {len(embedding_adapters)} embedding adapter(s): "
+            f"{list(embedding_adapters.keys())}"
+        )
     return embedding_adapters, model_infos
 
 
