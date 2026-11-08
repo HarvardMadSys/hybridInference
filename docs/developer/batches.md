@@ -299,9 +299,10 @@ curl -s "https://your-gateway.example/v1/batches/$BATCH_ID/results?limit=100" \
 }
 ```
 
-`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the next
-page with `after` set to the page's `last_id`. Every request of the batch is
-listed, finished or not. A request still `queued` or `running` has no
+`limit` is 1–1000 (default 100). A page also stops at about 8 MiB of results,
+so large ones (embeddings, say) come a few to a page. When `has_more` is
+`true`, ask for the next page with `after` set to the page's `last_id`. Every
+request of the batch is listed, finished or not. A request still `queued` or `running` has no
 `response` yet, but may retain its last `error` while being retried. Read the
 results once the batch is in a final status, or read them again later.
 

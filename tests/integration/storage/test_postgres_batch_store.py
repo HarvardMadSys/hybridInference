@@ -422,6 +422,70 @@ async def test_results_page_through_items_in_submission_order(store):
     assert await store.list_results("batch_unknown") == []
 
 
+async def test_a_result_page_is_cut_by_the_size_of_its_items(store):
+    """Pages by bytes as well as by count, the first item always, the rest as they fit."""
+    model = _model()
+    created = await _create(store, _items(model, 6))
+    claimed = await _claim(store, model, limit=6)
+    big = {"object": "list", "data": [{"embedding": [0.123456789] * 3000}]}
+    # The last carries a NUL, so it is stored in the envelope JSONB cannot avoid.
+    small = {"small": "a\x00b"}
+    for item in claimed:
+        assert await store.complete_item(
+            item_id=item["id"],
+            worker_id="worker-1",
+            attempt=item["attempt_seq"],
+            response=big if item["custom_id"] != "req-5" else small,
+            error=None,
+            status_code=200,
+        )
+    batch_id = created["id"]
+    (one,) = await store.list_results(batch_id, limit=1)
+    size = len(json.dumps(big))
+
+    # Two of these fit in a budget of two and a half; the page says more follow.
+    page, more = await store.result_page(batch_id, max_bytes=int(size * 2.5))
+    assert [r["custom_id"] for r in page] == ["req-0", "req-1"]
+    assert more is True
+    assert all(r["bytes"] > size * 0.5 for r in page)
+    # The response is left as text, and decodes to what list_results reads.
+    assert "response" not in page[0]
+    assert batch_store.load_response(page[0])["response"] == one["response"] == big
+    # One larger than the whole budget still comes, alone.
+    page, more = await store.result_page(batch_id, max_bytes=10, after=page[-1]["id"])
+    assert [r["custom_id"] for r in page] == ["req-2"]
+    assert more is True
+    # The count still bounds a page; the last page says nothing follows.
+    page, more = await store.result_page(batch_id, max_bytes=10**9, after=page[-1]["id"], limit=2)
+    assert [r["custom_id"] for r in page] == ["req-3", "req-4"]
+    assert more is True
+    page, more = await store.result_page(batch_id, max_bytes=10**9, after=page[-1]["id"])
+    assert [r["custom_id"] for r in page] == ["req-5"]
+    assert more is False
+    assert batch_store.load_response(page[0])["response"] == small
+    assert await store.result_page(batch_id, max_bytes=10**9, after=page[-1]["id"]) == ([], False)
+    # Only the statuses asked for.
+    assert await store.result_page(batch_id, max_bytes=10**9, statuses=frozenset({"failed"})) == (
+        [],
+        False,
+    )
+
+
+async def test_a_request_page_is_cut_by_the_size_of_its_requests(store):
+    model = _model()
+    items = _items(model, 3)
+    items[0]["request"]["messages"][0]["content"] = "x" * 50_000
+    created = await _create(store, items)
+
+    page, more = await store.request_page(created["id"], max_bytes=20_000)
+    assert [r["custom_id"] for r in page] == ["req-0"]
+    assert more is True
+    assert batch_store.load_request(page[0])["request"] == items[0]["request"]
+    page, more = await store.request_page(created["id"], max_bytes=20_000, after=page[0]["id"])
+    assert [r["custom_id"] for r in page] == ["req-1", "req-2"]
+    assert more is False
+
+
 async def test_unstorable_custom_ids_are_refused_and_nothing_is_stored(store):
     model = _model()
     duplicated = [*_items(model, 2), _items(model, 1)[0]]  # req-0 twice

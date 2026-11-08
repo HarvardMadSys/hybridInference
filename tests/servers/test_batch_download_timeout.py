@@ -74,14 +74,15 @@ class SlowBatchStore:
     async def batch_exists(self, batch_id: str) -> bool:
         return True
 
-    async def _page(self, after: int) -> list[dict[str, Any]]:
+    async def _page(self, after: int) -> tuple[list[dict[str, Any]], bool]:
         await asyncio.sleep(PAGE_DELAY)
-        return [item for item in self.items if item["id"] > after][:1]
+        rest = [dict(item) for item in self.items if item["id"] > after]
+        return rest[:1], len(rest) > 1
 
-    async def iter_items(self, batch_id: str, *, after: int = 0, **_kwargs: Any):
+    async def result_page(self, batch_id: str, *, after: int = 0, **_kwargs: Any):
         return await self._page(after)
 
-    async def iter_item_requests(self, batch_id: str, *, after: int = 0, **_kwargs: Any):
+    async def request_page(self, batch_id: str, *, after: int = 0, **_kwargs: Any):
         return await self._page(after)
 
 

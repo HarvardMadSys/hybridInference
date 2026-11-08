@@ -297,6 +297,81 @@ _RESULT_COLUMNS = (
     "id, custom_id, status, status_code, response, error, prompt_tokens, completion_tokens, "
     "cost_usd, request_id, completed_at, usage, cost_status, attempts, model_id"
 )
+
+# Pages of results, and of stored requests, bounded by size as well as count:
+# a result may be megabytes (an embeddings list), and a page of them must
+# never reach the gateway whole. First the stored size of each candidate --
+# read from the row without reading the value, so it is cheap, but only an
+# estimate (a value may be compressed) -- chooses which items to fetch ($2
+# the item after which to start, $3 the statuses to keep or NULL, $4 how many
+# to look at). Then the chosen ones ($2) are rendered as text once each,
+# measured, and cut by the database where their total passes the byte budget
+# ($3), so only what fits is sent. The first one is always sent, however large. The innermost subquery has a
+# LIMIT, so it is never merged into the ones above it: each value is rendered
+# once, not once more for its size.
+_RESULT_SIZES_SQL = """
+    SELECT id,
+           COALESCE(pg_column_size(response), 0) + COALESCE(pg_column_size(error), 0) AS stored
+    FROM batch_items
+    WHERE batch_id = $1 AND id > $2 AND ($3::text[] IS NULL OR status = ANY($3::text[]))
+    ORDER BY id
+    LIMIT $4
+"""
+_RESULT_PAGE_SQL = """
+    SELECT page.id, page.custom_id, page.status, page.status_code, page.response, page.error,
+           page.prompt_tokens, page.completion_tokens, page.cost_usd, page.request_id,
+           page.completed_at, page.usage, page.cost_status, page.attempts, page.model_id,
+           page.bytes
+    FROM (
+        SELECT sized.*,
+               sum(sized.bytes) OVER (ORDER BY sized.id) AS running,
+               row_number() OVER (ORDER BY sized.id) AS position
+        FROM (
+            SELECT rendered.*,
+                   COALESCE(octet_length(rendered.response), 0)
+                   + COALESCE(octet_length(rendered.error), 0) AS bytes
+            FROM (
+                SELECT id, custom_id, status, status_code, response::text AS response,
+                       error::text AS error, prompt_tokens, completion_tokens, cost_usd,
+                       request_id, completed_at, usage::text AS usage, cost_status, attempts,
+                       model_id
+                FROM batch_items
+                WHERE batch_id = $1 AND id = ANY($2::bigint[])
+                ORDER BY id
+                LIMIT $4
+            ) AS rendered
+        ) AS sized
+    ) AS page
+    WHERE page.running <= $3 OR page.position = 1
+    ORDER BY page.id
+"""
+_REQUEST_SIZES_SQL = """
+    SELECT id, pg_column_size(request) AS stored
+    FROM batch_items
+    WHERE batch_id = $1 AND id > $2 AND ($3::text[] IS NULL OR status = ANY($3::text[]))
+    ORDER BY id
+    LIMIT $4
+"""
+_REQUEST_PAGE_SQL = """
+    SELECT page.id, page.custom_id, page.request, page.status, page.bytes
+    FROM (
+        SELECT sized.*,
+               sum(sized.bytes) OVER (ORDER BY sized.id) AS running,
+               row_number() OVER (ORDER BY sized.id) AS position
+        FROM (
+            SELECT rendered.*, octet_length(rendered.request) AS bytes
+            FROM (
+                SELECT id, custom_id, request::text AS request, status
+                FROM batch_items
+                WHERE batch_id = $1 AND id = ANY($2::bigint[])
+                ORDER BY id
+                LIMIT $4
+            ) AS rendered
+        ) AS sized
+    ) AS page
+    WHERE page.running <= $3 OR page.position = 1
+    ORDER BY page.id
+"""
 # Filled by COPY in this order; every other column takes its default, and
 # ``id`` follows the order the rows arrive in.
 _ITEM_COPY_COLUMNS = ("batch_id", "custom_id", "model_id", "request", "line_no")
@@ -1224,6 +1299,73 @@ class BatchStore:
             for row in rows
         ]
 
+    async def request_page(
+        self,
+        batch_id: str,
+        *,
+        max_bytes: int,
+        statuses: frozenset[str] | None = None,
+        after: int = 0,
+        limit: int = 200,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """A page of a batch's stored requests, bounded by count and by size.
+
+        Like :meth:`iter_item_requests`, but holding no more of them than fit
+        in *max_bytes* of their stored JSON text (always one at least): a
+        request may be megabytes. Each row is ``id, custom_id, request_text,
+        status, bytes``: the request left as its stored JSON text, for the
+        caller to decode one at a time (:func:`load_request`), and ``bytes``
+        the size of that text.
+
+        Returns:
+            ``(rows, more)``: the rows, and whether the batch has requests
+            after the last one returned.
+        """
+        rows, more = await self._sized_page(
+            _REQUEST_SIZES_SQL, _REQUEST_PAGE_SQL, batch_id, after, statuses, limit, max_bytes
+        )
+        return [
+            {
+                "id": row["id"],
+                "custom_id": row["custom_id"],
+                "request_text": row["request"],
+                "status": row["status"],
+                "bytes": int(row["bytes"] or 0),
+            }
+            for row in rows
+        ], more
+
+    async def _sized_page(
+        self,
+        sizes_sql: str,
+        page_sql: str,
+        batch_id: str,
+        after: int,
+        statuses: frozenset[str] | None,
+        limit: int,
+        max_bytes: int,
+    ) -> tuple[list[Any], bool]:
+        """Read one page by count and by size (see :data:`_RESULT_SIZES_SQL`)."""
+        budget = max(1, int(max_bytes))
+        wanted = sorted(statuses) if statuses is not None else None
+        async with self._pool.acquire() as conn:
+            sizes = await conn.fetch(sizes_sql, batch_id, after, wanted, limit + 1)
+            ids: list[int] = []
+            stored = 0
+            for row in sizes[:limit]:
+                size = int(row["stored"] or 0)
+                if ids and stored + size > budget:
+                    break
+                ids.append(row["id"])
+                stored += size
+            if not ids:
+                return [], False
+            rows = await conn.fetch(page_sql, batch_id, ids, budget, len(ids))
+        if not rows:
+            # The batch went away between the two reads.
+            return [], False
+        return rows, len(rows) < len(sizes)
+
     async def item_contents(
         self, batch_id: str, *, after: int = 0, limit: int = 50
     ) -> list[dict[str, Any]]:
@@ -1600,6 +1742,38 @@ class BatchStore:
                 limit,
             )
         return [_result_row(row) for row in rows]
+
+    async def result_page(
+        self,
+        batch_id: str,
+        *,
+        max_bytes: int,
+        after: int = 0,
+        limit: int = 200,
+        statuses: frozenset[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """A page of a batch's results in submission order, bounded by count and by size.
+
+        Up to *limit* items after *after* (only those in *statuses*, when
+        given), and no more of them than fit in *max_bytes* of their stored
+        JSON text -- always one at least, however large. A result can be
+        megabytes (an embeddings list), so :meth:`list_results` by count alone
+        could fetch gigabytes at once; here the database measures and cuts
+        the page before it is sent (see :data:`_RESULT_SIZES_SQL`).
+
+        The rows are :meth:`list_results` rows, except that each response is
+        left as its stored JSON text under ``response_text``, for the caller to
+        decode one item at a time (:func:`load_response`), and ``bytes`` is
+        the size of the item's stored text.
+
+        Returns:
+            ``(rows, more)``: the rows, and whether the batch has items after
+            the last one returned.
+        """
+        rows, more = await self._sized_page(
+            _RESULT_SIZES_SQL, _RESULT_PAGE_SQL, batch_id, after, statuses, limit, max_bytes
+        )
+        return [_raw_result_row(row) for row in rows], more
 
     async def cancel_batch(
         self, batch_id: str, *, user_id: str | None = None
@@ -3277,6 +3451,47 @@ def _result_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _raw_result_row(row: Any) -> dict[str, Any]:
+    """A :meth:`BatchStore.result_page` row: :func:`_result_row` with the response undecoded."""
+    return {
+        "id": row["id"],
+        "custom_id": row["custom_id"],
+        "status": row["status"],
+        "status_code": row["status_code"],
+        "response_text": row["response"],
+        "error": _load_json(row["error"]),
+        "prompt_tokens": row["prompt_tokens"],
+        "completion_tokens": row["completion_tokens"],
+        "cost_usd": float(row["cost_usd"]) if row["cost_usd"] is not None else None,
+        "request_id": row["request_id"],
+        "completed_at": row["completed_at"],
+        "usage": _load_json(row["usage"]),
+        "cost_status": row["cost_status"],
+        "attempts": row["attempts"],
+        "model_id": row["model_id"],
+        "bytes": int(row["bytes"] or 0),
+    }
+
+
+def load_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Decode the response of a :meth:`BatchStore.result_page` row, in place; return the row.
+
+    The row then reads as a :meth:`BatchStore.list_results` row. Decoding a
+    large response takes a while, so callers decode one item at a time and
+    yield to the event loop in between.
+    """
+    if "response_text" in row:
+        row["response"] = _load_json(row.pop("response_text"))
+    return row
+
+
+def load_request(row: dict[str, Any]) -> dict[str, Any]:
+    """Decode the request of a :meth:`BatchStore.request_page` row, in place; return the row."""
+    if "request_text" in row:
+        row["request"] = _load_json(row.pop("request_text"))
+    return row
+
+
 def _like_escape(text: str) -> str:
     """*text* with the ``LIKE`` wildcards and the escape character taken literally."""
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -3313,7 +3528,10 @@ def _dump_json(value: Any) -> str | None:
     if value is None:
         return None
     encoded = json.dumps(value)
-    if _contains_nul(value) or _is_json_envelope(value):
+    # ``json.dumps`` writes a U+0000 anywhere in the value as the escape
+    # ``\u0000``, so text without that escape holds none: walking the value
+    # (slow, for a large result) is needed only when the text has it.
+    if ("\\u0000" in encoded and _contains_nul(value)) or _is_json_envelope(value):
         payload = base64.b64encode(encoded.encode("utf-8")).decode("ascii")
         return json.dumps([_JSON_ENVELOPE_MARKER, payload])
     return encoded

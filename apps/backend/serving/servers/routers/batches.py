@@ -107,6 +107,7 @@ from serving.storage.batch_store import (
     TARGET_MESSAGES,
     TERMINAL_BATCH_STATUSES,
     BatchDeleteInProgress,
+    load_response,
 )
 from serving.utils.logging import get_logger
 
@@ -125,6 +126,14 @@ _RESULT_ID = re.compile(rf"{RESULT_ID_PREFIX}(\d{{1,18}})")
 
 # Requests validated between two yields to the event loop.
 _YIELD_EVERY = 1000
+
+#: The most stored JSON one page of results holds; a page always holds one
+#: result at least. A result may be megabytes (an embeddings list), and a page
+#: is decoded and answered whole, so ``limit`` alone could make one answer
+#: gigabytes. A page cut short still says ``has_more``.
+RESULTS_PAGE_BYTES = 8 * 1024 * 1024
+#: Results decoded between two yields to the event loop, by stored size.
+_RESULTS_YIELD_BYTES = 1024 * 1024
 
 
 def _surface(store: Any) -> tuple[Any, BatchConfig]:
@@ -717,16 +726,30 @@ async def list_batch_results(
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
 ) -> BatchResultsPage:
-    """Page through a batch's requests in submission order, with their outcomes."""
+    """Page through a batch's requests in submission order, with their outcomes.
+
+    A page holds up to ``limit`` results and no more than
+    :data:`RESULTS_PAGE_BYTES` of their stored JSON (one at least);
+    ``has_more`` says whether more follow either way.
+    """
     store, _config = _surface(store)
     cursor = _results_cursor(after)
     if await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx)) is None:
         raise _not_found(batch_id)
-    rows = await store.list_results(batch_id, after=cursor, limit=limit + 1)
-    page = [_result(row) for row in rows[:limit]]
+    rows, more = await store.result_page(
+        batch_id, after=cursor or 0, limit=limit, max_bytes=RESULTS_PAGE_BYTES
+    )
+    page = []
+    decoded = 0
+    for row in rows:
+        page.append(_result(load_response(row)))
+        decoded += int(row.get("bytes") or 0)
+        if decoded >= _RESULTS_YIELD_BYTES:
+            decoded = 0
+            await asyncio.sleep(0)
     return BatchResultsPage(
         data=page,
-        has_more=len(rows) > limit,
+        has_more=more,
         first_id=page[0].id if page else None,
         last_id=page[-1].id if page else None,
     )

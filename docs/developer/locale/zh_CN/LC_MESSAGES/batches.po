@@ -596,14 +596,16 @@ msgstr "`GET /v1/batches/{id}/results` 按你提交的顺序分页列出批次�
 
 #: ../developer/batches.md:265
 msgid ""
-"`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the "
-"next page with `after` set to the page's `last_id`. Every request of the "
-"batch is listed, finished or not. A request still `queued` or `running` "
-"has no `response` yet, but may retain its last `error` while being "
-"retried. Read the results once the batch is in a final status, or read "
-"them again later."
+"`limit` is 1–1000 (default 100). A page also stops at about 8 MiB of "
+"results, so large ones (embeddings, say) come a few to a page. When "
+"`has_more` is `true`, ask for the next page with `after` set to the page's "
+"`last_id`. Every request of the batch is listed, finished or not. A "
+"request still `queued` or `running` has no `response` yet, but may retain"
+" its last `error` while being retried. Read the results once the batch is"
+" in a final status, or read them again later."
 msgstr ""
-"`limit` 为 1–1000，默认 100。当 `has_more` 为 `true` 时，将本页的 `last_id` 作为 `after`"
+"`limit` 为 1–1000，默认 100。一页的结果累计约 8 MiB 时也会截止，因此较大的结果（例如 embeddings）每页只有几条。"
+"当 `has_more` 为 `true` 时，将本页的 `last_id` 作为 `after`"
 " 获取下一页。批次中的所有请求都会列出，无论是否完成。仍处于 `queued` 或 `running` 的请求尚无 "
 "`response`，但在重试时可能保留上一次的 `error`。请在批次达到最终状态后读取结果，或稍后再次读取。"
 
