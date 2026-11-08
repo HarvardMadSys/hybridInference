@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderRoutesTab } from './ProviderRoutesTab';
 
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+
 vi.mock('@/lib/api/admin', () => ({
   clearOffloadRoute: vi.fn(),
   clearRouteWeight: vi.fn(),
@@ -1120,7 +1122,7 @@ describe('ProviderRoutesTab', () => {
     });
 
     // Reset goes back to the configured weight the row shows, at once.
-    expect(screen.getByText('YAML 1 · Effective 3')).toBeInTheDocument();
+    expect(screen.getByText('Catalog 1 · Effective 3')).toBeInTheDocument();
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Clear minimax-fast:featherless-api weight override',

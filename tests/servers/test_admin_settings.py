@@ -12,6 +12,7 @@ from serving.auto_mode import AutoMode
 from serving.config.runtime_settings import RuntimeSettings
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
+from tests.fixtures.application_documents import seed_site
 
 
 @pytest.fixture
@@ -187,7 +188,7 @@ async def test_cannot_enable_signup_against_active_manifest(admin_client, monkey
     manifest.write_text(
         "schema_version: 1\ndistribution: {id: example}\nfeatures: {public_signup: false}\n"
     )
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
 

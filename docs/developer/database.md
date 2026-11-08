@@ -263,6 +263,25 @@ part of the conversation.
 
 ## Backup
 
+The standard lifecycle commands create a private dump and verify it in a
+throwaway database server:
+
+```bash
+make backup BACKUP=/private/path/gateway.dump
+make restore-check BACKUP=/private/path/gateway.dump
+```
+
+The dump includes every application document and secret in `app_config`.
+Without `BACKUP` it goes to `.ops/<distribution>/gateway.dump`, which neither Git
+nor a Docker build includes. The restore check never touches the deployment's
+database server: it restores the dump into a throwaway PostgreSQL container of
+the same image, with its own volume and internal network, runs this release's
+migrations on the copy, so a backup taken before an upgrade passes as it would
+restore, and removes the container, volume and network afterwards. It needs
+free disk where Docker keeps volumes, normally the disk of the deployment's
+database: about twice the database's size plus 1 GiB, or it refuses to start.
+The commands below remain available when a manual database restore is required.
+
 `pg_dump` in custom format, straight out of the container:
 
 ```bash

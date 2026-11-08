@@ -1361,3 +1361,9 @@ msgid ""
 "Users table and the user dashboard's usage figures, and the last computed"
 " result of the admin console's slowest views"
 msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘、管理后台用户表和用户仪表盘用量数字所用的小时级与天级汇总，以及管理后台最慢几个视图最近一次的计算结果"
+
+msgid "The standard lifecycle commands create a private dump and verify it in a throwaway database server:"
+msgstr "标准生命周期命令可创建私有转储，并在一次性的数据库服务器中验证："
+
+msgid "The dump includes every application document and secret in `app_config`. Without `BACKUP` it goes to `.ops/<distribution>/gateway.dump`, which neither Git nor a Docker build includes. The restore check never touches the deployment's database server: it restores the dump into a throwaway PostgreSQL container of the same image, with its own volume and internal network, runs this release's migrations on the copy, so a backup taken before an upgrade passes as it would restore, and removes the container, volume and network afterwards. It needs free disk where Docker keeps volumes, normally the disk of the deployment's database: about twice the database's size plus 1 GiB, or it refuses to start. The commands below remain available when a manual database restore is required."
+msgstr "转储包含 `app_config` 中的所有应用文档和秘密。未指定 `BACKUP` 时，转储写入 `.ops/<distribution>/gateway.dump`，Git 和 Docker 构建都不会包含它。恢复检查绝不会触碰部署的数据库服务器：它把转储恢复到一个使用相同镜像的一次性 PostgreSQL 容器中，该容器有自己的卷和内部网络；然后对副本运行当前版本的迁移，因此升级前的备份能像实际恢复时那样通过检查；最后删除容器、卷和网络。它需要 Docker 存放卷的磁盘（通常就是部署数据库所在的磁盘）上有空闲空间：约为数据库大小的两倍再加 1 GiB，否则拒绝启动。需要手动恢复数据库时，仍可使用下方命令。"

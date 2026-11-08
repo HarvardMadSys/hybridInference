@@ -237,3 +237,45 @@ async def test_a_plain_text_prompt_that_starts_like_an_array_does_not_fail_its_w
 
     assert [item["code"] for item in payload["languages"]["items"]] == ["fr"]
     assert payload["languages"]["messages_sampled"] == 2
+
+
+async def test_the_job_names_the_models_the_stored_catalog_offers(monkeypatch, capsys):
+    # The job runs in a process of its own: the catalog it names models from is
+    # the one stored in app_config, which it has to load itself.
+    import argparse
+    import json
+
+    from serving.config.settings import get_settings
+    from tests.fixtures import migrations as mig
+
+    catalog = {
+        "models": [
+            {"id": "open-model", "provider": "vllm"},
+            {"id": "staff-model", "provider": "vllm", "required_role": "admin"},
+        ]
+    }
+    async with mig.scratch_database() as database:
+        await mig.upgrade(database)
+        async with mig.connected(database) as scratch:
+            await scratch.execute(
+                "INSERT INTO app_config(key,value,secret,source) "
+                "VALUES ('MODEL_CATALOG',$1,false,'admin')",
+                json.dumps(catalog),
+            )
+            for model in ("open-model", "staff-model"):
+                await scratch.execute(
+                    "INSERT INTO api_logs (request_id, model_id, provider, timestamp, "
+                    "status_code, prompt_tokens, completion_tokens) "
+                    "VALUES ($1, $1, 'p', NOW() - INTERVAL '1 hour', 200, 10, 5)",
+                    model,
+                )
+        monkeypatch.delenv("MODEL_CATALOG", raising=False)
+        for key, value in {**postgres.target().app_env(), "DB_NAME": database}.items():
+            monkeypatch.setenv(key, value)
+        get_settings.cache_clear()
+
+        assert await ps._main(argparse.Namespace(dry_run=True, weeks=2)) == 0
+
+    models = json.loads(capsys.readouterr().out)["models"]
+    assert [item["name"] for item in models["items"]] == ["open-model"]
+    assert models["other"]["requests"] == 1

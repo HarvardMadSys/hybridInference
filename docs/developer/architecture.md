@@ -31,8 +31,8 @@ Five ideas explain most of the code:
    to a uniform `404`, and upstream errors are scrubbed before they reach a
    client.
 4. **Configuration is a deployment's, not the project's.** The repository ships
-   runnable examples; a real deployment supplies its own registry and routing
-   files, found as described under [Configuration](#configuration).
+   runnable examples; a real deployment configures its registry, routing policy
+   and branding in Admin and PostgreSQL. See [Configuration](#configuration).
 5. **Extension points are declarative.** New provider: a `kind` and, if the API
    is not OpenAI-compatible, an adapter. New routing behaviour: a module in
    `apps/backend/routing/strategies/` that self-registers. Neither requires touching the request
@@ -431,45 +431,24 @@ capped with a fabricated `[DONE]`.
 
 ## Configuration
 
-Three YAML files describe a deployment: a model registry, a routing config, and
-an alert config. **They are not at fixed paths.** `resolve_config_path()` in
-`apps/backend/serving/config/distribution.py` resolves each one through a
-three-step precedence:
+Application documents are validated JSON settings in `app_config`:
+`MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION` and
+`SITE_BRANDING`. Application YAML files and their path/mode selectors are not
+runtime inputs. A fresh gateway serves an empty model list and a neutral console
+that asks an administrator to configure it.
 
-1. **An explicit environment variable** — `MODELS_CONFIG_PATH`,
-   `ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH`. Always wins.
-2. **The distribution manifest** — a single versioned YAML naming the site
-   identity and the config-file locations, pointed at by
-   `DISTRIBUTION_CONFIG_PATH`. Relative `paths:` in the manifest resolve against
-   the manifest's own directory, so a deployment overlay under
-   `distributions/<name>/` is self-contained.
-3. **Built-in defaults** — `config/examples/models.openrouter.yaml` and
-   `config/examples/routing.minimal.yaml`. This is what a fresh clone with no
-   environment and no overlay gets: supply one `OPENROUTER_API_KEY` and the
-   gateway serves a working catalog. The alert default is `config/alerts.yaml`,
-   a path this repository does not ship — with no alert file
-   present the built-in thresholds apply.
+The model catalog supplies the baseline; operational provider, key, route and
+weight state is applied on top. Ordinary Admin route edits synchronize between
+backend processes through committed, model-scoped change counters. Existing
+routing transition helpers retain execution and feedback ownership. Per-process
+acknowledgements distinguish saved configuration from applied configuration.
+Catalog/routing-policy/alert-rule changes remain explicitly restart-required.
 
-The manifest is opt-in and defaults to a dry run. With `DISTRIBUTION_CONFIG_PATH`
-set but `DISTRIBUTION_CONFIG_MODE` unset, the mode is `dark`: the manifest is
-loaded, validated, and compared against the paths that are actually in effect —
-logging a per-file digest comparison — while resolution stays unchanged. Setting
-`DISTRIBUTION_CONFIG_MODE=active` makes manifest paths effective, and in that
-mode a manifest that fails to load leaves the gateway with no models, logged at
-`CRITICAL`, rather than quietly serving
-a different registry than the deployment named.
-
-All three YAML files support environment interpolation, but not the same
-dialect. The model registry expands only a whole value that is exactly
-`${VAR}` (`registry.py`); the routing and alert files run a recursive regex
-expander that also handles `${VAR:-default}` and variables embedded in longer
-strings (`_expand_env_value` in `apps/backend/routing/config.py`). A route whose
-`api_key`, `api_keys`, or `base_url` expands to
-nothing is either skipped (if the route is marked optional) or fails startup —
-never registered as a dead endpoint.
-
-See [Configuration](configuration.md) for the field-by-field reference and
-[Quickstart](router-tutorial.md) for a working end-to-end example.
+Credentials are separate secret settings referenced by documents. The existing
+settings store owns validation, audit, conditional writes and backup/restore.
+An explicit offline importer handles old external YAML; startup never imports
+those files. See [Configuration](configuration.md) and the
+{download}`accepted design <../agents/specs/2026-11-08-database-only-configuration.md>`.
 
 ## Storage
 
@@ -523,8 +502,8 @@ The gateway reports through these; it has no Prometheus exporter:
   `apps/backend/serving/observability/alerts.py` post through an `AlertSink` to
   one Slack or WeCom webhook, selected in Admin Configuration. Channel changes
   take effect after a restart. Thresholds come
-  from the alert config resolved by the same `resolve_config_path()` chain; with
-  no alert file present the built-in thresholds apply. The circuit breaker pages
+  from the `ALERT_RULES` database document; an empty document uses built-in
+  thresholds. The circuit breaker pages
   on `circuit_open` transitions and on upstream-credential rejections, with
   per-endpoint cooldowns so a persistent fault re-pages on a fixed cadence
   instead of flooding.

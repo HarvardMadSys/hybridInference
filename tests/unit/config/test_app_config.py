@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import textwrap
 
 import pytest
+import yaml
 
 from serving.config import app_config
 from serving.config.app_config_registry import static_entries
@@ -22,6 +25,7 @@ def config_env(tmp_path, monkeypatch):
         monkeypatch.delenv(entry.key, raising=False)
     for key in ("ENVIRONMENT", "DISTRIBUTION_CONFIG_PATH"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MODEL_CATALOG", "{}")
     models = tmp_path / "models.yaml"
     models.write_text("models: []\n")
     monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
@@ -34,7 +38,7 @@ def config_env(tmp_path, monkeypatch):
 
 
 def _write_models(path, text: str) -> None:
-    (path / "models.yaml").write_text(textwrap.dedent(text))
+    os.environ["MODEL_CATALOG"] = json.dumps(yaml.safe_load(textwrap.dedent(text)) or {})
 
 
 async def _boot(store: FakeAppConfigStore) -> None:

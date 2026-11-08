@@ -401,3 +401,18 @@ msgid ""
 msgstr ""
 "部署在启动时加载的可信 Python 模块，用来添加 adapter、agent 访问规则或配额来源。见[后端扩展](backend-"
 "extensions.md)。"
+
+msgid "The `MODEL_CATALOG` database setting that lists every model id and the routes behind it. [Configuration](configuration.md) explains how the gateway finds it."
+msgstr "`MODEL_CATALOG` 数据库设置，列出各模型 ID 及其后端路由。[配置](configuration.md)说明网关如何读取它。"
+
+msgid "The optional `ROUTING_POLICY` database setting. It holds health-probe settings and a local/remote weight split; see [The routing file](configuration.md#the-routing-file) for what it does and does not change."
+msgstr "可选的 `ROUTING_POLICY` 数据库设置，包含健康探测配置和本地与远端权重分配；其作用范围见[路由文件](configuration.md#the-routing-file)。"
+
+msgid "One deployment's code, assets and Compose settings, kept together in `distributions/<name>/`. Application settings, including identity, branding and the model catalog, live in the database. `distributions/example/` is the tutorial this repository ships."
+msgstr "具体部署的代码、资源和 Compose 设置，集中保存在 `distributions/<name>/`。应用设置（包括标识、品牌和模型目录）位于数据库中。`distributions/example/` 是仓库提供的教程。"
+
+msgid "The retired application configuration file `distribution.yaml`. Its identity and feature settings now live in Admin's `SITE_CONFIGURATION` document; application file paths are no longer used at startup."
+msgstr "已停用的应用配置文件 `distribution.yaml`。其标识和功能设置现位于 Admin 的 `SITE_CONFIGURATION` 文档中；启动时不再使用应用文件路径。"
+
+msgid "Retired modes of `DISTRIBUTION_CONFIG_MODE`. Saved database settings now determine the site configuration, without a manifest mode switch."
+msgstr "`DISTRIBUTION_CONFIG_MODE` 已停用的模式。站点配置现在由已保存的数据库设置决定，无需清单模式开关。"

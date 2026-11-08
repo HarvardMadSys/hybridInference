@@ -258,9 +258,27 @@ def boot_value(key: str, default: str | None = None) -> str | None:
     entry = registry.extension_entry(key)
     fallback = default if default is not None else (entry.default if entry is not None else None)
     value = _environ_value(key, entry)
-    if entry is not None and _value_problem(entry, value):
+    # An application document from the environment that its validator refuses
+    # counts as unset, as a stored one does (:func:`_apply`): served, it would
+    # bypass the checks every write makes, inline credentials included.
+    checked = entry if entry is not None else _document_entry(key)
+    if checked is not None and _value_problem(checked, value):
         return fallback
     return value if value is not None else fallback
+
+
+def _document_entry(key: str) -> ConfigEntry | None:
+    """Return *key*'s entry when it is an application document, else ``None``.
+
+    Every other key is answered without the registry, which settings read
+    while modules are still importing must not build.
+    """
+    from serving.config.documents import KEY_KINDS
+
+    if key not in KEY_KINDS:
+        return None
+    entry = _STATE.entries.get(key) or registry.static_entry(key)
+    return entry if entry is not None and entry.validator is not None else None
 
 
 # LOG_LEVEL and LOG_FORMAT are database-backed too. Logging cannot import this
@@ -359,6 +377,11 @@ def _value_problem(entry: ConfigEntry, raw: str | None) -> str | None:
         if entry.choices:
             return "must be one of " + ", ".join(entry.choices)
         return None
+    if entry.validator is not None:
+        try:
+            entry.validator(raw)
+        except (ValueError, TypeError) as exc:
+            return _validator_problem(exc)
     typed = _typed(entry, raw)
     if entry.type in ("bool", "int", "float") and isinstance(typed, str):
         return {
@@ -382,6 +405,44 @@ def _value_problem(entry: ConfigEntry, raw: str | None) -> str | None:
         if not allowed:
             return "must be one of " + ", ".join(entry.choices)
     return None
+
+
+#: Said of a document whose validator gave no reason that is safe to repeat.
+_DOCUMENT_PROBLEM = (
+    "must be a valid application document; check its JSON fields and secret references"
+)
+
+#: How many of a validation error's reasons :func:`_validator_problem` names.
+_REASONS_SHOWN = 3
+
+
+def _validator_problem(exc: BaseException) -> str:
+    """Return why a validator refused a document, naming fields and types, never a value.
+
+    The reason is shown in Admin and logged, and a document can carry a
+    credential, or a reference the validator has already expanded into one.
+    A pydantic error, raised or wrapped (``raise ... from``), prints its input,
+    so its reason is rebuilt from each error's location and message; any other
+    reason that still names an input is replaced with a generic one.
+    """
+    cause: BaseException | None = exc
+    while cause is not None and not isinstance(cause, ValidationError):
+        cause = cause.__cause__
+    if isinstance(cause, ValidationError):
+        errors = cause.errors(include_url=False, include_context=False, include_input=False)
+        reasons = []
+        for error in errors[:_REASONS_SHOWN]:
+            location = "/".join(str(part) for part in error.get("loc") or ())
+            message = _error_message(error)
+            reasons.append(f"/{location} {message}" if location else message)
+        if len(errors) > _REASONS_SHOWN:
+            reasons.append(f"{len(errors) - _REASONS_SHOWN} more")
+        reason = "; ".join(reasons)
+    else:
+        reason = str(exc)
+    if not reason.strip() or "input_value" in reason:
+        return _DOCUMENT_PROBLEM
+    return reason
 
 
 def _environ_value(key: str, entry: ConfigEntry | None) -> str | None:
@@ -435,9 +496,24 @@ def _in_force_raw(key: str, entry: ConfigEntry | None) -> tuple[str | None, str]
     if row is not None and _refusal(key, entry) is None:
         return row.value, "database"
     value = _environ_value(key, entry)
-    if value is not None and key not in _STATE.environment_aside:
+    if (
+        value is not None
+        and key not in _STATE.environment_aside
+        and (entry is None or entry.validator is None or _value_problem(entry, value) is None)
+    ):
         return value, "environment"
     return (entry.default if entry is not None else None), "default"
+
+
+def validation_problem(key: str) -> str | None:
+    """Return a configured value's validation problem without exposing its value."""
+    # A document is judged before anything is loaded too: config_value counts
+    # an invalid one from the environment as unset, and a caller that must
+    # fail closed on it (the public site policy) asks here.
+    setting = entry(key) or _document_entry(key)
+    row = _STATE.rows.get(key)
+    raw = row.value if row is not None else _environ_value(key, setting)
+    return _value_problem(setting, raw) if setting is not None else None
 
 
 def configured_value(key: str, default: str | None = None) -> str | None:
@@ -927,29 +1003,25 @@ def refresh_health() -> ConfigHealth:
 # --- loading -----------------------------------------------------------------
 
 
-def _discover() -> dict[str, DiscoveredReference]:
-    """Scan the model registry, routing document and alerts file for ``${VAR}``.
+def _discover(rows: Mapping[str, ConfigRow] | None = None) -> dict[str, DiscoveredReference]:
+    """Discover references from database documents, never configuration files."""
+    from serving.config.documents import DOCUMENT_KEYS
 
-    A route catalog loaded earlier in this boot replaces the models and routing
-    files. Alerts stay a file.
-    """
-    from serving.config.distribution import resolve_config_path
-    from serving.config.route_catalog import installed_body
+    available = rows if rows is not None else _STATE.rows
 
-    paths = {}
-    for kind in ("models", "routing", "alerts"):
+    def text(kind: str) -> str:
+        row = available.get(DOCUMENT_KEYS[kind])
+        return row.value if row is not None else os.environ.get(DOCUMENT_KEYS[kind], "{}")
+
+    from serving.config.documents import parse
+
+    def document(kind: str) -> dict[str, Any]:
         try:
-            paths[kind] = resolve_config_path(kind).path  # type: ignore[arg-type]
-        except Exception:
-            logger.warning("Cannot locate the %s file to scan for settings", kind, exc_info=True)
-            paths[kind] = None
-    return registry.discover_references(
-        paths["models"],
-        paths["routing"],
-        paths["alerts"],
-        models_text=installed_body("models"),
-        routing_text=installed_body("routing"),
-    )
+            return parse(text(kind))
+        except ValueError:
+            return {}
+
+    return registry.discover_documents(document("models"), document("routing"), document("alerts"))
 
 
 def _build_entries(
@@ -1088,6 +1160,7 @@ def _apply(
     if boot:
         state.boot_rows = dict(rows)
     state.rows = rows
+    state.discovered = _discover(rows)
     state.resets = dict(resets or {})
     state.entries = _build_entries(rows, state.resets)
     state.live_keys = frozenset(
@@ -1145,6 +1218,7 @@ async def load(
     if bootstrap:
         async with store.transaction() as transaction:
             rows = await transaction.fetch_all()
+            _STATE.discovered = _discover(rows)
             rows = await _import_environment(transaction, rows)
             await _generate_secrets(transaction, rows)
             await _record_secrets(transaction)
@@ -1218,7 +1292,13 @@ async def _import_environment(
         value = _environ_value(key, entry)
         if entry.origin == "custom" or key in rows or key in unusable or not (value or "").strip():
             continue
-        if registry.extension_entry(key) is not None or key in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+        if (
+            registry.extension_entry(key) is not None
+            or key in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            or entry.validator is not None
+        ):
+            # Outside Settings' schema. An application document is judged by
+            # its own validator: a seed every write would refuse is never stored.
             problem = _value_problem(entry, value)
             if problem is not None:
                 logger.warning("Not importing invalid %s from the environment: %s", key, problem)
@@ -1331,9 +1411,10 @@ def require_valid_environment() -> None:
     called once the stored configuration is in force, instead of failing before
     the database could be read:
 
-    - An environment value that is not valid on its own, left at its default:
-      a valid stored value for the setting applies, and the gateway starts with
-      a warning; without one it must not.
+    - An environment value that is not valid on its own, left at its default,
+      an application document its validator refuses included: a valid stored
+      value for the setting applies, and the gateway starts with a warning;
+      without one it must not.
     - The rules between settings: the configuration in force, stored values
       over the environment, must satisfy every one.
 
@@ -1367,10 +1448,15 @@ def require_valid_environment() -> None:
             )
         else:
             unresolved[key] = problem
-    # Extension fields and dynamically registered provider names are outside
-    # Settings' schema. Apply the same DB-over-env rule to their registry bounds.
+    # Extension fields, dynamically registered provider names and application
+    # documents are outside Settings' schema. Apply the same DB-over-env rule to
+    # their registry bounds and document validators.
     for key, entry in _STATE.entries.items():
-        if registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+        if (
+            registry.extension_entry(key) is None
+            and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            and entry.validator is None
+        ):
             continue
         problem = _value_problem(entry, _environ_value(key, entry))
         if problem is None:
@@ -1744,11 +1830,20 @@ def _damage(
     for key in written:
         entry = entries.get(key)
         if entry is None or (
-            registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            registry.extension_entry(key) is None
+            and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            and entry.validator is None
         ):
             continue
         problem = _value_problem(entry, _resolve(after, key, entry))
         if problem and not _value_problem(entry, _resolve(rows, key, entry)):
+            if entry.validator is not None and key not in after:
+                # A reset puts the environment's document back in force, which
+                # startup refuses (require_valid_environment).
+                problem = (
+                    f"its environment value is not valid ({problem}); correct or remove the "
+                    "variable first"
+                )
             return _Damage(key, (problem,))
     if not any(
         (entry := registry.static_entry(key)) is not None and entry.field is not None
@@ -1927,12 +2022,20 @@ async def update(
             pending.append(
                 ConfigRow(key, raw, secret=secret, source="admin", updated_by=updated_by)
             )
+            old_raw = _resolve(rows, key, entry)
+            # The audit log withholds what a backup withholds (_is_secret_row):
+            # a row marked secret, and a document its validator refuses, which
+            # can carry a credential inline (a hand-edited row, one stored
+            # before the validator existed, or the environment's in its place).
+            withheld = (
+                secret or (key in rows and rows[key].secret) or _invalid_document(entry, old_raw)
+            )
             changes.append(
                 ConfigChange(
                     key,
-                    secret,
-                    old_value=None if secret else _typed(entry, _resolve(rows, key, entry)),
-                    new_value=None if secret else _typed(entry, raw),
+                    withheld,
+                    old_value=None if withheld else _typed(entry, old_raw),
+                    new_value=None if withheld else _typed(entry, raw),
                     marked_secret=marked,
                 )
             )
@@ -1999,13 +2102,16 @@ async def delete(
 
     async def body(transaction: AppConfigStore) -> ConfigChange:
         rows, resets = await _read(transaction)
+        entries = _build_entries(rows, resets)
         if registry.is_retired(key):
             # Nothing reads it any more; only an administrator removes what an
             # earlier version stored.
             row, reset = rows.get(key), resets.get(key)
             if row is None and reset is None:
                 raise ConfigUpdateError(404, f"{key} has no stored value.")
-            secret = (row is not None and row.secret) or (reset is not None and reset.secret)
+            secret = (row is not None and _is_secret_row(key, row, entries)) or (
+                reset is not None and reset.secret
+            )
             change = ConfigChange(
                 key, secret, old_value=None if secret or row is None else row.value
             )
@@ -2026,11 +2132,16 @@ async def delete(
             damage = _damage(rows, remaining, [key])
             if damage is not None:
                 raise ConfigUpdateError(409, damage.resetting())
+            new_raw = _resolve(remaining, key, entry)
+            # As for update: neither a secret row's value nor a document its
+            # validator refuses (the stored one, or the environment's that the
+            # reset puts back) reaches the audit log.
+            withheld = _is_secret_row(key, row, entries) or _invalid_document(entry, new_raw)
             change = ConfigChange(
                 key,
-                secret,
-                old_value=None if secret else _typed(entry, row.value),
-                new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
+                withheld,
+                old_value=None if withheld else _typed(entry, row.value),
+                new_value=None if withheld else _typed(entry, new_raw),
             )
             if entry.origin == "custom":
                 await transaction.delete(key)
@@ -2188,6 +2299,7 @@ def _security_relevant_entry(key: str, setting: ConfigEntry | None) -> bool:
         or setting.category in SECURITY_CATEGORIES
         or setting.origin != "static"
         or key in SECURITY_SETTING_KEYS
+        or setting.category == "application"
         or key.endswith("_URL")
     )
 
@@ -2209,9 +2321,14 @@ def _is_secret_row(key: str, row: ConfigRow, entries: Mapping[str, ConfigEntry])
     """Whether *row*'s value is a secret: as :func:`describe` decides, or by its name."""
     entry = entries.get(key) or registry.numbered_key_entry(key)
     if entry is not None:
-        return entry.secret or row.secret
+        return entry.secret or row.secret or _invalid_document(entry, row.value)
     # A retired setting has no entry; its row's flag and its name decide.
     return row.secret or registry.is_secret_name(key)
+
+
+def _invalid_document(entry: ConfigEntry, raw: str | None) -> bool:
+    """Whether *raw* is a document its validator refuses, which may carry a credential inline."""
+    return entry.validator is not None and _value_problem(entry, raw) is not None
 
 
 async def export_rows(*, include_secret_values: bool = False) -> list[dict[str, Any]]:
@@ -2278,6 +2395,21 @@ class _RestorePlan:
     target_resets: dict[str, ConfigRow]
     to_delete: frozenset[str]
     summary: RestoreSummary
+    #: Rows in force after the restore that it leaves exactly as they are.
+    untouched: frozenset[str] = frozenset()
+
+
+def _kept_unless_named(key: str) -> bool:
+    """Whether a restore keeps *key*'s stored row when the backup does not name it.
+
+    The application documents, and the ``CATALOG_SECRET_*`` credentials the
+    upgrade lifted out of the catalog: a backup taken before the upgrade has
+    neither, and restoring it must not delete the catalog. Removing one is an
+    administrator's explicit reset, never a side effect of a restore.
+    """
+    from serving.config.documents import KEY_KINDS
+
+    return key in KEY_KINDS or key.startswith("CATALOG_SECRET_")
 
 
 def _plan_restore(
@@ -2289,6 +2421,9 @@ def _plan_restore(
     updated_by: str,
 ) -> _RestorePlan:
     """Decide what restoring *items* over the stored rows writes, and check it.
+
+    An application document or a ``CATALOG_SECRET_*`` setting the backup does
+    not name is kept as it is (:func:`_kept_unless_named`).
 
     Raises:
         ConfigUpdateError: 400 for an invalid entry, or for a result that would
@@ -2406,8 +2541,16 @@ def _plan_restore(
         )
 
     # Never drop an already-settled immutable row or a generated secret that
-    # has no environment fallback when the backup omitted it.
+    # has no environment fallback when the backup omitted it, nor what a backup
+    # from before the application documents could not name (_kept_unless_named).
     all_entries = _build_entries(current_rows, current_resets)
+    untouched = frozenset(
+        key
+        for key in (*current_rows, *current_resets)
+        if key not in seen_keys and _kept_unless_named(key)
+    )
+    target_rows.update((key, current_rows[key]) for key in untouched if key in current_rows)
+    target_resets.update((key, current_resets[key]) for key in untouched if key in current_resets)
     for key, existing_row in current_rows.items():
         if key in target_rows or key in target_resets:
             continue
@@ -2459,6 +2602,7 @@ def _plan_restore(
             preserved_immutable=tuple(sorted(preserved_immutable)),
             not_restored=tuple(sorted(not_restored)),
         ),
+        untouched=untouched,
     )
 
 
@@ -2498,7 +2642,10 @@ async def restore_rows(
 
     A secret whose value the backup withholds (``value`` is ``None``) keeps the
     value this deployment has; with none here it stays unset, and the summary
-    names it in ``not_restored``.
+    names it in ``not_restored``. An application document or a
+    ``CATALOG_SECRET_*`` setting the backup does not name at all keeps its
+    stored row too: a backup taken before the upgrade that introduced them
+    names none of them.
 
     Args:
         items: Stored row dicts (``key``, ``value``, ``secret``, ``source``).
@@ -2536,10 +2683,14 @@ async def restore_rows(
             await check_plan(transaction, plan.summary)
         for key in sorted(plan.to_delete):
             await transaction.delete(key)
-        if plan.target_rows:
-            await transaction.write(list(plan.target_rows.values()))
+        # A row the restore keeps is not rewritten: rewriting the catalog would
+        # replace the previous release's copy of it (0014's mirror) as well.
+        written = [row for key, row in plan.target_rows.items() if key not in plan.untouched]
+        if written:
+            await transaction.write(written)
         for key, reset_row in sorted(plan.target_resets.items()):
-            await transaction.reset(key, secret=reset_row.secret, updated_by=updated_by)
+            if key not in plan.untouched:
+                await transaction.reset(key, secret=reset_row.secret, updated_by=updated_by)
 
         if before_commit is not None:
             await before_commit(transaction)

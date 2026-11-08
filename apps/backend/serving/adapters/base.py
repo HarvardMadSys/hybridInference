@@ -180,7 +180,7 @@ class ModelConfig:
     # on for a server that does not report replaces an honest NULL with a
     # fabricated measured miss, which is the harder error to notice later. The
     # loader accepts it only on a route (never inherited from the model) and only
-    # as a real YAML boolean; see servers/registry.py.
+    # as a real boolean; see servers/registry.py.
     null_cache_details_means_miss: bool = False
     # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
     # When set, OpenAICompatAdapter uses profile-specific usage normalization.

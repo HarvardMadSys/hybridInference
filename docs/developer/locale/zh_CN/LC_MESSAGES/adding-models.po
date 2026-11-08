@@ -280,6 +280,10 @@ msgid "Display name"
 msgstr "展示名称"
 
 #: ../developer/adding-models.md
+msgid "Display name; defaults to `id`"
+msgstr "显示名称；默认为 `id`"
+
+#: ../developer/adding-models.md
 msgid "`provider`"
 msgstr ""
 
@@ -712,22 +716,12 @@ msgstr ""
 
 #: ../developer/adding-models.md:264
 #, python-brace-format
-msgid ""
-"A whole-value `${VAR}` reference must resolve to a non-blank path; it is "
-"not an instruction to use the default if the variable is missing. A "
-"missing or blank variable aborts startup for a required route. With "
-"`optional: true`, only that route is skipped, with a warning naming the "
-"model, route, and variable."
-msgstr ""
-"整个值写成 `${VAR}` "
-"时，它必须解析成非空白的路径；变量缺失并不意味着改用默认值。如果路由不是可选的，变量未设置或为空白都会导致启动失败。设置了 `optional: "
-"true` 时，只跳过这一条路由，并记一条写明模型、路由和变量名的警告。"
+msgid "A whole-value `${VAR}` reference must resolve to a non-blank path; it is not an instruction to use the default if the variable is missing. For a required route, a missing or blank variable means the catalog registers no models, with an error naming the model, route, and variable. With `optional: true`, only that route is skipped, with a warning naming the same."
+msgstr "整个值写成 `${VAR}` 时，它必须解析成非空白的路径；变量缺失并不意味着改用默认值。对于不是可选的路由，变量未设置或为空白时，整个目录都不会注册任何模型，并记录一条写明模型、路由和变量名的错误。设置了 `optional: true` 时，只跳过这一条路由，并记一条写明同样信息的警告。"
 
 #: ../developer/adding-models.md:269
-msgid ""
-"Any other invalid `embeddings_path` stops startup, even on an optional "
-"route, so the gateway never starts with part of the registry missing."
-msgstr "其他任何非法的 `embeddings_path` 都会导致启动失败，可选路由也不例外，免得网关带着残缺的注册表启动。"
+msgid "Admin refuses a catalog with any other invalid `embeddings_path`, even on an optional route. A stored catalog with one registers no catalog model and logs an error naming the model, so the gateway never serves part of the registry."
+msgstr "其他任何非法的 `embeddings_path`（可选路由也不例外）都会让 Admin 拒绝保存该目录。已保存的目录若含有这样的值，不会注册任何目录模型，并记录一条写明模型的错误，因此网关绝不会只提供注册表的一部分。"
 
 #: ../developer/adding-models.md:272
 msgid "Supported adapter kinds"
@@ -934,17 +928,12 @@ msgid "Model not appearing in `/v1/models`"
 msgstr "模型没有出现在 `/v1/models` 里"
 
 #: ../developer/adding-models.md:312
-msgid ""
-"Confirm the registry the backend actually loaded. It logs `Registered N "
-"routes from <path>` at startup, and logs an error naming the path when no"
-" registry is there."
-msgstr ""
-"确认后端实际加载的是哪份注册表。它在启动时会记录 `Registered N routes from "
-"<path>`；如果那个路径上没有注册表，则会记录一条写明路径的错误日志。"
+msgid "Confirm the catalog the backend actually loaded. It logs `Registered N routes from the database route catalog` at startup, and logs an error when the catalog has no models."
+msgstr "确认后端实际加载的目录。它在启动时会记录 `Registered N routes from the database route catalog`；如果目录中没有模型，则会记录一条错误日志。"
 
 #: ../developer/adding-models.md:315
-msgid "Check the YAML syntax and indentation under `models:`."
-msgstr "检查 `models:` 下的 YAML 语法和缩进。"
+msgid "Check that the model is an entry of the catalog's `models` list. Admin validates the JSON when you save it and names the field it refuses."
+msgstr "检查该模型是否是目录 `models` 列表中的一项。保存时 Admin 会验证 JSON，并指出被拒绝的字段。"
 
 #: ../developer/adding-models.md:316
 #, python-brace-format
@@ -1023,8 +1012,8 @@ msgid "[Routing](routing.md) — central weight overrides and strategies"
 msgstr "[路由](routing.md)——集中式权重覆盖与策略"
 
 #: ../developer/adding-models.md:344
-msgid "[Configuration](configuration.md) — environment and YAML configuration"
-msgstr "[配置](configuration.md)——环境变量与 YAML 配置"
+msgid "[Configuration](configuration.md) — where each setting lives, and the application documents"
+msgstr "[配置](configuration.md)——各项设置存放在哪里，以及应用文档"
 
 #~ msgid ""
 #~ "Provider/adapter kind; also the default "
@@ -1593,10 +1582,25 @@ msgstr ""
 msgid "Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency)"
 msgstr "只可用于路由的准入分类：`auto`（默认值，识别回环/宿主机端点）、`self_hosted`（自己运维的引擎，包括局域网中的引擎）或 `provider_api`（按 provider key 限制并发，即使通过回环代理访问）。与 `provider_type` 独立；参见[出站并发](routing.md#outbound-concurrency)。"
 
+msgid "Add a model in **Admin → Routing → Create model**. Choose its router, pricing, context/output limits, input capabilities, required role and first provider route. Verify the route, save, then grant the intended users access. Ordinary route edits propagate between registered backend processes without restarting."
+msgstr "在 **Admin → Routing → Create model** 中添加模型。选择路由器、定价、上下文和输出上限、输入能力、所需角色及第一条供应商路由。验证路由并保存，再向目标用户授予访问权限。普通路由修改会在已注册的后端进程间传播，无需重启。"
+
+msgid "For a non-OpenAI protocol, implement an adapter first; see [Writing a Provider Adapter](provider-adapters.md). Local inference still uses the OpenAI-compatible adapter; see [Adding a Local Model](add-local-model.md)."
+msgstr "对于非 OpenAI 协议，请先实现适配器，参见[编写供应商适配器](provider-adapters.md)。本地推理仍使用兼容 OpenAI 的适配器，参见[添加本地模型](add-local-model.md)。"
+
+msgid "The catalog is the `MODEL_CATALOG` JSON setting in PostgreSQL. Application YAML files and path-selection variables are retired. The gateway starts with no models until an administrator configures them. See [Configuration](configuration.md)."
+msgstr "模型目录是 PostgreSQL 中的 `MODEL_CATALOG` JSON 设置。应用 YAML 文件和路径选择变量已停用。管理员配置模型之前，网关启动后没有模型。参见[配置](configuration.md)。"
+
+msgid "For aliases or additional metadata, edit the model catalog in **Admin → Settings → Models**. Store credentials as separate secret settings and refer to them as `${NAME}`. The catalog refuses inline credentials. The JSON shape follows the field reference below; a small example is in [The model registry](configuration.md#the-model-registry)."
+msgstr "如需别名或其他元数据，请在 **Admin → Settings → Models** 中编辑模型目录。将凭据保存为独立的秘密设置，并通过 `${NAME}` 引用。目录拒绝内嵌凭据。JSON 结构遵循下方字段参考；[模型注册表](configuration.md#the-model-registry)中有一个简短示例。"
+
+msgid "Set `GATEWAY_API_KEY` in the shell when authentication is enabled. The smoke uses the real inference path and normal quota. Check streaming separately when clients depend on it. A catalog change marked **Restart required** needs `make restart s=backend`; ordinary Admin route edits do not."
+msgstr "启用认证后，请在 shell 中设置 `GATEWAY_API_KEY`。冒烟检查使用真实推理路径并消耗正常配额。客户端依赖流式响应时，请单独验证流式请求。标记为 **Restart required** 的目录修改需要执行 `make restart s=backend`；普通 Admin 路由修改无需重启。"
+
 #: ../developer/adding-models.md
 msgid "`include_usage_in_stream`"
 msgstr "`include_usage_in_stream`"
 
 #: ../developer/adding-models.md
-msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a YAML boolean: a model-wide or non-boolean value (`\"false\"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
-msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是 YAML 布尔值：在模型级配置或使用非布尔值（`\"false\"`、`null`）属于配置错误，会使服务无法启动。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"
+msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: Admin refuses a model-wide or non-boolean value (`\"false\"`, `null`) when the catalog is saved, and a stored catalog with one registers no catalog model and logs an error. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
+msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是布尔值：保存目录时，Admin 会拒绝模型级配置或非布尔值（`\"false\"`、`null`）；已保存的目录若含有这样的值，不会注册任何目录模型，并会记录一条错误。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"

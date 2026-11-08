@@ -1217,6 +1217,7 @@ export function ConfigCategorySection({
             Unsaved changes to them are kept and saved with the rest.
           </p>
         ) : null}
+        {group.id === 'application' ? <LiveConfigStatus groupName="routing.runtime" /> : null}
         {liveGroupNames(group).map((name) => (
           <LiveConfigStatus
             key={name}

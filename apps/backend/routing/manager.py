@@ -23,7 +23,7 @@ class RoutingManager:
     and computes per-adapter weights that are applied to the `FixedRouter`.
     """
 
-    def __init__(self, router: FixedRouter, config_path: Path) -> None:
+    def __init__(self, router: FixedRouter, config_path: Path | None = None) -> None:
         self.router = router
         self.config_path = config_path
         self.conf: RoutingConfig | None = None
@@ -31,6 +31,8 @@ class RoutingManager:
 
     def load(self) -> None:
         """Load routing configuration and start health monitoring if enabled."""
+        if self.config_path is None:
+            raise ValueError("Use Admin Settings to configure the routing policy")
         self.load_config(load_routing_config(self.config_path))
 
     def load_config(self, conf: RoutingConfig) -> None:
