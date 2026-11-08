@@ -1,9 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
-# ---- Stage 1: build ----
-FROM python:3.12-slim AS builder
+# Both stages run one exact Python release, so a rebuild cannot change it under
+# the gateway: 3.12.16 is what `3.12-slim` named when this was pinned. Bump it
+# by hand, in both FROM lines. A registry can still move a tag; pinning its
+# digest too (`python:3.12.16-slim@sha256:...`, the index digest that
+# `docker buildx imagetools inspect python:3.12.16-slim` prints) closes that,
+# and Dependabot (.github/dependabot.yml) then keeps tag and digest current.
 
-RUN pip install uv
+# ---- Stage 1: build ----
+FROM python:3.12.16-slim AS builder
+
+# The installer is pinned like what it installs: the uv release CI uses,
+# accepted only as a wheel whose hash PyPI published (uv-requirements.txt).
+COPY deploy/docker/uv-requirements.txt /tmp/uv-requirements.txt
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes \
+        -r /tmp/uv-requirements.txt
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
@@ -12,7 +23,7 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # ---- Stage 2: runtime ----
-FROM python:3.12-slim
+FROM python:3.12.16-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

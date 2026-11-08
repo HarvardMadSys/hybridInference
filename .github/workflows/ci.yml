@@ -43,10 +43,15 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.12"
+  # deploy/docker/uv-requirements.txt pins the backend image's uv to this
+  # release, with its hashes; bump both together.
   UV_VERSION: "0.5.0"
   UV_SYSTEM_PYTHON: 1
   NODE_VERSION: "22"
   GITLEAKS_VERSION: "8.30.1"
+  # The audit runs on self-hosted runners for pushes: an exact release, not
+  # whatever PyPI calls latest when the job starts.
+  PIP_AUDIT_VERSION: "2.10.1"
 
 jobs:
   changes:
@@ -831,7 +836,8 @@ jobs:
           SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
         run: |
           uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
-          uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
+          uvx --python ${{ env.PYTHON_VERSION }} --from "pip-audit==${PIP_AUDIT_VERSION}" \
+            pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
 
   docker-build:
     # No custom name: skipped jobs do not expand matrix expressions in names;

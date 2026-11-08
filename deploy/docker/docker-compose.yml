@@ -276,8 +276,15 @@ services:
 
   # ===== Database =====
 
+  # An exact release, so that no pull changes the database under a running
+  # stack: 16.15 is what `postgres:16` named when this was pinned. On a host
+  # whose local `postgres:16` is older, the first `make up` after this pulls
+  # 16.15 and restarts the database on it, a minor upgrade. Bump it by hand,
+  # after reading that release's notes. Pinning the digest too
+  # (`postgres:16.15@sha256:...`) closes the tag moving under it; Dependabot
+  # (.github/dependabot.yml) then keeps tag and digest current.
   postgres:
-    image: postgres:16
+    image: postgres:16.15
     container_name: hybridinference-postgres
     restart: unless-stopped
     logging: *logging
