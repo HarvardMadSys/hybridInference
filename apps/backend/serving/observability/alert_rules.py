@@ -907,8 +907,10 @@ class AuthFailureSpikeRule:
         self._incident.observe(arrived, window_count=count, now=now)
 
         def breach_context() -> dict[str, Any]:
-            # The only full pass over the window, and only for a breached
-            # evaluation; a record that breaches nothing reads just its size.
+            # The only full pass over the window. Deferred (below), so it runs
+            # when a breach is actually sent or opens a history episode, not on
+            # every failure while one is breached: a source that keeps failing
+            # fills this window, and paid for a pass over it per failure.
             return {
                 "count": count,
                 "window_sec": self._cfg.window_sec,
@@ -930,6 +932,7 @@ class AuthFailureSpikeRule:
             stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
             resolution_context=resolution_context,
+            defer_context=True,
         )
 
 

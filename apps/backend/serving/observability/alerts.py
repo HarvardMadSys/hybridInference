@@ -754,7 +754,7 @@ async def _wait_for_in_flight(key: str) -> bool:
 async def alert_slack(
     severity: AlertSeverity,
     title: str,
-    context: dict[str, Any],
+    context: dict[str, Any] | Callable[[], dict[str, Any]],
     *,
     dedupe_key: str | None = None,
     cooldown_sec: int = 300,
@@ -765,6 +765,10 @@ async def alert_slack(
     """Send an alert to the one configured channel.
 
     Returns True if the channel accepted the message, False otherwise.
+
+    ``context`` may be a callable that builds the detail: it is called only
+    once the send has been admitted and is about to be rendered, so a breach
+    suppressed by the cooldown or anything else costs no card.
 
     ``fence``, when given, is checked at the send's admission — synchronously,
     right before the in-flight marker is registered — and again after the mute
@@ -918,6 +922,12 @@ async def alert_slack(
         #
         # Copied, never mutated: ``alert_on_transition`` hands the same dict to
         # every repeat of an incident, and a rule may hold it as its own state.
+        #
+        # A callable is built only now, past the cooldown, the in-flight guard,
+        # the mute, the snooze and the fence: a breach that sends nothing --
+        # every repeat inside the cooldown -- never pays for a card.
+        if callable(context):
+            context = context()
         detail = context
         if not resolution and "request_id" not in context:
             request_id = _current_request_id()
@@ -1420,6 +1430,18 @@ def reset_transition_state() -> None:
     _MUTED_UNANNOUNCED.clear()
 
 
+def _built_once(build: Callable[[], dict[str, Any]]) -> Callable[[], dict[str, Any]]:
+    """Wrap a card builder so it runs at most once, for whichever reader asks first."""
+    built: list[dict[str, Any]] = []
+
+    def card() -> dict[str, Any]:
+        if not built:
+            built.append(build())
+        return built[0]
+
+    return card
+
+
 @_tracked
 async def alert_on_transition(
     *,
@@ -1436,6 +1458,7 @@ async def alert_on_transition(
     announce_resolution: bool = True,
     fence: Callable[[], bool] | None = None,
     settle_sec: float = 0.0,
+    defer_context: bool = False,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
 
@@ -1452,9 +1475,16 @@ async def alert_on_transition(
     plane. What was missing was never the repeat, only the close.
 
     ``context`` is a callable so the breach detail — counters, top-N summaries —
-    is only built when a message is actually attempted. A resolution
-    carries just the metric identity, since breach numbers describe a healthy
-    system by then and would only mislead on the recovery card.
+    is not built for a healthy evaluation. A resolution carries just the
+    metric identity, since breach numbers describe a healthy system by then and
+    would only mislead on the recovery card.
+
+    ``defer_context`` goes further, for a card that is costly to build: it is
+    then built only when the sink admits a send (past the cooldown, the
+    in-flight guard, a mute, the snooze and the fence) or when the breach opens
+    an alert-history episode, instead of on every breached evaluation. A rule
+    whose card rescans a window an attacker can fill sets it; without it the
+    card is built once per breached evaluation and handed over as a dict.
 
     ``resolution_context`` is the exception a rule may opt into: a summary of
     the incident that just closed, as opposed to a reading of the metric now.
@@ -1534,7 +1564,11 @@ async def alert_on_transition(
             _SILENT_RESOLUTIONS.discard(key)
         else:
             _SILENT_RESOLUTIONS.add(key)
-        detail = context()
+        # Built at most once. A deferred card only for a reader that uses it:
+        # history when this breach opens an episode, the sink when it admits a
+        # send; every other breached evaluation -- each repeat inside the
+        # cooldown -- builds none.
+        detail = _built_once(context)
         # History follows the observation, not the tracker: a breach after a
         # recovery whose card failed (the tracker re-armed and never left
         # "firing") is a new episode, and the old one's retry ends here.
@@ -1545,7 +1579,16 @@ async def alert_on_transition(
                 reason="superseded_by_new_episode",
                 attempts=superseded.attempts,
             )
-        _history.breach(key, severity=severity, title=title, kind=kind, context=detail, now=moment)
+        # A breach inside an open episode is not described again.
+        opens_episode = _history.active() is not None and _history.open_episode(key) is None
+        _history.breach(
+            key,
+            severity=severity,
+            title=title,
+            kind=kind,
+            context=detail() if opens_episode else None,
+            now=moment,
+        )
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
         # control plane each repeat is what advances the incident's occurrence
@@ -1554,7 +1597,7 @@ async def alert_on_transition(
         return await alert_slack(
             severity,
             title,
-            detail,
+            detail if defer_context else detail(),
             dedupe_key=key,
             cooldown_sec=cooldown_sec,
             fence=fence,
