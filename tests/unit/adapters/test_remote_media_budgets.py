@@ -179,6 +179,25 @@ def slow_media(media):
     return media, state
 
 
+async def _peak_while_held(state: dict[str, Any], limit: int) -> int:
+    """The most fetches the media server held at once, read once *limit* are held.
+
+    Waits for *limit* fetches to reach the server, then a while longer for any
+    fetch past the limit to show itself. Reading the peak after a fixed sleep
+    alone read 0 whenever the event loop stalled (a garbage collection, a busy
+    CI runner): the sleep's deadline passed during the stall, before any fetch
+    had had a turn to reach the server.
+    """
+    try:
+        async with asyncio.timeout(10):
+            while state["running"] < limit:
+                await asyncio.sleep(0.01)
+    except TimeoutError:
+        return state["peak"]  # the limit was never reached; the assertion says how far
+    await asyncio.sleep(0.3)
+    return state["peak"]
+
+
 @pytest.mark.asyncio
 async def test_a_caller_runs_at_most_four_fetches_across_its_requests(slow_media, monkeypatch):
     media, state = slow_media
@@ -189,8 +208,7 @@ async def test_a_caller_runs_at_most_four_fetches_across_its_requests(slow_media
         return await _fetch_as("same-user", _user(*parts), request_id=f"r{n}")
 
     requests = asyncio.gather(*(request(n) for n in range(3)))
-    await asyncio.sleep(0.3)
-    peak_while_held = state["peak"]
+    peak_while_held = await _peak_while_held(state, remote_media.MAX_CALLER_FETCHES)
     state["go"].set()
     await requests
 
@@ -208,8 +226,7 @@ async def test_all_callers_together_run_at_most_the_global_number(slow_media, mo
         return await _fetch_as(f"user-{n}", _user(*parts))
 
     requests = asyncio.gather(*(request(n) for n in range(3)))
-    await asyncio.sleep(0.3)
-    peak_while_held = state["peak"]
+    peak_while_held = await _peak_while_held(state, 6)
     state["go"].set()
     await requests
 
