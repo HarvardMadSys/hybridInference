@@ -227,6 +227,11 @@ proxy describe it at a status address, and give the gateway that address:
 - `MODEL_QUEUE_STATUS_API_KEY` is the bearer key the address requires. Empty, the
   gateway sends `LOCAL_API_KEY`.
 
+A request that runs longer than the proxy waits for one answer gets `504` with
+error code `upstream_timeout`. The gateway passes the `504` to the caller but
+does not count it against the endpoint's health, so one caller's long
+generations cannot open the circuit for every caller of the model.
+
 **Admin → Batches → Model queue** then lists each model the proxy serves: its
 state, its jobs, the gateway models routed to it, and the batch requests
 waiting for those models. A route is counted as the proxy's when its
