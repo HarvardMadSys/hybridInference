@@ -114,6 +114,8 @@ async def seal_file_batch(
         items, more = await store.result_page(
             batch_id, after=after, limit=PAGE, max_bytes=PAGE_BYTES
         )
+        if not items:
+            break
         for item in items:
             after = item["id"]
             kind = "output" if item.get("status") in OUTPUT_STATUSES else "error"
@@ -246,6 +248,8 @@ async def stream_lines(
             )
             if keeper.lost:
                 raise DownloadInterrupted(batch_id)
+            if not items:
+                break
             chunk = bytearray()
             for index, item in enumerate(items):
                 after = item["id"]
@@ -361,6 +365,8 @@ async def stream_requests(
             )
             if keeper.lost:
                 raise DownloadInterrupted(batch_id)
+            if not page:
+                break
             lines = []
             for item in page:
                 after = item["id"]
