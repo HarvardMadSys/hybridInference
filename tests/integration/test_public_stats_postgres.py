@@ -189,13 +189,6 @@ async def _seed_three_weeks(conn) -> None:
     ):
         for n, text in enumerate(texts):
             await _message(conn, week + timedelta(days=1, hours=n), user, text, n)
-    # Plain text that starts like an array: the guard keeps it from failing W3.
-    await conn.execute(
-        "INSERT INTO api_logs (request_id, model_id, provider, timestamp, status_code, "
-        "user_id, prompt, last_user_msg_hash, last_user_msg_chars) "
-        "VALUES ('plain', 'm', 'p', $1, 200, 'dee', '[INST] bonjour tout le monde [/INST]', 7, 30)",
-        W3 + timedelta(hours=2),
-    )
 
 
 async def test_a_second_run_reads_closed_weeks_from_their_checkpoints(conn):
@@ -225,3 +218,22 @@ async def _run_recorded(recording: _Recording) -> dict:
     assert retention[0].client_weeks == (W3.date(),)
     await ps.store_snapshot(recording, payload, retention[0])
     return payload
+
+
+async def test_a_plain_text_prompt_that_starts_like_an_array_does_not_fail_its_week(conn):
+    """The validity guard, on the server that has one (PostgreSQL 16+)."""
+    if int(await conn.fetchval("SHOW server_version_num")) < 160000:
+        pytest.skip("pg_input_is_valid needs PostgreSQL 16; older servers cast unguarded")
+    for n, text in enumerate(_FRENCH):
+        await _message(conn, W3 + timedelta(hours=n), "cai", text, n)
+    await conn.execute(
+        "INSERT INTO api_logs (request_id, model_id, provider, timestamp, status_code, "
+        "user_id, prompt, last_user_msg_hash, last_user_msg_chars) "
+        "VALUES ('plain', 'm', 'p', $1, 200, 'dee', '[INST] bonjour tout le monde [/INST]', 7, 30)",
+        W3 + timedelta(hours=3),
+    )
+
+    payload = await ps.compute_snapshot(conn, now=NOW)
+
+    assert [item["code"] for item in payload["languages"]["items"]] == ["fr"]
+    assert payload["languages"]["messages_sampled"] == 2
