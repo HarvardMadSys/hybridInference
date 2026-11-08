@@ -1062,6 +1062,8 @@ def _configure_upstream(base_url: str, password: str, deadline: float) -> None:
     """Store this environment's EXAMPLE_UPSTREAM_* values as the admin console does.
 
     The values take effect when the backend next starts; the caller restarts it.
+    They are security-relevant settings (they say where a key is sent), so the
+    change carries the administrator's password, as the console asks for it.
     """
     values: dict[str, str] = {}
     for name in UPSTREAM_SETTINGS:
@@ -1079,7 +1081,7 @@ def _configure_upstream(base_url: str, password: str, deadline: float) -> None:
         base_url,
         "/admin/config",
         method="PATCH",
-        payload={"values": values},
+        payload={"values": values, "password": password},
         bearer=access_token,
     )
     entries = config.get("entries") if isinstance(config, dict) else None
