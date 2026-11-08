@@ -5,8 +5,8 @@ the previous release keeps serving while this runs. The backfill that fills a
 personal org and a Default project for existing accounts runs in the gateway
 (code), not here, because it must be idempotent and resumable.
 
-Revision ID: 0012_projects
-Revises: 0011_trim_oversized_preferences
+Revision ID: 0015_projects
+Revises: 0014_legacy_catalog_mirror
 Create Date: 2026-11-05
 """
 
@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0012_projects"
-down_revision = "0011_trim_oversized_preferences"
+revision = "0015_projects"
+down_revision = "0014_legacy_catalog_mirror"
 branch_labels = None
 depends_on = None
 compatibility = "expand"

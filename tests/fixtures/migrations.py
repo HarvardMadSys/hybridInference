@@ -96,7 +96,7 @@ async def ensure_api_logs_tables(conn: Any) -> None:
             await conn.execute(statement)
 
     for statement in importlib.import_module(
-        "migrations.versions.0012_projects"
+        "migrations.versions.0015_projects"
     ).API_LOG_STATEMENTS:
         await conn.execute(statement)
 
