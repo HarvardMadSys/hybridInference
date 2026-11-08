@@ -777,6 +777,7 @@ class RouteWiseRouter:
             self._last_lp_statuses = {}
             self._last_lp_weights = {}
             self._rebuild_from_route_table()
+        self._ensure_quota_refresh_task()
 
     def attach_operational_store(self, operational_store: Any | None) -> None:
         """Bind the operational store used for persisted probe samples."""
@@ -859,6 +860,31 @@ class RouteWiseRouter:
         """Refresh route-derived state while excluding concurrent decisions."""
         with self._route_commit_lock:
             self._rebuild_from_route_table()
+        self._ensure_quota_refresh_task()
+
+    def _ensure_quota_refresh_task(self) -> None:
+        """Start the quota refresh loop for a running router that now has a quota source.
+
+        ``start`` schedules the loop only for the quota sources the table held
+        then. A quota route added later -- an admin edit, or a config restore
+        re-applying persisted routes after the router started -- would never
+        get a provider snapshot, and an unready quota pool is skipped: its
+        traffic went to paid legs until a restart.
+        """
+        if not self._lifecycle_started or not self._quota_sources():
+            return
+        task = self._quota_refresh_task
+        if task is not None and not task.done():
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # Not on an event loop: ``start`` schedules the loop instead.
+            return
+        self._quota_refresh_task = asyncio.create_task(
+            self._refresh_quota_snapshots_loop(),
+            name="RouteWiseRouter.refresh_quota_snapshots",
+        )
 
     async def start(self) -> bool:
         """Start periodic maintenance tasks.

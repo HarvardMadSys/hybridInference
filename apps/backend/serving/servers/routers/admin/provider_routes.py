@@ -6757,6 +6757,12 @@ async def reconcile_live_routes_from_store(services, op_store) -> None:
             _set_route_entries(services, route, list(baseline))
             for current_adapter, _weight, _endpoint_id in current_entries:
                 _unregister_replaced_dynamic_adapter(route, current_adapter)
+            if not _has_runtime_strategy_override(services, model_id):
+                # Already on its configured router: keep that instance. A
+                # RouteWise router keeps its learned state, its background
+                # tasks and its place in managed_routers; detaching it would
+                # stop it and leave a cold replacement built on first use.
+                continue
             previous_router = _detach_model_router_strategy_override(services, model_id)
             if previous_router is not None:
                 active_router = None
@@ -6779,3 +6785,94 @@ async def reconcile_live_routes_from_store(services, op_store) -> None:
     await sync_route_capability_overrides(services, op_store)
     apply_persisted_provider_route_removals(services)
     _rebuild_routewise_routers(services)
+    await _start_restored_routewise_routers(services)
+
+
+def _has_runtime_strategy_override(services, model_id: str) -> bool:
+    """Return whether ``model_id`` is served by a runtime strategy override.
+
+    True when the registry cannot say, so the caller falls back to resetting it.
+    """
+    registry = services.model_router_registry
+    if registry is None:
+        return False
+    try:
+        current = registry.get_cached_router(model_id)
+        if current is None:
+            return True
+        return registry.runtime_override_for_router(current) is not None
+    except Exception:
+        return True
+
+
+async def _start_restored_routewise_routers(services) -> None:
+    """Bring every RouteWise router a reconcile leaves serving into the state boot gives it.
+
+    A reconcile resets each model to its configured router and re-applies the
+    persisted strategy overrides and runtime routes from the store. That can leave
+    a model on a RouteWise router built lazily by ``get_router`` or with
+    ``start_managed=False`` -- the way boot builds them, which starts them only
+    later. After a live restore nothing did: the router had no operational store
+    and was not tracked for shutdown, and with no quota refresh loop its quota
+    legs never became ready, so traffic went to paid legs until a restart.
+
+    Each one is attached to the operational store, given the model's RouteWise
+    settings, tracked and started. ``start`` is idempotent, so a router that was
+    already running only picks up the restored settings and any quota source a
+    restored route added.
+    """
+    registry = services.model_router_registry
+    routes = getattr(getattr(services, "router", None), "routes", None)
+    if registry is None or not isinstance(routes, dict):
+        return
+    handled: set[int] = set()
+    for model_id, route in list(routes.items()):
+        if not _is_canonical_model(model_id, route):
+            continue
+        try:
+            if registry.get_router_name(model_id) != "routewise":
+                continue
+            router_obj = registry.get_router(model_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to load the RouteWise router for model=%s after restore: %s",
+                model_id,
+                exc,
+            )
+            continue
+        if not isinstance(router_obj, RouteWiseRouter) or id(router_obj) in handled:
+            continue
+        handled.add(id(router_obj))
+        router_obj.attach_operational_store(services.operational_store)
+        settings_resolver = services.routewise_settings_resolver
+        if settings_resolver is not None:
+            try:
+                await apply_routewise_settings_to_router(
+                    settings_resolver,
+                    registry,
+                    model_id,
+                    router_obj,
+                    refresh_probe_task=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to apply RouteWise settings for model=%s after restore: %s",
+                    model_id,
+                    exc,
+                )
+        if id(router_obj) not in _managed_router_ids(services):
+            services.managed_routers.append(router_obj)
+        try:
+            await router_obj.start()
+        except EnvelopeNotCalibratedError as exc:
+            logger.error(
+                "RouteWise router for model=%s cannot start after restore: %s",
+                model_id,
+                exc,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to start the RouteWise router for model=%s after restore: %s",
+                model_id,
+                exc,
+            )
