@@ -664,9 +664,21 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         case_sensitive=True,
         setup=True,
     ),
-    _setting("smtp_host", "email", "SMTP server host.", "str", setup=True),
     _setting(
-        "smtp_port", "email", "SMTP server port.", "int", setup=True, minimum=1, maximum=65_535
+        "smtp_host",
+        "email",
+        "SMTP server host. The server's TLS certificate must be valid for this name.",
+        "str",
+        setup=True,
+    ),
+    _setting(
+        "smtp_port",
+        "email",
+        "SMTP server port. Port 465 uses TLS from the start; any other port must offer STARTTLS.",
+        "int",
+        setup=True,
+        minimum=1,
+        maximum=65_535,
     ),
     _setting(
         "smtp_user",
