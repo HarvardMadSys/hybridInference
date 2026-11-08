@@ -21,6 +21,13 @@ section and the account total do not fall. The checkpoint stores a digest of
 the account id and the truncated User-Agent, never the message, and neither
 value is published. Weeks removed before a checkpoint was written cannot be
 reconstructed.
+
+The hourly country rollup keeps 90 days, a shorter span than the window. A
+week the rollup no longer fully covers takes its weekly country counts from
+the previous snapshot, which counted it while it was covered, so the weekly
+line does not fall to zero for the window's older weeks. The country totals
+(how many countries, the top shares and the map) cover only the days the
+rollup still holds, and ``countries.since`` says from which day.
 """
 
 from __future__ import annotations
@@ -78,6 +85,20 @@ SELECT payload FROM public_stats_snapshots
 ORDER BY generated_at DESC, id DESC
 LIMIT 1
 """
+
+# What the previous run recorded about the weeks it covered, carried forward
+# for weeks whose inputs have since been removed.
+PREVIOUS_SNAPSHOT_SQL = """
+SELECT payload->'window'->>'end' AS window_end,
+       payload->'weeks' AS weeks,
+       payload->'countries'->'weekly' AS country_weekly
+FROM public_stats_snapshots
+ORDER BY generated_at DESC, id DESC
+LIMIT 1
+"""
+
+# The first hour the country rollup still holds; it keeps 90 days.
+GEO_COVERED_FROM_SQL = "SELECT MIN(hour_bucket) FROM geo_hourly_coverage"
 
 _NOT_PROBE = "COALESCE(metadata->>'synthetic_probe', 'false') <> 'true'"
 
@@ -452,6 +473,81 @@ def build_countries(rows: Iterable[Mapping[str, Any]], weeks: list[date]) -> dic
         ],
         "all": seen,
     }
+
+
+def merge_country_weeks(
+    weeks: list[date],
+    live: list[dict[str, int]],
+    *,
+    covered_from: date,
+    carried: Mapping[date, Mapping[str, int]],
+) -> tuple[list[dict[str, int]], int]:
+    """Fill in the weekly country counts of weeks the rollup no longer fully covers.
+
+    ``live`` is :func:`build_countries`' weekly line. A week starting on or
+    after ``covered_from``, the first day the rollup fully holds, keeps its
+    live counts. An earlier week takes, per count, the larger of what is left
+    of it and what the previous snapshot recorded: both undercount a week
+    partly or wholly gone, and the recorded one was taken while more of it was
+    there. Returns the line and how many weeks the record filled in.
+    """
+    merged: list[dict[str, int]] = []
+    filled = 0
+    for week, counts in zip(weeks, live, strict=True):
+        recorded = carried.get(week)
+        if recorded is None or _week_coverage(week, covered_from) == "full":
+            merged.append(counts)
+            continue
+        merged.append({key: max(counts[key], int(recorded.get(key, 0))) for key in counts})
+        filled += 1
+    return merged, filled
+
+
+@dataclass(frozen=True)
+class PreviousSnapshot:
+    """What the previous run recorded: the end of its window and its weekly country line."""
+
+    window_end: datetime | None
+    country_weekly: dict[date, dict[str, int]]
+
+
+def _as_json(value: Any) -> Any:
+    """A JSON value as asyncpg returns it: text unless a codec decoded it already."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def previous_snapshot(row: Mapping[str, Any] | None) -> PreviousSnapshot | None:
+    """Read the previous snapshot's record, or ``None`` when there is none to trust.
+
+    A snapshot this version cannot read -- an older layout, a hand edit -- is
+    treated as absent: every week is then computed from what is still there.
+    """
+    if row is None:
+        return None
+    try:
+        end = row["window_end"]
+        window_end = datetime.fromisoformat(end) if end else None
+        weeks = [date.fromisoformat(week) for week in _as_json(row["weeks"]) or []]
+        line = _as_json(row["country_weekly"]) or []
+        weekly = {
+            week: {"any": int(counts["any"]), "min_requests": int(counts["min_requests"])}
+            for week, counts in zip(weeks, line, strict=True)
+        }
+    except (KeyError, TypeError, ValueError):
+        logger.warning("public_stats: the previous snapshot is unreadable; not reusing it")
+        return None
+    if window_end is not None and window_end.tzinfo is None:
+        window_end = window_end.replace(tzinfo=UTC)
+    return PreviousSnapshot(window_end=window_end, country_weekly=weekly)
+
+
+def _first_full_day(first_hour: datetime | None) -> date:
+    """The first UTC day the country rollup fully holds; ``date.max`` when it holds none."""
+    if first_hour is None:
+        return date.max
+    first = first_hour.astimezone(UTC)
+    day = first.date()
+    return day if first.time() == datetime.min.time() else day + timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -1074,6 +1170,8 @@ async def compute_snapshot(
         for row in await conn.fetch(CLIENTS_SQL, start, end)
     ]
     country_rows = await conn.fetch(COUNTRIES_SQL, start, end)
+    geo_from = await conn.fetchval(GEO_COVERED_FROM_SQL)
+    previous = previous_snapshot(await conn.fetchrow(PREVIOUS_SNAPSHOT_SQL))
     registrations_row = await conn.fetchrow(REGISTRATIONS_SQL)
     model_names = (
         public_model_names(models_config, await _visibility_overrides(conn))
@@ -1124,7 +1222,7 @@ async def compute_snapshot(
                 client_rows=tuple(client_write),
             )
         )
-    return build_payload(
+    payload = build_payload(
         generated_at=now,
         start=start,
         end=end,
@@ -1136,6 +1234,22 @@ async def compute_snapshot(
         registrations_row=registrations_row,
         model_names=model_names,
     )
+    countries = payload["countries"]
+    countries["weekly"], filled = merge_country_weeks(
+        weeks,
+        countries["weekly"],
+        covered_from=_first_full_day(geo_from),
+        carried=previous.country_weekly if previous is not None else {},
+    )
+    if geo_from is not None:
+        # The totals are what the rollup still holds: from this day on.
+        countries["since"] = max(start.date(), geo_from.astimezone(UTC).date()).isoformat()
+    if filled:
+        logger.info(
+            "public_stats: kept %s week(s) of country counts from the previous snapshot",
+            filled,
+        )
+    return payload
 
 
 def load_models_config() -> dict[str, Any] | None:
