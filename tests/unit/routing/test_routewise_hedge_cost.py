@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import random
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ import routing.routewise.router as router_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.latency import ProviderProfile
 from routing.routewise.router import RouteWiseRouter
+from serving.utils import tokens
 from tests.unit.routing.test_routewise_router import _FakeRouteTable, _make_adapter
 
 ENDPOINTS = ("m:conc", "m:api-a", "m:api-b")
@@ -168,6 +170,9 @@ def test_a_request_is_estimated_once_and_boundedly(monkeypatch):
         return bounded(messages, **kwargs)
 
     monkeypatch.setattr(router_module, "estimate_prompt_tokens_bounded", counting)
+    # A prompt this long is sampled from a random phase, so two estimates of it
+    # differ; pin the phase to compare the stored one with a fresh one.
+    monkeypatch.setattr(tokens, "_SAMPLE_PHASE", SimpleNamespace(random=lambda: 0.5))
     assert not hasattr(router_module, "estimate_prompt_tokens")
     router = _router(1)
     messages = [{"role": "user", "content": "word " * 200_000}]
