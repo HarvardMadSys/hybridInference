@@ -27,7 +27,9 @@ import {
 import {
   ACCOUNT_CHANGED_EVENT,
   AUTH_EXPIRED_EVENT,
+  isDocumentKeptSignedOut,
   markAccountChanged,
+  reloadDocument,
   setAccessToken,
   type AccountChangeReason,
 } from '@/lib/api/client';
@@ -262,7 +264,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         if (message.type === 'active' && !shown && message.userId) {
-          // Signed in elsewhere while this tab had no account: take it up.
+          // Signed in elsewhere while this tab had no account: take it up --
+          // in a new document when this one runs a third-party script, which
+          // must never hold a session (see keepDocumentSignedOut).
+          if (isDocumentKeptSignedOut()) {
+            reloadDocument();
+            return;
+          }
           void refreshUser();
         }
         void refreshAccounts();

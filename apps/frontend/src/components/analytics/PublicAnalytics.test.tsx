@@ -8,11 +8,13 @@ const nav = vi.hoisted(() => ({ pathname: '/' }));
 vi.mock('next/navigation', () => ({ usePathname: () => nav.pathname }));
 
 type Module = typeof import('./PublicAnalytics');
+type Client = typeof import('@/lib/api/client');
 
 const COUNTER_SRC = 'https://www.statcounter.com/counter/counter.js';
 
 let PublicAnalytics: Module['PublicAnalytics'];
 let isAnalyticsPath: Module['isAnalyticsPath'];
+let client: Client;
 let address: { pathname: string; reload: ReturnType<typeof vi.fn> };
 let idle: (() => void)[];
 
@@ -39,10 +41,19 @@ function counter(): HTMLScriptElement | null {
   return document.querySelector(`script[src="${COUNTER_SRC}"]`);
 }
 
+function token(sub: string): string {
+  const encode = (value: object) => btoa(JSON.stringify(value)).replace(/=+$/, '');
+  const exp = Math.floor(Date.now() / 1000) + 900;
+  return `${encode({ alg: 'HS256' })}.${encode({ sub, exp })}.signature`;
+}
+
 beforeEach(async () => {
-  // The counter loads once per document, which is module state.
+  // What a document decides, and the session it holds, are module state: a
+  // fresh pair of modules is a fresh document.
   vi.resetModules();
   ({ PublicAnalytics, isAnalyticsPath } = await import('./PublicAnalytics'));
+  client = await import('@/lib/api/client');
+  sessionStorage.clear();
   nav.pathname = '/';
   idle = [];
   address = { ...window.location, pathname: '/', reload: vi.fn() };
@@ -157,6 +168,88 @@ describe('PublicAnalytics', () => {
     expect(address.reload).not.toHaveBeenCalled();
 
     navigate('/login', rerender);
+    expect(address.reload).toHaveBeenCalledOnce();
+  });
+
+  // The counter added but not yet run is on its way all the same.
+  it('reloads the page when the visitor leaves before the counter has arrived', async () => {
+    const { rerender } = render(analytics());
+    await settle();
+    expect(counter()).not.toBeNull();
+
+    navigate('/login', rerender);
+
+    expect(address.reload).toHaveBeenCalledOnce();
+  });
+
+  it('reloads the page when the visitor leaves before the counter was even added', () => {
+    const { rerender } = render(analytics());
+
+    navigate('/login', rerender);
+
+    expect(address.reload).toHaveBeenCalledOnce();
+  });
+
+  it('never reloads a document that does not run it', () => {
+    nav.pathname = '/login';
+    address.pathname = '/login';
+    const { rerender } = render(analytics());
+
+    navigate('/', rerender);
+    navigate('/dashboard', rerender);
+
+    expect(address.reload).not.toHaveBeenCalled();
+  });
+});
+
+describe('a document that runs the counter', () => {
+  it('holds no session: the client mints and installs none', () => {
+    render(analytics());
+
+    expect(client.isDocumentKeptSignedOut()).toBe(true);
+  });
+
+  it('drops a token the tab kept from an earlier page', () => {
+    client.setAccessToken(token('user-a'));
+
+    render(analytics());
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(sessionStorage.getItem('access_token')).toBeNull();
+  });
+
+  it('leaves the session alone in a document that does not run it', () => {
+    client.setAccessToken(token('user-a'));
+
+    render(analytics(false));
+
+    expect(client.isDocumentKeptSignedOut()).toBe(false);
+    expect(client.getAccessToken()).not.toBeNull();
+  });
+
+  // Every change of account remounts the pages, this component with them.
+  it('is decided by the first page the document draws, not again on a remount', async () => {
+    nav.pathname = '/login';
+    address.pathname = '/login';
+    render(analytics());
+    cleanup();
+
+    navigate('/', () => undefined);
+    render(analytics());
+    await settle();
+
+    expect(counter()).toBeNull();
+    expect(client.isDocumentKeptSignedOut()).toBe(false);
+  });
+
+  it('does not add the counter once the document is on its way out', async () => {
+    render(analytics());
+
+    // Signed in from another tab, say: the page reloads to take the session up.
+    client.reloadDocument();
+    await settle();
+
+    expect(counter()).toBeNull();
     expect(address.reload).toHaveBeenCalledOnce();
   });
 });

@@ -1,7 +1,13 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  getAccessToken,
+  isDocumentReloading,
+  keepDocumentSignedOut,
+  reloadDocument,
+} from '@/lib/api/client';
 
 /**
  * The public pages a visitor may be counted on: ones that hold no credential
@@ -18,8 +24,25 @@ export function isAnalyticsPath(pathname: string | null): boolean {
 
 const COUNTER_SRC = 'https://www.statcounter.com/counter/counter.js';
 
+// Whether this document runs the counter, decided by the first page it draws
+// and kept until it is replaced: a remount -- every account change remounts
+// the pages -- must not decide again on whatever page it lands. Browser only;
+// on the server a module outlives the request it rendered.
+let analyticsDocument: boolean | undefined;
 // Once per document: the counter counts the page view it loads on.
 let counterStarted = false;
+
+function decideDocument(signedOut: boolean, pathname: string | null): boolean {
+  const eligible = signedOut && isAnalyticsPath(pathname);
+  if (typeof window === 'undefined') return eligible;
+  if (analyticsDocument === undefined) {
+    analyticsDocument = eligible;
+    // From the first render, which runs before any effect: before
+    // AuthProvider's first look for a session, or anyone else's.
+    if (eligible) keepDocumentSignedOut();
+  }
+  return analyticsDocument;
+}
 
 /**
  * Run `start` once the page has loaded and the browser is idle, as
@@ -51,12 +74,7 @@ function afterLoadWhenIdle(start: () => void): () => void {
  * set as values rather than written into an inline script, so nothing in them
  * can run.
  */
-function startCounter(
-  project: number,
-  securityKey: string,
-  nonce: string | undefined,
-  onLoad: () => void,
-): void {
+function startCounter(project: number, securityKey: string, nonce: string | undefined): void {
   if (counterStarted) return;
   counterStarted = true;
   Object.assign(window, { sc_project: project, sc_invisible: 1, sc_security: securityKey });
@@ -65,7 +83,6 @@ function startCounter(
   script.src = COUNTER_SRC;
   script.async = true;
   if (nonce) script.nonce = nonce;
-  script.addEventListener('load', onLoad, { once: true });
   document.body.appendChild(script);
 }
 
@@ -75,14 +92,18 @@ function startCounter(
  * A third-party script runs with everything the page can reach: the access
  * token in `sessionStorage`, and `/auth/refresh`, which mints a new one from the
  * session cookie. So it loads only in a document that began as a public page
- * for a visitor with no session (`signedOut`, from the request's cookies), and a
- * document it has loaded in never becomes a signed-in one: the console moves
- * between pages without reloading, so leaving the public pages -- for the
- * sign-in form, say -- reloads the page, and the counter with its access goes.
+ * for a visitor with no session (`signedOut`, from the request's cookies), and
+ * that document never becomes a signed-in one (`keepDocumentSignedOut`):
  *
- * It loads once the page has loaded and the browser is idle, and only if the
- * page is still a public one at that moment: a visitor quick to click "Sign in"
- * is on the sign-in form by then.
+ * - it mints no token and installs none: a sign-in answered anyway, or a
+ *   session signed in from another tab, is taken up by reloading the page;
+ * - leaving the public pages -- for the sign-in form, say -- reloads it too,
+ *   whether or not the counter has arrived yet: the console moves between pages
+ *   without reloading, and a script, once run, stays.
+ *
+ * The counter itself loads once the page has loaded and the browser is idle,
+ * and only if the page is still a public one at that moment: a visitor quick to
+ * click "Sign in" is on the sign-in form by then.
  */
 export function PublicAnalytics({
   projectId,
@@ -97,23 +118,23 @@ export function PublicAnalytics({
 }) {
   const pathname = usePathname();
   // Decided once, for the page this document was served as.
-  const [eligible] = useState(() => signedOut && isAnalyticsPath(pathname));
-  const loaded = useRef(false);
+  const [eligible] = useState(() => decideDocument(signedOut, pathname));
 
   useEffect(() => {
-    if (loaded.current && !isAnalyticsPath(pathname)) window.location.reload();
-  }, [pathname]);
+    if (eligible && !isAnalyticsPath(pathname)) reloadDocument();
+  }, [eligible, pathname]);
 
   useEffect(() => {
     // A project id is a number; StatCounter counts nothing with anything else.
     const project = Number(projectId);
     if (!eligible || !Number.isSafeInteger(project) || project <= 0) return;
     return afterLoadWhenIdle(() => {
-      // The page now, not the page this was scheduled on.
-      if (!isAnalyticsPath(window.location.pathname)) return;
-      startCounter(project, securityKey, nonce, () => {
-        loaded.current = true;
-      });
+      // The document now, not the one this was scheduled in: by now it may be
+      // on another page, on its way out, or -- against every rule above --
+      // holding a token.
+      if (isDocumentReloading() || !isAnalyticsPath(window.location.pathname)) return;
+      if (getAccessToken()) return;
+      startCounter(project, securityKey, nonce);
     });
   }, [eligible, projectId, securityKey, nonce]);
 

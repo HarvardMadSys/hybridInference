@@ -163,3 +163,69 @@ describe('refresh across tabs', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+// A page running a third-party script -- the analytics counter -- keeps its
+// document signed out: whatever the page holds, the script can read.
+describe('a document kept signed out', () => {
+  let reload: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    reload = vi.fn();
+    vi.stubGlobal('location', { ...window.location, reload });
+  });
+
+  it('drops the token the tab held from an earlier page', () => {
+    client.setAccessToken(token('user-a', 900));
+
+    client.keepDocumentSignedOut();
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(sessionStorage.getItem('access_token')).toBeNull();
+  });
+
+  // A cookie the document request did not carry (SameSite=Strict, arriving
+  // from another site) would otherwise be turned into a token right here.
+  it('mints no token: a request that needs a session is refused unsent', async () => {
+    client.keepDocumentSignedOut();
+
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'SESSION_NOT_FOUND',
+    });
+    await expect(
+      client.uploadWithAuth(API, '/user/batch-files', 'body', { expectedUserId: 'user-a' }),
+    ).rejects.toMatchObject({ code: 'SESSION_NOT_FOUND' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authExpiredEvents).toBe(0);
+  });
+
+  it('installs no token: a sign-in answered anyway reloads the page instead', () => {
+    client.keepDocumentSignedOut();
+
+    client.setAccessToken(token('user-a', 900));
+    client.setAccessToken(token('user-a', 900));
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(sessionStorage.getItem('access_token')).toBeNull();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(client.isDocumentReloading()).toBe(true);
+  });
+
+  it('still signs out', () => {
+    client.keepDocumentSignedOut();
+
+    client.setAccessToken(null);
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('is only this document: an ordinary one refreshes as before', async () => {
+    fetchMock.mockResolvedValueOnce(refreshAnswer(token('user-a', 900)));
+    fetchMock.mockResolvedValueOnce(new Response('{}'));
+
+    await client.fetchWithAuth(API, '/user/me');
+
+    expect(client.isDocumentKeptSignedOut()).toBe(false);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/auth/refresh`);
+  });
+});

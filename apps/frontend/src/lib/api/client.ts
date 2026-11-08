@@ -15,6 +15,14 @@ let sessionGeneration = 0;
 // Set once a refresh proves the browser's session now belongs to another
 // account; cleared only by a sign-in in this tab. See refreshAccessToken.
 let accountChanged = false;
+// Set for the life of a document that runs a script the console does not
+// control -- the deployment's analytics counter, on the public pages (see
+// src/components/analytics/PublicAnalytics.tsx). That script can read whatever
+// the page holds, so the document holds no session at all. See
+// keepDocumentSignedOut.
+let keptSignedOut = false;
+// Set once this document has asked to be replaced. See reloadDocument.
+let reloading = false;
 
 // These events are ephemeral within one loaded console bundle, not persisted
 // distribution state. Keeping a stable neutral name lets storageKeyPrefix be
@@ -75,7 +83,52 @@ export function markAccountChanged(reason: AccountChangeReason): void {
   }
 }
 
+/**
+ * Keep this document signed out until it is replaced.
+ *
+ * For a page that runs a third-party script. A token the tab still holds from
+ * an earlier page is dropped, and from now on the client mints none -- it never
+ * refreshes, so a request that needs a session is refused unsent -- and
+ * installs none: a sign-in answered anyway reloads the page, and its session
+ * starts in the new document. Nothing clears it; the document ends instead.
+ */
+export function keepDocumentSignedOut(): void {
+  keptSignedOut = true;
+  sessionGeneration += 1;
+  accessToken = null;
+  sessionStorage.removeItem('access_token');
+}
+
+export function isDocumentKeptSignedOut(): boolean {
+  return keptSignedOut;
+}
+
+/**
+ * Replace this document with a fresh load of its address, once however often
+ * it is asked. The way a document kept signed out takes up a session: the new
+ * document is rendered for it, and loads no third-party script.
+ */
+export function reloadDocument(): void {
+  if (reloading) return;
+  reloading = true;
+  window.location.reload();
+}
+
+/** True once `reloadDocument` has been asked: this document is on its way out. */
+export function isDocumentReloading(): boolean {
+  return reloading;
+}
+
+function signedOutDocumentError(): APIError {
+  return new APIError('SESSION_NOT_FOUND', ERROR_MESSAGES.SESSION_NOT_FOUND);
+}
+
 export function setAccessToken(token: string | null): void {
+  if (token && keptSignedOut) {
+    // The server has issued the session; this document must not hold it.
+    reloadDocument();
+    return;
+  }
   // Only sign-in, account switch, setup and sign-out hand a session in or end
   // it here; a refresh of the same session installs its token itself.
   sessionGeneration += 1;
@@ -138,7 +191,7 @@ export async function withSessionLock<T>(run: () => Promise<T>): Promise<T> {
 }
 
 async function refreshAccessToken(apiBase: string): Promise<boolean> {
-  if (accountChanged) return false;
+  if (accountChanged || keptSignedOut) return false;
   const generation = sessionGeneration;
   // A refresh already in flight for this same session answers this one too.
   if (refreshing && refreshing.generation === generation) return refreshing.promise;
@@ -201,6 +254,7 @@ export async function fetchWithAuth(
   init: RequestInit = {},
 ): Promise<Response> {
   if (accountChanged) throw accountChangedError();
+  if (keptSignedOut) throw signedOutDocumentError();
   const generation = sessionGeneration;
   let token = getAccessToken();
   if (isAccessTokenExpired(token)) {
@@ -319,6 +373,7 @@ export async function uploadWithAuth(
   const expected = options.expectedUserId;
   const owns = () => !accountChanged && tokenSubject(getAccessToken()) === expected;
   if (accountChanged) throw accountChangedError();
+  if (keptSignedOut) throw signedOutDocumentError();
   let token = getAccessToken();
   if (token && tokenSubject(token) !== expected) throw accountChangedError();
   if (isAccessTokenExpired(token)) {
