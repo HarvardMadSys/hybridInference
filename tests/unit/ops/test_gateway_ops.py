@@ -25,6 +25,8 @@ def arguments(tmp_path, **overrides):
         "timeout": 0,
         "state": tmp_path / "release",
         "backup": tmp_path / "backup.dump",
+        "legacy_manifest": "",
+        "legacy_import_option": [],
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -193,6 +195,64 @@ def test_migration_failure_never_switches_running_services(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="migration failed"):
         ops.deploy(args)
     switch.assert_not_called()
+
+
+def test_a_legacy_manifest_is_imported_by_the_new_image_before_the_switch(tmp_path, monkeypatch):
+    """Otherwise the new release serves open signup and default alerts until someone imports."""
+    args = arguments(
+        tmp_path,
+        legacy_manifest="distributions/site/distribution.yaml",
+        legacy_import_option=["--example-option"],
+    )
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
+    calls = []
+    monkeypatch.setattr(ops, "command", lambda argv, **kw: calls.append((argv, kw)))
+    monkeypatch.setattr(ops, "_wait", Mock())
+    ops.deploy(args)
+    migration = next(i for i, (argv, _) in enumerate(calls) if "upgrade" in argv)
+    (imported,) = [i for i, (argv, _) in enumerate(calls) if "import-legacy" in argv]
+    first_switch = _switches(calls)[0][0]
+    assert migration < imported < first_switch
+    argv, kwargs = calls[imported]
+    assert argv[-4:] == [
+        "serving.config.manage",
+        "import-legacy",
+        "--example-option",
+        "distributions/site/distribution.yaml",
+    ]
+    assert argv[argv.index("run") : argv.index("run") + 4] == [
+        "run",
+        "--rm",
+        "--no-deps",
+        "backend",
+    ]
+    assert ops._ARTIFACTS in argv
+    assert kwargs["env"]["BACKEND_IMAGE"] == args.backend_image
+
+
+def test_a_failed_legacy_import_never_switches_running_services(tmp_path, monkeypatch):
+    args = arguments(tmp_path, legacy_manifest="distributions/site/distribution.yaml")
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
+
+    def run(argv, **kwargs):
+        if "import-legacy" in argv:
+            raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(ops, "command", run)
+    switch = Mock()
+    monkeypatch.setattr(ops, "_switch", switch)
+    with pytest.raises(subprocess.CalledProcessError):
+        ops.deploy(args)
+    switch.assert_not_called()
+
+
+def test_no_legacy_manifest_imports_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops, "_running_images", lambda _: OLD)
+    calls = []
+    monkeypatch.setattr(ops, "command", lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(ops, "_wait", Mock())
+    ops.deploy(arguments(tmp_path))
+    assert not any("import-legacy" in argv for argv in calls)
 
 
 def test_deploy_refuses_mutable_image_tags_before_any_command(tmp_path, monkeypatch):

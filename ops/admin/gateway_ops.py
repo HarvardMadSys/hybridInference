@@ -352,6 +352,26 @@ def deploy(args: argparse.Namespace) -> None:
         [*compose, "run", "--rm", "--no-deps", "backend", "python", "-m", "migrations", "upgrade"],
         env=env,
     )
+    if args.legacy_manifest:
+        # Before the switch, with the new image, so the release starts on the
+        # site policy and alert rules its predecessor read from files. Settings
+        # already stored are kept, so running it again changes nothing.
+        command(
+            [
+                *compose,
+                "run",
+                "--rm",
+                "--no-deps",
+                "backend",
+                "python",
+                "-m",
+                "serving.config.manage",
+                "import-legacy",
+                *args.legacy_import_option,
+                args.legacy_manifest,
+            ],
+            env=env,
+        )
     try:
         _switch(args.compose, images)
         _wait(args)
@@ -459,6 +479,18 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--backend-image", default="")
     parser.add_argument("--frontend-image", default="")
+    parser.add_argument(
+        "--legacy-manifest",
+        default="",
+        help="deploy: import this previous-release manifest, at its path inside the backend "
+        "container, with the new image before switching",
+    )
+    parser.add_argument(
+        "--legacy-import-option",
+        action="append",
+        default=[],
+        help="deploy: pass an option to import-legacy; repeat for several",
+    )
     parser.add_argument("--backup", type=Path, default=Path(".ops/none/gateway.dump"))
     parser.add_argument(
         "--state",
