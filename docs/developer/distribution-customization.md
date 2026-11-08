@@ -108,6 +108,9 @@ image rebuild. Public image assets can still be mounted read-only through
 regardless of the ordinary signup switch. `features.rag: false` disables the RAG
 surface. Public usage statistics remain opt-in through `public_stats`; schedule
 `python -m serving.analytics.public_stats` for deployments that enable them.
+Run it with the backend's environment, `DB_*` and `BACKEND_EXTENSIONS` included
+(for example through `docker compose exec backend`): it reads the stored model
+catalog, and without one its snapshot has no per-model section.
 Router selection still belongs to each model and its router parameters.
 
 ### When changes take effect

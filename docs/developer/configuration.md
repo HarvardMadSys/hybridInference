@@ -37,6 +37,11 @@ Empty routing and alert documents use the built-in policy and thresholds.
 Empty site documents use neutral branding. An empty model catalog supplies no
 models; models created in Admin Routing remain available independently.
 
+A stored site document that no longer validates is passed over: the explicit
+`SITE_*` settings and then the neutral defaults apply, public signup and RAG are
+reported off, and the console reports the configuration as incomplete until an
+administrator corrects the document.
+
 ## How a gateway finds its config
 
 Database settings win over environment seeds, then registered defaults. Stored
@@ -50,6 +55,12 @@ and `ROUTING_POLICY` without overwriting settings an administrator already saved
 Embedded credentials become separate secret settings. Legacy rows remain for
 previous-release compatibility, and later edits to those rows have no effect on
 the new release.
+
+Catalog and routing changes saved in this release are copied back to those
+rows, as canonical JSON, so a rollback runs the latest catalog the previous
+release can run. A catalog holding a credential reference where the previous
+release would not expand one is not copied, nor are a reset and a removal: the
+rows keep the last copy.
 
 Site identity, branding and alert rules kept in files need one explicit import,
 with the new image, after the migrations and before it serves. Until then the
@@ -194,6 +205,10 @@ do not replace them. Resetting a setting deliberately returns it to its
 registered environment/default behavior. Database connection and wiring stay in
 the environment because they are needed before settings can be read.
 
+An application document from the environment that does not validate is not
+imported: the log names the setting and the reason, never the value, and the
+backend refuses to start on it unless a valid stored value takes its place.
+
 ### Analytics sections
 
 Analytics visibility switches affect the console without a backend restart.
@@ -210,6 +225,11 @@ and override. Secret values are omitted by default; references remain intact.
 **Backup with secrets** includes credentials after administrator reauthentication.
 Restore previews security-relevant changes and applies the confirmed bundle in
 one transaction. Withheld secrets keep the destination's existing values.
+
+A restore removes the stored settings the bundle does not name, except the
+application documents and the `CATALOG_SECRET_*` credentials the upgrade lifted
+out of the catalog, which a bundle from before the upgrade cannot name: those
+keep their stored value or reset. Reset one explicitly to remove it.
 
 This configuration bundle is distinct from a full database backup, which also
 preserves accounts, sessions, request history and operational state. Use

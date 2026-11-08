@@ -2786,3 +2786,15 @@ msgstr "告警规则：环境指定了 `ALERTS_CONFIG_PATH` 时取自该文件�
 
 msgid "The backend still receives `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE`, `MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH` and `ALERTS_CONFIG_PATH` from Compose when the deployment sets them, and warns at startup that they do nothing. They are kept for the rollback window: a failed deploy or `make rollback` starts the previous release, which reads its manifest and files through them. Remove them, and the files, once no earlier release will run."
 msgstr "部署设置了 `DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE`、`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH` 和 `ALERTS_CONFIG_PATH` 时，后端仍会从 Compose 收到它们，并在启动时警告它们不起作用。保留它们是为了回退窗口：部署失败或 `make rollback` 会启动上一版本，而上一版本通过它们读取自己的清单和文件。确定不会再运行更早的版本后，再删除它们及对应文件。"
+
+msgid "A stored site document that no longer validates is passed over: the explicit `SITE_*` settings and then the neutral defaults apply, public signup and RAG are reported off, and the console reports the configuration as incomplete until an administrator corrects the document."
+msgstr "已保存但不再通过验证的站点文档会被跳过：先应用显式的 `SITE_*` 设置，再应用中性默认值；公开注册和 RAG 报告为关闭，控制台会报告配置不完整，直到管理员修正该文档。"
+
+msgid "Catalog and routing changes saved in this release are copied back to those rows, as canonical JSON, so a rollback runs the latest catalog the previous release can run. A catalog holding a credential reference where the previous release would not expand one is not copied, nor are a reset and a removal: the rows keep the last copy."
+msgstr "在当前版本中保存的目录和路由修改会以规范 JSON 的形式回写到这些旧行，因此回退会运行上一版本能够运行的最新目录。如果目录在上一版本不会展开凭据引用的位置含有凭据引用，则不会回写；重置和删除也不会回写：旧行保留最后一次回写的副本。"
+
+msgid "An application document from the environment that does not validate is not imported: the log names the setting and the reason, never the value, and the backend refuses to start on it unless a valid stored value takes its place."
+msgstr "来自环境变量、未通过验证的应用文档不会被导入：日志会写明设置名和原因，绝不写出其值；除非已有有效的已保存值替代它，否则后端会拒绝以它启动。"
+
+msgid "A restore removes the stored settings the bundle does not name, except the application documents and the `CATALOG_SECRET_*` credentials the upgrade lifted out of the catalog, which a bundle from before the upgrade cannot name: those keep their stored value or reset. Reset one explicitly to remove it."
+msgstr "恢复会删除备份包未列出的已保存设置，但应用文档以及升级时从目录中提取出的 `CATALOG_SECRET_*` 凭据除外——升级前的备份包不可能列出它们：这些设置保留其已保存的值或重置状态。要删除其中某项，请显式重置它。"
