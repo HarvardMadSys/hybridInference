@@ -20,7 +20,6 @@ global HTTP exception handler formats them correctly with no special-casing.
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +59,7 @@ from serving.servers.routers.completions import (
     release_unstarted_chat_streams,
 )
 from serving.servers.surface_http import client_origin, timeout_probe
+from serving.storage.responses_store import decode_conversation
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils.logging import get_logger
 
@@ -136,25 +136,28 @@ async def _load_prior_messages(
     response_store: Any,
     previous_response_id: str,
     user_id: str | None,
-) -> tuple[list[dict[str, Any]], int]:
-    """Return the stored cumulative conversation for ``previous_response_id``, and its size.
+    *,
+    store: bool,
+) -> list[dict[str, Any]]:
+    """Return the stored cumulative conversation for ``previous_response_id``.
 
-    The size is that of the stored JSON text, in bytes.
+    The store matches the owner and reports the stored JSON text's size with
+    the row, so a conversation too large to store another turn of (when
+    *store*) is refused before it is decoded.
 
     Raises 404 (Responses/OpenAI error envelope) when statefulness is
-    unavailable, the prior response is unknown, or it belongs to another user.
+    unavailable, the prior response is unknown, or it belongs to another user;
+    400 for an oversized conversation (:func:`_refuse_an_oversized_stored_conversation`).
     """
-    if response_store is None:
+    if response_store is None or user_id is None:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
-    row = await response_store.get(previous_response_id)
-    if not row or row.get("user_id") != user_id:
+    found = await response_store.get_conversation(previous_response_id, user_id=user_id)
+    if found is None:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
-    msgs = row.get("messages")
-    msgs = msgs if isinstance(msgs, list) else []
-    size = row.get("messages_bytes")
-    if not isinstance(size, int):
-        size = len(json.dumps(msgs).encode())
-    return msgs, size
+    stored, size = found
+    if store:
+        _refuse_an_oversized_stored_conversation(previous_response_id, size)
+    return decode_conversation(stored)
 
 
 def _refuse_an_oversized_stored_conversation(previous_response_id: str, size: int) -> None:
@@ -269,11 +272,19 @@ async def execute_responses(
     # non-None identity — never let a None user_id bypass ownership scoping.
     user_id = ctx.user_ctx.get("user_id") or "anonymous"
     previous_response_id = body.get("previous_response_id")
+    # store defaults to true; only an explicit ``false`` disables persistence
+    # (missing or null → true). Persistence also requires a write-enabled store
+    # (privacy mode disables writes), so the echoed value reflects whether the
+    # response is actually stored.
+    store = (
+        body.get("store") is not False
+        and response_store is not None
+        and getattr(response_store, "persist_enabled", True)
+    )
     prior_messages: list[dict[str, Any]] = []
-    prior_bytes = 0
     if previous_response_id:
-        prior_messages, prior_bytes = await _load_prior_messages(
-            response_store, previous_response_id, user_id
+        prior_messages = await _load_prior_messages(
+            response_store, previous_response_id, user_id, store=store
         )
 
     instructions = body.get("instructions")
@@ -317,17 +328,6 @@ async def execute_responses(
     chat_ctx = replace(ctx, origin=ctx.origin.without(_REASONING_PASSTHROUGH_HEADER))
 
     is_stream = bool(body.get("stream"))
-    # store defaults to true; only an explicit ``false`` disables persistence
-    # (missing or null → true). Persistence also requires a write-enabled store
-    # (privacy mode disables writes), so the echoed value reflects whether the
-    # response is actually stored.
-    store = (
-        body.get("store") is not False
-        and response_store is not None
-        and getattr(response_store, "persist_enabled", True)
-    )
-    if store and previous_response_id:
-        _refuse_an_oversized_stored_conversation(previous_response_id, prior_bytes)
     response_id = new_response_id()
     created_at = now_ts()
 
@@ -514,14 +514,18 @@ async def get_response(
     user_ctx: dict = Depends(verify_api_key),
     response_store=Depends(get_response_store),
 ):
-    """Retrieve a previously stored response by id."""
+    """Retrieve a previously stored response by id.
+
+    Served as stored: the store matches the owner and reads the Responses
+    object alone, never the conversation stored beside it.
+    """
     if response_store is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
-    row = await response_store.get(response_id)
     owner = user_ctx.get("user_id") or "anonymous"
-    if not row or row.get("user_id") != owner:
+    body = await response_store.get_response(response_id, user_id=owner)
+    if body is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
-    return JSONResponse(content=row.get("response") or {})
+    return Response(content=body, media_type="application/json")
 
 
 @router.delete("/v1/responses/{response_id}", response_model=None)

@@ -146,13 +146,50 @@ class ResponseStore:
                 model,
             )
 
+    async def get_response(self, response_id: str, *, user_id: str) -> bytes | None:
+        """*user_id*'s stored Responses object *response_id*, as JSON text, or ``None``.
+
+        What ``GET /v1/responses/{id}`` serves, verbatim. The owner is matched in
+        the statement, and the conversation stored beside the object -- which
+        can be as large as a request body -- is neither read nor decoded.
+        """
+        async with self._connection() as conn:
+            value = await conn.fetchval(
+                "SELECT response FROM openai_responses WHERE id = $1 AND user_id = $2",
+                response_id,
+                user_id,
+            )
+        return None if value is None else _json_text(value)
+
+    async def get_conversation(self, response_id: str, *, user_id: str) -> tuple[Any, int] | None:
+        """*user_id*'s stored conversation for *response_id*, and its size; ``None`` if none.
+
+        For a ``previous_response_id`` follow-up. The conversation comes back as
+        asyncpg hands it, undecoded (:func:`decode_conversation`), and its size
+        is that of its JSON text in bytes, measured in the statement
+        (``octet_length``), so a caller can refuse an oversized one before it
+        decodes anything. The owner is matched in the statement.
+        """
+        async with self._connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT messages, octet_length(messages::text) AS messages_bytes "
+                "FROM openai_responses WHERE id = $1 AND user_id = $2",
+                response_id,
+                user_id,
+            )
+        if row is None:
+            return None
+        return row["messages"], int(row["messages_bytes"])
+
     async def get(self, response_id: str) -> dict[str, Any] | None:
-        """Fetch a stored response row by id.
+        """Fetch a stored response row by id, whoever owns it, decoded whole.
 
         Returns a dict with keys ``id``, ``user_id``, ``response``,
         ``messages``, ``previous_response_id``, ``model`` and ``messages_bytes``
         -- or ``None`` if not found. JSON columns are decoded to Python objects;
         ``messages_bytes`` is the size of the stored conversation as JSON text.
+        The request paths read through :meth:`get_response` and
+        :meth:`get_conversation`, which match the owner and read less.
         """
         async with self._connection() as conn:
             row = await conn.fetchrow(
@@ -276,6 +313,21 @@ def _json_bytes(value: Any) -> int:
     if isinstance(value, str):
         return len(value.encode())
     return len(json.dumps(value).encode()) if value is not None else 0
+
+
+def _json_text(value: Any) -> bytes:
+    """A JSON column as UTF-8 JSON text, however asyncpg handed it back."""
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode()
+    return json.dumps(value).encode()
+
+
+def decode_conversation(value: Any) -> list[dict[str, Any]]:
+    """A conversation :meth:`ResponseStore.get_conversation` returned, as a message list."""
+    messages = _load_json(value)
+    return messages if isinstance(messages, list) else []
 
 
 def _load_json(value: Any) -> Any:
