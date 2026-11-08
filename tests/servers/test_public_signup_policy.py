@@ -282,7 +282,7 @@ async def test_invalid_distribution_selection_cannot_enable_signup(
 
     response = await client.post("/auth/signup", json=create_signup_request())
     assert response.status_code == 403
-    assert (await client.get("/site-config")).status_code == 503
+    _assert_neutral_and_closed(await client.get("/site-config"))
     store.create_user.assert_not_awaited()
 
 
@@ -311,9 +311,18 @@ async def test_invalid_active_manifest_cannot_create_accounts(
     response = await client.post("/auth/signup", json=create_signup_request())
     assert response.status_code == 403
     response = await client.get("/site-config")
-    assert response.status_code == 503
+    _assert_neutral_and_closed(response)
     assert "private-manifest" not in response.text
     store.create_user.assert_not_awaited()
+
+
+def _assert_neutral_and_closed(response):
+    """An invalid site document leaves the console working, signup closed."""
+    assert response.status_code == 200
+    body = response.json()
+    assert body["distribution"]["id"] == "neutral"
+    assert body["features"]["public_signup"] is False
+    assert body["configuration"]["incomplete"] is True
 
 
 @pytest.mark.asyncio

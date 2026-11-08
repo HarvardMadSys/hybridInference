@@ -92,16 +92,25 @@ def get_site_identity() -> SiteIdentity:
 
     Resolved per call (no cache): the values feed rendered content, not hot
     request paths, and per-call resolution keeps tests and env changes simple.
+
+    An invalid site document is passed over, as if none were stored: the
+    explicit settings still apply, then the neutral default. OpenRouter
+    attribution and every email read the identity, and an administrator's
+    mistake in the site document must not fail them. The distribution module
+    logs the problem once per configuration change.
     """
     # Imported lazily to keep this module import-cycle-free and importable in
     # isolation (e.g. by offline tools).
-    from serving.config.distribution import get_distribution_config
+    from serving.config.distribution import DistributionConfigError, get_distribution_config
 
     manifest_name: str | None = None
     manifest_base_url: str | None = None
     manifest_docs_url: str | None = None
     manifest_support: str | None = None
-    config = get_distribution_config()
+    try:
+        config = get_distribution_config()
+    except DistributionConfigError:
+        config = None
     if config is not None:
         manifest_name = config.distribution.display_name
         manifest_base_url = config.site.public_base_url

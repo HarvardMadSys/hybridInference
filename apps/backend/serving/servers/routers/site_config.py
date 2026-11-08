@@ -9,15 +9,15 @@ are returned.
 Two deployment-state flags ride along at the top level, where an older
 console's parser ignores them: ``setup.required`` (first-run setup is pending,
 so the console sends every route to ``/setup``) and
-``configuration.incomplete`` (a required setting has no value). Neither names
-a setting.
+``configuration.incomplete`` (a required setting has no value, no model is
+configured, or the site document does not validate). Neither names a setting.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 
 from serving.auth.signup_policy import is_public_signup_enabled
 from serving.config.app_config import get_config_health
@@ -38,15 +38,23 @@ _NEUTRAL: dict[str, Any] = {
 }
 
 
-async def _deployment_state(router_exec: Any = None) -> dict[str, Any]:
-    """Return the top-level ``setup`` and ``configuration`` flags."""
+async def _deployment_state(
+    router_exec: Any = None, *, site_invalid: bool = False
+) -> dict[str, Any]:
+    """Return the top-level ``setup`` and ``configuration`` flags.
+
+    An invalid site document leaves the configuration incomplete too: the
+    console then sends an administrator to Admin Settings to correct it.
+    """
     routes = getattr(router_exec, "routes", None)
     no_models = (
         isinstance(routes, dict) and not routes and not getattr(router_exec, "embedding_routes", {})
     )
     return {
         "setup": {"required": await refresh_setup_state()},
-        "configuration": {"incomplete": no_models or get_config_health().incomplete},
+        "configuration": {
+            "incomplete": site_invalid or no_models or get_config_health().incomplete
+        },
     }
 
 
@@ -77,17 +85,24 @@ async def get_site_config(request: Request = None) -> dict[str, Any]:
     special-case its absence. Public signup always reports the effective
     backend policy, including environment and runtime settings. ``setup``
     and ``configuration`` are always present, manifest or not.
+
+    A site document that does not validate gets the neutral document too, not
+    an error: every console page reads this one, Admin Settings included, where
+    the document is corrected. Public signup is reported closed, as the signup
+    API closes it, since the document may have carried that restriction, and
+    the configuration is reported incomplete.
     """
     try:
         config = get_active_distribution_config()
+        site_invalid = False
     except DistributionConfigError:
-        raise HTTPException(
-            status_code=503,
-            detail="Ask an admin to configure the site in Admin Settings.",
-        ) from None
-    public_signup = await is_public_signup_enabled()
+        # The distribution module logs it, once per configuration change.
+        config, site_invalid = None, True
+    public_signup = False if site_invalid else await is_public_signup_enabled()
     services = getattr(request.app.state, "services", None) if request is not None else None
-    deployment_state = await _deployment_state(getattr(services, "router", None))
+    deployment_state = await _deployment_state(
+        getattr(services, "router", None), site_invalid=site_invalid
+    )
     phone_auth_enabled = is_sms_enabled()
     phone_policy = (
         {"phone_auth_policy": {"default_country_code": get_settings().sms_default_country_code}}

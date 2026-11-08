@@ -312,3 +312,34 @@ async def test_reports_pending_setup_and_incomplete_configuration(
     assert "SMTP_PASSWORD" not in str(body)
     assert "CORS_ALLOWED_ORIGINS" not in str(body)
     assert "ABCD" not in str(body)
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_stored_site_document_serves_the_neutral_document(client, monkeypatch):
+    # A row stored before the validator, or by hand: the console must still
+    # load, Admin Settings included, so it can be corrected there.
+    import json
+
+    from serving.config import app_config
+    from tests.fixtures.app_config_store import FakeAppConfigStore, row
+
+    stored = {
+        "schema_version": 1,
+        "distribution": {"id": "previous", "display_name": "Previous"},
+        "features": {"public_signup": True},
+        "paths": {"models": "models.yaml"},
+    }
+    store = FakeAppConfigStore([row("SITE_CONFIGURATION", json.dumps(stored))])
+    await app_config.load(store, bootstrap=False)
+
+    response = await client.get("/site-config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["distribution"]["id"] == "neutral"
+    assert body["branding"] is None
+    # It may have carried a restriction: signup is reported closed, as the
+    # signup API closes it, and the configuration incomplete.
+    assert body["features"]["public_signup"] is False
+    assert body["configuration"]["incomplete"] is True
+    assert "models.yaml" not in response.text

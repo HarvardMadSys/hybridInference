@@ -218,9 +218,42 @@ def get_distribution_config() -> DistributionConfig | None:
         config._branding_config = BrandingConfig.model_validate(branding) if branding else None
         return config
     except ValueError:
+        _report_invalid()
         raise DistributionConfigError(
             "Ask admin to configure the site in Admin Settings."
         ) from None
+
+
+#: The invalid site configuration has been reported since the last change.
+#: Every reader runs into it, OpenRouter attribution and ``/site-config`` on
+#: each request, so it is logged once per configuration change, not per call.
+_invalid_reported = False
+
+
+def _report_invalid() -> None:
+    """Log, once per configuration change, what is wrong with the site documents."""
+    global _invalid_reported
+    if _invalid_reported:
+        return
+    _invalid_reported = True
+    from serving.config.app_config import validation_problem
+
+    problems = "; ".join(
+        f"{key}: {problem}"
+        for key in ("SITE_CONFIGURATION", "SITE_BRANDING")
+        if (problem := validation_problem(key))
+    )
+    logger.error(
+        "The public site configuration is not valid (%s). Until it is corrected in Admin "
+        "Settings, the site has the neutral identity, public signup is closed and the "
+        "console reports the configuration incomplete.",
+        problems or "the documents do not validate together",
+    )
+
+
+def _forget_report() -> None:
+    global _invalid_reported
+    _invalid_reported = False
 
 
 @dataclass(frozen=True)
@@ -348,7 +381,9 @@ def _log_dark_comparison(
     )
 
 
-# Settings changes invalidate the parsed public configuration in this process.
+# Settings changes invalidate the parsed public configuration in this process,
+# and let a configuration still invalid after one be reported again.
 from serving.config.app_config import on_change
 
 on_change(get_distribution_config.cache_clear)
+on_change(_forget_report)
