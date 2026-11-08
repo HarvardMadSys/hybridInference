@@ -1192,8 +1192,8 @@ class BatchScheduler:
         await self._pause_owner(
             owner,
             until,
-            "API key daily budget spent" if exc.window == "day" else "API key monthly budget spent",
-            kind="key_budget",
+            f"{'Project' if exc.scope == 'project' else 'API key'} {'daily' if exc.window == 'day' else 'monthly'} budget spent",
+            kind=f"{exc.scope}_budget",
             key_hash=item.get("key_hash"),
         )
 

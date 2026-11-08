@@ -1852,6 +1852,7 @@ async def test_project_cap_is_shared_by_batch_and_interactive_work():
     scheduler = object.__new__(BatchScheduler)
     scheduler._role_slots = UserConcurrencyLimiter(static_limits_provider({"free": 10}))
     scheduler._services = types.SimpleNamespace(user_concurrency_limiter=limiter)
+    scheduler._owner_slots = Counter()
     user = {"user_id": OWNER, "project_id": "proj_shared", "project_max_concurrent_requests": 1}
     slot = "scope:project:proj_shared"
     granted, _, _ = await limiter.try_acquire(slot, "free", False, 1)

@@ -1375,6 +1375,10 @@
     "source": "A batch runs under your active API key, and you have none. Create one on the dashboard, then submit again.",
     "text": "批处理任务以你当前有效的 API 密钥运行，而你还没有密钥。请先在仪表盘创建，然后再提交。"
   },
+  "batches.create.refused.project_budget": {
+    "source": "The project this batch runs under has spent its budget. Raise it on the project's page, or submit after it renews; uploading and checking stay free.",
+    "text": "这个批次所用的项目已用完预算。请在该项目的页面调高预算，或等预算重置后再提交；上传和校验仍然免费。"
+  },
   "batches.create.refused.quota": {
     "source": "Your daily quota is spent. Submit after it renews (00:00 UTC) or once it is raised; uploading and checking stay free.",
     "text": "你今天的额度已用完。请在额度重置（UTC 0 点）或调整后再提交；上传和校验仍然免费。"
@@ -1843,6 +1847,10 @@
     "source": "Created in the console",
     "text": "在控制台创建"
   },
+  "batches.paused.account_budget": {
+    "source": "Paused: the account this batch runs under has spent its quota. It is checked again after {until}; raise the account quota to resume sooner.",
+    "text": "已暂停：这个批次所用的账户已用完额度。将在 {until} 之后再次检查；调高账户额度可以更早恢复。"
+  },
   "batches.paused.key_budget": {
     "source": "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
     "text": "已暂停：这个批次所用的 API key 已用完预算。将在 {until} 之后再次检查；在该 key 的页面调高预算可以更早恢复。"
@@ -1854,6 +1862,10 @@
   "batches.paused.other": {
     "source": "Paused until {until}.",
     "text": "已暂停，直到 {until}。"
+  },
+  "batches.paused.project_budget": {
+    "source": "Paused: the project this batch runs under has spent its budget. It is checked again after {until}; raise the project's budget on its page to resume sooner.",
+    "text": "已暂停：这个批次所用的项目已用完预算。将在 {until} 之后再次检查；在该项目的页面调高预算可以更早恢复。"
   },
   "batches.paused.quota": {
     "source": "Paused: your daily quota is spent. It resumes after {until} (when the quota renews at 00:00 UTC) or once your quota is raised.",

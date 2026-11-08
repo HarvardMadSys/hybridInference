@@ -629,3 +629,24 @@ async def test_project_cost_keeps_attribution_through_the_coalesced_writer():
     increment = store.batches[0][0]
     assert (increment.org_id, increment.project_id) == ("org_shared", "proj_shared")
     assert check.refusal().scope == "project"
+
+
+async def test_project_headroom_caps_a_large_reservation():
+    from decimal import Decimal
+
+    ledger = SpendLedger(object())
+    check = _check(
+        ledger, key_id=1, project_id="proj_headroom", project_budget_daily_usd=Decimal("0.03")
+    )
+    reservation, refusal = ledger.admit(check, amount=1.0)
+    assert refusal is None
+    assert reservation.amount == pytest.approx(0.03)
+    assert (
+        _check(
+            ledger, key_id=2, project_id="proj_headroom", project_budget_daily_usd=Decimal("0.03")
+        )
+        .refusal()
+        .scope
+        == "project"
+    )
+    reservation.release()

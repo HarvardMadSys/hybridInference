@@ -1394,19 +1394,17 @@ async def initialize() -> AppServices:
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
 
-        from serving.storage.project_backfill import backfill_projects, seed_spend_counters
+        from serving.storage.project_backfill import backfill_projects
 
         async def _run_project_backfill() -> None:
             try:
                 async with db_logger.pool.acquire() as conn:
                     accounts = await backfill_projects(conn)
-                    seeded = await seed_spend_counters(conn)
                 logger.info(
                     "project_backfill_complete",
                     extra={
                         "event": "project_backfill_complete",
                         "accounts": accounts,
-                        "counters": seeded,
                     },
                 )
             except Exception:

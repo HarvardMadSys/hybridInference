@@ -54,6 +54,15 @@ describe('pauseText', () => {
     );
   });
 
+  it("names a project's budget and the account's, apart from the key's", () => {
+    expect(pauseText(paused('project_budget'), english)).toMatch(
+      /^Paused: the project this batch runs under has spent its budget\./,
+    );
+    expect(pauseText(paused('account_budget'), english)).toMatch(
+      /^Paused: the account this batch runs under has spent its quota\./,
+    );
+  });
+
   it('is nothing for a batch that is not paused', () => {
     expect(pauseText({ paused_until: null } as ConsoleBatch, english)).toBeNull();
   });

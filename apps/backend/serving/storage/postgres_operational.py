@@ -90,7 +90,7 @@ scope_rows AS (
     INSERT INTO spend_counters AS c (scope_id, period, cost_usd, requests, last_request_at)
     SELECT scope_id, period, SUM(cost_usd), SUM(requests), NOW()
     FROM batch
-    CROSS JOIN LATERAL (VALUES ('key:' || key_id::text), (org_id), (project_id)) scopes(scope_id)
+    CROSS JOIN LATERAL (VALUES (project_id)) scopes(scope_id)
     CROSS JOIN LATERAL (VALUES ('d:' || day), ('m:' || left(day, 7))) periods(period)
     WHERE scope_id IS NOT NULL
     GROUP BY scope_id, period
@@ -105,21 +105,21 @@ COST_INCREMENTS_SQL = (
     """
 WITH batch AS (
     SELECT *
-    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
-        AS b(user_id, day, key_id, cost_usd, requests)
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[], $6::text[], $7::text[])
+        AS b(user_id, day, key_id, cost_usd, requests, org_id, project_id)
 ),"""
     + _COST_INCREMENT_WRITES
 )
 
-# The same, with each increment's erasure-fence digest ($6, NULL for none): an
+# The same, with each increment's erasure-fence digest ($8, NULL for none): an
 # increment whose account was hard-deleted is left out (see
 # ``PostgresOperationalStore.increment_user_costs``).
 COST_INCREMENTS_FENCED_SQL = (
     """
 WITH batch AS (
-    SELECT b.user_id, b.day, b.key_id, b.cost_usd, b.requests
-    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[], $6::text[])
-        AS b(user_id, day, key_id, cost_usd, requests, fence_key)
+    SELECT b.user_id, b.day, b.key_id, b.cost_usd, b.requests, b.org_id, b.project_id
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[], $6::text[], $7::text[], $8::text[])
+        AS b(user_id, day, key_id, cost_usd, requests, org_id, project_id, fence_key)
     WHERE NOT EXISTS (SELECT 1 FROM erasure_fence AS f WHERE f.account_digest = b.fence_key)
 ),"""
     + _COST_INCREMENT_WRITES
@@ -333,8 +333,7 @@ _PROJECT_SCOPE_COLUMNS = (
     "COALESCE(o.budget_monthly_usd, k.quota_monthly_cost_usd) AS quota_monthly_cost_usd, "
     "o.status AS org_status, "
     "p.max_concurrent_requests AS project_max_concurrent_requests, "
-    "o.max_concurrent_requests AS org_max_concurrent_requests, "
-    "k.max_concurrent_requests AS key_max_concurrent_requests"
+    "o.max_concurrent_requests AS org_max_concurrent_requests"
 )
 
 _PROJECT_SCOPE_JOIN = (
@@ -342,15 +341,12 @@ _PROJECT_SCOPE_JOIN = (
     "LEFT JOIN organizations o ON o.id = COALESCE(p.org_id, k.org_id) "
 )
 
-#: Daily and monthly spend for the key's project and organization, read from
-#: ``spend_counters`` through its primary key. Project and org counters are
-#: written at settlement; the account's own counters stay in ``user_daily_cost``
-#: during the transition, so the gate keeps reading both sources.
+#: Daily and monthly spend for the key's project, read from ``spend_counters``
+#: through its primary key. Project counters are written at settlement; the
+#: account's own counters stay in ``user_daily_cost``.
 _SCOPE_SPEND_COLUMNS = (
     "COALESCE(ps.cost_usd, 0) AS project_spent_today_usd, "
-    "COALESCE(pm.cost_usd, 0) AS project_spent_month_usd, "
-    "COALESCE(os.cost_usd, 0) AS org_spent_today_usd, "
-    "COALESCE(om.cost_usd, 0) AS org_spent_month_usd"
+    "COALESCE(pm.cost_usd, 0) AS project_spent_month_usd"
 )
 
 _SCOPE_SPEND_JOIN = (
@@ -360,12 +356,6 @@ _SCOPE_SPEND_JOIN = (
     "LEFT JOIN spend_counters pm "
     "  ON pm.scope_id = k.project_id "
     " AND pm.period = 'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
-    "LEFT JOIN spend_counters os "
-    "  ON os.scope_id = COALESCE(p.org_id, k.org_id) "
-    " AND os.period = 'd:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
-    "LEFT JOIN spend_counters om "
-    "  ON om.scope_id = COALESCE(p.org_id, k.org_id) "
-    " AND om.period = 'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
 )
 
 #: Postgres types the project and organization write paths cast their bound
@@ -1626,7 +1616,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
-                "  AND u.id IS NOT NULL AND u.status = 'active'",
+                "  AND u.id IS NOT NULL AND u.status = 'active' "
+                "AND (k.project_id IS NULL OR p.id IS NOT NULL)",
                 key_hash,
             )
         return _coerce_user_row(row)
@@ -1669,7 +1660,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
-                "  AND u.id IS NOT NULL AND u.status = 'active'",
+                "  AND u.id IS NOT NULL AND u.status = 'active' "
+                "AND (k.project_id IS NULL OR p.id IS NOT NULL)",
                 key_hash,
             )
         return _coerce_user_row(row)
@@ -1691,7 +1683,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
-                "  AND u.id IS NOT NULL AND u.status = 'active'",
+                "  AND u.id IS NOT NULL AND u.status = 'active' "
+                "AND (k.project_id IS NULL OR p.id IS NOT NULL)",
                 key_hash,
             )
         return _coerce_user_row(row)
@@ -2040,7 +2033,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 raise ValueError("The Default project cannot be archived.")
             revoked = await conn.execute(
                 "UPDATE api_keys SET status = 'revoked', revoked_at = NOW() "
-                "WHERE project_id = $1 AND status = 'active'",
+                "WHERE project_id = $1 AND status <> 'revoked'",
                 project_id,
             )
             await conn.execute(
@@ -2110,7 +2103,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Count active keys attached to a project."""
         async with self._pool.acquire() as conn:
             count = await conn.fetchval(
-                "SELECT COUNT(*) FROM api_keys WHERE project_id = $1 AND status = 'active'",
+                "SELECT COUNT(*) FROM api_keys WHERE project_id = $1 AND status <> 'revoked'",
                 project_id,
             )
         return int(count or 0)
@@ -2357,6 +2350,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn, conn.transaction():
             await _lock_account_keys(conn, user_id)
             await conn.execute(sql, *params)
+            from serving.storage.project_backfill import personal_org_id
+
+            for key, column in (
+                ("quota_daily_cost_usd", "budget_daily_usd"),
+                ("quota_monthly_cost_usd", "budget_monthly_usd"),
+            ):
+                if key in fields:
+                    await conn.execute(
+                        f"UPDATE organizations SET {column} = $2 WHERE id = $1",
+                        personal_org_id(user_id),
+                        fields[key],
+                    )
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Soft-revoke (status='revoked') or hard-delete every key of *user_id*."""

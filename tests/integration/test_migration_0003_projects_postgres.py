@@ -1,4 +1,4 @@
-"""``0003_projects``: the project model and the backfill that fills it."""
+"""``0012_projects``: the project model and the backfill that fills it."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from serving.storage.project_backfill import (
     backfill_projects,
     default_project_id,
     personal_org_id,
-    seed_spend_counters,
 )
 from tests.fixtures import migrations as mig
 
@@ -91,27 +90,21 @@ async def test_backfill_creates_the_personal_org_and_is_idempotent(scratch):
     assert key["project_id"] == default_project_id("u-bf")
 
 
-async def test_spend_counters_are_seeded_once(scratch):
+async def test_backfill_repairs_membership_without_a_default_project(scratch):
     await mig.upgrade(scratch)
     async with mig.connected(scratch) as conn:
         await conn.execute(
-            "INSERT INTO users (id, email, password_hash) VALUES ('u-sp', 'sp@x.test', 'h')"
+            "INSERT INTO users (id, email, password_hash) VALUES ('u-partial', 'partial@x.test', 'h')"
         )
         await conn.execute(
-            "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests) "
-            "VALUES ('u-sp', '2026-11-05', 4.25, 7)"
+            "INSERT INTO organizations (id, name, kind) VALUES ('org_p_u-partial', 'Partial', 'personal')"
         )
-
-        first = await seed_spend_counters(conn)
-        second = await seed_spend_counters(conn)
-
-        row = await conn.fetchrow(
-            "SELECT cost_usd, requests FROM spend_counters "
-            "WHERE scope_id = $1 AND period = 'd:2026-11-05'",
-            personal_org_id("u-sp"),
+        await conn.execute(
+            "INSERT INTO org_members (org_id, user_id, role) VALUES ('org_p_u-partial', 'u-partial', 'owner')"
         )
-
-    assert first == 1
-    assert second == 0
-    assert float(row["cost_usd"]) == pytest.approx(4.25)
-    assert row["requests"] == 7
+        assert await backfill_projects(conn) == 1
+        assert (
+            await conn.fetchval("SELECT id FROM projects WHERE id = 'proj_d_u-partial'")
+            == "proj_d_u-partial"
+        )
+        assert await backfill_projects(conn) == 0

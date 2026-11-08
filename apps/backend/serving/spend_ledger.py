@@ -262,16 +262,32 @@ def _refusal(
     )
 
 
-def _headroom(check: SpendCheck, extra: tuple[float, float, float, float]) -> float:
+def _headroom(
+    check: SpendCheck,
+    extra: tuple[float, float, float, float],
+    project_extra: tuple[float, float] = (0.0, 0.0),
+) -> float:
     """What the tightest of *check*'s limits has left, counting *extra* (see :func:`_refusal`)."""
     day, month, key_day, key_month = extra
-    left = [check.account_quota_usd - (check.account_spent_usd + day)]
+    left = [float(check.account_quota_usd) - (check.account_spent_usd + day)]
     if check.account_quota_monthly_usd is not None:
-        left.append(check.account_quota_monthly_usd - (check.account_spent_month_usd + month))
+        left.append(
+            float(check.account_quota_monthly_usd) - (check.account_spent_month_usd + month)
+        )
     if check.key_budget_daily_usd is not None:
-        left.append(check.key_budget_daily_usd - (check.key_spent_today_usd + key_day))
+        left.append(float(check.key_budget_daily_usd) - (check.key_spent_today_usd + key_day))
     if check.key_budget_monthly_usd is not None:
-        left.append(check.key_budget_monthly_usd - (check.key_spent_month_usd + key_month))
+        left.append(float(check.key_budget_monthly_usd) - (check.key_spent_month_usd + key_month))
+    if check.project_budget_daily_usd is not None:
+        left.append(
+            float(check.project_budget_daily_usd) - check.project_spent_today_usd - project_extra[0]
+        )
+    if check.project_budget_monthly_usd is not None:
+        left.append(
+            float(check.project_budget_monthly_usd)
+            - check.project_spent_month_usd
+            - project_extra[1]
+        )
     return min(left)
 
 
@@ -344,11 +360,19 @@ class SpendLedger:
         cannot overshoot the limit together.
         """
         extra = self._extra(check.user_id, check.key_id, check.read_at)
-        refusal = _refusal(check, extra)
+        project_extra = (
+            self._extra(check.user_id, check.key_id, check.read_at, project_id=check.project_id)[:2]
+            if check.project_id
+            else (0.0, 0.0)
+        )
+        refusal = _refusal(check, extra, project_extra)
         if refusal is not None:
             return None, refusal
         if amount > quota.ESTIMATED_REQUEST_COST_USD:
-            amount = max(quota.ESTIMATED_REQUEST_COST_USD, min(amount, _headroom(check, extra)))
+            amount = max(
+                quota.ESTIMATED_REQUEST_COST_USD,
+                min(amount, _headroom(check, extra, project_extra)),
+            )
         reservation = Reservation(self, check.user_id, check.key_id, amount, check.project_id)
         if check.project_id is not None:
             _add_reserved(self._reserved_projects, check.project_id, amount)
@@ -516,9 +540,9 @@ class SpendLedger:
             self._set_aside([(key, batch[key], error) for key, error in outcome.refused])
         if outcome.failed:
             for key in outcome.failed:
-                self._pending.setdefault(key, _Amount(org_id=batch[key].org_id, project_id=batch[key].project_id)).add(
-                    batch[key].cost, batch[key].counted, batch[key].requests
-                )
+                self._pending.setdefault(
+                    key, _Amount(org_id=batch[key].org_id, project_id=batch[key].project_id)
+                ).add(batch[key].cost, batch[key].counted, batch[key].requests)
             self._schedule_retry()
         else:
             self._retry_delay = 0.0
@@ -783,6 +807,8 @@ def _increment(key: _Key, amount: _Amount) -> CostIncrement:
         api_key_id=key[1],
         cost_usd=amount.counted,
         requests=amount.requests,
+        org_id=amount.org_id,
+        project_id=amount.project_id,
     )
 
 

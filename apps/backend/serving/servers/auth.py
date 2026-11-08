@@ -589,7 +589,6 @@ def _user_context(
         "project_name": identity.get("project_name"),
         "project_max_concurrent_requests": identity.get("project_max_concurrent_requests"),
         "org_max_concurrent_requests": identity.get("org_max_concurrent_requests"),
-        "key_max_concurrent_requests": identity.get("key_max_concurrent_requests"),
         "org_id": identity.get("org_id"),
         "project_budget_daily_usd": identity.get("project_budget_daily_usd"),
         "project_budget_monthly_usd": identity.get("project_budget_monthly_usd"),
@@ -993,7 +992,9 @@ def _quota_exceeded(
     refusal: quota.BudgetRefusal,
 ) -> HTTPException:
     """Log the budget rejection and return the 429 every quota-gated route answers."""
-    error_code = "quota_exceeded" if refusal.scope == "account" else "key_budget_exceeded"
+    error_code = (
+        "quota_exceeded" if refusal.scope == "account" else f"{refusal.scope}_budget_exceeded"
+    )
     asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
         log_rejection(
             request=request,
@@ -1209,15 +1210,7 @@ async def authenticate_stored_key(
     if await _verification_pending(user):
         raise StoredKeyRejected("the account's email or phone is not verified")
     if user.get("org_status") == "suspended":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": {
-                    "type": "organization_suspended",
-                    "message": "This organization has been suspended by the operator.",
-                }
-            },
-        )
+        raise StoredKeyRejected("the organization has been suspended by the operator")
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
@@ -1431,7 +1424,7 @@ async def optional_verify_api_key(
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc
 
-    if not row:
+    if not row or row.get("org_status") == "suspended":
         return None  # Key invalid or expired — treat as anonymous
 
     require_verification = get_settings().signup_require_email_verification
@@ -1461,6 +1454,11 @@ async def optional_verify_api_key(
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,
+        **(
+            {PROJECT_ALLOWED_MODELS_KEY: list(row["project_allowed_models"])}
+            if row.get("project_allowed_models") is not None
+            else {}
+        ),
         # The key's allowlist narrows the listings this context is for.
         **(
             {KEY_ALLOWED_MODELS_KEY: list(row["allowed_models"])}

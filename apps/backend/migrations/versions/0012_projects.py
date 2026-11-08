@@ -5,8 +5,8 @@ the previous release keeps serving while this runs. The backfill that fills a
 personal org and a Default project for existing accounts runs in the gateway
 (code), not here, because it must be idempotent and resumable.
 
-Revision ID: 0010_projects
-Revises: 0009_route_catalog
+Revision ID: 0012_projects
+Revises: 0011_trim_oversized_preferences
 Create Date: 2026-11-05
 """
 
@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0010_projects"
-down_revision = "0009_route_catalog"
+revision = "0012_projects"
+down_revision = "0011_trim_oversized_preferences"
 branch_labels = None
 depends_on = None
 compatibility = "expand"
@@ -102,9 +102,7 @@ def upgrade() -> None:
             ADD COLUMN IF NOT EXISTS org_id TEXT,
             ADD COLUMN IF NOT EXISTS project_id TEXT,
             ADD COLUMN IF NOT EXISTS allowed_models TEXT[],
-            ADD COLUMN IF NOT EXISTS max_concurrent_requests INTEGER,
-            ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ,
-            ADD COLUMN IF NOT EXISTS rotated_from_id BIGINT
+            ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ
         """
     )
     op.execute(

@@ -299,3 +299,79 @@ async def test_key_insertion_revalidates_project_ownership_and_status(store, sta
         if state == "foreign":
             async with store._pool.acquire() as conn:
                 await conn.execute("DELETE FROM organizations WHERE id = 'org_foreign_test'")
+
+
+async def test_account_quota_edits_replace_the_personal_org_ceiling(store):
+    await store.create_key(key_hash="h-quota-edit", key_prefix="hyi-qed", user_id=_USER)
+    await store.update_org(
+        personal_org_id(_USER), {"budget_daily_usd": 10, "budget_monthly_usd": 100}
+    )
+    await store.update_key(_USER, quota_daily_cost_usd=2, quota_monthly_cost_usd=20)
+    identity = await store.get_auth_context_with_spend("h-quota-edit")
+    grant_identity = (await store.get_quota_context_for_user(_USER))[0]
+    for row in (identity, grant_identity):
+        assert float(row["quota_daily_cost_usd"]) == 2
+        assert float(row["quota_monthly_cost_usd"]) == 20
+
+
+async def test_archive_revokes_suspended_keys_and_auth_rejects_archived_projects(store):
+    project_id = "proj_archive_test"
+    await store.create_project(project_id=project_id, user_id=_USER, name="Archive suspended")
+    await store.create_key(
+        key_hash="h-suspended-archive", key_prefix="hyi-sar", user_id=_USER, project_id=project_id
+    )
+    async with store._pool.acquire() as conn:
+        await conn.execute("UPDATE api_keys SET status = 'suspended' WHERE user_id = $1", _USER)
+    assert await store.archive_project(_USER, project_id) == 1
+    await store.update_key(_USER, status="active")
+    assert await store.get_auth_context_with_spend("h-suspended-archive") is None
+    async with store._pool.acquire() as conn:
+        await conn.execute("UPDATE api_keys SET status = 'active' WHERE user_id = $1", _USER)
+    assert await store.get_auth_context_with_spend("h-suspended-archive") is None
+    assert await store.get_auth_context_lightweight("h-suspended-archive") is None
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+async def test_coalesced_cost_write_attributes_project_and_honors_erasure(store, fenced):
+    from serving.storage.base import CostIncrement
+    from serving.storage.erasure_fence import fence_account_digest
+
+    secret = "project-cost-fence-test" if fenced else None
+    writer = PostgresOperationalStore(store._pool, fence_secret=secret)
+    project_id = default_project_id(_USER)
+    increment = CostIncrement(
+        _USER, "2026-11-08", None, 0.25, 1, personal_org_id(_USER), project_id
+    )
+    await writer.increment_user_costs([increment, increment])
+    async with store._pool.acquire() as conn:
+        assert (
+            float(
+                await conn.fetchval(
+                    "SELECT cost_usd FROM spend_counters WHERE scope_id = $1 AND period = 'm:2026-11'",
+                    project_id,
+                )
+            )
+            == 0.5
+        )
+        if fenced:
+            digest = fence_account_digest(_USER, secret)
+            await conn.execute(
+                "INSERT INTO erasure_fence (account_digest) VALUES ($1) ON CONFLICT DO NOTHING",
+                digest,
+            )
+    if fenced:
+        try:
+            await writer.increment_user_costs([increment])
+            async with store._pool.acquire() as conn:
+                assert (
+                    float(
+                        await conn.fetchval(
+                            "SELECT cost_usd FROM spend_counters WHERE scope_id = $1 AND period = 'm:2026-11'",
+                            project_id,
+                        )
+                    )
+                    == 0.5
+                )
+        finally:
+            async with store._pool.acquire() as conn:
+                await conn.execute("DELETE FROM erasure_fence WHERE account_digest = $1", digest)
