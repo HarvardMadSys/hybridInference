@@ -642,3 +642,25 @@ def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
                     name,
                 )
     assert checkouts >= 6
+
+
+def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
+    """`uv venv` replaces .venv, so a restored one was downloaded and thrown away.
+
+    What keeps the sync fast is the uv cache, setup-uv's ``enable-cache``.
+    """
+    syncing = 0
+    for workflow, name, job, _ in _jobs():
+        steps = job.get("steps") or []
+        for step in steps:
+            if "actions/cache@" in str(step.get("uses", "")):
+                paths = str((step.get("with") or {}).get("path", "")).splitlines()
+                assert not [p for p in paths if p.strip().rstrip("/").endswith(".venv")], (
+                    workflow,
+                    name,
+                )
+        if any("uv venv" in str(step.get("run", "")) for step in steps):
+            syncing += 1
+            (setup,) = [s for s in steps if "astral-sh/setup-uv@" in str(s.get("uses", ""))]
+            assert setup["with"].get("enable-cache") is True, (workflow, name)
+    assert syncing >= 3
