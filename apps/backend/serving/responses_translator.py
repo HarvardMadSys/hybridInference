@@ -370,8 +370,11 @@ def _map_status(finish_reason: str | None) -> tuple[str, dict[str, Any] | None]:
 def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
     """Translate chat ``usage`` to the Responses usage shape.
 
-    Preserve three distinct cache-evidence states that downstream consumers
-    (the FI gateway, RouteWise locality learning, billing) rely on:
+    Preserve three distinct cache-evidence states for those who read the
+    Responses usage: clients (the FI Gateway among them) and the batch worker,
+    which takes an item's cache count from it. (The gateway's own api_logs,
+    billing and RouteWise observations read the chat usage before
+    translation.) The states:
 
     - UNKNOWN: the provider reported no cache measurement at all. Emit
       ``cache_read_reported: false``; ``cached_tokens`` stays 0 only because
@@ -387,7 +390,7 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
     defect that made staging MiniMax-M3 traffic score a fabricated miss on
     every request: the upstream chat surface there omits cache fields
     entirely, so the previous code emitted ``cached_tokens: 0`` and every
-    downstream reader saw a measured miss.
+    reader of the Responses usage saw a measured miss.
     """
     if not chat_usage:
         return None

@@ -252,9 +252,10 @@ def extract_cache_tokens(
     # when the provider reported no cache measurement at all, while still
     # serializing ``input_tokens_details.cached_tokens: 0`` for SDK
     # compatibility. Without this short-circuit the nested 0 would be read as
-    # a measured miss, and every consumer downstream — RouteWise locality
-    # learning, billing, the api_logs cache columns — would score a
-    # measurement that was never made.
+    # a measured miss by whatever reads that payload back: the batch worker's
+    # per-item cache count (serving/batch/dispatch.py), or a client using this
+    # parser. The gateway's own api_logs, billing and RouteWise observations
+    # read the chat usage before translation, which carries no such 0.
     explicit = usage.get("cache_read_reported")
     if isinstance(explicit, bool) and not explicit:
         # The producer asserts nothing was measured. Cache write accounting is

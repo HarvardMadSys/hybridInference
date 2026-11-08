@@ -3240,6 +3240,26 @@ class BatchStore:
         async with self._pool.acquire() as conn:
             return bool(await conn.fetchval("SELECT TRUE FROM batch_jobs WHERE id = $1", batch_id))
 
+    async def batch_intact(self, batch_id: str) -> bool:
+        """Whether a download that has read the batch to its end read all of it.
+
+        False once the batch is gone, and from the moment its owner's erasure
+        begins: :meth:`delete_user_batches` removes a batch's items a slice at
+        a time and its row with the last slice, so until then the row is there
+        while pages a download has yet to read may already be gone. The account
+        is marked ``hard_delete_pending`` before the first slice and stays
+        marked until the erasure is done. A deletion the owner asked for keeps
+        the rows while a download reads them, so it does not count.
+        """
+        async with self._pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT TRUE FROM batch_jobs j LEFT JOIN users u ON u.id = j.user_id "
+                    "WHERE j.id = $1 AND u.hard_delete_pending IS NOT TRUE",
+                    batch_id,
+                )
+            )
+
     # -- admin: per-model caps ---------------------------------------------------
 
     async def list_model_limits(self) -> dict[str, int]:
