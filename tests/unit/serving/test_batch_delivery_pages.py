@@ -86,7 +86,7 @@ class PagedStore:
     async def drop_read_lease(self, lease_id: str) -> None:
         return None
 
-    async def batch_exists(self, batch_id: str) -> bool:
+    async def batch_intact(self, batch_id: str) -> bool:
         return True
 
 

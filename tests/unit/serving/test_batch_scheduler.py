@@ -1477,6 +1477,42 @@ async def test_a_model_queued_answer_holds_the_model(worker, dispatch):
     assert store.count("queued") == 2
 
 
+async def test_a_week_long_queued_hint_holds_the_model_only_briefly(worker, dispatch, monkeypatch):
+    # The answered item waits out its hint, capped at a week; the model's other
+    # items must not wait with it. The hold has a short cap of its own.
+    monkeypatch.setattr(scheduler_module, "MAX_MODEL_HOLD_SECONDS", 0.05)
+    dispatch.results["m1"] = _queued(7 * 86400)
+    store = FakeStore()
+    store.add(2)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, caps={"m1": 1}, timings=timings)
+
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) == 2)
+    await until(lambda: store.calls["release_item"] == 2)
+
+
+async def test_a_model_hold_is_capped_and_only_extends(worker):
+    now = [1000.0]
+    scheduler = worker(FakeStore())
+    scheduler._clock = lambda: now[0]
+    cap = scheduler_module.MAX_MODEL_HOLD_SECONDS
+
+    scheduler._hold_model("m1", 7 * 86400)
+    assert scheduler._cooldown_until["m1"] == 1000.0 + cap
+
+    # A shorter hint later does not cut the hold short.
+    now[0] += 60
+    scheduler._hold_model("m1", 120)
+    assert scheduler._cooldown_until["m1"] == 1000.0 + cap
+
+
 async def test_a_model_queued_answer_fails_once_the_window_would_close(worker, dispatch):
     # The next try would start after the batch stops starting requests: the
     # item fails with the queued answer rather than expiring unexplained.

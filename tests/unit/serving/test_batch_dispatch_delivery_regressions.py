@@ -64,7 +64,7 @@ async def test_request_export_fails_if_erasure_removes_its_next_page():
         ([{"id": 1, "custom_id": "one", "request": {"model": "m"}}], True),
         ([], False),
     ]
-    store.batch_exists.return_value = False
+    store.batch_intact.return_value = False
 
     stream = delivery.stream_requests(store=store, batch_id="erased", url="/v1/embeddings")
     assert b'"custom_id":"one"' in await anext(stream)
@@ -86,7 +86,7 @@ async def test_download_cannot_finish_after_losing_lease_during_its_final_send(m
     monkeypatch.setattr(delivery, "LeaseKeeper", remember_keeper)
     store = AsyncMock()
     store.take_read_lease.return_value = "read-lease"
-    store.batch_exists.return_value = True
+    store.batch_intact.return_value = True
     if kind == "results":
         store.result_page.return_value = (
             [{"id": 1, "custom_id": "one", "status": "completed", "response": {"ok": True}}],

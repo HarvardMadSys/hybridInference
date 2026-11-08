@@ -226,8 +226,9 @@ async def stream_lines(
     fail the download instead of ending it as complete.
 
     Raises:
-        DownloadInterrupted: The batch was removed under the download, its
-            read lease was lost, or the rendering does not match its manifest.
+        DownloadInterrupted: The batch was removed under the download (its
+            owner's erasure began), its read lease was lost, or the rendering
+            does not match its manifest.
     """
     statuses = _statuses(kind)
     try:
@@ -274,7 +275,7 @@ async def stream_lines(
                     _mismatch(batch_id, kind, size, digest, expected)
                     raise DownloadInterrupted(batch_id)
                 yield bytes(chunk)
-        if keeper.lost or not await store.batch_exists(batch_id):
+        if keeper.lost or not await store.batch_intact(batch_id):
             raise DownloadInterrupted(batch_id)
         if expected is not None and (size != limit or digest.hexdigest() != expected.get("sha256")):
             _mismatch(batch_id, kind, size, digest, expected)
@@ -348,7 +349,8 @@ async def stream_requests(
     only the items in ``statuses`` when given.
 
     Raises:
-        DownloadInterrupted: The batch was removed under the download.
+        DownloadInterrupted: The batch was removed under the download (its
+            owner's erasure began), or its read lease was lost.
     """
     try:
         lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
@@ -387,7 +389,7 @@ async def stream_requests(
                 await pacer.step(int(item.get("bytes") or 0) + len(line))
             if lines:
                 yield "".join(lines).encode("utf-8")
-        if keeper.lost or not await store.batch_exists(batch_id):
+        if keeper.lost or not await store.batch_intact(batch_id):
             raise DownloadInterrupted(batch_id)
     finally:
         await keeper.close()
