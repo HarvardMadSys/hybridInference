@@ -600,25 +600,24 @@ async def test_streaming_upstream_cancellation_is_not_recorded(
 
 
 @pytest.mark.parametrize(
-    ("event_type", "data", "expected"),
+    ("event_type", "payload", "expected"),
     [
-        ("content_block_delta", '{"delta":{"type":"text_delta","text":"hi"}}', True),
-        ("content_block_delta", '{"delta":{"type":"thinking_delta","thinking":"hm"}}', True),
-        ("content_block_delta", '{"delta":{"type":"input_json_delta","partial_json":"{"}}', True),
-        ("content_block_delta", '{"delta":{"type":"text_delta","text":""}}', False),
-        ("content_block_delta", '{"delta":{}}', False),
-        ("content_block_delta", "not json", False),
-        ("content_block_delta", "[1, 2]", False),
-        ("message_start", '{"message":{"content":[]}}', False),
-        ("ping", "{}", False),
-        ("", "", False),
+        ("content_block_delta", {"delta": {"type": "text_delta", "text": "hi"}}, True),
+        ("content_block_delta", {"delta": {"type": "thinking_delta", "thinking": "hm"}}, True),
+        ("content_block_delta", {"delta": {"type": "input_json_delta", "partial_json": "{"}}, True),
+        ("content_block_delta", {"delta": {"type": "text_delta", "text": ""}}, False),
+        ("content_block_delta", {"delta": {}}, False),
+        ("content_block_delta", [1, 2], False),
+        ("message_start", {"message": {"content": []}}, False),
+        ("ping", {}, False),
+        ("", None, False),
     ],
 )
-def test_is_non_empty_content_event(event_type, data, expected):
+def test_is_content_delta(event_type, payload, expected):
     """Only a delta that actually produced output counts as content."""
-    from serving.servers.routers.anthropic_messages import _is_non_empty_content_event
+    from serving.servers.routers.anthropic_messages import _is_content_delta
 
-    assert _is_non_empty_content_event(event_type, data) is expected
+    assert _is_content_delta(event_type, payload) is expected
 
 
 # --- the half-open probe on this surface -----------------------------------

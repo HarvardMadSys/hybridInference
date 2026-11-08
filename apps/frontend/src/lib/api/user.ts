@@ -4,7 +4,7 @@ import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 
 const API_BASE = config.apiBase;
 
-export interface User {
+interface User {
   id: string;
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
@@ -23,7 +23,7 @@ export interface User {
   locale?: AccountLocaleChoice | null;
 }
 
-export interface ApiKeyResponse {
+interface ApiKeyResponse {
   api_key: string;
   key_prefix: string;
   name?: string | null;
@@ -56,11 +56,11 @@ export interface ApiKeyListItem {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyListResponse {
+interface ApiKeyListResponse {
   keys: ApiKeyListItem[];
 }
 
-export interface ApiKeyRevealResponse {
+interface ApiKeyRevealResponse {
   key_prefix: string;
   api_key: string;
 }
@@ -73,7 +73,7 @@ export interface ApiKeyUpdate {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyUpdateResponse {
+interface ApiKeyUpdateResponse {
   key_prefix: string;
   name?: string | null;
   budget_daily_usd?: number | null;
@@ -81,20 +81,20 @@ export interface ApiKeyUpdateResponse {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyRegenerateResponse {
+interface ApiKeyRegenerateResponse {
   api_key: string;
   key_prefix: string;
   old_key_prefix: string;
   warning: string;
 }
 
-export interface ApiKeyDeleteResponse {
+interface ApiKeyDeleteResponse {
   key_prefix: string;
   status: string;
   message: string;
 }
 
-export interface UsageStats {
+interface UsageStats {
   period: 'today' | 'month' | 'all';
   quota: {
     has_key: boolean;
@@ -145,7 +145,7 @@ export interface ModelCatalogItem {
   openrouter?: Record<string, unknown> | null;
 }
 
-export interface ModelCatalogResponse {
+interface ModelCatalogResponse {
   object: 'list';
   data: ModelCatalogItem[];
 }
@@ -332,7 +332,7 @@ export interface RouteWiseDecision {
   lp_status?: string | null;
 }
 
-export interface RecentRequestsResponse {
+interface RecentRequestsResponse {
   requests: RecentRequestItem[];
   total: number;
   limit: number;

@@ -113,7 +113,7 @@ export function resolveRequestLocale({
 }
 
 /** What to do once the signed-in account's choice is known. */
-export type LocaleSyncPlan =
+type LocaleSyncPlan =
   | { kind: 'none' }
   /** Write this browser choice — signed out, or the account's own — into the account. */
   | { kind: 'store'; choice: LocaleChoice }

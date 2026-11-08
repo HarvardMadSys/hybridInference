@@ -7,7 +7,7 @@ import { useId, type ReactNode } from 'react';
  * or a loading, empty or error state reads the same on every tab. The look follows the Users, Providers and Recent Requests tabs.
  */
 
-export interface AdminSubTab<K extends string> {
+interface AdminSubTab<K extends string> {
   key: K;
   label: string;
   /** Id of the tab button; the panel names it in `aria-labelledby`. */

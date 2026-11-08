@@ -938,7 +938,7 @@ export function useConfigurationEditor({
   };
 }
 
-export type ConfigurationEditor = ReturnType<typeof useConfigurationEditor>;
+type ConfigurationEditor = ReturnType<typeof useConfigurationEditor>;
 
 /** How many settings the filters leave, across every category. */
 export function matchingSettingCount(editor: ConfigurationEditor): number {
@@ -1060,7 +1060,7 @@ export function ConfigurationFilters({ editor }: { editor: ConfigurationEditor }
 }
 
 /** The anchor of a category's section. */
-export function configSectionId(categoryId: string): string {
+function configSectionId(categoryId: string): string {
   return `config-${categoryId.replace(/[^\w-]/g, '-')}`;
 }
 

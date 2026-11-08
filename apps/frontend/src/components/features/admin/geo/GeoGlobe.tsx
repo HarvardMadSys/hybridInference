@@ -35,7 +35,7 @@ const DEFAULT_ROTATION: [number, number] = [-20, -30];
 // Spacing of the land dot matrix, in degrees of latitude.
 const LAND_STEP_DEGREES = 1.45;
 
-export type GeoRangeDays = 7 | 14 | 30;
+type GeoRangeDays = 7 | 14 | 30;
 
 const METRIC_OPTIONS: { value: GeoMetric; label: string }[] = [
   { value: 'n', label: 'Requests' },

@@ -12,7 +12,7 @@ import { useT, type Translate } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
 
 /** How the signed-in account proves it is its owner's, or why it cannot here. */
-export type DeletionProof = 'password' | 'phone' | 'admin' | 'unavailable';
+type DeletionProof = 'password' | 'phone' | 'admin' | 'unavailable';
 
 export function deletionProof(user: AuthUser, phoneAuth: boolean): DeletionProof {
   if (user.role === 'admin' || user.is_admin) return 'admin';

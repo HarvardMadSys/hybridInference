@@ -1,9 +1,6 @@
 import type { Branding } from '@/config/branding';
 
-export type QuickstartBranding = Pick<
-  Branding,
-  'exampleApiBase' | 'exampleApiKeyEnvVar' | 'exampleModel'
->;
+type QuickstartBranding = Pick<Branding, 'exampleApiBase' | 'exampleApiKeyEnvVar' | 'exampleModel'>;
 
 function shellSingleQuote(value: string): string {
   const singleQuote = String.fromCodePoint(39);

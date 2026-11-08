@@ -14,7 +14,7 @@ function sameStyle(a: CSSProperties, b: CSSProperties): boolean {
  */
 const UNPLACED: CSSProperties = { position: 'fixed', top: 0, left: 0, visibility: 'hidden' };
 
-export interface AnchoredPopoverOptions {
+interface AnchoredPopoverOptions {
   /** Space between the trigger and the popup. */
   gap?: number;
   /** Distance kept from the viewport edges. */

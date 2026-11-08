@@ -166,12 +166,10 @@ INGEST_CODE_FACT_KEYS = frozenset(
 )
 #: Fact names whose string value is an *identifier* another system minted,
 #: kept exactly as sent: the contract's identifier charset
-#: ``[A-Za-z0-9._:@/-]``, at most :data:`INGEST_IDENTIFIER_FACT_MAX`
-#: characters, mixed case allowed, and refused (dropped) when it carries a
+#: ``[A-Za-z0-9._:@/-]``, at most 200 characters, mixed case allowed, and refused (dropped) when it carries a
 #: credential or address shape (:func:`credential_shaped_identifier`). It is
 #: never partly redacted: a changed identifier would no longer join anything.
 INGEST_IDENTIFIER_FACT_KEYS = frozenset({"monitor_incident_key"})
-INGEST_IDENTIFIER_FACT_MAX = 200
 _IDENTIFIER_VALUE = re.compile(r"[A-Za-z0-9._:@/-]{1,200}")
 #: Fact names whose string value is a short *label*: a model or provider
 #: name, a timestamp, a rendered rate or money amount, a top-N summary of
@@ -200,10 +198,7 @@ INGEST_LABEL_FACT_KEYS = frozenset(
         "top_status_codes",
     }
 )
-#: Every name an external string fact may use.
-INGEST_TEXT_FACT_KEYS = INGEST_CODE_FACT_KEYS | INGEST_IDENTIFIER_FACT_KEYS | INGEST_LABEL_FACT_KEYS
-#: Longest code / label an external fact may hold.
-INGEST_CODE_FACT_MAX = 100
+#: Longest label an external fact may hold; ``_CODE_VALUE`` holds a code to 100.
 INGEST_TEXT_FACT_MAX = 200
 _CODE_VALUE = re.compile(r"[a-z0-9][a-z0-9_.:-]{0,99}")
 

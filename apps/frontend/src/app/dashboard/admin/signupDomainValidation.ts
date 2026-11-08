@@ -4,7 +4,7 @@
 // with an alphanumeric character (no leading/trailing hyphens).
 const DOMAIN_RE = /^([a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
 
-export type ValidatedInput =
+type ValidatedInput =
   | { ok: true; domain: string; isWildcard: boolean }
   | { ok: false; error: string };
 

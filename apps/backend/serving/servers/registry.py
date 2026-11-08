@@ -44,8 +44,6 @@ class ModelRegistrationInfo:
 
     Attributes:
         model_id: Canonical model identifier.
-        strategy: DEPRECATED — legacy ``routing_strategy:`` value.  Read by
-            existing bootstrap code; new code should use ``router`` instead.
         aliases: Alternate model_ids that share this model's route.
         router: Strategy name from ``models.yaml`` ``router:`` field
             (e.g. ``"fixed"``, ``"routewise"``).  ``None`` means "use
@@ -56,7 +54,6 @@ class ModelRegistrationInfo:
     """
 
     model_id: str
-    strategy: str | None = None
     aliases: list[str] = field(default_factory=list)
     router: str | None = None
     router_params: dict[str, Any] | None = None
@@ -1048,7 +1045,6 @@ def register_from_models_text(
             model_infos.append(
                 ModelRegistrationInfo(
                     model_id=model_id,
-                    strategy=m.get("routing_strategy"),
                     aliases=aliases,
                     router=m.get("router"),
                     router_params=m.get("router_params"),

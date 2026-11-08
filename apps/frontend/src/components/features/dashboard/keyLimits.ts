@@ -38,7 +38,7 @@ export function limitsSummary(key: ApiKeyListItem, t: Translate): string {
 }
 
 /** Highest budget the server accepts, per day or per month. */
-export const BUDGET_MAX_USD = 1_000_000;
+const BUDGET_MAX_USD = 1_000_000;
 
 /**
  * A typed budget as the API takes it: blank is no limit (`null`); otherwise a

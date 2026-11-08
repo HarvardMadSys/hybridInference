@@ -9,10 +9,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 
 /** The codes that confirm a signed-in account's owner, sent only to its own number. */
-export type OwnerCodePurpose = Extract<
-  PhoneCodePurpose,
-  'delete_account' | 'bind_email' | 'set_password'
->;
+type OwnerCodePurpose = Extract<PhoneCodePurpose, 'delete_account' | 'bind_email' | 'set_password'>;
 
 const INPUT_CLASS =
   'mt-1.5 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20';

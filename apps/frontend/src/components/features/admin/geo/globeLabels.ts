@@ -1,5 +1,5 @@
 /** A mark that wants a label beside it, in screen pixels. */
-export interface LabelRequest {
+interface LabelRequest {
   key: string;
   x: number;
   y: number;
@@ -9,7 +9,7 @@ export interface LabelRequest {
   width: number;
 }
 
-export interface PlacedLabel {
+interface PlacedLabel {
   key: string;
   x: number;
   y: number;

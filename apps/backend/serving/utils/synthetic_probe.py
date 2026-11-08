@@ -42,7 +42,6 @@ from serving.config.settings import has_role
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from fastapi import Request
 
 PROBE_HEADER = "x-probe"
 PROBE_HEADER_VALUE = "synthetic"
@@ -73,13 +72,8 @@ def is_trusted_probe_caller(user_ctx: Mapping[str, Any] | None) -> bool:
     return bool(user_ctx.get("authenticated"))
 
 
-def is_trusted_probe(request: Request, user_ctx: Mapping[str, Any] | None) -> bool:
-    """Marker present *and* the caller is allowed to mean it."""
-    return is_trusted_probe_headers(request.headers, user_ctx)
-
-
 def is_trusted_probe_headers(
     headers: Mapping[str, str], user_ctx: Mapping[str, Any] | None
 ) -> bool:
-    """:func:`is_trusted_probe` for request headers held apart from their request."""
+    """Marker present in *headers* *and* the caller is allowed to mean it."""
     return probe_marker_in(headers) and is_trusted_probe_caller(user_ctx)

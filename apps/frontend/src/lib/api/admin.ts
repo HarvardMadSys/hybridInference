@@ -39,7 +39,7 @@ export interface AdminUser {
   usage_alltime_tokens: number | null;
 }
 
-export type UserSortBy =
+type UserSortBy =
   | 'created'
   | 'cost_today'
   | 'cost_month'
@@ -48,7 +48,7 @@ export type UserSortBy =
   | 'requests'
   | 'tokens';
 
-export interface StatusCounts {
+interface StatusCounts {
   all: number;
   pending_approval: number;
   active: number;
@@ -57,13 +57,13 @@ export interface StatusCounts {
   deleted: number;
 }
 
-export interface ListUsersResponse {
+interface ListUsersResponse {
   total: number;
   users: AdminUser[];
   status_counts: StatusCounts;
 }
 
-export interface ApproveRejectResponse {
+interface ApproveRejectResponse {
   user_id: string;
   email: string | null;
   phone?: string | null;
@@ -71,7 +71,7 @@ export interface ApproveRejectResponse {
   message: string;
 }
 
-export interface ListUsersOptions {
+interface ListUsersOptions {
   status?: string;
   search?: string;
   sortBy?: UserSortBy;
@@ -112,7 +112,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
 // Users cost-history + summary (new in admin Users redesign)
 // ========================================
 
-export interface BulkCostHistoryResponse {
+interface BulkCostHistoryResponse {
   days: number;
   histories: Record<string, CostHistoryPoint[]>;
 }
@@ -139,7 +139,7 @@ export interface UserFilterProvider {
   routable: boolean;
 }
 
-export interface ListUserFilterProvidersResponse {
+interface ListUserFilterProvidersResponse {
   providers: UserFilterProvider[];
 }
 
@@ -241,7 +241,7 @@ export interface UserTurnAverages {
   avg_user_turns: number | null;
 }
 
-export interface BulkTurnAveragesResponse {
+interface BulkTurnAveragesResponse {
   averages: Record<string, UserTurnAverages>;
 }
 
@@ -258,7 +258,7 @@ export interface UserAskQuestionFraction {
   n_ask_requests: number;
 }
 
-export interface BulkAskQuestionFractionsResponse {
+interface BulkAskQuestionFractionsResponse {
   fractions: Record<string, UserAskQuestionFraction>;
 }
 
@@ -297,7 +297,7 @@ export interface UserAutomationScore {
   detail: Record<string, number | null>;
 }
 
-export interface BulkAutomationScoresResponse {
+interface BulkAutomationScoresResponse {
   days: number;
   scores: Record<string, UserAutomationScore>;
 }
@@ -365,7 +365,7 @@ export async function resumeUser(userId: string, reason?: string): Promise<Appro
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
-export interface HardDeleteUserResponse {
+interface HardDeleteUserResponse {
   user_id: string;
   email: string | null;
   phone?: string | null;
@@ -499,7 +499,7 @@ export interface AdminRequestMetricsWindow {
   buckets: AdminRequestMetricsBucket[];
 }
 
-export interface AdminRequestMetricsResponse {
+interface AdminRequestMetricsResponse {
   generated_at: string;
   // Whose requests the counts count. A gateway that predates the field counts
   // every request, whatever was asked.
@@ -549,7 +549,7 @@ export interface AdminPerformanceMetricsWindow {
   throughput_tps: AdminMetricDistribution;
 }
 
-export interface AdminPerformanceMetricsResponse {
+interface AdminPerformanceMetricsResponse {
   /** When the server computed these; null while its first computation runs. */
   generated_at: string | null;
   windows: AdminPerformanceMetricsWindow[];
@@ -586,7 +586,7 @@ export interface AdminTtftScatterModel {
   points: AdminTtftScatterPoint[];
 }
 
-export interface AdminTtftScatterResponse {
+interface AdminTtftScatterResponse {
   /** When the server computed this scatter; null while its first computation runs. */
   generated_at: string | null;
   models: AdminTtftScatterModel[];
@@ -756,7 +756,7 @@ export type RequestSource = 'interactive' | 'batch';
 
 // The request views' filters on who ran a request: a source, and optionally
 // one batch (exact id).
-export interface RequestSourceFilter {
+interface RequestSourceFilter {
   source?: RequestSource;
   batchId?: string;
 }
@@ -835,7 +835,7 @@ export interface AdminRequestPerfGroup {
   decode_throughput_tps: AdminRequestPerfDistribution;
 }
 
-export interface AdminRequestPerfBreakdownResponse {
+interface AdminRequestPerfBreakdownResponse {
   generated_at: string;
   days: number;
   groups: AdminRequestPerfGroup[];
@@ -1014,7 +1014,7 @@ export async function getRecentRequestsPerformanceTrend({
   return jsonOrThrow<AdminRequestPerfTrendResponse>(resp);
 }
 
-export interface AdminRecentRequestContentResponse {
+interface AdminRecentRequestContentResponse {
   prompt: string | null;
   response: string | null;
   reasoning_content: string | null;
@@ -1030,7 +1030,7 @@ export async function getRecentRequestContent(
   return jsonOrThrow<AdminRecentRequestContentResponse>(resp);
 }
 
-export interface ClearErrorRequestsResponse {
+interface ClearErrorRequestsResponse {
   deleted_count: number;
   hours: number;
   message: string;
@@ -1078,7 +1078,7 @@ export interface AnalyticsBreakdownEntry {
   fraction: number;
 }
 
-export interface AnalyticsModelUserEntry {
+interface AnalyticsModelUserEntry {
   email: string | null;
   login_name?: string | null;
   phone?: string | null;
@@ -1133,7 +1133,7 @@ export interface GrowthPoint {
   partial: boolean; // today, still accumulating — excluded from the trends
 }
 
-export interface GetGrowthAnalyticsOptions {
+interface GetGrowthAnalyticsOptions {
   signal?: AbortSignal;
 }
 
@@ -1172,7 +1172,7 @@ export type GeoBucketRow = [
   outputTokens: number,
 ];
 
-export interface GeoIpAttribution {
+interface GeoIpAttribution {
   label: string;
   url: string;
 }
@@ -1206,7 +1206,7 @@ export interface GeoAnalyticsResponse {
   hours: GeoHour[];
 }
 
-export interface GetGeoAnalyticsOptions {
+interface GetGeoAnalyticsOptions {
   days?: 7 | 14 | 30 | 90;
   signal?: AbortSignal;
 }
@@ -1305,7 +1305,7 @@ export async function getGeoAnalytics(
 
 // The analysis provider (API key + model) is configured server-side in Admin →
 // Settings; the request only chooses the scope and sample size.
-export interface UsageInsightsRequest {
+interface UsageInsightsRequest {
   user_id?: string;
   user_email?: string;
   limit?: number;
@@ -1368,7 +1368,7 @@ export interface UsageInsightsSettings {
   model: string;
 }
 
-export interface UsageInsightsSettingsUpdate {
+interface UsageInsightsSettingsUpdate {
   // Omit api_key to keep the current one; '' clears it; any other value replaces it.
   api_key?: string;
   model?: string;
@@ -1415,7 +1415,7 @@ export interface BroadcastPreviewResponse {
   rendered_body_text: string;
 }
 
-export interface CreateBroadcastRequest extends BroadcastPreviewRequest {
+interface CreateBroadcastRequest extends BroadcastPreviewRequest {
   scheduled_at?: string | null;
 }
 
@@ -1437,7 +1437,7 @@ export interface BroadcastListItem {
   created_at: string;
 }
 
-export interface ListBroadcastsResponse {
+interface ListBroadcastsResponse {
   total: number;
   broadcasts: BroadcastListItem[];
 }
@@ -1519,7 +1519,7 @@ export async function cancelBroadcast(id: string): Promise<void> {
 // Request Export
 // ========================================
 
-export interface ExportRequestsParams {
+interface ExportRequestsParams {
   startTime: string;
   endTime?: string;
   userId?: string;
@@ -1599,7 +1599,7 @@ export interface ProviderQuotaResult {
   key_disabled: boolean;
 }
 
-export interface AdminProviderQuotasResponse {
+interface AdminProviderQuotasResponse {
   generated_at: string;
   providers: ProviderQuotaResult[];
 }
@@ -1643,11 +1643,11 @@ export interface RoutableProvider {
   disabled: boolean;
 }
 
-export interface ListRoutableProvidersResponse {
+interface ListRoutableProvidersResponse {
   providers: RoutableProvider[];
 }
 
-export interface SetProviderDisabledResponse {
+interface SetProviderDisabledResponse {
   provider: string;
   disabled: boolean;
   affected_model_count: number;
@@ -1740,12 +1740,12 @@ export interface ProviderStatsRow {
   total_reasoning_tokens: number | null;
 }
 
-export interface ProviderModelPair {
+interface ProviderModelPair {
   provider: string;
   model_id: string;
 }
 
-export interface ProviderStatsResponse {
+interface ProviderStatsResponse {
   rows: ProviderStatsRow[];
   providers: string[];
   models: string[];
@@ -1892,7 +1892,7 @@ export interface SignupAllowedDomain {
   created_by_email: string | null;
 }
 
-export interface ListSignupAllowedDomainsResponse {
+interface ListSignupAllowedDomainsResponse {
   domains: SignupAllowedDomain[];
 }
 
@@ -2007,7 +2007,7 @@ export interface AlertTypeMute {
   muted_at: number | null;
 }
 
-export interface ListAlertMutesResponse {
+interface ListAlertMutesResponse {
   types: AlertTypeMute[];
 }
 
@@ -2055,7 +2055,7 @@ export interface AdminModelVisibilityItem {
   effective_required_role: Role;
 }
 
-export interface ListAdminModelVisibilityResponse {
+interface ListAdminModelVisibilityResponse {
   models: AdminModelVisibilityItem[];
 }
 
@@ -2066,7 +2066,7 @@ export interface RoleQuotaPreview {
   users_affected: number;
 }
 
-export interface RoleQuotaApplyResult {
+interface RoleQuotaApplyResult {
   role: Role;
   quota: number;
   keys_updated: number;
@@ -2115,7 +2115,7 @@ export interface AdminModelConcurrencyItem {
   exempt: boolean;
 }
 
-export interface ListAdminModelConcurrencyResponse {
+interface ListAdminModelConcurrencyResponse {
   models: AdminModelConcurrencyItem[];
 }
 
@@ -2155,7 +2155,7 @@ export interface AdminBatchModelLimit {
   queued: number;
 }
 
-export interface ListAdminBatchModelLimitsResponse {
+interface ListAdminBatchModelLimitsResponse {
   /** `BATCH_MODEL_CONCURRENCY`: the cap of a model without its own. */
   default_concurrency: number;
   models: AdminBatchModelLimit[];
@@ -2190,7 +2190,7 @@ export interface RouteWeight {
   effective_weight: number;
 }
 
-export interface ListRouteWeightsResponse {
+interface ListRouteWeightsResponse {
   model_id?: string;
   routes: RouteWeight[];
 }
@@ -2210,7 +2210,7 @@ export interface RoutewiseSettingItem {
   max?: number | null;
 }
 
-export interface ListRoutewiseSettingsResponse {
+interface ListRoutewiseSettingsResponse {
   model_id: string;
   settings: RoutewiseSettingItem[];
 }
@@ -2224,18 +2224,18 @@ export interface RoutewiseProbeSampleItem {
   checked_at: string;
 }
 
-export interface ListRoutewiseProbeSamplesResponse {
+interface ListRoutewiseProbeSamplesResponse {
   samples: RoutewiseProbeSampleItem[];
 }
 
-export interface ListRoutewiseProbeSamplesOptions {
+interface ListRoutewiseProbeSamplesOptions {
   modelId?: string;
   endpointId?: string;
   sinceSeconds?: number;
   limit?: number;
 }
 
-export interface RunRoutewiseProbeRequest {
+interface RunRoutewiseProbeRequest {
   model_id?: string | null;
   endpoint_id?: string | null;
   idle_only?: boolean;
@@ -2312,7 +2312,7 @@ export interface OffloadRoute {
   updated_by: string | null;
 }
 
-export interface ListOffloadRoutesResponse {
+interface ListOffloadRoutesResponse {
   /**
    * False while UPSTREAM_CONCURRENCY_ENABLED is off: nothing queues for a remote
    * route. A local engine under an engine queue limit still holds its requests.
@@ -2323,7 +2323,7 @@ export interface ListOffloadRoutesResponse {
   offload_routes: OffloadRoute[];
 }
 
-export interface ModelOffloadRouteResponse {
+interface ModelOffloadRouteResponse {
   model_id: string;
   offload: OffloadRoute | null;
 }
@@ -2334,7 +2334,7 @@ export async function listOffloadRoutes(): Promise<ListOffloadRoutesResponse> {
 }
 
 /** The optional limits of an offload policy. A null or absent one is off. */
-export interface OffloadRouteLimits {
+interface OffloadRouteLimits {
   engineQueueLimit?: number | null;
   maxInputTokens?: number | null;
 }
@@ -2504,7 +2504,7 @@ export async function getRoutewiseDecisions(
 // Provider Routes (admin-managed runtime route targets)
 // ========================================
 
-export type ProviderRouteKeySource = 'default' | 'db' | 'env' | 'missing';
+type ProviderRouteKeySource = 'default' | 'db' | 'env' | 'missing';
 export type ProviderRouteSource = 'yaml' | 'override' | 'runtime';
 export type RouteDeploymentType = 'auto' | 'self_hosted' | 'provider_api';
 
@@ -2592,7 +2592,7 @@ export interface RouteCapabilities {
   supports_tools: boolean;
 }
 
-export interface ListProviderRoutesResponse {
+interface ListProviderRoutesResponse {
   model_id?: string;
   strategy?: string;
   provider_options: ProviderRouteOption[];
@@ -2600,7 +2600,7 @@ export interface ListProviderRoutesResponse {
   routes: ProviderRoute[];
 }
 
-export interface ListOpenRouterProviderOptionsResponse {
+interface ListOpenRouterProviderOptionsResponse {
   provider_model_id: string;
   providers: OpenRouterProviderOption[];
 }
@@ -2610,12 +2610,12 @@ export interface ListOpenRouterProviderOptionsResponse {
  * fields. Leave both out to keep the capabilities; `reset_capabilities` clears
  * the values set in the console, so the route follows its defaults again.
  */
-export type RouteCapabilityEdit =
+type RouteCapabilityEdit =
   | { capabilities?: undefined; reset_capabilities?: undefined }
   | { capabilities: RuntimeModelCapabilities; reset_capabilities?: undefined }
   | { capabilities?: undefined; reset_capabilities: true };
 
-export interface UpdateProviderRoutePayload {
+interface UpdateProviderRoutePayload {
   upstream_provider: string;
   openrouter_provider?: string | null;
   openrouter_sort?: OpenRouterSortPolicy | null;
@@ -2630,7 +2630,7 @@ export interface UpdateProviderRoutePayload {
 export type ProviderRouteStrategy = 'fixed' | 'routewise';
 export type ProviderRouteType = 'quota' | 'concurrency' | 'on_demand';
 
-export interface CreateProviderRoutePayload {
+interface CreateProviderRoutePayload {
   route_type: ProviderRouteType;
   upstream_provider: string;
   openrouter_provider?: string | null;
@@ -2652,7 +2652,7 @@ export interface CreateProviderRoutePayload {
  * ID) replaces it whole, and the gateway checks a changed target upstream
  * before saving it.
  */
-export interface UpdateProviderRouteCandidatePayload {
+interface UpdateProviderRouteCandidatePayload {
   upstream_provider?: string;
   openrouter_provider?: string | null;
   openrouter_sort?: OpenRouterSortPolicy | null;
@@ -2673,14 +2673,14 @@ export interface RuntimeModelCapabilities {
   supports_tools: boolean;
 }
 
-export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
+interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
   model_id: string;
   strategy: ProviderRouteStrategy;
   required_role?: Role;
   pricing: Record<string, string>;
 }
 
-export interface VerifyProviderRouteResponse {
+interface VerifyProviderRouteResponse {
   ok: boolean;
 }
 
@@ -2976,7 +2976,7 @@ export async function deleteProviderRouteCandidate(
 // ========================================
 
 export type ProviderDefinitionSource = 'built_in' | 'custom';
-export type ProviderDefinitionAdapterKind = 'openai_compat';
+type ProviderDefinitionAdapterKind = 'openai_compat';
 
 export interface ProviderDefinitionItem {
   provider: string;
@@ -2991,12 +2991,12 @@ export interface ProviderDefinitionItem {
   updated_at: string | null;
 }
 
-export interface ListProviderDefinitionsResponse {
+interface ListProviderDefinitionsResponse {
   providers: ProviderDefinitionItem[];
   adapter_kinds: ProviderDefinitionAdapterKind[];
 }
 
-export interface ProbeProviderDefinitionPayload {
+interface ProbeProviderDefinitionPayload {
   default_base_url: string;
   api_key: string;
   probe_model_id: string;
@@ -3010,7 +3010,7 @@ export interface ProbeProviderDefinitionResponse {
   preview: string | null;
 }
 
-export interface CreateProviderDefinitionPayload extends ProbeProviderDefinitionPayload {
+interface CreateProviderDefinitionPayload extends ProbeProviderDefinitionPayload {
   provider: string;
   display_name: string;
   adapter_kind: ProviderDefinitionAdapterKind;
@@ -3024,7 +3024,7 @@ export interface UpdateProviderDefinitionPayload {
   probe_model_id?: string | null;
 }
 
-export interface DeleteProviderDefinitionResponse {
+interface DeleteProviderDefinitionResponse {
   provider: string;
   deleted_keys: number;
 }
@@ -3117,34 +3117,34 @@ export interface ListProviderApiKeysResponse {
   keys: ProviderApiKeyItem[];
 }
 
-export interface ListProviderApiKeyProvidersResponse {
+interface ListProviderApiKeyProvidersResponse {
   providers: string[];
 }
 
-export interface AddProviderApiKeyResponse {
+interface AddProviderApiKeyResponse {
   key: ProviderApiKeyItem;
   pools_updated: number;
 }
 
-export interface DeleteProviderApiKeyResponse {
+interface DeleteProviderApiKeyResponse {
   id: string;
   provider: string;
   pools_updated: number;
 }
 
-export interface DisableProviderEnvKeyResponse {
+interface DisableProviderEnvKeyResponse {
   id: string;
   provider: string;
   pools_updated: number;
 }
 
-export interface EnableProviderEnvKeyResponse {
+interface EnableProviderEnvKeyResponse {
   id: string;
   provider: string;
   pools_updated: number;
 }
 
-export interface SetProviderApiKeyStatusResponse {
+interface SetProviderApiKeyStatusResponse {
   id: string;
   provider: string;
   status: 'active' | 'disabled';
@@ -3158,7 +3158,7 @@ export interface SetProviderApiKeyMinRoleResponse {
   pools_updated: number;
 }
 
-export interface VerifyProviderApiKeyResponse {
+interface VerifyProviderApiKeyResponse {
   ok: boolean;
 }
 
@@ -3304,7 +3304,7 @@ export interface SiteUpdateItem {
   updated_at: string;
 }
 
-export interface ListSiteUpdatesResponse {
+interface ListSiteUpdatesResponse {
   total: number;
   updates: SiteUpdateItem[];
 }

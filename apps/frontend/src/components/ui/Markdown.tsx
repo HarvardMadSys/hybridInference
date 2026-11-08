@@ -3,7 +3,7 @@ import remarkGfm from 'remark-gfm';
 import { rehypeImagesAsLinks } from '@/lib/utils/markdownImages';
 
 /** Surface this Markdown renders on — picks the accent, border and code palette. */
-export type MarkdownTone = 'light' | 'dark';
+type MarkdownTone = 'light' | 'dark';
 
 interface Palette {
   link: string;

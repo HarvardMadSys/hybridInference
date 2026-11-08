@@ -1204,28 +1204,14 @@ def _schedule_log_store_task(
 # --- Endpoint health recording ---------------------------------------------
 
 
-def _is_non_empty_content_event(event_type: str, data: str) -> bool:
-    """Return whether one Anthropic SSE event carries generated content.
+def _is_content_delta(event_type: str, payload: Any) -> bool:
+    """Return whether one Anthropic SSE event's parsed ``data`` carries generated content.
 
     The Anthropic-native equivalent of ``routing.streaming.has_non_empty_content``,
     which the chat path uses as its stream success signal: a delta that actually
     produced text, thinking, or tool-call JSON proves the upstream is generating,
     where ``message_start`` and keepalive pings prove only that it answered.
-
-    Best-effort like the accumulator beside it -- a malformed event is not
-    content, and never raises into the forwarded stream.
     """
-    if event_type != "content_block_delta":
-        return False
-    try:
-        payload = json.loads(data)
-    except (json.JSONDecodeError, ValueError):
-        return False
-    return _is_content_delta(event_type, payload)
-
-
-def _is_content_delta(event_type: str, payload: Any) -> bool:
-    """:func:`_is_non_empty_content_event` for an event's already-parsed ``data``."""
     if event_type != "content_block_delta" or not isinstance(payload, dict):
         return False
     delta = payload.get("delta")
@@ -1265,25 +1251,11 @@ def _append_fragment(block: dict, key: str, piece: Any) -> None:
         raise TypeError(f"{key} is {type(current).__name__}, not str")
 
 
-def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | None:
-    """Update *acc* in-place given one Anthropic SSE event; return the (possibly new) accumulator.
-
-    Best-effort: any malformed event is swallowed so streaming logging never
-    impacts the forwarded client stream.
-    """
-    if event_type in ("ping", "message_stop", "error", ""):
-        return acc
-    try:
-        payload = json.loads(data)
-    except (json.JSONDecodeError, ValueError):
-        return acc
-    return _apply_sse_payload(acc, event_type, payload)
-
-
 def _apply_sse_payload(acc: dict | None, event_type: str, payload: Any) -> dict | None:
-    """:func:`_apply_sse_event` for an event's already-parsed ``data``.
+    """Update *acc* in place with one Anthropic SSE event's parsed ``data``; return it.
 
-    String fields keep their pieces in :class:`_Fragments` until the block
+    Best-effort: an event of an unexpected shape is ignored, so streaming
+    logging never affects the forwarded client stream. String fields keep their pieces in :class:`_Fragments` until the block
     finalizes; read the accumulator through :func:`_finalize_response_acc`.
     """
     if event_type in ("ping", "message_stop", "error", ""):
@@ -2399,9 +2371,9 @@ async def execute_messages(
                     Returns whether every event it extracted was well-formed,
                     which is what tells the drain apart from a truncation: a
                     complete event that merely lost its delimiter parses, and an
-                    upstream that stopped mid-event does not. Both
-                    ``_apply_sse_event`` and ``_is_non_empty_content_event``
-                    already swallow a malformed event, so a truncation accounts
+                    upstream that stopped mid-event does not. A malformed event
+                    is skipped before ``_apply_sse_payload`` and
+                    ``_is_content_delta`` see it, so a truncation accounts
                     nothing either way; the return exists so the wire and the
                     accounting cannot disagree about what was delivered.
                     """

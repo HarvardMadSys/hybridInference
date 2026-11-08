@@ -49,7 +49,7 @@ function apiOrigin(apiBase: string): string | null {
   }
 }
 
-export interface PolicyOptions {
+interface PolicyOptions {
   /** The API base the browser bundle calls: `config.apiBase` in src/config/env.ts. */
   apiBase: string;
   /** `next dev` evaluates code and reloads over a websocket; a build does neither. */

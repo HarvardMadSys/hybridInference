@@ -530,7 +530,7 @@ function TextSetting({
   );
 }
 
-export interface UserDetailPanelProps {
+interface UserDetailPanelProps {
   user: AdminUser;
   detail: UserDetail;
   availableModels: AdminModelVisibilityItem[];

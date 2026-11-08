@@ -28,7 +28,7 @@ export function ChangeList({ changes }: { changes: readonly Change[] }) {
 }
 
 /** How an empty value reads in a change row. */
-export function shown(value: string | number | boolean | null | undefined, empty = '(empty)') {
+function shown(value: string | number | boolean | null | undefined, empty = '(empty)') {
   if (value === null || value === undefined || value === '') return empty;
   if (typeof value === 'boolean') return value ? 'On' : 'Off';
   return String(value);

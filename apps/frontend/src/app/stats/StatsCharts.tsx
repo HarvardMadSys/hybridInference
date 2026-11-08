@@ -97,7 +97,7 @@ export function DailyTokensChart({
   );
 }
 
-export interface WeeklySeries {
+interface WeeklySeries {
   key: string;
   name: string;
   color: string;

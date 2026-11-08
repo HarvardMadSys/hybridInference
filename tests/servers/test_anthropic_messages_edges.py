@@ -33,7 +33,7 @@ def _auth():
 def _feed(events: list[tuple[str, dict]]) -> dict | None:
     acc = None
     for event_type, payload in events:
-        acc = amod._apply_sse_event(acc, event_type, json.dumps(payload))
+        acc = amod._apply_sse_payload(acc, event_type, payload)
     return acc
 
 

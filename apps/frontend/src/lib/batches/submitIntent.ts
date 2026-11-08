@@ -57,7 +57,7 @@ export interface IntentStore {
   replaceIf(userId: string, expectedKey: string, next: SubmitIntent): Promise<SubmitIntent | null>;
 }
 
-export class IntentUnsupportedError extends Error {
+class IntentUnsupportedError extends Error {
   constructor() {
     super('This browser cannot coordinate submissions safely across tabs.');
     this.name = 'IntentUnsupportedError';
@@ -235,7 +235,7 @@ export type IntentOutcome =
    */
   | { kind: 'stale' };
 
-export interface SettleDeps {
+interface SettleDeps {
   lookup: (key: string) => Promise<SubmissionLookup>;
   create: (body: ConsoleSubmission, key: string) => Promise<BatchDetail>;
   now?: () => number;

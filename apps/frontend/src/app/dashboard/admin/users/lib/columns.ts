@@ -14,7 +14,7 @@ export type ColumnId =
   | 'askQuestion'
   | 'automation';
 
-export interface ColumnGroup {
+interface ColumnGroup {
   label: string;
   columns: Array<{ id: ColumnId; label: string }>;
 }

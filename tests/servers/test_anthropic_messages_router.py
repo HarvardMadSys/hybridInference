@@ -2761,7 +2761,7 @@ def test_pick_adapter_skips_one_whose_eligible_key_is_muted(monkeypatch):
 
 
 def _start_event(idx, block=None):
-    return json.dumps({"index": idx, "content_block": block or {"type": "text"}})
+    return {"index": idx, "content_block": block or {"type": "text"}}
 
 
 def test_sse_accumulator_drops_an_absurd_block_index():
@@ -2771,7 +2771,9 @@ def test_sse_accumulator_drops_an_absurd_block_index():
     before any of the surrounding validation could matter.
     """
     acc = {"content": []}
-    out = anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(100_000_000))
+    out = anthropic_messages._apply_sse_payload(
+        acc, "content_block_start", _start_event(100_000_000)
+    )
     assert out is acc
     assert acc["content"] == []
 
@@ -2783,10 +2785,10 @@ def test_sse_accumulator_drops_a_negative_block_index():
     rather than being rejected.
     """
     acc = {"content": []}
-    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(0))
+    anthropic_messages._apply_sse_payload(acc, "content_block_start", _start_event(0))
     acc["content"][0]["text"] = "real content"
 
-    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(-1))
+    anthropic_messages._apply_sse_payload(acc, "content_block_start", _start_event(-1))
 
     assert len(acc["content"]) == 1
     assert acc["content"][0]["text"] == "real content"
@@ -2794,8 +2796,8 @@ def test_sse_accumulator_drops_a_negative_block_index():
 
 def test_sse_accumulator_still_accepts_ordinary_indices():
     acc = {"content": []}
-    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(0))
-    anthropic_messages._apply_sse_event(acc, "content_block_start", _start_event(2))
+    anthropic_messages._apply_sse_payload(acc, "content_block_start", _start_event(0))
+    anthropic_messages._apply_sse_payload(acc, "content_block_start", _start_event(2))
     assert len(acc["content"]) == 3
     assert acc["content"][1] is None
     assert acc["content"][2]["type"] == "text"

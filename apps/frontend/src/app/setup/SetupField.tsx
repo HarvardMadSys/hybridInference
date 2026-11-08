@@ -8,7 +8,7 @@ import { NEUTRAL_AUTH_APPEARANCE } from '@/site-ui/appearance';
 export const SETUP_INPUT_CLASS = NEUTRAL_AUTH_APPEARANCE.input;
 export const SETUP_INPUT_ERROR_CLASS = NEUTRAL_AUTH_APPEARANCE.inputError;
 
-export interface FieldA11y {
+interface FieldA11y {
   'aria-describedby'?: string;
   'aria-invalid'?: true;
 }

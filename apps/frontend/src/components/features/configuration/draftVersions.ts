@@ -15,7 +15,7 @@ import type { ConfigSourceVersion } from '@/lib/api/config';
  */
 export type DraftVersions = Readonly<Record<string, ConfigSourceVersion>>;
 
-export function sameVersion(
+function sameVersion(
   a: ConfigSourceVersion | null | undefined,
   b: ConfigSourceVersion | null | undefined,
 ): boolean {

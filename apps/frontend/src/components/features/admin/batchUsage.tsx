@@ -1,7 +1,7 @@
 import type { AdminBatchSummary, ConsoleBatch } from '@/lib/api/batches';
 
 /** Requests by outcome; the parts add up to the total. */
-export interface OutcomeCounts {
+interface OutcomeCounts {
   succeeded: number;
   failed: number;
   expired: number;
@@ -176,7 +176,7 @@ export function StatTile({
 }
 
 /** When a running batch should finish at its pace so far, and whether its window closes first. */
-export interface FinishEstimate {
+interface FinishEstimate {
   /** Epoch seconds. */
   at: number;
   /** Seconds from `now`. */

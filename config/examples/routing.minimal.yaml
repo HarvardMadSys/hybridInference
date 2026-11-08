@@ -16,8 +16,8 @@
 # in models.openrouter.yaml. Nothing here needs to name a host.
 
 # Per-model routers (`router:` in the model registry) override this.
-# `routing_strategy:`/`routing_parameter:` are the deprecated spelling and are
-# deliberately absent here.
+# `routing_parameter:` is the deprecated spelling and is deliberately absent
+# here.
 default_router: fixed
 
 # Seconds to wait for an endpoint to accept a connection.

@@ -11,12 +11,12 @@ import { config } from '@/config/env';
 
 const API_BASE = config.apiBase;
 
-export interface SetupStatus {
+interface SetupStatus {
   setup_required: boolean;
   database_enabled: boolean;
 }
 
-export interface SetupAdminRequest {
+interface SetupAdminRequest {
   /** As printed in the backend log, `XXXX-XXXX-XXXX`. */
   setup_code: string;
   login_name: string;

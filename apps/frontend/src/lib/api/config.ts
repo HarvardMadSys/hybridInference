@@ -218,7 +218,7 @@ export class ConfigVersionConflictError extends APIError {
 }
 
 /** Options for a configuration write. */
-export interface ConfigWriteOptions {
+interface ConfigWriteOptions {
   /**
    * The version the editing view was loaded at: the write is refused (a
    * `ConfigVersionConflictError`) if anything was saved since. Pass the
@@ -234,7 +234,7 @@ function ifMatch(options?: ConfigWriteOptions): Record<string, string> {
   return version ? { 'If-Match': `"${version.epoch}:${version.revision}"` } : {};
 }
 
-export interface ConfigPatchRequest {
+interface ConfigPatchRequest {
   /** A JSON boolean for `bool`, a number for `int`/`float`, a string otherwise. */
   values: Record<string, ConfigScalar>;
   /**
@@ -247,13 +247,13 @@ export interface ConfigPatchRequest {
 
 export type AlertNotificationChannel = 'slack' | 'wecom';
 
-export interface AlertNotificationTestRequest {
+interface AlertNotificationTestRequest {
   channel: AlertNotificationChannel;
   /** Omit to test the latest saved URL, including changes pending restart. */
   webhook_url?: string;
 }
 
-export interface AlertNotificationTestResponse {
+interface AlertNotificationTestResponse {
   channel: AlertNotificationChannel;
   sent: true;
   test_id: string;
@@ -271,7 +271,7 @@ export async function testAlertNotification(
   return readJson<AlertNotificationTestResponse>(resp);
 }
 
-export interface RestartResponse {
+interface RestartResponse {
   restarting: boolean;
   /** The process that is exiting; `/health` names a different one once it is back. */
   instance?: string;
@@ -393,7 +393,7 @@ export interface ConfigBackupPayload {
   signup_allowed_domains?: Array<Record<string, unknown>>;
 }
 
-export interface ConfigRestoreResponse {
+interface ConfigRestoreResponse {
   config: ConfigResponse;
   immutable_keys_preserved: string[];
   /** The security-relevant changes the restore made; absent from older backends. */
@@ -500,7 +500,7 @@ export async function restartBackend(): Promise<RestartResponse> {
 const HEALTH_ATTEMPT_TIMEOUT_MS = 5_000;
 
 /** What one liveness probe found. */
-export interface BackendHealth {
+interface BackendHealth {
   up: boolean;
   /** The process that answered, when it says (an older backend does not). */
   instance: string | null;
@@ -534,7 +534,7 @@ export async function checkBackendHealth(): Promise<BackendHealth> {
   }
 }
 
-export type RestartWaitResult = 'restarted' | 'timeout' | 'aborted';
+type RestartWaitResult = 'restarted' | 'timeout' | 'aborted';
 
 /** What the waits for one restart know about it. */
 export interface RestartProgress {
@@ -544,7 +544,7 @@ export interface RestartProgress {
   from?: string | null;
 }
 
-export interface WaitForRestartOptions {
+interface WaitForRestartOptions {
   /** Give up after this long. Default two minutes. */
   timeoutMs?: number;
   /** Pause between probes. Default one second. */

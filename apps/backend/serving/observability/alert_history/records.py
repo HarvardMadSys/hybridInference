@@ -23,47 +23,6 @@ MAX_FACT_STRING = 500
 MAX_FACTS = 32
 MAX_TITLE = 300
 MAX_BODY = 8000
-MAX_REQUEST_REFS = 5
-
-#: Every kind a record may have. ``history_conflict`` is written only by the
-#: store, for the losing side of an identity collision.
-KINDS = frozenset(
-    {
-        "condition_triggered",
-        "condition_ended",
-        "notification_decision",
-        "suppression_summary",
-        "delivery_attempt",
-        "delivery_result",
-        "resolution_retry_terminated",
-        "history_gap",
-    }
-)
-STORE_KINDS = KINDS | {"history_conflict"}
-
-END_BASES = frozenset({"observed_healthy", "no_samples", "source_closed", "superseded", "unknown"})
-DECISION_REASONS = frozenset(
-    {
-        "cooldown",
-        "type_muted",
-        "snoozed",
-        "in_flight",
-        "no_channel",
-        "channel_config_invalid",
-        "policy_disabled",
-        "rate_limited",
-        "resolution_silenced",
-        "source_suppressed",
-        "superseded_by_new_episode",
-        "max_attempts",
-        "max_age",
-        "other",
-    }
-)
-OUTCOMES = frozenset({"accepted", "rejected", "not_sent", "unknown"})
-CHANNELS = frozenset({"slack", "wecom", "email", "webhook", "other"})
-ORIGINS = frozenset({"live", "test", "channel_import"})
-SEVERITIES = frozenset({"critical", "error", "warn", "info"})
 
 
 def utc_iso(value: dt.datetime) -> str:

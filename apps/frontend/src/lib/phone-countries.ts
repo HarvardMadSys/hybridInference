@@ -1,4 +1,4 @@
-export interface PhoneCountryOption {
+interface PhoneCountryOption {
   code: string;
   iso: string;
   flag: string;
