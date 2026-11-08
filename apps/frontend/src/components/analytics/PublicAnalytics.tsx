@@ -1,6 +1,5 @@
 'use client';
 
-import Script from 'next/script';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 
@@ -17,6 +16,59 @@ export function isAnalyticsPath(pathname: string | null): boolean {
   return ANALYTICS_PATHS.has(pathname === '/' ? '/' : pathname.replace(/\/+$/, ''));
 }
 
+const COUNTER_SRC = 'https://www.statcounter.com/counter/counter.js';
+
+// Once per document: the counter counts the page view it loads on.
+let counterStarted = false;
+
+/**
+ * Run `start` once the page has loaded and the browser is idle, as
+ * `next/script`'s `lazyOnload` does -- but cancellable, which that is not: a
+ * lazy script it has scheduled is added whatever page the visitor is on by
+ * then. Returns the cancel.
+ */
+function afterLoadWhenIdle(start: () => void): () => void {
+  let cancelIdle: (() => void) | null = null;
+  const schedule = () => {
+    if (typeof window.requestIdleCallback === 'function') {
+      const handle = window.requestIdleCallback(start);
+      cancelIdle = () => window.cancelIdleCallback(handle);
+    } else {
+      const handle = window.setTimeout(start, 1);
+      cancelIdle = () => window.clearTimeout(handle);
+    }
+  };
+  if (document.readyState === 'complete') schedule();
+  else window.addEventListener('load', schedule, { once: true });
+  return () => {
+    window.removeEventListener('load', schedule);
+    cancelIdle?.();
+  };
+}
+
+/**
+ * Add StatCounter's script, with the settings it reads from the page. They are
+ * set as values rather than written into an inline script, so nothing in them
+ * can run.
+ */
+function startCounter(
+  project: number,
+  securityKey: string,
+  nonce: string | undefined,
+  onLoad: () => void,
+): void {
+  if (counterStarted) return;
+  counterStarted = true;
+  Object.assign(window, { sc_project: project, sc_invisible: 1, sc_security: securityKey });
+  const script = document.createElement('script');
+  script.id = 'statcounter-loader';
+  script.src = COUNTER_SRC;
+  script.async = true;
+  if (nonce) script.nonce = nonce;
+  script.addEventListener('load', onLoad, { once: true });
+  document.body.appendChild(script);
+}
+
 /**
  * The deployment's StatCounter, on the public pages only.
  *
@@ -27,6 +79,10 @@ export function isAnalyticsPath(pathname: string | null): boolean {
  * document it has loaded in never becomes a signed-in one: the console moves
  * between pages without reloading, so leaving the public pages -- for the
  * sign-in form, say -- reloads the page, and the counter with its access goes.
+ *
+ * It loads once the page has loaded and the browser is idle, and only if the
+ * page is still a public one at that moment: a visitor quick to click "Sign in"
+ * is on the sign-in form by then.
  */
 export function PublicAnalytics({
   projectId,
@@ -48,35 +104,34 @@ export function PublicAnalytics({
     if (loaded.current && !isAnalyticsPath(pathname)) window.location.reload();
   }, [pathname]);
 
+  useEffect(() => {
+    // A project id is a number; StatCounter counts nothing with anything else.
+    const project = Number(projectId);
+    if (!eligible || !Number.isSafeInteger(project) || project <= 0) return;
+    return afterLoadWhenIdle(() => {
+      // The page now, not the page this was scheduled on.
+      if (!isAnalyticsPath(window.location.pathname)) return;
+      startCounter(project, securityKey, nonce, () => {
+        loaded.current = true;
+      });
+    });
+  }, [eligible, projectId, securityKey, nonce]);
+
   if (!eligible || !isAnalyticsPath(pathname)) return null;
 
   return (
-    <>
-      <Script id="statcounter-config" strategy="afterInteractive" nonce={nonce}>
-        {`var sc_project=${projectId}; var sc_invisible=1; var sc_security='${securityKey}';`}
-      </Script>
-      <Script
-        id="statcounter-loader"
-        src="https://www.statcounter.com/counter/counter.js"
-        strategy="lazyOnload"
-        nonce={nonce}
-        onLoad={() => {
-          loaded.current = true;
-        }}
-      />
-      <noscript>
-        <div className="statcounter">
-          <a title="Web Analytics" href="https://statcounter.com/" target="_blank" rel="noreferrer">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              className="statcounter"
-              src={`https://c.statcounter.com/${projectId}/0/${securityKey}/1/`}
-              alt="Web Analytics"
-              referrerPolicy="no-referrer-when-downgrade"
-            />
-          </a>
-        </div>
-      </noscript>
-    </>
+    <noscript>
+      <div className="statcounter">
+        <a title="Web Analytics" href="https://statcounter.com/" target="_blank" rel="noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            className="statcounter"
+            src={`https://c.statcounter.com/${projectId}/0/${securityKey}/1/`}
+            alt="Web Analytics"
+            referrerPolicy="no-referrer-when-downgrade"
+          />
+        </a>
+      </div>
+    </noscript>
   );
 }
