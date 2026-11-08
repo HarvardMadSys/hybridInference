@@ -327,3 +327,38 @@ def test_the_restore_drill_server_shares_nothing_with_the_deployment_database(
     assert "restore-check" not in deployment["networks"]
     for key in ("POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"):
         assert scratch["environment"][key] == deployment["environment"][key]
+
+
+def test_copying_the_ops_env_example_changes_no_choice(tmp_path: Path, docker_cli: str) -> None:
+    """A copied template must not override .env profiles or shell values with blanks."""
+    shutil.copy(REPO / "Makefile", tmp_path / "Makefile")
+    shutil.copy(REPO / ".ops.env.example", tmp_path / ".ops.env")
+    compose = tmp_path / "deploy" / "docker" / "docker-compose.yml"
+    compose.parent.mkdir(parents=True)
+    shutil.copy(COMPOSE, compose)
+    shutil.copy(COMPOSE.parent / "docker-compose.pgadmin-port.yml", compose.parent)
+    (tmp_path / ".env").write_text(
+        "DB_NAME=compose_test\nDB_USER=compose_test\nDB_PASSWORD=local-compose-test-only\n"
+        "COMPOSE_PROFILES=admin\n"
+    )
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "DOCKER_CONFIG") if key in os.environ}
+    result = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "--eval=probe: ; @$(COMPOSE) config --format json",
+            "probe",
+            "DISTRIBUTION=none",
+        ],
+        cwd=tmp_path,
+        env={**env, "PGADMIN_PUBLISH": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    services = json.loads(result.stdout)["services"]
+    # The profile from .env still applies, and the shell's PGADMIN_PUBLISH too.
+    (port,) = services["pgadmin"]["ports"]
+    assert (port["host_ip"], port["published"]) == ("127.0.0.1", "5050")
