@@ -321,10 +321,13 @@ ARTIFACT_ENV_ARGS := $(if $(ARTIFACT_ENV_FILE),--env-file $(ARTIFACT_ENV_FILE),)
 ifneq ($(ARTIFACT_ENV_FILE),)
 COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.artifacts.yml
 endif
+# A teaching overlay's database-less Stage 1 reads its documents as JSON
+# environment seeds, taken from the selected overlay's own files.
+_json_env = $(if $(wildcard $(1)),$(shell python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))))' '$(1)'),)
 ifeq ($(_IS_EXAMPLE),yes)
-export MODEL_CATALOG := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/config/models.json"))))')
-export ROUTING_POLICY := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/config/routing.json"))))')
-export SITE_CONFIGURATION := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/distribution.json"))))')
+export MODEL_CATALOG := $(call _json_env,$(DISTRIBUTION_PATH)/config/models.json)
+export ROUTING_POLICY := $(call _json_env,$(DISTRIBUTION_PATH)/config/routing.json)
+export SITE_CONFIGURATION := $(call _json_env,$(DISTRIBUTION_PATH)/distribution.json)
 endif
 COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)$(if $(ARTIFACT_ENV_ARGS), $(ARTIFACT_ENV_ARGS),)
 # The full local demo is a third Compose layer on top of the runnable example.
@@ -401,7 +404,11 @@ _DIST_DEMO_PROVIDER_SERVICE := $(if $(_DIST_ENV_FILES),$(shell sed -n 's/^DEMO_P
 BACKEND_PORT ?= $(if $(_DIST_BACKEND_PORT),$(_DIST_BACKEND_PORT),8080)
 FRONTEND_PORT ?= $(if $(_DIST_FRONTEND_PORT),$(_DIST_FRONTEND_PORT),3001)
 DEMO_PROVIDER_SERVICE ?= $(_DIST_DEMO_PROVIDER_SERVICE)
-ifeq ($(_IS_EXAMPLE),yes)
+# An overlay may ship its own smoke check, as the example always does; `make
+# smoke` runs it against the backend port its env file publishes. Without one,
+# the generic check below runs.
+SMOKE_SCRIPT := $(if $(_IS_EXAMPLE),$(DISTRIBUTION_PATH)/smoke.py,$(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION_PATH)/smoke.py),))
+ifneq ($(SMOKE_SCRIPT),)
 SMOKE_BASE_URL ?= http://localhost:$(BACKEND_PORT)
 else
 # An empty URL asks gateway_ops to resolve the published endpoint from Compose,
@@ -411,13 +418,12 @@ endif
 DEMO_BASE_URL ?= http://localhost:$(FRONTEND_PORT)
 SMOKE_TIMEOUT ?= 120
 SMOKE_PYTHON ?= python3
-SMOKE_SCRIPT := $(DISTRIBUTION_PATH)/smoke.py
 DEMO_SMOKE_SCRIPT := $(DISTRIBUTION_PATH)/full_smoke.py
 DEMO_SMOKE_STATE_ARG := $(if $(DEMO_SMOKE_STATE_FILE),--write-reset-state "$(DEMO_SMOKE_STATE_FILE)",)
 DEMO_SMOKE_EXPECT_STATE_ARG := $(if $(DEMO_SMOKE_EXPECT_STATE_FILE),--expect-existing-state "$(DEMO_SMOKE_EXPECT_STATE_FILE)",)
 
 smoke:  ## Check readiness and configuration; MODEL=<id> also checks inference
-ifeq ($(_IS_EXAMPLE),yes)
+ifneq ($(SMOKE_SCRIPT),)
 	$(SMOKE_PYTHON) "$(SMOKE_SCRIPT)" --base-url "$(SMOKE_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)"
 else
 	$(SMOKE_PYTHON) -m ops.admin.gateway_ops smoke --base-url "$(SMOKE_BASE_URL)" --model "$(MODEL)" --compose $(COMPOSE)

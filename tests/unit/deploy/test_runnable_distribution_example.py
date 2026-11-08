@@ -526,6 +526,59 @@ def test_smoke_url_follows_the_distribution_env_file(
     assert '--base-url "http://localhost:24242"' in smoke
 
 
+def test_a_deployment_overlay_keeps_its_own_smoke_check(tmp_path: Path) -> None:
+    """An overlay's smoke.py is what `make smoke` ran before; the generic check is the fallback."""
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "distributions" / "acme" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    (deploy / "backend.env").write_text("BACKEND_PORT=25252\n")
+
+    generic = _make_dry_run("smoke", "DISTRIBUTION=acme", cwd=sandbox)
+    assert "-m ops.admin.gateway_ops smoke" in generic
+
+    (deploy.parent / "smoke.py").write_text("raise SystemExit(0)\n")
+    own = _make_dry_run("smoke", "DISTRIBUTION=acme", cwd=sandbox)
+    assert 'distributions/acme/smoke.py" --base-url "http://localhost:25252"' in own
+    assert "gateway_ops" not in own
+
+
+def test_a_teaching_overlay_seeds_its_own_documents(tmp_path: Path) -> None:
+    """Stage 1's JSON seeds come from the selected overlay, not a fixed example path."""
+    sandbox = tmp_path / "repo"
+    overlay = sandbox / "distributions" / "tutorial"
+    (overlay / "deploy").mkdir(parents=True)
+    (overlay / "config").mkdir()
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE / "EXAMPLE_OVERLAY", overlay / "EXAMPLE_OVERLAY")
+    (overlay / "deploy" / "backend.env").write_text("BACKEND_PORT=26262\n")
+    (overlay / "config" / "models.json").write_text('{"models": [{"id": "tutorial-chat"}]}')
+    (overlay / "config" / "routing.json").write_text('{"default_router": "fixed"}')
+    (overlay / "distribution.json").write_text('{"distribution": {"id": "tutorial"}}')
+
+    env = {k: v for k, v in os.environ.items() if k != "DISTRIBUTION"}
+    proc = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            '--eval=seeds: ; @printf \'%s\\n\' "$$MODEL_CATALOG" "$$ROUTING_POLICY" '
+            '"$$SITE_CONFIGURATION"',
+            "seeds",
+            "DISTRIBUTION=tutorial",
+        ],
+        cwd=sandbox,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    models, routing, site = (json.loads(line) for line in proc.stdout.splitlines())
+    assert models["models"][0]["id"] == "tutorial-chat"
+    assert routing == {"default_router": "fixed"}
+    assert site["distribution"]["id"] == "tutorial"
+
+
 def test_make_selection_preserves_default_and_none_semantics(tmp_path: Path) -> None:
     """The example shares a root with real overlays but is never auto-selected.
 
