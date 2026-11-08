@@ -2471,10 +2471,6 @@
     "source": "Your account's daily quota of {amount} also applies.",
     "text": "账户的每日额度 {amount} 同时生效。"
   },
-  "dashboard.key_detail.all_models": {
-    "source": "All models",
-    "text": "全部模型"
-  },
   "dashboard.key_detail.back": {
     "source": "API Keys",
     "text": "API key"
@@ -2539,10 +2535,6 @@
     "source": "Limits saved.",
     "text": "限制已保存。"
   },
-  "dashboard.key_detail.some_models": {
-    "source": "Only the models selected below",
-    "text": "仅限下面选中的模型"
-  },
   "dashboard.key_detail.spend_note": {
     "source": "Counted since usage was first attributed to keys. Regenerating the key keeps its spend.",
     "text": "从开始按 key 统计用量时算起。重新生成 key 不会清零花费。"
@@ -2562,10 +2554,6 @@
   "dashboard.key_detail.today": {
     "source": "Today",
     "text": "今天"
-  },
-  "dashboard.key_detail.unavailable": {
-    "source": "no longer available",
-    "text": "已不可用"
   },
   "dashboard.key_detail.zero_hint": {
     "source": "A budget of 0 pauses the key.",
@@ -4273,14 +4261,6 @@
     "source": "Failed to load projects. Please try again later.",
     "text": "无法加载项目，请稍后重试。"
   },
-  "dashboard.projects.models_label": {
-    "source": "Allowed models (comma separated)",
-    "text": "允许的模型（以逗号分隔）"
-  },
-  "dashboard.projects.models_placeholder": {
-    "source": "Every visible model",
-    "text": "所有可见模型"
-  },
   "dashboard.projects.monthly_budget": {
     "source": "Monthly {amount}",
     "text": "每月 {amount}"
@@ -4340,5 +4320,45 @@
   "dashboard.keys.project_placeholder": {
     "source": "Account default",
     "text": "账户默认项目"
+  },
+  "dashboard.model_picker.all_models": {
+    "source": "All models",
+    "text": "全部模型"
+  },
+  "dashboard.model_picker.clear_all": {
+    "source": "Clear all",
+    "text": "全部清除"
+  },
+  "dashboard.model_picker.pick_a_model": {
+    "source": "Pick at least one model, or choose All models.",
+    "text": "至少选择一个模型，或选择全部模型。"
+  },
+  "dashboard.model_picker.select_all": {
+    "source": "Select all",
+    "text": "全选"
+  },
+  "dashboard.model_picker.selected_count": {
+    "source": "{count} selected",
+    "text": "已选择 {count} 个"
+  },
+  "dashboard.model_picker.some_models": {
+    "source": "Only the models selected below",
+    "text": "仅以下选中的模型"
+  },
+  "dashboard.model_picker.unavailable": {
+    "source": "no longer available",
+    "text": "已不可用"
+  },
+  "dashboard.projects.models_hint": {
+    "source": "Other models answer requests from this project as if they did not exist, and its model list shows only these.",
+    "text": "其他模型对这个项目的请求就像不存在一样，用它获取的模型列表也只包含这些模型。"
+  },
+  "dashboard.projects.models_title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "dashboard.projects.pick_a_model": {
+    "source": "Pick at least one model, or allow all models.",
+    "text": "至少选择一个模型，或允许全部模型。"
   }
 }

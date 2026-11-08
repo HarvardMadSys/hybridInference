@@ -8,6 +8,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
+import { ModelPicker } from './ModelPicker';
 import { useT } from '@/components/providers/useT';
 import { formatUsd } from '@/lib/utils/currency';
 import { fill } from '@/lib/utils/interpolate';
@@ -19,14 +20,6 @@ function parseBudget(value: string): number | null {
   if (!trimmed) return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseModels(value: string): string[] | null {
-  const models = value
-    .split(',')
-    .map((model) => model.trim())
-    .filter(Boolean);
-  return models.length > 0 ? models : null;
 }
 
 export function ProjectsManager(): JSX.Element {
@@ -44,7 +37,7 @@ export function ProjectsManager(): JSX.Element {
     daily: '',
     monthly: '',
     concurrency: '',
-    models: '',
+    models: null as string[] | null,
   });
   const [formError, setFormError] = useState<string | null>(null);
   const submittingRef = useRef(false);
@@ -52,7 +45,7 @@ export function ProjectsManager(): JSX.Element {
   const busy = createMutation.isPending || updateMutation.isPending || archiveMutation.isPending;
 
   function openCreate(): void {
-    setNames({ name: '', daily: '', monthly: '', concurrency: '', models: '' });
+    setNames({ name: '', daily: '', monthly: '', concurrency: '', models: null });
     setFormError(null);
     setEdit({ mode: 'create' });
   }
@@ -64,7 +57,7 @@ export function ProjectsManager(): JSX.Element {
       monthly: project.budget_monthly_usd == null ? '' : String(project.budget_monthly_usd),
       concurrency:
         project.max_concurrent_requests == null ? '' : String(project.max_concurrent_requests),
-      models: (project.allowed_models ?? []).join(', '),
+      models: project.allowed_models ?? null,
     });
     setFormError(null);
     setEdit({ mode: 'edit', project });
@@ -93,12 +86,18 @@ export function ProjectsManager(): JSX.Element {
       );
       return;
     }
+    if (names.models !== null && names.models.length === 0) {
+      setFormError(
+        t('dashboard.projects.pick_a_model', 'Pick at least one model, or allow all models.'),
+      );
+      return;
+    }
     const budget: ProjectUpdate = {
       name,
       budget_daily_usd: parseBudget(names.daily),
       budget_monthly_usd: parseBudget(names.monthly),
       max_concurrent_requests: names.concurrency.trim() ? Number(names.concurrency.trim()) : null,
-      allowed_models: parseModels(names.models),
+      allowed_models: names.models === null ? null : [...names.models].sort(),
     };
     submittingRef.current = true;
     setFormError(null);
@@ -302,11 +301,14 @@ export function ProjectsManager(): JSX.Element {
               placeholder={t('dashboard.projects.no_limit', 'No limit')}
               disabled={busy}
             />
-            <InputField
-              label={t('dashboard.projects.models_label', 'Allowed models (comma separated)')}
+            <ModelPicker
               value={names.models}
-              onChange={(event) => setNames({ ...names, models: event.target.value })}
-              placeholder={t('dashboard.projects.models_placeholder', 'Every visible model')}
+              onChange={(models) => setNames({ ...names, models })}
+              title={t('dashboard.projects.models_title', 'Models')}
+              hint={t(
+                'dashboard.projects.models_hint',
+                'Other models answer requests from this project as if they did not exist, and its model list shows only these.',
+              )}
               disabled={busy}
             />
             <button type="submit" className="hidden" tabIndex={-1} disabled={busy} />

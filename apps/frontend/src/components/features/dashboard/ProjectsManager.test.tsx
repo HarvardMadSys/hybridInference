@@ -6,6 +6,16 @@ import { ProjectsManager } from './ProjectsManager';
 
 const state = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn(), archive: vi.fn() }));
 vi.mock('@/lib/hooks', () => ({
+  useModels: () => ({
+    data: {
+      object: 'list',
+      data: [
+        { id: 'model-one', name: 'Model One' },
+        { id: 'model-two', name: 'Model Two' },
+      ],
+    },
+    isLoading: false,
+  }),
   useProjects: () => ({
     data: [
       {
@@ -36,9 +46,9 @@ it('creates shared limits and leaves blank limits unset', async () => {
   const dialog = screen.getByRole('dialog');
   fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Evaluations' } });
   fireEvent.change(within(dialog).getByLabelText('Daily budget (USD)'), { target: { value: '0' } });
-  fireEvent.change(within(dialog).getByLabelText('Allowed models (comma separated)'), {
-    target: { value: 'model-one, model-two' },
-  });
+  fireEvent.click(within(dialog).getByLabelText('Only the models selected below'));
+  fireEvent.click(within(dialog).getByRole('checkbox', { name: /Model One/ }));
+  fireEvent.click(within(dialog).getByRole('checkbox', { name: /Model Two/ }));
   fireEvent.click(within(dialog).getByRole('button', { name: 'Create Project' }));
   await waitFor(() =>
     expect(state.create).toHaveBeenCalledWith({
@@ -49,6 +59,37 @@ it('creates shared limits and leaves blank limits unset', async () => {
       allowed_models: ['model-one', 'model-two'],
     }),
   );
+});
+
+it('sends null when every model is allowed', async () => {
+  render(<ProjectsManager />);
+  fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Everything' } });
+  fireEvent.click(within(dialog).getByLabelText('Only the models selected below'));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Select all' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create Project' }));
+  await waitFor(() =>
+    expect(state.create).toHaveBeenCalledWith({
+      name: 'Everything',
+      budget_daily_usd: null,
+      budget_monthly_usd: null,
+      max_concurrent_requests: null,
+      allowed_models: null,
+    }),
+  );
+});
+
+it('rejects an empty model selection instead of allowing every model', () => {
+  render(<ProjectsManager />);
+  fireEvent.click(screen.getByRole('button', { name: 'Create Project' }));
+  const dialog = screen.getByRole('dialog');
+  fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Nothing' } });
+  fireEvent.click(within(dialog).getByLabelText('Only the models selected below'));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Clear all' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Create Project' }));
+  expect(state.create).not.toHaveBeenCalled();
+  expect(screen.getByText('Pick at least one model, or allow all models.')).toBeInTheDocument();
 });
 
 it('rejects an invalid budget instead of making it unlimited', () => {
