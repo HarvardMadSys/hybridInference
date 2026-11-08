@@ -825,6 +825,12 @@ class BatchScheduler:
                     del self._owner_roles[stale]
                     break
 
+    def _results_full(self, batch_id: str, cfg: BatchConfig) -> bool:
+        """Whether the batch's stored responses have used up ``BATCH_MAX_RESULTS_MB_PER_BATCH``."""
+        budget = cfg.max_results_per_batch_bytes
+        spent = getattr(self._store, "result_budget_spent", None)
+        return bool(budget) and spent is not None and spent(batch_id, budget)
+
     def _owner_at_cap(self, owner: str, cfg: BatchConfig) -> bool:
         """Whether every slot of the owner's batch quota is taken here, as last known."""
         cap = self._owner_cap(owner, cfg)
@@ -967,6 +973,22 @@ class BatchScheduler:
 
         batch_id = item["batch_id"]
         owner = item["user_id"]
+        if self._results_full(batch_id, cfg):
+            # The batch's results have used up their budget: whatever this
+            # request answered could not be stored, so it does not run.
+            budget = cfg.max_results_per_batch_bytes
+            await self._complete(
+                entry,
+                error={
+                    "code": "result_too_large",
+                    "message": "The batch's responses reached their storage limit of "
+                    f"{budget} bytes; this request did not run.",
+                    "status": 500,
+                },
+                status_code=500,
+                cost_status="not_billed",
+            )
+            return
         if self._owner_at_cap(entry.user_id, cfg):
             # Every slot of the owner's quota is taken here: no use looking the
             # owner up only to find that out.
@@ -1171,6 +1193,7 @@ class BatchScheduler:
                 cost_status=result.cost_status,
                 max_result_bytes=cfg.max_result_bytes,
                 cached_tokens=result.cached_tokens,
+                max_batch_result_bytes=cfg.max_results_per_batch_bytes or None,
             )
             return
         requeue = result.requeue_after
@@ -1256,6 +1279,7 @@ class BatchScheduler:
         cost_status: str | None = None,
         max_result_bytes: int | None = None,
         cached_tokens: int | None = None,
+        max_batch_result_bytes: int | None = None,
     ) -> None:
         """Record the item's final outcome.
 
@@ -1281,6 +1305,7 @@ class BatchScheduler:
                     cost_status=cost_status,
                     max_result_bytes=max_result_bytes,
                     cached_tokens=cached_tokens,
+                    max_batch_result_bytes=max_batch_result_bytes,
                 )
             except Exception:
                 if delay is None:

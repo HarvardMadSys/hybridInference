@@ -682,6 +682,17 @@ msgid "Another server error after every retry"
 msgstr "所有重试之后仍是其他服务器错误"
 
 #: ../developer/batches.md:41
+msgid "`result_too_large`"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid ""
+"The response was larger than one request may store, or the batch's "
+"responses had reached their storage limit (the requests still to run then"
+" fail without running)"
+msgstr "响应超过了单个请求可以存储的大小，或者批次的响应已达到存储上限（此后尚未运行的请求不再运行，直接失败）"
+
+#: ../developer/batches.md:41
 msgid "`batch_failed`"
 msgstr ""
 
@@ -1499,6 +1510,14 @@ msgstr "已结束批次的保留时间"
 msgid "7 days"
 msgstr "7 天"
 
+#: ../developer/batches.md:41
+msgid "Responses one batch may store"
+msgstr "一个批次可以存储的响应总量"
+
+#: ../developer/batches.md:41
+msgid "8 GiB in all; 4 MiB per request"
+msgstr "总计 8 GiB；每个请求 4 MiB"
+
 #: ../developer/batches.md:693
 msgid ""
 "The operator may have changed any of them. A larger job is several "
@@ -1892,6 +1911,27 @@ msgstr ""
 #: ../developer/batches.md:41
 msgid "Largest response one batch request may store"
 msgstr "单个批量请求可以存储的最大响应"
+
+#: ../developer/batches.md:41
+msgid "`BATCH_MAX_RESULTS_MB_PER_BATCH`"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid "8192"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid ""
+"Responses one batch may store in all, in MiB. Once they reach it, a "
+"response that does not fit fails with `result_too_large`, and so does "
+"every request of that batch still to run, without running. Counted in "
+"each gateway process from the results it records; after a restart, what a"
+" batch already stored counts at its stored, compressed size. `0` removes "
+"the limit"
+msgstr ""
+"一个批次总共可以存储的响应大小，单位 MiB。达到上限后，放不下的响应会以 `result_too_large` "
+"失败，该批次尚未运行的请求也不再运行，同样失败。由每个网关进程根据自己记录的结果分别计数；重启之后，批次已存储的结果按其存储（压缩后）的大小计入。`0`"
+" 表示不设上限"
 
 #: ../developer/batches.md:41
 msgid "`BATCH_FILES_MAX_TOTAL_MB_PER_USER`"

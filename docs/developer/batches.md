@@ -320,6 +320,7 @@ is `cancelled`, `expired` or `failed`. Error codes:
 | `timeout` | Ran out of time (`504`); not retried |
 | `service_unavailable` | No endpoint could serve it after every retry (`503`) |
 | `upstream_error` | Another server error after every retry |
+| `result_too_large` | The response was larger than one request may store, or the batch's responses had reached their storage limit (the requests still to run then fail without running) |
 | `batch_failed` | Not run: the batch failed |
 | `batch_expired` | Not run before the completion window closed |
 
@@ -748,6 +749,7 @@ and submit as a new batch.
 | Input files you may keep, and upload per hour | 512 MiB; 60 |
 | Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches), or no limit if the operator set none |
 | Time a finished batch is kept | 7 days |
+| Responses one batch may store | 8 GiB in all; 4 MiB per request |
 
 The operator may have changed any of them. A larger job is several batches.
 
@@ -816,6 +818,7 @@ and to the worker's next round.
 | `BATCH_INTERACTIVE_RESERVE` | 0 | Slots of every model's batch cap kept free for interactive requests, on top of those in flight. Applies only while `BATCH_YIELD_TO_INTERACTIVE` is on |
 | `BATCH_MAX_LINE_KB` | 4096 | Largest line of an input file |
 | `BATCH_MAX_RESULT_KB` | 4096 | Largest response one batch request may store |
+| `BATCH_MAX_RESULTS_MB_PER_BATCH` | 8192 | Responses one batch may store in all, in MiB. Once they reach it, a response that does not fit fails with `result_too_large`, and so does every request of that batch still to run, without running. Counted in each gateway process from the results it records; after a restart, what a batch already stored counts at its stored, compressed size. `0` removes the limit |
 | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` | 512 | Uploaded input files one user may keep |
 | `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour |
 | `BATCH_FILE_RETENTION_DAYS` | 30 | Days an uploaded input file is kept |

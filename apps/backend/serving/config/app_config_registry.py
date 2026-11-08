@@ -1167,6 +1167,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     ConfigEntry(
+        "BATCH_MAX_RESULTS_MB_PER_BATCH",
+        "batch",
+        "Responses one batch may store in all, in MiB (counted by each gateway process "
+        "from the results it records). Once a batch's results reach it, a response that "
+        "does not fit fails with result_too_large, and so does every request of that "
+        "batch still to run, without running. 0 removes the limit.",
+        type="int",
+        default="8192",
+        minimum=0,
+    ),
+    ConfigEntry(
         "BATCH_FILES_MAX_TOTAL_MB_PER_USER",
         "batch",
         "Uploaded batch input files one user may keep at once, in MiB.",

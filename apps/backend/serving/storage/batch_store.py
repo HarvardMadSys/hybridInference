@@ -77,6 +77,7 @@ import base64
 import json
 import math
 import secrets
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
@@ -208,6 +209,13 @@ _CLAIM_LOCK_SQL = "SELECT pg_advisory_xact_lock($1, hashtext($2))"
 # Retention purges at most this many batches per sweep, one per statement: a
 # batch can hold tens of thousands of items, and the next sweep continues.
 _PURGE_LIMIT = 100
+
+# Batches whose result count (see BatchStore.result_budget_spent) a process
+# keeps; one it has forgotten is read again from its rows.
+_RESULT_BYTES_TRACKED = 4096
+
+# Items an erasure deletes per statement (see BatchStore.delete_user_batches).
+_ERASE_ITEMS_PER_STATEMENT = 500
 
 # JSONB rejects U+0000 even when it appears as a JSON ``\u0000`` escape. Values
 # that contain one are therefore stored as a two-element JSON array carrying a
@@ -753,6 +761,10 @@ class BatchStore:
     def __init__(self, pool: Any) -> None:
         """Wrap an asyncpg pool."""
         self._pool = pool
+        # What each batch's responses come to, serialized, as this process
+        # counts them (see result_budget_spent): read from the database the
+        # first time a batch needs it, then raised by every response stored.
+        self._result_bytes: OrderedDict[str, int] = OrderedDict()
 
     @property
     def pool(self) -> Any:
@@ -1917,40 +1929,76 @@ class BatchStore:
         these batches finds it gone: every write it attempts is fenced on the
         rows this removes, so nothing is re-created.
 
+        Deleted a slice at a time, each slice a transaction of its own under
+        the user's admission lock: one batch can hold tens of thousands of
+        large results, more than a single statement deletes within the
+        statement timeout, and a statement that times out undoes everything it
+        did. What a failed run deleted stays deleted, and running it again goes
+        on from there. The account is already marked for deletion, so nothing
+        new is stored for it meanwhile.
+
         Returns:
             The number of batches deleted.
         """
+        deleted = 0
         async with self._pool.acquire() as conn:
             try:
-                async with conn.transaction():
-                    await conn.execute(_CLAIM_LOCK_SQL, _USER_ADMISSION_LOCK_CLASS, user_id)
-                    result = await conn.execute(
-                        """
-                        DELETE FROM batch_jobs
-                        WHERE id IN (
-                            SELECT id FROM batch_jobs WHERE user_id = $1 ORDER BY id FOR UPDATE
-                        )
-                        """,
+                while True:
+                    batch_id = await conn.fetchval(
+                        "SELECT id FROM batch_jobs WHERE user_id = $1 ORDER BY id LIMIT 1",
                         user_id,
                     )
-                    for statement in (
-                        "DELETE FROM batch_files WHERE user_id = $1",
-                        "DELETE FROM batch_idempotency WHERE owner_id = $1",
-                        # The webhook before its events: removing it waits for
-                        # any transaction still writing an event under it.
-                        "DELETE FROM batch_webhooks WHERE user_id = $1",
-                        "DELETE FROM batch_webhook_events WHERE user_id = $1",
-                        "DELETE FROM batch_user_state WHERE user_id = $1",
-                    ):
-                        try:
-                            async with conn.transaction():
-                                await conn.execute(statement, user_id)
-                        except asyncpg.UndefinedTableError:
-                            # A table this version adds, not created yet.
-                            continue
+                    if batch_id is None:
+                        break
+                    deleted += await self._erase_batch(conn, user_id, batch_id)
+                for statement in (
+                    "DELETE FROM batch_files WHERE user_id = $1",
+                    "DELETE FROM batch_idempotency WHERE owner_id = $1",
+                    # The webhook before its events: removing it waits for
+                    # any transaction still writing an event under it.
+                    "DELETE FROM batch_webhooks WHERE user_id = $1",
+                    "DELETE FROM batch_webhook_events WHERE user_id = $1",
+                    "DELETE FROM batch_user_state WHERE user_id = $1",
+                ):
+                    try:
+                        async with conn.transaction():
+                            await conn.execute(_CLAIM_LOCK_SQL, _USER_ADMISSION_LOCK_CLASS, user_id)
+                            await conn.execute(statement, user_id)
+                    except asyncpg.UndefinedTableError:
+                        # A table this version adds, not created yet.
+                        continue
             except asyncpg.UndefinedTableError:
                 return 0
-        return _rowcount(result)
+        return deleted
+
+    async def _erase_batch(self, conn: Any, user_id: str, batch_id: str) -> int:
+        """Delete one batch of a user being erased: its items a slice at a time, then itself.
+
+        Each slice locks the batch row first, as a worker's write does before
+        its item, so the two never wait on each other in a cycle.
+
+        Returns:
+            1 when the batch was deleted, 0 when it was already gone.
+        """
+        while True:
+            async with conn.transaction():
+                await conn.execute(_CLAIM_LOCK_SQL, _USER_ADMISSION_LOCK_CLASS, user_id)
+                if not await conn.fetchval(
+                    "SELECT TRUE FROM batch_jobs WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                    batch_id,
+                    user_id,
+                ):
+                    return 0
+                result = await conn.execute(
+                    "DELETE FROM batch_items WHERE id IN ("
+                    "SELECT id FROM batch_items WHERE batch_id = $1 ORDER BY id LIMIT $2)",
+                    batch_id,
+                    _ERASE_ITEMS_PER_STATEMENT,
+                )
+                if _rowcount(result) >= _ERASE_ITEMS_PER_STATEMENT:
+                    continue
+                result = await conn.execute("DELETE FROM batch_jobs WHERE id = $1", batch_id)
+                return _rowcount(result)
 
     # -- worker ------------------------------------------------------------------
 
@@ -2229,6 +2277,7 @@ class BatchStore:
         cost_status: str | None = None,
         max_result_bytes: int | None = None,
         cached_tokens: int | None = None,
+        max_batch_result_bytes: int | None = None,
     ) -> bool:
         """Record an item's final outcome: ``completed`` without *error*, else ``failed``.
 
@@ -2249,6 +2298,11 @@ class BatchStore:
                 its prompt cache; None when it reported none. Added to the
                 batch's ``cache_read_tokens``, which stays NULL for a batch
                 stored before that column.
+            max_batch_result_bytes: What the batch's responses may come to in
+                all, serialized (see :meth:`result_budget_spent`). A response
+                that does not fit is not stored: the item fails with
+                ``result_too_large`` (its cost still counts), and the batch's
+                budget counts as spent from then on.
 
         Returns:
             False, changing nothing, when the item is no longer running under
@@ -2279,8 +2333,30 @@ class BatchStore:
                 "status": 500,
             }
             status_code = 500
-        status = "completed" if error is None else "failed"
         async with self._pool.acquire() as conn, conn.transaction():
+            counted: str | None = None
+            if stored_response is not None and max_batch_result_bytes:
+                budget = int(max_batch_result_bytes)
+                # The batch's row lock (taken again by the write below)
+                # orders every completion of the batch, so its count is read
+                # and raised by one of them at a time.
+                locked = await conn.fetchrow(_LOCK_ITEM_BATCH_SQL, item_id)
+                if locked is not None:
+                    stored = await self._stored_result_bytes(conn, locked["id"])
+                    if stored + len(stored_response) > budget:
+                        self._result_bytes[locked["id"]] = max(stored, budget)
+                        stored_response = None
+                        response = None
+                        error = {
+                            "code": "result_too_large",
+                            "message": "The batch's responses reached their storage limit "
+                            f"of {budget} bytes.",
+                            "status": 500,
+                        }
+                        status_code = 500
+                    else:
+                        counted = locked["id"]
+            status = "completed" if error is None else "failed"
             batch = await self._guarded_item_write(
                 conn,
                 _COMPLETE_ITEM_SQL,
@@ -2301,6 +2377,8 @@ class BatchStore:
             if batch is None:
                 return False
             batch_id, batch_status, _owner = batch
+            if counted is not None and stored_response is not None:
+                self._count_result_bytes(counted, len(stored_response))
             await conn.execute(
                 _CLOSE_ATTEMPT_SQL,
                 item_id,
@@ -2336,6 +2414,40 @@ class BatchStore:
             )
             await self._settle(conn, batch_id, batch_status)
         return True
+
+    def result_budget_spent(self, batch_id: str, budget: int) -> bool:
+        """Whether a batch's responses have used up *budget* bytes, as far as this process knows.
+
+        The count is this process's own: what the batch's responses already
+        stored take up when the process first needs it (their stored size,
+        read once), then the serialized size of every response it stores, and
+        the whole budget once a response has not fit. False for a batch it has
+        no count for yet. Several processes count apart, so between them a
+        batch may store up to that many budgets.
+        """
+        stored = self._result_bytes.get(batch_id)
+        return stored is not None and stored >= budget
+
+    async def _stored_result_bytes(self, conn: Any, batch_id: str) -> int:
+        """The batch's count for the result budget, read from its rows the first time."""
+        stored = self._result_bytes.get(batch_id)
+        if stored is None:
+            stored = int(
+                await conn.fetchval(
+                    "SELECT COALESCE(sum(pg_column_size(response)), 0) FROM batch_items "
+                    "WHERE batch_id = $1 AND response IS NOT NULL",
+                    batch_id,
+                )
+                or 0
+            )
+            self._count_result_bytes(batch_id, 0, start=stored)
+        return stored
+
+    def _count_result_bytes(self, batch_id: str, size: int, *, start: int | None = None) -> None:
+        stored = self._result_bytes.pop(batch_id, 0) if start is None else start
+        self._result_bytes[batch_id] = stored + size
+        while len(self._result_bytes) > _RESULT_BYTES_TRACKED:
+            self._result_bytes.popitem(last=False)
 
     async def retry_item(
         self,

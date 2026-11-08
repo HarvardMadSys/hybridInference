@@ -1819,6 +1819,103 @@ async def test_a_hard_delete_purges_every_batch_of_that_user_only(pool, store):
     assert await store.delete_user_batches("alice") == 0
 
 
+async def test_a_hard_delete_takes_a_large_batch_apart_a_slice_at_a_time(pool, store, monkeypatch):
+    monkeypatch.setattr(batch_store, "_ERASE_ITEMS_PER_STATEMENT", 2)
+    model = _model()
+    big = await _create(store, _items(model, 7))
+    small = await _create(store, _items(model, 1, prefix="s"))
+    theirs = await _create(store, _items(model, 3), user="bob")
+    claimed = await _claim(store, model, limit=3)
+    for item in claimed:
+        await _complete(store, item)
+
+    assert await store.delete_user_batches("alice") == 2
+
+    for batch in (big, small):
+        assert await store.get_batch(batch["id"]) is None
+        assert await _rows(pool, batch["id"]) == []
+    async with pool.acquire() as conn:
+        left = await conn.fetchval(
+            "SELECT count(*) FROM batch_attempts WHERE batch_id = ANY($1::text[])",
+            [big["id"], small["id"]],
+        )
+    assert left == 0
+    assert len(await _rows(pool, theirs["id"])) == 3
+
+
+async def test_a_batch_stores_responses_up_to_its_budget_then_none(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 4))
+    claimed = await _claim(store, model, limit=4)
+    response = {"id": "chatcmpl-x", "choices": [{"message": {"content": "y" * 1000}}]}
+    size = len(json.dumps(response))
+    budget = 2 * size + size // 2
+
+    async def complete(item: dict[str, Any], body: dict[str, Any]) -> bool:
+        return await store.complete_item(
+            item_id=item["id"],
+            worker_id="worker-1",
+            attempt=item["attempt_seq"],
+            response=body,
+            error=None,
+            status_code=200,
+            cost_usd=0.01,
+            max_batch_result_bytes=budget,
+        )
+
+    assert not store.result_budget_spent(created["id"], budget)
+    assert await complete(claimed[0], response)
+    assert await complete(claimed[1], response)
+    assert not store.result_budget_spent(created["id"], budget)
+    # The third does not fit: not stored, failed, its cost still counted ...
+    assert await complete(claimed[2], response)
+    # ... and from then on the budget is spent, even for a small response.
+    assert store.result_budget_spent(created["id"], budget)
+    assert await complete(claimed[3], {"small": True})
+
+    results = {r["id"]: r for r in await store.list_results(created["id"])}
+    assert [results[i["id"]]["status"] for i in claimed] == [
+        "completed",
+        "completed",
+        "failed",
+        "failed",
+    ]
+    assert results[claimed[2]["id"]]["response"] is None
+    assert results[claimed[2]["id"]]["error"]["code"] == "result_too_large"
+    batch = await store.get_batch(created["id"])
+    assert (batch["completed_count"], batch["failed_count"]) == (2, 2)
+    assert batch["cost_usd"] == pytest.approx(0.04)
+
+
+async def test_a_new_process_counts_the_responses_a_batch_already_stored(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    first, second = await _claim(store, model, limit=2)
+    response = {"data": [{"embedding": [0.123456789] * 500}]}
+    assert await _complete(store, first)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE batch_items SET response = $2::jsonb WHERE id = $1",
+            first["id"],
+            json.dumps(response),
+        )
+
+    # Another process (a store of its own) starts its count from what is stored.
+    fresh = BatchStore(pool)
+    assert await fresh.complete_item(
+        item_id=second["id"],
+        worker_id="worker-1",
+        attempt=second["attempt_seq"],
+        response=response,
+        error=None,
+        status_code=200,
+        # Room for exactly this one response, and none for the one stored.
+        max_batch_result_bytes=len(json.dumps(response)),
+    )
+    (_, result) = await fresh.list_results(created["id"])
+    assert result["error"]["code"] == "result_too_large"
+
+
 # -- admin -----------------------------------------------------------------------
 
 

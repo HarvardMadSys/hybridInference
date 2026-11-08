@@ -1653,3 +1653,56 @@ async def test_a_failed_dispatch_gives_the_reservation_back(worker, dispatch, au
 
     assert ledger._reserved_users == {}
     assert scheduler._role_slots._slots[OWNER].in_use == 0
+
+
+# -- the batch's result budget ----------------------------------------------------
+
+
+async def test_a_batch_whose_results_are_full_runs_nothing_more(worker, dispatch, settings):
+    settings["BATCH_MAX_RESULTS_MB_PER_BATCH"] = "1"
+    store = FakeStore()
+    store.add(2, batch="full")
+    store.add(1, batch="room")
+    asked = []
+
+    def result_budget_spent(batch_id, budget):
+        asked.append((batch_id, budget))
+        return batch_id == "full"
+
+    store.result_budget_spent = result_budget_spent
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.count("queued") == 0 and store.count("running") == 0)
+
+    assert [c["batch_id"] for c in dispatch.calls] == ["room"]
+    full = [item for item in store.items.values() if item["batch_id"] == "full"]
+    assert {item["status"] for item in full} == {"failed"}
+    assert {item["error"]["code"] for item in full} == {"result_too_large"}
+    assert {item["cost_status"] for item in full} == {"not_billed"}
+    assert ("full", 1024 * 1024) in asked
+
+
+async def test_a_stored_result_is_held_to_the_batchs_budget(worker, dispatch, settings):
+    settings["BATCH_MAX_RESULTS_MB_PER_BATCH"] = "3"
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.count("completed") == 1)
+
+    assert store.items[1]["max_batch_result_bytes"] == 3 * 1024 * 1024
+
+
+async def test_no_result_budget_when_it_is_turned_off(worker, dispatch, settings):
+    settings["BATCH_MAX_RESULTS_MB_PER_BATCH"] = "0"
+    store = FakeStore()
+    store.add(1)
+    store.result_budget_spent = lambda batch_id, budget: True
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.count("completed") == 1)
+
+    assert store.items[1]["max_batch_result_bytes"] is None
