@@ -668,6 +668,19 @@ a request as malformed, the bound FixedRouter applies. The stream race's
 60-second deadline is recorded as a failed attempt of each leg still open, but
 is charged to neither circuit breaker.
 
+**Route weights.** RouteWise does not split traffic by weight. It chooses each
+request's route by cost and latency, and every route with a weight above `0` is
+a full candidate that can take any share of the traffic: a route weighted for a
+small share, such as a 1% staging canary or a last-resort fallback, becomes a
+peer like any other. Set such a route's weight to `0` to keep it out of
+RouteWise. `optional: true` does not mark a canary; it only decides whether a
+route whose environment is unset is skipped at startup. Switching a model to
+`routewise` in the admin console is therefore refused while any of its routes
+has a weight above `0` but below the model's heaviest route, and the router
+logs `routewise_route_weights_ignored` when such a weighting reaches a
+`routewise` model another way: `models.yaml`, a weight override or a new route.
+A persisted switch is still applied at startup and on a configuration restore.
+
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
 exactly against the usage records a provider's quota fetcher returns. RouteWise

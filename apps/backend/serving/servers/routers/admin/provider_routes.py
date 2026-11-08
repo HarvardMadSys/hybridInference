@@ -463,6 +463,78 @@ def _validate_model_router_strategy(
     return canonical_model_id, route
 
 
+def _routes_routewise_would_take_in_full(
+    services: AppServices,
+    model_id: str,
+) -> list[tuple[str, float]]:
+    """Return each route weighted above 0 but below the model's heaviest route.
+
+    As ``(endpoint id, weight / heaviest weight)``, from the effective route
+    table RouteWise itself reads: weight overrides and disabled routes and
+    providers applied. A ratio, because the table may hold renormalised weights.
+    """
+    snapshot_for_transition = getattr(services.router, "snapshot_for_transition", None)
+    if not callable(snapshot_for_transition):
+        return []
+    adapters: tuple[tuple[Any, float], ...] = ()
+    for effective_route in snapshot_for_transition(model_id).iter_effective_routes():
+        if effective_route.canonical_model_id == model_id:
+            adapters = effective_route.adapters
+            break
+    weighted = [
+        (endpoint_id_for_adapter(adapter), float(weight))
+        for adapter, weight in adapters
+        if float(weight) > 0
+    ]
+    if not weighted:
+        return []
+    heaviest = max(weight for _endpoint_id, weight in weighted)
+    return [
+        (endpoint_id, weight / heaviest)
+        for endpoint_id, weight in weighted
+        if weight < heaviest * (1.0 - 1e-9)
+    ]
+
+
+def _refuse_routewise_over_weighted_routes(services: AppServices, model_id: str) -> None:
+    """Refuse switching a model to RouteWise while its route weights mean something.
+
+    RouteWise does not split traffic by weight. It chooses each request's route
+    by cost and latency from every route weighted above 0, so a route weighted
+    to take a small share -- a 1% staging canary, a last-resort fallback --
+    would become a full peer and could take all of the model's traffic,
+    production prompts sent to staging included. ``optional: true`` cannot be
+    told apart at runtime: it only decides whether a route whose environment is
+    unset is skipped at startup, and production routes use it too.
+
+    Only this interactive switch refuses. Boot and a config restore re-apply a
+    persisted override through the same transition, and refusing there would
+    silently put a running model back on its configured router on the next
+    restart; RouteWise logs those weightings instead. A model already on
+    RouteWise is not switched, so it is not refused either.
+    """
+    registry = services.model_router_registry
+    if registry is not None and registry.get_router_name(model_id) == "routewise":
+        return
+    lighter = _routes_routewise_would_take_in_full(services, model_id)
+    if not lighter:
+        return
+    named = ", ".join(
+        f"{endpoint_id} ({share * 100:.3g}% of the heaviest route's weight)"
+        for endpoint_id, share in lighter
+    )
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "routewise does not split traffic by route weight: it can send any "
+            "share of the traffic to every route weighted above 0, so these routes "
+            f"would no longer be held to a smaller share: {named}. Set their weight "
+            "to 0 to keep them out of routewise, or give every route the same "
+            "weight, then switch again"
+        ),
+    )
+
+
 def _managed_router_ids(services: AppServices) -> set[int]:
     return {id(router_obj) for router_obj in services.managed_routers}
 
@@ -4229,6 +4301,8 @@ async def update_provider_route_strategy(
         model_id,
         payload.strategy,
     )
+    if payload.strategy == "routewise":
+        _refuse_routewise_over_weighted_routes(services, canonical_model_id)
     strategy_key = _model_strategy_setting_key(canonical_model_id)
     previous_setting: Any = None
     previous_setting_loaded = False

@@ -718,6 +718,8 @@ class RouteWiseRouter:
         # Last LP state retained for tests and diagnostics.
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
+        # Route weightings already warned about; see _warn_on_route_weights.
+        self._warned_route_weights: set[tuple[str, tuple[tuple[str, float], ...]]] = set()
 
         if self.route_table is not None:
             # Avoid dispatching to an overrideable public method before a
@@ -1364,6 +1366,7 @@ class RouteWiseRouter:
             if model_id in self.route_candidates:
                 continue
             candidates = build_provider_candidates(model_id, effective_route.adapters)
+            self._warn_on_route_weights(model_id, candidates)
             self.route_candidates[model_id] = candidates
             self.classified[model_id] = [
                 (candidate.adapter, candidate.weight, candidate.provider_type)
@@ -1380,6 +1383,39 @@ class RouteWiseRouter:
                         model_id,
                         sorted(pools),
                     )
+
+    def _warn_on_route_weights(
+        self,
+        model_id: str,
+        candidates: list[RouteProviderCandidate],
+    ) -> None:
+        """Warn once per weighting when a model's routes are not weighted alike.
+
+        RouteWise does not split traffic by weight: every route weighted above
+        0 is a full candidate, so a route weighted for a small share -- a staging
+        canary, a last-resort fallback -- can take all of the traffic. The
+        admin switch to RouteWise refuses such a weighting; one that arrives
+        another way (``models.yaml``, a weight override, an added route) is
+        logged here instead, once for each weighting seen.
+        """
+        weights = {candidate.weight for candidate in candidates}
+        if len(weights) < 2:
+            return
+        key = (model_id, tuple((c.endpoint_id, c.weight) for c in candidates))
+        if key in self._warned_route_weights:
+            return
+        if len(self._warned_route_weights) >= 1024:
+            self._warned_route_weights.clear()
+        self._warned_route_weights.add(key)
+        heaviest = max(weights)
+        logger.warning(
+            "RouteWise model '%s' has routes weighted below its heaviest (%s); RouteWise "
+            "does not split traffic by weight and may send any share of it to each of "
+            "them. Set a route's weight to 0 to keep it out.",
+            model_id,
+            ", ".join(f"{c.endpoint_id}={c.weight:g}" for c in candidates if c.weight < heaviest),
+            extra={"event": "routewise_route_weights_ignored", "model_id": model_id},
+        )
 
     def _build_resource_pools(self) -> None:
         """(Re)build per-pool resource managers from route-level policies.
