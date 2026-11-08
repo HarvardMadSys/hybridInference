@@ -9,14 +9,16 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.audit import AuditActor, AuditTarget
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
+from serving.utils import password as password_utils
+from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
 # ---------------------------------------------------------------------------
 # Helpers / Fixtures
@@ -686,6 +688,85 @@ async def test_patch_user_refuses_a_quota_with_a_suspension_before_writing(admin
 
     assert response.status_code == 409
     op_store.suspend_user.assert_not_awaited()
+
+
+ADMIN_PASSWORD = "correct-admin-password"
+
+
+@pytest.fixture
+def signed_in_admin(admin_client, monkeypatch):
+    """The same app, with an administrator signed in to the console instead of ADMIN_TOKEN."""
+    client, op_store, _log_store, log_action = admin_client
+    app = client._transport.app
+
+    async def console_session(request: Request) -> str:
+        request.state.admin_user_id = "u-admin"
+        request.state.audit_actor = AuditActor.admin("u-admin", "127.0.0.1")
+        return "admin@example.com"
+
+    app.dependency_overrides[verify_admin_access] = console_session
+    accounts = {
+        "u-admin": {"id": "u-admin", "email": "admin@example.com", "password_hash": "h"},
+        "u1": _user_row(role="free"),
+    }
+    op_store.get_user_by_id = AsyncMock(side_effect=accounts.get)
+    monkeypatch.setattr(
+        password_utils, "verify_password", lambda plain, _hash: plain == ADMIN_PASSWORD
+    )
+    reset_login_rate_limit_state()
+    yield client, op_store, log_action, accounts
+    reset_login_rate_limit_state()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["pro", "internal", "admin"])
+async def test_the_admin_token_cannot_raise_an_accounts_role(admin_client, role):
+    """An account whose password the caller knows, raised, would outlast the token."""
+    client, op_store, _log_store, mock_log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(role="free")
+
+    response = await client.patch(
+        "/admin/users/u1", headers=AUTH, json={"role": role, "password": "anything"}
+    )
+
+    assert response.status_code == 403
+    assert "admin token cannot confirm" in response.json()["detail"]
+    op_store.update_user_fields.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_lowering_a_role_needs_no_password(admin_client):
+    client, op_store, _log_store, _mock_log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(role="internal")
+
+    response = await client.patch("/admin/users/u1", headers=AUTH, json={"role": "pro"})
+
+    assert response.status_code == 200, response.text
+    op_store.update_user_fields.assert_awaited_once_with("u1", role="pro")
+
+
+@pytest.mark.asyncio
+async def test_raising_a_role_needs_the_administrators_password(signed_in_admin):
+    client, op_store, mock_log, _accounts = signed_in_admin
+
+    for body in ({"role": "admin"}, {"role": "admin", "password": "wrong"}):
+        refused = await client.patch("/admin/users/u1", headers=AUTH, json=body)
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == "Current password is incorrect."
+    op_store.update_user_fields.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+    response = await client.patch(
+        "/admin/users/u1", headers=AUTH, json={"role": "admin", "password": ADMIN_PASSWORD}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["updated_fields"] == ["role"]
+    op_store.update_user_fields.assert_awaited_once_with("u1", role="admin")
+    details = mock_log.await_args.kwargs["details"]
+    assert details["values"] == {"role": "admin"}
+    assert ADMIN_PASSWORD not in repr(mock_log.await_args_list)
 
 
 @pytest.mark.asyncio

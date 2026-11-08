@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 
 from serving.audit import AuditActor, AuditTarget
 from serving.config.provider_labels import resolve_display_names
-from serving.config.settings import get_settings
+from serving.config.settings import ROLE_RANK, get_settings
 from serving.exceptions import HardDeleteStateChanged
 from serving.model_access import (
     DISABLED_MODELS_PREFERENCE_KEY,
@@ -69,6 +69,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
 from serving.servers.routers.admin.providers import _enumerate_routable_providers
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -765,12 +766,18 @@ async def update_user(
 ) -> UpdateUserResponse:
     """Update user account status or API key settings (quota).
 
+    Raising an account's role needs the signed-in administrator's ``password``
+    (400 when it is missing or wrong, 403 for the admin token): a role grants
+    what no session should hand out on its own, and an administrator role is
+    administrator access that outlives the session that granted it.
+
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    payload_dict = payload.model_dump(exclude_unset=True)
+    # The password confirms this request; it is no field of the account.
+    payload_dict = payload.model_dump(exclude_unset=True, exclude={"password"})
     if not payload_dict:
         raise HTTPException(422, "No fields to update")
 
@@ -826,6 +833,19 @@ async def update_user(
             )
         if not await op_store.get_active_key_by_account(user_id):
             raise HTTPException(409, "User has no active API key to update")
+
+    # Last of the checks, so a request refused for another reason spends no
+    # sign-in attempt. A higher role reaches more models, reserved provider
+    # keys and, as admin, everything: an account whose password a caller knows,
+    # raised by a stolen session or the admin token, would otherwise keep it.
+    current_role = user_row.get("role") or "free"
+    if new_role is not None and ROLE_RANK.get(new_role, 0) > ROLE_RANK.get(current_role, 0):
+        await confirm_administrator(
+            request,
+            op_store,
+            payload.password,
+            action=f"Giving {_user_label(user_row)} the {new_role} role",
+        )
 
     # Collect all users-table fields for a single round-trip
     user_table_updates: dict[str, object] = {}

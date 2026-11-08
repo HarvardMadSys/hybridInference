@@ -7,11 +7,16 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
-from serving.servers.deps import AppServices
+from serving.audit import AuditActor
+from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
+from serving.utils import password as password_utils
+from serving.utils.login_rate_limit import reset_login_rate_limit_state
+
+ADMIN_PASSWORD = "correct-admin-password"
 
 
 @pytest.fixture
@@ -62,9 +67,32 @@ async def admin_client(monkeypatch, mock_stores):
         await client.aclose()
 
 
+@pytest.fixture
+def signed_in_admin(admin_client, monkeypatch):
+    """The same app, with an administrator signed in to the console instead of ADMIN_TOKEN."""
+    client, op_store, log_store, log_action = admin_client
+    app = client._transport.app
+
+    async def console_session(request: Request) -> str:
+        request.state.admin_user_id = "u-admin"
+        request.state.audit_actor = AuditActor.admin("u-admin", "127.0.0.1")
+        return "admin@example.com"
+
+    app.dependency_overrides[verify_admin_access] = console_session
+    op_store.get_user_by_id = AsyncMock(
+        return_value={"id": "u-admin", "email": "admin@example.com", "password_hash": "h"}
+    )
+    monkeypatch.setattr(
+        password_utils, "verify_password", lambda plain, _hash: plain == ADMIN_PASSWORD
+    )
+    reset_login_rate_limit_state()
+    yield client, op_store, log_store, log_action
+    reset_login_rate_limit_state()
+
+
 @pytest.mark.asyncio
-async def test_create_api_key_success(admin_client, monkeypatch):
-    client, op_store, _log_store, log_action = admin_client
+async def test_create_api_key_success(signed_in_admin, monkeypatch):
+    client, op_store, _log_store, log_action = signed_in_admin
     created_at = datetime(2025, 1, 1, tzinfo=UTC)
     op_store.check_active_key_exists.return_value = False
     op_store.create_key.return_value = {"id": 1, "created_at": created_at}
@@ -79,7 +107,7 @@ async def test_create_api_key_success(admin_client, monkeypatch):
     response = await client.post(
         "/admin/api-keys",
         headers={"Authorization": "Bearer test-admin"},
-        json={"user_id": "alice", "quota_daily_cost_usd": 500},
+        json={"user_id": "alice", "quota_daily_cost_usd": 500, "password": ADMIN_PASSWORD},
     )
 
     assert response.status_code == 201
@@ -91,14 +119,14 @@ async def test_create_api_key_success(admin_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_api_key_conflict(admin_client, monkeypatch):
-    client, op_store, _log_store, log_action = admin_client
+async def test_create_api_key_conflict(signed_in_admin, monkeypatch):
+    client, op_store, _log_store, log_action = signed_in_admin
     op_store.check_active_key_exists.return_value = True
 
     response = await client.post(
         "/admin/api-keys",
         headers={"Authorization": "Bearer test-admin"},
-        json={"user_id": "alice"},
+        json={"user_id": "alice", "password": ADMIN_PASSWORD},
     )
 
     assert response.status_code == 409
@@ -112,6 +140,49 @@ async def test_create_api_key_requires_token(admin_client):
     client, _op_store, _log_store, _log_action = admin_client
     response = await client.post("/admin/api-keys", json={"user_id": "alice"})
     assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_the_admin_token_cannot_mint_a_key_for_an_account(admin_client):
+    """A plaintext key acts as its account long after the token that minted it is rotated."""
+    client, op_store, _log_store, log_action = admin_client
+
+    response = await client.post(
+        "/admin/api-keys",
+        headers={"Authorization": "Bearer test-admin"},
+        json={"user_id": "alice", "password": "anything"},
+    )
+
+    assert response.status_code == 403
+    assert "admin token cannot confirm" in response.json()["detail"]
+    assert "api_key" not in response.json()
+    op_store.create_key.assert_not_awaited()
+    log_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_key_for_another_account_needs_the_administrators_password(
+    signed_in_admin, monkeypatch
+):
+    client, op_store, _log_store, _log_action = signed_in_admin
+    op_store.create_key.return_value = {"id": 1, "created_at": datetime(2025, 1, 1, tzinfo=UTC)}
+
+    for body in ({"user_id": "alice"}, {"user_id": "alice", "password": "wrong"}):
+        refused = await client.post(
+            "/admin/api-keys", headers={"Authorization": "Bearer jwt"}, json=body
+        )
+        assert refused.status_code == 400
+        assert refused.json()["detail"] == "Current password is incorrect."
+    op_store.create_key.assert_not_awaited()
+
+    # A key for the administrator's own account is the administrator's to make.
+    own = await client.post(
+        "/admin/api-keys", headers={"Authorization": "Bearer jwt"}, json={"user_id": "u-admin"}
+    )
+    assert own.status_code == 201, own.text
+    assert op_store.create_key.await_args.kwargs["user_id"] == "u-admin"
+    # The password is never stored with the key.
+    assert "password" not in repr(op_store.create_key.await_args)
 
 
 @pytest.mark.asyncio
