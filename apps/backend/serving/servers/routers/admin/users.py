@@ -7,7 +7,7 @@ import logging
 from decimal import Decimal
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from serving.audit import AuditActor, AuditTarget
 from serving.config.provider_labels import resolve_display_names
@@ -504,6 +504,7 @@ async def admin_get_user_cost_history(
 async def approve_user(
     request: Request,
     user_id: str,
+    background_tasks: BackgroundTasks,
     payload: ApproveUserRequest | None = None,
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
@@ -544,7 +545,10 @@ async def approve_user(
     from serving.utils.email import is_email_enabled, send_approval_email
 
     if is_email_enabled() and user_row["email"]:
-        send_approval_email(user_row["email"])
+        # The send is blocking I/O (SMTP, or a provider's HTTP API), so it runs
+        # in the threadpool once the response is out, as the other account
+        # notices do, rather than holding up the event loop for its duration.
+        background_tasks.add_task(send_approval_email, user_row["email"])
 
     return ApproveUserResponse(
         user_id=user_id,
@@ -560,6 +564,7 @@ async def reject_user(
     request: Request,
     user_id: str,
     payload: RejectUserRequest,
+    background_tasks: BackgroundTasks,
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
@@ -598,7 +603,8 @@ async def reject_user(
     from serving.utils.email import is_email_enabled, send_rejection_email
 
     if is_email_enabled() and user_row["email"]:
-        send_rejection_email(user_row["email"], payload.reason)
+        # Off the event loop, as in approve_user above.
+        background_tasks.add_task(send_rejection_email, user_row["email"], payload.reason)
 
     return RejectUserResponse(
         user_id=user_id,

@@ -64,7 +64,6 @@ from pydantic import ValidationError
 from serving.batch import admission
 from serving.batch.config import (
     KNOWN_ANTHROPIC_VERSIONS,
-    PROTOCOL_WINDOW_SECONDS,
     batch_config,
     may_use_batch,
 )
@@ -75,6 +74,7 @@ from serving.batch.schemas import (
     CHAT_COMPLETIONS_URL,
     FILE_COMPLETION_WINDOW,
     MAX_CUSTOM_ID_LENGTH,
+    NO_COMPLETION_WINDOW,
     RESULT_ID_PREFIX,
     BatchCreateRequest,
     BatchDeleted,
@@ -87,8 +87,11 @@ from serving.batch.schemas import (
     BatchUsage,
 )
 from serving.batch.targets import TARGET_URLS, AdmissionContext, check_item
-from serving.config.settings import has_role
-from serving.servers.auth import enforce_daily_quota, verify_batch_management_identity
+from serving.servers.auth import (
+    enforce_daily_quota,
+    reads_every_owner,
+    verify_batch_management_identity,
+)
 from serving.servers.deps import (
     get_batch_file_store,
     get_batch_store,
@@ -160,8 +163,12 @@ def _owner(user_ctx: dict[str, Any]) -> str:
 
 
 def _lookup_scope(user_ctx: dict[str, Any]) -> str | None:
-    """Return the owner a lookup is restricted to: the caller, or none for an admin."""
-    return None if has_role(user_ctx.get("role") or "free", "admin") else _owner(user_ctx)
+    """Return the owner a lookup is restricted to: the caller, or none for an admin.
+
+    An administrator who authenticated as one, that is: the anonymous caller of
+    an auth-disabled gateway holds the admin role too (:func:`reads_every_owner`).
+    """
+    return None if reads_every_owner(user_ctx) else _owner(user_ctx)
 
 
 def _not_found(batch_id: str) -> HTTPException:
@@ -176,14 +183,21 @@ def _completion_window(row: dict[str, Any], config: BatchConfig) -> str:
     """Return the window the batch was created with, as OpenAI spells it (``24h``).
 
     Read off the batch's own timestamps rather than the live setting, which may
-    have changed since.
+    have changed since. A batch with no window (``expires_at`` is null, created
+    while ``BATCH_COMPLETION_WINDOW_HOURS`` was 0) reports ``none``, except a
+    file batch, which keeps the ``24h`` its creator had to send so that
+    OpenAI clients still read a value they know; its null ``expires_at`` says
+    it never expires.
     """
     created, expires = row.get("created_at"), row.get("expires_at")
     if isinstance(created, datetime) and isinstance(expires, datetime):
-        hours = max(1, round((expires - created).total_seconds() / 3600))
-    else:
-        hours = config.completion_window_hours
-    return f"{hours}h"
+        return f"{max(1, round((expires - created).total_seconds() / 3600))}h"
+    if isinstance(created, datetime):
+        if row.get("api_surface") == SURFACE_OPENAI_FILE:
+            return FILE_COMPLETION_WINDOW
+        return NO_COMPLETION_WINDOW
+    hours = config.completion_window_hours
+    return f"{hours}h" if hours else NO_COMPLETION_WINDOW
 
 
 def batch_object(row: dict[str, Any], config: BatchConfig) -> BatchObject:
@@ -331,6 +345,7 @@ def _admission_context(
         visibility_resolver=visibility_resolver,
         embedding_adapters=getattr(services, "embedding_adapters", None),
         embedding_routes=getattr(router_exec, "embedding_routes", None),
+        batch_routes=getattr(router_exec, "batch_route_resolver", None),
         profile=PROFILES[anthropic_version] if anthropic_version else None,
     )
 
@@ -563,7 +578,7 @@ async def create_batch(
             endpoint=payload.endpoint,
             model_ids=[],
             items=[],
-            completion_window_seconds=PROTOCOL_WINDOW_SECONDS,
+            completion_window_seconds=config.file_window_seconds,
             api_surface=SURFACE_OPENAI_FILE,
             target=TARGET_URLS[payload.endpoint or ""],
             phase=PHASE_VALIDATING,

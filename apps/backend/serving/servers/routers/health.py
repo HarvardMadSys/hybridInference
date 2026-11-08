@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from serving.config.settings import get_settings, has_role
 from serving.observability.alert_history import hooks as alert_history
@@ -19,11 +20,13 @@ from serving.servers.deps import (
     get_operational_store,
     get_router,
     get_services,
+    verify_admin_access,
 )
 from serving.servers.middleware.proxy_trust import (
     proxy_discovery_ready,
     proxy_discovery_required,
 )
+from serving.utils.single_flight import SingleFlightCache
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -34,6 +37,21 @@ router = APIRouter()
 #: Detached alert deliveries. Held so the loop cannot garbage-collect a task
 #: mid-send, which would drop the report silently.
 _ALERT_TASKS: set[asyncio.Task[Any]] = set()
+
+#: How long anonymous ``/health`` answers from its last store probe. The probe
+#: is a ``SELECT 1`` per store plus the outage/recovery alert bookkeeping; any
+#: caller can ask for it, as often as it likes, and the container probe, load
+#: balancers and monitors all poll it. Two seconds keeps it current for every
+#: one of them and bounds the database work to one probe per window, however
+#: many callers there are. ``/health/ready`` and ``/health/deep`` still probe on
+#: every call.
+HEALTH_PROBE_TTL_SEC = 2.0
+
+#: The last probe, keyed by the stores it probed. Concurrent callers share the
+#: probe in flight rather than each starting one.
+_HEALTH_PROBES: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
+    HEALTH_PROBE_TTL_SEC, max_entries=1
+)
 
 
 def _report_in_background(coro: Coroutine[Any, Any, bool]) -> None:
@@ -52,6 +70,41 @@ def _report_in_background(coro: Coroutine[Any, Any, bool]) -> None:
 def _route_is_published(route: Any) -> bool:
     """Return whether a route may be exposed by serving discovery endpoints."""
     return bool(getattr(route, "published", True))
+
+
+async def _admin_caller(
+    request: Request,
+    authorization: str | None = Header(None),
+    op_store=Depends(get_operational_store),
+) -> bool:
+    """Whether the caller presented an administrator's credential; never a refusal.
+
+    For the public status endpoints, which show an administrator where the
+    gateway sends requests and show everyone else the rest. A missing, invalid
+    or non-administrator credential, or one that cannot be checked right now,
+    reads as anonymous rather than as an error, so the public answer and its
+    status code stay what monitors expect. The credentials are
+    :func:`~serving.servers.deps.verify_admin_access`'s: an administrator's
+    console token or ``ADMIN_TOKEN``.
+    """
+    if not authorization:
+        return False
+    try:
+        await verify_admin_access(request, authorization, op_store)
+    except Exception:
+        # Refused, or not checkable here: no JWT secret on a gateway without
+        # authentication, a database that is down. Either way, not an admin.
+        return False
+    return True
+
+
+#: What an anonymous caller is not shown of a route: where it sends requests.
+_ADDRESS_FIELDS = frozenset({"base_url"})
+
+
+def _without_addresses(fact: dict[str, Any]) -> dict[str, Any]:
+    """*fact* less the upstream address an anonymous caller is not shown."""
+    return {key: value for key, value in fact.items() if key not in _ADDRESS_FIELDS}
 
 
 def _endpoint_is_degraded(endpoint_status: dict[str, Any]) -> bool:
@@ -216,6 +269,19 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     return result
 
 
+async def _cached_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
+    """:func:`_test_store_health` for ``/health``: shared for a moment, run once at a time.
+
+    The alert transitions it reports are evaluated by the probe itself, so they
+    fire once per probe rather than once per caller. Each caller gets its own
+    copy of the result.
+    """
+    result = await _HEALTH_PROBES.get(
+        (op_store, log_store), lambda: _test_store_health(op_store, log_store)
+    )
+    return copy.deepcopy(result)
+
+
 @router.get("/")
 async def root() -> dict[str, Any]:
     """Root endpoint showing API information and static metadata."""
@@ -261,10 +327,14 @@ async def health(
     log_store hiccups if we returned 503 for partial degradation. Strict
     readiness consumers should use ``/health/ready`` instead, which does
     AND-logic and returns 503 unless every configured store is up.
+
+    The store probe behind it is shared: one probe answers every caller for
+    :data:`HEALTH_PROBE_TTL_SEC`, and callers arriving while it runs wait for
+    it rather than starting their own.
     """
     routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
-    store_health = await _test_store_health(op_store, log_store)
+    store_health = await _cached_store_health(op_store, log_store)
     db_connected = store_health["healthy"]
 
     if not store_health["database_configured"]:
@@ -382,10 +452,15 @@ async def deep_health(
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    admin: bool = Depends(_admin_caller),
 ) -> dict[str, Any]:
     """Deep health check with provider/circuit info.
 
     Performs active database connection test and returns detailed system status.
+    Anyone may ask; only an administrator (:func:`_admin_caller`) is shown each
+    excluded route's upstream ``base_url``. ``admin`` counts only when it is
+    ``True``, so a direct call that leaves out the dependency gets the public
+    answer.
     """
     routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
@@ -418,6 +493,8 @@ async def deep_health(
     route_exclusions = (
         router_exec.get_route_exclusions() if hasattr(router_exec, "get_route_exclusions") else []
     )
+    if admin is not True:
+        route_exclusions = [_without_addresses(fact) for fact in route_exclusions]
 
     # Live configuration groups, alerting first among them. Like the route
     # exclusions, deliberately not part of `overall`: a group that failed to
@@ -477,20 +554,28 @@ async def model_activity(
 async def get_routing(
     router_exec=Depends(get_router),
     services=Depends(get_services),
+    admin: bool = Depends(_admin_caller),
 ) -> dict[str, Any]:
-    """Show current routing configuration and manager status if present."""
+    """Show current routing configuration and manager status if present.
+
+    Anyone sees each published route's provider and weight. Only an
+    administrator (:func:`_admin_caller`) also sees its upstream ``base_url``
+    and the routing file's probe results, which are keyed by endpoint URL;
+    ``GET /admin/routing`` adds the unpublished routes.
+    """
+    show_addresses = admin is True
     routing_info: dict[str, Any] = {}
     for model_id, route in router_exec.routes.items():
         if not _route_is_published(route):
             continue
-        routing_info[model_id] = [
-            {
-                "provider": adapter.config.provider,
-                "base_url": adapter.config.base_url,
-                "weight": f"{weight * 100:.0f}%",
-            }
-            for adapter, weight in route.adapters
-        ]
+        entries: list[dict[str, Any]] = []
+        for adapter, weight in route.adapters:
+            entry: dict[str, Any] = {"provider": adapter.config.provider}
+            if show_addresses:
+                entry["base_url"] = adapter.config.base_url
+            entry["weight"] = f"{weight * 100:.0f}%"
+            entries.append(entry)
+        routing_info[model_id] = entries
 
     response: dict[str, Any] = {
         "routes": routing_info,
@@ -498,6 +583,12 @@ async def get_routing(
     }
 
     if services.routing_manager:
-        response["manager_status"] = services.routing_manager.get_status()
+        manager_status = services.routing_manager.get_status()
+        if not show_addresses:
+            # Its probe results are keyed by each local endpoint's URL.
+            manager_status = {
+                key: value for key, value in manager_status.items() if key != "endpoint_health"
+            }
+        response["manager_status"] = manager_status
 
     return response

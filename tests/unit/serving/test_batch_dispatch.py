@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -53,6 +53,8 @@ class _Upstream(BaseAdapter):
                 name="Batch Model",
                 provider="openai",
                 base_url="https://upstream.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=PRICING,
             )
         )
@@ -182,7 +184,7 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
             break
         await asyncio.sleep(0.001)
     services.operational_store.increment_user_cost.assert_awaited_once_with(
-        "owner-1", pytest.approx(0.0002), api_key_id=41
+        "owner-1", pytest.approx(0.0002), day=ANY, api_key_id=41, requests=1
     )
 
 
@@ -295,6 +297,7 @@ async def test_upstream_failures_may_be_retried(error, status, code):
 
     assert result.status_code == status
     assert result.retryable is True
+    assert result.timed_out is False
     assert result.error["code"] == code
     assert result.error["status"] == status
     # The handler logged the failed request; its id comes back with the error.
@@ -327,6 +330,23 @@ async def test_an_attempt_past_its_deadline_times_out():
     result = await _dispatch(app, services, timeout_s=0.05)
 
     assert (result.status_code, result.error["code"], result.retryable) == (504, "timeout", True)
+    assert result.timed_out is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [_StatusError(504), TimeoutError(), TimeoutError()],
+    ids=["upstream-504", "timeout-error", "asyncio-timeout"],
+)
+async def test_an_upstream_timeout_is_marked_timed_out(error):
+    # A 504 from the upstream, or the upstream call's own timeout (answered
+    # 500, with the timeout as its cause): the scheduler does not retry these.
+    app, services = _setup(_Upstream(error=error))
+
+    result = await _dispatch(app, services)
+
+    assert result.timed_out is True
+    assert result.error is not None
 
 
 async def test_cancellation_propagates():

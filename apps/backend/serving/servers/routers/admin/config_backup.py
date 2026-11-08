@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
 import math
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from serving.adapters import dynamic_keys, provider_registry
@@ -50,10 +52,12 @@ from serving.schemas_config import (
     ConfigBackupAppConfigRow,
     ConfigBackupDisabledEnvKey,
     ConfigBackupEnvKeyMinRole,
+    ConfigBackupExportRequest,
     ConfigBackupModelVisibility,
     ConfigBackupPayload,
     ConfigBackupProviderDefinition,
     ConfigBackupProviderKey,
+    ConfigBackupRouteBatchPolicy,
     ConfigBackupRouteCandidate,
     ConfigBackupRouteCapability,
     ConfigBackupRouteConfig,
@@ -62,6 +66,8 @@ from serving.schemas_config import (
     ConfigBackupSiteSetting,
     ConfigBackupWeightOverride,
     ConfigResponse,
+    ConfigRestorePreview,
+    ConfigRestoreRequest,
     ConfigRestoreResponse,
 )
 from serving.servers import restart
@@ -90,13 +96,52 @@ from serving.servers.routers.admin.usage_insights import (
     _SETTING_API_KEY as USAGE_INSIGHTS_API_KEY,
     _SETTING_MODEL as USAGE_INSIGHTS_MODEL,
 )
+from serving.servers.routers.reauth import confirm_account_owner
 from serving.setup_state import SETUP_CODE_KEY, SETUP_MARKER_KEY
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["admin"])
 
 _EXCLUDED_SITE_SETTING_KEYS: frozenset[str] = frozenset({SETUP_MARKER_KEY, SETUP_CODE_KEY})
+
+#: The one secret ``site_settings`` row; its own admin API shows only a hint.
+_SECRET_SITE_SETTING_KEYS: frozenset[str] = frozenset({USAGE_INSIGHTS_API_KEY})
+
+# What a restore changes only once the administrator confirms the change and
+# gives the account's password: what signs and encrypts, who administers and
+# who may sign in, which networks are trusted, and where the gateway sends
+# requests, credentials, mail and users. For ``app_config`` that is every
+# secret, every setting of these categories, every variable a configuration
+# file references, every ``*_URL`` setting and these keys
+# (:func:`_security_relevant_setting`); for ``site_settings``, these keys.
+_SECURITY_CATEGORIES: frozenset[str] = frozenset({"security", "network"})
+_SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "EMAIL_PROVIDER",
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_USER",
+        "SMTP_FROM_EMAIL",
+        "IDENTITY_ISSUER",
+        "IDENTITY_ALLOWED_REDIRECTS",
+        "IDENTITY_JWT_RETIRING_PUBLIC_KEYS",
+        "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
+        "DB_STORE_FULL_CONTENT",
+    }
+)
+_SECURITY_SITE_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "user_auth_enabled",
+        "signup_enabled",
+        "signup_require_email_verification",
+        "log_full_payload",
+        *_SECRET_SITE_SETTING_KEYS,
+    }
+)
 
 
 def _jsonb_value(raw: Any) -> Any:
@@ -156,7 +201,12 @@ def _validate_runtime_setting_string(key: str, raw: str) -> str:
     return expected_type
 
 
-def _validate_site_setting(item: ConfigBackupSiteSetting) -> tuple[str, str, str]:
+def _validate_site_setting(item: ConfigBackupSiteSetting) -> tuple[str, str | None, str]:
+    """Return the row a restore writes for *item*; its value is ``None`` when withheld.
+
+    Only a secret row may come without a value, from a backup taken without
+    secret values: the restore then keeps this deployment's value.
+    """
     key = item.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="site_settings key must not be blank")
@@ -165,8 +215,12 @@ def _validate_site_setting(item: ConfigBackupSiteSetting) -> tuple[str, str, str
             status_code=400,
             detail=f"site_settings key {key!r} is a first-run setup marker and cannot be restored",
         )
-    value = item.value
     value_type = item.value_type or "str"
+    if item.value is None:
+        if key not in _SECRET_SITE_SETTING_KEYS:
+            raise HTTPException(status_code=400, detail=f"site_settings key {key!r} needs a value")
+        return key, None, value_type
+    value = item.value
 
     if key in RUNTIME_SETTINGS_REGISTRY:
         try:
@@ -281,7 +335,8 @@ def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
 
     seen_key_ids: set[str] = set()
     for k in payload.provider_keys:
-        if not k.id.strip() or not k.provider.strip() or not k.api_key:
+        # ``None`` is a value withheld from the backup; an empty key is no key.
+        if not k.id.strip() or not k.provider.strip() or k.api_key == "":
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid provider_key entry for provider {k.provider!r}",
@@ -375,18 +430,16 @@ def _validate_backup_payload(payload: ConfigBackupPayload) -> None:
             )
 
 
-@router.get("/admin/config/backup", response_model=ConfigBackupPayload)
-async def export_config_backup(
-    response: Response,
-    admin_id: str = Depends(verify_admin_access),
-    actor: AuditActor = Depends(get_admin_audit_actor),
-    services=Depends(get_services),
-    op_store=Depends(get_operational_store),
+async def _build_backup(
+    services: Any, op_store: Any, *, include_secret_values: bool
 ) -> ConfigBackupPayload:
-    """Export all administrator-configurable state as a portable JSON bundle."""
-    response.headers["Cache-Control"] = "no-store"
+    """Read every administrator-configurable domain into a bundle.
 
-    raw_app_config = await app_config.export_rows()
+    Without *include_secret_values*, each secret -- a secret ``app_config``
+    row, the usage-insights API key, every provider key -- is named with no
+    value: ``null``, and ``is_set`` on the ``app_config`` rows.
+    """
+    raw_app_config = await app_config.export_rows(include_secret_values=include_secret_values)
     app_config_items = [ConfigBackupAppConfigRow(**row) for row in raw_app_config]
 
     site_settings: list[ConfigBackupSiteSetting] = []
@@ -394,10 +447,11 @@ async def export_config_backup(
         key = str(row["key"])
         if key in _EXCLUDED_SITE_SETTING_KEYS or is_retired_routewise_setting_row(key):
             continue
+        withheld = key in _SECRET_SITE_SETTING_KEYS and not include_secret_values
         site_settings.append(
             ConfigBackupSiteSetting(
                 key=key,
-                value=str(row["value"]),
+                value=None if withheld else str(row["value"]),
                 value_type=str(row.get("value_type") or "str"),
             )
         )
@@ -418,24 +472,27 @@ async def export_config_backup(
 
     key_rows = await _call_store(op_store, "list_provider_keys", default=[])
     raw_values_by_provider: dict[str, dict[str, str]] = {}
-    for row in key_rows:
-        if row.provider not in raw_values_by_provider:
-            raw_values_by_provider[row.provider] = await _call_store(
-                op_store,
-                "list_provider_key_values",
-                row.provider,
-                default={},
-            )
+    if include_secret_values:
+        for row in key_rows:
+            if row.provider not in raw_values_by_provider:
+                raw_values_by_provider[row.provider] = await _call_store(
+                    op_store,
+                    "list_provider_key_values",
+                    row.provider,
+                    default={},
+                )
 
     provider_keys: list[ConfigBackupProviderKey] = []
     for row in key_rows:
-        raw_key = raw_values_by_provider.get(row.provider, {}).get(row.id)
-        if raw_key is None:
-            full = await _call_store(op_store, "get_provider_key_full", row.id, default=None)
-            if full is not None:
-                raw_key = full[1]
-        if raw_key is None:
-            continue
+        raw_key: str | None = None
+        if include_secret_values:
+            raw_key = raw_values_by_provider.get(row.provider, {}).get(row.id)
+            if raw_key is None:
+                full = await _call_store(op_store, "get_provider_key_full", row.id, default=None)
+                if full is not None:
+                    raw_key = full[1]
+            if raw_key is None:
+                continue
         provider_keys.append(
             ConfigBackupProviderKey(
                 id=row.id,
@@ -500,6 +557,23 @@ async def export_config_backup(
         if row.get("disabled") or row.get("removed")
     ]
     provider_route_states.sort(key=lambda item: (item.model_id, item.route_id))
+
+    batch_policies_raw = await _call_store(
+        op_store,
+        "list_all_provider_route_batch_policies",
+        default=[],
+    )
+    provider_route_batch_policies = sorted(
+        (
+            ConfigBackupRouteBatchPolicy(
+                model_id=str(row["model_id"]),
+                route_id=str(row["route_id"]),
+                batch_allowed=bool(row["batch_allowed"]),
+            )
+            for row in batch_policies_raw
+        ),
+        key=lambda item: (item.model_id, item.route_id),
+    )
 
     route_candidates_raw = await _call_store(
         op_store,
@@ -615,25 +689,11 @@ async def export_config_backup(
     ]
     signup_allowed_domains.sort(key=lambda item: item.domain)
 
-    await log_admin_action(
-        op_store,
-        action="config.backup",
-        actor=actor,
-        target=AuditTarget("config", "backup"),
-        details={
-            "app_config": len(app_config_items),
-            "site_settings": len(site_settings),
-            "provider_definitions": len(provider_definitions),
-            "provider_keys": len(provider_keys),
-            "provider_route_candidates": len(provider_route_candidates),
-            "provider_route_configs": len(provider_route_configs),
-        },
-    )
-
     return ConfigBackupPayload(
         **{
             "schema_version": 1,
             "exported_at": datetime.now(UTC),
+            "secrets_included": include_secret_values,
             "app_config": app_config_items,
             "site_settings": site_settings,
             "provider_definitions": provider_definitions,
@@ -642,6 +702,7 @@ async def export_config_backup(
             "provider_env_key_min_roles": provider_env_key_min_roles,
             "disabled_providers": disabled_providers,
             "provider_route_states": provider_route_states,
+            "provider_route_batch_policies": provider_route_batch_policies,
             "provider_route_candidates": provider_route_candidates,
             "provider_route_configs": provider_route_configs,
             "provider_route_capabilities": provider_route_capabilities,
@@ -652,6 +713,298 @@ async def export_config_backup(
             "signup_allowed_domains": signup_allowed_domains,
         }
     )
+
+
+async def _confirm_administrator(
+    request: Request, op_store: Any, password: str | None, *, action: str
+) -> None:
+    """Raise unless the administrator behind this request gives the account's password.
+
+    A bearer token proves a session, not a person, and what this guards
+    outlives any session: secret values handed out, or the deployment's
+    security settings replaced. The password is checked by
+    :func:`confirm_account_owner`, as revealing a saved API key checks it, so
+    every attempt counts against the sign-in limits. An ``ADMIN_TOKEN`` caller
+    has no account to confirm, and an account without a password (made by
+    phone) is refused: confirming by phone code would need a new code purpose.
+
+    Raises:
+        HTTPException: 403 for the admin token; 400 for an account without a
+            password or a wrong or missing one; 429 when rate-limited.
+    """
+    user_id = get_admin_user_id(request)
+    if user_id is None:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{action} needs an administrator's password. Sign in to the console as an "
+            "administrator: the admin token cannot confirm it.",
+        )
+    user_row = await op_store.get_user_by_id(user_id) if op_store else None
+    if not user_row:
+        raise HTTPException(status_code=403, detail="Admin account not found.")
+    if not user_row.get("password_hash"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{action} needs your password, and this account has none. Set one in "
+            "Settings first.",
+        )
+    await confirm_account_owner(
+        request,
+        op_store,
+        user_row,
+        password=password,
+        phone_code=None,
+        purpose="config_backup",
+    )
+
+
+async def _export(
+    response: Response,
+    actor: AuditActor,
+    services: Any,
+    op_store: Any,
+    *,
+    include_secret_values: bool,
+) -> ConfigBackupPayload:
+    response.headers["Cache-Control"] = "no-store"
+    payload = await _build_backup(services, op_store, include_secret_values=include_secret_values)
+    await log_admin_action(
+        op_store,
+        action="config.backup",
+        actor=actor,
+        target=AuditTarget("config", "backup"),
+        details={
+            "secrets_included": include_secret_values,
+            "app_config": len(payload.app_config),
+            "site_settings": len(payload.site_settings),
+            "provider_definitions": len(payload.provider_definitions),
+            "provider_keys": len(payload.provider_keys),
+            "provider_route_candidates": len(payload.provider_route_candidates),
+            "provider_route_configs": len(payload.provider_route_configs),
+        },
+    )
+    return payload
+
+
+@router.get("/admin/config/backup", response_model=ConfigBackupPayload)
+async def export_config_backup(
+    response: Response,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ConfigBackupPayload:
+    """Export all administrator-configurable state, with no secret values.
+
+    Every secret is named, and its value is ``null``: an ``app_config`` row
+    says ``is_set``, a provider key keeps its id, provider and label. Restoring
+    the bundle keeps this deployment's secrets. ``POST`` exports the values
+    too, after the administrator's password.
+    """
+    return await _export(response, actor, services, op_store, include_secret_values=False)
+
+
+@router.post("/admin/config/backup", response_model=ConfigBackupPayload)
+async def export_config_backup_with_secrets(
+    body: ConfigBackupExportRequest,
+    request: Request,
+    response: Response,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ConfigBackupPayload:
+    """Export all administrator-configurable state, secret values included on request.
+
+    With ``include_secrets`` the bundle carries every secret in plain text --
+    the signing and encryption secrets, the admin token, the identity key and
+    every provider key -- so the signed-in administrator must give the
+    account's password (:func:`_confirm_administrator`); the admin token
+    cannot. Without it, the same bundle as ``GET``.
+    """
+    if body.include_secrets:
+        await _confirm_administrator(
+            request, op_store, body.password, action="Exporting secret values"
+        )
+    return await _export(
+        response, actor, services, op_store, include_secret_values=body.include_secrets
+    )
+
+
+async def _kept_provider_key_values(op_store: Any, keys: list[Any]) -> dict[str, str]:
+    """This deployment's value for each key the backup withholds, by id, where it has one.
+
+    Only for the same id under the same provider: a value is never moved to
+    another provider's pool.
+    """
+    kept: dict[str, str] = {}
+    for key in keys:
+        if key.api_key is not None:
+            continue
+        key_id = key.id.strip()
+        full = await _call_store(op_store, "get_provider_key_full", key_id, default=None)
+        if full is not None and full[0] == key.provider.strip():
+            kept[key_id] = full[1]
+    return kept
+
+
+def _security_relevant_setting(key: str) -> bool:
+    """Whether changing ``app_config`` *key* from a backup needs confirmation and the password."""
+    entry = app_config.entry(key)
+    if entry is None:
+        # A variable the restore adds: a configuration file reads it.
+        return True
+    return (
+        entry.secret
+        or entry.category in _SECURITY_CATEGORIES
+        or entry.origin != "static"
+        or key in _SECURITY_SETTING_KEYS
+        or key.endswith("_URL")
+    )
+
+
+def _route_target_changed(current: Any, target: Any) -> bool:
+    """Whether a route would send requests, or a key, somewhere it does not now."""
+    if current is None:
+        return True
+    return (
+        str(current.get("base_url") or "") != target.base_url
+        or str(current.get("provider") or "") != target.provider
+        or current.get("api_key_id") != target.api_key_id
+    )
+
+
+async def _restore_plan(
+    payload: ConfigBackupPayload, op_store: Any
+) -> tuple[list[str], list[str], app_config.RestoreSummary]:
+    """What restoring *payload* now would change that is security-relevant, and leave unset.
+
+    Returns:
+        The security-relevant changes and the withheld secrets this deployment
+        has no value for, each as sorted ``domain:name`` labels, and the
+        ``app_config`` summary they were drawn from. Labels never carry a value.
+
+    Raises:
+        app_config.ConfigUpdateError: the ``app_config`` rows cannot be restored.
+    """
+    summary = await app_config.preview_restore_rows(
+        [row.model_dump() for row in payload.app_config]
+    )
+    changes = {f"app_config:{key}" for key in summary.changed if _security_relevant_setting(key)}
+    not_restored = {f"app_config:{key}" for key in summary.not_restored}
+
+    current_settings = {
+        str(row["key"]): str(row["value"])
+        for row in await _call_store(op_store, "list_settings", default=[])
+    }
+    target_settings = {item.key.strip(): item.value for item in _restorable_site_settings(payload)}
+    for key in _SECURITY_SITE_SETTING_KEYS:
+        if key not in target_settings:
+            if key in current_settings:
+                changes.add(f"site_settings:{key}")
+            continue
+        value = target_settings[key]
+        if value is None:
+            if key not in current_settings:
+                not_restored.add(f"site_settings:{key}")
+        elif current_settings.get(key) != value:
+            changes.add(f"site_settings:{key}")
+
+    current_defs = {
+        defn.provider: defn
+        for defn in await _call_store(op_store, "list_provider_definitions", default=[])
+    }
+    for d in payload.provider_definitions:
+        current = current_defs.get(d.provider.strip())
+        if (
+            current is None
+            or current.default_base_url != d.default_base_url.strip()
+            or current.adapter_kind != (d.adapter_kind.strip() or "openai_compat")
+        ):
+            changes.add(f"provider_definitions:{d.provider.strip()}")
+
+    current_keys = {
+        row.id: row for row in await _call_store(op_store, "list_provider_keys", default=[])
+    }
+    kept = await _kept_provider_key_values(op_store, payload.provider_keys)
+    for k in payload.provider_keys:
+        key_id, provider = k.id.strip(), k.provider.strip()
+        label = f"provider_keys:{provider}/{key_id}"
+        if k.api_key is None:
+            if key_id not in kept:
+                not_restored.add(label)
+            continue
+        current_key = current_keys.get(key_id)
+        if current_key is None or current_key.provider != provider:
+            changes.add(label)
+            continue
+        full = await _call_store(op_store, "get_provider_key_full", key_id, default=None)
+        if full is None or full[1] != k.api_key:
+            changes.add(label)
+
+    for domain, method, routes in (
+        (
+            "provider_route_candidates",
+            "list_all_provider_route_candidates",
+            payload.provider_route_candidates,
+        ),
+        (
+            "provider_route_configs",
+            "list_all_provider_route_configs",
+            payload.provider_route_configs,
+        ),
+    ):
+        current_routes = {
+            (str(row["model_id"]), str(row["route_id"])): row
+            for row in await _call_store(op_store, method, default=[])
+        }
+        for route in routes:
+            if _route_target_changed(current_routes.get((route.model_id, route.route_id)), route):
+                changes.add(f"{domain}:{route.model_id}/{route.route_id}")
+
+    current_domains = {
+        (str(row["domain"]), bool(row.get("is_wildcard", False)))
+        for row in await _call_store(op_store, "list_signup_allowed_domains", default=[])
+    }
+    if current_domains != {
+        (d.domain.strip(), d.is_wildcard) for d in payload.signup_allowed_domains
+    }:
+        # Who may sign up: an empty allowlist admits every address.
+        changes.add("signup_allowed_domains")
+
+    return sorted(changes), sorted(not_restored), summary
+
+
+@contextlib.asynccontextmanager
+async def _stores_in(
+    transaction: Any, op_store: Any, batch_store: Any
+) -> AsyncIterator[tuple[Any, Any]]:
+    """The operational and batch stores, writing on the ``app_config`` transaction's connection.
+
+    All three share the database and its pool, so on that one connection their
+    writes commit or roll back together. A store that cannot be bound refuses
+    the restore rather than write outside the transaction. A transaction with
+    no connection to share is an in-memory double, whose stores are used as
+    they are.
+    """
+    connection = getattr(transaction, "connection", None)
+    if not callable(connection):
+        yield op_store, batch_store
+        return
+
+    def bound(store: Any, conn: Any) -> Any:
+        if store is None:
+            return None
+        bind = getattr(store, "on_connection", None)
+        if not callable(bind):
+            raise RuntimeError(
+                f"{type(store).__name__} cannot write inside the configuration transaction; "
+                "nothing was restored."
+            )
+        return bind(conn)
+
+    async with connection() as conn:
+        yield bound(op_store, conn), bound(batch_store, conn)
 
 
 async def _apply_operational_and_batch_stores(
@@ -680,6 +1033,10 @@ async def _apply_operational_and_batch_stores(
             if existing_key not in target_settings:
                 await _call_store(op_store, "delete_setting", existing_key)
         for key, (val, vtype) in target_settings.items():
+            if val is None:
+                # Withheld from the backup: this deployment's value stays, and
+                # without one the setting stays unset.
+                continue
             await _call_store(op_store, "set_setting", key, val, vtype, admin_id)
 
         # 2. provider_definitions
@@ -700,16 +1057,21 @@ async def _apply_operational_and_batch_stores(
                 status=d.status,
             )
 
-        # 3. provider_api_keys
+        # 3. provider_api_keys. A key whose value the backup withholds keeps
+        # this deployment's value for the same id; without one it is left out.
+        kept_values = await _kept_provider_key_values(op_store, payload.provider_keys)
         current_keys = await _call_store(op_store, "list_provider_keys", default=[])
         for existing in current_keys:
             await _call_store(op_store, "delete_provider_key", existing.id)
         for k in payload.provider_keys:
+            api_key = k.api_key if k.api_key is not None else kept_values.get(k.id.strip())
+            if api_key is None:
+                continue
             await _call_store(
                 op_store,
                 "add_provider_key",
                 provider=k.provider.strip(),
-                api_key=k.api_key,
+                api_key=api_key,
                 label=k.label,
                 created_by=admin_id,
                 key_id=k.id.strip(),
@@ -826,6 +1188,34 @@ async def _apply_operational_and_batch_stores(
                 route_id,
                 disabled=new_state.disabled,
                 removed=new_state.removed,
+                updated_by=admin_id,
+            )
+
+        # 7b. provider_route_batch_policies: the bundle's choices replace the
+        # current ones; a route the bundle leaves out follows its locality.
+        target_batch_policies = {
+            (p.model_id, p.route_id): p.batch_allowed for p in payload.provider_route_batch_policies
+        }
+        for row in await _call_store(
+            op_store, "list_all_provider_route_batch_policies", default=[]
+        ):
+            key = (str(row["model_id"]), str(row["route_id"]))
+            if key not in target_batch_policies:
+                await _call_store(
+                    op_store,
+                    "set_provider_route_batch_policy",
+                    key[0],
+                    key[1],
+                    batch_allowed=None,
+                    updated_by=admin_id,
+                )
+        for (model_id, route_id), batch_allowed in target_batch_policies.items():
+            await _call_store(
+                op_store,
+                "set_provider_route_batch_policy",
+                model_id,
+                route_id,
+                batch_allowed=batch_allowed,
                 updated_by=admin_id,
             )
 
@@ -1060,6 +1450,10 @@ async def _refresh_live_caches(services: Any, op_store: Any) -> None:
     if route_state_resolver is not None:
         await _call_store(route_state_resolver, "load_all")
 
+    batch_route_resolver = getattr(services, "batch_route_resolver", None)
+    if batch_route_resolver is not None:
+        await _call_store(batch_route_resolver, "load_all")
+
     weight_resolver = getattr(services, "weight_override_resolver", None)
     if weight_resolver is not None:
         await _call_store(weight_resolver, "load_all")
@@ -1101,9 +1495,40 @@ async def _refresh_live_caches(services: Any, op_store: Any) -> None:
     app_config.refresh_health()
 
 
+async def _plan_or_refuse(
+    payload: ConfigBackupPayload, op_store: Any
+) -> tuple[list[str], list[str], app_config.RestoreSummary]:
+    _validate_backup_payload(payload)
+    try:
+        return await _restore_plan(payload, op_store)
+    except app_config.ConfigUpdateError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+
+
+@router.post("/admin/config/restore/preview", response_model=ConfigRestorePreview)
+async def preview_config_restore(
+    payload: ConfigBackupPayload,
+    response: Response,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ConfigRestorePreview:
+    """Say what restoring *payload* would change, writing nothing.
+
+    ``security_changes`` lists what the restore may change only once the
+    administrator confirms it and gives the account's password;
+    ``secrets_not_restored`` the secrets the bundle withholds that this
+    deployment has no value for.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    security_changes, not_restored, _summary = await _plan_or_refuse(payload, op_store)
+    return ConfigRestorePreview(
+        security_changes=security_changes, secrets_not_restored=not_restored
+    )
+
+
 @router.post("/admin/config/restore", response_model=ConfigRestoreResponse)
 async def restore_config_backup(
-    payload: ConfigBackupPayload,
+    payload: ConfigRestoreRequest,
     request: Request,
     response: Response,
     admin_id: str = Depends(verify_admin_access),
@@ -1111,25 +1536,49 @@ async def restore_config_backup(
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ConfigRestoreResponse:
-    """Restore administrator-configurable state from a backup bundle."""
+    """Restore administrator-configurable state from a backup bundle, all of it or none.
+
+    A bundle is not signed, so a restore that changes anything
+    security-relevant (``POST /admin/config/restore/preview`` lists it) needs
+    ``confirm_security_changes`` set to exactly that list, and the signed-in
+    administrator's ``password``. The list is checked again here, so a
+    configuration that changed since the preview is refused with 409 rather
+    than changed past what was confirmed.
+
+    Every table is written in the ``app_config`` transaction, on its
+    connection, so a failure anywhere rolls all of it back: nothing is
+    restored. A secret the bundle withholds keeps this deployment's value; one
+    this deployment lacks is left unset and named in ``secrets_not_restored``.
+    """
     response.headers["Cache-Control"] = "no-store"
 
-    _validate_backup_payload(payload)
+    security_changes, not_restored, _summary = await _plan_or_refuse(payload, op_store)
+    if security_changes:
+        confirmed = payload.confirm_security_changes
+        if confirmed is None or sorted(set(confirmed)) != security_changes:
+            raise HTTPException(
+                status_code=409,
+                detail="This backup changes security settings that were not confirmed: "
+                f"{', '.join(security_changes)}. Preview the restore, confirm these changes and "
+                "give your password.",
+            )
+        await _confirm_administrator(
+            request, op_store, payload.password, action="Restoring security settings"
+        )
 
     batch_store = getattr(services, "batch_store", None)
     app_config_dicts = [row.model_dump() for row in payload.app_config]
+    admin_user_id = get_admin_user_id(request)
+
+    async def apply_in_transaction(transaction: Any) -> None:
+        async with _stores_in(transaction, op_store, batch_store) as (tx_op_store, tx_batch):
+            await _apply_operational_and_batch_stores(
+                tx_op_store, tx_batch, payload, admin_id, admin_user_id
+            )
 
     try:
-        preserved = await app_config.restore_rows(
-            app_config_dicts,
-            updated_by=admin_id,
-            before_commit=lambda: _apply_operational_and_batch_stores(
-                op_store,
-                batch_store,
-                payload,
-                admin_id,
-                get_admin_user_id(request),
-            ),
+        summary = await app_config.restore_rows(
+            app_config_dicts, updated_by=admin_id, before_commit=apply_in_transaction
         )
     except app_config.ConfigUpdateError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
@@ -1139,22 +1588,36 @@ async def restore_config_backup(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except asyncpg.PostgresError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The backup could not be restored ({type(exc).__name__}); nothing was changed.",
+        ) from exc
 
     await _refresh_live_caches(services, op_store)
 
+    # The app_config rows' own answer, from inside the transaction, wins over
+    # the plan's for that domain.
+    not_restored = sorted(
+        {label for label in not_restored if not label.startswith("app_config:")}
+        | {f"app_config:{key}" for key in summary.not_restored}
+    )
     await log_admin_action(
         op_store,
         action="config.restore",
         actor=actor,
         target=AuditTarget("config", "backup"),
         details={
+            "secrets_included": payload.secrets_included,
             "app_config": len(payload.app_config),
             "site_settings": len(payload.site_settings),
             "provider_definitions": len(payload.provider_definitions),
             "provider_keys": len(payload.provider_keys),
             "provider_route_candidates": len(payload.provider_route_candidates),
             "provider_route_configs": len(payload.provider_route_configs),
-            "immutable_keys_preserved": preserved,
+            "immutable_keys_preserved": list(summary.preserved_immutable),
+            "security_changes": security_changes,
+            "secrets_not_restored": not_restored,
         },
     )
 
@@ -1163,5 +1626,7 @@ async def restore_config_backup(
             **app_config.describe(offered_only=True),
             restart_supported=restart.restart_supported(),
         ),
-        immutable_keys_preserved=preserved,
+        immutable_keys_preserved=list(summary.preserved_immutable),
+        security_changes=security_changes,
+        secrets_not_restored=not_restored,
     )

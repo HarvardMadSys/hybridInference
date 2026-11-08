@@ -22,7 +22,7 @@ import { constants, open, readFile, readlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { NextResponse, type NextRequest } from 'next/server';
 import { Agent, type Dispatcher } from 'undici';
-import { withoutConsoleSession } from '@/lib/utils/consoleSessionCookie';
+import { scopeProxiedSetCookie, withoutConsoleSession } from '@/lib/utils/consoleSessionCookie';
 
 const BACKEND_INTERNAL_URL = process.env.BUILT_BACKEND_INTERNAL_URL || 'http://backend:8080';
 const PGADMIN_INTERNAL_URL = process.env.PGADMIN_INTERNAL_URL || 'http://pgadmin:80';
@@ -207,8 +207,13 @@ function responseHeaders(upstream: Response): Headers {
     if (lower === 'content-encoding' || lower === 'set-cookie') return;
     headers.set(name, value);
   });
-  // forEach folds repeated Set-Cookie into one value; getSetCookie keeps them apart.
-  for (const cookie of upstream.headers.getSetCookie()) headers.append('set-cookie', cookie);
+  // forEach folds repeated Set-Cookie into one value; getSetCookie keeps them
+  // apart. pgAdmin's cookies stay under its prefix and never replace the
+  // console's: see scopeProxiedSetCookie.
+  for (const cookie of upstream.headers.getSetCookie()) {
+    const scoped = scopeProxiedSetCookie(cookie, PGADMIN_SCRIPT_NAME);
+    if (scoped) headers.append('set-cookie', scoped);
+  }
 
   const location = headers.get('location');
   if (location) {
@@ -550,7 +555,17 @@ async function handle(request: NextRequest): Promise<Response> {
       // response stream that has already been handed back to us.
       lease?.release();
     }
-  } catch {
+  } catch (error) {
+    // The console runs as an unprivileged user (uid 1000). mTLS files mounted
+    // for root alone are the one failure here an operator has to fix on the
+    // host, so name it; the path and the material stay out of the log.
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      console.error(
+        'pgAdmin mTLS credentials are not readable by the console user (uid 1000); ' +
+          'make PGADMIN_MTLS_* files readable by it.',
+      );
+    }
     // pgAdmin runs behind the `admin` Compose profile, so the usual cause is
     // a deployment that did not start it. Say so rather than leaking a stack.
     return new NextResponse('pgAdmin is not reachable.', {

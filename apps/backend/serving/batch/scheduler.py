@@ -31,11 +31,16 @@ slot of the owner's batch quota -- ``BATCH_ROLE_CONCURRENCY_<ROLE>``, counted in
 this process by a limiter of the worker's own, apart from the interactive
 per-user limiter, so batch work and the owner's own requests never compete for
 one budget -- its attempt is marked as dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
-on its target. A failure that may pass (a timeout, a 408/425/429, a 5xx) is
+on its target. A failure that may pass (a 408/425/429, a 5xx) is
 retried with exponential backoff for as long as its batch's window is open:
 it fails with its last error once the next try would start after the window
-closes. Only such failures count toward cooling a model down; a caller error
-(any other 4xx) fails the item at once.
+closes. A batch with no window (``BATCH_COMPLETION_WINDOW_HOURS`` 0, a null
+``expires_at``) never closes, so only ``max_attempts`` bounds its retries; an
+answer that the model is queued for capacity spends no attempt and is waited
+out however long it lasts. Only such failures count toward cooling a model down; a caller error
+(any other 4xx) fails the item at once, and so does a timeout (a 504, the
+upstream call's timeout, the item's deadline), without cooling the model down:
+the request generates past every limit and a retry would only repeat it.
 
 The same loop also does the background work batches need besides inference,
 each in at most one task per process at a time: validating uploaded input
@@ -66,14 +71,21 @@ from serving.batch.dispatch import dispatch_item
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoad
 from serving.batch.validation import validate_file_batch
 from serving.batch.webhooks import deliver_due_events
+from serving.config.batch_routes import (
+    BATCH_ROUTE_UNAVAILABLE,
+    batch_route_available,
+    batch_route_refusal,
+)
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
     StoredKeyRejected,
     authenticate_stored_key,
+    stored_key_quota_exceeded,
 )
 from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id
-from serving.storage.batch_store import TARGET_CHAT
+from serving.spend_ledger import spend_check_of
+from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -111,6 +123,9 @@ class SchedulerTimings:
     #: retried until its batch's window closes (see ``_settle``), which this
     #: does not reach in a window of a week at the backoff cap; it also bounds
     #: an item whose attempts never report back (a worker that keeps dying).
+    #: In a batch with no window it is the only bound on retryable failures
+    #: (some two weeks of them at the jittered backoff cap). A "model queued" answer
+    #: spends no attempt, so waiting for capacity never reaches it.
     max_attempts: int = 2000
     #: Delay before a retry: doubles with every attempt, up to the cap, and
     #: is jittered down by up to half.
@@ -746,7 +761,7 @@ class BatchScheduler:
             "waiting_hours": round(waited / 3600, 1),
             "detail": "Its upstream has answered 'model queued' (GPU job waiting for a "
             "node) since then; its batch requests are held, not failed, until the "
-            "batch window closes.",
+            "batch window closes (or indefinitely, for a batch with no window).",
         }
 
         async def send() -> None:
@@ -822,32 +837,7 @@ class BatchScheduler:
             await self._fail_batch(batch_id, exc.reason)
             return
         except StoredKeyQuotaExceeded as exc:
-            await self._release(entry, delay=self._timings.owner_retry_seconds)
-            if exc.scope == "account" and exc.window == "day":
-                await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
-                return
-            # A key budget or the monthly quota: checked again within the
-            # recheck interval, so one raised mid-window takes effect.
-            until = min(
-                exc.reset_at,
-                datetime.now(UTC) + timedelta(seconds=self._timings.budget_recheck_seconds),
-            )
-            if exc.scope == "account":
-                await self._pause_owner(
-                    owner, until, "monthly cost quota spent", kind="monthly_quota"
-                )
-                return
-            # Only this key's batches: the account's other keys still have
-            # budget, and their batches keep running.
-            await self._pause_owner(
-                owner,
-                until,
-                "API key daily budget spent"
-                if exc.window == "day"
-                else "API key monthly budget spent",
-                kind="key_budget",
-                key_hash=item.get("key_hash"),
-            )
+            await self._defer_for_spent_limit(entry, item, exc)
             return
         except Exception:
             logger.warning(
@@ -871,13 +861,44 @@ class BatchScheduler:
             return
 
         target = item.get("target") or TARGET_CHAT
+        if not batch_route_available(
+            self._services, entry.model_id, embeddings=target == TARGET_EMBEDDINGS
+        ):
+            # No route of the model may serve batch work any more (an admin
+            # changed it since the batch was created). Failed, with the reason a
+            # new batch is refused for, rather than queued for a route that
+            # never comes.
+            await self._complete(
+                entry,
+                error={
+                    "code": BATCH_ROUTE_UNAVAILABLE,
+                    "message": batch_route_refusal(entry.model_id),
+                    "status": 400,
+                },
+                status_code=400,
+                cost_status="not_billed",
+            )
+            return
         dispatch_body = self._dispatch_body(item, entry, target)
         give_back = await self._take_user_slot(user_ctx, entry.model_id)
         if give_back is None:
             logger.debug("batch item %s: owner at concurrency limit; deferred", entry.item_id)
             await self._release(entry, delay=self._timings.slot_retry_seconds)
             return
+        reservation = None
         try:
+            # Admitted against the owner's quotas and the key's budgets in one
+            # step with the reservation of its estimated cost, counting the
+            # owner's other requests in flight (interactive ones too): the
+            # check in authenticate_stored_key may since have been overtaken.
+            check = spend_check_of(user_ctx)
+            if check is not None:
+                reservation, refusal = check.admit()
+                if refusal is not None:
+                    await self._defer_for_spent_limit(
+                        entry, item, stored_key_quota_exceeded(refusal)
+                    )
+                    return
             marked = await self._store.mark_dispatched(
                 item_id=entry.item_id, worker_id=self._worker_id, attempt=entry.attempt
             )
@@ -900,8 +921,39 @@ class BatchScheduler:
                 timeout_s=self._timings.attempt_timeout_seconds,
             )
         finally:
+            # The item's real cost, if any, is recorded by now.
+            if reservation is not None:
+                reservation.release()
             give_back()
         await self._settle(entry, result, attempts, cfg)
+
+    async def _defer_for_spent_limit(
+        self, entry: _InFlight, item: dict[str, Any], exc: StoredKeyQuotaExceeded
+    ) -> None:
+        """Hand the item back and pause what the spent limit covers."""
+        owner = item["user_id"]
+        await self._release(entry, delay=self._timings.owner_retry_seconds)
+        if exc.scope == "account" and exc.window == "day":
+            await self._pause_owner(owner, exc.reset_at, "daily cost quota spent", kind="quota")
+            return
+        # A key budget or the monthly quota: checked again within the
+        # recheck interval, so one raised mid-window takes effect.
+        until = min(
+            exc.reset_at,
+            datetime.now(UTC) + timedelta(seconds=self._timings.budget_recheck_seconds),
+        )
+        if exc.scope == "account":
+            await self._pause_owner(owner, until, "monthly cost quota spent", kind="monthly_quota")
+            return
+        # Only this key's batches: the account's other keys still have
+        # budget, and their batches keep running.
+        await self._pause_owner(
+            owner,
+            until,
+            "API key daily budget spent" if exc.window == "day" else "API key monthly budget spent",
+            kind="key_budget",
+            key_hash=item.get("key_hash"),
+        )
 
     def _dispatch_body(self, item: dict[str, Any], entry: _InFlight, target: str) -> Any:
         """The body to run: the stored one, its model pinned to the admitted canonical id.
@@ -986,6 +1038,13 @@ class BatchScheduler:
             if entry.expires_at is None or retry_at < entry.expires_at:
                 await self._release(entry, delay=requeue)
                 return
+        elif result.timed_out:
+            # Ran out of time: a generation running past every limit, which a
+            # retry only repeats on the same GPU. The item fails now, and the
+            # model is not cooled down for it: one runaway request says nothing
+            # about the model's health, and it stops claiming work the model
+            # could serve.
+            pass
         elif result.retryable:
             # Only a failure that may pass says anything about the model; a
             # caller's own error (4xx) is no reason to slow it down for others.

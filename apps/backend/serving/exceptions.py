@@ -197,16 +197,45 @@ class UpstreamModelQueued(aiohttp.ClientResponseError):
     retry_after: float | None = None
 
 
-def is_model_queued_body(body: str | None) -> bool:
-    """Return whether an upstream error body is the ``model_queued`` answer."""
+#: The error ``code`` an on-demand deployment's proxy answers 504 with when the
+#: backend took longer than the proxy waits for one request. See
+#: :class:`UpstreamRequestTimedOut`.
+UPSTREAM_TIMEOUT_CODE = "upstream_timeout"
+
+
+class UpstreamRequestTimedOut(aiohttp.ClientResponseError):
+    """The upstream proxy answered 504 ``upstream_timeout``: one request ran too long.
+
+    The proxy in front of an on-demand deployment gives each request a fixed
+    time to finish. A request that asks for a long generation can outrun it
+    while the backend keeps serving everything else, so this says the request
+    was too long, not that the endpoint is down: the breaker does not count it.
+    The caller still gets the 504, and a batch item answered with it fails
+    without a retry.
+    """
+
+
+def _upstream_error_code(body: str | None) -> str | None:
+    """Return the ``error.code`` of an OpenAI-style upstream error body, if any."""
     if not body:
-        return False
+        return None
     try:
         data = json.loads(body)
     except (ValueError, TypeError):
-        return False
+        return None
     error = data.get("error") if isinstance(data, dict) else None
-    return isinstance(error, dict) and error.get("code") == MODEL_QUEUED_CODE
+    code = error.get("code") if isinstance(error, dict) else None
+    return code if isinstance(code, str) else None
+
+
+def is_model_queued_body(body: str | None) -> bool:
+    """Return whether an upstream error body is the ``model_queued`` answer."""
+    return _upstream_error_code(body) == MODEL_QUEUED_CODE
+
+
+def is_upstream_timeout_body(body: str | None) -> bool:
+    """Return whether an upstream error body is the proxy's ``upstream_timeout`` answer."""
+    return _upstream_error_code(body) == UPSTREAM_TIMEOUT_CODE
 
 
 def model_queued_cause(exc: BaseException | None) -> UpstreamModelQueued | None:

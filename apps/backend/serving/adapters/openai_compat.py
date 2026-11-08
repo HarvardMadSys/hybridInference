@@ -15,6 +15,7 @@ from serving.config.app_config import config_value, on_change
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
 from serving.stream import done_sentinel
+from serving.structured_output import requested_format, with_instruction
 from serving.utils.logging import get_logger
 from serving.utils.messages import (
     flatten_text_content,
@@ -24,7 +25,7 @@ from serving.utils.messages import (
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .dispatch_watch import report_first_token
+from .dispatch_watch import report_first_token, report_queued
 from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted, ReleaseOutcome
 from .processors import get_processor
 from .profiles import (
@@ -33,7 +34,6 @@ from .profiles import (
     extract_tool_calls_for_profile,
     filter_response_format,
     filter_sampling_params,
-    function_call_delta_to_tool_calls,
     get_stream_first_byte_timeout_seconds,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
@@ -42,7 +42,13 @@ from .profiles import (
     resolve_tool_choice_for_profile,
     supports_guided_json,
 )
-from .upstream_limiter import UpstreamSaturated, UpstreamSlot, acquire_upstream_slot
+from .remote_media import inline_remote_media
+from .upstream_limiter import (
+    UpstreamSaturated,
+    UpstreamSlot,
+    acquire_upstream_slot,
+    is_local_endpoint,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -82,6 +88,15 @@ class UpstreamStreamError(aiohttp.ClientError):
     def __init__(self, message: str, status: int) -> None:
         super().__init__(message)
         self.status = status
+
+
+# vLLM ends a request it aborted -- its engine shutting down under it, say --
+# with ``finish_reason: "abort"`` and whatever it had generated so far, inside
+# an ordinary 200. That is a failed generation, not a finished one: raised as
+# an upstream error, the router falls back and a batch item is retried instead
+# of the caller receiving a truncated or empty reply as the model's answer.
+_ABORTED_FINISH_REASON = "abort"
+_ABORTED_ERROR = "Upstream aborted the generation before it finished"
 
 
 # Used when an error frame names no usable HTTP status. Not a client error, so
@@ -709,6 +724,30 @@ class OpenAICompatAdapter(BaseAdapter):
         )
         return [self._clean_message(msg) for msg in messages]
 
+    async def _inline_remote_media(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return the messages to send, with remote media inlined for a self-hosted engine.
+
+        A self-hosted engine (vLLM, SGLang) fetches a media URL from this
+        deployment's own network, so on such a route the gateway fetches it
+        instead, through a client that reaches only public addresses, and sends
+        it on as a ``data:`` URL (:mod:`serving.adapters.remote_media`). A
+        provider API fetches from its own network, so other routes send the
+        messages as they are. "Self-hosted" is the classification outbound
+        admission uses: the route's ``deployment_type``, else its host.
+
+        Only the payload changes: the caller keeps ``messages`` -- the usage
+        estimate reads them, and a fallback to a cloud route sends their URLs.
+
+        Raises:
+            RemoteMediaRefused: A URL was refused or could not be fetched (400).
+        """
+        if not is_local_endpoint(self.config.base_url, deployment_type=self.config.deployment_type):
+            return messages
+        # The fetch is the gateway's time, not the engine's: pause a first-token
+        # watch as a wait for an outbound slot does. The slot this attempt takes
+        # next restarts it (``report_sent``).
+        return await inline_remote_media(messages, before_fetch=report_queued)
+
     def _normalize_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         """Normalize tool definitions for the active provider profile."""
         return normalize_tools_for_profile(self._usage_profile, tools)
@@ -1244,6 +1283,52 @@ class OpenAICompatAdapter(BaseAdapter):
         if isinstance(priority, int) and not isinstance(priority, bool):
             payload["priority"] = priority
 
+    def _apply_response_format(
+        self, payload: dict[str, Any], params: dict[str, Any], *, stream: bool
+    ) -> None:
+        """Forward the request's ``response_format`` as far as this endpoint takes it.
+
+        What the endpoint cannot take is described in the prompt instead: a
+        route without ``supports_structured_output``, or a provider that keeps
+        only ``json_object`` of a schema, would otherwise answer free text with
+        the model never having been told the shape it was asked for.
+
+        A vLLM route also gets ``structured_outputs`` with
+        ``disable_any_whitespace``: vLLM's JSON grammar otherwise admits any
+        amount of whitespace between tokens, and a model can loop on newlines
+        until ``max_tokens`` without ever writing a key. vLLM merges the schema
+        from ``response_format`` into it, and a server too old to know the
+        field ignores it.
+        """
+        wanted = requested_format(params)
+        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
+        if filtered_rf and self.config.supports_structured_output:
+            payload["response_format"] = filtered_rf
+            if self.config.vllm_structured_outputs and wanted is not None:
+                if wanted.schema is not None:
+                    payload["structured_outputs"] = {
+                        "json": wanted.schema,
+                        "disable_any_whitespace": True,
+                    }
+                elif wanted.kind == "json_object":
+                    payload["structured_outputs"] = {
+                        "json_object": True,
+                        "disable_any_whitespace": True,
+                    }
+            elif (
+                stream
+                and supports_guided_json(self._usage_profile)
+                and (schema := params.get("response_format", {}).get("schema"))
+            ):
+                payload["guided_json"] = schema
+        if wanted is None:
+            return
+        forwarded = payload.get("response_format")
+        if forwarded is None or (
+            wanted.schema is not None and forwarded.get("type") != "json_schema"
+        ):
+            payload["messages"] = with_instruction(payload["messages"], wanted)
+
     def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
         """Subclass extension point for provider-specific payload mutation.
 
@@ -1273,7 +1358,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # Build request payload
         payload = {
             **self.config.extra_body,
-            "messages": cleaned_messages,
+            "messages": await self._inline_remote_media(cleaned_messages),
             "model": self._get_model_identifier(),
             **validated,
         }
@@ -1286,9 +1371,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         self._apply_supported_passthrough_params(payload, params)
 
-        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
-        if filtered_rf and self.config.supports_structured_output:
-            payload["response_format"] = filtered_rf
+        self._apply_response_format(payload, params, stream=False)
         self._apply_upstream_priority(payload)
         payload = self._augment_payload(payload, stream=False)
 
@@ -1334,7 +1417,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         payload = {
             **self.config.extra_body,
-            "messages": cleaned_messages,
+            "messages": await self._inline_remote_media(cleaned_messages),
             "model": self._get_model_identifier(),
             "stream": True,
             **validated,
@@ -1348,13 +1431,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         self._apply_supported_passthrough_params(payload, params)
 
-        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
-        if filtered_rf and self.config.supports_structured_output:
-            payload["response_format"] = filtered_rf
-            if supports_guided_json(self._usage_profile) and (
-                schema := params.get("response_format", {}).get("schema")
-            ):
-                payload["guided_json"] = schema
+        self._apply_response_format(payload, params, stream=True)
         if getattr(self.config, "include_usage_in_stream", False):
             existing_options = payload.get("stream_options") or {}
             payload["stream_options"] = {**existing_options, "include_usage": True}
@@ -1367,8 +1444,12 @@ class OpenAICompatAdapter(BaseAdapter):
         # Fresh processor per request — avoids shared mutable state across concurrent streams
         processor = get_processor(self._processor_model_id, override=self._processor_override)
 
-        total_content = ""
-        total_tool_text = ""
+        # The output so far, for the usage estimate when the upstream reports
+        # none: content and reasoning, and tool-call names and arguments. Lists
+        # of pieces, joined once at the end -- appending to a string the closure
+        # below rebinds copies all of it on every token, quadratic in the answer.
+        content_pieces: list[str] = []
+        tool_text_pieces: list[str] = []
         finish_reason = "stop"
         upstream_usage: dict[str, Any] | None = None
         prompt_tokens_override: int | None = None
@@ -1378,13 +1459,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         # Helper to yield formatted chunks from processed data
         def format_and_yield(processed_chunk: dict[str, Any]) -> str | None:
-            nonlocal \
-                total_content, \
-                total_tool_text, \
-                finish_reason, \
-                upstream_usage, \
-                prompt_tokens_override, \
-                saw_tool_calls
+            nonlocal finish_reason, upstream_usage, prompt_tokens_override, saw_tool_calls
 
             choices = processed_chunk.get("choices") or []
 
@@ -1408,46 +1483,13 @@ class OpenAICompatAdapter(BaseAdapter):
             # Accumulate visible content and reasoning independently for the fallback
             content = delta.get("content")
             if isinstance(content, str) and content:
-                total_content += content
+                content_pieces.append(content)
 
             reasoning = (
                 delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             )
             if isinstance(reasoning, str) and reasoning:
-                total_content += reasoning
-
-            legacy_tool_calls = function_call_delta_to_tool_calls(
-                self._usage_profile, delta.get("function_call")
-            )
-            if legacy_tool_calls:
-                saw_tool_calls = True
-                # Accumulate tool-call text so the fallback usage estimate can
-                # count tool tokens when the provider omits a usage chunk.
-                # Skip malformed entries (non-dict entry or `function` value)
-                # rather than crashing the stream.
-                for entry in legacy_tool_calls:
-                    fn = entry.get("function") if isinstance(entry, dict) else None
-                    if not isinstance(fn, dict):
-                        continue
-                    name = fn.get("name") or ""
-                    args = fn.get("arguments") or ""
-                    if isinstance(name, str):
-                        total_tool_text += name
-                    if isinstance(args, str):
-                        total_tool_text += args
-                chunk_copy = dict(processed_chunk)
-                chunk_copy["model"] = self.config.id
-                new_choices = list(chunk_copy.get("choices") or [])
-                if new_choices:
-                    new_choice = dict(new_choices[0])
-                    new_delta = dict(new_choice.get("delta") or {})
-                    new_delta.pop("role", None)
-                    new_delta.pop("function_call", None)
-                    new_delta["tool_calls"] = legacy_tool_calls
-                    new_choice["delta"] = new_delta
-                    new_choices[0] = new_choice
-                    chunk_copy["choices"] = new_choices
-                return f"data: {json.dumps(chunk_copy)}\n\n"
+                content_pieces.append(reasoning)
 
             has_reasoning = (
                 bool(delta.get("reasoning_content"))
@@ -1472,9 +1514,9 @@ class OpenAICompatAdapter(BaseAdapter):
                         name = fn.get("name") or ""
                         args = fn.get("arguments") or ""
                         if isinstance(name, str):
-                            total_tool_text += name
+                            tool_text_pieces.append(name)
                         if isinstance(args, str):
-                            total_tool_text += args
+                            tool_text_pieces.append(args)
                 return self._format_passthrough_chunk(processed_chunk)
 
             if isinstance(content, str) and content:
@@ -1572,13 +1614,22 @@ class OpenAICompatAdapter(BaseAdapter):
                         # marks them ``finish_reason: "error"``: a failure, never
                         # a finish, with or without the error object beside it.
                         errored = isinstance(raw_choices, list) and any(
-                            isinstance(choice, dict) and choice.get("finish_reason") == "error"
+                            isinstance(choice, dict)
+                            and choice.get("finish_reason") in ("error", _ABORTED_FINISH_REASON)
                             for choice in raw_choices
                         )
                         if isinstance(data, dict) and (
                             (data.get("error") and not raw_choices) or errored
                         ):
-                            error = data.get("error")
+                            error = data.get("error") or (
+                                _ABORTED_ERROR
+                                if any(
+                                    isinstance(choice, dict)
+                                    and choice.get("finish_reason") == _ABORTED_FINISH_REASON
+                                    for choice in raw_choices or ()
+                                )
+                                else None
+                            )
                             raise UpstreamStreamError(
                                 _stream_error_message(error),
                                 _stream_error_status(error),
@@ -1710,9 +1761,9 @@ class OpenAICompatAdapter(BaseAdapter):
             usage_info = None
             final_usage = self._build_fallback_usage(
                 messages=cleaned_messages,
-                total_content=total_content,
+                total_content="".join(content_pieces),
                 prompt_tokens_override=prompt_tokens_override,
-                tool_text=total_tool_text,
+                tool_text="".join(tool_text_pieces),
             )
         final_chunk_str = self._build_final_chunk(
             usage=final_usage,
@@ -1760,6 +1811,8 @@ class OpenAICompatAdapter(BaseAdapter):
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""
         choice, message = unpack_first_choice(response, self.config.provider)
+        if choice.get("finish_reason") == _ABORTED_FINISH_REASON:
+            raise UpstreamStreamError(_ABORTED_ERROR, _UNCLASSIFIED_STREAM_ERROR_STATUS)
         tool_calls = extract_tool_calls_for_profile(self._usage_profile, message)
 
         usage = self._parse_usage(response.get("usage", {}))

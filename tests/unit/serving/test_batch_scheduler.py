@@ -22,6 +22,7 @@ from serving.batch.interactive_load import InteractiveLoad
 from serving.batch.scheduler import BatchScheduler, SchedulerTimings
 from serving.servers.auth import StoredKeyQuotaExceeded, StoredKeyRejected
 from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
+from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, SpendLedger
 
 OWNER = "owner-1"
 OK = DispatchResult(
@@ -40,6 +41,12 @@ UNAVAILABLE = DispatchResult(
 INVALID = DispatchResult(
     status_code=400,
     error={"code": "invalid_request", "message": "bad", "status": 400},
+)
+TIMED_OUT = DispatchResult(
+    status_code=504,
+    error={"code": "timeout", "message": "slow", "status": 504},
+    retryable=True,
+    timed_out=True,
 )
 
 # Long waits unless a test shortens them: progress must come from wake-ups.
@@ -349,9 +356,9 @@ async def worker(settings, auth, dispatch, limiter):
     """Build schedulers on a store; every one built is stopped afterwards."""
     built: list[BatchScheduler] = []
 
-    def build(store, *, caps=None, timings=SLOW, load=None):
+    def build(store, *, caps=None, timings=SLOW, load=None, router=None):
         services = types.SimpleNamespace(
-            router=None,
+            router=router,
             operational_store=object(),
             user_concurrency_limiter=limiter,
             model_concurrency_resolver=None,
@@ -827,6 +834,37 @@ async def test_a_retry_that_would_start_after_the_window_fails_now_with_its_erro
     assert len(dispatch.calls) == 1
 
 
+async def test_a_batch_with_no_window_retries_however_long_the_backoff(worker, dispatch):
+    # No window (BATCH_COMPLETION_WINDOW_HOURS 0): a retry two minutes away is
+    # still scheduled, where a closing window would fail the item now.
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=None)
+    timings = _fast_retries(backoff_base_seconds=120.0, backoff_cap_seconds=120.0)
+    scheduler = worker(store, timings=timings)
+
+    scheduler.start()
+    await until(lambda: store.calls["retry_item"] == 1)
+
+    assert store.status(1) == "queued"
+    assert store.items[1]["next_attempt_at"] > datetime.now(UTC) + timedelta(seconds=30)
+    assert len(dispatch.calls) == 1
+
+
+async def test_a_batch_with_no_window_still_stops_at_the_attempt_guard(worker, dispatch):
+    dispatch.results["m1"] = UNAVAILABLE
+    store = FakeStore()
+    store.add(1, expires_at=None)
+    scheduler = worker(store, timings=_fast_retries(max_attempts=4))
+
+    scheduler.start()
+    await until(lambda: store.status(1) == "failed")
+
+    assert store.items[1]["attempts"] == 4
+    assert store.items[1]["error"] == UNAVAILABLE.error
+    assert store.calls["retry_item"] == 3
+
+
 def test_the_attempt_guard_outlasts_a_week_long_window_at_the_backoff_cap():
     timings = SchedulerTimings()
     week = 168 * 3600
@@ -870,6 +908,24 @@ async def test_a_caller_error_fails_at_once_and_never_cools_the_model(worker, di
     assert store.items[1]["error"] == INVALID.error
 
 
+async def test_a_timeout_fails_at_once_and_never_cools_the_model(worker, dispatch):
+    # A request generating past every limit: a retry would only run it away
+    # again, and it says nothing about the model, which keeps taking work.
+    dispatch.results["m1"] = TIMED_OUT
+    store = FakeStore()
+    store.add(4)
+    scheduler = worker(store, caps={"m1": 1}, timings=_fast_retries(cooldown_failures=1))
+
+    scheduler.start()
+    await until(lambda: store.count("failed") == 4)
+
+    assert {item["attempts"] for item in store.items.values()} == {1}
+    assert store.calls["retry_item"] == 0
+    assert store.items[1]["error"] == TIMED_OUT.error
+    assert store.items[1]["status_code"] == 504
+    assert scheduler._cooldown_until == {}
+
+
 @pytest.mark.parametrize("threshold", [1, 2])
 async def test_retryable_failures_cool_the_model_down(worker, dispatch, threshold):
     dispatch.results["flaky"] = UNAVAILABLE
@@ -900,6 +956,48 @@ async def test_retryable_failures_cool_the_model_down(worker, dispatch, threshol
     # The flaky model's attempts stop at the threshold; the healthy one still runs.
     assert len(dispatch.calls) == threshold + 1
     assert all(c["model_id"] != "flaky" for c in store.claims[claims:])
+
+
+def _route_table(model: str, base_url: str) -> Any:
+    from routing.routers import FixedRouter
+    from serving.adapters.base import ModelConfig
+
+    adapter = types.SimpleNamespace(
+        config=ModelConfig(id=model, name=model, provider="p", base_url=base_url)
+    )
+    router = FixedRouter()
+    router.register_route(model, [(adapter, 1.0)])
+    return router
+
+
+async def test_an_item_whose_model_has_no_batch_route_fails_without_running(worker, dispatch):
+    """A queued item fails with the reason a new batch is refused for, not left to wait."""
+    store = FakeStore()
+    store.add(2)
+    scheduler = worker(store, caps={"m1": 1}, router=_route_table("m1", "https://cloud.test"))
+
+    scheduler.start()
+    await until(lambda: store.count("failed") == 2)
+
+    assert dispatch.calls == []
+    assert store.calls["mark_dispatched"] == 0
+    assert store.calls["retry_item"] == 0
+    error = store.items[1]["error"]
+    assert error["code"] == "batch_route_unavailable"
+    assert error["status"] == 400
+    assert "no route that batch requests may use" in error["message"]
+    assert store.items[1]["status_code"] == 400
+
+
+async def test_an_item_whose_model_has_a_batch_route_runs(worker, dispatch):
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store, caps={"m1": 1}, router=_route_table("m1", "http://localhost:8000"))
+
+    scheduler.start()
+    await until(lambda: store.count("completed") == 1)
+
+    assert len(dispatch.calls) == 1
 
 
 async def test_an_item_past_its_last_attempt_fails_with_its_last_error(worker, dispatch):
@@ -1090,6 +1188,22 @@ async def test_a_model_queued_answer_fails_once_the_window_would_close(worker, d
     assert store.calls["retry_item"] == 0
 
 
+async def test_a_model_queued_answer_waits_however_long_with_no_window(worker, dispatch):
+    # A batch with no window waits out an hour-long (or longer) queue for a
+    # node rather than failing.
+    dispatch.results["m1"] = _queued(3600)
+    store = FakeStore()
+    store.add(1, expires_at=None)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 1)
+
+    assert store.status(1) == "queued"
+    assert store.items[1]["error"] is None
+    assert store.calls["retry_item"] == 0
+
+
 @pytest.fixture
 def queued_alerts(monkeypatch):
     sent: list[dict[str, Any]] = []
@@ -1157,3 +1271,81 @@ async def test_a_queued_answer_counts_toward_the_wait(worker, dispatch, settings
     await until(lambda: store.calls["release_item"] == 1)
 
     assert noted == [("m1", 12)]
+
+
+# -- the owner's spend, reserved while an item runs ----------------------------------
+
+
+def _spend_check(ledger: SpendLedger, *, quota_usd: float) -> SpendCheck:
+    return SpendCheck(
+        ledger=ledger,
+        user_id=OWNER,
+        key_id=11,
+        read_at=0.0,
+        account_quota_usd=quota_usd,
+        account_spent_usd=0.0,
+    )
+
+
+async def test_an_items_estimated_cost_is_reserved_while_it_runs(worker, dispatch, auth):
+    """Counted against the owner's quota with their interactive requests, then given back."""
+    ledger = SpendLedger(object())
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    store = FakeStore()
+    store.add(1)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+    assert ledger._reserved_users[OWNER][1] == 1
+    assert ledger._reserved_keys[11][1] == 1
+
+    gate.set()
+    await until(lambda: store.count("completed") == 1)
+    assert ledger._reserved_users == {}
+    assert ledger._reserved_keys == {}
+
+
+async def test_an_item_that_no_longer_fits_is_deferred_and_its_slot_given_back(
+    worker, dispatch, auth
+):
+    """The owner's interactive requests took the rest of the budget since the check."""
+    ledger = SpendLedger(object())
+    check = _spend_check(ledger, quota_usd=0.015)
+    interactive, _ = check.admit()  # in flight elsewhere
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: check})
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+    await settle()
+
+    assert store.pause_reasons[OWNER] == "quota"
+    assert store.status(1) == "queued"
+    assert dispatch.calls == []
+    assert scheduler._role_slots._slots[OWNER].in_use == 0
+    interactive.release()
+    assert ledger._reserved_users == {}
+
+
+async def test_a_failed_dispatch_gives_the_reservation_back(worker, dispatch, auth, monkeypatch):
+    ledger = SpendLedger(object())
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+
+    async def broken(**_kwargs):
+        raise RuntimeError("dispatch broke")
+
+    monkeypatch.setattr(scheduler_module, "dispatch_item", broken)
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: store.calls["mark_dispatched"] >= 1)
+    await settle()
+
+    assert ledger._reserved_users == {}
+    assert scheduler._role_slots._slots[OWNER].in_use == 0

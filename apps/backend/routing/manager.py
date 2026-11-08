@@ -31,7 +31,16 @@ class RoutingManager:
 
     def load(self) -> None:
         """Load routing configuration and start health monitoring if enabled."""
-        self.conf = load_routing_config(self.config_path)
+        self.load_config(load_routing_config(self.config_path))
+
+    def load_config(self, conf: RoutingConfig) -> None:
+        """Use *conf* and start health monitoring when the config enables it.
+
+        Args:
+            conf: A document already loaded from a file or from the database
+                catalog. This does not read ``config_path``.
+        """
+        self.conf = conf
         if self.conf.health_check > 0:
             # Only monitor local deployments. Remote provider endpoints generally do not
             # expose our /health path and would be falsely marked unhealthy.
@@ -85,10 +94,8 @@ class RoutingManager:
         Returns the number of models whose routes were updated.
         """
         assert self.conf is not None
-        # default_router is the new field; routing_strategy is the legacy
-        # alias kept for one release.  Either being "fixed" enables apply().
-        effective_strategy = self.conf.default_router or self.conf.routing_strategy
-        if effective_strategy != "fixed":
+        # Only a "fixed" default_router enables apply().
+        if self.conf.default_router != "fixed":
             # For now only fixed supported; ignore otherwise
             return 0
         # local_fraction comes from the legacy routing_parameter block when
@@ -146,7 +153,7 @@ class RoutingManager:
             return {"loaded": False}
         return {
             "loaded": True,
-            "strategy": conf.default_router or conf.routing_strategy,
+            "strategy": conf.default_router,
             "health_check_interval": conf.health_check,
             "timeout": conf.timeout,
             "deployments": {

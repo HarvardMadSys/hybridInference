@@ -134,8 +134,6 @@ all: format check  ## Format code and run all checks
 
 setup-dev:  ## Set up development environment
 	@echo "$(YELLOW)Setting up development environment...$(RESET)"
-	@# Init git submodules (e.g. llm-prober)
-	git submodule update --init --recursive
 	@# Create venv if it doesn't exist; fail fast if an existing venv uses a different Python minor.
 	@if [ -x .venv/bin/python ]; then \
 		current="$$(.venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"; \
@@ -148,8 +146,6 @@ setup-dev:  ## Set up development environment
 	fi
 	@# Install package in editable mode
 	uv pip install -e .
-	@# Install requirements.txt if it exists
-	[ -f requirements.txt ] && uv pip install -r requirements.txt || true
 	@# Sync development dependencies from pyproject.toml
 	uv sync --group dev
 	$(UV_RUN) pre-commit install
@@ -209,11 +205,10 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # from a routine command. Discovery keeps that working with no change to any
 # machine.
 #
-# The cost is that this repository still contains the overlay, so a clone gets
-# it too. That is an artifact of the split being unfinished — once the overlay
-# lives elsewhere, discovery finds nothing and every clone is neutral without
-# anything here changing. Until then it is announced rather than silent, and
-# `DISTRIBUTION=none` opts out:
+# A clone of this repository carries no deployment overlay (example/ is marked
+# EXAMPLE_OVERLAY and never auto-selected), so discovery finds nothing and the
+# result is neutral. Where an overlay is present, discovery announces it rather
+# than staying silent, and `DISTRIBUTION=none` opts out:
 #
 #   make up                          # discovers the overlay, and says so
 #   make up DISTRIBUTION=none        # your own gateway, named after nobody

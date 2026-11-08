@@ -41,21 +41,10 @@ from typing import Any, Literal
 DEFAULT_DAILY_QUOTA_USD = 1000.0
 
 #: Charged optimistically before the call, since the real cost is not known
-#: until it returns. Same value the direct path uses.
+#: until it returns. Same value the direct path uses. It is also what an
+#: admitted request reserves while it runs (:mod:`serving.spend_ledger`), so
+#: requests in flight count against the limits they may yet exceed.
 ESTIMATED_REQUEST_COST_USD = 0.01
-
-
-class QuotaExceeded(Exception):
-    """The account's daily cost quota is spent.
-
-    Carries the numbers rather than a rendered message so each caller can raise
-    it in its own framework's idiom while the body stays identical.
-    """
-
-    def __init__(self, *, quota_usd: float, spent_usd: float) -> None:
-        super().__init__("Daily cost quota exceeded")
-        self.quota_usd = quota_usd
-        self.spent_usd = spent_usd
 
 
 def next_utc_midnight(now: datetime | None = None) -> datetime:
@@ -86,16 +75,6 @@ def resolve_quota(raw: Any) -> float:
     direct path — old rows predate the column.
     """
     return DEFAULT_DAILY_QUOTA_USD if raw is None else float(raw)
-
-
-def check(*, quota_usd: float, spent_usd: float) -> None:
-    """Raise if this request would take the account past its daily limit.
-
-    Raises:
-        QuotaExceeded: When the estimated charge does not fit under the limit.
-    """
-    if spent_usd + ESTIMATED_REQUEST_COST_USD > quota_usd:
-        raise QuotaExceeded(quota_usd=quota_usd, spent_usd=spent_usd)
 
 
 def exceeded_payload(

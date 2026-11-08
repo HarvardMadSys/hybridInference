@@ -7,6 +7,7 @@ user_routes.py, internal.py, and user_stats.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from datetime import UTC
@@ -26,12 +27,21 @@ from serving.storage.audit_schema import (
     SELECT_COLUMNS as AUDIT_SELECT_COLUMNS,
     insert_audit_row,
 )
-from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from serving.storage.base import (
+    CostIncrement,
+    CostWriteOutcomeUnknown,
+    OperationalStore,
+    ProviderDefinitionRow,
+    ProviderKeyRow,
+    Row,
+)
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
+from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from contextlib import AbstractAsyncContextManager
     from datetime import datetime
     from decimal import Decimal
 
@@ -40,6 +50,47 @@ if TYPE_CHECKING:
     from serving.audit import AuditActor
 
 logger = get_logger(__name__)
+
+# Adds a batch of cost increments to the account counters and the key counters
+# in one statement, so both are written or neither, and returns the
+# transaction id that ``increment_user_costs`` asks about when the COMMIT's
+# answer is lost. Each target row is updated once: the batch is summed per
+# (user, day) and per (key, day) first, as ON CONFLICT DO UPDATE requires.
+# The sums keep each increment's rounding (``spend_ledger.counted_amount``), so
+# a coalesced batch adds exactly what the separate increments would have.
+COST_INCREMENTS_SQL = """
+WITH batch AS (
+    SELECT *
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
+        AS b(user_id, day, key_id, cost_usd, requests)
+),
+account_rows AS (
+    INSERT INTO user_daily_cost AS c (user_id, day, cost_usd, requests, last_request_at)
+    SELECT user_id, day, SUM(cost_usd), SUM(requests), NOW()
+    FROM batch
+    GROUP BY user_id, day
+    ON CONFLICT (user_id, day) DO UPDATE SET
+        cost_usd = c.cost_usd + EXCLUDED.cost_usd,
+        requests = c.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+),
+key_rows AS (
+    INSERT INTO api_key_daily_cost AS k (key_id, day, user_id, cost_usd, requests, last_request_at)
+    SELECT key_id, day, MIN(user_id), SUM(cost_usd), SUM(requests), NOW()
+    FROM batch
+    WHERE key_id IS NOT NULL
+    GROUP BY key_id, day
+    ON CONFLICT (key_id, day) DO UPDATE SET
+        cost_usd = k.cost_usd + EXCLUDED.cost_usd,
+        requests = k.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+)
+SELECT txid_current()
+"""
+
+# How long to keep asking how a cost transaction ended after its COMMIT's
+# answer was lost: the delays before each try.
+_COMMIT_STATUS_RETRY_DELAYS = (0.0, 0.2, 1.0, 3.0)
 
 # Distinct ``api_logs.provider`` values with a row in the last $1 days; see
 # ``PostgresOperationalStore.list_user_activity_providers``.
@@ -289,10 +340,31 @@ def _coerce_user_row(row: Any) -> Row | None:
     return d
 
 
+#: The lookups a request makes before it is served -- authentication, spend and
+#: quota, session liveness, and the per-model and runtime settings read on the
+#: way -- which use the request pool (:mod:`serving.storage.pools`). Each is a
+#: cheap primary-key or index lookup; nothing slow may join them.
+REQUEST_PATH_READS = (
+    "get_user_by_id",
+    "get_auth_context_by_key_hash",
+    "get_auth_context_with_spend",
+    "get_auth_context_lightweight",
+    "get_key_spend",
+    "session_is_live",
+    "get_quota_context_for_user",
+    "get_agent_grant",
+    "get_setting",
+    "get_model_visibility_override",
+    "get_model_concurrency_exemption",
+    "get_user_cost_today",
+    "get_user_cost_period",
+)
+
+
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, request_pool: asyncpg.Pool | None = None) -> None:
         """Initialize with a shared asyncpg pool.
 
         The LogStore owns the erasure-fence schema and tombstone checks; this
@@ -300,8 +372,30 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         Args:
             pool: Shared asyncpg pool.
+            request_pool: The pool reserved for the lookups a request makes
+                before it is served (:data:`REQUEST_PATH_READS`); *pool* when
+                not given. Those lookups wait at most
+                :data:`~serving.storage.pools.REQUEST_ACQUIRE_TIMEOUT_SEC` for a
+                connection, from whichever pool, and then raise
+                :class:`~serving.storage.pools.DatabaseBusyError`.
         """
         self._pool = pool
+        self._request_pool = request_pool if request_pool is not None else pool
+
+    def _request_connection(self) -> AbstractAsyncContextManager[Any]:
+        """A connection for a request-path lookup: the request pool, a bounded wait."""
+        return request_connection(self._request_pool)
+
+    def on_connection(self, connection: Any) -> PostgresOperationalStore:
+        """This store on one connection: every call runs on *connection*, in its transaction.
+
+        For writes that must commit or roll back with the caller's own, such as
+        a configuration restore, which writes these tables inside the
+        ``app_config`` transaction. The caller owns the connection and its
+        transaction; request-path lookups use it as well.
+        """
+        pool = SingleConnectionPool(connection)
+        return PostgresOperationalStore(pool, request_pool=pool)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -343,7 +437,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_user_by_id(self, user_id: str) -> Row | None:
         """Fetch a single user row by primary key."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 f"SELECT {_USER_SELECT} FROM users WHERE id = $1",
                 user_id,
@@ -1329,7 +1423,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Returns full projection in a single round-trip.
         """
         identity = _JOINED_USER_IDENTITY
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 f"k.quota_monthly_cost_usd, {_AUTH_KEY_COLUMNS}, "
@@ -1362,7 +1456,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         one round-trip.
         """
         identity = _JOINED_USER_IDENTITY
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 "k.quota_monthly_cost_usd, am.account_spent_month_usd, "
@@ -1390,7 +1484,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Carries the key's model allowlist, which the model listings apply.
         """
         identity = _JOINED_USER_IDENTITY
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
                 "u.max_concurrent_requests, k.allowed_models "
@@ -1437,13 +1531,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return dict(row) if row is not None else None
 
     async def update_key_last_used(self, key_id: int) -> None:
-        """Set ``last_used_at = NOW()`` for the given key id."""
+        """Set ``last_used_at = NOW()`` for the given key id, at most once a minute.
+
+        The guard leaves a row written in the last minute alone: no new row
+        version and no row lock held to the end of a write, so the processes
+        serving a busy key do not queue on its row for a column the console
+        reads at minute resolution.
+        """
         async with self._pool.acquire() as conn:
-            await conn.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", key_id)
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1 "
+                "AND (last_used_at IS NULL OR last_used_at < NOW() - INTERVAL '60 seconds')",
+                key_id,
+            )
 
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:
         """What key *key_id* spent on the current UTC day and month, from its counter."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(cost_usd) FILTER ("
                 "         WHERE day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
@@ -1910,6 +2014,23 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return dict(row) if row else None
 
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Whether *user_id*'s session *sid* exists, unrevoked and unexpired.
+
+        Found through ``idx_auth_sessions_user`` (user_id, expires_at): ``sid``
+        has no index of its own, and an account holds few sessions.
+        """
+        async with self._request_connection() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM auth_sessions "
+                    "WHERE user_id = $1 AND expires_at > NOW() AND sid = $2 "
+                    "AND revoked IS NOT TRUE)",
+                    user_id,
+                    sid,
+                )
+            )
+
     async def rotate_session(
         self,
         session_id: str,
@@ -2230,6 +2351,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return dict(row) if row else None
 
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Return the newest unused signup verification token valid past *valid_until*."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT token FROM email_verification_tokens "
+                "WHERE user_id = $1 AND used_at IS NULL AND pending_email IS NULL "
+                "AND expires_at > $2 ORDER BY expires_at DESC LIMIT 1",
+                user_id,
+                valid_until,
+            )
+
     async def mark_verification_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
         async with self._pool.acquire() as conn:
@@ -2276,6 +2410,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 token,
             )
         return dict(row) if row else None
+
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Return the newest unused password reset token valid past *valid_until*."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT token FROM password_reset_tokens "
+                "WHERE user_id = $1 AND used_at IS NULL AND expires_at > $2 "
+                "ORDER BY expires_at DESC LIMIT 1",
+                user_id,
+                valid_until,
+            )
 
     async def mark_reset_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
@@ -2342,7 +2487,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         quota (see :func:`_sync_account_quota`), so any one of them answers;
         the oldest is taken so repeated lookups read the same row.
         """
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             rows = await conn.fetch(
                 "SELECT k.id, k.user_id, k.quota_daily_cost_usd, k.quota_monthly_cost_usd, u.role "
                 "FROM api_keys k "
@@ -2409,7 +2554,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_agent_grant(self, grant_id: str) -> Row | None:
         """Fetch a grant row by id, live or not."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT grant_id, user_id, external_job_id, external_attempt_id, "
                 "       allowed_models, created_at, expires_at, revoked_at "
@@ -2697,7 +2842,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_setting(self, key: str) -> Row | None:
         """Fetch a single site_settings row by key."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT key, value, value_type, updated_at, updated_by "
                 "FROM site_settings WHERE key = $1",
@@ -2773,7 +2918,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_model_visibility_override(self, model_id: str) -> Row | None:
         """Fetch a single model_visibility_overrides row by model_id."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT model_id, required_role, updated_at, updated_by "
                 "FROM model_visibility_overrides WHERE model_id = $1",
@@ -2853,7 +2998,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
         """Fetch a single model_concurrency_exemptions row by model_id."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT model_id, updated_at, updated_by "
                 "FROM model_concurrency_exemptions WHERE model_id = $1",
@@ -3353,12 +3498,55 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return _parse_command_tag_count(tag) > 0
 
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Return every stored batch choice ordered by model and route."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, batch_allowed, updated_at, updated_by "
+                "FROM provider_route_batch_policies ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Store one route's batch choice; ``None`` deletes it (the route follows its locality)."""
+        async with self._pool.acquire() as conn:
+            if batch_allowed is None:
+                await conn.execute(
+                    "DELETE FROM provider_route_batch_policies "
+                    "WHERE model_id = $1 AND route_id = $2",
+                    model_id,
+                    route_id,
+                )
+                return
+            await conn.execute(
+                """
+                INSERT INTO provider_route_batch_policies
+                    (model_id, route_id, batch_allowed, updated_at, updated_by)
+                VALUES ($1, $2, $3, NOW(), $4)
+                ON CONFLICT (model_id, route_id) DO UPDATE SET
+                    batch_allowed = EXCLUDED.batch_allowed,
+                    updated_at = EXCLUDED.updated_at,
+                    updated_by = EXCLUDED.updated_by
+                """,
+                model_id,
+                route_id,
+                batch_allowed,
+                updated_by,
+            )
+
     async def delete_provider_route_candidate_with_config(
         self,
         model_id: str,
         route_id: str,
     ) -> bool:
-        """Atomically delete a route candidate, its override row and its route state."""
+        """Atomically delete a route candidate, its override row, route state and batch choice."""
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "DELETE FROM provider_route_configs WHERE model_id = $1 AND route_id = $2",
@@ -3367,6 +3555,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_route_states WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_batch_policies WHERE model_id = $1 AND route_id = $2",
                 model_id,
                 route_id,
             )
@@ -3394,6 +3587,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
             await conn.execute(
                 "DELETE FROM provider_route_states WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_batch_policies WHERE model_id = $1",
                 model_id,
             )
             await conn.execute(
@@ -3520,55 +3717,77 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         *,
         day: str | None = None,
         api_key_id: int | None = None,
+        requests: int = 1,
     ) -> None:
-        """Atomically increment the daily cost counter via upsert.
+        """Atomically increment the daily cost counters via upsert.
 
         With ``api_key_id`` the key's own counter (``api_key_daily_cost``) is
-        bumped too, after the account's and apart from it: what the quota reads
-        never depends on the per-key write, whose failure is logged and
-        otherwise ignored.
+        bumped in the same statement: the key's budgets read it, so a write
+        that left it behind would let the key spend past them.
         """
         from datetime import datetime
 
         if day is None:
             day = datetime.now(UTC).strftime("%Y-%m-%d")
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
-                "VALUES ($1, $2, $3, 1, NOW()) "
-                "ON CONFLICT (user_id, day) DO UPDATE SET "
-                "cost_usd = user_daily_cost.cost_usd + $3, "
-                "requests = user_daily_cost.requests + 1, "
-                "last_request_at = NOW()",
-                user_id,
-                day,
-                cost_usd,
-            )
-            if api_key_id is None:
-                return
+        await self.increment_user_costs(
+            [CostIncrement(user_id, day, api_key_id, cost_usd, requests)]
+        )
+
+    atomic_cost_increments = True
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Add a batch of increments to the counters in one transaction, exactly once.
+
+        A failure before the COMMIT was sent applied nothing and is raised as
+        it is, so the caller may write the batch again. When the COMMIT was
+        sent and its answer lost (the connection dropped), the database is
+        asked how the transaction ended (``txid_status``): committed returns
+        normally, aborted raises the original error, and an answer that cannot
+        be had raises :class:`CostWriteOutcomeUnknown` -- retrying then could
+        count the batch twice.
+        """
+        if not increments:
+            return
+        args = (
+            [increment.user_id for increment in increments],
+            [increment.day for increment in increments],
+            [increment.api_key_id for increment in increments],
+            [increment.cost_usd for increment in increments],
+            [increment.requests for increment in increments],
+        )
+        xid: int | None = None
+        try:
+            async with self._pool.acquire() as conn, conn.transaction():
+                xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+            return
+        except Exception as exc:
+            if xid is None:
+                raise
+            failure = exc
+        status = await self._transaction_status(xid)
+        if status == "committed":
+            return
+        if status == "aborted":
+            raise failure
+        raise CostWriteOutcomeUnknown(xid) from failure
+
+    async def _transaction_status(self, xid: int) -> str | None:
+        """How transaction *xid* ended: ``committed``, ``aborted``, or None when untold."""
+        for delay in _COMMIT_STATUS_RETRY_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
             try:
-                await conn.execute(
-                    "INSERT INTO api_key_daily_cost "
-                    "(key_id, day, user_id, cost_usd, requests, last_request_at) "
-                    "VALUES ($1, $2, $3, $4, 1, NOW()) "
-                    "ON CONFLICT (key_id, day) DO UPDATE SET "
-                    "cost_usd = api_key_daily_cost.cost_usd + $4, "
-                    "requests = api_key_daily_cost.requests + 1, "
-                    "last_request_at = NOW()",
-                    api_key_id,
-                    day,
-                    user_id,
-                    cost_usd,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Per-key cost counter write failed",
-                    extra={"api_key_id": api_key_id, "error": type(exc).__name__},
-                )
+                async with self._pool.acquire() as conn:
+                    status = await conn.fetchval("SELECT txid_status($1)", xid)
+            except Exception:
+                continue
+            if status in ("committed", "aborted"):
+                return status
+        return None
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return today's cost from the counter table."""
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT cost_usd FROM user_daily_cost "
                 "WHERE user_id = $1 AND day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')",
@@ -3710,7 +3929,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         if period == "today":
             return await self.get_user_cost_today(user_id)
         # month: sum all days in current UTC month
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT COALESCE(SUM(cost_usd), 0) as total FROM user_daily_cost "
                 "WHERE user_id = $1 "

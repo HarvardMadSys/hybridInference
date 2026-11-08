@@ -23,8 +23,8 @@ everyone who clones the repository.
 The layout is in [docs/developer/contributing.md](docs/developer/contributing.md),
 under "Repository layout". Two things it does not tell you:
 
-- Deployment overlays under `distributions/` move out of this repository before
-  publication. `example/` is the one that remains.
+- Deployment overlays live in their own repositories; `distributions/example/`
+  is the only one here.
 - `distributions/example/` is marked `EXAMPLE_OVERLAY`, and that marker is what
   excludes it from automatic distribution discovery. Select it explicitly
   with `make up DISTRIBUTION=example` to run the local tutorial.
@@ -168,12 +168,14 @@ For the full diagram (network layer, observability, storage), see
   [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))
   is applied by `RoutingManager` in
   [apps/backend/routing/manager.py](apps/backend/routing/manager.py) from
-  `config/routing.yaml` (`default_router:`, formerly `routing_strategy:`).
+  the distribution's `config/routing.yaml` (`default_router:`, formerly
+  `routing_strategy:`).
   Per-model router selection (`fixed` / `routewise`) lives in the
   [apps/backend/routing/strategies/](apps/backend/routing/strategies/) package
   and is dispatched by
   [apps/backend/routing/model_router_registry.py](apps/backend/routing/model_router_registry.py)
-  from each model's `router:` field in `config/models.yaml`.
+  from each model's `router:` field in the distribution's `config/models.yaml`
+  (see 6.3).
 - **Circuit breaker / EWMA health** — provider health tracking in
   [apps/backend/routing/](apps/backend/routing/).
 
@@ -258,7 +260,10 @@ What remains here is the gateway's side of the two service contracts:
   browser bundle.
 
 The old `agent_*` tables stay in existing databases as read-only history
-(decision DR5); nothing here creates, reads or migrates them.
+(decision DR5); nothing here creates, reads or migrates them. `agent_grants` is
+the exception: it belongs to the inference-grant contract above, so the
+migrations create it and `serving/storage/postgres_operational.py` reads and
+writes it.
 
 ## 7. Common tasks
 

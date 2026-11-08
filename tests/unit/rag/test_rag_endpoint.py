@@ -439,3 +439,69 @@ async def test_open_chat_stream_preflight_error_raises(monkeypatch):
         )
     # 401 from upstream => our RAG_API_KEY is bad => 502 to the client.
     assert ei.value.status_code == 502
+
+
+def _deny_auth():
+    raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def test_chat_authenticates_before_it_parses_the_body(client):
+    """An anonymous caller is refused before its body is parsed at all.
+
+    With the body model on the route, FastAPI parsed the body before any
+    dependency ran, so a malformed body answered 422 to a caller who had not
+    authenticated -- and a large one was parsed for them.
+    """
+    client.app.dependency_overrides[get_current_user] = _deny_auth
+    response = client.post(
+        "/v1/rag/chat", content=b"{not json", headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_chat_does_not_read_an_anonymous_body(client):
+    client.app.dependency_overrides[get_current_user] = _deny_auth
+    read = []
+
+    async def body():
+        read.append(True)
+        yield b'{"messages": [{"role": "user", "content": "hi"}]}'
+
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+        response = await async_client.post(
+            "/v1/rag/chat", content=body(), headers={"content-type": "application/json"}
+        )
+    assert response.status_code == 401
+    assert read == []
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type", "field"),
+    [
+        (b'{"messages": []}', "application/json", "messages"),
+        (b'{"messages": [{"role": "user"}]}', "application/json", "content"),
+        (b'{"messages": [', "application/json", None),
+        (b'{"messages": [{"role": "user", "content": "hi"}]}', "text/plain", None),
+        (b"", "application/json", None),
+    ],
+    ids=["empty-messages", "missing-content", "malformed-json", "not-json", "no-body"],
+)
+def test_chat_still_answers_an_invalid_body_with_422(client, content, content_type, field):
+    response = client.post("/v1/rag/chat", content=content, headers={"content-type": content_type})
+    assert response.status_code == 422
+    locations = [error["loc"] for error in response.json()["detail"]]
+    assert all(location[0] == "body" for location in locations)
+    if field is not None:
+        assert any(field in location for location in locations)
+
+
+def test_chat_body_is_still_described_in_the_api_schema(client):
+    spec = client.app.openapi()
+    operation = spec["paths"]["/v1/rag/chat"]["post"]
+    schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    if "$ref" in schema:
+        schema = spec["components"]["schemas"][schema["$ref"].rsplit("/", 1)[-1]]
+    assert schema["properties"]["messages"]["type"] == "array"
+    assert schema["required"] == ["messages"]

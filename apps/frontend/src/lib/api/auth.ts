@@ -10,7 +10,7 @@ import { config } from '@/config/env';
 
 const API_BASE = config.apiBase;
 
-export interface SignupRequest {
+interface SignupRequest {
   email: string;
   password: string;
   user_name: string;
@@ -27,7 +27,7 @@ export interface SignupResponse {
   requires_approval: boolean;
 }
 
-export interface LoginRequest {
+interface LoginRequest {
   /**
    * An email address, or the login name of an account created without one
    * (the first-run administrator). The field keeps its name on the wire: the
@@ -62,7 +62,7 @@ export type PhoneCodePurpose =
   | 'bind_email'
   | 'set_password';
 
-export interface PhoneSignupRequest {
+interface PhoneSignupRequest {
   phone: string;
   code: string;
   user_name: string;
@@ -119,7 +119,7 @@ export async function loginPhone(data: { phone: string; code: string }): Promise
   return result;
 }
 
-export interface BindEmailResponse {
+interface BindEmailResponse {
   message: string;
   email: string;
   email_verified: boolean;
@@ -239,7 +239,7 @@ export interface AccountSummary {
   agent_access?: boolean | null;
 }
 
-export interface AccountsResponse {
+interface AccountsResponse {
   active_user_id: string | null;
   accounts: AccountSummary[];
   max_accounts: number;

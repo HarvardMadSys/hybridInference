@@ -48,6 +48,8 @@ class _Upstream(BaseAdapter):
                 name=model,
                 provider="openai",
                 base_url="https://upstream.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=PRICING,
             )
         )
@@ -66,7 +68,12 @@ class _Upstream(BaseAdapter):
 class _Embedder:
     def __init__(self) -> None:
         self.config = ModelConfig(
-            id=EMBED, name=EMBED, provider="openai", base_url="https://emb.test", pricing=PRICING
+            id=EMBED,
+            name=EMBED,
+            provider="openai",
+            base_url="https://emb.test",
+            deployment_type="self_hosted",
+            pricing=PRICING,
         )
         self.calls: list[Any] = []
 

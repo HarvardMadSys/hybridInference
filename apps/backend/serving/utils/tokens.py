@@ -6,9 +6,20 @@ formatters, and rate limiters share the same estimation behavior.
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import bisect
+import concurrent.futures
+import contextvars
+import functools
+import itertools
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import tiktoken
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+T = TypeVar("T")
 
 
 def _get_tiktoken_encoding():
@@ -125,8 +136,8 @@ AUDIO_TOKEN_ESTIMATE = 200  # coarse placeholder; precise counts come from upstr
 VIDEO_TOKEN_ESTIMATE = 1000  # coarse placeholder; real cost scales with frames/fps upstream
 
 
-def _estimate_block_tokens(block: Any) -> int:
-    """Estimate tokens for a single content block within a message.
+def _collect_block(block: Any, texts: list[str]) -> int:
+    """Collect one content block's text into *texts*; return its flat token count.
 
     Handles OpenAI-style structured blocks (``{"type": "text"|"image_url"|
     "input_audio", ...}``) as well as bare strings. Non-text blocks contribute
@@ -134,7 +145,8 @@ def _estimate_block_tokens(block: Any) -> int:
     payload.
     """
     if isinstance(block, str):
-        return estimate_text_tokens(block)
+        texts.append(block)
+        return 0
     if not isinstance(block, dict):
         return 0
 
@@ -142,7 +154,9 @@ def _estimate_block_tokens(block: Any) -> int:
     # Text blocks: {"type": "text", "text": ...}; some clients omit the type.
     if block_type == "text" or (block_type is None and "text" in block):
         text = block.get("text")
-        return estimate_text_tokens(text) if isinstance(text, str) else 0
+        if isinstance(text, str):
+            texts.append(text)
+        return 0
     if block_type in ("image_url", "image", "input_image"):
         return IMAGE_TOKEN_ESTIMATE
     if block_type in ("input_audio", "audio"):
@@ -152,11 +166,13 @@ def _estimate_block_tokens(block: Any) -> int:
 
     # Unknown block: count any embedded text, but never the raw payload/blob.
     text = block.get("text")
-    return estimate_text_tokens(text) if isinstance(text, str) else 0
+    if isinstance(text, str):
+        texts.append(text)
+    return 0
 
 
-def _estimate_content_tokens(content: Any) -> int:
-    """Estimate tokens for a message ``content`` field of any shape.
+def _collect_content(content: Any, texts: list[str]) -> int:
+    """Collect a message ``content`` field of any shape; return its flat token count.
 
     ``content`` may be a plain string (OpenAI text style), a list of structured
     blocks (multimodal style), a single block mapping, or ``None``.
@@ -164,12 +180,40 @@ def _estimate_content_tokens(content: Any) -> int:
     if content is None:
         return 0
     if isinstance(content, str):
-        return estimate_text_tokens(content)
+        texts.append(content)
+        return 0
     if isinstance(content, list):
-        return sum(_estimate_block_tokens(block) for block in content)
+        return sum(_collect_block(block, texts) for block in content)
     if isinstance(content, dict):
-        return _estimate_block_tokens(content)
-    return estimate_text_tokens(str(content))
+        return _collect_block(content, texts)
+    texts.append(str(content))
+    return 0
+
+
+def _prompt_token_parts(messages: list[dict[str, Any]]) -> tuple[int, list[str]]:
+    """Split a messages list into its flat token count and the texts to tokenize.
+
+    The one walk behind :func:`estimate_prompt_tokens` and
+    :func:`estimate_prompt_tokens_bounded`, so the two can never count a
+    prompt differently: each message contributes its role and content texts
+    plus a small overhead approximating protocol framing, and media blocks a
+    flat per-modality estimate.
+    """
+    if not messages:
+        return 0, []
+
+    overhead_per_message = 4
+    overhead_end = 3
+
+    texts: list[str] = []
+    fixed = 0
+    for m in messages:
+        texts.append(str(m.get("role", "")))
+        fixed += _collect_content(m.get("content"), texts)
+        fixed += overhead_per_message
+
+    fixed += overhead_end
+    return fixed, texts
 
 
 def estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
@@ -182,47 +226,133 @@ def estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
     structurally: text blocks are tokenized while image/audio blocks add a flat
     per-modality estimate, so inline base64 payloads never inflate the count.
 
+    Tokenizes the whole prompt, which takes tens of milliseconds for a long one;
+    on the event loop prefer :func:`estimate_prompt_tokens_bounded`.
+
     Args:
       messages: Chat messages with ``role`` and ``content`` fields.
 
     Returns:
       Estimated prompt token count.
     """
-    if not messages:
-        return 0
-
-    overhead_per_message = 4
-    overhead_end = 3
-
-    total = 0
-    for m in messages:
-        role = str(m.get("role", ""))
-        total += estimate_text_tokens(role)
-        total += _estimate_content_tokens(m.get("content"))
-        total += overhead_per_message
-
-    total += overhead_end
-    return total
+    fixed, texts = _prompt_token_parts(messages)
+    return fixed + sum(estimate_text_tokens(text) for text in texts)
 
 
-def estimate_total_tokens(messages: list[dict[str, Any]], max_tokens: int | None = None) -> int:
-    """Estimate total request tokens (prompt + completion budget).
+#: How much text an estimate made on the event loop tokenizes, at most:
+#: about 3 ms of tiktoken. A prompt with less text is counted exactly.
+INLINE_ESTIMATE_MAX_CHARS = 32_768
 
-    Args:
-      messages: Chat messages in OpenAI format.
-      max_tokens: Optional completion budget; defaults to 500 if None.
+#: Bytes in each window a bounded estimate tokenizes from a longer prompt.
+_SAMPLE_WINDOW_BYTES = 512
 
-    Returns:
-      Estimated total tokens for the request.
+
+def _utf8_size(text: str) -> int:
+    """The UTF-8 length of *text*, without encoding it when it is ASCII."""
+    return len(text) if text.isascii() else len(text.encode("utf-8", "surrogatepass"))
+
+
+def estimate_texts_tokens_bounded(texts: list[str], *, max_chars: int) -> int:
+    """Estimate the summed token counts of *texts*, tokenizing about *max_chars* at most.
+
+    Exactly ``sum(estimate_text_tokens(t) for t in texts)`` while the texts hold
+    no more than *max_chars* characters. Past that, a deterministic sample:
+    windows of :data:`_SAMPLE_WINDOW_BYTES` spread evenly over the texts' UTF-8
+    bytes are tokenized, each weighted by the share of the prompt it stands
+    for. Bytes rather than characters, because tokens per byte vary far less
+    between scripts than tokens per character (a CJK character is about one
+    token, an English one about a quarter). A text no longer than a window that
+    a window lands in is tokenized whole and weighted by its own size, so a
+    prompt of many short messages is counted without bias; a window cut out of
+    a longer text gives up the half token each cut edge adds. On real prompts
+    the sample comes within a few percent of the exact count, at a cost set by
+    *max_chars* instead of by the prompt.
     """
-    prompt_tokens = estimate_prompt_tokens(messages)
-    completion_budget = max_tokens if max_tokens is not None else 500
-    return prompt_tokens + int(completion_budget)
+    texts = [text for text in texts if text]
+    if sum(len(text) for text in texts) <= max_chars:
+        return sum(_count_with_tiktoken(text) for text in texts)
+
+    sizes = [_utf8_size(text) for text in texts]
+    total = sum(sizes)
+    width = _SAMPLE_WINDOW_BYTES
+    windows = max(1, max_chars // width)
+    stride = total / windows
+    starts = list(itertools.accumulate(sizes, initial=0))
+    encoded: dict[int, bytes] = {}
+    estimate = 0.0
+    for window_index in range(windows):
+        offset = min(int((window_index + 0.5) * stride), total - 1)
+        index = bisect.bisect_right(starts, offset) - 1
+        text, size = texts[index], sizes[index]
+        if size <= width:
+            estimate += _count_with_tiktoken(text) * stride / size
+            continue
+        begin = max(0, min(offset - starts[index] - width // 2, size - width))
+        cut_edges = (begin > 0) + (begin + width < size)
+        if size == len(text):  # ASCII: a byte offset is a character offset
+            window = text[begin : begin + width]
+        else:
+            data = encoded.get(index)
+            if data is None:
+                data = encoded[index] = text.encode("utf-8", "surrogatepass")
+            # A character split by the window's edges is dropped, not guessed.
+            window = data[begin : begin + width].decode("utf-8", "ignore")
+        window_size = _utf8_size(window)
+        if not window_size:
+            continue
+        tokens = max(_count_with_tiktoken(window) - cut_edges / 2, 0.0)
+        estimate += tokens * stride / window_size
+    return round(estimate)
+
+
+def estimate_prompt_tokens_bounded(
+    messages: list[dict[str, Any]],
+    *,
+    max_chars: int = INLINE_ESTIMATE_MAX_CHARS,
+    extra_texts: tuple[str, ...] = (),
+) -> int:
+    """:func:`estimate_prompt_tokens`, tokenizing at most about *max_chars* characters.
+
+    Equal to ``estimate_prompt_tokens(messages)`` plus the estimate of each of
+    *extra_texts* (serialized tool definitions, say) whenever all of that text
+    fits in *max_chars*; a sampled estimate beyond it (see
+    :func:`estimate_texts_tokens_bounded`). Use it wherever the prompt is
+    caller-sized and the work must stay bounded: on the event loop above all.
+    """
+    fixed, texts = _prompt_token_parts(messages)
+    texts.extend(extra_texts)
+    return fixed + estimate_texts_tokens_bounded(texts, max_chars=max_chars)
+
+
+#: One small pool for tokenizing off the event loop. tiktoken releases the GIL
+#: while it encodes, so the loop keeps serving meanwhile; a pool of its own
+#: keeps a burst of token counting from queueing ahead of other work handed to
+#: the default executor, and bounds how much of it runs at once.
+_TOKENIZER_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="tokenizer"
+)
+
+
+async def run_tokenization(func: Callable[..., T], *args: Any) -> T:
+    """Run ``func(*args)`` in the tokenizer pool and return its result.
+
+    *args* must not be mutated by anyone else while it runs. A cancelled call
+    that has not started is dropped from the pool; one that has started runs to
+    completion, which the callers bound by bounding the text.
+    """
+    loop = asyncio.get_running_loop()
+    # The caller's context goes along, as with ``asyncio.to_thread``, so log
+    # lines from the worker still carry the request they belong to.
+    context = contextvars.copy_context()
+    return await loop.run_in_executor(_TOKENIZER_POOL, functools.partial(context.run, func, *args))
 
 
 __all__ = [
+    "INLINE_ESTIMATE_MAX_CHARS",
     "estimate_prompt_tokens",
+    "estimate_prompt_tokens_bounded",
     "estimate_text_tokens",
-    "estimate_total_tokens",
+    "estimate_texts_tokens_bounded",
+    "run_tokenization",
     "tokenize_text",
 ]

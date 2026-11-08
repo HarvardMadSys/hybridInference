@@ -1523,6 +1523,10 @@
     "source": "Execution window",
     "text": "执行窗口"
   },
+  "batches.create.summary.window_none": {
+    "source": "No limit: the batch keeps running until every request is done, however long that takes. No request expires.",
+    "text": "不限：批次会一直运行，直到每个请求都完成，无论需要多久。不会有请求过期。"
+  },
   "batches.create.summary.window_text": {
     "source": "Every request starts within {hours} hours; requests already started may finish after that. Requests not started by then expire.",
     "text": "所有请求在 {hours} 小时内开始执行；已开始的请求可以在此之后完成。届时仍未开始的请求将过期。"
@@ -1722,6 +1726,10 @@
   "batches.detail.window": {
     "source": "Start requests by",
     "text": "请求开始期限"
+  },
+  "batches.detail.window_none": {
+    "source": "No limit",
+    "text": "不限"
   },
   "batches.empty_create": {
     "source": "You have no batches. Create one here, or submit one through the API.",
@@ -2211,10 +2219,6 @@
     "source": "Log out",
     "text": "退出登录"
   },
-  "chrome.account_menu.log_out_all": {
-    "source": "Log out of all accounts",
-    "text": "退出所有账户"
-  },
   "chrome.account_menu.settings": {
     "source": "My settings",
     "text": "我的设置"
@@ -2619,6 +2623,10 @@
     "source": "Copy key",
     "text": "复制 key"
   },
+  "dashboard.keys.copy_failed": {
+    "source": "Could not copy the key. Show it and copy it instead.",
+    "text": "无法复制 key。请先显示它，再手动复制。"
+  },
   "dashboard.keys.create": {
     "source": "Create API Key",
     "text": "创建 API key"
@@ -2698,6 +2706,22 @@
   "dashboard.keys.renamed_toast": {
     "source": "API key renamed.",
     "text": "API key 已重命名。"
+  },
+  "dashboard.keys.reveal_needs_password": {
+    "source": "Showing a saved key needs your password. Set one in Settings, or regenerate the key to see a new one.",
+    "text": "显示已保存的 key 需要你的密码。请先在设置中设置密码，或者重新生成这个 key 来查看新的 key。"
+  },
+  "dashboard.keys.reveal_password": {
+    "source": "Password",
+    "text": "密码"
+  },
+  "dashboard.keys.reveal_prompt": {
+    "source": "Enter your password to see this key in full.",
+    "text": "输入密码，查看完整的 key。"
+  },
+  "dashboard.keys.reveal_title": {
+    "source": "Confirm it's you",
+    "text": "确认是你本人"
   },
   "dashboard.keys.revoke": {
     "source": "Revoke",
@@ -3066,6 +3090,20 @@
   "dashboard.usage.reasoning_label": {
     "source": "Reasoning tokens",
     "text": "推理 token"
+  },
+  "dashboard.usage.reasoning_partial": [
+    {
+      "source": "reported by only 1 request",
+      "text": "仅 1 个请求上报"
+    },
+    {
+      "source": "reported by only {known} requests",
+      "text": "仅 {known} 个请求上报"
+    }
+  ],
+  "dashboard.usage.reasoning_unreported": {
+    "source": "Not reported",
+    "text": "未上报"
   },
   "dashboard.usage.requests": {
     "source": "Requests",

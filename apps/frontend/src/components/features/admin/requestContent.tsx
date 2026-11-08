@@ -12,7 +12,7 @@ function previewText(value: string, maxChars: number = 280): string {
   return `${value.slice(0, maxChars)}...`;
 }
 
-export type ParseResult = { ok: true; value: unknown } | { ok: false };
+type ParseResult = { ok: true; value: unknown } | { ok: false };
 
 function tryParseJson(value: string): ParseResult {
   try {
@@ -32,7 +32,7 @@ type ToolCall = {
   function?: { name?: unknown; arguments?: unknown };
 };
 
-export type ChatMessage = {
+type ChatMessage = {
   role: string;
   content: unknown;
   reasoning_content?: unknown;

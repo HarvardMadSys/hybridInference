@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
 from dataclasses import dataclass
@@ -15,11 +14,11 @@ from pydantic import ValidationError
 from routing.endpoints import endpoint_id_for_config
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.batch.attempts import note_request_id, observe_billing
+from serving.config.batch_routes import batch_embedding_adapter, batch_route_refusal
 from serving.config.runtime_settings import get_runtime_settings
 from serving.exceptions import UpstreamModelQueued, user_safe_upstream_error
 from serving.grant_auth import ledger_attribution
 from serving.model_access import ModelAccessDenial, model_access_denial
-from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, require_embedding_pricing
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
 from serving.servers.auth import verify_api_key
@@ -34,6 +33,7 @@ from serving.servers.deps import (
 )
 from serving.servers.model_availability import model_not_found_detail
 from serving.servers.surface_http import client_origin, timeout_probe
+from serving.spend_ledger import ledger_for
 from serving.storage.utils import calculate_cost
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
@@ -45,13 +45,14 @@ from serving.utils.synthetic_probe import is_trusted_probe_headers
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import Mapping
 
 logger = get_logger(__name__)
 router = APIRouter()
 
-# Retains in-flight cost-increment tasks so the event loop's garbage collector
-# can't cancel a fire-and-forget increment before it commits.
+# Retains the cost-counter writes carrying this surface's increments, for
+# callers that wait on them (tests); the spend ledger owns the writes.
 _increment_tasks: set[asyncio.Task[Any]] = set()
 
 
@@ -63,7 +64,7 @@ def _schedule_cost_increment(
     *,
     api_key_id: int | None = None,
 ) -> None:
-    """Fire-and-forget the daily quota cost increment for a billed embedding.
+    """Record the daily quota cost of a billed embedding in the spend ledger.
 
     Mirrors the chat path's ``CostTracker.schedule_increment`` effect: the
     ``api_logs.cost_usd`` column alone is not read by ``verify_api_key`` for
@@ -79,20 +80,10 @@ def _schedule_cost_increment(
     if not cost or cost <= 0:
         return
 
-    async def _increment() -> None:
-        try:
-            await op_store.increment_user_cost(user_id, cost, api_key_id=api_key_id)
-        except Exception as exc:
-            logger.warning(f"Failed to increment embedding cost counter for {user_id}: {exc}")
-            raise  # let tracked_task record the failure
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = tracked_task(_increment(), name="embedding_cost_increment")
-    _increment_tasks.add(task)
-    task.add_done_callback(_increment_tasks.discard)
+    task = ledger_for(op_store).record(user_id, cost, api_key_id=api_key_id)
+    if task is not None:
+        _increment_tasks.add(task)
+        task.add_done_callback(_increment_tasks.discard)
 
 
 def _response_summary(response: Any, model: str) -> dict[str, Any]:
@@ -426,6 +417,13 @@ async def execute_embeddings(
         )
 
     adapter = embedding_adapters[model]
+    if ctx.batch is not None:
+        # A batch item runs only on the backends batch work may use
+        # (serving/config/batch_routes.py). The batch worker fails an item whose
+        # model has none before dispatch; this is the backstop.
+        adapter = batch_embedding_adapter(adapter, model, router_exec)
+        if adapter is None:
+            raise HTTPException(400, batch_route_refusal(model))
     require_embedding_pricing(adapter)
     adapter_config = getattr(adapter, "config", None)
     provider = getattr(adapter_config, "provider", None) or "unknown"

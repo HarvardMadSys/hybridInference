@@ -20,7 +20,7 @@ import type { CreateDraft } from './createDraft';
 import { errorReportFile, saveText } from './errorReport';
 import { FormatExample } from './FormatExample';
 
-export function StepCard({ title, children }: { title: string; children: ReactNode }) {
+function StepCard({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
       <h2 className="text-base font-semibold text-gray-900">{title}</h2>
@@ -61,7 +61,7 @@ export function Stepper({ step }: { step: 1 | 2 | 3 }) {
   );
 }
 
-export function ErrorList({ report }: { report: PreflightReport }) {
+function ErrorList({ report }: { report: PreflightReport }) {
   const t = useT();
   const shown = report.errors.slice(0, 200);
   return (
@@ -794,13 +794,18 @@ export function ReviewStep({
                 {t('batches.create.summary.window', 'Execution window')}
               </dt>
               <dd className="sm:col-span-2">
-                {fill(
-                  t(
-                    'batches.create.summary.window_text',
-                    'Every request starts within {hours} hours; requests already started may finish after that. Requests not started by then expire.',
-                  ),
-                  { hours: String(limits?.completion_window_hours ?? 24) },
-                )}
+                {limits?.completion_window_hours === null
+                  ? t(
+                      'batches.create.summary.window_none',
+                      'No limit: the batch keeps running until every request is done, however long that takes. No request expires.',
+                    )
+                  : fill(
+                      t(
+                        'batches.create.summary.window_text',
+                        'Every request starts within {hours} hours; requests already started may finish after that. Requests not started by then expire.',
+                      ),
+                      { hours: String(limits?.completion_window_hours ?? 24) },
+                    )}
               </dd>
             </div>
             <div className="grid gap-1 py-2 sm:grid-cols-3">

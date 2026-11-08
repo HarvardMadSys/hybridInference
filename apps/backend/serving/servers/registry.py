@@ -44,8 +44,6 @@ class ModelRegistrationInfo:
 
     Attributes:
         model_id: Canonical model identifier.
-        strategy: DEPRECATED — legacy ``routing_strategy:`` value.  Read by
-            existing bootstrap code; new code should use ``router`` instead.
         aliases: Alternate model_ids that share this model's route.
         router: Strategy name from ``models.yaml`` ``router:`` field
             (e.g. ``"fixed"``, ``"routewise"``).  ``None`` means "use
@@ -56,7 +54,6 @@ class ModelRegistrationInfo:
     """
 
     model_id: str
-    strategy: str | None = None
     aliases: list[str] = field(default_factory=list)
     router: str | None = None
     router_params: dict[str, Any] | None = None
@@ -309,8 +306,10 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "provider_profile": "kimi", "include_usage_in_stream": True}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
-    elif kind == "sglang" or kind == "vllm":
+    elif kind == "sglang":
         cfg = {**cfg, "include_usage_in_stream": True}
+    elif kind == "vllm":
+        cfg = {**cfg, "include_usage_in_stream": True, "vllm_structured_outputs": True}
 
     model_cfg = ModelConfig(**cfg)
 
@@ -493,7 +492,42 @@ def register_from_models_yaml(
     """
     if not path.exists():
         return 0, []
-    data = yaml.safe_load(path.read_text()) or {}
+    return register_from_models_text(
+        router,
+        path.read_text(),
+        embedding_adapters=embedding_adapters,
+        continue_on_missing_env=continue_on_missing_env,
+        report=report,
+        origin=str(path),
+    )
+
+
+def register_from_models_text(
+    router: FixedRouter,
+    text: str,
+    embedding_adapters: dict[str, Any] | None = None,
+    *,
+    continue_on_missing_env: bool = False,
+    report: ModelLoadReport | None = None,
+    origin: str = "the database route catalog",
+) -> tuple[int, list[ModelRegistrationInfo]]:
+    """Register models and routes from a YAML document.
+
+    Args:
+        router: Executor to receive registered routes.
+        text: YAML document. ``${VAR}`` references stay unresolved in the text
+            and resolve here, the same way the file loader resolves them.
+        embedding_adapters: Receives the embedding models' adapters.
+        continue_on_missing_env: Skip a model whose required setting is unset
+            instead of raising.
+        report: Receives the models skipped that way.
+        origin: Named in the skip logs. The file loader passes the path.
+
+    Returns:
+        Tuple of (count of registered route identifiers including aliases,
+        list of ModelRegistrationInfo for each model).
+    """
+    data = yaml.safe_load(text) or {}
     models: list[dict[str, Any]] = data.get("models", [])
     count = 0
     model_infos: list[ModelRegistrationInfo] = []
@@ -1011,7 +1045,6 @@ def register_from_models_yaml(
             model_infos.append(
                 ModelRegistrationInfo(
                     model_id=model_id,
-                    strategy=m.get("routing_strategy"),
                     aliases=aliases,
                     router=m.get("router"),
                     router_params=m.get("router_params"),
@@ -1020,7 +1053,7 @@ def register_from_models_yaml(
         except MissingEnvBackedKeyError as exc:
             if not continue_on_missing_env:
                 raise
-            logger.warning("Skipping model %r from %s: %s", m.get("id"), path, exc)
+            logger.warning("Skipping model %r from %s: %s", m.get("id"), origin, exc)
             skipped_for_missing_env.append(str(m.get("id")))
             if report is not None:
                 report.skipped_models[str(m.get("id"))] = [
@@ -1040,7 +1073,7 @@ def register_from_models_yaml(
                 "restart. /v1/models will "
                 "stay empty until then, and requests will report the model as "
                 "not found. Skipped: %s",
-                path,
+                origin,
                 missing,
                 dropped,
             )
@@ -1050,7 +1083,7 @@ def register_from_models_yaml(
                 "are unset (%s). Skipped: %s",
                 len(skipped_for_missing_env),
                 len(models),
-                path,
+                origin,
                 missing,
                 dropped,
             )

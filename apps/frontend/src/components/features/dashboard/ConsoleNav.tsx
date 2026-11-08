@@ -17,7 +17,7 @@ import { useBatchCapabilities } from '@/lib/hooks/queries/useBatchCapabilities';
  * browser; given this one, it can say so and offer to switch rather than
  * silently showing another account's work.
  */
-export function agentsEntryUrl(agentsUrl: string, userId: string | undefined): string {
+function agentsEntryUrl(agentsUrl: string, userId: string | undefined): string {
   if (!userId) return agentsUrl;
   const separator = agentsUrl.includes('?') ? '&' : '?';
   return `${agentsUrl}${separator}gateway_account=${encodeURIComponent(userId)}`;

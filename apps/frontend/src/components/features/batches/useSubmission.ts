@@ -35,7 +35,7 @@ export type SubmissionState =
   /** The browser cannot coordinate tabs: nothing is submitted. */
   | { phase: 'unsupported' };
 
-export interface Submission {
+interface Submission {
   state: SubmissionState;
   /** Submit `body` as one new submission (unless one is still pending: that one is settled). */
   submit: (body: ConsoleSubmission) => Promise<void>;

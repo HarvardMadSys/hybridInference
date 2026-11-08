@@ -80,6 +80,7 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
+from serving.storage.pools import SingleConnectionPool
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -273,7 +274,8 @@ def _claimable_job_sql(alias: str) -> str:
         f"({alias}.phase = 'runnable' "
         f"AND {alias}.status IN ('validating', 'in_progress') "
         f"AND ({alias}.paused_until IS NULL OR {alias}.paused_until <= now()) "
-        f"AND {alias}.expires_at > now() "
+        # A null expires_at is a batch with no window: it never expires.
+        f"AND ({alias}.expires_at IS NULL OR {alias}.expires_at > now()) "
         f"AND {alias}.delete_requested_at IS NULL "
         f"AND {_supported_kinds_sql(alias)})"
     )
@@ -560,40 +562,59 @@ _SWEEP_SETTLE_CANDIDATES_SQL = f"""
 # its sealing, or (stored before phases existed) its final status.
 _ENDED_AT = "COALESCE(j.sealed_at, j.completed_at, j.failed_at, j.expired_at, j.cancelled_at)"
 
-# One batch to purge, oldest first: a finished batch past its retention (its
-# own, frozen at creation, else the deployment's), or one whose deletion waited
-# for a download. Only kinds this worker supports, never one a download is
-# reading (``read_lease_until`` is on the row itself, so a reader that renewed
-# after this statement's snapshot makes the locked row fail the recheck), and
-# never one with a live upstream call. Its idempotency records keep the expiry
-# its end gave them (24 hours after it), so a purge never leaves one behind
-# for good. A batch another sweep is purging is skipped.
+# A batch the retention purge may delete now (``$1``: the deployment's retention
+# in days): a finished batch past its retention (its own, frozen at creation,
+# else the deployment's), or one whose deletion waited for a download. Only
+# kinds this worker supports, never one a download is reading
+# (``read_lease_until`` is on the row itself, so a reader that renewed after the
+# purge's snapshot makes the locked row fail the recheck), and never one with a
+# live upstream call.
+#
+# The retention is each batch's own, so no index on the end time can bound the
+# batches past it: finding them reads every finished batch.
+_PURGEABLE = f"""(
+    (
+        (
+            j.status IN ('completed', 'failed', 'expired', 'cancelled')
+            AND j.phase IN ('runnable', 'sealed')
+            AND {_ENDED_AT}
+                < now() - make_interval(
+                    secs => COALESCE(j.retention_seconds, $1::bigint * 86400)::double precision)
+        )
+        OR j.delete_requested_at IS NOT NULL
+    )
+    AND {_supported_kinds_sql("j")}
+    AND (j.read_lease_until IS NULL OR j.read_lease_until <= now())
+    AND NOT EXISTS (
+        SELECT 1 FROM batch_read_leases AS l
+        WHERE l.batch_id = j.id AND l.expires_at > now()
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM batch_items AS i
+        WHERE i.batch_id = j.id AND i.status = 'running' AND i.lease_expires_at > now()
+    )
+)"""
+
+# Up to ``$2`` batches to purge, oldest first, none of those in ``$3`` (tried
+# already). One read of the table finds a sweep's worth; each is then purged by
+# :data:`_PURGE_ONE_SQL`, which checks it again under its row lock.
+_PURGE_CANDIDATES_SQL = f"""
+    SELECT j.id
+    FROM batch_jobs AS j
+    WHERE {_PURGEABLE}
+      AND j.id <> ALL($3::text[])
+    ORDER BY COALESCE(j.delete_requested_at, {_ENDED_AT})
+    LIMIT $2
+"""
+
+# Purge batch ``$2`` if it may be purged now, with its items. Its idempotency
+# records keep the expiry its end gave them (24 hours after it), so a purge
+# never leaves one behind for good. A batch another sweep is purging is skipped.
 _PURGE_ONE_SQL = f"""
     WITH victim AS (
         SELECT j.id, {_ENDED_AT} AS ended_at
         FROM batch_jobs AS j
-        WHERE (
-            (
-                j.status IN ('completed', 'failed', 'expired', 'cancelled')
-                AND j.phase IN ('runnable', 'sealed')
-                AND {_ENDED_AT}
-                    < now() - make_interval(
-                        secs => COALESCE(j.retention_seconds, $1::bigint * 86400)::double precision)
-            )
-            OR j.delete_requested_at IS NOT NULL
-          )
-          AND {_supported_kinds_sql("j")}
-          AND (j.read_lease_until IS NULL OR j.read_lease_until <= now())
-          AND NOT EXISTS (
-              SELECT 1 FROM batch_read_leases AS l
-              WHERE l.batch_id = j.id AND l.expires_at > now()
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM batch_items AS i
-              WHERE i.batch_id = j.id AND i.status = 'running' AND i.lease_expires_at > now()
-          )
-        ORDER BY COALESCE(j.delete_requested_at, {_ENDED_AT})
-        LIMIT 1
+        WHERE j.id = $2 AND {_PURGEABLE}
         FOR UPDATE SKIP LOCKED
     ),
     tombstones AS (
@@ -651,6 +672,14 @@ class BatchStore:
         """Return the asyncpg pool this store and the file and webhook stores share."""
         return self._pool
 
+    def on_connection(self, connection: Any) -> BatchStore:
+        """This store on one connection, for writes that share the caller's transaction.
+
+        A configuration restore writes the per-model caps inside the
+        ``app_config`` transaction; the caller owns the connection.
+        """
+        return BatchStore(SingleConnectionPool(connection))
+
     # -- admission ---------------------------------------------------------------
 
     async def find_idempotent(
@@ -696,7 +725,7 @@ class BatchStore:
         model_ids: list[str],
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         api_surface: str = SURFACE_OPENAI_INLINE,
         target: str = TARGET_CHAT,
         protocol_profile: str | None = None,
@@ -724,7 +753,8 @@ class BatchStore:
                 stored already ``failed`` and never claimed.
             metadata: The caller's metadata, or None.
             completion_window_seconds: Time the batch has before its
-                unstarted items expire.
+                unstarted items expire; None for no window (``expires_at``
+                stays null and the batch never expires).
             api_surface: ``openai_inline`` or ``openai_file`` (``anthropic`` only
                 for a batch stored the way the retired Message Batches API stored them).
             target: ``chat``, ``embeddings``, ``messages`` or ``responses``.
@@ -844,7 +874,7 @@ class BatchStore:
         models: list[str],
         request_count: int,
         metadata: dict[str, Any] | None,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         api_surface: str,
         target: str,
         protocol_profile: str | None,
@@ -875,7 +905,7 @@ class BatchStore:
                  idempotency_key, in_progress_at, display_name, description,
                  created_via, console_spec, cache_read_tokens)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
-                    now() + make_interval(secs => $8), $9, $10, $11, $12, $13, $14,
+                    now() + make_interval(secs => $8::double precision), $9, $10, $11, $12, $13, $14,
                     $15, $16, $17, CASE WHEN $14 = 'in_progress' THEN now() END,
                     $18, $19, $20, $21::jsonb, 0)
             RETURNING {_BATCH_COLUMNS}
@@ -887,7 +917,7 @@ class BatchStore:
             json.dumps(models),
             request_count,
             _dump_json(metadata),
-            float(completion_window_seconds),
+            None if completion_window_seconds is None else float(completion_window_seconds),
             api_surface,
             target,
             SCHEMA_VERSION,
@@ -947,7 +977,7 @@ class BatchStore:
         source_sha256: str,
         derived: dict[str, Any] | None,
         file_retention_seconds: int,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         retention_seconds: int,
         idempotency: dict[str, str],
         max_active: int | None,
@@ -1782,7 +1812,8 @@ class BatchStore:
             (the fencing token for this attempt), ``error`` (the previous
             attempt's, or None), and the batch's ``user_id``, ``key_hash``,
             ``api_surface``, ``target``, ``protocol_profile``, ``endpoint`` and
-            ``expires_at`` (when it stops starting requests).
+            ``expires_at`` (when it stops starting requests; None when it
+            never does).
         """
         if limit <= 0 or max_running <= 0:
             return []
@@ -2296,7 +2327,8 @@ class BatchStore:
         1. A validating or in-progress batch past ``expires_at`` becomes
            ``expired``; its queued items expire as ``batch_expired`` and count
            as failed. Items already running finish normally. A batch already
-           sealing is not touched: its result is fixed.
+           sealing is not touched: its result is fixed. A batch with no window
+           (null ``expires_at``) is never expired here.
         2. An active batch with no open item left is finalized, and a batch no
            longer claimable from passes its verdict on to running items whose
            lease ran out.
@@ -2346,10 +2378,7 @@ class BatchStore:
                     if status is not None and await self._settle(conn, row["id"], status):
                         counts["finalized"] += 1
 
-            for _ in range(_PURGE_LIMIT):
-                if await conn.fetchval(_PURGE_ONE_SQL, int(retention_days)) is None:
-                    break
-                counts["purged"] += 1
+            counts["purged"] = await self._purge_retained(conn, int(retention_days))
 
             # Records whose batch ended get the expiry its end gives them;
             # records whose batch vanished without one (a purge by an older
@@ -2378,6 +2407,33 @@ class BatchStore:
                 "DELETE FROM batch_interactive_load WHERE updated_at < now() - interval '10 minutes'"
             )
         return counts
+
+    @staticmethod
+    async def _purge_retained(conn: Any, retention_days: int) -> int:
+        """Purge up to ``_PURGE_LIMIT`` batches, oldest first, one per statement; return how many.
+
+        One statement finds the oldest purgeable batches, up to the sweep's
+        budget, and each is then purged in a statement of its own: a batch can
+        hold tens of thousands of items, and the next sweep continues. Finding
+        them reads every finished batch, so it is done once, not once per batch.
+
+        A batch another sweep is purging, or no longer purgeable, is skipped. If
+        that left the budget unspent while there may be more, the search goes on
+        past the batches tried, as a statement per batch skipping locked rows
+        did; it never reads the table more often than that did.
+        """
+        purged = 0
+        tried: list[str] = []
+        for _ in range(_PURGE_LIMIT):
+            wanted = _PURGE_LIMIT - purged
+            candidates = await conn.fetch(_PURGE_CANDIDATES_SQL, retention_days, wanted, tried)
+            for row in candidates:
+                tried.append(row["id"])
+                if await conn.fetchval(_PURGE_ONE_SQL, retention_days, row["id"]) is not None:
+                    purged += 1
+            if len(candidates) < wanted or purged >= _PURGE_LIMIT:
+                break
+        return purged
 
     # -- validation and sealing (work leases on the batch row) ------------------
 

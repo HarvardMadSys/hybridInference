@@ -593,6 +593,10 @@ class AdminRequestMetricsBucket(BaseModel):
     A client disconnect (status 499) is counted in ``client_disconnect_count``
     and never in ``error_count`` or ``success_count``; the two error/disconnect
     counts are disjoint by construction.
+
+    The counts are of the requests the response's ``source`` names. The
+    ``batch_*`` counts are the batch worker's requests in the bucket whatever
+    ``source`` is, so a chart of the interactive counts can stack them on top.
     """
 
     start_time: datetime
@@ -602,6 +606,9 @@ class AdminRequestMetricsBucket(BaseModel):
     # Defaulted so a client reading an older cached response still validates.
     client_disconnect_count: int = 0
     avg_latency_ms: float | None = None
+    batch_request_count: int = 0
+    # Of ``batch_request_count``, the failures (as ``error_count`` counts them).
+    batch_error_count: int = 0
 
 
 class AdminRequestMetricsWindow(BaseModel):
@@ -620,6 +627,8 @@ class AdminRequestMetricsWindow(BaseModel):
     error_requests: int
     client_disconnect_requests: int = 0
     avg_latency_ms: float | None = None
+    batch_requests: int = 0
+    batch_error_requests: int = 0
     buckets: list[AdminRequestMetricsBucket]
 
 
@@ -627,6 +636,8 @@ class AdminRequestMetricsResponse(BaseModel):
     """Request metrics for multiple admin dashboard lookback windows."""
 
     generated_at: datetime
+    # Whose requests the counts count: ``all``, ``interactive`` or ``batch``.
+    source: str = "all"
     windows: list[AdminRequestMetricsWindow]
 
 
@@ -921,6 +932,9 @@ class AdminRecentRequestItem(BaseModel):
     num_turns: int | None = None
     num_user_turns: int | None = None
     num_tool_calls: int | None = None
+    # The batch whose worker ran this request (``api_logs.batch_job_id``); None
+    # for every request a caller made directly.
+    batch_job_id: str | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):
@@ -1573,6 +1587,86 @@ class UpdateBatchModelLimitRequest(BaseModel):
     max_concurrency: StrictInt | None = Field(..., ge=0, le=MAX_BATCH_MODEL_CONCURRENCY)
 
 
+class ModelQueueJob(BaseModel):
+    """One scheduler job serving, or waiting to serve, a model. Times are epoch seconds."""
+
+    job_id: str | None = None
+    state: str = Field(..., description="The scheduler's state, e.g. PENDING or RUNNING.")
+    reason: str | None = Field(None, description="Why a pending job waits, as the scheduler says.")
+    partition: str | None = None
+    nodes: str | None = Field(None, description="The node(s) a running job holds.")
+    submitted_at: float | None = None
+    started_at: float | None = None
+    expected_start_at: float | None = Field(
+        None, description="The scheduler's estimate of when a pending job starts."
+    )
+    ends_at: float | None = Field(None, description="When a running job's walltime ends.")
+
+
+class ModelQueueModel(BaseModel):
+    """One model on an on-demand host, its jobs, and the batch requests waiting for it."""
+
+    model: str = Field(..., description="The name the host serves the model under.")
+    state: str = Field(..., description="serving, loading, queued or idle.")
+    job_name: str | None = None
+    last_request_at: float | None = Field(None, description="The host's last request for it.")
+    walltime_seconds: float | None = None
+    startup_estimate_seconds: float | None = None
+    partitions: str | None = None
+    constraint: str | None = None
+    avoided_nodes: list[str] = Field(
+        default_factory=list, description="Nodes its next job keeps off, after failures there."
+    )
+    jobs: list[ModelQueueJob] = Field(default_factory=list)
+    gateway_models: list[str] = Field(
+        default_factory=list,
+        description="This gateway's models with a route to it on the host, by canonical id.",
+    )
+    batch_queued: int | None = Field(
+        None, description="Batch requests of those models waiting to run; null when unknown."
+    )
+    batch_running: int | None = Field(
+        None, description="Batch requests of those models running now; null when unknown."
+    )
+
+
+class ModelQueueFailedNode(BaseModel):
+    """A node jobs keep off for a while, because a job failed there."""
+
+    node: str
+    jobs: list[str] = Field(default_factory=list, description="The jobs that failed there.")
+    last_failed_at: float | None = None
+    avoided_until: float | None = None
+    avoided_by_all: bool = Field(False, description="Every model's jobs avoid it, not only theirs.")
+
+
+class ModelQueuePolicy(BaseModel):
+    """How long the host keeps jobs nobody asks for, and avoids failed nodes, in seconds."""
+
+    pending_idle_cancel_seconds: float | None = None
+    running_idle_stop_seconds: float | None = None
+    renew_before_seconds: float | None = None
+    node_avoid_seconds: float | None = None
+
+
+class ModelQueueResponse(BaseModel):
+    """An on-demand model host's queue, as its status address reports it, for Admin -> Batches."""
+
+    configured: bool = Field(..., description="Whether MODEL_QUEUE_STATUS_URL is set.")
+    error: str | None = Field(None, description="Why the host's status could not be read.")
+    cluster: str | None = Field(None, description="The host's name for itself, e.g. a cluster.")
+    scheduler: str | None = None
+    generated_at: float | None = None
+    refreshed_at: float | None = Field(
+        None, description="When the host last read its scheduler's queue; null if never."
+    )
+    started_at: float | None = None
+    poll_interval_seconds: float | None = None
+    policy: ModelQueuePolicy | None = None
+    models: list[ModelQueueModel] = Field(default_factory=list)
+    failed_nodes: list[ModelQueueFailedNode] = Field(default_factory=list)
+
+
 class RouteWeightItem(BaseModel):
     """Current route weight state for one model endpoint."""
 
@@ -1685,6 +1779,12 @@ class ProviderRouteItem(BaseModel):
     disabled: bool = False
     # A config route removed from this deployment; listed so it can be restored.
     removed: bool = False
+    # Whether batch work may use the route: the admin's choice
+    # (``batch_allowed_choice``) or, without one, its locality
+    # (``batch_allowed_default``: true for a server this gateway runs itself).
+    batch_allowed: bool = False
+    batch_allowed_default: bool = False
+    batch_allowed_choice: bool | None = None
     updated_at: datetime | None = None
     updated_by: str | None = None
     # What the route serves with now, and what it had from models.yaml or its
@@ -1877,6 +1977,16 @@ class UpdateProviderRouteStateRequest(BaseModel):
     """Request payload for disabling or enabling one provider route."""
 
     disabled: bool
+
+
+class UpdateProviderRouteBatchRequest(BaseModel):
+    """Request payload for allowing or forbidding batch work on one provider route.
+
+    ``null`` clears the choice: the route follows its locality again (batch work
+    on the gateway's own servers only).
+    """
+
+    batch_allowed: bool | None
 
 
 class UpdateProviderRouteRequest(RouteCapabilityEdit):

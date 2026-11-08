@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from serving.http import AsyncHTTPClient
+from serving.http import AsyncHTTPClient, read_error_text, stream_timeout
 from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -282,7 +282,8 @@ class AnthropicAdapter(BaseAdapter):
 
         http = AsyncHTTPClient.shared()
         session = await http._ensure_session()
-        timeout = aiohttp.ClientTimeout(total=None)
+        # No total (generation runs as long as it runs), but a bounded connect.
+        timeout = stream_timeout()
         accum = ToolCallAccumulator()
 
         input_tokens = 0
@@ -307,7 +308,7 @@ class AnthropicAdapter(BaseAdapter):
             ) as resp,
         ):
             if resp.status >= 400:
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
                 raise aiohttp.ClientResponseError(
                     request_info=resp.request_info,
                     history=resp.history,
@@ -396,9 +397,15 @@ class AnthropicAdapter(BaseAdapter):
         body: dict[str, Any],
         *,
         request_id: str,
+        usage_sink: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages."""
+        """Anthropic-format identity passthrough -> api.anthropic.com/v1/messages.
+
+        ``usage_sink`` is accepted for interface compatibility and left empty:
+        the response's own Anthropic usage is all there is, with thinking
+        already counted in ``output_tokens`` and no separate reasoning count.
+        """
         forward = dict(body)
         forward["model"] = self._upstream_model()
 
@@ -435,7 +442,8 @@ class AnthropicAdapter(BaseAdapter):
 
         http = AsyncHTTPClient.shared()
         session = await http._ensure_session()
-        timeout = aiohttp.ClientTimeout(total=None)
+        # No total (generation runs as long as it runs), but a bounded connect.
+        timeout = stream_timeout()
 
         usage = {
             "input_tokens": 0,
@@ -453,7 +461,7 @@ class AnthropicAdapter(BaseAdapter):
             ) as resp,
         ):
             if resp.status >= 400:
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
                 raise aiohttp.ClientResponseError(
                     request_info=resp.request_info,
                     history=resp.history,

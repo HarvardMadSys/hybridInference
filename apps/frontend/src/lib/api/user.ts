@@ -4,7 +4,7 @@ import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 
 const API_BASE = config.apiBase;
 
-export interface User {
+interface User {
   id: string;
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
@@ -23,7 +23,7 @@ export interface User {
   locale?: AccountLocaleChoice | null;
 }
 
-export interface ApiKeyResponse {
+interface ApiKeyResponse {
   api_key: string;
   key_prefix: string;
   name?: string | null;
@@ -32,9 +32,15 @@ export interface ApiKeyResponse {
 }
 
 export interface ApiKeyListItem {
+  /**
+   * The listing never carries a full key any more (older gateways did); a
+   * saved key is shown through `revealApiKey`.
+   */
   api_key?: string | null;
   key_prefix: string;
   key_masked: string;
+  /** Whether the key's full value is saved, so that its owner can reveal it. */
+  revealable?: boolean;
   /** The owner's label for the key; absent for keys made before keys had names. */
   name?: string | null;
   created_at: string;
@@ -50,8 +56,13 @@ export interface ApiKeyListItem {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyListResponse {
+interface ApiKeyListResponse {
   keys: ApiKeyListItem[];
+}
+
+interface ApiKeyRevealResponse {
+  key_prefix: string;
+  api_key: string;
 }
 
 /** Settings to change on a key: a field left out is unchanged, `null` clears it. */
@@ -62,7 +73,7 @@ export interface ApiKeyUpdate {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyUpdateResponse {
+interface ApiKeyUpdateResponse {
   key_prefix: string;
   name?: string | null;
   budget_daily_usd?: number | null;
@@ -70,20 +81,20 @@ export interface ApiKeyUpdateResponse {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyRegenerateResponse {
+interface ApiKeyRegenerateResponse {
   api_key: string;
   key_prefix: string;
   old_key_prefix: string;
   warning: string;
 }
 
-export interface ApiKeyDeleteResponse {
+interface ApiKeyDeleteResponse {
   key_prefix: string;
   status: string;
   message: string;
 }
 
-export interface UsageStats {
+interface UsageStats {
   period: 'today' | 'month' | 'all';
   quota: {
     has_key: boolean;
@@ -106,8 +117,13 @@ export interface UsageStats {
     cache_read_tokens?: number;
     /** Input tokens written to the prompt cache; part of `prompt_tokens`. */
     cache_write_tokens?: number;
-    /** Reasoning tokens; some providers already count them in `completion_tokens`. */
-    reasoning_tokens?: number;
+    /**
+     * Reasoning tokens; some providers already count them in `completion_tokens`.
+     * Summed over the requests whose upstream reported a count; null when none did.
+     */
+    reasoning_tokens?: number | null;
+    /** How many of `requests` reported a reasoning count; fewer means a partial sum. */
+    reasoning_tokens_known_requests?: number;
     cost_usd: number;
   };
 }
@@ -129,7 +145,7 @@ export interface ModelCatalogItem {
   openrouter?: Record<string, unknown> | null;
 }
 
-export interface ModelCatalogResponse {
+interface ModelCatalogResponse {
   object: 'list';
   data: ModelCatalogItem[];
 }
@@ -199,6 +215,27 @@ export async function renameApiKey(
 export async function listApiKeys(): Promise<ApiKeyListResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys/all');
   return jsonOrThrow<ApiKeyListResponse>(resp);
+}
+
+/**
+ * Show one saved key in full. The account's password confirms that its owner,
+ * not just a signed-in browser, is asking; each attempt counts against the
+ * sign-in limits.
+ */
+export async function revealApiKey(
+  keyPrefix: string,
+  password: string,
+): Promise<ApiKeyRevealResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/user/api-keys/${encodeURIComponent(keyPrefix)}/reveal`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    },
+  );
+  return jsonOrThrow<ApiKeyRevealResponse>(resp);
 }
 
 export async function deleteApiKey(keyPrefix: string): Promise<ApiKeyDeleteResponse> {
@@ -295,7 +332,7 @@ export interface RouteWiseDecision {
   lp_status?: string | null;
 }
 
-export interface RecentRequestsResponse {
+interface RecentRequestsResponse {
   requests: RecentRequestItem[];
   total: number;
   limit: number;

@@ -74,6 +74,8 @@ def _adapter(model_id: str) -> _Adapter:
             name=model_id,
             provider="test",
             base_url="http://test",
+            # The gateway's own server, so batch work may use it.
+            deployment_type="self_hosted",
             context_length=8192,
             max_output_length=4096,
             pricing={"prompt": "0", "completion": "0"},
@@ -101,7 +103,7 @@ class FakeBatchStore:
         model_ids: list[str],
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         **options: Any,
     ) -> dict[str, Any]:
         self.options = options
@@ -138,7 +140,11 @@ class FakeBatchStore:
             "expired_at": None,
             "cancelling_at": None,
             "cancelled_at": None,
-            "expires_at": now + timedelta(seconds=completion_window_seconds),
+            "expires_at": (
+                None
+                if completion_window_seconds is None
+                else now + timedelta(seconds=completion_window_seconds)
+            ),
             "paused_until": None,
             "api_surface": options.get("api_surface", "openai_inline"),
             "target": options.get("target", "chat"),
@@ -902,6 +908,41 @@ async def test_the_batch_object_is_openai_shaped(client, settings):
     assert batch["error"] is None
 
 
+async def test_a_window_of_zero_hours_creates_a_batch_that_never_expires(client, store, settings):
+    settings["BATCH_COMPLETION_WINDOW_HOURS"] = "0"
+
+    batch = await _create(client, body=_body(2))
+
+    (created,) = store.created
+    assert created["completion_window_seconds"] is None
+    assert batch["expires_at"] is None
+    assert batch["completion_window"] == "none"
+
+    fetched = await client.get(f"/v1/batches/{batch['id']}", headers=_auth())
+    assert fetched.status_code == 200
+    assert fetched.json()["expires_at"] is None
+    listed = await client.get("/v1/batches", headers=_auth())
+    assert listed.status_code == 200
+    assert [b["expires_at"] for b in listed.json()["data"]] == [None]
+
+
+def test_a_file_batch_with_no_window_still_reports_the_protocol_s_window():
+    created = datetime(2026, 11, 6, tzinfo=UTC)
+    config = batch_config_module.BatchConfig(completion_window_hours=0)
+    row = {"id": "batch_x", "created_at": created, "expires_at": None, "status": "in_progress"}
+
+    file_batch = batches.batch_object({**row, "api_surface": "openai_file"}, config)
+    inline = batches.batch_object({**row, "api_surface": "openai_inline"}, config)
+
+    assert (file_batch.completion_window, file_batch.expires_at) == ("24h", None)
+    assert (inline.completion_window, inline.expires_at) == ("none", None)
+    windowed = batches.batch_object(
+        {**row, "api_surface": "openai_inline", "expires_at": created + timedelta(hours=48)},
+        config,
+    )
+    assert windowed.completion_window == "48h"
+
+
 async def test_the_key_hash_is_stored_but_never_returned(client, store):
     batch = await _create(client)
     path = f"/v1/batches/{batch['id']}"
@@ -1403,6 +1444,29 @@ async def test_an_admin_may_read_cancel_and_delete_any_batch(client, store):
     assert listed.json()["data"] == []
     assert deleted.status_code == 200
     assert batch["id"] not in store.batches
+
+
+async def test_the_anonymous_caller_of_an_auth_disabled_gateway_reaches_only_its_own(
+    client, users, store
+):
+    """Its admin role opens the API, not the batches stored under real accounts."""
+    users["anon"] = {"user_id": "anonymous", "role": "admin", "authenticated": False}
+    theirs = await _create(client, "key-alice")
+    own = await _create(client, "anon")
+    path = f"/v1/batches/{theirs['id']}"
+
+    responses = [
+        await client.get(path, headers=_auth("anon")),
+        await client.get(f"{path}/results", headers=_auth("anon")),
+        await client.get(f"{path}/output.jsonl", headers=_auth("anon")),
+        await client.post(f"{path}/cancel", headers=_auth("anon")),
+        await client.delete(path, headers=_auth("anon")),
+    ]
+
+    assert [r.status_code for r in responses] == [404] * 5
+    assert store.batches[theirs["id"]]["status"] == "validating"
+    read = await client.get(f"/v1/batches/{own['id']}", headers=_auth("anon"))
+    assert read.json()["id"] == own["id"]
 
 
 async def test_an_unknown_batch_is_404(client):

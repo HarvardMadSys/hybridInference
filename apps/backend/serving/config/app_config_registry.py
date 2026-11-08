@@ -727,6 +727,21 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         restart_required=True,
         one_time=True,
     ),
+    ConfigEntry(
+        "MODEL_QUEUE_STATUS_URL",
+        "providers",
+        "Queue status address of an on-demand model host, as this backend reaches it "
+        "(for example an HPC on-demand proxy's /status). Admin -> Batches -> Model queue "
+        "shows the jobs it reports and the batch requests waiting for each model. Empty "
+        "shows no queue.",
+    ),
+    ConfigEntry(
+        "MODEL_QUEUE_STATUS_API_KEY",
+        "providers",
+        "Bearer key the queue status address requires. Empty uses LOCAL_API_KEY.",
+        secret=True,
+        fallback_key="LOCAL_API_KEY",
+    ),
     # --- routing -----------------------------------------------------------
     _setting(
         "enable_routewise",
@@ -976,6 +991,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="float",
         default="3600",
     ),
+    # Read per request by serving.servers.middleware.body_limit, which falls
+    # back to the same default for a missing or invalid value.
+    ConfigEntry(
+        "REQUEST_MAX_BODY_MB",
+        "routing",
+        "Largest request body, in MiB, the gateway reads; a larger one gets 413 before "
+        "it is parsed. Raise it for requests that carry many images or long media. "
+        "Batch uploads keep their own limit, BATCH_MAX_BODY_MB.",
+        type="int",
+        default="32",
+        minimum=1,
+    ),
     # --- batch inference ---------------------------------------------------
     # Read through serving.batch.config, which falls back to the same defaults
     # and bounds; tests/unit/config/test_app_config_registry.py holds the two
@@ -1050,10 +1077,12 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "BATCH_COMPLETION_WINDOW_HOURS",
         "batch",
         "Hours a new batch has to finish, at most a week. Requests not started by then "
-        "expire; those already running finish.",
+        "expire; those already running finish. 0 means no limit: new batches, inline "
+        "and from a file, never expire and run until every request is done, however "
+        "long upstream capacity takes. A change applies to batches created afterwards.",
         type="int",
         default="24",
-        minimum=1,
+        minimum=0,
         maximum=168,
     ),
     ConfigEntry(
@@ -1923,6 +1952,14 @@ def _load_yaml(path: Path | None) -> Any:
         return None
 
 
+def _load_yaml_text(text: str) -> Any:
+    """Parse a stored document. An unreadable document contributes no references."""
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+
+
 def _note(
     found: dict[str, DiscoveredReference],
     key: str,
@@ -2006,6 +2043,9 @@ def discover_references(
     models_path: Path | None,
     routing_path: Path | None,
     alerts_path: Path | None,
+    *,
+    models_text: str | None = None,
+    routing_text: str | None = None,
 ) -> dict[str, DiscoveredReference]:
     """Find every ``${VAR}`` reference in the three configuration files.
 
@@ -2013,11 +2053,24 @@ def discover_references(
     for nothing. A missing or unreadable file contributes no references. A
     reference from a field that carries a credential is marked as one
     (:attr:`DiscoveredReference.credential`).
+
+    A stored catalog document replaces its file. Passing the text, including an
+    empty string, does not fall back to the path. Alerts have no stored
+    document and always come from the file.
+
+    Args:
+        models_path: Model registry file, used when ``models_text`` is None.
+        routing_path: Routing file, used when ``routing_text`` is None.
+        alerts_path: Alerts file.
+        models_text: Stored model registry, when the database has that row.
+        routing_text: Stored routing document, when the database has that row.
     """
     found: dict[str, DiscoveredReference] = {}
-    models, routing, alerts = (
-        _load_yaml(path) for path in (models_path, routing_path, alerts_path)
+    models = _load_yaml_text(models_text) if models_text is not None else _load_yaml(models_path)
+    routing = (
+        _load_yaml_text(routing_text) if routing_text is not None else _load_yaml(routing_path)
     )
+    alerts = _load_yaml(alerts_path)
     _discover_models(models, found)
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)

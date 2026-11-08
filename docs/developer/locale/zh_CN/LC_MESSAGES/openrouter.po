@@ -379,13 +379,9 @@ msgstr ""
 
 #: ../developer/openrouter.md:184
 msgid ""
-"**Requests reach the wrong upstream.** Use `GET /routing` to see the "
-"effective weight distribution per model. Note that this endpoint is "
-"unauthenticated and discloses upstream base URLs; see the warning in "
-"[Architecture](architecture.md#http-surface)."
+"**Requests reach the wrong upstream.** Use `GET /routing` to see the effective weight distribution per model. It answers anyone, but shows each route's upstream base URL only with an administrator's JWT or `ADMIN_TOKEN`; see [Architecture](architecture.md#http-surface)."
 msgstr ""
-"**请求发到了错误的上游**。用 `GET /routing` 查看每个模型实际生效的权重分布。注意这个端点不需要鉴权，而且会暴露上游的 base"
-" URL；见[架构](architecture.md#http-surface)里的警告。"
+"**请求发到了错误的上游**。用 `GET /routing` 查看每个模型实际生效的权重分布。任何人都能访问它，但只有带上管理员的 JWT 或 `ADMIN_TOKEN` 时才会显示每条路由的上游 base URL；见[架构](architecture.md#http-surface)。"
 
 #~ msgid ""
 #~ "**Attribution headers.** `X-Title` carries the"

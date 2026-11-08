@@ -66,6 +66,14 @@ producer warns on the first drop, every 100th drop, and at least once per
 is still observable. The rule uses the alert engine's existing cooldown, so a
 sustained loss episode does not page once per warning.
 
+Every record-driven rule keeps at most 250,000 samples in its window. At
+traffic that would exceed that, the oldest samples leave early: the window then
+covers less than `window_sec`, and a rate alert says
+`only the latest 250000 samples are kept`. The `top_paths` line of
+`failed_request_rate` tracks at most 256 distinct paths per window. Failures on
+any other path still count toward the rate, and the line says how many it left
+out.
+
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded
@@ -121,7 +129,20 @@ Two things follow:
 
 A path that resolves from layer 1 or 2 but does not exist is a warning, not a
 failure: the gateway logs `Models config not found: <path> (source=env)` and
-continues with no models registered.
+continues with no models registered. That warning is about the file lookup.
+Once the database holds a models or routing row, the file is no longer read.
+
+## Model and routing documents in the database
+
+On a database-backed boot the gateway copies `models.yaml` and `routing.yaml`
+into `route_catalog` when that kind has no row and the file exists and is not
+blank. The copy keeps `${VAR}` unresolved. Later boots register from the row,
+and settings discovery scans the row. Alerts stay a file.
+
+A stored row wins, including an empty one. Editing the file and restarting
+does not change it. Delete the row and restart to import the file again.
+`provider_route_configs`, runtime candidates and weight overrides still apply
+on top of whichever document was loaded.
 
 ## What a fresh clone does with no configuration at all
 
@@ -263,8 +284,10 @@ probe is a `GET` to the endpoint's origin root plus `/health`.
 
 **The probe only reports; it never changes routing.** An endpoint that fails
 every probe keeps its weight and keeps receiving traffic. Each change of state
-is logged at `WARNING`, and `GET /routing` shows the latest results under
-`manager_status.endpoint_health`, next to `endpoint_health_enforced: false`.
+is logged at `WARNING`, and `GET /routing` shows the latest results to an
+administrator under `manager_status.endpoint_health`, next to
+`endpoint_health_enforced: false`. The map is keyed by endpoint URL, so an
+anonymous caller is shown `endpoint_health_enforced` without it.
 The [circuit breaker](routing.md#endpoint-health-and-circuit-breaking) is what
 takes a failing endpoint out of rotation.
 
@@ -274,11 +297,11 @@ alerts file expands the same way. A variable neither the database nor the
 environment sets takes the inline `:-default`, and without one the default the
 gateway registers for that setting.
 
-`routing_strategy:` and `routing_parameter:` are the deprecated spellings of
-`default_router:` and per-model `router_params:`. They still load, and log a
-deprecation warning. Per-model router selection (`router:` / `router_params:` in
-the model registry) overrides `default_router` and is documented in
-[Routing](routing.md).
+`routing_strategy:`, the earlier name of `default_router:`, is no longer read.
+`routing_parameter:` is the deprecated spelling of per-model `router_params:`;
+it still loads, and logs a deprecation warning. Per-model router selection
+(`router:` / `router_params:` in the model registry) overrides `default_router`
+and is documented in [Routing](routing.md).
 
 ## Settings that currently have no effect
 
@@ -289,7 +312,7 @@ the routing file's weight split, nothing on a gateway with a database.
 | Setting | Where | What happens |
 |---|---|---|
 | `local_deployment` / `remote_deployment` weight split | routing file | Applied only on a gateway without a database; see [The routing file](#the-routing-file) |
-| `health_check` probe results | routing file | Logged and reported on `GET /routing`, never used for routing |
+| `health_check` probe results | routing file | Logged, and shown to administrators on `GET /routing`; never used for routing |
 | `router_params.local_fraction` | model registry, `router: fixed` | Accepted and validated, not read |
 | `features.routers` | distribution manifest | Published in `/site-config`, does not select or restrict a router |
 | `paths.mcp` | distribution manifest | Accepted, not read by any component |
@@ -354,6 +377,7 @@ backend.
 | Point a registry route somewhere else | **Edit** | `PUT /admin/routing/provider-routes/{model_id}/{route_id}`; `.../provider-route-verifications/{model_id}/{route_id}` to check first (it checks a runtime route's edit too); `DELETE` removes the override and restores the YAML route (**Reset config**) | `provider_route_configs` |
 | Change what a route accepts: context window, max output, image input, tool calling | **Edit** on each route | `PUT /admin/routing/provider-route-capabilities/{model_id}/{route_id}`; `DELETE` returns the route to the values it has from the registry or its creation | `provider_route_capabilities` |
 | Disable or enable a route of either source | **Disable** / **Enable** | `PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` with `{"disabled": true}`; the route keeps its configuration and weights, and nothing (selection, retry, fallback, offload) picks it until it is enabled | `provider_route_states` |
+| Choose which routes batch work may use | **Allow batch** / **Stop batch**, and **Batch default**; a **Batch** badge marks the routes it may use | `PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` with `{"batch_allowed": true}`, `false`, or `null` to follow the route's locality again; by default only the gateway's own servers take batch work — see [Which routes batch work may use](batches.md#which-routes-batch-work-may-use) | `provider_route_batch_policies` |
 | Delete a registry route from this deployment | **Delete**, then **Restore** | `POST /admin/routing/provider-route-removals/{model_id}/{route_id}`; `DELETE` on the same path restores it with its edits and weights. models.yaml is not changed | `provider_route_states` |
 | Change a route's weight | the weight field on each route | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}`; `GET` shows the YAML, override and effective values | `provider_weight_overrides` |
 | Switch a model between `fixed` and `routewise` | the strategy selector | `PATCH /admin/routing/provider-route-strategies/{model_id}` | `site_settings` |
@@ -446,9 +470,9 @@ moment it is saved.
 Two rules follow from that order. A stored change never edits the file it
 overrides: delete the override and the registry route, weight or `router:`
 value is back, and a runtime candidate sits beside the registry's routes rather
-than replacing them. And the file still wins for anything the store has no row
-for, so a registry edit plus restart is how catalog metadata, aliases and new
-adapter kinds change.
+than replacing them. Once a models or routing row is stored, that document
+wins over a later edit to the file; delete the row and restart to import
+again. See [Model and routing documents in the database](#model-and-routing-documents-in-the-database).
 
 ## Settings stored in the database
 
@@ -584,6 +608,35 @@ environment, such as `DB_PASSWORD` or `MODELS_CONFIG_PATH`, cannot be set here.
 Behind the tab are `GET` and `PATCH /admin/config` and
 `DELETE /admin/config/{key}`.
 
+### Backup and restore
+
+**Backup** (`GET /admin/config/backup`) downloads every setting an administrator
+can change as one JSON file: the stored settings, the runtime and model
+settings, custom providers and their keys, routes and their overrides, the
+batch caps and the signup allowlist. It names each secret without its value: a
+stored setting has `value: null` and `is_set`, and a provider key keeps its id,
+provider and label. **Backup with secrets** (`POST /admin/config/backup` with
+`include_secrets: true`) puts the values in, in plain text, once the signed-in
+administrator gives the account's password again. The admin token cannot ask
+for them, and an account without a password, made by phone, sets one first.
+Store that file as you would the secrets themselves.
+
+**Restore** (`POST /admin/config/restore`) replaces all of it in one database
+transaction, so a failure anywhere leaves the deployment as it was. A secret
+the file withholds keeps the value this deployment has; one the deployment has
+no value for stays unset, and the response names it under
+`secrets_not_restored`. A backup file is not signed, so a restore that changes
+anything security-relevant needs a confirmation and the password: any secret,
+the Security and Network settings, every `*_URL` setting and every variable a
+configuration file references, mail delivery, the identity issuer, keys and
+redirects, user authentication, the sign-up switches and allowlist, full
+request logging, private batch webhook targets, and where a custom provider or
+a route sends requests and keys. The console lists those changes before it
+restores, from `POST /admin/config/restore/preview`; a script sends that list
+back as `confirm_security_changes`, with `password`, and a restore whose changes
+differ from the confirmed list is refused with 409. The admin token can restore
+only a file that changes none of them.
+
 ### When a change applies
 
 Most settings apply as soon as they are saved: at once in the backend process
@@ -695,9 +748,9 @@ two can differ, and the status shows it. Going back to a build that does not
 know the group is a deployment, not a configuration change.
 
 A configuration backup does not include this status. Restoring a backup
-applies its `app_config` rows to live groups like any other save; the other
-tables in the backup are written separately, so a failure there can leave them
-partly restored. After restoring a whole database, run
+applies its `app_config` rows to live groups like any other save, and writes
+the other tables in the same transaction, so a failure anywhere restores none
+of them. After restoring a whole database, run
 `python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`:
 it starts a new version history and makes every process register again.
 
@@ -800,16 +853,15 @@ the registry file that was used; `[distribution dark mode] ...` lines show what
 a manifest would change once activated; `Skipping model '<id>' ... after env
 expansion` names each model whose credentials were unset.
 
-```{warning}
 `GET /routing` requires no credentials and returns, for every published route,
-the upstream `base_url`, its provider label and its weight — that is, your
-complete upstream topology including any host and port embedded in a base URL.
-Block `/routing` at your reverse proxy on any gateway reachable from the
-internet unless you intend to publish this topology. `GET /admin/routing`
-additionally reports unpublished routes and requires an administrator's JWT
-or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header. Treat both endpoints'
-output as sensitive.
-```
+its provider label and its weight. Each route's upstream `base_url`, and the
+routing file's probe results, which are keyed by endpoint URL, are shown only
+to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the
+`Authorization: Bearer ...` header; any other caller, or a credential that does
+not check out, gets the anonymous answer with the same status code.
+`GET /admin/routing` requires those credentials and additionally reports
+unpublished routes. Treat their output as sensitive: it is your upstream
+topology, including any host and port embedded in a base URL.
 
 ## Optional phone authentication
 

@@ -17,9 +17,9 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/api/config', () => ({
   getConfig: vi.fn(),
   patchConfig: vi.fn(),
-  markConfigSecret: vi.fn(),
   resetConfigKey: vi.fn(),
   exportConfigBackup: vi.fn(),
+  previewConfigRestore: vi.fn(),
   restoreConfigBackup: vi.fn(),
   testAlertNotification: vi.fn(),
   restartBackend: vi.fn(),
@@ -40,8 +40,8 @@ import {
   exportConfigBackup,
   getConfig,
   getLiveConfigStatus,
-  markConfigSecret,
   patchConfig,
+  previewConfigRestore,
   resetConfigKey,
   restoreConfigBackup,
   testAlertNotification,
@@ -198,7 +198,6 @@ beforeEach(() => {
     test_id: 'test-123',
   });
   vi.mocked(patchConfig).mockImplementation(async () => makeConfig());
-  vi.mocked(markConfigSecret).mockImplementation(async () => makeConfig());
   vi.mocked(resetConfigKey).mockImplementation(async () => makeConfig());
   vi.mocked(restartBackend).mockResolvedValue({ restarting: true, instance: 'old-process' });
   vi.mocked(waitForBackendRestart).mockResolvedValue('restarted');
@@ -1399,7 +1398,6 @@ describe('marking a variable secret', () => {
       }),
     );
     expect(patchConfig).toHaveBeenCalledTimes(1);
-    expect(markConfigSecret).not.toHaveBeenCalled();
     await waitFor(() => expect(saveButton('Providers')).toBeNull());
     // Neither the stored value (still in the buggy response) nor the edit.
     for (const plaintext of [HEADER_VALUE, 'typed-value']) {
@@ -2035,25 +2033,64 @@ describe('loading', () => {
 });
 
 describe('backup and restore', () => {
-  it('downloads a backup on the click, warning before and after that it holds secrets in plain text', async () => {
+  it('downloads a backup without secret values on the click', async () => {
     vi.mocked(exportConfigBackup).mockResolvedValueOnce({
       schema_version: 1,
       exported_at: '2026-10-25T15:00:00Z',
-      app_config: [{ key: 'SMTP_PORT', value: '587', secret: false, source: 'admin' }],
+      secrets_included: false,
+      app_config: [{ key: 'SMTP_PASSWORD', value: null, secret: true, is_set: true }],
     });
     await renderTab();
 
     const backup = screen.getByRole('button', { name: 'Backup' });
-    expect(backup.title).toContain('secrets in plain text');
+    expect(backup.title).toContain('Secret values are left out');
     fireEvent.click(backup);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(
-        'Downloaded configuration backup. It holds API keys and secrets in plain text: store it securely.',
+        "Downloaded configuration backup. Secret values are left out: restoring it keeps this deployment's.",
       ),
     );
     expect(exportConfigBackup).toHaveBeenCalledTimes(1);
+    expect(exportConfigBackup).toHaveBeenCalledWith();
+  });
+
+  it('downloads secret values only after the password, which stays asked until right', async () => {
+    vi.mocked(exportConfigBackup)
+      .mockRejectedValueOnce(new APIError('HTTP_400', 'Current password is incorrect.', 400))
+      .mockResolvedValueOnce({ schema_version: 1, secrets_included: true });
+    await renderTab();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Backup with secrets' }));
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Download backup with secret values?',
+    });
+    expect(dialog).toHaveTextContent('every secret in plain text');
+
+    // No password: refused here, nothing asked of the server.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Download' }));
+    expect(
+      await within(dialog).findByText('Enter your password to include secret values.'),
+    ).toBeInTheDocument();
+    expect(exportConfigBackup).not.toHaveBeenCalled();
+
+    const password = within(dialog).getByLabelText('Your password');
+    fireEvent.change(password, { target: { value: 'wrong' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Download' }));
+    expect(await within(dialog).findByText('Current password is incorrect.')).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
+
+    fireEvent.change(password, { target: { value: 'right' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Download' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(exportConfigBackup).toHaveBeenLastCalledWith({
+      includeSecrets: true,
+      password: 'right',
+    });
+    expect(toast.success).toHaveBeenCalledWith(
+      'Downloaded configuration backup with secret values. It holds API keys and secrets in plain text: store it securely.',
+    );
   });
 
   it('says why a backup could not be downloaded, and allows another try', async () => {
@@ -2107,20 +2144,26 @@ describe('backup and restore', () => {
       value: async () => JSON.stringify(payload),
     });
 
+    vi.mocked(previewConfigRestore).mockResolvedValueOnce({
+      security_changes: [],
+      secrets_not_restored: [],
+    });
     const fileInput = screen.getByLabelText('Select configuration backup file');
     fireEvent.change(fileInput, { target: { files: [file] } });
 
     const dialog = await screen.findByRole('dialog', {
       name: 'Restore configuration from backup?',
     });
+    expect(previewConfigRestore).toHaveBeenCalledWith(payload);
     expect(dialog).toHaveTextContent('backup.json');
     expect(dialog).toHaveTextContent('1 stored row');
     expect(dialog).toHaveTextContent('1 provider, 1 API key');
+    expect(within(dialog).queryByLabelText('Your password')).toBeNull();
     expect(restoreConfigBackup).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restore configuration' }));
 
-    await waitFor(() => expect(restoreConfigBackup).toHaveBeenCalledWith(payload));
+    await waitFor(() => expect(restoreConfigBackup).toHaveBeenCalledWith(payload, undefined));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByLabelText('SMTP_PORT')).toHaveValue(2525);
     expect(screen.queryByRole('button', { name: /^(Discard|Save) changes to / })).toBeNull();
@@ -2128,6 +2171,108 @@ describe('backup and restore', () => {
     expect(toast.success).toHaveBeenCalledWith(
       'Restored configuration (preserved existing API_KEY_SECRET).',
     );
+  });
+
+  it('lists security changes and restores them only with the password', async () => {
+    vi.mocked(restoreConfigBackup).mockResolvedValueOnce({
+      config: makeConfig(),
+      immutable_keys_preserved: [],
+      security_changes: ['app_config:ADMIN_EMAILS'],
+      secrets_not_restored: ['provider_keys:acme/k1'],
+    });
+    vi.mocked(previewConfigRestore).mockResolvedValueOnce({
+      security_changes: ['app_config:ADMIN_EMAILS', 'signup_allowed_domains'],
+      secrets_not_restored: ['provider_keys:acme/k1'],
+    });
+    await renderTab();
+    const payload = {
+      schema_version: 1,
+      secrets_included: false,
+      app_config: [{ key: 'ADMIN_EMAILS', value: 'mallory@example.com', source: 'admin' }],
+      provider_keys: [{ id: 'k1', provider: 'acme', api_key: null }],
+    };
+    const file = new File([JSON.stringify(payload)], 'backup.json', { type: 'application/json' });
+    Object.defineProperty(file, 'text', { value: async () => JSON.stringify(payload) });
+
+    fireEvent.change(screen.getByLabelText('Select configuration backup file'), {
+      target: { files: [file] },
+    });
+
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Restore configuration from backup?',
+    });
+    expect(dialog).toHaveTextContent('no secret values');
+    expect(dialog).toHaveTextContent('ADMIN_EMAILS (app config)');
+    expect(dialog).toHaveTextContent('signup_allowed_domains');
+    expect(dialog).toHaveTextContent('acme/k1 (provider keys)');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore configuration' }));
+    expect(
+      await within(dialog).findByText('Enter your password to restore security settings.'),
+    ).toBeInTheDocument();
+    expect(restoreConfigBackup).not.toHaveBeenCalled();
+
+    fireEvent.change(within(dialog).getByLabelText('Your password'), {
+      target: { value: 'my-password' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore configuration' }));
+
+    await waitFor(() =>
+      expect(restoreConfigBackup).toHaveBeenCalledWith(payload, {
+        securityChanges: ['app_config:ADMIN_EMAILS', 'signup_allowed_domains'],
+        password: 'my-password',
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(toast.error).toHaveBeenCalledWith(
+      'The backup had no value for acme/k1 (provider keys): set them again.',
+    );
+  });
+
+  it('restores through a gateway that predates the preview', async () => {
+    vi.mocked(previewConfigRestore).mockRejectedValueOnce(
+      new APIError('HTTP_405', 'Method Not Allowed', 405),
+    );
+    vi.mocked(restoreConfigBackup).mockResolvedValueOnce({
+      config: makeConfig(),
+      immutable_keys_preserved: [],
+    });
+    await renderTab();
+    const payload = { schema_version: 1, app_config: [] };
+    const file = new File([JSON.stringify(payload)], 'backup.json', { type: 'application/json' });
+    Object.defineProperty(file, 'text', { value: async () => JSON.stringify(payload) });
+
+    fireEvent.change(screen.getByLabelText('Select configuration backup file'), {
+      target: { files: [file] },
+    });
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Restore configuration from backup?',
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore configuration' }));
+
+    await waitFor(() => expect(restoreConfigBackup).toHaveBeenCalledWith(payload, undefined));
+  });
+
+  it('says why a backup cannot be restored when the preview refuses it', async () => {
+    vi.mocked(previewConfigRestore).mockRejectedValueOnce(
+      new APIError('HTTP_400', 'SMTP_PORT: must be an integer.', 400),
+    );
+    await renderTab();
+    const payload = { schema_version: 1, app_config: [{ key: 'SMTP_PORT', value: 'x' }] };
+    const file = new File([JSON.stringify(payload)], 'backup.json', { type: 'application/json' });
+    Object.defineProperty(file, 'text', { value: async () => JSON.stringify(payload) });
+
+    fireEvent.change(screen.getByLabelText('Select configuration backup file'), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        'The backup cannot be restored: SMTP_PORT: must be an integer.',
+      ),
+    );
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(restoreConfigBackup).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed backup file before opening the confirmation dialog', async () => {

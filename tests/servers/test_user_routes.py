@@ -242,31 +242,49 @@ class TestAPIKeyManagement:
         assert "*" in data["keys"][0]["key_masked"]
 
     @pytest.mark.asyncio
-    async def test_list_api_keys_reveals_full_key_for_active_key(
+    async def test_a_saved_key_is_masked_in_the_listing_and_revealed_by_the_password(
         self, auth_app_client: AsyncClient, test_user, auth_headers
     ):
-        """A key created after this feature exposes the decrypted full key.
+        """The listing never carries the full key; the password reveals it.
 
         The plaintext round-trips through the stored ciphertext
-        (``encrypt`` at create time -> DB -> ``decrypt`` at list time).
+        (``encrypt`` at create time -> DB -> ``decrypt`` at reveal time).
         """
         create = await auth_app_client.post("/user/api-keys", headers=auth_headers)
         assert create.status_code == 201
-        created_key = create.json()["api_key"]
+        created = create.json()
 
         response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
         assert response.status_code == 200
         keys = response.json()["keys"]
         assert len(keys) == 1
         assert keys[0]["status"] == "active"
-        assert keys[0]["api_key"] == created_key
-        assert keys[0]["api_key"].startswith("hyi-")
+        assert keys[0]["api_key"] is None
+        assert keys[0]["revealable"] is True
+        assert created["api_key"] not in response.text
+
+        refused = await auth_app_client.post(
+            f"/user/api-keys/{created['key_prefix']}/reveal",
+            headers=auth_headers,
+            json={"password": "Not-The-Password-1"},
+        )
+        assert refused.status_code == 400
+        revealed = await auth_app_client.post(
+            f"/user/api-keys/{created['key_prefix']}/reveal",
+            headers=auth_headers,
+            json={"password": test_user["password"]},
+        )
+        assert revealed.status_code == 200
+        assert revealed.json() == {
+            "key_prefix": created["key_prefix"],
+            "api_key": created["api_key"],
+        }
 
     @pytest.mark.asyncio
     async def test_list_api_keys_reveals_revoked_key_without_restoring_auth(
         self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend
     ):
-        """An owner can recover a revoked key's value, but cannot authenticate with it."""
+        """An owner can recover a revoked key's value with the password, not authenticate with it."""
         from serving.servers.auth import hash_api_key
         from tests.fixtures.auth_helpers import login_and_get_auth_headers, seed_test_user
 
@@ -288,8 +306,15 @@ class TestAPIKeyManagement:
         keys = response.json()["keys"]
         assert len(keys) == 1
         assert keys[0]["status"] == "revoked"
-        assert keys[0]["api_key"] == created["api_key"]
+        assert keys[0]["api_key"] is None
+        assert keys[0]["revealable"] is True
         assert "*" in keys[0]["key_masked"]
+        revealed = await auth_app_client.post(
+            f"/user/api-keys/{created['key_prefix']}/reveal",
+            headers=auth_headers,
+            json={"password": test_user["password"]},
+        )
+        assert revealed.json()["api_key"] == created["api_key"]
         assert await store.get_auth_context_by_key_hash(key_hash) is None
 
         # Listing is session-authenticated and scoped to the owner, including
@@ -302,6 +327,12 @@ class TestAPIKeyManagement:
         other_list = await auth_app_client.get("/user/api-keys/all", headers=other_headers)
         assert other_list.status_code == 200
         assert other_list.json()["keys"] == []
+        other_reveal = await auth_app_client.post(
+            f"/user/api-keys/{created['key_prefix']}/reveal",
+            headers=other_headers,
+            json={"password": other["password"]},
+        )
+        assert other_reveal.status_code == 404
 
     @pytest.mark.asyncio
     async def test_list_api_keys_legacy_key_masked(
@@ -314,6 +345,7 @@ class TestAPIKeyManagement:
         assert len(keys) == 1
         assert keys[0]["status"] == "active"
         assert keys[0]["api_key"] is None
+        assert keys[0]["revealable"] is False
         assert "*" in keys[0]["key_masked"]
 
     @pytest.mark.asyncio
@@ -715,18 +747,25 @@ class TestUsageStatistics:
         assert data["usage"]["cache_read_tokens"] >= 90
         assert data["usage"]["cache_write_tokens"] >= 40
         assert data["usage"]["reasoning_tokens"] >= 15
+        assert data["usage"]["reasoning_tokens_known_requests"] >= 2
 
     @pytest.mark.asyncio
-    async def test_get_usage_defaults_new_token_fields_to_zero(
+    async def test_get_usage_defaults_new_token_fields(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
     ):
-        """A user with no logged cache or reasoning usage reads zeros, not nulls."""
+        """No logged usage: cache counts read 0, and reasoning reads unknown, not 0.
+
+        A reasoning sum over rows that reported none is not a measured 0; the
+        dashboard shows it as not reported.
+        """
         response = await auth_app_client.get("/user/usage?period=today", headers=auth_headers)
 
         assert response.status_code == 200
         usage = response.json()["usage"]
-        for field in ("cache_read_tokens", "cache_write_tokens", "reasoning_tokens"):
+        for field in ("cache_read_tokens", "cache_write_tokens"):
             assert usage[field] == 0
+        assert usage["reasoning_tokens"] is None
+        assert usage["reasoning_tokens_known_requests"] == 0
 
 
 class TestRecentRequests:

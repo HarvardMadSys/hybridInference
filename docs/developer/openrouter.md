@@ -182,6 +182,6 @@ the resolution chain chose. If it is not the file you edited, an explicit
 [Configuration](configuration.md).
 
 **Requests reach the wrong upstream.** Use `GET /routing` to see the effective
-weight distribution per model. Note that this endpoint is unauthenticated and
-discloses upstream base URLs; see the warning in
+weight distribution per model. It answers anyone, but shows each route's
+upstream base URL only with an administrator's JWT or `ADMIN_TOKEN`; see
 [Architecture](architecture.md#http-surface).

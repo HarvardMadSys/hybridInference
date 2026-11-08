@@ -36,6 +36,9 @@ class UsageInfo:
     # True when the provider explicitly reported a cache-read count (even 0), so
     # to_dict() can distinguish a reported miss (0) from "not reported" (absent).
     cache_read_reported: bool = False
+    # True when the provider explicitly reported a reasoning count (even 0), so
+    # to_dict() can tell a model that did not reason (0) from "not reported".
+    reasoning_reported: bool = False
     # OpenRouter-reported per-request upstream cost in USD. Internal-only:
     # NOT serialized via to_dict() to avoid leaking to API clients. Logged
     # to api_logs.upstream_cost_usd for ops/billing reconciliation.
@@ -48,8 +51,9 @@ class UsageInfo:
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
         }
-        # Include reasoning tokens if present (for models like DeepSeek-R1)
-        if self.reasoning_tokens > 0:
+        # Include reasoning tokens if present (for models like DeepSeek-R1),
+        # including a reported 0, which api_logs stores as 0 rather than NULL.
+        if self.reasoning_reported or self.reasoning_tokens > 0:
             result["reasoning_tokens"] = self.reasoning_tokens
         # Include cache tokens. Emit cache_read even when the provider reported
         # an explicit 0 (cache_read_reported) so downstream logging and billing
@@ -102,6 +106,9 @@ class ModelConfig:
     max_output_length: int = 4096
     supports_tools: bool = False
     supports_structured_output: bool = False
+    # The endpoint is a vLLM server, which takes ``structured_outputs`` beside
+    # ``response_format``. Set by the registry for ``kind: vllm`` routes.
+    vllm_structured_outputs: bool = False
     # Lazily loaded on shared GPUs (ops/local_deployment_proxy): started by the
     # first request, stopped when idle, and refused fast when no GPU is vacant.
     # Exposed through /v1/models so synthetic monitors can skip these models —
@@ -285,6 +292,7 @@ class BaseAdapter(ABC):
         body: dict[str, Any],
         *,
         request_id: str,
+        usage_sink: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Anthropic Messages API non-streaming. Returns Anthropic-format dict.
@@ -292,32 +300,48 @@ class BaseAdapter(ABC):
         Default impl translates Anthropic -> OpenAI, calls self.chat_completion,
         translates OpenAI -> Anthropic. ``extra_headers`` is accepted for interface
         compatibility but ignored by OpenAI-backed adapters.
+
+        ``usage_sink``, when given, receives the upstream's OpenAI-shaped counts
+        under ``OPENAI_USAGE_SINK_KEY``: the reasoning count and total that the
+        Anthropic response has no field for, which the router logs and bills.
         """
         from serving.adapters.anthropic_translator import (
+            OPENAI_USAGE_SINK_KEY,
             anthropic_request_to_openai,
             openai_response_to_anthropic,
+            openai_usage_record,
         )
 
         oai_messages, oai_params = anthropic_request_to_openai(
             body, tool_images=self._reads_images()
         )
         oai_resp = await self.chat_completion(oai_messages, **oai_params)
-        return openai_response_to_anthropic(oai_resp, model=body.get("model", ""))
+        resp = openai_response_to_anthropic(oai_resp, model=body.get("model", ""))
+        upstream_usage = oai_resp.get("usage") if isinstance(oai_resp, dict) else None
+        if usage_sink is not None and isinstance(upstream_usage, dict) and upstream_usage:
+            usage_sink[OPENAI_USAGE_SINK_KEY] = openai_usage_record(upstream_usage)
+        return resp
 
     async def stream_messages(
         self,
         body: dict[str, Any],
         *,
         request_id: str,
-        usage_sink: dict[str, int] | None = None,
+        usage_sink: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> AsyncGenerator[bytes, None]:
-        """Anthropic Messages API streaming. Yields raw Anthropic SSE bytes."""
+        """Anthropic Messages API streaming. Yields raw Anthropic SSE bytes.
+
+        ``usage_sink`` receives the Anthropic counts and, when the upstream
+        reported usage, its OpenAI-shaped counts under ``OPENAI_USAGE_SINK_KEY``
+        (see :meth:`messages`).
+        """
         from serving.adapters.anthropic_translator import (
+            OPENAI_USAGE_SINK_KEY,
             OpenAIToAnthropicStreamTranslator,
             anthropic_request_to_openai,
         )
-        from serving.utils.tokens import estimate_prompt_tokens
+        from serving.utils.tokens import estimate_prompt_tokens_bounded
 
         oai_messages, oai_params = anthropic_request_to_openai(
             body, tool_images=self._reads_images()
@@ -326,9 +350,14 @@ class BaseAdapter(ABC):
         # Seed message_start.usage.input_tokens with an estimate: OpenAI streams
         # report prompt tokens only in the final chunk, but Anthropic clients
         # read input usage from message_start. The exact count replaces this in
-        # the terminal message_delta once the upstream reports it.
+        # the terminal message_delta once the upstream reports it. It is also
+        # the input a stream cut off after message_start is billed for, so it
+        # stays a tiktoken estimate -- but a bounded one: this runs on the event
+        # loop for every streamed turn, and a full encode of a coding agent's
+        # context took tens of milliseconds there. Exact up to
+        # INLINE_ESTIMATE_MAX_CHARS of text, sampled within a few percent beyond.
         try:
-            input_estimate = estimate_prompt_tokens(oai_messages)
+            input_estimate = estimate_prompt_tokens_bounded(oai_messages)
         except Exception:
             input_estimate = 0
         translator = OpenAIToAnthropicStreamTranslator(
@@ -360,11 +389,12 @@ class BaseAdapter(ABC):
                 for ant in translator.abort():
                     yield ant
                 raise
-        for ant in translator.finalize():
-            yield ant
-        # Hand the accumulated usage to the router's DB-logging step.
+        # Hand the accumulated usage to the router's DB-logging step. The
+        # upstream has finished and finalize() changes no count, so this is
+        # done before the terminal events are yielded: a client that leaves
+        # while they are in flight still gets its exact usage logged.
         translator_usage = translator.usage
-        final_usage = {
+        final_usage: dict[str, Any] = {
             "input_tokens": translator_usage.get("input_tokens", 0),
             "output_tokens": translator_usage.get("output_tokens", 0),
         }
@@ -373,8 +403,13 @@ class BaseAdapter(ABC):
         for key in ("cache_creation_input_tokens", "cache_read_input_tokens"):
             if key in translator_usage:
                 final_usage[key] = translator_usage[key]
+        openai_usage = translator.openai_usage
+        if openai_usage is not None:
+            final_usage[OPENAI_USAGE_SINK_KEY] = openai_usage
         if usage_sink is not None:
             usage_sink.update(final_usage)
+        for ant in translator.finalize():
+            yield ant
 
     def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Validate and clamp request parameters to provider limits."""

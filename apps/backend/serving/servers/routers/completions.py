@@ -14,6 +14,7 @@ import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from routing.endpoint_health import http_status_of
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import conversation_fingerprint
 from routing.protocols import RoutingRequestOptions
@@ -26,6 +27,7 @@ from serving.auto_mode import (
     openai_features,
     session_key,
 )
+from serving.config.batch_routes import batch_endpoint_scope, batch_route_refusal
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.grant_auth import ledger_attribution
@@ -61,6 +63,7 @@ from serving.servers.routers.routing_info import (
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
+from serving.structured_output import conform_reply, requested_format
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
@@ -609,7 +612,8 @@ async def release_unstarted_chat_streams() -> AsyncIterator[list[ChatStream]]:
     status, so its session and upstream are running; a client already gone when
     the response starts can leave Starlette never iterating the body (an ASGI
     server reporting spec 2.4+ fails the first send). Closed here, the session
-    ends as a client disconnect (499, no charge) and the upstream stream, its
+    ends as a client disconnect (499, charged for what the upstream had done by
+    then, as any disconnect is) and the upstream stream, its
     reader task and the router's claim are released at the end of the request,
     instead of whenever the abandoned generator is collected -- which an
     exception traceback kept alive can postpone indefinitely. A stream whose
@@ -1224,6 +1228,16 @@ async def execute_chat(
                 detail=f"Pinned provider '{pin_provider}' not found for model {model}",
             )
 
+    # A batch item runs only on the routes batch work may use: the routers' own
+    # per-request range narrows every selection, retry and fallback to them. It
+    # leaves the owner's affinity pin alone, so a batch on the local routes does
+    # not re-pin the owner's interactive requests there. A model with no such
+    # route is refused before anything runs (the batch worker fails such items
+    # before dispatch; this is the backstop).
+    batch_scope = batch_endpoint_scope(router_exec, model) if ctx.batch is not None else None
+    if batch_scope is not None and not batch_scope:
+        raise HTTPException(status_code=400, detail=batch_route_refusal(model))
+
     # Per-model routing strategy via ModelRouterRegistry. Pinned requests still
     # bypass RouteWise, but both selected routers now share one execution call
     # contract below.
@@ -1231,8 +1245,10 @@ async def execute_chat(
         RoutingRequestOptions(
             pin_provider=pin_provider,
             required_modalities=required_modalities,
+            endpoint_scope=batch_scope,
+            affinity=ctx.batch is None,
         )
-        if pin_provider or required_modalities
+        if pin_provider or required_modalities or ctx.batch is not None
         else None
     )
     active_router = router_exec
@@ -1299,6 +1315,15 @@ async def execute_chat(
             messages,
             **router_params,
         )
+        wanted_format = requested_format(params)
+        if wanted_format is not None:
+
+            async def _retry(retry_messages: list[dict[str, Any]]) -> Any:
+                return await active_router.chat_completion(model, retry_messages, **router_params)
+
+            response, metadata["structured_output"] = await conform_reply(
+                response, wanted_format, _retry, messages
+            )
         serializer_mode = resolve_mode(ctx.origin.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content
@@ -1501,6 +1526,9 @@ async def execute_chat(
                     prompt_tokens=0,
                     completion_tokens=0,
                     success=False,
+                    # The upstream's own status, or None: not the 500 the
+                    # response below defaults a status-less failure to.
+                    status_code=http_status_of(exc),
                 )
             except Exception:
                 logger.exception(

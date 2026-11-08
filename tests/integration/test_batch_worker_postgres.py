@@ -73,6 +73,8 @@ class _Upstream(BaseAdapter):
                 name=model_id,
                 provider="openai",
                 base_url=f"https://{model_id}.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=_PRICING,
             )
         )
@@ -547,13 +549,29 @@ async def test_a_worker_that_reclaims_its_own_lapsed_item_still_settles_it_once(
         worker_id=f"lapsing-{uuid.uuid4().hex[:6]}",
         timings=dataclasses.replace(_TIMINGS, lease_seconds=1, heartbeat_seconds=3600),
     )
+    # Every attempt this worker starts. The re-claim replaces the stale entry in
+    # ``_in_flight`` (keyed by item), so an empty ``_in_flight`` does not mean
+    # the stale attempt's task has finished; only its task says that.
+    tracked = []
+    track = worker._track
+
+    def tracking(item):
+        entry = track(item)
+        tracked.append(entry)
+        return entry
+
+    monkeypatch.setattr(worker, "_track", tracking)
     worker.start()
     try:
         await asyncio.wait_for(entered_first.wait(), timeout=10)
         await _until(lambda: _status_is(store, batch_id, "completed"), what="the self re-claim")
         release_first.set()
         await _until(lambda: answered == [2, 1], what="the stale call to return")
-        await _until(lambda: not worker._in_flight, what="the worker's bookkeeping to drain")
+        assert len(tracked) == 2
+        # Each task's ``_forget`` callback was added before gather's own, so it
+        # has run by the time gather returns.
+        await asyncio.wait_for(asyncio.gather(*(e.task for e in tracked)), timeout=20)
+        assert not worker._in_flight
         assert dict(worker._running) == {}
     finally:
         release_first.set()

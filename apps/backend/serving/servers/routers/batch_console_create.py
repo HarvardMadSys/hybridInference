@@ -46,7 +46,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from serving.batch import admission
-from serving.batch.config import PROTOCOL_WINDOW_SECONDS, batch_config, may_use_batch
+from serving.batch.config import batch_config, may_use_batch
 from serving.batch.console_prepare import (
     CONSOLE_TARGETS,
     ConsoleScan,
@@ -156,6 +156,7 @@ def _admission_context(
         visibility_resolver=visibility_resolver,
         embedding_adapters=getattr(services, "embedding_adapters", None),
         embedding_routes=getattr(router_exec, "embedding_routes", None),
+        batch_routes=getattr(router_exec, "batch_route_resolver", None),
     )
 
 
@@ -304,7 +305,10 @@ async def create_context(
             "max_active_batches": config.max_active_per_user,
             "file_retention_days": config.file_retention_days,
             "result_retention_days": config.retention_days,
-            "completion_window_hours": PROTOCOL_WINDOW_SECONDS // 3600,
+            # None: the batch has no window and none of its requests expire.
+            "completion_window_hours": (
+                None if config.file_window_seconds is None else config.file_window_seconds // 3600
+            ),
             "submission_replay_seconds": IDEMPOTENCY_RETENTION_SECONDS,
         },
         "usage": {
@@ -805,7 +809,7 @@ async def create_console_batch(
                 source_sha256=body.source_sha256,
                 derived=derived,
                 file_retention_seconds=config.file_retention_days * 86400,
-                completion_window_seconds=PROTOCOL_WINDOW_SECONDS,
+                completion_window_seconds=config.file_window_seconds,
                 retention_seconds=config.retention_seconds,
                 idempotency={"key": key, "digest": digest},
                 max_active=config.max_active_per_user,

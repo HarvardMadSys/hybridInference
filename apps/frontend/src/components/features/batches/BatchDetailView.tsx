@@ -297,7 +297,9 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
           </Row>
           <Row label={t('batches.row.created', 'Created')}>{formatTime(detail.created_at)}</Row>
           <Row label={t('batches.detail.window', 'Start requests by')}>
-            {formatTime(detail.expires_at)}
+            {detail.expires_at
+              ? formatTime(detail.expires_at)
+              : t('batches.detail.window_none', 'No limit')}
           </Row>
           <Row label={t('batches.detail.ended', 'Ended')}>{formatTime(detail.ended_at)}</Row>
           <Row label={t('batches.row.results_until', 'Results kept until')}>

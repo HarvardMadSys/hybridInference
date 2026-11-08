@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
     from datetime import datetime
     from decimal import Decimal
 
@@ -55,6 +55,35 @@ class ProviderDefinitionRow:
 
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
+
+
+class CostIncrement(NamedTuple):
+    """One addition to the cost counters (``user_daily_cost``, ``api_key_daily_cost``).
+
+    *cost_usd* and *requests* are added to the user's counter for *day*, and
+    to the key's when *api_key_id* is set. *requests* counts the requests the
+    cost sums, so coalescing several into one increment keeps the counts.
+    """
+
+    user_id: str
+    day: str
+    api_key_id: int | None
+    cost_usd: Decimal | float
+    requests: int = 1
+
+
+class CostWriteOutcomeUnknown(Exception):
+    """A write of cost increments may or may not have been applied.
+
+    Raised when the connection failed after the transaction's COMMIT was sent
+    and the database could not then say how that transaction ended. Retrying
+    could count the costs twice; the caller decides.
+    """
+
+    def __init__(self, xid: int) -> None:
+        """Record the transaction id whose outcome is unknown."""
+        super().__init__(f"outcome of cost counter transaction {xid} is unknown")
+        self.xid = xid
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +528,16 @@ class OperationalStore(ABC):
         immediately without waiting for TTL expiry.
         """
 
+    async def invalidate_user_auth_caches(self, user_id: str) -> None:
+        """Evict the cached auth-context entries of *user_id*'s keys.
+
+        For a write that changes one account. The base implementation evicts
+        what :meth:`invalidate_auth_caches` does, which is always enough;
+        ``CachedOperationalStore`` overrides it to evict that account's
+        entries alone.
+        """
+        await self.invalidate_auth_caches()
+
     @abstractmethod
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
         """Materialized auth lookup for ``verify_api_key``.
@@ -568,7 +607,12 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def update_key_last_used(self, key_id: int) -> None:
-        """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget."""
+        """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget.
+
+        A row already written within the last minute may be left as it is: the
+        column is read at minute resolution, and a busy key must not turn it
+        into a write per request.
+        """
 
     @abstractmethod
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:
@@ -746,6 +790,15 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Whether *user_id*'s auth session *sid* may still authorize a request.
+
+        *sid* is the ``sid`` claim of an access token. False once the session
+        is revoked (signing out, a password change or reset, signing out the
+        other devices), deleted, expired, or when it never existed.
+        """
+
+    @abstractmethod
     async def rotate_session(
         self,
         session_id: str,
@@ -900,6 +953,16 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Return *user_id*'s newest unused signup verification token valid past *valid_until*.
+
+        A token that proves a new address (``pending_email``) is never
+        returned. None when the account holds no such token.
+        """
+
+    @abstractmethod
     async def mark_verification_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
 
@@ -928,6 +991,13 @@ class OperationalStore(ABC):
         """Fetch reset token row.
 
         Returns: ``token, user_id, created_at, expires_at, used_at``.
+        """
+
+    @abstractmethod
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Return *user_id*'s newest unused password reset token valid past *valid_until*.
+
+        None when the account holds no such token.
         """
 
     @abstractmethod
@@ -1087,18 +1157,21 @@ class OperationalStore(ABC):
         *,
         day: str | None = None,
         api_key_id: int | None = None,
+        requests: int = 1,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
 
         Uses upsert: inserts a new row if none exists for (user_id, day),
-        otherwise adds *cost_usd* to the existing total and increments
+        otherwise adds *cost_usd* to the existing total and *requests* to
         the request count.
 
-        The key's own daily counter is a report, not a quota input: a
-        failure to write it never fails the account's increment.
+        The key's counter is written with the account's, both or neither:
+        the key's budgets read it, so it is a quota input too.
 
         Only call this for billed requests (successful responses where
-        cost > 0), not for auth failures or 4xx errors.
+        cost > 0), not for auth failures or 4xx errors. Request handlers do
+        not call it: they record costs in :mod:`serving.spend_ledger`, which
+        writes them.
 
         Args:
             user_id: The user whose cost to increment.
@@ -1107,7 +1180,30 @@ class OperationalStore(ABC):
             api_key_id: The key the request was made with, whose own daily
                 counter (``api_key_daily_cost``) is bumped as well; None for a
                 request made without one of the account's keys.
+            requests: How many requests *cost_usd* is the cost of.
         """
+
+    #: Whether :meth:`increment_user_costs` applies a whole batch in one
+    #: transaction, exactly once. The spend ledger writes a store without it
+    #: one increment at a time.
+    atomic_cost_increments: bool = False
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Add every increment to its counters.
+
+        A store with :attr:`atomic_cost_increments` applies the batch in one
+        transaction, exactly once, and raises :class:`CostWriteOutcomeUnknown`
+        when it cannot tell whether that transaction committed. This default
+        applies the increments one after another.
+        """
+        for increment in increments:
+            await self.increment_user_cost(
+                increment.user_id,
+                float(increment.cost_usd),
+                day=increment.day,
+                api_key_id=increment.api_key_id,
+                requests=increment.requests,
+            )
 
     @abstractmethod
     async def get_user_cost_today(self, user_id: str) -> float:
@@ -1554,6 +1650,25 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Return every route's stored batch choice (``batch_allowed``), by (model, route id)."""
+
+    @abstractmethod
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Store whether batch work may use one route; ``None`` deletes the choice.
+
+        A route without a choice follows its locality (``serving.config.batch_routes``).
+        Keyed by the model's canonical id and the route id, as the route states are.
+        """
+
+    @abstractmethod
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delete a runtime provider route candidate row. Returns True if removed."""
 
@@ -1923,14 +2038,20 @@ class LogStore(ABC):
     async def get_user_usage_detail(
         self,
         user_id: str,
+        windows: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Return detailed usage stats for a user (today, week, month, all-time).
 
         Used by the user dashboard ``/user/usage`` endpoint.
-        Returns dict with keys ``today``, ``week``, ``month``, ``alltime``
-        each containing ``requests``, ``cost_usd``, ``prompt_tokens``,
-        ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``
-        and ``reasoning_tokens``.
+        Returns dict with keys ``today``, ``week``, ``month``, ``alltime`` --
+        only those named in *windows* when given -- each containing
+        ``requests``, ``cost_usd``, ``prompt_tokens``,
+        ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
+        ``reasoning_tokens`` and ``reasoning_tokens_known_requests``.
+        ``reasoning_tokens`` is summed over the rows that report it and is
+        ``None`` when none does; ``reasoning_tokens_known_requests`` counts
+        those rows. An implementation may answer from a cache a few seconds
+        old.
         """
 
     @abstractmethod
@@ -2119,6 +2240,7 @@ class LogStore(ABC):
         *,
         hours: int = 1,
         on_deleted: Callable[[Any, list[datetime]], Awaitable[None]] | None = None,
+        batch: bool | None = None,
     ) -> int:
         """Hard-delete error requests logged within the last *hours* hours.
 
@@ -2126,6 +2248,11 @@ class LogStore(ABC):
         ``outcome=errors`` filter uses: ``error IS NOT NULL`` OR a status code
         that is missing or outside the 2xx/3xx success range — which includes
         client disconnects (status 499). Returns the number of deleted rows.
+
+        *batch* narrows it by who ran the request, as the list's ``source``
+        filter does: None deletes every source's errors, False only those of
+        requests the batch worker did not run (no ``batch_job_id``), True only
+        the batch worker's.
 
         *on_deleted*, when rows were deleted, is awaited inside the delete's
         transaction with its connection and the UTC hour starts the rows were

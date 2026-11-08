@@ -91,6 +91,15 @@ def test_the_revisions_form_one_numbered_line():
     assert sorted(p.stem for p in _revision_files()) == sorted(chain)
 
 
+def test_every_revision_id_fits_the_version_table():
+    """Alembic records the revision in a ``VARCHAR(32)``.
+
+    A longer id fails the run when it records the revision -- after the
+    revision's own statements have already run.
+    """
+    assert [r for r in code_chain() if len(r) > 32] == []
+
+
 @pytest.mark.parametrize(
     "path",
     [*_revision_files(), *sorted(BASELINE.glob("*.py"))],

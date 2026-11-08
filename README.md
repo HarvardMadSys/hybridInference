@@ -243,8 +243,8 @@ config/
 distributions/    # Per-distribution overlays: identity, content, config
                   # (including example/, the public runnable router example)
 tests/            # Unit, API, integration, and external tests
-ops/              # CI classifiers, admin sweeps, release/deploy scripts, backend-coupled DB analysis
-deploy/           # Docker, systemd, observability manifests
+ops/              # CI helpers, admin tools and sweeps, local dev scripts, backend-coupled DB analysis
+deploy/           # Docker, systemd and Kubernetes manifests
 docs/             # Developer docs, agent specs/plans, reviews
 ```
 

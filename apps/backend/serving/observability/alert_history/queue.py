@@ -202,10 +202,6 @@ class HistoryQueue:
         """Records of the batch currently being written."""
         return self._in_flight
 
-    def oldest_queued_at(self) -> Any:
-        """``occurred_at`` of the oldest uncommitted record, or ``None``."""
-        return self._items[0].occurred_at if self._items else None
-
     def after_in_flight(self) -> tuple[int, int, Any]:
         """Count, bytes and oldest ``occurred_at`` of what outlives the in-flight batch.
 

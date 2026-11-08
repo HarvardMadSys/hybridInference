@@ -428,6 +428,23 @@ if params.get("response_format", {}).get("type") == "json_object":
     payload["response_format"] = {"type": "json_object"}
 ```
 
+The gateway does not rely on the provider alone to honor `response_format`:
+
+- When an endpoint cannot take the requested format, the OpenAI-compatible
+  adapter describes it in the prompt instead. This covers a route without
+  `supports_structured_output` and a provider that keeps only `json_object`
+  of a schema.
+- A `kind: vllm` route also gets `structured_outputs` with
+  `disable_any_whitespace`, so the model cannot loop on whitespace inside the
+  JSON grammar.
+- A non-streaming reply is checked against the request. JSON in a code fence
+  or surrounded by prose is unwrapped. A reply that is not JSON or does not
+  match the schema is asked again with the schema in the prompt, up to twice,
+  unless it was cut off by `max_tokens`.
+  If no attempt conforms, the last reply is returned unchanged rather than as
+  an error. The request log's `metadata.structured_output` records the
+  attempts and whether the reply conformed.
+
 ### Limiting concurrent requests
 
 An adapter does not need its own limiter. The gateway already caps how many

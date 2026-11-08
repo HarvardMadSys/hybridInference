@@ -41,6 +41,7 @@ vi.mock('@/lib/api/admin', () => ({
   listRouteWeights: vi.fn(),
   removeProviderRoute: vi.fn(),
   restoreProviderRoute: vi.fn(),
+  updateProviderRouteBatch: vi.fn(),
   updateProviderRouteState: vi.fn(),
   listRoutewiseProbeSamples: vi.fn(),
   listRoutewiseSettings: vi.fn(() => Promise.resolve({ model_id: 'minimax-fast', settings: [] })),
@@ -81,6 +82,7 @@ import {
   listRoutewiseSettings,
   removeProviderRoute,
   restoreProviderRoute,
+  updateProviderRouteBatch,
   updateProviderRouteState,
   runRoutewiseProbe,
   setOffloadRoute,
@@ -4759,5 +4761,163 @@ describe('ProviderRoutesTab', () => {
       });
       expect(createProviderRouteCandidate).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('ProviderRoutesTab batch work', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  // A server the gateway runs itself, which batch work may use by default.
+  const localRoute = {
+    ...route,
+    route_id: 'minimax-fast:local-8010',
+    endpoint_id: 'minimax-fast:local-8010',
+    provider: 'vllm',
+    base_url: 'http://host.docker.internal:8010',
+    batch_allowed: true,
+    batch_allowed_default: true,
+    batch_allowed_choice: null,
+  };
+  // A cloud provider, which batch work may not use unless an admin allows it.
+  const cloudRoute = {
+    ...quotaRoute,
+    batch_allowed: false,
+    batch_allowed_default: false,
+    batch_allowed_choice: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listRouteWeights).mockResolvedValue([]);
+    vi.mocked(listOffloadRoutes).mockResolvedValue({
+      queue_enabled: true,
+      max_wait_seconds: 30,
+      offload_routes: [],
+    });
+    vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({ samples: [] });
+  });
+
+  function showRoutes(routes: ProviderRoute[]) {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes,
+    });
+  }
+
+  it('marks the routes batch work may use and says why', async () => {
+    showRoutes([localRoute, cloudRoute]);
+    render(<ProviderRoutesTab />);
+
+    const badge = await screen.findByTestId(`batch-badge-${localRoute.route_id}`);
+    expect(badge).toHaveTextContent('Batch');
+    expect(badge.getAttribute('title')).toContain("one of the gateway's own servers");
+    // A cloud route takes no batch work by default and carries no badge.
+    expect(screen.queryByTestId(`batch-badge-${cloudRoute.route_id}`)).toBeNull();
+    expect(
+      screen.getByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `Allow batch work on ${cloudRoute.route_id}` }),
+    ).toBeInTheDocument();
+    // No choice is stored yet, so there is nothing to reset.
+    expect(screen.queryByRole('button', { name: /^Batch default for / })).toBeNull();
+  });
+
+  it('allows batch work on a cloud route at once, and hands it back to its default', async () => {
+    showRoutes([localRoute, cloudRoute]);
+    vi.mocked(updateProviderRouteBatch)
+      .mockResolvedValueOnce({ ...cloudRoute, batch_allowed: true, batch_allowed_choice: true })
+      .mockResolvedValueOnce(cloudRoute);
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: `Allow batch work on ${cloudRoute.route_id}` }),
+    );
+
+    await waitFor(() =>
+      expect(updateProviderRouteBatch).toHaveBeenCalledWith('minimax-fast', cloudRoute.route_id, {
+        batch_allowed: true,
+      }),
+    );
+    const badge = await screen.findByTestId(`batch-badge-${cloudRoute.route_id}`);
+    expect(badge.getAttribute('title')).toContain('An administrator allowed batch work');
+    fireEvent.click(
+      screen.getByRole('button', { name: `Batch default for ${cloudRoute.route_id}` }),
+    );
+    await waitFor(() =>
+      expect(updateProviderRouteBatch).toHaveBeenLastCalledWith(
+        'minimax-fast',
+        cloudRoute.route_id,
+        { batch_allowed: null },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId(`batch-badge-${cloudRoute.route_id}`)).toBeNull(),
+    );
+  });
+
+  it("asks first before stopping a model's last batch route", async () => {
+    showRoutes([localRoute, cloudRoute]);
+    vi.mocked(updateProviderRouteBatch).mockResolvedValue({
+      ...localRoute,
+      batch_allowed: false,
+      batch_allowed_choice: false,
+    });
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Stop batch work on minimax-fast?' });
+    expect(dialog).toHaveTextContent('queued batch requests fail');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(updateProviderRouteBatch).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    );
+    confirmAction('Stop batch work');
+    await waitFor(() =>
+      expect(updateProviderRouteBatch).toHaveBeenCalledWith('minimax-fast', localRoute.route_id, {
+        batch_allowed: false,
+      }),
+    );
+    expect(await screen.findByTestId(`batch-badge-${localRoute.route_id}`)).toHaveTextContent(
+      'No batch',
+    );
+  });
+
+  it('stops batch work on a route at once while another route still takes it', async () => {
+    const secondLocal = {
+      ...localRoute,
+      route_id: 'minimax-fast:local-8011',
+      endpoint_id: 'minimax-fast:local-8011',
+    };
+    showRoutes([localRoute, secondLocal]);
+    vi.mocked(updateProviderRouteBatch).mockResolvedValue({
+      ...localRoute,
+      batch_allowed: false,
+      batch_allowed_choice: false,
+    });
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    );
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(updateProviderRouteBatch).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows no batch control against a gateway that predates them', async () => {
+    showRoutes([route]);
+    render(<ProviderRoutesTab />);
+
+    await screen.findByRole('button', { name: 'Edit' });
+    expect(screen.queryByRole('button', { name: /batch work on/ })).toBeNull();
+    expect(screen.queryByTestId(`batch-badge-${route.route_id}`)).toBeNull();
   });
 });

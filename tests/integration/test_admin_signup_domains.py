@@ -36,6 +36,7 @@ def mock_stores():
     op_store.is_signup_domain_allowed = AsyncMock(return_value=False)
     op_store.get_user_by_email = AsyncMock(return_value=None)
     op_store.get_user_by_id = AsyncMock(return_value=None)
+    op_store.session_is_live = AsyncMock(return_value=True)
     op_store.log_admin_action = AsyncMock()
 
     log_store = MagicMock()

@@ -243,7 +243,9 @@ async def test_every_parameter_a_caller_sets_reaches_the_adapter(monkeypatch, st
     response = await _post(app, stream=stream, **_PARAMS)
 
     assert response.status_code == 200, response.text
-    [received] = alpha.calls
+    # The stand-in's reply is not the JSON ``response_format`` asks for, so a
+    # non-streaming request is asked again; the first attempt is the caller's.
+    received = alpha.calls[0]
     assert {name: received.get(name) for name in _PARAMS} == _PARAMS
     assert received["stream"] is stream
 

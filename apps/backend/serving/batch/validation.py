@@ -73,6 +73,10 @@ async def iter_lines(
 ) -> AsyncIterator[tuple[int, bytes]]:
     """Yield ``(line number, line bytes)`` of an upload, reading it chunk by chunk.
 
+    A line ends at a newline, which is not part of it; a carriage return before
+    the newline is (the parser strips it), and a last line with no newline is a
+    line too.
+
     Raises:
         _Invalid: A line is longer than ``max_line_bytes``.
     """
@@ -86,11 +90,16 @@ async def iter_lines(
         for seq, data in chunks:
             after = seq
             buffer += data
+            # Scan from a moving offset and cut the buffer once per chunk.
+            # Cutting it at every line copied the rest of the chunk each time:
+            # quadratic in a chunk of short lines.
+            start = 0
             while True:
-                newline = buffer.find(b"\n")
+                newline = buffer.find(b"\n", start)
                 if newline < 0:
                     break
-                line, buffer = buffer[:newline], buffer[newline + 1 :]
+                line = buffer[start:newline]
+                start = newline + 1
                 line_no += 1
                 if len(line) > max_line_bytes:
                     raise LineTooLong(
@@ -99,6 +108,7 @@ async def iter_lines(
                         line_no,
                     )
                 yield line_no, line
+            buffer = buffer[start:]
             if len(buffer) > max_line_bytes:
                 raise LineTooLong(
                     "line_too_long",
@@ -251,6 +261,7 @@ async def validate_file_batch(
         visibility_resolver=getattr(services, "model_visibility_resolver", None),
         embedding_adapters=getattr(services, "embedding_adapters", None),
         embedding_routes=getattr(router, "embedding_routes", None),
+        batch_routes=getattr(router, "batch_route_resolver", None),
         profile=profile if target == TARGET_MESSAGES else None,
     )
     errors: list[dict[str, Any]] = []

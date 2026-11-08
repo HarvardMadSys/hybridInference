@@ -25,15 +25,24 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
-from serving.auto_mode import AutoMode, load_auto_mode
+from serving import spend_ledger
+from serving.auto_mode import AutoMode, load_auto_mode, load_auto_mode_from_text
 from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
+from serving.config.batch_routes import BatchRouteResolver
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.offload_routes import AppliedOffloadPolicies, OffloadRouteResolver
+from serving.config.route_catalog import (
+    import_missing as import_route_catalog,
+    install as install_route_catalog,
+    installed_body,
+    reset_installed as reset_route_catalog,
+    seed_texts,
+)
 from serving.config.route_states import RouteStateResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
@@ -68,6 +77,7 @@ from .registry import (
     EmbeddingsPathConfigError,
     ModelLoadReport,
     ModelRegistrationInfo,
+    register_from_models_text,
     register_from_models_yaml,
 )
 from .routewise_rebuild import rebuild_cached_routewise_routers
@@ -330,6 +340,43 @@ async def _apply_route_removals_after_boot(services: AppServices) -> None:
             apply_persisted_provider_route_removals(services, model_ids={model_id})
 
 
+async def _refresh_batch_route_snapshots(
+    resolver: BatchRouteResolver,
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Periodically reload the per-route batch choices so workers converge after admin edits.
+
+    No RouteWise rebuild follows a change: a batch request's routes are worked
+    out from the snapshot when it is dispatched.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await resolver.load_all()
+        except Exception:
+            logger.warning("Batch route snapshot refresh failed", exc_info=True)
+
+
+async def _attach_batch_routes(router: Any, store: Any) -> BatchRouteResolver:
+    """Attach the per-route batch choices to the shared router, loaded if they can be.
+
+    Attached even when the first load fails: until the refresh loop's read
+    lands, every route follows its locality, and the admin batch endpoint
+    refuses to write (``ready``).
+    """
+    resolver = BatchRouteResolver(store)
+    try:
+        await resolver.load_all()
+    except Exception:
+        logger.warning(
+            "Batch route snapshot load failed; retrying in the background",
+            exc_info=True,
+        )
+    router.batch_route_resolver = resolver
+    return resolver
+
+
 async def _refresh_offload_route_snapshots(
     resolver: OffloadRouteResolver,
     *,
@@ -580,6 +627,7 @@ async def _load_app_config() -> None:
             made safe to start on.
     """
     if not database_enabled():
+        reset_route_catalog()
         app_config.use_environment(database_enabled=False)
         return
 
@@ -593,6 +641,18 @@ async def _load_app_config() -> None:
                 # Before anything reads a table: a database the migrations
                 # have not brought to this code's schema stops startup here.
                 await require_schema(conn)
+                try:
+                    # Import before settings load so discovery scans the stored
+                    # documents. A row that already exists is left as it is.
+                    # A failed import must not abandon the stored settings.
+                    install_route_catalog(await import_route_catalog(conn, seed_texts()))
+                except Exception:
+                    logger.error(
+                        "Route catalog import failed; registering models and "
+                        "routing from the files",
+                        exc_info=True,
+                    )
+                    reset_route_catalog()
                 await app_config.load(AppConfigStore(conn))
             finally:
                 await conn.close()
@@ -617,6 +677,9 @@ async def _load_app_config() -> None:
 
 #: The share of the shutdown the live configuration groups may take.
 _LIVE_CONFIG_STOP_SECONDS = 10.0
+
+#: How long shutdown waits for the spend ledger's last cost-counter writes.
+_COST_COUNTER_FLUSH_SECONDS = 10.0
 
 
 def _start_live_config(pool: Any) -> None:
@@ -715,53 +778,87 @@ async def _init_router_and_models(
     embedding_adapters: dict = {}
     model_infos: list[ModelRegistrationInfo] = []
 
-    # Load models from YAML configuration
+    # A stored catalog wins over the file, including when the file is gone.
+    stored_models = installed_body("models")
     try:
-        resolved_models = resolve_config_path("models")
-        models_path = resolved_models.path
-        if resolved_models.source != "default" and not models_path.exists():
-            logger.warning(
-                f"Models config not found: {models_path} (source={resolved_models.source})"
-            )
-        elif models_path.exists():
+        if stored_models is not None:
             load_report = ModelLoadReport()
-            registered, model_infos = register_from_models_yaml(
+            registered, model_infos = register_from_models_text(
                 router,
-                models_path,
+                stored_models,
                 embedding_adapters=embedding_adapters,
                 continue_on_missing_env=True,
                 report=load_report,
             )
-            # A request for a skipped model says why it is missing.
             record_skipped_models(load_report)
             if registered:
-                logger.info(f"Registered {registered} routes from {models_path}")
+                logger.info(f"Registered {registered} routes from the database route catalog")
+            elif not load_report.skipped_models:
+                logger.error(
+                    "The database route catalog has no models, so no models are "
+                    "available: /v1/models will be empty and every request will "
+                    "report the model as not found."
+                )
             if embedding_adapters:
                 logger.info(
                     f"Registered {len(embedding_adapters)} embedding adapter(s): "
                     f"{list(embedding_adapters.keys())}"
                 )
         else:
-            # Default path, nothing there. Previously silent, and silence is the
-            # worst answer here: /v1/models returns an empty list, every request
-            # 404s, and the log says nothing at all. The registry is a
-            # deployment's own file — upstream ships none — so this is what a
-            # fresh checkout hits on its first run.
-            logger.error(
-                "No model registry at %s, so no models are available: "
-                "/v1/models will be empty and every request will report the "
-                "model as not found. Point MODELS_CONFIG_PATH at your registry, "
-                "or copy one of the files in config/examples/ to that path.",
-                models_path,
-            )
+            _register_models_from_file(router, embedding_adapters, model_infos)
     except EmbeddingsPathConfigError:
         # A rejected explicit path must abort startup, not leave the server
         # running on whatever models were registered before the bad entry.
         raise
     except Exception as exc:
-        logger.warning(f"Failed to load models.yaml: {exc}")
+        source = "the database route catalog" if stored_models is not None else "models.yaml"
+        logger.warning(f"Failed to load {source}: {exc}")
 
     return embedding_adapters, model_infos
+
+
+def _register_models_from_file(
+    router: FixedRouter,
+    embedding_adapters: dict,
+    model_infos: list[ModelRegistrationInfo],
+) -> None:
+    """Register the model file when the database has no models row."""
+    resolved_models = resolve_config_path("models")
+    models_path = resolved_models.path
+    if resolved_models.source != "default" and not models_path.exists():
+        logger.warning(f"Models config not found: {models_path} (source={resolved_models.source})")
+    elif models_path.exists():
+        load_report = ModelLoadReport()
+        registered, loaded_infos = register_from_models_yaml(
+            router,
+            models_path,
+            embedding_adapters=embedding_adapters,
+            continue_on_missing_env=True,
+            report=load_report,
+        )
+        model_infos.extend(loaded_infos)
+        # A request for a skipped model says why it is missing.
+        record_skipped_models(load_report)
+        if registered:
+            logger.info(f"Registered {registered} routes from {models_path}")
+        if embedding_adapters:
+            logger.info(
+                f"Registered {len(embedding_adapters)} embedding adapter(s): "
+                f"{list(embedding_adapters.keys())}"
+            )
+    else:
+        # Default path, nothing there. Previously silent, and silence is the
+        # worst answer here: /v1/models returns an empty list, every request
+        # 404s, and the log says nothing at all. The registry is a
+        # deployment's own file — upstream ships none — so this is what a
+        # fresh checkout hits on its first run.
+        logger.error(
+            "No model registry at %s, so no models are available: "
+            "/v1/models will be empty and every request will report the "
+            "model as not found. Point MODELS_CONFIG_PATH at your registry, "
+            "or copy one of the files in config/examples/ to that path.",
+            models_path,
+        )
 
 
 def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
@@ -773,6 +870,9 @@ def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
     turns auto off and nothing else.
     """
     try:
+        stored_models = installed_body("models")
+        if stored_models is not None:
+            return load_auto_mode_from_text(stored_models, router.routes)
         models_path = resolve_config_path("models").path
         if not models_path.exists():
             return None
@@ -842,6 +942,21 @@ def _apply_routing_manager(router: FixedRouter) -> RoutingManager | None:
         otherwise None.
     """
     try:
+        from routing.config import load_routing_config_text
+
+        stored_routing = installed_body("routing")
+        if stored_routing is not None:
+            manager = RoutingManager(router, resolve_config_path("routing").path)
+            manager.load_config(load_routing_config_text(stored_routing))
+            updated = manager.apply()
+            if updated:
+                logger.info(
+                    f"RoutingManager applied weights to {updated} routes "
+                    "from the database route catalog"
+                )
+            else:
+                logger.info("RoutingManager loaded the database route catalog; no routes updated")
+            return manager
         resolved_routing = resolve_config_path("routing")
         routing_cfg_path = resolved_routing.path
         if resolved_routing.source != "default" and not routing_cfg_path.exists():
@@ -979,6 +1094,9 @@ async def initialize() -> AppServices:
                             register_rollup_job as register_request_volume_job,
                         )
                         from serving.storage import daily_activity_rollup, user_usage_rollup
+                        from serving.storage.responses_store import (
+                            register_retention_job as register_responses_retention_job,
+                        )
 
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
@@ -987,6 +1105,8 @@ async def initialize() -> AppServices:
                             register_request_volume_job(sched, db_logger.pool)
                             user_usage_rollup.register_rollup_job(sched, db_logger.pool)
                             daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
+                            # Stored Responses past their retention, hourly.
+                            register_responses_retention_job(sched, db_logger.pool)
 
                             # Failed-request alerter: one job, paused while
                             # neither SLACK_WEBHOOK_URL nor
@@ -1044,9 +1164,10 @@ async def initialize() -> AppServices:
 
                         # Store the completed hours the admin Request volume
                         # cards read and the table lacks: a month of them on the
-                        # first start with the table, otherwise those that ended
-                        # while the server was down. Counting them here keeps
-                        # that work out of an admin's page load.
+                        # first start with the table or after what an hour
+                        # counts changes, otherwise those that ended while the
+                        # server was down. Counting them here keeps that work
+                        # out of an admin's page load.
                         async def _run_request_volume_backfill(pool=db_logger.pool):
                             try:
                                 await backfill_request_volume(pool)
@@ -1091,9 +1212,9 @@ async def initialize() -> AppServices:
                         # The Providers tab's percentile and TTFT-scatter views
                         # take seconds to minutes over a large api_logs and are
                         # served from their last stored result; build the
-                        # percentiles' covering index if missing, then refresh
-                        # both, so the first admin to open the tab sees fresh
-                        # numbers.
+                        # percentiles' covering index and the request lists'
+                        # source index if missing, then refresh both views, so
+                        # the first admin to open the tab sees fresh numbers.
                         from serving.servers.routers.admin.metrics import (
                             warm_performance_caches,
                         )
@@ -1159,12 +1280,9 @@ async def initialize() -> AppServices:
     # canonical id invalidate the alias's cached router.
     alias_to_model: dict[str, str] = {}
     for info in model_infos:
-        # Effective router: explicit `router:` wins; otherwise the legacy
-        # `routing_strategy:` (one-release shim) maps onto `router`.
-        effective_router = info.router or info.strategy
         entry: dict[str, Any] = {}
-        if effective_router is not None:
-            entry["router"] = effective_router
+        if info.router is not None:
+            entry["router"] = info.router
         if info.router_params is not None:
             entry["router_params"] = info.router_params
         # Aliases share the canonical model's config.
@@ -1178,14 +1296,20 @@ async def initialize() -> AppServices:
     # parsed RoutingConfig; we re-load here cheaply (small YAML).
     default_router_name = "fixed"
     try:
-        from routing.config import load_routing_config
+        from routing.config import load_routing_config, load_routing_config_text
 
-        routing_cfg_path = resolve_config_path("routing").path
-        if routing_cfg_path.exists():
-            routing_cfg = load_routing_config(routing_cfg_path)
-            default_router_name = routing_cfg.default_router
+        stored_routing = installed_body("routing")
+        if stored_routing is not None:
+            default_router_name = load_routing_config_text(stored_routing).default_router
+        else:
+            routing_cfg_path = resolve_config_path("routing").path
+            if routing_cfg_path.exists():
+                routing_cfg = load_routing_config(routing_cfg_path)
+                default_router_name = routing_cfg.default_router
     except Exception as exc:
-        logger.warning(f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'.")
+        logger.warning(
+            f"Failed to read default_router from the routing catalog: {exc}; using 'fixed'."
+        )
 
     # ENABLE_ROUTEWISE legacy: opts every model into routewise as the default.
     if settings.enable_routewise and default_router_name == "fixed":
@@ -1245,7 +1369,12 @@ async def initialize() -> AppServices:
 
         fence_secret = resolve_fence_secret(settings.erasure_fence_secret)
 
-        pg_operational = PostgresOperationalStore(db_logger.pool)
+        # The lookups a request makes before it is served read through the
+        # logger's request pool, which nothing else uses, so slow work on the
+        # general pool cannot hold up authentication (serving.storage.pools).
+        pg_operational = PostgresOperationalStore(
+            db_logger.pool, request_pool=getattr(db_logger, "request_pool", None)
+        )
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
         log_store = PostgresLogStore(
@@ -1545,6 +1674,7 @@ async def initialize() -> AppServices:
     disabled_provider_refresh_task = None
     route_state_refresh_task = None
     offload_route_resolver = None
+    batch_route_resolver: BatchRouteResolver | None = None
     offload_route_refresh_task = None
     if operational_store is not None:
         try:
@@ -1663,6 +1793,14 @@ async def initialize() -> AppServices:
         _BACKGROUND_TASKS.add(offload_route_refresh_task)
         offload_route_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
         logger.info("Offload route resolver initialized")
+
+        # Which routes batch work may use (serving/config/batch_routes.py).
+        batch_route_resolver = await _attach_batch_routes(router, operational_store)
+        batch_route_refresh_task = asyncio.create_task(
+            _refresh_batch_route_snapshots(batch_route_resolver)
+        )
+        _BACKGROUND_TASKS.add(batch_route_refresh_task)
+        batch_route_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     # Say which routes the operational store just took out of service. Both
     # resolvers are attached by now, so this is the first moment the effective
@@ -1800,6 +1938,7 @@ async def initialize() -> AppServices:
         disabled_provider_resolver=disabled_provider_resolver,
         route_state_resolver=route_state_resolver,
         offload_route_resolver=offload_route_resolver,
+        batch_route_resolver=batch_route_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
@@ -1948,6 +2087,13 @@ async def shutdown(services: AppServices) -> None:
             await services.completions_logger.stop()
         except Exception as exc:
             logger.error(f"Completions logger shutdown failed: {exc}")
+
+    # Cost counters — write the costs the spend ledger still holds while the
+    # operational store can take them; what cannot be written is logged.
+    try:
+        await spend_ledger.flush_all(timeout=_COST_COUNTER_FLUSH_SECONDS)
+    except Exception as exc:
+        logger.error(f"Cost counter flush failed: {exc}")
 
     # Log store
     if services.log_store:
