@@ -40,7 +40,7 @@ from serving.observability.alert_transitions import (
 )
 from serving.observability.alert_types import alert_type_of
 from serving.utils import context as req_ctx
-from serving.utils.secret_urls import UrlRedaction, posting_to, scrub
+from serving.utils.secret_urls import UrlRedaction, posting_to, url_redaction
 
 log = logging.getLogger(__name__)
 
@@ -434,7 +434,7 @@ def redact_webhook_urls(text: str) -> str:
     # Longest first, so a URL that extends another is not cut by the shorter one.
     for url in sorted(urls, key=len, reverse=True):
         if url:
-            text = scrub(text, url)
+            text = url_redaction(url).scrub(text)
     return text
 
 
