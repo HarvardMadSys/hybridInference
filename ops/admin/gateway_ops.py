@@ -53,7 +53,7 @@ def request(
 
 def smoke(base_url: str, model: str = "") -> dict[str, Any]:
     """Check the public request path, including inference when a model is supplied."""
-    request(base_url, "/health/ready")
+    check_health(base_url)
     site = request(base_url, "/site-config")
     if site.get("setup", {}).get("required") or site.get("configuration", {}).get("incomplete"):
         raise ValueError("Ask admin to configure this service")
@@ -77,12 +77,41 @@ def smoke(base_url: str, model: str = "") -> dict[str, Any]:
     }
 
 
+def check_health(base_url: str) -> dict[str, Any]:
+    """Require healthy stores through the public health path forwarded by the console."""
+    health = request(base_url, "/health")
+    if health.get("status") != "healthy":
+        raise ValueError("Gateway health is not healthy")
+    return health
+
+
 def _records(text: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(text or "[]")
         return data if isinstance(data, list) else [data]
     except ValueError:
         return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def published_base_url(compose: list[str], service: str) -> str:
+    """Resolve the probe endpoint with the same overlays and env files as deployment."""
+    config = json.loads(
+        command([*compose, "config", "--format", "json"], capture=True, text=True).stdout
+    )
+    target = {"backend": 8080, "frontend": 3001}[service]
+    for port in config.get("services", {}).get(service, {}).get("ports", []):
+        if port.get("target") != target or port.get("protocol", "tcp") != "tcp":
+            continue
+        published = str(port.get("published", ""))
+        if not published.isdigit() or not 1 <= int(published) <= 65535:
+            continue
+        host = port.get("host_ip") or "localhost"
+        if host in ("0.0.0.0", "::"):
+            host = "localhost"
+        if ":" in host:
+            host = f"[{host}]"
+        return f"http://{host}:{published}"
+    raise ValueError(f"No published {service} endpoint; specify --base-url explicitly")
 
 
 def configuration_status(args: argparse.Namespace) -> dict[str, Any]:
@@ -132,7 +161,7 @@ def doctor(args: argparse.Namespace) -> int:
                 or "[]"
             ),
         ),
-        ("readiness", lambda: request(args.base_url, "/health/ready").get("status")),
+        ("readiness", lambda: check_health(args.base_url).get("status")),
         (
             "site",
             lambda: {
@@ -339,7 +368,7 @@ def main() -> int:
     parser.add_argument(
         "action", choices=("doctor", "smoke", "deploy", "rollback", "backup", "restore-check")
     )
-    parser.add_argument("--base-url", default="http://localhost:3001")
+    parser.add_argument("--base-url", default="")
     parser.add_argument("--model", default="")
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--backend-image", default="")
@@ -349,6 +378,10 @@ def main() -> int:
     parser.add_argument("--compose", nargs=argparse.REMAINDER, default=["docker", "compose"])
     args = parser.parse_args()
     try:
+        if args.action in ("doctor", "smoke", "deploy", "rollback") and not args.base_url:
+            args.base_url = published_base_url(
+                args.compose, "backend" if args.action == "smoke" else "frontend"
+            )
         if args.action == "doctor":
             return doctor(args)
         if args.action == "smoke":

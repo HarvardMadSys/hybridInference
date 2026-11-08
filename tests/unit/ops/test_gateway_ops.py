@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -115,6 +116,32 @@ def test_smoke_refuses_incomplete_configuration_before_inference(monkeypatch):
     assert run.call_count == 2
 
 
+@pytest.mark.parametrize("status", ["healthy", "degraded"])
+def test_smoke_checks_the_public_health_path_and_refuses_degraded_stores(monkeypatch, status):
+    responses = {"/health": {"status": status}, "/site-config": {}, "/v1/models": {"data": []}}
+    request = Mock(side_effect=lambda base_url, path: responses[path])
+    monkeypatch.setattr(ops, "request", request)
+    if status == "healthy":
+        assert ops.smoke("http://localhost:3001")["ready"] is True
+    else:
+        with pytest.raises(ValueError, match="Gateway health is not healthy"):
+            ops.smoke("http://localhost:3001")
+    assert request.call_args_list[0].args == ("http://localhost:3001", "/health")
+
+
+@pytest.mark.parametrize("status", ["healthy", "degraded"])
+def test_doctor_checks_the_public_health_path_and_reports_degraded_stores(
+    tmp_path, monkeypatch, status
+):
+    responses = {"/health": {"status": status}, "/site-config": {}}
+    request = Mock(side_effect=lambda base_url, path: responses[path])
+    monkeypatch.setattr(ops, "request", request)
+    monkeypatch.setattr(ops, "command", Mock(return_value=argparse.Namespace(stdout="[]")))
+    monkeypatch.setattr(ops, "configuration_status", Mock(return_value={}))
+    assert ops.doctor(arguments(tmp_path)) == int(status != "healthy")
+    assert request.call_args_list[0].args == ("http://localhost:3001", "/health")
+
+
 def test_compose_output_accepts_arrays_and_json_lines():
     assert ops._records('[{"Service":"backend"}]') == [{"Service": "backend"}]
     assert len(ops._records('{"Service":"backend"}\n{"Service":"frontend"}\n')) == 2
@@ -162,3 +189,69 @@ def test_configuration_status_reads_applied_state_without_disclosing_values(tmp_
     request.assert_called_once_with(
         "http://localhost:3001", "/admin/config", token="test-access-token"
     )
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("0.0.0.0", "localhost"),
+        ("::", "localhost"),
+        ("::1", "[::1]"),
+        ("192.0.2.10", "192.0.2.10"),
+    ],
+)
+def test_probe_url_uses_published_port_and_safe_bound_host(monkeypatch, host, expected):
+    config = {
+        "services": {
+            "frontend": {"ports": [{"target": 3001, "published": "23001", "host_ip": host}]}
+        }
+    }
+    run = Mock(return_value=argparse.Namespace(stdout=json.dumps(config)))
+    monkeypatch.setattr(ops, "command", run)
+    compose = ["docker", "compose", "--env-file", "custom.env"]
+    assert ops.published_base_url(compose, "frontend") == f"http://{expected}:23001"
+    run.assert_called_once_with([*compose, "config", "--format", "json"], capture=True, text=True)
+
+
+@pytest.mark.parametrize(
+    "ports",
+    [[], [{"target": 3001}], [{"target": 3001, "published": "23001-23002"}]],
+)
+def test_probe_url_requires_a_known_published_endpoint(monkeypatch, ports):
+    config = {"services": {"frontend": {"ports": ports}}}
+    monkeypatch.setattr(
+        ops, "command", Mock(return_value=argparse.Namespace(stdout=json.dumps(config)))
+    )
+    with pytest.raises(ValueError, match="No published frontend endpoint; specify --base-url"):
+        ops.published_base_url(["docker", "compose"], "frontend")
+
+
+@pytest.mark.parametrize("action", ["doctor", "smoke", "deploy", "rollback"])
+def test_main_discovers_the_effective_url_when_none_is_supplied(monkeypatch, action):
+    monkeypatch.setattr(sys, "argv", ["gateway_ops", action])
+    resolve = Mock(return_value="http://127.0.0.1:23001")
+    monkeypatch.setattr(ops, "published_base_url", resolve)
+    operation = Mock(return_value=0)
+    monkeypatch.setattr(ops, action, operation)
+    assert ops.main() == 0
+    resolve.assert_called_once_with(
+        ["docker", "compose"], "backend" if action == "smoke" else "frontend"
+    )
+    if action == "smoke":
+        operation.assert_called_once_with("http://127.0.0.1:23001", "")
+    else:
+        assert operation.call_args.args[0].base_url == "http://127.0.0.1:23001"
+
+
+def test_explicit_probe_url_bypasses_compose_discovery(monkeypatch):
+    monkeypatch.setattr(
+        sys, "argv", ["gateway_ops", "smoke", "--base-url", "https://gateway.example"]
+    )
+    resolve = Mock()
+    monkeypatch.setattr(ops, "published_base_url", resolve)
+    smoke = Mock(return_value={"ready": True})
+    monkeypatch.setattr(ops, "smoke", smoke)
+    assert ops.main() == 0
+    resolve.assert_not_called()
+    smoke.assert_called_once_with("https://gateway.example", "")

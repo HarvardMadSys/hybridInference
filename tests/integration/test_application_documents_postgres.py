@@ -54,6 +54,29 @@ async def test_upgrade_does_not_overwrite_administrator_catalog():
             )
 
 
+async def test_upgrade_preserves_unquoted_pricing_schedule_dates():
+    from serving.pricing import PricingSchedule
+
+    async with mig.scratch_database() as database:
+        await mig.upgrade(database, "0011_trim_oversized_preferences")
+        async with mig.connected(database) as conn:
+            await conn.execute(
+                "INSERT INTO route_catalog(kind,body,source) VALUES ('models',$1,'yaml_import')",
+                "models:\n- id: scheduled\n  pricing_schedule:\n"
+                "    effective_at: '2026-11-01T00:00:00Z'\n"
+                "    excluded_dates: [2026-12-25]\n"
+                "    default: {prompt: '0.15'}\n    windows: []\n",
+            )
+        await mig.upgrade(database)
+        async with mig.connected(database) as conn:
+            catalog = json.loads(
+                await conn.fetchval("SELECT value FROM app_config WHERE key='MODEL_CATALOG'")
+            )
+        raw = catalog["models"][0]["pricing_schedule"]
+        assert raw["excluded_dates"] == ["2026-12-25"]
+        assert PricingSchedule.from_raw(raw).excluded_dates
+
+
 async def test_routing_counter_is_scoped_and_rolls_back_with_the_write():
     async with mig.scratch_database() as database:
         await mig.upgrade(database)

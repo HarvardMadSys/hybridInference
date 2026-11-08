@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import date
 
 import sqlalchemy as sa
 import yaml
@@ -54,6 +55,13 @@ def _separate_secrets(value, namespace):
     return visit(value, ""), secrets
 
 
+def _json_scalar(item):
+    # Pricing schedules accept unquoted YAML dates in excluded_dates.
+    if isinstance(item, date):
+        return item.isoformat()
+    raise TypeError("Unsupported legacy application document value")
+
+
 def upgrade() -> None:
     """Preserve stored catalogs and lift embedded credentials into secret settings."""
     conn = op.get_bind()
@@ -76,7 +84,11 @@ def upgrade() -> None:
             conn.execute(insert, {"key": name, "value": secret, "secret": True})
         conn.execute(
             insert,
-            {"key": key, "value": json.dumps(document, allow_nan=False), "secret": False},
+            {
+                "key": key,
+                "value": json.dumps(document, allow_nan=False, default=_json_scalar),
+                "secret": False,
+            },
         )
 
 

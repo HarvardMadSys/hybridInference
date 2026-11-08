@@ -56,6 +56,8 @@ STATEMENTS = (
             "provider_route_capabilities",
             "provider_definitions",
             "provider_api_keys",
+            "disabled_provider_env_keys",
+            "provider_env_key_min_roles",
             "site_settings",
         )
     ),

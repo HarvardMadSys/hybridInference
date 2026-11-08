@@ -516,6 +516,9 @@ def test_smoke_url_follows_the_distribution_env_file(
     deploy.mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
     shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    shutil.copy2(EXAMPLE / "EXAMPLE_OVERLAY", deploy.parent / "EXAMPLE_OVERLAY")
+    shutil.copytree(EXAMPLE / "config", deploy.parent / "config")
+    shutil.copy2(EXAMPLE / "distribution.json", deploy.parent / "distribution.json")
     (deploy / "backend.env").write_text("BACKEND_PORT=24242\n")
 
     smoke = _make_dry_run("smoke", "DISTRIBUTION=example", cwd=sandbox)

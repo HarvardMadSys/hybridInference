@@ -33,6 +33,7 @@ def free_port():
 async def test_database_configuration_across_real_processes(tmp_path):
     held = threading.Event()
     release = threading.Event()
+    revocation_probes = []
 
     class Provider(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -41,6 +42,8 @@ async def test_database_configuration_across_real_processes(tmp_path):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             model = body["model"]
+            if body["messages"][-1]["content"] in ("disabled-probe", "deleted-probe"):
+                revocation_probes.append(model)
             if body["messages"][-1]["content"] == "hold":
                 held.set()
                 release.wait(30)
@@ -356,6 +359,51 @@ async def test_database_configuration_across_real_processes(tmp_path):
                     },
                 )
                 assert restored.status_code == 200, restored.text
+
+                async def runtime_response(message):
+                    return await second.post(
+                        "/v1/chat/completions",
+                        headers=inference_auth,
+                        json={
+                            "model": "runtime-chat",
+                            "messages": [{"role": "user", "content": message}],
+                            "max_tokens": 4,
+                        },
+                    )
+
+                async def await_runtime_availability(message, *, available):
+                    deadline = time.monotonic() + 10
+                    while True:
+                        response = await runtime_response(message)
+                        if (response.status_code == 200) == available:
+                            return
+                        assert time.monotonic() < deadline, response.text
+                        await asyncio.sleep(0.1)
+
+                # Revocation on one worker must reach the other worker's
+                # existing pinned adapter; an acknowledged refresh cannot leave
+                # a deleted/disabled credential capable of upstream I/O.
+                disabled = await first.post(
+                    f"/admin/provider-keys/{provider_key_id}/disable", headers=auth
+                )
+                assert disabled.status_code == 200, disabled.text
+                await await_runtime_availability("disabled-probe", available=False)
+                before = len(revocation_probes)
+                assert (await runtime_response("disabled-probe")).status_code != 200
+                assert len(revocation_probes) == before
+                enabled = await first.post(
+                    f"/admin/provider-keys/{provider_key_id}/enable", headers=auth
+                )
+                assert enabled.status_code == 200, enabled.text
+                await await_runtime_availability("reenabled-probe", available=True)
+                deleted = await first.delete(
+                    f"/admin/provider-keys/{provider_key_id}", headers=auth
+                )
+                assert deleted.status_code == 200, deleted.text
+                await await_runtime_availability("deleted-probe", available=False)
+                before = len(revocation_probes)
+                assert (await runtime_response("deleted-probe")).status_code != 200
+                assert len(revocation_probes) == before
                 previous_root = os.environ.get("PREVIOUS_GATEWAY_SOURCE")
                 if previous_root:
                     processes[1].terminate()

@@ -72,3 +72,23 @@ async def test_public_branding_keeps_the_displayed_key_variable_name(tmp_path):
         "EXAMPLE_INFERENCE_API_KEY"
     )
     assert not any(key.startswith("CATALOG_SECRET_") for key in store.rows)
+
+
+async def test_import_preserves_unquoted_pricing_schedule_dates(tmp_path):
+    from serving.pricing import PricingSchedule
+
+    store = await configure()
+    manifest = tmp_path / "legacy.yaml"
+    manifest.write_text(
+        "schema_version: 1\ndistribution: {id: imported}\npaths: {models: models.yaml}\n"
+    )
+    (tmp_path / "models.yaml").write_text(
+        "models:\n- id: scheduled\n  pricing_schedule:\n"
+        "    effective_at: '2026-11-01T00:00:00Z'\n"
+        "    excluded_dates: [2026-12-25]\n"
+        "    default: {prompt: '0.15'}\n    windows: []\n"
+    )
+    await import_legacy(manifest)
+    raw = json.loads(store.rows["MODEL_CATALOG"].value)["models"][0]["pricing_schedule"]
+    assert raw["excluded_dates"] == ["2026-12-25"]
+    assert PricingSchedule.from_raw(raw).excluded_dates

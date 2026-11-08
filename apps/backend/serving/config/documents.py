@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 from dataclasses import fields
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -40,8 +41,14 @@ def parse(text: str) -> dict[str, Any]:
 
 
 def encode(value: dict[str, Any]) -> str:
-    """Return a deterministic JSON document, rejecting non-finite numbers."""
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    """Encode JSON, preserving legacy YAML dates and rejecting non-finite numbers."""
+
+    def scalar(item: Any) -> str:
+        if isinstance(item, date):
+            return item.isoformat()
+        raise TypeError("Unsupported application document value")
+
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False, default=scalar)
 
 
 def get(kind: str, *, configured: bool = False) -> dict[str, Any]:

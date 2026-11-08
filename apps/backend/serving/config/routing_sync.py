@@ -112,9 +112,8 @@ class RoutingSynchronizer:
                             store,
                             reserved_providers=_config_managed_provider_names(specs),
                             config_label_providers=config_route_provider_labels(specs),
+                            remove_missing=True,
                         )
-                        await dynamic_keys.apply_db_keys_at_boot(store)
-                        await dynamic_keys.load_min_role_declarations(store)
                     for model_id in sorted(changed - {"@providers"}):
                         async with model_router_transition_lock(self.services, model_id):
                             await reconcile_live_routes_from_store(
@@ -124,6 +123,11 @@ class RoutingSynchronizer:
                                 strict=True,
                                 lock_held=True,
                             )
+                    # Model transitions can create fresh adapters with their
+                    # configured key material. Publish credential state last,
+                    # including revocations and newly registered providers, so
+                    # rebuilding a route cannot resurrect a disabled DB key.
+                    await dynamic_keys.reconcile_db_keys(store)
                 self.applied = observed
                 self.version = self.checked
                 self._report("applied")

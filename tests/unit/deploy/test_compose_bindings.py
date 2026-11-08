@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from ops.admin import gateway_ops
+
 REPO = Path(__file__).resolve().parents[3]
 COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
 EXAMPLE = REPO / "distributions" / "example" / "deploy"
@@ -130,3 +132,98 @@ def test_pgadmin_renders_with_its_own_login_and_no_port_unless_published(
         assert (port["host_ip"], port["published"], port["target"]) == ("127.0.0.1", "5050", 80)
     else:
         assert "ports" not in pgadmin
+
+
+@pytest.mark.parametrize(
+    ("distribution_profiles", "local_profiles", "persisted_profiles", "admin_enabled"),
+    [
+        ("admin", None, None, True),
+        (None, "admin", None, True),
+        ("admin", "", None, False),
+        (None, "", "admin", True),
+        (None, "admin", "", False),
+    ],
+)
+def test_make_preserves_compose_profile_env_file_precedence(
+    tmp_path: Path,
+    docker_cli: str,
+    distribution_profiles: str | None,
+    local_profiles: str | None,
+    persisted_profiles: str | None,
+    admin_enabled: bool,
+) -> None:
+    """An undefined Make variable must leave profile selection to Compose's env files."""
+    shutil.copy(REPO / "Makefile", tmp_path / "Makefile")
+    compose = tmp_path / "deploy" / "docker" / "docker-compose.yml"
+    compose.parent.mkdir(parents=True)
+    shutil.copy(COMPOSE, compose)
+    overlay = tmp_path / "distributions" / "profiles" / "deploy" / "backend.env"
+    overlay.parent.mkdir(parents=True)
+    overlay.write_text(
+        f"COMPOSE_PROFILES={distribution_profiles}\n" if distribution_profiles is not None else ""
+    )
+    local = "DB_NAME=compose_test\nDB_USER=compose_test\nDB_PASSWORD=local-compose-test-only\n"
+    if local_profiles is not None:
+        local += f"COMPOSE_PROFILES={local_profiles}\n"
+    (tmp_path / ".env").write_text(local)
+    if persisted_profiles is not None:
+        (tmp_path / ".ops.env").write_text(f"COMPOSE_PROFILES={persisted_profiles}\n")
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "DOCKER_CONFIG") if key in os.environ}
+    result = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "--eval=profile-services: ; @$(COMPOSE) config --services",
+            "profile-services",
+            "DISTRIBUTION=profiles",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert ("pgadmin" in result.stdout.splitlines()) is admin_enabled
+
+
+@pytest.mark.parametrize("local_override", [False, True])
+def test_probe_urls_follow_make_extra_env_files_and_local_overrides(
+    tmp_path: Path, docker_cli: str, monkeypatch, local_override: bool
+) -> None:
+    """Probe the effective Compose ports after deployment and host overrides merge."""
+    shutil.copy(REPO / "Makefile", tmp_path / "Makefile")
+    compose = tmp_path / "deploy" / "docker" / "docker-compose.yml"
+    compose.parent.mkdir(parents=True)
+    shutil.copy(COMPOSE, compose)
+    (tmp_path / "staging.env").write_text("BACKEND_PORT=28080\nFRONTEND_PORT=23001\n")
+    local = "DB_NAME=compose_test\nDB_USER=compose_test\nDB_PASSWORD=local-compose-test-only\n"
+    if local_override:
+        local += "BACKEND_PORT=38080\nFRONTEND_PORT=33001\n"
+    (tmp_path / ".env").write_text(local)
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "DOCKER_CONFIG") if key in os.environ}
+    original_command = gateway_ops.command
+
+    def render_with_make(argv, **kwargs):
+        return original_command(
+            [
+                "make",
+                "--no-print-directory",
+                "--eval=probe-config: ; @$(COMPOSE) config --format json",
+                "probe-config",
+                "DISTRIBUTION=none",
+                "COMPOSE_EXTRA_ENV_FILES=staging.env",
+            ],
+            cwd=tmp_path,
+            env=env,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(gateway_ops, "command", render_with_make)
+    assert gateway_ops.published_base_url([], "frontend") == (
+        "http://127.0.0.1:33001" if local_override else "http://127.0.0.1:23001"
+    )
+    assert gateway_ops.published_base_url([], "backend") == (
+        "http://127.0.0.1:38080" if local_override else "http://127.0.0.1:28080"
+    )

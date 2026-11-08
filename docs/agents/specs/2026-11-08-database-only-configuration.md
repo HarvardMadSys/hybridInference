@@ -23,7 +23,11 @@ Preserve Fixed and RouteWise execution, lifecycle, reservations and feedback
 ownership. Runtime routing synchronization must use scoped existing transitions
 and leave unaffected models and requests in flight with their original owners.
 Report saved and applied state separately; a database commit alone is not proof
-that all workers applied a change. Invalid candidates keep the previous view.
+that all workers applied a change. Application document validation rejects invalid
+writes before publication. Runtime refresh failures are reported and retried;
+manually corrupted routing rows are not guaranteed to retain the previous
+effective route view. A prepare/publish rollback boundary for those rows remains
+deferred.
 
 Operations also gain diagnostics and generic smoke commands, durable Compose
 options, and pinned-artifact deployment/rollback with migrations before switchover

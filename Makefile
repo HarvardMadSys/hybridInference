@@ -1,6 +1,11 @@
 # Infrastructure choices persist across every lifecycle command.
 -include .ops.env
-export CLOUD_AGENT_NETWORK PGADMIN_PUBLISH COMPOSE_PROFILES
+export CLOUD_AGENT_NETWORK PGADMIN_PUBLISH
+# Exporting an undefined variable supplies an empty value, which would mask a
+# profile selected in a distribution env file or .env before Compose reads it.
+ifneq ($(origin COMPOSE_PROFILES),undefined)
+export COMPOSE_PROFILES
+endif
 
 .PHONY: help format lint test migrate test-verbose test-cov test-db test-all test-external rag-ingest \
 	frontend-install frontend-lint frontend-type-check frontend-test frontend-check \
@@ -376,7 +381,13 @@ _DIST_DEMO_PROVIDER_SERVICE := $(if $(_DIST_ENV_FILES),$(shell sed -n 's/^DEMO_P
 BACKEND_PORT ?= $(if $(_DIST_BACKEND_PORT),$(_DIST_BACKEND_PORT),8080)
 FRONTEND_PORT ?= $(if $(_DIST_FRONTEND_PORT),$(_DIST_FRONTEND_PORT),3001)
 DEMO_PROVIDER_SERVICE ?= $(_DIST_DEMO_PROVIDER_SERVICE)
+ifeq ($(_IS_EXAMPLE),yes)
 SMOKE_BASE_URL ?= http://localhost:$(BACKEND_PORT)
+else
+# An empty URL asks gateway_ops to resolve the published endpoint from Compose,
+# including .env and COMPOSE_EXTRA_ENV_FILES overrides.
+SMOKE_BASE_URL ?=
+endif
 DEMO_BASE_URL ?= http://localhost:$(FRONTEND_PORT)
 SMOKE_TIMEOUT ?= 120
 SMOKE_PYTHON ?= python3
@@ -479,7 +490,7 @@ endif
 endif
 
 .PHONY: doctor deploy rollback backup restore-check
-OPS_BASE_URL ?= http://localhost:$(FRONTEND_PORT)
+OPS_BASE_URL ?=
 BACKUP ?= gateway.dump
 
 doctor:  ## Diagnose services, readiness, schema and missing configuration

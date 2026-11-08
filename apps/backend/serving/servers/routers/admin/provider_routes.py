@@ -3045,6 +3045,7 @@ def _install_route_update(services, update: PreparedRouteUpdate) -> None:
             update.key_provider,
             update.adapter,
             allow_db_key_injection=update.api_key_id is None,
+            api_key_id=update.api_key_id,
         )
         registered = True
 
@@ -3090,6 +3091,7 @@ def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> Non
             candidate.key_provider,
             candidate.adapter,
             allow_db_key_injection=candidate.api_key_id is None,
+            api_key_id=candidate.api_key_id,
         )
         registered = True
 
@@ -3425,6 +3427,7 @@ def _install_route_candidate_edit(services, edit: PreparedRouteCandidateEdit) ->
             candidate.key_provider,
             candidate.adapter,
             allow_db_key_injection=candidate.api_key_id is None,
+            api_key_id=candidate.api_key_id,
         )
         registered = True
 
@@ -3479,6 +3482,7 @@ def _install_provider_route_model(
                 candidate.key_provider,
                 candidate.adapter,
                 allow_db_key_injection=candidate.api_key_id is None,
+                api_key_id=candidate.api_key_id,
             )
 
         if published:
@@ -6568,6 +6572,7 @@ async def restore_config_provider_route(
                             update.key_provider,
                             update.adapter,
                             allow_db_key_injection=update.api_key_id is None,
+                            api_key_id=update.api_key_id,
                         )
                         registered = update
                 # Published before the table, with no await between them, so
