@@ -20,7 +20,7 @@ import pytest
 
 from serving.storage import database, pools
 from serving.storage.database import DatabaseLogger
-from serving.storage.pools import DatabaseBusyError, request_connection
+from serving.storage.pools import DatabaseBusyError, history_read_connection, request_connection
 from serving.storage.postgres_operational import REQUEST_PATH_READS, PostgresOperationalStore
 from tests.fixtures import postgres
 
@@ -110,12 +110,83 @@ async def test_a_slow_statement_is_not_reported_as_a_busy_pool():
     assert pool.held == 0
 
 
+# ---------------------------------------------------------------------------
+# history_read_connection
+# ---------------------------------------------------------------------------
+
+
+async def test_history_reads_hold_at_most_their_share_of_the_general_pool():
+    """However many users read their history at once, the rest of the pool stays free."""
+    general = _Pool("general", size=pools.GENERAL_POOL_MAX_SIZE)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    peak = 0
+
+    async def read() -> None:
+        nonlocal peak
+        async with history_read_connection(general, timeout=5):
+            peak = max(peak, general.held)
+            if general.held == pools.HISTORY_READS_MAX:
+                started.set()
+            await finish.wait()
+
+    readers = [asyncio.ensure_future(read()) for _ in range(3 * pools.HISTORY_READS_MAX)]
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.sleep(0.05)
+    assert general.held == pools.HISTORY_READS_MAX
+    finish.set()
+    await asyncio.gather(*readers)
+
+    assert peak == pools.HISTORY_READS_MAX
+    assert general.held == 0
+    assert general.acquired == 3 * pools.HISTORY_READS_MAX
+
+
+async def test_a_history_read_that_cannot_start_in_time_is_busy_and_takes_nothing():
+    general = _Pool("general", size=pools.GENERAL_POOL_MAX_SIZE)
+    holders = [history_read_connection(general) for _ in range(pools.HISTORY_READS_MAX)]
+    for holder in holders:
+        await holder.__aenter__()
+
+    with pytest.raises(DatabaseBusyError):
+        async with history_read_connection(general, timeout=0.05):
+            pass
+
+    for holder in holders:
+        await holder.__aexit__(None, None, None)
+    # Its turn was not kept: every slot is free again.
+    async with contextlib.AsyncExitStack() as stack:
+        for _ in range(pools.HISTORY_READS_MAX):
+            await stack.enter_async_context(history_read_connection(general, timeout=0.05))
+        assert general.held == pools.HISTORY_READS_MAX
+
+
+async def test_a_history_read_waits_for_a_general_connection_only_so_long():
+    """Its turn is free but slow work holds every general connection."""
+    general = _Pool("general", size=1)
+    async with general.acquire():
+        with pytest.raises(DatabaseBusyError):
+            async with history_read_connection(general, timeout=0.05):
+                pass
+    # The turn it took while waiting was given back.
+    async with contextlib.AsyncExitStack() as stack:
+        for _ in range(pools.HISTORY_READS_MAX - 1):
+            await stack.enter_async_context(
+                history_read_connection(_Pool("other", size=10), timeout=0.05)
+            )
+        async with history_read_connection(general, timeout=0.05):
+            assert general.held == 1
+
+
 def test_the_wait_is_seconds_not_minutes():
     assert 1 <= pools.REQUEST_ACQUIRE_TIMEOUT_SEC <= 5
     # A request-pool statement gone slow gives its connection back in seconds:
     # four of them held for the general pool's minute would refuse every request.
     assert 1 <= pools.REQUEST_COMMAND_TIMEOUT_SEC <= 10
     assert pools.REQUEST_COMMAND_TIMEOUT_SEC < pools.COMMAND_TIMEOUT_SEC
+    # History reads leave most of the general pool to the log writers.
+    assert 1 <= pools.HISTORY_READS_MAX <= pools.GENERAL_POOL_MAX_SIZE // 2
+    assert 1 <= pools.HISTORY_READ_WAIT_SEC <= 10
     assert pools.REQUEST_POOL_MAX_SIZE < pools.GENERAL_POOL_MAX_SIZE
     # Both pools together stay far below PostgreSQL's default of 100.
     assert pools.REQUEST_POOL_MAX_SIZE + pools.GENERAL_POOL_MAX_SIZE <= 20

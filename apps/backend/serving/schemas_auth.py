@@ -683,5 +683,8 @@ class RecentRequestsResponse(BaseModel):
 
     requests: list[RecentRequestItem]
     total: int
+    #: True when the account has requests older than the ones the list reaches
+    #: back over, so ``total`` is a lower bound ("10,000+").
+    total_capped: bool = False
     limit: int
     offset: int

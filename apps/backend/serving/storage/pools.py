@@ -27,12 +27,22 @@ Sizes, per gateway process:
   general pool's minute.
 - at most 14 connections in all (18 with the alert-history pool's 4), well
   under PostgreSQL's default ``max_connections`` of 100.
+
+A user's reads of their own request history on the general pool
+(``/user/recent-requests``) are bounded twice over: each reads a bounded number
+of rows, and at most :data:`HISTORY_READS_MAX` of them hold a general-pool
+connection at once in a process, however many users ask
+(:func:`history_read_connection`), so the log writers, batch work and rollups
+always keep the rest of the pool. One waits at most
+:data:`HISTORY_READ_WAIT_SEC` for its turn and its connection, and then fails
+with :class:`DatabaseBusyError` like a request-path lookup.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import weakref
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -60,6 +70,14 @@ REQUEST_COMMAND_TIMEOUT_SEC = 5
 #: pool uses.
 REQUEST_ACQUIRE_TIMEOUT_SEC = 3.0
 
+#: How many general-pool connections users' reads of their own request history
+#: may hold at once, per process: under half the pool, so the log writers keep
+#: most of it whatever users ask for.
+HISTORY_READS_MAX = 4
+
+#: How long one such read waits for its turn and its connection together.
+HISTORY_READ_WAIT_SEC = 5.0
+
 #: The ``Retry-After`` a refused request is given, in seconds.
 DATABASE_BUSY_RETRY_AFTER_SEC = 1
 
@@ -70,9 +88,11 @@ DATABASE_BUSY_DETAIL = (
 
 
 class DatabaseBusyError(RuntimeError):
-    """No request-path connection came free within :data:`REQUEST_ACQUIRE_TIMEOUT_SEC`.
+    """No connection came free in time for the request being served.
 
-    Answered with a 503 and ``Retry-After`` by the app's exception handler.
+    For a request-path lookup within :data:`REQUEST_ACQUIRE_TIMEOUT_SEC`, for a
+    history read within :data:`HISTORY_READ_WAIT_SEC`. Answered with a 503 and
+    ``Retry-After`` by the app's exception handler.
     """
 
 
@@ -97,6 +117,53 @@ async def request_connection(pool: Any, *, timeout: float | None = None) -> Asyn
         except TimeoutError as exc:
             raise DatabaseBusyError(
                 f"no request-path database connection within {timeout:g}s"
+            ) from exc
+        yield conn
+
+
+class _LoopSemaphore:
+    """An :class:`asyncio.Semaphore` per running event loop (tests run many; production one)."""
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+        self._by_loop: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+            weakref.WeakKeyDictionary()
+        )
+
+    def get(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        semaphore = self._by_loop.get(loop)
+        if semaphore is None:
+            semaphore = self._by_loop[loop] = asyncio.Semaphore(self._value)
+        return semaphore
+
+
+_HISTORY_READS = _LoopSemaphore(HISTORY_READS_MAX)
+
+
+@contextlib.asynccontextmanager
+async def history_read_connection(pool: Any, *, timeout: float | None = None) -> AsyncIterator[Any]:
+    """A connection from *pool* for a user's read of their own request history.
+
+    At most :data:`HISTORY_READS_MAX` are held at once in this process, whoever
+    asks; the rest wait their turn. The turn and the connection together are
+    waited for at most *timeout* (default :data:`HISTORY_READ_WAIT_SEC`).
+
+    Raises:
+        DatabaseBusyError: No turn and connection came free in time.
+    """
+    if timeout is None:
+        timeout = HISTORY_READ_WAIT_SEC
+    semaphore = _HISTORY_READS.get()
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            async with asyncio.timeout(timeout):
+                await semaphore.acquire()
+                stack.callback(semaphore.release)
+                conn = await stack.enter_async_context(pool.acquire())
+        except TimeoutError as exc:
+            raise DatabaseBusyError(
+                f"no database connection for a history read within {timeout:g}s"
             ) from exc
         yield conn
 
