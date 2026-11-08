@@ -102,19 +102,30 @@ def get(kind: str, *, configured: bool = False) -> dict[str, Any]:
     return parse(reader(key) or "")
 
 
-def _credentials(value: Any, *, path: str = "", credential: bool = False) -> None:
+def _credentials(
+    value: Any, *, path: str = "", credential: bool = False, references: bool = True
+) -> None:
+    """Refuse a credential stored inline instead of in a secret setting.
+
+    With *references* false the document holds no credentials at all, not even
+    a ``${NAME}`` reference: nothing would expand it.
+    """
     if isinstance(value, dict):
         for key, item in value.items():
             _credentials(
                 item,
                 path=f"{path}/{key}",
-                credential=credential or bool(_CREDENTIAL.search(key.replace("-", "_"))),
+                credential=credential or bool(_CREDENTIAL.search(str(key).replace("-", "_"))),
+                references=references,
             )
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            _credentials(item, path=f"{path}/{index}", credential=credential)
-    elif credential and value and (not isinstance(value, str) or not _REFERENCE.fullmatch(value)):
-        raise DocumentError(f"{path} must reference a separate secret setting as ${{NAME}}")
+            _credentials(item, path=f"{path}/{index}", credential=credential, references=references)
+    elif credential and value:
+        if not references:
+            raise DocumentError(f"{path} names a credential, and this document holds none")
+        if not isinstance(value, str) or not _REFERENCE.fullmatch(value):
+            raise DocumentError(f"{path} must reference a separate secret setting as ${{NAME}}")
 
 
 def validate(key: str, text: str) -> None:
@@ -162,8 +173,8 @@ def check(kind: str, value: dict[str, Any]) -> None:
 
 
 def _check(kind: str, value: dict[str, Any]) -> None:
-    # The public documents have strict, closed schemas. In particular,
-    # branding's api_key_env_var is a displayed variable name, not a secret.
+    # Branding's schema is closed, and its api_key_env_var is a displayed
+    # variable name, not a secret. The site configuration is checked below.
     if kind not in ("distribution", "branding"):
         _credentials(value)
     if kind == "models":
@@ -182,11 +193,15 @@ def _check(kind: str, value: dict[str, Any]) -> None:
         from serving.config.distribution import DistributionConfig
 
         if value:
+            # Its root refuses a key it does not define; a section ignores one.
             config = DistributionConfig.model_validate(value)
             if any(config.paths.model_dump().values()) or config.site.branding:
                 raise DocumentError(
                     "file paths are retired; configure application documents in Admin"
                 )
+        # A public document: no credential belongs in it, not even under a
+        # key a section ignores.
+        _credentials(value, references=False)
     elif kind == "branding":
         from serving.config.branding import BrandingConfig
 

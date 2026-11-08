@@ -254,3 +254,43 @@ def test_a_refusal_names_the_place_and_never_shows_the_value(key, document):
         validate(key, json.dumps(document))
     assert _SECRET not in str(refused.value)
     assert str(refused.value)
+
+
+# --- the public site document holds no credentials -----------------------------
+
+
+@pytest.mark.parametrize(
+    "document,reason",
+    [
+        (
+            {"schema_version": 1, "distribution": {"id": "x", "token": _SECRET}},
+            "/distribution/token names a credential, and this document holds none",
+        ),
+        (
+            {"schema_version": 1, "distribution": {"id": "x"}, "site": {"api_key": "${KEY}"}},
+            "/site/api_key names a credential",
+        ),
+        (
+            {"schema_version": 1, "distribution": {"id": "x"}, "secrets": {"a": "b"}},
+            "/secrets Extra inputs are not permitted",
+        ),
+    ],
+)
+def test_the_site_configuration_refuses_credentials_and_unknown_keys(document, reason):
+    with pytest.raises(DocumentError, match=reason) as refused:
+        validate("SITE_CONFIGURATION", json.dumps(document))
+    assert _SECRET not in str(refused.value)
+
+
+def test_a_site_configuration_without_credentials_is_still_accepted():
+    validate(
+        "SITE_CONFIGURATION",
+        json.dumps(
+            {
+                "schema_version": 1,
+                "distribution": {"id": "x", "display_name": "X"},
+                "site": {"support_email": "help@example.com"},
+                "features": {"public_signup": False},
+            }
+        ),
+    )
