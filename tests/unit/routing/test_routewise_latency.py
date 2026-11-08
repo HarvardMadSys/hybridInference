@@ -150,7 +150,7 @@ class TestProviderProfile:
         assert profile.max_samples == 3
         assert len(profile._events) == 3
         assert profile.sample_count(200.0) == 3
-        assert [ttft for _t, ttft, _e in profile._events] == [300.0, 400.0, 500.0]
+        assert [event[1] for event in profile._events] == [300.0, 400.0, 500.0]
 
     def test_max_samples_bounds_successes_and_errors_together(self):
         """Success and error accounting use the same bounded outcome window."""
@@ -204,9 +204,9 @@ class TestProviderProfile:
 
 def _scan_summaries(profile: ProviderProfile) -> tuple[int, int, float]:
     """Recompute (successes, errors, success TTFT sum) by scanning the window."""
-    successes = sum(1 for _ts, ttft, err in profile._events if err is None and ttft > 0)
-    errors = sum(1 for _ts, _ttft, err in profile._events if err is not None)
-    total_ms = sum(ttft for _ts, ttft, err in profile._events if err is None and ttft > 0)
+    successes = sum(1 for _ts, ttft, err, _p in profile._events if err is None and ttft > 0)
+    errors = sum(1 for _ts, _ttft, err, _p in profile._events if err is not None)
+    total_ms = sum(ttft for _ts, ttft, err, _p in profile._events if err is None and ttft > 0)
     return successes, errors, total_ms
 
 
@@ -266,7 +266,7 @@ class TestProviderProfileRunningAggregates:
 
         now = 119.0
         successes, errors, total_ms = _scan_summaries_after_prune(profile, now)
-        untimed = sum(1 for _ts, ttft, err in profile._events if err is None and ttft <= 0)
+        untimed = sum(1 for _ts, ttft, err, _p in profile._events if err is None and ttft <= 0)
         assert untimed > 0
         assert profile.sample_count(now) == successes
         assert profile.total_count(now) == successes + errors

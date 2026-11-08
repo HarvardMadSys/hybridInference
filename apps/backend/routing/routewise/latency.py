@@ -15,8 +15,20 @@ question, with up to 5000 samples per endpoint.
 from __future__ import annotations
 
 import bisect
+import math
 from collections import deque
 from dataclasses import dataclass, field
+
+# A prefill model (TTFT = a + b * prompt size) is fitted only once this many
+# timed successes with a known prompt size are in the window...
+PREFILL_FIT_MIN_SAMPLES = 30
+# ...and their prompt sizes spread this much (standard deviation, thousands of
+# tokens). With prompts all of a size there is no slope to see, and none to
+# need: a request like them is answered like them.
+PREFILL_FIT_MIN_SPREAD_KTOK = 0.25
+
+# (timestamp, ttft_ms, error_type | None, prompt_tokens)
+Event = tuple[float, float, str | None, int]
 
 
 @dataclass
@@ -37,8 +49,9 @@ class ProviderProfile:
     window_sec: float = 900.0  # 15 minutes
     max_samples: int = 5000
 
-    # Request outcomes: (timestamp, ttft_ms, error_type | None).
-    _events: deque[tuple[float, float, str | None]] = field(init=False, repr=False)
+    # Request outcomes: (timestamp, ttft_ms, error_type | None, prompt_tokens),
+    # prompt_tokens 0 when unknown.
+    _events: deque[Event] = field(init=False, repr=False)
     # Running aggregates over exactly the outcomes currently in ``_events``.
     # A "timed success" (no error, positive TTFT) feeds the count and the sum;
     # an error feeds the error count. An "untimed success" -- a success with no
@@ -55,25 +68,40 @@ class ProviderProfile:
     # compares in, computed by the same division, so the answer is exactly the
     # scan's: ``ttft_ms / 1000.0 <= threshold_sec``.
     _sorted_ttft_sec: list[float] = field(init=False, repr=False)
+    # Least-squares sums for TTFT against prompt size, over the timed successes
+    # whose prompt size is known: prompt in thousands of tokens (k), TTFT in
+    # seconds (t). See ``expected_extra_ttft_sec``.
+    _fit_n: int = field(default=0, init=False, repr=False)
+    _fit_sum_k: float = field(default=0.0, init=False, repr=False)
+    _fit_sum_kk: float = field(default=0.0, init=False, repr=False)
+    _fit_sum_t: float = field(default=0.0, init=False, repr=False)
+    _fit_sum_kt: float = field(default=0.0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.max_samples = max(int(self.max_samples), 1)
         self._events = deque(maxlen=self.max_samples)
         self._sorted_ttft_sec = []
 
-    def _add_to_aggregates(self, event: tuple[float, float, str | None]) -> None:
-        _ts, ttft_ms, error_type = event
+    def _add_to_aggregates(self, event: Event) -> None:
+        _ts, ttft_ms, error_type, prompt_tokens = event
         if error_type is not None:
             self._error_count += 1
         elif ttft_ms > 0:
             self._success_count += 1
             self._success_sum_ms += ttft_ms
             bisect.insort(self._sorted_ttft_sec, ttft_ms / 1000.0)
+            if prompt_tokens > 0:
+                k, t = prompt_tokens / 1000.0, ttft_ms / 1000.0
+                self._fit_n += 1
+                self._fit_sum_k += k
+                self._fit_sum_kk += k * k
+                self._fit_sum_t += t
+                self._fit_sum_kt += k * t
         else:
             self._untimed_success_count += 1
 
-    def _remove_from_aggregates(self, event: tuple[float, float, str | None]) -> None:
-        _ts, ttft_ms, error_type = event
+    def _remove_from_aggregates(self, event: Event) -> None:
+        _ts, ttft_ms, error_type, prompt_tokens = event
         if error_type is not None:
             self._error_count -= 1
         elif ttft_ms > 0:
@@ -85,20 +113,31 @@ class ProviderProfile:
             index = bisect.bisect_left(sorted_ttft, ttft_ms / 1000.0)
             if index < len(sorted_ttft):
                 del sorted_ttft[index]
+            if prompt_tokens > 0:
+                k, t = prompt_tokens / 1000.0, ttft_ms / 1000.0
+                self._fit_n -= 1
+                self._fit_sum_k -= k
+                self._fit_sum_kk -= k * k
+                self._fit_sum_t -= t
+                self._fit_sum_kt -= k * t
         else:
             self._untimed_success_count -= 1
         # Re-anchor on empty so repeated add/subtract cycles cannot accumulate
-        # floating-point drift in the running sum.
+        # floating-point drift in the running sums.
         if self._success_count <= 0:
             self._success_count = 0
             self._success_sum_ms = 0.0
             self._sorted_ttft_sec.clear()
+        if self._fit_n <= 0:
+            self._fit_n = 0
+            self._fit_sum_k = self._fit_sum_kk = self._fit_sum_t = self._fit_sum_kt = 0.0
 
     def record(
         self,
         timestamp: float,
         ttft_ms: float,
         error_type: str | None = None,
+        prompt_tokens: int = 0,
     ) -> None:
         """Record a request outcome.
 
@@ -108,13 +147,15 @@ class ProviderProfile:
                 are treated as missing TTFT: a success without one is recorded
                 as an untimed success.
             error_type: None for success, or error type string.
+            prompt_tokens: The request's prompt size, or 0 when unknown. A
+                timed success with one feeds the prefill model.
         """
         events = self._events
         # ``append`` on a full deque silently drops the oldest outcome, so the
         # aggregates have to let go of it first.
         if events.maxlen is not None and len(events) == events.maxlen:
             self._remove_from_aggregates(events[0])
-        event = (timestamp, ttft_ms, error_type)
+        event = (timestamp, ttft_ms, error_type, max(int(prompt_tokens or 0), 0))
         events.append(event)
         self._add_to_aggregates(event)
 
@@ -148,6 +189,33 @@ class ProviderProfile:
         outcomes = success_count + self._untimed_success_count + error_count
         success_rate = 1.0 - (error_count / outcomes)
         return success_rate * f_success
+
+    def expected_extra_ttft_sec(self, prompt_tokens: int, current_time: float) -> float:
+        """Return how much later than usual this endpoint should answer a prompt this long.
+
+        Prefill grows with the prompt, so a request far longer than the ones in
+        this window starts answering later than the window's TTFTs say -- on
+        whichever endpoint it is sent to. Fitted as TTFT = a + b * prompt over
+        the window's timed successes of known prompt size, the answer is
+        ``b * (prompt - mean prompt)`` for a prompt longer than the mean, and 0
+        for any other, for a slope that is not positive, and while the window
+        holds too few such samples, or ones too alike in size, to fit one.
+        """
+        self._prune(current_time)
+        n = self._fit_n
+        if prompt_tokens <= 0 or n < PREFILL_FIT_MIN_SAMPLES:
+            return 0.0
+        mean_k = self._fit_sum_k / n
+        excess_k = prompt_tokens / 1000.0 - mean_k
+        if excess_k <= 0.0:
+            return 0.0
+        variance = self._fit_sum_kk / n - mean_k * mean_k
+        if not variance >= PREFILL_FIT_MIN_SPREAD_KTOK**2:
+            return 0.0
+        slope = (self._fit_sum_kt / n - mean_k * (self._fit_sum_t / n)) / variance
+        if not (slope > 0.0 and math.isfinite(slope)):
+            return 0.0
+        return slope * excess_k
 
     def mean_with_errors_sec(
         self,

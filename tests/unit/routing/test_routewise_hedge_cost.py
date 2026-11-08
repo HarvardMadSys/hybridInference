@@ -29,10 +29,10 @@ def _scan_cdf(profile: ProviderProfile, threshold_sec: float, now: float) -> flo
     """The scan the profile used to run, as a reference."""
     profile._prune(now)
     events = list(profile._events)
-    timed = [ttft for _ts, ttft, err in events if err is None and ttft > 0]
+    timed = [ttft for _ts, ttft, err, _p in events if err is None and ttft > 0]
     if not timed:
         return 0.0
-    errors = sum(1 for _ts, _ttft, err in events if err is not None)
+    errors = sum(1 for _ts, _ttft, err, _p in events if err is not None)
     within = sum(1 for ttft in timed if ttft / 1000.0 <= threshold_sec)
     return (1.0 - errors / len(events)) * (within / len(timed))
 

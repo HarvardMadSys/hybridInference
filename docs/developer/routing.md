@@ -654,6 +654,19 @@ Remove them from `models.yaml`. FixedRouter's
 it, so it was removed, and a registry that still sets it starts with the same
 warning.
 
+**Hedging.** With `latency_hedge_mode: probability_target`, a request whose
+primary has not started answering by a checkpoint may be raced against a
+backup on another endpoint. The checkpoints read each endpoint's latency
+window, which describes requests of the usual size, so RouteWise also fits each
+endpoint's time to first token against prompt size and expects a longer prompt
+to start later by its extra prefill, on the backup as on the primary: a prompt
+that is merely long to prefill is not sent to a second endpoint to be
+prefilled again. A primary that refuses the request itself (400, 404, 413 or
+422) gets no backup, and RouteWise stops re-solving once two endpoints have
+refused a request that way, the bound FixedRouter applies. The stream race's
+60-second deadline is recorded as a failed attempt of each leg still open, but
+is charged to neither circuit breaker.
+
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
 exactly against the usage records a provider's quota fetcher returns. RouteWise

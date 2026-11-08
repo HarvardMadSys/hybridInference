@@ -62,8 +62,10 @@ from routing.routers import (
     ROUTE_REFUSAL_NO_CAPACITY,
     AllCircuitsOpenError,
     TargetUnavailableError,
+    _describes_request,
     adapter_supports_modalities,
     describe_route_refusals,
+    request_refusals_end_fallback,
 )
 from routing.streaming import has_non_empty_content
 from routing.telemetry import (
@@ -391,6 +393,35 @@ def _is_routewise_retryable_error(exc: BaseException) -> bool:
     )
 
 
+def _primary_failure_starts_backup(exc: BaseException) -> bool:
+    """Return whether a hedge sends the request to a backup after its primary failed with ``exc``.
+
+    Not after a refusal that describes the request itself (FixedRouter's
+    request-describing statuses: 400, 404, 413, 422). The backup would be sent
+    the same malformed or oversized request, and both endpoints billed for its
+    upload and tokenization; RouteWise does not re-solve after such a refusal
+    either. Every other failure starts the backup at once, as before.
+    """
+    return not _describes_request(exc)
+
+
+def _attempt_failures(
+    adapter: BaseAdapter,
+    endpoint_id: str,
+    exc: BaseException,
+) -> list[tuple[str | None, BaseException]]:
+    """Return each endpoint one failed attempt reached and how it failed.
+
+    A hedge reports each leg -- its primary and, once sent, its backup -- and
+    raises the primary's error for the whole; any other attempt is the one
+    endpoint and the error it raised.
+    """
+    legs = getattr(adapter, "leg_failures", None) if isinstance(adapter, HedgedAdapter) else None
+    if legs:
+        return list(legs)
+    return [(endpoint_id, exc)]
+
+
 def _refused_for_its_content(obs: RoutingObservation) -> bool:
     """Return whether ``obs`` is a failure the upstream blamed on the request itself.
 
@@ -439,18 +470,24 @@ async def _close_stream(stream: Any) -> None:
             await aclose()
 
 
-def _memoized_cdf_ms(profile: ProviderProfile, now: float) -> Callable[[float], float]:
+def _memoized_cdf_ms(
+    profile: ProviderProfile,
+    now: float,
+    *,
+    shift_ms: float = 0.0,
+) -> Callable[[float], float]:
     """Return ``profile``'s CDF in milliseconds at ``now``, remembering each value asked for.
 
     The hedge math asks a primary for the same two or three values once per
     backup candidate at every checkpoint; this answers each one once.
+    ``shift_ms`` delays the whole distribution (see ``_request_cdf_ms``).
     """
     cache: dict[float, float] = {}
 
     def cdf_ms(value_ms: float) -> float:
         value = cache.get(value_ms)
         if value is None:
-            value = cache[value_ms] = profile.cdf_at(value_ms / 1000.0, now)
+            value = cache[value_ms] = profile.cdf_at((value_ms - shift_ms) / 1000.0, now)
         return value
 
     return cdf_ms
@@ -1225,11 +1262,17 @@ class RouteWiseRouter:
             return
         profile.record(now, -1.0, result.error or "probe_error")
 
-    def _record_latency_success(self, endpoint_id: str, now: float, ttft_ms: float) -> None:
+    def _record_latency_success(
+        self,
+        endpoint_id: str,
+        now: float,
+        ttft_ms: float,
+        prompt_tokens: int = 0,
+    ) -> None:
         profile = self._latency_profiles.get(endpoint_id)
         if profile is None or ttft_ms <= 0:
             return
-        profile.record(now, ttft_ms, None)
+        profile.record(now, ttft_ms, None, prompt_tokens)
         prior = self._latency_history_priors_ms.get(endpoint_id)
         if prior is None:
             self._latency_history_priors_ms[endpoint_id] = ttft_ms
@@ -2348,7 +2391,7 @@ class RouteWiseRouter:
         ]
         # One read of the primary's CDF per value for this checkpoint: every
         # backup candidate, and the look ahead below, ask for the same ones.
-        primary_cdf_ms = _memoized_cdf_ms(primary_profile, checkpoint_ts)
+        primary_cdf_ms = self._request_cdf_ms(primary_profile, prompt_tokens, checkpoint_ts)
         current = self._select_hedge_candidate_at_elapsed(
             primary_profile=primary_profile,
             candidates=candidates,
@@ -2357,6 +2400,7 @@ class RouteWiseRouter:
             elapsed_sec=elapsed_sec,
             latency_slo_sec=latency_slo_sec,
             primary_cdf_ms=primary_cdf_ms,
+            prompt_tokens=prompt_tokens,
         )
         if current is None:
             return None
@@ -2368,8 +2412,9 @@ class RouteWiseRouter:
         # time; only scheduled checkpoints should defer to a later checkpoint.
         #
         # Deferring means "a later checkpoint could still hedge", and only the
-        # next checkpoint needs asking. For one snapshot of the profiles, a
-        # candidate's combined success probability never rises with elapsed
+        # next checkpoint needs asking. For one snapshot of the profiles (each
+        # CDF shifted by the request's prefill as above, which keeps it a CDF),
+        # a candidate's combined success probability never rises with elapsed
         # time: it is ``1 - p_violate(t) * (1 - B(slo - t))``, where
         # ``p_violate(t) = (1 - F(slo)) / (1 - F(t))`` grows as the primary's CDF
         # F does and the backup's ``B(slo - t)`` shrinks as its time runs out.
@@ -2389,6 +2434,7 @@ class RouteWiseRouter:
                     elapsed_sec=future_elapsed,
                     latency_slo_sec=latency_slo_sec,
                     primary_cdf_ms=primary_cdf_ms,
+                    prompt_tokens=prompt_tokens,
                 )
                 if future is not None:
                     return None
@@ -2436,9 +2482,10 @@ class RouteWiseRouter:
         elapsed_sec: float,
         latency_slo_sec: float,
         primary_cdf_ms: Callable[[float], float] | None = None,
+        prompt_tokens: int = 0,
     ) -> BackupCandidate[FeasibleProviderCandidate] | None:
         if primary_cdf_ms is None:
-            primary_cdf_ms = _memoized_cdf_ms(primary_profile, now)
+            primary_cdf_ms = self._request_cdf_ms(primary_profile, prompt_tokens, now)
         backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
         for candidate in candidates:
             if candidate.endpoint_id == selected.endpoint_id:
@@ -2446,11 +2493,13 @@ class RouteWiseRouter:
             profile = self._latency_profiles.get(candidate.endpoint_id)
             if profile is None:
                 continue
+            # A backup prefills the same prompt, so it is expected late by its
+            # own prefill model just as the primary is.
+            backup_shift_ms = profile.expected_extra_ttft_sec(prompt_tokens, now) * 1000.0
             success_probability = combined_success_probability(
                 primary_cdf_ms,
-                lambda value_ms, backup_profile=profile: backup_profile.cdf_at(
-                    value_ms / 1000.0,
-                    now,
+                lambda value_ms, backup_profile=profile, shift_ms=backup_shift_ms: (
+                    backup_profile.cdf_at((value_ms - shift_ms) / 1000.0, now)
                 ),
                 elapsed_ms=elapsed_sec * 1000.0,
                 slo_ms=latency_slo_sec * 1000.0,
@@ -2466,6 +2515,24 @@ class RouteWiseRouter:
                 )
             )
         return select_probability_backup(backup_candidates)
+
+    @staticmethod
+    def _request_cdf_ms(
+        profile: ProviderProfile,
+        prompt_tokens: int,
+        now: float,
+    ) -> Callable[[float], float]:
+        """Return an endpoint's TTFT CDF for this request, in milliseconds.
+
+        The window's CDF describes requests of the window's usual size. A
+        longer prompt is expected later by its extra prefill
+        (``ProviderProfile.expected_extra_ttft_sec``), so the CDF is shifted by
+        that much: without it a long prompt that is merely prefilling looked
+        stuck at every checkpoint, and a backup was sent to prefill the same
+        prompt again -- billed upstream twice, the user once.
+        """
+        shift_ms = profile.expected_extra_ttft_sec(prompt_tokens, now) * 1000.0
+        return _memoized_cdf_ms(profile, now, shift_ms=shift_ms)
 
     def _record_hedge_dispatch(
         self,
@@ -2519,9 +2586,16 @@ class RouteWiseRouter:
                     *failed_attempts,
                 ]
             )
-        self._record_hedge_explorer_samples(adapter)
+        self._record_hedge_explorer_samples(
+            adapter, prompt_tokens=self._int_or_zero(meta.get("prompt_tokens"))
+        )
 
-    def _record_hedge_explorer_samples(self, adapter: HedgedAdapter) -> None:
+    def _record_hedge_explorer_samples(
+        self,
+        adapter: HedgedAdapter,
+        *,
+        prompt_tokens: int = 0,
+    ) -> None:
         if not bool(getattr(adapter, "hedge_triggered", False)):
             return
         ttfts = getattr(adapter, "leg_first_content_ttft_ms", None)
@@ -2536,7 +2610,7 @@ class RouteWiseRouter:
                 ttft = float(ttft_ms)
             except (TypeError, ValueError):
                 continue
-            self._record_latency_success(str(endpoint_id), now, ttft)
+            self._record_latency_success(str(endpoint_id), now, ttft, prompt_tokens)
 
     @staticmethod
     def _ensure_response_routing(
@@ -2809,6 +2883,7 @@ class RouteWiseRouter:
                             # primary's leg ends without ending the request; the
                             # hedge then takes the release over (exactly once).
                             primary_release_handoff=reservation.hand_off,
+                            backup_after_primary_failure=_primary_failure_starts_backup,
                         )
                     if self.prefix_cache.enabled:
                         self._stash_prefix_for_commit(
@@ -2956,7 +3031,9 @@ class RouteWiseRouter:
         if obs.success:
             ttft_ms = _observed_attempt_ttft_ms(obs)
             if ttft_ms is not None:
-                self._record_latency_success(endpoint_id, now, ttft_ms)
+                self._record_latency_success(
+                    endpoint_id, now, ttft_ms, self._int_or_zero(obs.prompt_tokens)
+                )
             else:
                 self._latency_profiles[endpoint_id].record(now, -1.0, None)
             return
@@ -3016,7 +3093,9 @@ class RouteWiseRouter:
                 ):
                     latency_ms = self._bootstrap_latency_ms(row, success)
                     error_type = None if success else self._bootstrap_error_type(row)
-                    self._latency_profiles[endpoint_id].record(ts, latency_ms, error_type)
+                    self._latency_profiles[endpoint_id].record(
+                        ts, latency_ms, error_type, self._int_or_zero(row.get("prompt_tokens"))
+                    )
                     counts["latency_events"] += 1
                     if success and latency_ms > 0:
                         prior_samples.setdefault(endpoint_id, []).append(latency_ms)
@@ -3356,6 +3435,7 @@ class RouteWiseRouter:
         decision: RoutingDecision | None = None
         last_attempted: BaseAdapter | None = None
         last_error: BaseException | None = None
+        failures: list[tuple[str | None, BaseException]] = []
 
         try:
             while True:
@@ -3403,8 +3483,14 @@ class RouteWiseRouter:
                         )
                     attempt = failed_attempt(primary, exc)
                     trace.record_failed_attempt(attempt)
-                    if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
-                        exc
+                    failures.extend(_attempt_failures(primary, endpoint_id, exc))
+                    if (
+                        self.config.fallback_mode != "policy"
+                        or not _is_routewise_retryable_error(exc)
+                        # FixedRouter's bound: once two endpoints have refused
+                        # the request as malformed -- a hedge's backup leg
+                        # included -- the rest would too.
+                        or request_refusals_end_fallback(model_id, failures)
                     ):
                         raise
                     trace.record_fallback(
@@ -3480,6 +3566,7 @@ class RouteWiseRouter:
         decision: RoutingDecision | None = None
         last_attempted: BaseAdapter | None = None
         last_error: BaseException | None = None
+        failures: list[tuple[str | None, BaseException]] = []
         chunks_yielded = False
         done_chunk: str | None = None
 
@@ -3566,10 +3653,13 @@ class RouteWiseRouter:
                         )
                     attempt = failed_attempt(primary, exc)
                     trace.record_failed_attempt(attempt)
+                    failures.extend(_attempt_failures(primary, endpoint_id, exc))
                     if (
                         chunks_yielded
                         or self.config.fallback_mode != "policy"
                         or not _is_routewise_retryable_error(exc)
+                        # FixedRouter's bound, as on the non-streaming path.
+                        or request_refusals_end_fallback(model_id, failures)
                     ):
                         raise
                     trace.record_fallback(
