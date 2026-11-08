@@ -23,7 +23,7 @@ from serving.utils.messages import (
     merge_leading_system_messages,
     move_tool_media,
 )
-from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import estimate_prompt_tokens_bounded, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
 from .dispatch_watch import report_first_token, report_queued
@@ -1908,10 +1908,12 @@ class OpenAICompatAdapter(BaseAdapter):
         prompt_tokens_override: int | None,
         tool_text: str = "",
     ) -> dict[str, int]:
+        # Bounded: this runs on the event loop at the end of the stream, and the
+        # prompt is the caller's size. Exact up to the inline bound, sampled past it.
         prompt_tokens = (
             int(prompt_tokens_override)
             if prompt_tokens_override is not None and prompt_tokens_override > 0
-            else int(estimate_prompt_tokens(messages))
+            else int(estimate_prompt_tokens_bounded(messages))
         )
         # The tool-text estimate intentionally skews low: it counts only the
         # function name + arguments text, not the per-call function-calling
