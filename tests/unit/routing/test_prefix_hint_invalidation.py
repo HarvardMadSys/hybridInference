@@ -26,7 +26,7 @@ from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamQueueWaitExpired, UpstreamSaturated
-from serving.exceptions import UpstreamModelQueued
+from serving.exceptions import UpstreamModelQueued, UpstreamRequestTimedOut
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
@@ -149,6 +149,8 @@ def test_failures_that_can_mean_a_restart_lose_the_cache(exc):
         UpstreamSaturated("gateway limiter"),
         UpstreamQueueWaitExpired("queue wait over"),
         EngineWaitExpired("m:local-1", 5.0),
+        # The proxy gave up on one long request; the backend is still serving.
+        UpstreamRequestTimedOut(request_info=_REQUEST_INFO, history=(), status=504, message="x"),
     ],
     ids=repr,
 )

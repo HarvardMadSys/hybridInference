@@ -15,7 +15,7 @@ from routing.usage_limit import MIN_ALERT_GAP, detect_usage_limit
 from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.config.app_config import config_value
-from serving.exceptions import UpstreamModelQueued, operator_safe_error
+from serving.exceptions import UpstreamModelQueued, UpstreamRequestTimedOut, operator_safe_error
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition, interrupt_settle
 from serving.observability.state_alert_policy import circuit_open_policy
@@ -290,6 +290,15 @@ def _uncharged_failure_event(exc: BaseException) -> str | None:
         # this answer, so counting it would hold the circuit open, and page,
         # for as long as the queue does.
         return "model_queued_skip_breaker"
+    if isinstance(exc, UpstreamRequestTimedOut):
+        # The proxy in front of an on-demand deployment gave up on this one
+        # request after its fixed per-request timeout, while the backend went
+        # on serving the rest: a request asking for a long generation outruns
+        # it. That is evidence about the request, not the endpoint. Counting it
+        # let one caller's long generations open the circuit for every caller
+        # of the model. A backend whose job has ended is reported by the proxy
+        # as ``model_queued``, and a refused or dropped connection still counts.
+        return "upstream_timeout_skip_breaker"
     return None
 
 

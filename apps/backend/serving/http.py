@@ -23,7 +23,12 @@ import aiohttp
 # timeout=None is NOT equivalent: aiohttp treats it as "no timeout at all".
 from aiohttp.helpers import sentinel as _aiohttp_sentinel
 
-from serving.exceptions import UpstreamModelQueued, is_model_queued_body
+from serving.exceptions import (
+    UpstreamModelQueued,
+    UpstreamRequestTimedOut,
+    is_model_queued_body,
+    is_upstream_timeout_body,
+)
 from serving.servers.sse import MAX_FRAME_CHARS, SSEFrameTooLarge, SSEMessage, SSEParser
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -68,7 +73,11 @@ def _upstream_status_error(resp: Any, error_body: str) -> aiohttp.ClientResponse
             extra={"event": "upstream_media_rejection", "upstream_status": resp.status},
         )
     queued = status == 503 and is_model_queued_body(error_body)
-    error_type = UpstreamModelQueued if queued else aiohttp.ClientResponseError
+    error_type: type[aiohttp.ClientResponseError] = aiohttp.ClientResponseError
+    if queued:
+        error_type = UpstreamModelQueued
+    elif status == 504 and is_upstream_timeout_body(error_body):
+        error_type = UpstreamRequestTimedOut
     error = error_type(
         request_info=resp.request_info,
         history=resp.history,
