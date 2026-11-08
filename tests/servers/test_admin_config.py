@@ -1434,3 +1434,73 @@ async def test_resetting_a_security_setting_needs_the_password_too(console_admin
     )
     assert response.status_code == 200, response.text
     assert store.rows["TRUSTED_PROXIES"].source == "reset"
+
+
+# --- a restore that committed is never reported as not made (review L7) -----
+
+
+@pytest.mark.asyncio
+async def test_a_committed_restore_this_process_cannot_read_back_is_reported_and_audited(
+    console_admin, monkeypatch
+) -> None:
+    import asyncpg
+
+    client, store, audit, _account = console_admin
+    store.has_api_keys = True
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_settings = AsyncMock(
+        return_value=[{"key": "signup_enabled", "value": "true", "value_type": "bool"}]
+    )
+    op_store.set_setting = AsyncMock()
+    bundle = _security_bundle()
+    changes = (
+        await client.post("/admin/config/restore/preview", headers=AUTH, json=bundle)
+    ).json()["security_changes"]
+
+    async def reload_fails(_store) -> None:
+        # The transaction has committed by the time the rows are read back.
+        raise asyncpg.exceptions.QueryCanceledError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(app_config, "_reload", reload_fails)
+    audit.reset_mock()
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={**bundle, "confirm_security_changes": changes, "password": ADMIN_PASSWORD},
+    )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail.startswith("The backup was restored")
+    assert "QueryCanceledError" in detail
+    assert "nothing was changed" not in detail
+    assert store.rows["CHAT_UPSTREAM_KEY"].value == "sk-restored-upstream"
+    audit.assert_awaited_once()
+    assert audit.await_args.kwargs["action"] == "config.restore"
+    assert "QueryCanceledError" in audit.await_args.kwargs["details"]["not_loaded"]
+    assert audit.await_args.kwargs["details"]["security_changes"] == changes
+
+
+@pytest.mark.asyncio
+async def test_a_committed_restore_whose_caches_fail_to_refresh_is_audited(
+    config_client, monkeypatch
+) -> None:
+    client, store, audit = config_client
+    bundle = await _exported(client)
+    bundle["app_config"].append(
+        {"key": "SITE_NAME", "value": "Restored Lab", "secret": False, "source": "admin"}
+    )
+
+    async def refresh_fails(_services, _op_store) -> None:
+        raise ConnectionResetError("database went away")
+
+    monkeypatch.setattr(config_backup_routes, "_refresh_live_caches", refresh_fails)
+    audit.reset_mock()
+    response = await client.post("/admin/config/restore", headers=AUTH, json=bundle)
+
+    assert response.status_code == 503
+    assert response.json()["detail"].startswith("The backup was restored")
+    assert "restart the backend" in response.json()["detail"]
+    assert store.rows["SITE_NAME"].value == "Restored Lab"
+    audit.assert_awaited_once()
+    assert "ConnectionResetError" in audit.await_args.kwargs["details"]["not_loaded"]

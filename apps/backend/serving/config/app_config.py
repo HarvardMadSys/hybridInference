@@ -2257,6 +2257,21 @@ class RestoreSummary:
     not_restored: tuple[str, ...] = ()
 
 
+class RestoreNotLoaded(Exception):
+    """A restore committed, but this process could not read the configuration back.
+
+    The restored rows are stored: the next periodic refresh (within
+    :data:`REFRESH_INTERVAL_SECONDS`), or a restart, applies them here; every
+    other process applies them on its own refresh as usual.
+    """
+
+    def __init__(self, summary: RestoreSummary, cause: Exception) -> None:
+        super().__init__(f"the restore committed; reading it back failed ({type(cause).__name__})")
+        #: What the committed restore changed, kept and could not restore.
+        self.summary = summary
+        self.cause = cause
+
+
 @dataclass(frozen=True)
 class _RestorePlan:
     target_rows: dict[str, ConfigRow]
@@ -2495,6 +2510,10 @@ async def restore_rows(
 
     Returns:
         What the restore changed, kept and could not restore, by key.
+
+    Raises:
+        RestoreNotLoaded: The restore committed, but reading it back into this
+            process failed; it carries the summary.
     """
     store = await _writable_store()
     async with store.transaction() as transaction:
@@ -2516,5 +2535,14 @@ async def restore_rows(
         if before_commit is not None:
             await before_commit(transaction)
 
-    await _reload(store)
+    # Committed: from here on nothing may report the restore as not made.
+    try:
+        await _reload(store)
+    except Exception as exc:
+        logger.error(
+            "A configuration restore committed, but reading it back failed (%s); the next "
+            "refresh applies it",
+            type(exc).__name__,
+        )
+        raise RestoreNotLoaded(plan.summary, exc) from exc
     return plan.summary

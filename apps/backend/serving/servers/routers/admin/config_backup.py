@@ -1591,6 +1591,11 @@ async def restore_config_backup(
     connection, so a failure anywhere rolls all of it back: nothing is
     restored. A secret the bundle withholds keeps this deployment's value; one
     this deployment lacks is left unset and named in ``secrets_not_restored``.
+
+    Once the transaction has committed, the restore is made and audited even
+    when this process then fails to load it: that answers 503, saying the
+    backup was restored and how it comes into force, never that nothing was
+    changed.
     """
     response.headers["Cache-Control"] = "no-store"
 
@@ -1618,9 +1623,17 @@ async def restore_config_backup(
                 tx_op_store, tx_batch, payload, admin_id, admin_user_id
             )
 
+    # Why this process could not load the committed restore, if it could not.
+    not_loaded: str | None = None
     try:
         summary = await app_config.restore_rows(
             app_config_dicts, updated_by=admin_id, before_commit=apply_in_transaction
+        )
+    except app_config.RestoreNotLoaded as exc:
+        summary = exc.summary
+        not_loaded = (
+            f"reading the configuration back failed ({type(exc.cause).__name__}); the next "
+            "configuration refresh, within about ten seconds, or a restart applies it"
         )
     except app_config.ConfigUpdateError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
@@ -1636,7 +1649,14 @@ async def restore_config_backup(
             detail=f"The backup could not be restored ({type(exc).__name__}); nothing was changed.",
         ) from exc
 
-    await _refresh_live_caches(services, op_store)
+    try:
+        await _refresh_live_caches(services, op_store)
+    except Exception as exc:
+        logger.warning("Refreshing caches after a committed restore failed", exc_info=True)
+        not_loaded = not_loaded or (
+            f"refreshing its in-memory routes, keys and settings failed "
+            f"({type(exc).__name__}); restart the backend to apply all of it"
+        )
 
     # The app_config rows' own answer, from inside the transaction, wins over
     # the plan's for that domain.
@@ -1660,8 +1680,15 @@ async def restore_config_backup(
             "immutable_keys_preserved": list(summary.preserved_immutable),
             "security_changes": security_changes,
             "secrets_not_restored": not_restored,
+            **({"not_loaded": not_loaded} if not_loaded is not None else {}),
         },
     )
+    if not_loaded is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"The backup was restored, but this backend has not loaded it yet: "
+            f"{not_loaded}. Reload the page to see the restored configuration.",
+        )
 
     return ConfigRestoreResponse(
         config=ConfigResponse(
