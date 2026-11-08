@@ -142,7 +142,10 @@ class DispatchResult:
     its prompt cache, or None when the usage reports nothing about caching.
     ``requeue_after`` is set when the model's upstream answered that the model
     is queued for capacity: the item is to wait that many seconds and run
-    again, without the attempt counting.
+    again, without the attempt counting. ``timed_out`` says the attempt ran out
+    of time (a 504, the upstream call's own timeout, or the item's deadline):
+    the request is generating longer than any limit allows, and sent again it
+    most likely would again.
     """
 
     status_code: int
@@ -158,6 +161,7 @@ class DispatchResult:
     dispatched: bool = True
     cached_tokens: int | None = None
     requeue_after: float | None = None
+    timed_out: bool = False
 
 
 async def dispatch_item(
@@ -276,6 +280,8 @@ async def _dispatch(
                 outcome = _model_queued(queued, _detail_message(exc.detail, exc.status_code))
             else:
                 outcome = _failure(exc.status_code, _detail_message(exc.detail, exc.status_code))
+                if _caused_by_timeout(exc):
+                    outcome = replace(outcome, timed_out=True)
         except Exception as exc:
             uncertain = True
             if deadline.cancel_called:
@@ -520,7 +526,18 @@ def _failure(
         status_code=status_code,
         error=error,
         retryable=status_code >= 500 or status_code in _RETRYABLE_STATUSES,
+        timed_out=status_code == 504,
     )
+
+
+def _caused_by_timeout(exc: BaseException) -> bool:
+    """Whether an execution's error was raised from the upstream call timing out.
+
+    The chat surface answers an upstream timeout with the status it can find on
+    the exception, 500 when there is none, and chains the timeout as the
+    HTTPException's cause.
+    """
+    return isinstance(exc.__cause__, (TimeoutError, asyncio.TimeoutError))
 
 
 def _model_queued(exc: BaseException, message: str) -> DispatchResult:

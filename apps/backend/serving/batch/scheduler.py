@@ -31,14 +31,16 @@ slot of the owner's batch quota -- ``BATCH_ROLE_CONCURRENCY_<ROLE>``, counted in
 this process by a limiter of the worker's own, apart from the interactive
 per-user limiter, so batch work and the owner's own requests never compete for
 one budget -- its attempt is marked as dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
-on its target. A failure that may pass (a timeout, a 408/425/429, a 5xx) is
+on its target. A failure that may pass (a 408/425/429, a 5xx) is
 retried with exponential backoff for as long as its batch's window is open:
 it fails with its last error once the next try would start after the window
 closes. A batch with no window (``BATCH_COMPLETION_WINDOW_HOURS`` 0, a null
 ``expires_at``) never closes, so only ``max_attempts`` bounds its retries; an
 answer that the model is queued for capacity spends no attempt and is waited
 out however long it lasts. Only such failures count toward cooling a model down; a caller error
-(any other 4xx) fails the item at once.
+(any other 4xx) fails the item at once, and so does a timeout (a 504, the
+upstream call's timeout, the item's deadline), without cooling the model down:
+the request generates past every limit and a retry would only repeat it.
 
 The same loop also does the background work batches need besides inference,
 each in at most one task per process at a time: validating uploaded input
@@ -1036,6 +1038,13 @@ class BatchScheduler:
             if entry.expires_at is None or retry_at < entry.expires_at:
                 await self._release(entry, delay=requeue)
                 return
+        elif result.timed_out:
+            # Ran out of time: a generation running past every limit, which a
+            # retry only repeats on the same GPU. The item fails now, and the
+            # model is not cooled down for it: one runaway request says nothing
+            # about the model's health, and it stops claiming work the model
+            # could serve.
+            pass
         elif result.retryable:
             # Only a failure that may pass says anything about the model; a
             # caller's own error (4xx) is no reason to slow it down for others.

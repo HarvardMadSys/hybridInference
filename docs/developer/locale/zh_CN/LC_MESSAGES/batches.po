@@ -231,16 +231,29 @@ msgstr ""
 #: ../developer/batches.md:74
 msgid ""
 "Requests run in no particular order, and a request that fails for a "
-"reason that may pass — a timeout, a `408`, `425` or `429`, a `5xx` — is "
-"retried with exponential backoff (5 seconds, doubling to at most 15 "
-"minutes, with jitter) for as long as the batch's window is open. Once the "
-"next try would start after the window closes, the request fails with the "
-"last error it got rather than expiring as though it never ran. A request "
-"the model rejects (any other `4xx`) fails at once."
+"reason that may pass — a `408`, `425` or `429`, a `5xx` — is retried with "
+"exponential backoff (5 seconds, doubling to at most 15 minutes, with "
+"jitter) for as long as the batch's window is open. Once the next try would "
+"start after the window closes, the request fails with the last error it "
+"got rather than expiring as though it never ran. A request the model "
+"rejects (any other `4xx`) fails at once."
 msgstr ""
-"请求的运行顺序不固定。因可能自行恢复的原因失败的请求——超时、`408`、`425` 或 `429`、`5xx`——会在批次执行窗口开放期间以指数退避方式持续重试"
+"请求的运行顺序不固定。因可能自行恢复的原因失败的请求——`408`、`425` 或 `429`、`5xx`——会在批次执行窗口开放期间以指数退避方式持续重试"
 "（从 5 秒开始逐次翻倍，最长 15 分钟，并带随机抖动）。一旦下一次重试会在窗口关闭之后才开始，该请求即以最后一次得到的错误失败，而不会像从未运行过那样过期。"
 "被模型拒绝的请求（其他任何 `4xx`）会立即失败。"
+
+#: ../developer/batches.md:81
+msgid ""
+"A request that times out (a `504`, or the upstream call's own timeout) "
+"also fails at once, with the error code `timeout`. It is generating for "
+"longer than any limit allows, usually a long or repetitive output with a "
+"large `max_tokens`, and sent again it would most likely do the same. Nor "
+"does it count toward pausing the model, which several failures in a row "
+"do: one runaway request says nothing about the model's health."
+msgstr ""
+"超时的请求（`504`，或上游调用本身超时）同样会立即失败，错误码为 `timeout`。这类请求的生成时间超过了任何限制，"
+"通常是 `max_tokens` 很大时产生的冗长或重复输出，再次发送多半仍会如此。它也不计入暂停模型的连续失败次数："
+"单个失控的请求并不能说明模型的健康状况。"
 
 #: ../developer/batches.md:82
 msgid ""
@@ -647,8 +660,8 @@ msgid "`timeout`"
 msgstr ""
 
 #: ../developer/batches.md:41
-msgid "Still timing out after every retry (`504`)"
-msgstr "所有重试之后仍然超时（`504`）"
+msgid "Ran out of time (`504`); not retried"
+msgstr "超时（`504`）；不重试"
 
 #: ../developer/batches.md:41
 msgid "`service_unavailable`"
