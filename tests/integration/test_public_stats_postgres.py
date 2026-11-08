@@ -8,13 +8,16 @@ instead of falling to zero, and the totals say from which day they count.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
-import asyncpg
 import pytest
 import pytest_asyncio
 
 from serving.analytics import public_stats as ps
 from tests.fixtures import postgres
+
+if TYPE_CHECKING:
+    import asyncpg
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -34,15 +37,10 @@ _TABLES = (
 )
 
 
-@pytest.fixture(scope="session")
-def pg_dsn() -> str:
-    return postgres.worker_dsn()
-
-
 @pytest_asyncio.fixture
-async def conn(pg_dsn: str):
+async def conn():
     # A plain connection, as the job opens one: jsonb comes back as text.
-    connection = await asyncpg.connect(pg_dsn)
+    connection = await postgres.connect()
     await connection.execute(f"TRUNCATE TABLE {', '.join(_TABLES)}")
     try:
         yield connection
