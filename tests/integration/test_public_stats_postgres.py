@@ -126,3 +126,104 @@ async def test_the_first_run_carries_nothing(conn):
         {"any": 0, "min_requests": 0},
     ]
     assert payload["countries"]["since"] == W2.date().isoformat()
+
+
+# --- closed weeks are read from their checkpoints ---------------------------------
+
+_FRENCH = (
+    "Bonjour, pouvez-vous m'expliquer pourquoi le serveur renvoie une erreur après le déploiement ?",
+    "Merci, et comment puis-je configurer la limite de requêtes pour chaque utilisateur ?",
+)
+_GERMAN = (
+    "Guten Tag, können Sie mir bitte erklären, warum der Server nach dem Update abstürzt?",
+    "Danke, und wie kann ich das Limit für jeden einzelnen Benutzer richtig einstellen?",
+)
+
+
+class _Recording:
+    """The connection, with the statements the job ran and their arguments kept."""
+
+    def __init__(self, connection: asyncpg.Connection) -> None:
+        self._connection = connection
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetch(self, sql: str, *args):
+        self.calls.append((sql, args))
+        return await self._connection.fetch(sql, *args)
+
+    async def fetchval(self, sql: str, *args):
+        return await self._connection.fetchval(sql, *args)
+
+    async def fetchrow(self, sql: str, *args):
+        return await self._connection.fetchrow(sql, *args)
+
+    async def execute(self, sql: str, *args):
+        return await self._connection.execute(sql, *args)
+
+    def transaction(self):
+        return self._connection.transaction()
+
+
+async def _message(conn, at: datetime, user: str, text: str, n: int) -> None:
+    import json
+
+    prompt = json.dumps([{"role": "system", "content": "x"}, {"role": "user", "content": text}])
+    await conn.execute(
+        """
+        INSERT INTO api_logs (
+            request_id, model_id, provider, timestamp, status_code, user_id, prompt,
+            last_user_msg_hash, last_user_msg_chars, prompt_tokens, completion_tokens, metadata
+        ) VALUES ($1, 'm', 'p', $2, 200, $3, $4, $5, $6, 10, 5, $7::jsonb)
+        """,
+        f"msg-{user}-{at.isoformat()}-{n}",
+        at,
+        user,
+        prompt,
+        hash((user, text)) & 0x7FFFFFFFFFFFFFFF,
+        len(text),
+        json.dumps({"agent": "Claude", "user_agent": "claude-cli/2.1"}),
+    )
+
+
+async def _seed_three_weeks(conn) -> None:
+    for week, (user, texts) in zip(
+        (W1, W2, W3), (("ana", _FRENCH), ("ben", _GERMAN), ("cai", _FRENCH)), strict=True
+    ):
+        for n, text in enumerate(texts):
+            await _message(conn, week + timedelta(days=1, hours=n), user, text, n)
+    # Plain text that starts like an array: the guard keeps it from failing W3.
+    await conn.execute(
+        "INSERT INTO api_logs (request_id, model_id, provider, timestamp, status_code, "
+        "user_id, prompt, last_user_msg_hash, last_user_msg_chars) "
+        "VALUES ('plain', 'm', 'p', $1, 200, 'dee', '[INST] bonjour tout le monde [/INST]', 7, 30)",
+        W3 + timedelta(hours=2),
+    )
+
+
+async def test_a_second_run_reads_closed_weeks_from_their_checkpoints(conn):
+    await _seed_three_weeks(conn)
+
+    first = await _run(conn)
+    recording = _Recording(conn)
+    second = await _run_recorded(recording)
+
+    # The same answer as the run that read every week from the logs.
+    for section in ("languages", "agents", "totals"):
+        assert second[section] == first[section]
+    assert [item["code"] for item in second["languages"]["items"]] == ["fr", "de"]
+    assert second["languages"]["weekly"] == [1, 1, 1]
+    # But W1 and W2, closed before the first run ended, were not read again.
+    sampled = [args[0] for sql, args in recording.calls if "jsonb_array_elements" in sql]
+    assert [ps.week_start(at.date()) for at in sampled] == [W3.date()]
+    [clients] = [args for sql, args in recording.calls if sql is ps.CLIENTS_SQL]
+    assert clients[0] == W3
+
+
+async def _run_recorded(recording: _Recording) -> dict:
+    retention: list[ps.RetentionWrite] = []
+    payload = await ps.compute_snapshot(recording, now=NOW, retention_out=retention)
+    # Nothing settled is rewritten.
+    assert retention[0].language_weeks == (W3.date(),)
+    assert retention[0].client_weeks == (W3.date(),)
+    await ps.store_snapshot(recording, payload, retention[0])
+    return payload

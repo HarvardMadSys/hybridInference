@@ -175,6 +175,11 @@ rollup no longer holds keeps the weekly country counts the previous snapshot
 recorded for it. The country totals, the top shares and the map cover only the
 days the rollup holds, from the day `countries.since` names.
 
+Each stored run checkpoints the language sample and the client totals of the
+weeks it reads. A week that had closed before the previous stored run ended is
+read from that checkpoint instead of from `api_logs`, so a daily run samples
+message text only for the current week and any week that closed since.
+
 ### Activating a manifest
 
 Setting `DISTRIBUTION_CONFIG_PATH` alone changes nothing. By default the

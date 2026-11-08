@@ -834,3 +834,99 @@ async def test_without_a_previous_snapshot_or_rollup_nothing_is_carried():
         {"any": 0, "min_requests": 0},
     ]
     assert "since" not in payload["countries"]
+
+
+# --- closed weeks the previous run already checkpointed ---------------------------
+
+
+def test_a_week_is_settled_once_the_previous_run_saw_it_whole():
+    weeks = [W1, W2, W3]
+    assert ps.settled_weeks(weeks, None) == frozenset()
+    assert ps.settled_weeks(weeks, datetime(2026, 8, 10, tzinfo=UTC)) == {W1, W2}
+    # The previous run ended inside W2: W2 was still open then.
+    assert ps.settled_weeks(weeks, datetime(2026, 8, 6, 9, tzinfo=UTC)) == {W1}
+
+
+def test_a_settled_week_reads_its_client_checkpoint_not_the_logs():
+    retained = [_client(W2, ps.account_key("old"), "Claude", "claude-cli/1.0", 30, 400)]
+    live = [_client(W2, "someone", "codex", "codex-tui/1.0", 5, 50)]
+
+    rows, rewrite, from_checkpoint = ps.merge_client_rows(
+        weeks=[W2],
+        pruned_before=None,
+        live_rows=live,
+        retained_rows=retained,
+        settled=frozenset({W2}),
+    )
+
+    assert rows == retained
+    assert rewrite == ()
+    assert from_checkpoint == 1
+
+
+def _checkpointed_conn(**overrides):
+    """W1 and W2 closed before the previous run ended, and were checkpointed then."""
+    overrides.setdefault("previous", _previous([W1, W2, W3], [{"any": 0, "min_requests": 0}] * 3))
+    return _fake_conn(
+        retained_languages=[
+            {"week": W1, "account_key": ps.account_key("u1"), "language": "de"},
+            {"week": W2, "account_key": ps.account_key("u1"), "language": "fr"},
+        ],
+        retained_language_samples=[
+            {"week": W1, "messages_sampled": 2},
+            {"week": W2, "messages_sampled": 3},
+        ],
+        retained_clients=[
+            {
+                "week": W2,
+                "account_key": ps.account_key("u1"),
+                "agent": "Claude",
+                "user_agent": "claude-cli/2.1",
+                "requests": 20,
+                "tokens": 55,
+            }
+        ],
+        live_clients=[],
+        sample_by_week={W1: _FRENCH, W2: _FRENCH, W3: _FRENCH},
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+async def test_only_weeks_not_yet_settled_are_read_from_the_logs():
+    conn = _checkpointed_conn()
+    held: list[ps.RetentionWrite] = []
+
+    payload = await ps.compute_snapshot(
+        conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC), retention_out=held
+    )
+
+    samples = [c.args for c in conn.fetch.await_args_list if "jsonb_array_elements" in c.args[0]]
+    assert [ps.week_start(args[1].date()) for args in samples] == [W3]
+    [clients] = [c.args for c in conn.fetch.await_args_list if c.args[0] is ps.CLIENTS_SQL]
+    # W1 has no client checkpoint, so the scan starts there; W2 is read from its own.
+    assert clients[1] == START
+    # The settled weeks still count, from their checkpoints.
+    assert [item["code"] for item in payload["languages"]["items"]] == ["de", "fr"]
+    assert payload["languages"]["messages_sampled"] == 2 + 3 + 2
+    assert payload["agents"]["products"][0]["tokens"] == 55
+    # And are not rewritten.
+    assert held[0].language_weeks == (W3,)
+    assert W2 not in held[0].client_weeks
+
+
+@pytest.mark.asyncio
+async def test_without_a_stored_run_every_week_is_read_from_the_logs():
+    conn = _checkpointed_conn(previous=None)
+    await ps.compute_snapshot(conn, now=datetime(2026, 8, 12, 14, 27, tzinfo=UTC))
+    samples = [c.args for c in conn.fetch.await_args_list if "jsonb_array_elements" in c.args[0]]
+    assert len(samples) == 3
+
+
+def test_the_language_query_parses_each_prompt_once():
+    sql = ps.LANGUAGE_SAMPLE_SQL.format(valid_json="pg_input_is_valid(l.prompt, 'jsonb')")
+    # One cast, in a lateral subquery the planner cannot fold back into each use.
+    assert sql.count("l.prompt::jsonb") == 1
+    assert "OFFSET 0" in sql
+    assert "jsonb_array_elements(d.doc)" in sql
+    assert "jsonb_typeof(d.doc) = 'array'" in sql

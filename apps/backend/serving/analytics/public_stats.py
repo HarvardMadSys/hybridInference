@@ -22,6 +22,11 @@ the account id and the truncated User-Agent, never the message, and neither
 value is published. Weeks removed before a checkpoint was written cannot be
 reconstructed.
 
+A week that had closed by the end of the previous stored run is settled: that
+run wrote its checkpoint from the whole week, so this one reads the checkpoint
+instead of scanning ``api_logs`` for it again. Only the open week, and weeks
+that closed since or have no checkpoint, are read from the logs.
+
 The hourly country rollup keeps 90 days, a shorter span than the window. A
 week the rollup no longer fully covers takes its weekly country counts from
 the previous snapshot, which counted it while it was covered, so the weekly
@@ -210,7 +215,10 @@ GROUP BY 1, 2, 3
 # Up to $3 distinct newest-user-message hashes per account in [$1, $2), each
 # read from the first request that carried it (the shortest history), and the
 # text of that message. ``{valid_json}`` guards the jsonb cast where the server
-# can check it (PostgreSQL 16+).
+# can check it (PostgreSQL 16+), so one plain-text prompt that starts with "["
+# cannot fail the week. The prompt is cast once, in the lateral subquery, and
+# both the array check and the message search read that value; ``OFFSET 0``
+# keeps the planner from folding the cast back into each of them.
 LANGUAGE_SAMPLE_SQL = f"""
 WITH candidates AS (
   SELECT user_id, last_user_msg_hash AS h, MIN(id) AS id
@@ -237,16 +245,19 @@ SELECT p.user_id, (
         WHERE b->>'type' IN ('text', 'input_text')
       )
     END, 6000)
-  FROM jsonb_array_elements(l.prompt::jsonb) WITH ORDINALITY e(m, i)
+  FROM jsonb_array_elements(d.doc) WITH ORDINALITY e(m, i)
   WHERE m->>'role' = 'user'
   ORDER BY i DESC
   LIMIT 1
 ) AS text
 FROM picked p
 JOIN api_logs l ON l.id = p.id
+CROSS JOIN LATERAL (
+  SELECT CASE WHEN {{valid_json}} THEN l.prompt::jsonb END AS doc OFFSET 0
+) d
 WHERE l.prompt IS NOT NULL
   AND left(l.prompt, 1) = '['
-  AND jsonb_typeof(CASE WHEN {{valid_json}} THEN l.prompt::jsonb END) = 'array'
+  AND jsonb_typeof(d.doc) = 'array'
 """
 
 # Accounts as of the run: approved (active) and waiting for review, whatever
@@ -473,6 +484,22 @@ def build_countries(rows: Iterable[Mapping[str, Any]], weeks: list[date]) -> dic
         ],
         "all": seen,
     }
+
+
+def settled_weeks(weeks: list[date], previous_end: datetime | None) -> frozenset[date]:
+    """The weeks that had closed by ``previous_end``, the end of the previous stored run.
+
+    That run read each of them whole and wrote its checkpoint from it, so a
+    later run can read the checkpoint instead of the logs. Its own last week
+    was still open then, so it is not among them, nor is any week since.
+    """
+    if previous_end is None:
+        return frozenset()
+    return frozenset(
+        week
+        for week in weeks
+        if datetime.combine(week + timedelta(weeks=1), datetime.min.time(), UTC) <= previous_end
+    )
 
 
 def merge_country_weeks(
@@ -845,10 +872,13 @@ def merge_language_weeks(
     sample: LanguageSample,
     retained_by_week: Mapping[date, Mapping[str, set[str]]],
     retained_messages: Mapping[date, int],
+    reused: frozenset[date] = frozenset(),
 ) -> tuple[dict[date, dict[str, set[str]]] | None, int, RetentionWrite, int]:
     """Combine the live language sample with the checkpoint.
 
-    A week still fully in the logs is re-sampled. A week the prune has
+    A week still fully in the logs is re-sampled, unless it is ``reused``: a
+    settled week read from its checkpoint, as a re-sample would read it, its
+    message count included when it found no language. A week the prune has
     already removed keeps its checkpoint, so a partial tail still in the
     logs is not added on top. Returns the sets ``build_languages`` consumes,
     the messages sampled, the checkpoint to write, and how many weeks came
@@ -880,6 +910,12 @@ def merge_language_weeks(
         coverage = _week_coverage(week, pruned_before)
         retained = retained_by_week.get(week, {})
         sampled = week in sample.sampled_weeks
+        if week in reused and not sampled:
+            if retained:
+                merged[week] = {key: set(languages) for key, languages in retained.items()}
+            total += retained_messages.get(week, 0)
+            from_checkpoint += 1
+            continue
         if _prefer_live_languages(
             coverage, sampled, sample.messages_by_week.get(week, 0), bool(retained), prompts_stored
         ):
@@ -947,12 +983,14 @@ def merge_client_rows(
     pruned_before: date | None,
     live_rows: Iterable[ClientRow],
     retained_rows: Iterable[ClientRow],
+    settled: frozenset[date] = frozenset(),
 ) -> tuple[list[ClientRow], tuple[date, ...], int]:
     """Combine live client rows with the checkpoint.
 
-    Returns the rows ``build_agents`` consumes (account ids already digested),
-    the full or newly checkpointed weeks to rewrite, and how many weeks came
-    from the checkpoint.
+    A ``settled`` week (see :func:`settled_weeks`) that has a checkpoint is
+    read from it, and not rewritten. Returns the rows ``build_agents`` consumes
+    (account ids already digested), the full or newly checkpointed weeks to
+    rewrite, and how many weeks came from the checkpoint.
     """
     live_by_week: dict[date, list[ClientRow]] = defaultdict(list)
     for row in live_rows:
@@ -967,7 +1005,10 @@ def merge_client_rows(
     for week in weeks:
         coverage = _week_coverage(week, pruned_before)
         retained = retained_by_week.get(week, [])
-        if coverage == "full":
+        if week in settled and retained:
+            merged.extend(retained)
+            from_checkpoint += 1
+        elif coverage == "full":
             merged.extend(live_by_week.get(week, []))
             replace.append(week)
         elif retained:
@@ -1073,6 +1114,8 @@ async def _sample_languages(
     is what an empty week and a deployment that stores no message text look
     like.
     """
+    if not weeks:
+        return LanguageSample({}, {}, frozenset())
     version = await conn.fetchval("SHOW server_version_num")
     valid_json = "pg_input_is_valid(l.prompt, 'jsonb')" if int(version) >= 160000 else "TRUE"
     sql = LANGUAGE_SAMPLE_SQL.format(valid_json=valid_json)
@@ -1158,17 +1201,6 @@ async def compute_snapshot(
             item["model"] = None
         retained_rows.append(item)
     daily_rows = [*await conn.fetch(DAILY_SQL, start, end), *retained_rows]
-    live_clients = [
-        ClientRow(
-            week=row["week"],
-            user_id=row["user_id"],
-            agent=row["agent"],
-            user_agent=row["user_agent"],
-            requests=int(row["requests"]),
-            tokens=int(row["tokens"]),
-        )
-        for row in await conn.fetch(CLIENTS_SQL, start, end)
-    ]
     country_rows = await conn.fetch(COUNTRIES_SQL, start, end)
     geo_from = await conn.fetchval(GEO_COVERED_FROM_SQL)
     previous = previous_snapshot(await conn.fetchrow(PREVIOUS_SNAPSHOT_SQL))
@@ -1181,10 +1213,15 @@ async def compute_snapshot(
     weeks = weeks_between(start, end)
     pruned_before = pruned_before_day(first_log, first_retained)
     week_from, week_until = weeks[0], weeks[-1] + timedelta(weeks=1)
-    sample = await _sample_languages(conn, weeks, start, end)
+    settled = settled_weeks(weeks, previous.window_end if previous is not None else None)
     retained_languages, retained_language_counts = _retained_languages(
         await conn.fetch(RETAINED_LANGUAGE_SQL, week_from, week_until),
         await conn.fetch(RETAINED_LANGUAGE_SAMPLE_SQL, week_from, week_until),
+    )
+    # A settled week with a checkpoint is read from it, not sampled again.
+    reused_languages = frozenset(w for w in settled if w in retained_language_counts)
+    sample = await _sample_languages(
+        conn, [w for w in weeks if w not in reused_languages], start, end
     )
     languages, messages, language_write, language_weeks = merge_language_weeks(
         weeks=weeks,
@@ -1192,20 +1229,38 @@ async def compute_snapshot(
         sample=sample,
         retained_by_week=retained_languages,
         retained_messages=retained_language_counts,
+        reused=reused_languages,
     )
     retained_clients = [
         _retained_client(row)
         for row in await conn.fetch(RETAINED_CLIENT_SQL, week_from, week_until)
     ]
+    client_checkpoints = {row.week for row in retained_clients}
+    client_scan = [w for w in weeks if w not in settled or w not in client_checkpoints]
+    live_clients = []
+    if client_scan:
+        scan_from = max(start, datetime.combine(client_scan[0], datetime.min.time(), UTC))
+        live_clients = [
+            ClientRow(
+                week=row["week"],
+                user_id=row["user_id"],
+                agent=row["agent"],
+                user_agent=row["user_agent"],
+                requests=int(row["requests"]),
+                tokens=int(row["tokens"]),
+            )
+            for row in await conn.fetch(CLIENTS_SQL, scan_from, end)
+        ]
     client_rows, client_weeks, client_checkpoint_weeks = merge_client_rows(
         weeks=weeks,
         pruned_before=pruned_before,
         live_rows=live_clients,
         retained_rows=retained_clients,
+        settled=frozenset(settled & client_checkpoints),
     )
     if language_weeks or client_checkpoint_weeks:
         logger.info(
-            "public_stats: kept %s language week(s) and %s client week(s) from before the prune",
+            "public_stats: read %s language week(s) and %s client week(s) from the checkpoint",
             language_weeks,
             client_checkpoint_weeks,
         )
