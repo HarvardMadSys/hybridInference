@@ -190,7 +190,7 @@ export async function getMyBatchCapabilities(): Promise<BatchCapabilities> {
 }
 
 /** Filters of the batch list: a category (or exact status), and a name or exact id. */
-export interface MyBatchFilters {
+interface MyBatchFilters {
   category?: BatchCategory | '';
   status?: BatchStatus | '';
   q?: string;
@@ -578,7 +578,7 @@ export async function listMyWebhookEvents(): Promise<{ data: BatchWebhookEvent[]
 
 // -- administrators ------------------------------------------------------------------
 
-export interface AdminBatchFilters {
+interface AdminBatchFilters {
   userId?: string;
   /** A status as the list shows it (a file batch being sealed is `finalizing`). */
   status?: BatchStatus | '';
@@ -652,7 +652,7 @@ export interface AdminBatchItem {
   completed_at: number | null;
 }
 
-export interface AdminBatchItemPage {
+interface AdminBatchItemPage {
   object: 'list';
   data: AdminBatchItem[];
   has_more: boolean;
@@ -715,13 +715,13 @@ export interface ModelQueueJob {
   ends_at: number | null;
 }
 
-/** How the host stands with a model: serving it, loading it, waiting for a GPU, or nothing. */
-export type ModelQueueState = 'serving' | 'loading' | 'queued' | 'idle';
-
 export interface ModelQueueModel {
   /** The name the host serves the model under. */
   model: string;
-  /** Usually a `ModelQueueState`; kept open for a host that reports another. */
+  /**
+   * How the host stands with the model: usually `serving`, `loading`, `queued`
+   * (waiting for a GPU) or `idle`; kept open for a host that reports another.
+   */
   state: string;
   job_name: string | null;
   last_request_at: number | null;

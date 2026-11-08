@@ -13,7 +13,7 @@
 
 const CHANNEL = 'hybridinference:accounts';
 
-export type AccountSyncMessage =
+type AccountSyncMessage =
   /** The browser's active account is now `userId`, or none. */
   | { type: 'active'; userId: string | null }
   /** The list of accounts changed; the active one did not. */

@@ -20,7 +20,7 @@ import type { CreateDraft } from './createDraft';
 import { errorReportFile, saveText } from './errorReport';
 import { FormatExample } from './FormatExample';
 
-export function StepCard({ title, children }: { title: string; children: ReactNode }) {
+function StepCard({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
       <h2 className="text-base font-semibold text-gray-900">{title}</h2>
@@ -61,7 +61,7 @@ export function Stepper({ step }: { step: 1 | 2 | 3 }) {
   );
 }
 
-export function ErrorList({ report }: { report: PreflightReport }) {
+function ErrorList({ report }: { report: PreflightReport }) {
   const t = useT();
   const shown = report.errors.slice(0, 200);
   return (

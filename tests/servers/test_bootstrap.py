@@ -492,7 +492,6 @@ models:
         info.model_id = "m"
         info.aliases = []
         info.router = "routewise"
-        info.strategy = None
         info.router_params = None
 
         # A spec-backed instance keeps the production isinstance boundary honest.
@@ -902,7 +901,6 @@ models:
         info.model_id = "m"
         info.aliases = []
         info.router = "routewise"
-        info.strategy = None
         info.router_params = None
 
         registry_instance = MagicMock()
@@ -944,7 +942,6 @@ models:
         info.model_id = "m"
         info.aliases = []
         info.router = "routewise"
-        info.strategy = None
         info.router_params = None
 
         override = SimpleNamespace(canonical_model_id="m", configured_strategy="fixed")

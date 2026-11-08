@@ -782,14 +782,15 @@ msgstr ""
 
 #: ../developer/configuration.md:300
 msgid ""
-"`routing_strategy:` and `routing_parameter:` are the deprecated spellings"
-" of `default_router:` and per-model `router_params:`. They still load, "
-"and log a deprecation warning. Per-model router selection (`router:` / "
-"`router_params:` in the model registry) overrides `default_router` and is"
-" documented in [Routing](routing.md)."
+"`routing_strategy:`, the earlier name of `default_router:`, is no longer "
+"read. `routing_parameter:` is the deprecated spelling of per-model "
+"`router_params:`; it still loads, and logs a deprecation warning. Per-"
+"model router selection (`router:` / `router_params:` in the model "
+"registry) overrides `default_router` and is documented in "
+"[Routing](routing.md)."
 msgstr ""
-"`routing_strategy:` 和 `routing_parameter:` 分别是 `default_router:` 和按模型配置的 "
-"`router_params:` 的旧写法，已废弃。它们仍然能加载，但会记录一条废弃警告。按模型选择 router（模型注册表里的 "
+"`routing_strategy:` 是 `default_router:` 的旧名称，已不再读取。`routing_parameter:` "
+"是按模型配置的 `router_params:` 的旧写法，已废弃；它仍然能加载，但会记录一条废弃警告。按模型选择 router（模型注册表里的 "
 "`router:` / `router_params:`）会覆盖 `default_router`，详见[路由](routing.md)。"
 
 #: ../developer/configuration.md:306
@@ -2588,4 +2589,3 @@ msgstr ""
 #~ "key pool, such as `MINIMAX_API_KEY2`, "
 #~ "once one is set;"
 #~ msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
-

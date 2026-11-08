@@ -1280,12 +1280,9 @@ async def initialize() -> AppServices:
     # canonical id invalidate the alias's cached router.
     alias_to_model: dict[str, str] = {}
     for info in model_infos:
-        # Effective router: explicit `router:` wins; otherwise the legacy
-        # `routing_strategy:` (one-release shim) maps onto `router`.
-        effective_router = info.router or info.strategy
         entry: dict[str, Any] = {}
-        if effective_router is not None:
-            entry["router"] = effective_router
+        if info.router is not None:
+            entry["router"] = info.router
         if info.router_params is not None:
             entry["router_params"] = info.router_params
         # Aliases share the canonical model's config.

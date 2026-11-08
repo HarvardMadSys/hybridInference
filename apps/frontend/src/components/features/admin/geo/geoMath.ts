@@ -23,7 +23,7 @@ export const ORIGIN_COLORS = {
   land: '#94a3b8',
 } as const;
 
-export type GeoColumnIndex = Readonly<Record<string, number>>;
+type GeoColumnIndex = Readonly<Record<string, number>>;
 
 export interface GeoMetricModel {
   metric: GeoMetric;
@@ -50,7 +50,7 @@ export interface OriginSummary {
   topShare: number;
 }
 
-export type HourOriginSummary = OriginSummary;
+type HourOriginSummary = OriginSummary;
 
 export function buildColumnIndex(columns: readonly string[]): GeoColumnIndex {
   return Object.fromEntries(columns.map((column, index) => [column, index]));

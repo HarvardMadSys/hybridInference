@@ -130,7 +130,7 @@ function shortSessionId(sessionId: string): string {
 }
 
 /** A batch id that fits a table cell, `batch_52b9…fd51`: its start and end, the whole on hover. */
-export function shortBatchId(batchId: string): string {
+function shortBatchId(batchId: string): string {
   return batchId.length > 20 ? `${batchId.slice(0, 10)}…${batchId.slice(-4)}` : batchId;
 }
 

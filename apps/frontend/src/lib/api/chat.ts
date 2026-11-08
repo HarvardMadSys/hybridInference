@@ -7,7 +7,7 @@ import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 import { APIError } from '@/lib/utils/errors';
 
-export interface ChatMessage {
+interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
@@ -20,7 +20,7 @@ export interface RagSource {
   score: number;
 }
 
-export interface StreamRagChatOptions {
+interface StreamRagChatOptions {
   messages: ChatMessage[];
   topK?: number;
   signal?: AbortSignal;

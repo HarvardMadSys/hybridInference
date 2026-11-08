@@ -31,7 +31,7 @@ from serving.surfaces.context import (
 )
 from serving.utils.request_ip import ClientIpInfo
 from serving.utils.session_identity import session_identity
-from serving.utils.synthetic_probe import is_trusted_probe, is_trusted_probe_headers
+from serving.utils.synthetic_probe import is_trusted_probe_headers
 
 _RAW = [
     (b"X-Session-ID", b"raw-mixed-case"),
@@ -171,8 +171,8 @@ def test_the_probe_marker_reads_the_same_from_origin_headers(name, value):
     trusted = {"role": "internal", "authenticated": True}
     raw = [(name.lower(), value)]  # as an ASGI server delivers it
 
-    assert is_trusted_probe_headers(origin_headers(raw), trusted) == is_trusted_probe(
-        _request(raw), trusted
+    assert is_trusted_probe_headers(origin_headers(raw), trusted) == is_trusted_probe_headers(
+        _request(raw).headers, trusted
     )
 
 
