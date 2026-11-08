@@ -29,11 +29,10 @@ Sizes, per gateway process:
   under PostgreSQL's default ``max_connections`` of 100.
 
 A user's reads of their own request history on the general pool
-(``/user/recent-requests``, ``/user/usage``) are bounded twice over: each reads
-a bounded number of rows, and at most :data:`HISTORY_READS_MAX` of them hold a
-general-pool connection at once in a process, however many users ask
-(:func:`history_read_connection`), so the log writers, batch work and rollups
-always keep the rest of the pool. One waits at most
+(``/user/recent-requests``, ``/user/usage``) hold at most
+:data:`HISTORY_READS_MAX` general-pool connections at once in a process,
+however many users ask (:func:`history_read_connection`), so the log writers,
+batch work and rollups always keep the rest of the pool. One waits at most
 :data:`HISTORY_READ_WAIT_SEC` for its turn and its connection, and then fails
 with :class:`DatabaseBusyError` like a request-path lookup. The Responses store's
 loads and saves, made while a request is served, wait at most
