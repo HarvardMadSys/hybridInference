@@ -248,7 +248,12 @@ async def test_the_job_names_the_models_the_stored_catalog_offers(monkeypatch, c
     from serving.config.settings import get_settings
     from tests.fixtures import migrations as mig
 
-    catalog = {"models": [{"id": "open-model"}, {"id": "staff-model", "required_role": "admin"}]}
+    catalog = {
+        "models": [
+            {"id": "open-model", "provider": "vllm"},
+            {"id": "staff-model", "provider": "vllm", "required_role": "admin"},
+        ]
+    }
     async with mig.scratch_database() as database:
         await mig.upgrade(database)
         async with mig.connected(database) as scratch:

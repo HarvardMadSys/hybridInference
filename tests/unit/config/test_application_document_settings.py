@@ -15,7 +15,7 @@ from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
 INLINE = "inline-provider-credential"
 INVALID_CATALOG = json.dumps({"models": [{"id": "one", "api_key": INLINE}]})
-VALID_CATALOG = json.dumps({"models": [{"id": "one", "api_key": "${ONE_KEY}"}]})
+VALID_CATALOG = json.dumps({"models": [{"id": "one", "provider": "vllm", "api_key": "${ONE_KEY}"}]})
 
 
 @pytest.fixture(autouse=True)
