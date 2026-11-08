@@ -774,10 +774,10 @@ Each key in a `KeyPool` (`apps/backend/serving/adapters/key_pool.py`) carries a
   hard-fail a request another route could serve.
 
 The caller's role reaches the pool through the request context, published by
-the API-key auth dependency. Requests with no user identity — health probes,
-warmups, the admin playground — carry no role and are treated as unrestricted:
-reservation withholds capacity from lower *tiers*, not from the gateway's own
-machinery.
+the API-key auth dependency, and by the playground for the console user it
+serves. Requests with no user identity — health probes, warmups — carry no role
+and are treated as unrestricted: reservation withholds capacity from lower
+*tiers*, not from the gateway's own machinery.
 
 **Managing it.** Reservation is declared through the admin API rather than an
 env var, because pool membership comes from each route's `api_keys` list, which

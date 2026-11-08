@@ -1,22 +1,32 @@
-"""Admin-only API playground for testing LLM models interactively."""
+"""API playground for testing LLM models interactively, for internal users and above."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from routing.endpoints import endpoint_id_for_adapter
 from routing.protocols import RoutingRequestOptions
+from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
+from serving.model_access import model_access_denial
 from serving.pricing import require_route_pricing
-from serving.servers.deps import get_router, require_role
+from serving.servers.auth import publish_caller_role
+from serving.servers.deps import (
+    get_current_user,
+    get_model_visibility_resolver,
+    get_router,
+    get_user_concurrency_limiter,
+    require_role,
+)
+from serving.servers.model_availability import model_not_found_detail
 from serving.servers.request_body import json_body_after, json_body_schema
 from serving.servers.routers.completions_stream import _extract_exception_status_code
 from serving.stream import (
@@ -28,6 +38,9 @@ from serving.stream import (
 )
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 logger = get_logger(__name__)
 
@@ -58,10 +71,11 @@ _STREAM_END: Any = object()
 # to show, so `_sanitize_chunk` republishes an allow-listed, host-only summary
 # under `_PLAYGROUND_ROUTE_KEY` instead of dropping the field outright.
 #
-# Admin-only by construction: this republish lives here, not in the shared
-# `sanitize_chunk` used by the public completions path. The name deliberately
-# avoids containing `_routing` as a substring so that "the internal blob never
-# appears on the wire" stays checkable with a plain substring assertion.
+# Internal-only by construction: this republish lives here, not in the shared
+# `sanitize_chunk` used by the public completions path, and the upstream's
+# host:port in it is shown to administrators only. The name deliberately avoids
+# containing `_routing` as a substring so that "the internal blob never appears
+# on the wire" stays checkable with a plain substring assertion.
 _ROUTING_KEY = "_routing"
 _PLAYGROUND_ROUTE_KEY = "_playground_route"
 
@@ -120,15 +134,63 @@ def _provider_display_name(endpoint_id: str, base_url: str = "") -> str:
     return _PROVIDER_DISPLAY_NAMES.get(endpoint_id, endpoint_id)
 
 
+def _is_admin(user: dict[str, Any]) -> bool:
+    """Return whether the playground's caller is an administrator."""
+    return has_role(str(user.get("role") or "free"), "admin")
+
+
+async def _playground_slot(
+    user: dict[str, Any] = Depends(get_current_user),
+    limiter: Any = Depends(get_user_concurrency_limiter),
+) -> AsyncGenerator[None, None]:
+    """Hold one of the caller's concurrency slots for the request, or refuse with 429.
+
+    The playground runs on the console session, not an API key, so the API
+    surfaces' admission (``servers.concurrency.enforce_user_concurrency``) never
+    reaches it. It takes a slot from the same per-user budget instead, and
+    FastAPI tears this dependency down once the response has been sent, the
+    whole stream included, so the slot is held exactly as long as the upstream
+    work it admits.
+    """
+    if limiter is None:
+        yield
+        return
+    user_id = str(user["user_id"])
+    granted, limit, _role_label = await limiter.try_acquire(
+        user_id,
+        str(user.get("role") or "free"),
+        bool(user.get("is_admin", False)),
+        user.get("max_concurrent_requests"),
+    )
+    if not granted:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent requests (limit: {limit}).",
+            headers={"Retry-After": "1"},
+        )
+    try:
+        yield
+    finally:
+        limiter.release(user_id)
+
+
 @router.get("/models")
 async def list_models(
     _admin: dict[str, Any] = Depends(require_role("internal")),
     router_exec=Depends(get_router),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
 ) -> dict[str, Any]:
-    """Return canonical model metadata for the playground selector."""
-    canonical_models: dict[str, PlaygroundModelItem] = {}
+    """Return canonical model metadata for the playground selector.
 
-    for route in router_exec.routes.values():
+    Lists the models the caller may use, by the check every inference surface
+    applies (``model_access_denial``). A model's routes, which a request may
+    name to pin itself to one, are listed for administrators only, the only
+    callers who may pin.
+    """
+    canonical_models: dict[str, PlaygroundModelItem] = {}
+    show_routes = _is_admin(_admin)
+
+    for model_id, route in router_exec.routes.items():
         if not getattr(route, "published", True) or not route.adapters:
             continue
 
@@ -136,10 +198,19 @@ async def list_models(
         canonical_id = primary_cfg.id
         if canonical_id in canonical_models:
             continue
+        denial = await model_access_denial(
+            route,
+            model_id,
+            _admin,
+            visibility_resolver=model_visibility_resolver,
+            grant_scope=False,
+        )
+        if denial is not None:
+            continue
 
         providers: list[PlaygroundProviderItem] = []
         seen: set[str] = set()
-        for adapter, weight in route.adapters:
+        for adapter, weight in route.adapters if show_routes else ():
             if weight <= 0:
                 continue
             eid = endpoint_id_for_adapter(adapter)
@@ -200,11 +271,13 @@ def _routing_host(base_url: str) -> str | None:
     return f"{host}:{port}" if port else host
 
 
-def _redact_routing(routing: Any) -> dict[str, Any] | None:
-    """Reduce the router's ``_routing`` blob to an admin-safe summary.
+def _redact_routing(routing: Any, *, show_host: bool = False) -> dict[str, Any] | None:
+    """Reduce the router's ``_routing`` blob to a summary safe for the caller.
 
     Allow-list, not deny-list: fields the router adds later stay internal
-    until someone deliberately surfaces them here.
+    until someone deliberately surfaces them here. The upstream's host:port is
+    included only with ``show_host``, for an administrator: it can be a LAN
+    address, and the playground is open to internal users too.
     """
     if not isinstance(routing, dict):
         return None
@@ -226,7 +299,7 @@ def _redact_routing(routing: Any) -> dict[str, Any] | None:
         return None
 
     summary: dict[str, Any] = {"provider": provider, "endpoint_id": endpoint_id}
-    host = _routing_host(str(routing.get("base_url") or ""))
+    host = _routing_host(str(routing.get("base_url") or "")) if show_host else None
     if host:
         summary["host"] = host
     if routing.get("fallback"):
@@ -249,8 +322,8 @@ def _redact_routing(routing: Any) -> dict[str, Any] | None:
     return summary
 
 
-def _sanitize_chunk(chunk: str, completion_id: str) -> str:
-    """Swap internal routing metadata for an admin-safe summary.
+def _sanitize_chunk(chunk: str, completion_id: str, *, show_host: bool = False) -> str:
+    """Swap internal routing metadata for a summary safe for the caller.
 
     Also relabels the frame with this response's ``completion_id``, since
     adapters mint one id per chunk and clients group by it.
@@ -264,7 +337,8 @@ def _sanitize_chunk(chunk: str, completion_id: str) -> str:
 
     Total by contract: this must never raise. `_routing` is popped before the
     summary is built, so a redaction failure costs the badge, never the
-    redaction — the caller yields whatever comes back.
+    redaction — the caller yields whatever comes back. ``show_host`` is passed
+    to :func:`_redact_routing`.
     """
     if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
         return chunk
@@ -281,7 +355,7 @@ def _sanitize_chunk(chunk: str, completion_id: str) -> str:
         routing = obj.pop(_ROUTING_KEY)
         if not obj.get("choices"):
             try:
-                summary = _redact_routing(routing)
+                summary = _redact_routing(routing, show_host=show_host)
             except Exception:
                 summary = None
             if summary:
@@ -310,11 +384,32 @@ async def playground_chat(
     body: PlaygroundChatRequest = Depends(_chat_body),
     _admin: dict[str, Any] = Depends(_require_internal),
     router_exec=Depends(get_router),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+    _slot: None = Depends(_playground_slot),
 ) -> StreamingResponse:
     """Stream a chat completion for admin testing."""
+    # The access check every inference surface applies, answered the same way
+    # for every reason: the model does not exist. Internal users reach the
+    # playground, and an admin-only model must stay out of their reach here too.
     route = router_exec.routes.get(body.model)
-    if route is not None:
-        require_route_pricing(route)
+    if (
+        route is None
+        or await model_access_denial(
+            route, body.model, _admin, visibility_resolver=model_visibility_resolver
+        )
+        is not None
+    ):
+        req_ctx.mark_model_not_found()
+        raise HTTPException(404, model_not_found_detail(body.model, user_ctx=_admin))
+    is_admin = _is_admin(_admin)
+    if body.provider and not is_admin:
+        # A pin skips circuit admission and reaches routes no weighted draw
+        # would choose, a staging route included.
+        raise HTTPException(403, "Choosing the route a request takes requires the admin role.")
+    require_route_pricing(route)
+    # The key pool reads it to keep upstream keys reserved for a higher tier
+    # away from this caller, as on the API surfaces.
+    publish_caller_role(_admin)
     effective_messages = body.messages
     if body.system_prompt.strip():
         effective_messages = [
@@ -378,7 +473,7 @@ async def playground_chat(
                 # a raise inside the redactor would leave `chunk` at its original
                 # value and hand the raw `_routing` blob, base_url and all, to the
                 # browser. `_sanitize_chunk` is total instead.
-                yield _sanitize_chunk(item, completion_id)
+                yield _sanitize_chunk(item, completion_id, show_host=is_admin)
         finally:
             # Also the client-disconnect path: cancelling the reader closes the
             # router's generator, which releases its lease and probe claims.

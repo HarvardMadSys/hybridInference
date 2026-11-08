@@ -1604,14 +1604,14 @@ msgstr ""
 
 #: ../developer/routing.md:609
 msgid ""
-"The caller's role reaches the pool through the request context, published"
-" by the API-key auth dependency. Requests with no user identity — health "
-"probes, warmups, the admin playground — carry no role and are treated as "
-"unrestricted: reservation withholds capacity from lower *tiers*, not from"
-" the gateway's own machinery."
+"The caller's role reaches the pool through the request context, published "
+"by the API-key auth dependency, and by the playground for the console user "
+"it serves. Requests with no user identity — health probes, warmups — carry "
+"no role and are treated as unrestricted: reservation withholds capacity "
+"from lower *tiers*, not from the gateway's own machinery."
 msgstr ""
-"调用方的角色由 API key 鉴权依赖写进请求上下文，key 池从那里读取。没有用户身份的请求（健康探测、预热、管理控制台的 "
-"playground）不带角色，一律按不受限处理：预留针对的是较低的*层级*，不是网关自己的内部机制。"
+"调用方的角色由 API key 鉴权依赖写进请求上下文，playground 也会为它所服务的控制台用户写入，key 池从那里读取。"
+"没有用户身份的请求（健康探测、预热）不带角色，一律按不受限处理：预留针对的是较低的*层级*，不是网关自己的内部机制。"
 
 #: ../developer/routing.md:615
 msgid ""
