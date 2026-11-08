@@ -84,7 +84,7 @@ def test_active_manifest_supplies_identity(monkeypatch):
     assert identity.support_email == "help@acme.example"
 
 
-def test_dark_mode_ignores_manifest(monkeypatch):
+def test_retired_dark_mode_does_not_hide_database_identity(monkeypatch):
     _force_mode(monkeypatch, "dark")
     _force_manifest(
         monkeypatch,
@@ -92,7 +92,7 @@ def test_dark_mode_ignores_manifest(monkeypatch):
         base_url="https://acme.example",
         support="help@acme.example",
     )
-    assert get_site_identity() == NEUTRAL_DEFAULT
+    assert get_site_identity().name == "Acme"
 
 
 def test_env_beats_active_manifest(monkeypatch):

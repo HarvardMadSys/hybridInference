@@ -1,0 +1,33 @@
+[
+  {
+    "kind": "openai_compat",
+    "provider": "example_quota",
+    "weight": 1.0,
+    "base_url": "http://127.0.0.1:18353/v1",
+    "api_key": "",
+    "provider_model_id": "example-upstream",
+    "provider_type": "quota",
+    "quota_pool": "example-daily",
+    "quota": {
+      "limit": 100
+    },
+    "quota_source": {
+      "provider": "example_quota",
+      "usage_label": "Daily requests",
+      "unit": "requests"
+    }
+  },
+  {
+    "kind": "openai_compat",
+    "provider": "example_concurrency",
+    "weight": 1.0,
+    "base_url": "http://127.0.0.1:18354/v1",
+    "api_key": "",
+    "provider_model_id": "example-upstream",
+    "provider_type": "concurrency",
+    "concurrency_pool": "example-concurrency",
+    "concurrency": {
+      "limit": 1
+    }
+  }
+]

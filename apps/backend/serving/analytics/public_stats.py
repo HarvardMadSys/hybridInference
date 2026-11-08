@@ -48,8 +48,6 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-import yaml
-
 from routing.model_selection import (
     AUTO_MODEL_ID,
     AUTO_MODEL_PREFIX,
@@ -1308,18 +1306,10 @@ async def compute_snapshot(
 
 
 def load_models_config() -> dict[str, Any] | None:
-    """Read the gateway's ``models.yaml``, or return None when it cannot be read."""
-    from serving.config.distribution import resolve_config_path
+    """Return the database catalog used by the gateway."""
+    from serving.config.documents import get
 
-    try:
-        path = resolve_config_path("models").path
-        data = yaml.safe_load(path.read_text())
-    except Exception:
-        logger.warning(
-            "public_stats: cannot read the model catalog; leaving out models", exc_info=True
-        )
-        return None
-    return data if isinstance(data, dict) else None
+    return get("models")
 
 
 async def store_snapshot(

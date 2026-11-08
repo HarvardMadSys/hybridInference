@@ -9,6 +9,7 @@ from serving.schemas_admin import CreateProviderDefinitionRequest, UpdateProvide
 from serving.servers.routers.admin import provider_definitions
 from serving.servers.routers.admin.provider_definitions import _configured_provider_specs
 from serving.storage.base import ProviderDefinitionRow
+from tests.fixtures.application_documents import seed_models
 from tests.fixtures.audit import ADMIN_ACTOR
 
 
@@ -410,7 +411,7 @@ models:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    seed_models(monkeypatch, models_config)
     monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://host.docker.internal:8001/v1")
 
     specs = _configured_provider_specs()
@@ -439,7 +440,7 @@ models:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    seed_models(monkeypatch, models_config)
     monkeypatch.delenv("SPARK_DEPLOYMENT_URL", raising=False)
 
     specs = _configured_provider_specs()
@@ -545,7 +546,7 @@ models:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    seed_models(monkeypatch, models_config)
 
     specs = _configured_provider_specs()
 
@@ -663,7 +664,7 @@ models:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    seed_models(monkeypatch, models_config)
 
     labels = provider_definitions.config_route_provider_labels()
 
@@ -688,7 +689,7 @@ models:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    seed_models(monkeypatch, models_config)
 
     assert provider_definitions.config_route_provider_labels() == set()
 
@@ -780,7 +781,7 @@ models:
 def _write_models_config(tmp_path, monkeypatch, text: str) -> None:
     models_config = tmp_path / "models.yaml"
     models_config.write_text(text, encoding="utf-8")
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    seed_models(monkeypatch, models_config)
     monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
 
 
@@ -1075,7 +1076,7 @@ models:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
+    seed_models(monkeypatch, models_config)
     monkeypatch.delenv("CHUTES_BASE_URL", raising=False)
     monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
 
@@ -1380,39 +1381,10 @@ async def test_an_unknown_provider_is_404(wiring, call):
     assert caught.value.status_code == 404
 
 
-def test_the_model_registry_is_parsed_again_only_once_it_changes(tmp_path, monkeypatch):
-    """A pure-Python parse of a 93 KB models.yaml took about 90 ms on every provider view."""
-    import os
+def test_provider_metadata_follows_the_json_catalog(monkeypatch):
+    import json
 
-    models_config = tmp_path / "models.yaml"
-    models_config.write_text("models:\n  - id: aa\n    provider: kimi\n", encoding="utf-8")
-    monkeypatch.setenv("MODELS_CONFIG", str(models_config))
-    monkeypatch.setattr(provider_definitions, "_MODELS_CONFIG_PARSE", None)
-    parses: list[str] = []
-    real_safe_load = provider_definitions.yaml.safe_load
-
-    def counting_safe_load(text):
-        parses.append(text)
-        return real_safe_load(text)
-
-    monkeypatch.setattr(provider_definitions.yaml, "safe_load", counting_safe_load)
-
-    first = _configured_provider_specs()
-    assert _configured_provider_specs() == first
-    assert len(parses) == 1
-    assert first["kimi"].model_ids == frozenset(["aa"])
-
-    # An edit that keeps the size is seen by its modification time...
-    stamp = models_config.stat().st_mtime_ns
-    models_config.write_text("models:\n  - id: bb\n    provider: kimi\n", encoding="utf-8")
-    os.utime(models_config, ns=(stamp + 10**9, stamp + 10**9))
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps({"models": [{"id": "aa", "provider": "kimi"}]}))
+    assert _configured_provider_specs()["kimi"].model_ids == frozenset(["aa"])
+    monkeypatch.setenv("MODEL_CATALOG", json.dumps({"models": [{"id": "bb", "provider": "kimi"}]}))
     assert _configured_provider_specs()["kimi"].model_ids == frozenset(["bb"])
-    assert len(parses) == 2
-
-    # ...and a file replaced under the same time and size by its inode.
-    replacement = tmp_path / "models.yaml.new"
-    replacement.write_text("models:\n  - id: cc\n    provider: kimi\n", encoding="utf-8")
-    os.utime(replacement, ns=(stamp + 10**9, stamp + 10**9))
-    os.replace(replacement, models_config)
-    assert _configured_provider_specs()["kimi"].model_ids == frozenset(["cc"])
-    assert len(parses) == 3

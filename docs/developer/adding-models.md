@@ -1,159 +1,39 @@
 # Adding a New Model
 
-This guide is for operators who want a gateway to serve another model. If the
-provider is one the gateway already supports — any OpenAI-compatible API,
-OpenRouter, Anthropic, Claude on Vertex or Gemini — this is configuration only:
-add an entry to the model registry, set its credential, and restart.
+Add a model in **Admin → Routing → Create model**. Choose its router, pricing,
+context/output limits, input capabilities, required role and first provider
+route. Verify the route, save, then grant the intended users access. Ordinary
+route edits propagate between registered backend processes without restarting.
 
-- For a model you serve yourself on vLLM, SGLang, or Ollama, see
-  [Adding a New Local Model](add-local-model.md).
-- For a provider with its own, non-OpenAI API, you need an adapter first; see
-  [Writing a Provider Adapter](provider-adapters.md).
-- When a database is configured, a model, a route or a key can also be added
-  from the admin console while the gateway runs; see
-  [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
-  A model created there has no catalog metadata, so a model that needs a
-  context length, modalities or aliases still belongs in the registry.
+For a non-OpenAI protocol, implement an adapter first; see
+[Writing a Provider Adapter](provider-adapters.md). Local inference still uses
+the OpenAI-compatible adapter; see [Adding a Local Model](add-local-model.md).
 
 ## Where your model registry lives
 
-The gateway uses the file named by `MODELS_CONFIG_PATH`; failing that, the one
-named by an active distribution manifest; failing both, the bundled example
-`config/examples/models.openrouter.yaml`.
-[How a gateway finds its config](configuration.md#how-a-gateway-finds-its-config)
-has the details.
-
-That leaves two ways to set up your own:
-
-- **Point at a file.** Keep your registry wherever you like and set
-  `MODELS_CONFIG_PATH=/path/to/models.yaml`. This is what the quickstart in
-  `README.md` does.
-- **Ship a distribution.** Create `distributions/<name>/` containing a
-  `distribution.yaml` manifest and a `config/models.yaml`, then set
-  `DISTRIBUTION_CONFIG_PATH=distributions/<name>/distribution.yaml` and
-  `DISTRIBUTION_CONFIG_MODE=active`. `distributions/example/` is a working
-  distribution you can copy; `config/examples/distribution.example.yaml` is an
-  annotated manifest.
-
-Throughout this guide, "your model registry" means whichever file that
-resolution picks.
-
-If no registry is found at the resolved path, the backend logs an error, serves
-an empty `/v1/models`, and reports every model as not found.
+The catalog is the `MODEL_CATALOG` JSON setting in PostgreSQL. Application YAML
+files and path-selection variables are retired. The gateway starts with no
+models until an administrator configures them. See [Configuration](configuration.md).
 
 ## Adding a model
 
-1. **Add a model entry** to your model registry:
-
-```yaml
-models:
-  - id: your-model-id
-    name: Your Model Display Name
-    provider: existing_provider  # e.g. "gemini", "deepseek"
-    provider_model_id: "actual-provider-model-id"
-    base_url: ${PROVIDER_BASE_URL}
-    api_key: ${PROVIDER_API_KEY}
-    quantization: "bf16"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 8192
-    max_output_length: 4096
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop]
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      - kind: existing_provider
-        weight: 1.0
-```
-
-The route inherits `base_url` and `api_key` from the model, so it only has to
-carry what differs. Repeat them on a route entry when a second route points
-somewhere else.
-
-2. **Set the variables.** On a gateway with a database, add each one on the
-   admin console's **Configuration** tab with **Add variable**, and mark the
-   API key secret. Without a database, put them in `.env` at the repository
-   root, which the backend's settings loader reads:
-
-```bash
-PROVIDER_BASE_URL=https://api.provider.example/v1
-PROVIDER_API_KEY=your-api-key
-```
-
-A value in `.env` also reaches a gateway with a database: at startup the
-backend copies it into the database, unless the database already has a value
-of that name.
-
-If a `${VAR}` used for `api_key`, `api_keys` or `base_url` is empty, or unset
-with no default registered for that setting, the gateway skips the whole model
-and logs which variable was missing. Mark a route `optional: true` to
-skip only that route instead. Until such a variable has a value, the console
-also reports it as a missing setting to every signed-in user, so mark a route
-you leave unconfigured on purpose `optional: true` as well.
-
-3. **Restart the backend** to load the new model.
-
-4. **Verify** it, as described below.
-
-Note on aliases: to let clients also call the model under a second name — an
-OpenRouter-style vendor slug, or the raw model path your serving runtime uses —
-list those names in `aliases`. They resolve to the same routes.
+For aliases or additional metadata, edit the model catalog in
+**Admin → Settings → Models**. Store credentials as separate secret settings and
+refer to them as `${NAME}`. The catalog refuses inline credentials. The JSON
+shape follows the field reference below; a small example is in
+[The model registry](configuration.md#the-model-registry).
 
 ## Verify it through the gateway
 
-Start the backend. From a source checkout:
-
 ```bash
-MODELS_CONFIG_PATH=/path/to/your/models.yaml \
-  uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
+make doctor
+make smoke MODEL=your-model-id
 ```
 
-With the bundled Docker Compose setup, `make build s=backend` rebuilds and
-restarts the backend instead.
-
-`GET /v1/models` accepts an anonymous request — it resolves an API key only to
-decide whether to include admin-visible entries:
-
-```bash
-curl -s http://localhost:8080/v1/models | jq
-```
-
-`POST /v1/chat/completions` **returns 401 without a valid gateway API key**
-unless the backend is running with `USER_AUTH_ENABLED=false`. Send the key you issued for your own gateway (this is
-the gateway's key, not the upstream provider's):
-
-```bash
-export GATEWAY_API_KEY=<your gateway API key>
-
-curl -s -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $GATEWAY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "your-model-id",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }' | jq
-```
-
-Streaming test:
-
-```bash
-curl -N -s -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $GATEWAY_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "your-model-id",
-    "messages": [{"role": "user", "content": "Stream test"}],
-    "stream": true,
-    "max_tokens": 64
-  }'
-```
+Set `GATEWAY_API_KEY` in the shell when authentication is enabled. The smoke
+uses the real inference path and normal quota. Check streaming separately when
+clients depend on it. A catalog change marked **Restart required** needs
+`make restart s=backend`; ordinary Admin route edits do not.
 
 ## Configuration Reference
 
@@ -216,10 +96,13 @@ remove `admin_only`.
 
 To follow DeepSeek prices automatically, configure the official API model id as a pricing source. The source is independent of the inference endpoint, so a self-hosted route can use these reference prices too. PostgreSQL stores the last validated snapshot; no API key is sent to the pricing or calendar sources.
 
-```yaml
-pricing_source:
-  provider: deepseek
-  model: deepseek-flash
+```json
+{
+  "pricing_source": {
+    "provider": "deepseek",
+    "model": "deepseek-flash"
+  }
+}
 ```
 
 The gateway checks the [official English price page](https://api-docs.deepseek.com/quick_start/pricing/) every five minutes for USD input, output and cache-hit prices and UTC peak windows. It reads the current and following year from [holiday-cn](https://github.com/NateScarlet/holiday-cn), a third-party dataset generated from State Council notices. This calendar is not a DeepSeek API. Published future-year dates are picked up automatically; an empty placeholder is not treated as a year without holidays.
@@ -232,21 +115,53 @@ Fetch or parsing failures retain the last validated snapshot and are logged. A f
 
 For example, apply higher prices on weekdays except configured public holidays:
 
-```yaml
-pricing: {prompt: "0.15", completion: "0.60", input_cache_reads: "0.003"}
-pricing_schedule:
-  effective_at: "2026-10-17T00:00:00Z"
-  timezone: UTC
-  weekdays: [1, 2, 3, 4, 5]
-  excluded_dates: ["2026-12-25"]  # Example only; supply the provider's calendar.
-  default: {prompt: "0.15", completion: "0.60", input_cache_reads: "0.003"}
-  windows:
-    - start: "01:00"
-      end: "04:00"
-      pricing: {prompt: "0.30", completion: "1.20", input_cache_reads: "0.006"}
-    - start: "06:00"
-      end: "10:00"
-      pricing: {prompt: "0.30", completion: "1.20", input_cache_reads: "0.006"}
+```json
+{
+  "pricing": {
+    "prompt": "0.15",
+    "completion": "0.60",
+    "input_cache_reads": "0.003"
+  },
+  "pricing_schedule": {
+    "effective_at": "2026-10-17T00:00:00Z",
+    "timezone": "UTC",
+    "weekdays": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "excluded_dates": [
+      "2026-12-25"
+    ],
+    "default": {
+      "prompt": "0.15",
+      "completion": "0.60",
+      "input_cache_reads": "0.003"
+    },
+    "windows": [
+      {
+        "start": "01:00",
+        "end": "04:00",
+        "pricing": {
+          "prompt": "0.30",
+          "completion": "1.20",
+          "input_cache_reads": "0.006"
+        }
+      },
+      {
+        "start": "06:00",
+        "end": "10:00",
+        "pricing": {
+          "prompt": "0.30",
+          "completion": "1.20",
+          "input_cache_reads": "0.006"
+        }
+      }
+    ]
+  }
+}
 ```
 
 Omitting the calendar fields preserves daily schedules. On excluded dates and
@@ -260,19 +175,23 @@ selected at its start, even if a stream finishes across a boundary.
 
 Routes give one model several endpoints with weighted distribution:
 
-```yaml
-route:
-  # Local vLLM deployment
-  - kind: vllm
-    weight: 0.7  # 70% of traffic
-    base_url: http://localhost:8000
-    provider_model_id: "/models/local-model"
-
-  # Remote API fallback
-  - kind: your_provider
-    weight: 0.3  # 30% of traffic
-    base_url: https://api.provider.example
-    api_key: ${API_KEY}
+```json
+{
+  "route": [
+    {
+      "kind": "vllm",
+      "weight": 0.7,
+      "base_url": "http://localhost:8000",
+      "provider_model_id": "/models/local-model"
+    },
+    {
+      "kind": "your_provider",
+      "weight": 0.3,
+      "base_url": "https://api.provider.example",
+      "api_key": "${API_KEY}"
+    }
+  ]
+}
 ```
 
 Beyond the model fields above, a route entry accepts:
@@ -299,17 +218,25 @@ them.
 An OpenAI-compatible gateway may use an API prefix other than `/v1`. Set
 `embeddings_path` on that route to avoid appending an unwanted `/v1` segment:
 
-```yaml
-models:
-  - id: text-embedding-example
-    name: Example embeddings
-    provider: openai_compat
-    model_type: embedding
-    route:
-      - kind: openai_compat
-        base_url: https://gateway.example/api/v2
-        api_key: ${EMBEDDING_API_KEY}
-        embeddings_path: /embeddings
+```json
+{
+  "models": [
+    {
+      "id": "text-embedding-example",
+      "name": "Example embeddings",
+      "provider": "openai_compat",
+      "model_type": "embedding",
+      "route": [
+        {
+          "kind": "openai_compat",
+          "base_url": "https://gateway.example/api/v2",
+          "api_key": "${EMBEDDING_API_KEY}",
+          "embeddings_path": "/embeddings"
+        }
+      ]
+    }
+  ]
+}
 ```
 
 This sends requests to `https://gateway.example/api/v2/embeddings`. The override

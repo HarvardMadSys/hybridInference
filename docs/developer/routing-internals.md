@@ -238,7 +238,7 @@ from `apps/backend/routing/backends.py`. The
 `HybridFixedRouterFactory` already accepts a `cloud_backend` builder
 (`apps/backend/serving/servers/hybrid_composition.py`), so a composition root
 can put a cloud-scoped RouteWise under a pool right now. `GreedyRouter` and
-`NimbusRouter` are not registered strategies, and no `models.yaml` field names
+`NimbusRouter` are not registered strategies, and no `MODEL_CATALOG` field names
 one, so nothing reaches this shape from configuration.
 
 This example describes two routing levels, not arbitrary recursive

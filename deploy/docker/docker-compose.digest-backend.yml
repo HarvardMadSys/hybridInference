@@ -13,3 +13,8 @@
 services:
   backend:
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be a full image@sha256 reference}
+    # Only older-image rollback needs a file-based public site identity. New
+    # images ignore these retired inputs and use database documents.
+    environment:
+      DISTRIBUTION_CONFIG_PATH: ${ROLLBACK_DISTRIBUTION_CONFIG_PATH-}
+      DISTRIBUTION_CONFIG_MODE: ${ROLLBACK_DISTRIBUTION_CONFIG_MODE-dark}

@@ -26,23 +26,16 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from serving import spend_ledger
-from serving.auto_mode import AutoMode, load_auto_mode, load_auto_mode_from_text
+from serving.auto_mode import AutoMode, _auto_mode_from_document
 from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
 from serving.config.batch_routes import BatchRouteResolver
 from serving.config.disabled_providers import DisabledProviderResolver
-from serving.config.distribution import resolve_config_path
+from serving.config.documents import get as get_document
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.offload_routes import AppliedOffloadPolicies, OffloadRouteResolver
-from serving.config.route_catalog import (
-    import_missing as import_route_catalog,
-    install as install_route_catalog,
-    installed_body,
-    reset_installed as reset_route_catalog,
-    seed_texts,
-)
 from serving.config.route_states import RouteStateResolver
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
@@ -77,8 +70,7 @@ from .registry import (
     EmbeddingsPathConfigError,
     ModelLoadReport,
     ModelRegistrationInfo,
-    register_from_models_text,
-    register_from_models_yaml,
+    register_from_models_document,
 )
 from .routewise_rebuild import rebuild_cached_routewise_routers
 
@@ -627,7 +619,6 @@ async def _load_app_config() -> None:
             made safe to start on.
     """
     if not database_enabled():
-        reset_route_catalog()
         app_config.use_environment(database_enabled=False)
         return
 
@@ -641,18 +632,6 @@ async def _load_app_config() -> None:
                 # Before anything reads a table: a database the migrations
                 # have not brought to this code's schema stops startup here.
                 await require_schema(conn)
-                try:
-                    # Import before settings load so discovery scans the stored
-                    # documents. A row that already exists is left as it is.
-                    # A failed import must not abandon the stored settings.
-                    install_route_catalog(await import_route_catalog(conn, seed_texts()))
-                except Exception:
-                    logger.error(
-                        "Route catalog import failed; registering models and "
-                        "routing from the files",
-                        exc_info=True,
-                    )
-                    reset_route_catalog()
                 await app_config.load(AppConfigStore(conn))
             finally:
                 await conn.close()
@@ -704,6 +683,7 @@ def _start_live_config(pool: Any) -> None:
         started_at=dt.datetime.now(dt.UTC),
         capabilities={
             **live_config.COORDINATOR.capabilities(),
+            "groups": {**live_config.COORDINATOR.capabilities()["groups"], "routing.runtime": [1]},
             "details": instances.default_details(),
         },
     )
@@ -766,9 +746,8 @@ def _init_db_logger() -> DatabaseLogger | None:
 async def _init_router_and_models(
     router: FixedRouter,
 ) -> tuple[dict, list[ModelRegistrationInfo]]:
-    """Register models on the router from YAML configuration.
+    """Register models from the Admin/database catalog.
 
-    All models should be configured via YAML for consistency and flexibility.
     Supports hybrid mode where a single model can have multiple adapters
     (e.g., local VLLM and remote API) for failover and load balancing.
 
@@ -778,12 +757,12 @@ async def _init_router_and_models(
     embedding_adapters: dict = {}
     model_infos: list[ModelRegistrationInfo] = []
 
-    # A stored catalog wins over the file, including when the file is gone.
-    stored_models = installed_body("models")
+    # Empty configuration registers no models; Admin runtime models load below.
+    stored_models = get_document("models")
     try:
         if stored_models is not None:
             load_report = ModelLoadReport()
-            registered, model_infos = register_from_models_text(
+            registered, model_infos = register_from_models_document(
                 router,
                 stored_models,
                 embedding_adapters=embedding_adapters,
@@ -804,61 +783,15 @@ async def _init_router_and_models(
                     f"Registered {len(embedding_adapters)} embedding adapter(s): "
                     f"{list(embedding_adapters.keys())}"
                 )
-        else:
-            _register_models_from_file(router, embedding_adapters, model_infos)
     except EmbeddingsPathConfigError:
         # A rejected explicit path must abort startup, not leave the server
         # running on whatever models were registered before the bad entry.
         raise
     except Exception as exc:
-        source = "the database route catalog" if stored_models is not None else "models.yaml"
+        source = "the Admin model catalog"
         logger.warning(f"Failed to load {source}: {exc}")
 
     return embedding_adapters, model_infos
-
-
-def _register_models_from_file(
-    router: FixedRouter,
-    embedding_adapters: dict,
-    model_infos: list[ModelRegistrationInfo],
-) -> None:
-    """Register the model file when the database has no models row."""
-    resolved_models = resolve_config_path("models")
-    models_path = resolved_models.path
-    if resolved_models.source != "default" and not models_path.exists():
-        logger.warning(f"Models config not found: {models_path} (source={resolved_models.source})")
-    elif models_path.exists():
-        load_report = ModelLoadReport()
-        registered, loaded_infos = register_from_models_yaml(
-            router,
-            models_path,
-            embedding_adapters=embedding_adapters,
-            continue_on_missing_env=True,
-            report=load_report,
-        )
-        model_infos.extend(loaded_infos)
-        # A request for a skipped model says why it is missing.
-        record_skipped_models(load_report)
-        if registered:
-            logger.info(f"Registered {registered} routes from {models_path}")
-        if embedding_adapters:
-            logger.info(
-                f"Registered {len(embedding_adapters)} embedding adapter(s): "
-                f"{list(embedding_adapters.keys())}"
-            )
-    else:
-        # Default path, nothing there. Previously silent, and silence is the
-        # worst answer here: /v1/models returns an empty list, every request
-        # 404s, and the log says nothing at all. The registry is a
-        # deployment's own file — upstream ships none — so this is what a
-        # fresh checkout hits on its first run.
-        logger.error(
-            "No model registry at %s, so no models are available: "
-            "/v1/models will be empty and every request will report the "
-            "model as not found. Point MODELS_CONFIG_PATH at your registry, "
-            "or copy one of the files in config/examples/ to that path.",
-            models_path,
-        )
 
 
 def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
@@ -870,13 +803,10 @@ def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
     turns auto off and nothing else.
     """
     try:
-        stored_models = installed_body("models")
+        stored_models = get_document("models")
         if stored_models is not None:
-            return load_auto_mode_from_text(stored_models, router.routes)
-        models_path = resolve_config_path("models").path
-        if not models_path.exists():
-            return None
-        return load_auto_mode(models_path, router.routes)
+            return _auto_mode_from_document(stored_models, router.routes)
+        return None
     except Exception as exc:
         logger.warning(f"Auto mode is off: failed to load the auto section: {exc}")
         return None
@@ -935,19 +865,19 @@ def _attach_hybrid_router_factory(
 
 
 def _apply_routing_manager(router: FixedRouter) -> RoutingManager | None:
-    """Optionally load the routing manager and apply weights from YAML.
+    """Optionally load the routing manager and apply the database policy's weights.
 
     Returns:
         Optional[RoutingManager]: The active manager when configuration exists,
         otherwise None.
     """
     try:
-        from routing.config import load_routing_config_text
+        from routing.config import routing_config_from_data
 
-        stored_routing = installed_body("routing")
-        if stored_routing is not None:
-            manager = RoutingManager(router, resolve_config_path("routing").path)
-            manager.load_config(load_routing_config_text(stored_routing))
+        stored_routing = get_document("routing")
+        if stored_routing:
+            manager = RoutingManager(router)
+            manager.load_config(routing_config_from_data(stored_routing))
             updated = manager.apply()
             if updated:
                 logger.info(
@@ -957,25 +887,7 @@ def _apply_routing_manager(router: FixedRouter) -> RoutingManager | None:
             else:
                 logger.info("RoutingManager loaded the database route catalog; no routes updated")
             return manager
-        resolved_routing = resolve_config_path("routing")
-        routing_cfg_path = resolved_routing.path
-        if resolved_routing.source != "default" and not routing_cfg_path.exists():
-            logger.warning(
-                f"Routing config not found: {routing_cfg_path} (source={resolved_routing.source})"
-            )
-        elif routing_cfg_path.exists():
-            manager = RoutingManager(router, routing_cfg_path)
-            manager.load()
-            updated = manager.apply()
-            if updated:
-                logger.info(
-                    f"RoutingManager applied weights to {updated} routes from {routing_cfg_path}"
-                )
-            else:
-                logger.info("RoutingManager loaded; no routes updated (check config)")
-            return manager
-        else:
-            logger.info("No routing config found; using default routes")
+
     except Exception as exc:
         logger.warning(f"RoutingManager failed to initialize: {exc}")
     return None
@@ -1302,16 +1214,12 @@ async def initialize() -> AppServices:
     # parsed RoutingConfig; we re-load here cheaply (small YAML).
     default_router_name = "fixed"
     try:
-        from routing.config import load_routing_config, load_routing_config_text
+        from routing.config import routing_config_from_data
 
-        stored_routing = installed_body("routing")
+        stored_routing = get_document("routing")
         if stored_routing is not None:
-            default_router_name = load_routing_config_text(stored_routing).default_router
-        else:
-            routing_cfg_path = resolve_config_path("routing").path
-            if routing_cfg_path.exists():
-                routing_cfg = load_routing_config(routing_cfg_path)
-                default_router_name = routing_cfg.default_router
+            default_router_name = routing_config_from_data(stored_routing).default_router
+
     except Exception as exc:
         logger.warning(
             f"Failed to read default_router from the routing catalog: {exc}; using 'fixed'."
@@ -1438,14 +1346,16 @@ async def initialize() -> AppServices:
     # ``state_changes`` would be ignored by exactly the deployments still being
     # paged. Best-effort: a deployment with no alerts.yaml keeps the defaults
     # (page once per outage, 300s apart).
-    from serving.observability.alert_config import AlertConfig as _AlertConfig
+    from serving.observability.alert_config import (
+        AlertConfig as _AlertConfig,
+        alert_config_from_data,
+    )
 
     _rules_in_force = _AlertConfig()
     try:
-        from serving.observability.alert_config import load_alert_config as _load_alert_config
         from serving.observability.state_alert_policy import apply_state_change_policy
 
-        _rules_in_force = _load_alert_config(str(resolve_config_path("alerts").path))
+        _rules_in_force = alert_config_from_data(get_document("alerts"))
         apply_state_change_policy(_rules_in_force.state_changes)
     except Exception:
         logger.debug("state-change alert policy unavailable; keeping defaults", exc_info=True)
@@ -1462,7 +1372,6 @@ async def initialize() -> AppServices:
     if settings.alerts_enabled:
         alert_handler = None
         try:
-            from serving.observability.alert_config import load_alert_config
             from serving.observability.alert_rules import AlertEngine
             from serving.observability.log_handler import (
                 AlertingLogHandler,
@@ -1473,7 +1382,7 @@ async def initialize() -> AppServices:
             alert_handler = AlertingLogHandler(maxsize=10_000)
             install_alert_log_handler(alert_handler)
 
-            alert_cfg = load_alert_config(str(resolve_config_path("alerts").path))
+            alert_cfg = alert_config_from_data(get_document("alerts"))
             alert_engine = AlertEngine(
                 handler=alert_handler,
                 config=alert_cfg,
@@ -1972,6 +1881,11 @@ async def initialize() -> AppServices:
         route_state_refresh_task=route_state_refresh_task,
         offload_route_refresh_task=offload_route_refresh_task,
     )
+    if operational_store is not None and db_logger is not None and db_logger.pool is not None:
+        from serving.config.routing_sync import RoutingSynchronizer
+
+        services.routing_sync = RoutingSynchronizer(services, db_logger.pool)
+        await services.routing_sync.start()
     return services
 
 
@@ -2045,6 +1959,8 @@ async def shutdown(services: AppServices) -> None:
     # The batch worker first: its in-flight requests run through the whole
     # serving stack (router, pricing, stores), so it stops before any of that
     # is torn down.
+    if services.routing_sync is not None:
+        await services.routing_sync.stop()
     await _stop_batch_scheduler(services)
 
     if services.pricing_sync is not None:

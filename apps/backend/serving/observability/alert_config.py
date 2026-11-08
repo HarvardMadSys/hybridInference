@@ -1,4 +1,4 @@
-"""Pydantic models for config/alerts.yaml plus a loader that handles env expansion."""
+"""Alert document schemas and reference expansion, with an explicit legacy file reader."""
 
 from __future__ import annotations
 
@@ -429,6 +429,11 @@ class AlertConfig(BaseModel):
     cost: CostSection = Field(default_factory=CostSection)
 
 
+def alert_config_from_data(raw: dict[str, Any]) -> AlertConfig:
+    """Validate a parsed alert document using the existing setting-reference rules."""
+    return AlertConfig.model_validate(_expand_env(raw))
+
+
 def load_alert_config(path: str | Path) -> AlertConfig:
     """Load AlertConfig from YAML at ``path``; return defaults if missing."""
     p = Path(path)
@@ -436,5 +441,4 @@ def load_alert_config(path: str | Path) -> AlertConfig:
         log.warning("alerts config not found at %s; using defaults", p)
         return AlertConfig()
     raw = yaml.safe_load(p.read_text()) or {}
-    raw = _expand_env(raw)
-    return AlertConfig.model_validate(raw)
+    return alert_config_from_data(raw)

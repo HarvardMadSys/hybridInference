@@ -263,6 +263,18 @@ part of the conversation.
 
 ## Backup
 
+The standard lifecycle commands create a private dump and verify it in a
+separate scratch database:
+
+```bash
+make backup BACKUP=/private/path/gateway.dump
+make restore-check BACKUP=/private/path/gateway.dump
+```
+
+The dump includes every application document and secret in `app_config`.
+The restore check does not replace production data. The commands below remain
+available when a manual database restore is required.
+
 `pg_dump` in custom format, straight out of the container:
 
 ```bash

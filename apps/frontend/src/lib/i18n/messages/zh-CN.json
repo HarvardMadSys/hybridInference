@@ -2252,7 +2252,7 @@
     "text": "跟随系统"
   },
   "chrome.configuration.user_notice": {
-    "source": "This service is missing required configuration, so some features may not work. Please contact your administrator.",
+    "source": "Ask admin to configure this service. Required configuration is missing.",
     "text": "这个服务缺少必要的配置，部分功能可能用不了。请联系管理员。"
   },
   "chrome.error.body": {

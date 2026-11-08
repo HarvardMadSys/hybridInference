@@ -27,6 +27,7 @@ from serving.storage.base import ProviderDefinitionRow, ProviderKeyRow
 from serving.utils import password as password_utils
 from serving.utils.login_rate_limit import reset_login_rate_limit_state
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
+from tests.fixtures.application_documents import seed_models
 
 AUTH = {"Authorization": "Bearer test-admin"}
 
@@ -45,7 +46,7 @@ async def config_client(monkeypatch, tmp_path):
         "    base_url: https://api.example/v1\n"
         "    api_key: ${CHAT_UPSTREAM_KEY}\n"
     )
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
+    seed_models(monkeypatch, models)
     monkeypatch.delenv("CHAT_UPSTREAM_KEY", raising=False)
     get_settings.cache_clear()
 

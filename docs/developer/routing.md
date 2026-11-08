@@ -17,21 +17,31 @@ request to the adapter it chose is in [Routing Internals](routing-internals.md).
 The routing file's `default_router:` names the strategy for models that do not
 choose one. A model entry in the registry overrides it:
 
-```yaml
-models:
-  - id: <model-id>
-    provider: openai_compat
-    router: fixed            # strategy name; omit to use default_router
-    route:
-      - kind: openai_compat
-        weight: 0.7
-        base_url: http://localhost:8000/v1
-        provider_model_id: <served-model-name>
-      - kind: openai_compat
-        weight: 0.3
-        base_url: https://api.your-provider.example/v1
-        api_key: ${YOUR_PROVIDER_API_KEY}
-        provider_model_id: <upstream-model-id>
+```json
+{
+  "models": [
+    {
+      "id": "<model-id>",
+      "provider": "openai_compat",
+      "router": "fixed",
+      "route": [
+        {
+          "kind": "openai_compat",
+          "weight": 0.7,
+          "base_url": "http://localhost:8000/v1",
+          "provider_model_id": "<served-model-name>"
+        },
+        {
+          "kind": "openai_compat",
+          "weight": 0.3,
+          "base_url": "https://api.your-provider.example/v1",
+          "api_key": "${YOUR_PROVIDER_API_KEY}",
+          "provider_model_id": "<upstream-model-id>"
+        }
+      ]
+    }
+  ]
+}
 ```
 
 Two strategies are registered out of the box:
@@ -195,8 +205,8 @@ weight, the effective weight, and a `reasons` list:
 |---|---|---|
 | `weight_override` | a `provider_weight_overrides` row for that (model, endpoint) | admin console → routing weights |
 | `provider_disabled` | a `disabled_providers` row for that provider label | admin console → providers |
-| `routing_yaml` | the local/remote split `RoutingManager` applies once at boot | the overlay's `routing.yaml` |
-| `configured_zero` | `weight: 0` in the model registry | the overlay's `models.yaml` |
+| `routing_yaml` | the local/remote split `RoutingManager` applies once at boot | the overlay's `ROUTING_POLICY` |
+| `configured_zero` | `weight: 0` in the model registry | the overlay's `MODEL_CATALOG` |
 
 `routing_yaml` appears only on a gateway without a database. With one, the
 routing file's local/remote split never reaches the weights; see
@@ -602,7 +612,7 @@ message saying the package is missing.
 
 For a registry you can run unedited against two loopback providers, with every
 option annotated, see
-[`config/examples/models.routewise.yaml`](../../config/examples/models.routewise.yaml).
+[`config/examples/models.routewise.json`](../../config/examples/models.routewise.json).
 
 **RouteWise needs latency measurements.** Until it has measured an endpoint,
 it cannot tell which one is faster, so it sends everything to the cheapest —
@@ -647,7 +657,7 @@ withdrawn feature — `prefill_load_routing_enabled`,
 `prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are still
 accepted so an older registry keeps starting, but they have no effect whatever
 their value, and the backend logs a warning naming them once per process.
-Remove them from `models.yaml`. FixedRouter's
+Remove them from `MODEL_CATALOG`. FixedRouter's
 [prefill-aware selection](#prefill-aware-selection) is unchanged.
 
 `latency_min_samples` is accepted the same way. Provider selection never read
@@ -678,7 +688,7 @@ route whose environment is unset is skipped at startup. Switching a model to
 `routewise` in the admin console is therefore refused while any of its routes
 has a weight above `0` but below the model's heaviest route, and the router
 logs `routewise_route_weights_ignored` when such a weighting reaches a
-`routewise` model another way: `models.yaml`, a weight override or a new route.
+`routewise` model another way: `MODEL_CATALOG`, a weight override or a new route.
 A persisted switch is still applied at startup and on a configuration restore.
 
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
@@ -696,7 +706,7 @@ The route's `kind:` chooses its inference protocol; its `provider:` identifies
 the deployment's service/account and can differ from the kind. The fetcher
 must measure the account used by the corresponding routes, whether it uses
 their inference key or a separate billing credential. The
-[local quota example](../../config/examples/models.routewise.quota.yaml) uses
+[local quota example](../../config/examples/models.routewise.quota.json) uses
 `kind: openai_compat` with `provider: example_quota` and a matching registered
 source. It runs without a real supplier account; the default two-provider
 example remains unchanged until this separate registry is selected.
@@ -725,7 +735,7 @@ host, otherwise a name taken from the hostname (`api.minimax.io` →
 an edit that changes that derived part — a new port locally, a new vendor
 hostname remotely — renames the endpoint and restarts its latency profile,
 while one that does not (moving between local hosts on the same port) keeps it.
-A `route_id:` in a static `models.yaml` never overrides it; that field belongs
+A `route_id:` in a static `MODEL_CATALOG` never overrides it; that field belongs
 to the admin provider-routes API.
 
 **Cold start.** A quota-bearing route needs a calibrated cost envelope, built
@@ -852,25 +862,51 @@ served exactly as a request naming that model would be.
 Tiers are defined in an `auto:` section of the model registry, next to
 `models:`:
 
-```yaml
-auto:
-  default_profile: balance        # what a request for plain `auto` gets
-  session:
-    idle_timeout_seconds: 1800
-    max_sessions: 10000
-  profiles:
-    intelligence:
-      candidates:
-        - {model: <frontier-model>, reasoning_effort: high}
-        - {model: <mid-model>, reasoning_effort: high}
-    balance:
-      candidates:
-        - {model: <mid-model>}
-        - {model: <frontier-model>}
-    fast:
-      candidates:
-        - {model: <small-model>}
-        - {model: <mid-model>, reasoning_effort: low}
+```json
+{
+  "auto": {
+    "default_profile": "balance",
+    "session": {
+      "idle_timeout_seconds": 1800,
+      "max_sessions": 10000
+    },
+    "profiles": {
+      "intelligence": {
+        "candidates": [
+          {
+            "model": "<frontier-model>",
+            "reasoning_effort": "high"
+          },
+          {
+            "model": "<mid-model>",
+            "reasoning_effort": "high"
+          }
+        ]
+      },
+      "balance": {
+        "candidates": [
+          {
+            "model": "<mid-model>"
+          },
+          {
+            "model": "<frontier-model>"
+          }
+        ]
+      },
+      "fast": {
+        "candidates": [
+          {
+            "model": "<small-model>"
+          },
+          {
+            "model": "<mid-model>",
+            "reasoning_effort": "low"
+          }
+        ]
+      }
+    }
+  }
+}
 ```
 
 Each profile is served as `auto-<name>`. The auto models exist only while the
@@ -987,7 +1023,7 @@ endpoints:
 | `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
 | `PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` | Disable or enable a route of either source; a disabled route keeps its weights but takes no request, retry, fallback or offload. |
 | `PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` | Allow or forbid batch work on a route, or let it follow its locality (`null`): see [Which routes batch work may use](batches.md#which-routes-batch-work-may-use). |
-| `POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}` | Delete a registry route from this deployment, or restore it; models.yaml is not changed. |
+| `POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}` | Delete a registry route from this deployment, or restore it; the catalog baseline is not changed. |
 | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
 | `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |
 | `GET /admin/routing/offload-routes` | Every model's offload route and whether routing applies it; `PUT` / `DELETE .../{model_id}` sets or clears one — see [Queue-wait offload](#queue-wait-offload). |
@@ -1313,18 +1349,26 @@ handled.
 
 Per model, in the model registry:
 
-```yaml
-models:
-  - id: <model-id>
-    router: round_robin
-    router_params:
-      skip_open_circuits: true
+```json
+{
+  "models": [
+    {
+      "id": "<model-id>",
+      "router": "round_robin",
+      "router_params": {
+        "skip_open_circuits": true
+      }
+    }
+  ]
+}
 ```
 
 Or deployment-wide, in the routing file:
 
-```yaml
-default_router: round_robin
+```json
+{
+  "default_router": "round_robin"
+}
 ```
 
 Note that `RoutingManager.apply()` only rewrites weights when the effective

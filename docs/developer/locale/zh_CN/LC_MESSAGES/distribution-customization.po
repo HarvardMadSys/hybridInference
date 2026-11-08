@@ -2987,3 +2987,66 @@ msgstr "只上线测试过的那组镜像和配置，并保留上一组，以便
 #~ msgstr ""
 #~ "上游维护标准实现、读取配置的代码和已公布的 Site UI "
 #~ "接口契约。各发行版维护自己的配置、模块、部署和源码分支修改。上游合并变更本身不会决定发行版何时升级；升级时机由发行版的发布流水线负责。"
+
+msgid "Application identity, feature restrictions and branding now live in the `SITE_CONFIGURATION` and `SITE_BRANDING` settings in Admin. Model/routing/alert configuration is database-backed too. Application manifests and branding files are no longer read at runtime. The build-time Site UI/module mechanisms below remain separate. See [Configuration](configuration.md) for migration and editing."
+msgstr "应用标识、功能限制和品牌信息现位于 Admin 的 `SITE_CONFIGURATION` 和 `SITE_BRANDING` 设置中。模型、路由和告警配置也由数据库管理。运行时不再读取应用清单和品牌文件。下方构建时 Site UI 和模块机制仍独立存在。迁移和编辑方式见[配置](configuration.md)。"
+
+msgid "Use Admin for application settings and a deployment overlay for code and assets."
+msgstr "通过 Admin 管理应用设置，通过部署 overlay 管理代码和资源。"
+
+msgid "`SITE_CONFIGURATION` and `SITE_BRANDING` in Admin"
+msgstr "Admin 中的 `SITE_CONFIGURATION` 和 `SITE_BRANDING`"
+
+msgid "Applies on settings refresh"
+msgstr "设置刷新时应用"
+
+msgid "`SITE_BRANDING`; optional mounted `site-assets/` images served at `/site-assets/*`"
+msgstr "`SITE_BRANDING`；可选挂载的 `site-assets/` 图片通过 `/site-assets/*` 提供"
+
+msgid "Applies on settings refresh; packaged asset changes need a rebuild"
+msgstr "设置刷新时应用；打包资源修改需要重新构建"
+
+msgid "`SITE_BRANDING`, `SITE_CONFIGURATION` and supported Admin settings"
+msgstr "`SITE_BRANDING`、`SITE_CONFIGURATION` 及支持的 Admin 设置"
+
+msgid "Admin Routing, `MODEL_CATALOG` and `ROUTING_POLICY`"
+msgstr "Admin Routing、`MODEL_CATALOG` 和 `ROUTING_POLICY`"
+
+msgid "Follow restart markers on documents; ordinary route edits apply online"
+msgstr "遵循文档的重启标记；普通路由修改在线应用"
+
+msgid "`SITE_CONFIGURATION` → `features`, plus each feature's Admin settings"
+msgstr "`SITE_CONFIGURATION` → `features`，加上各功能的 Admin 设置"
+
+msgid "Follow the setting's refresh or restart marker"
+msgstr "遵循该设置的刷新或重启标记"
+
+msgid "Application settings are edited in Admin and stored in PostgreSQL. No application manifest, model, routing, alerts or branding file is read at runtime. Docker Compose remains the infrastructure definition, and a deployment can keep its own overlay for containers, public assets and frontend build inputs."
+msgstr "应用设置在 Admin 中编辑并存储在 PostgreSQL 中。运行时不读取任何应用清单、模型、路由、告警或品牌文件。Docker Compose 仍定义基础设施，部署可保留自己的 overlay 来管理容器、公共资源和前端构建输入。"
+
+msgid "Container wiring and assets belong to the deployment repository. Application configuration belongs in Admin Settings and is included in its configuration backup. Checked-in JSON examples are optional import input, not runtime defaults."
+msgstr "容器连接设置和资源属于部署仓库。应用配置属于 Admin Settings，并包含在其配置备份中。仓库中的 JSON 示例是可选导入输入，不是运行时默认值。"
+
+msgid "The former manifest is now the `SITE_CONFIGURATION` JSON setting:"
+msgstr "原来的清单现在是 `SITE_CONFIGURATION` JSON 设置："
+
+msgid "Model/routing file paths and a branding file path are not accepted here. Use `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES` and `SITE_BRANDING` in the same Admin category instead."
+msgstr "此处不接受模型、路由或品牌文件路径。请改用同一 Admin 类别中的 `MODEL_CATALOG`、`ROUTING_POLICY`、`ALERT_RULES` 和 `SITE_BRANDING`。"
+
+msgid "Save the site document in Admin Settings. It applies when backend settings refresh, normally within ten seconds. There is no active/dark mode to select. For existing external YAML, use the explicit [legacy importer](configuration.md#model-and-routing-documents-in-the-database), then verify the stored documents before removing the old files."
+msgstr "在 Admin Settings 中保存站点文档。它在后端设置刷新时生效，通常不超过十秒。无需选择 active/dark 模式。对于现有外部 YAML，使用显式[旧配置导入器](configuration.md#model-and-routing-documents-in-the-database)，确认存储的文档后再删除旧文件。"
+
+msgid "The site and branding documents are public, strictly validated contracts. Keep credentials in separate secret settings. The `SITE_*` operational settings retain their existing precedence when explicitly configured; otherwise the site and branding documents supply the identity. An unconfigured deployment is neutral."
+msgstr "站点和品牌文档是经过严格验证的公共契约。凭据应保存在独立的秘密设置中。显式配置的 `SITE_*` 运行设置保留现有优先级；否则由站点和品牌文档提供标识。未配置的部署保持中性。"
+
+msgid "Set the validated `SITE_BRANDING` JSON document in Admin Settings. The example shape is in `config/examples/branding.example.json`. The console obtains the public branding payload from `/site-config`; updating it requires no frontend image rebuild. Public image assets can still be mounted read-only through `SITE_ASSETS_DIR`; these are assets rather than application configuration."
+msgstr "在 Admin Settings 中设置经过验证的 `SITE_BRANDING` JSON 文档。示例结构见 `config/examples/branding.example.json`。控制台从 `/site-config` 获取公共品牌载荷；更新无需重新构建前端镜像。公共图片资源仍可通过 `SITE_ASSETS_DIR` 只读挂载；这些是资源，不是应用配置。"
+
+msgid "`features.public_signup: false` closes signup in both the API and console, regardless of the ordinary signup switch. `features.rag: false` disables the RAG surface. Public usage statistics remain opt-in through `public_stats`; schedule `python -m serving.analytics.public_stats` for deployments that enable them. Router selection still belongs to each model and its router parameters."
+msgstr "`features.public_signup: false` 无论普通注册开关如何，都会同时关闭 API 和控制台注册。`features.rag: false` 禁用 RAG 接口。公共用量统计仍需通过 `public_stats` 显式启用；为启用它的部署调度 `python -m serving.analytics.public_stats`。路由器选择仍由各模型及其路由器参数决定。"
+
+msgid "Site configuration and branding follow settings refresh. Catalog, routing policy and alert-rule changes are marked Restart required. Ordinary Admin provider and route changes synchronize between processes and report their applied status. Frontend code and Site UI module changes still require a frontend build."
+msgstr "站点配置和品牌信息随设置刷新生效。目录、路由策略和告警规则修改标记为 Restart required。普通 Admin 供应商和路由修改会在进程间同步并报告应用状态。前端代码和 Site UI 模块修改仍需要前端构建。"
+
+msgid "`make up DISTRIBUTION=example` explicitly selects the local teaching fixture and seeds its JSON settings. `make demo DISTRIBUTION=example` adds PostgreSQL and the console; from then on the stored settings win. The `EXAMPLE_OVERLAY` marker keeps the example out of automatic deployment discovery."
+msgstr "`make up DISTRIBUTION=example` 显式选择本地教学示例，并为其 JSON 设置提供种子值。`make demo DISTRIBUTION=example` 添加 PostgreSQL 和控制台；此后以已保存设置为准。`EXAMPLE_OVERLAY` 标记使示例不参与自动部署发现。"

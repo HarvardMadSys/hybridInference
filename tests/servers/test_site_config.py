@@ -11,9 +11,10 @@ from httpx import ASGITransport, AsyncClient
 from serving.config.distribution import get_distribution_config
 from serving.config.settings import get_settings
 from serving.servers.routers import site_config
+from tests.fixtures.application_documents import seed_site
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_BRANDING_EXAMPLE = _REPO_ROOT / "config" / "examples" / "branding.example.yaml"
+_BRANDING_EXAMPLE = _REPO_ROOT / "config" / "examples" / "branding.example.json"
 
 MANIFEST = """\
 schema_version: 1
@@ -77,7 +78,7 @@ async def test_neutral_fallback_without_manifest(client):
 async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -99,7 +100,7 @@ async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
 async def test_site_identity_env_overrides_manifest_site_fields(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("SITE_PUBLIC_BASE_URL", "http://localhost:13001")
     monkeypatch.setenv("SITE_SUPPORT_EMAIL", "support@local.dev")
@@ -121,17 +122,17 @@ async def test_site_identity_env_overrides_manifest_site_fields(client, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_dark_mode_does_not_publish_manifest_identity(client, monkeypatch, tmp_path):
+async def test_retired_mode_does_not_hide_database_identity(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "dark")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 
     body = (await client.get("/site-config")).json()
-    assert body["distribution"]["id"] == "neutral"
-    assert body["site"] == {"public_base_url": "", "support_email": ""}
+    assert body["distribution"]["id"] == "example-site"
+    assert body["site"]["public_base_url"] == "https://gateway.example.com"
     assert body["branding"] is None
 
 
@@ -147,7 +148,7 @@ async def test_serves_validated_public_branding_with_docs_override(client, monke
             "  branding: ./branding/site.yaml\nfeatures:\n",
         )
     )
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("SITE_DOCS_URL", "https://override-docs.example.com")
     get_settings.cache_clear()
@@ -209,7 +210,7 @@ async def test_invalid_docs_override_cannot_invalidate_runtime_branding(
             "  branding: ./branding/site.yaml\nfeatures:\n",
         )
     )
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("SITE_DOCS_URL", invalid_docs_url)
     get_settings.cache_clear()
@@ -225,7 +226,7 @@ async def test_invalid_docs_override_cannot_invalidate_runtime_branding(
 async def test_never_leaks_server_paths(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -247,7 +248,7 @@ async def test_phone_auth_flag_is_sent_only_while_enabled(
     if with_manifest:
         manifest = tmp_path / "distribution.yaml"
         manifest.write_text(MANIFEST)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        seed_site(monkeypatch, manifest)
         monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
         get_settings.cache_clear()
         get_distribution_config.cache_clear()
@@ -289,7 +290,7 @@ async def test_reports_pending_setup_and_incomplete_configuration(
     if with_manifest:
         manifest = tmp_path / "distribution.yaml"
         manifest.write_text(MANIFEST)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        seed_site(monkeypatch, manifest)
         monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
         get_settings.cache_clear()
         get_distribution_config.cache_clear()

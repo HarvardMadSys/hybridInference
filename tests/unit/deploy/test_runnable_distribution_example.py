@@ -24,7 +24,7 @@ FAKE_PROVIDER = EXAMPLE / "fixtures" / "fake-openai-provider"
 BASE_COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
 EXAMPLE_COMPOSE = EXAMPLE / "deploy" / "docker-compose.yml"
 DEMO_COMPOSE = EXAMPLE / "deploy" / "docker-compose.demo.yml"
-DEMO_MANIFEST = EXAMPLE / "distribution.demo.yaml"
+DEMO_MANIFEST = EXAMPLE / "distribution.demo.json"
 FULL_SMOKE = EXAMPLE / "full_smoke.py"
 ACTIVE_CI = REPO / ".github" / "workflows" / "ci.yml"
 TUTORIAL = REPO / "docs" / "developer" / "router-tutorial.md"
@@ -55,14 +55,14 @@ def _make_dry_run(*args: str, cwd: Path = REPO) -> str:
 
 
 def test_example_manifest_and_config_are_self_contained() -> None:
-    config = load_distribution_config(EXAMPLE / "distribution.yaml")
+    config = load_distribution_config(EXAMPLE / "distribution.json")
     assert config.distribution.id == "example"
     assert config.site.public_base_url == "http://localhost:18080"
     assert config.features.public_signup is False
-    assert Path(config.paths.models) == (EXAMPLE / "config" / "models.yaml").resolve()
-    assert Path(config.paths.routing) == (EXAMPLE / "config" / "routing.yaml").resolve()
+    assert config.paths.models == ""
+    assert config.paths.routing == ""
 
-    models_text = (EXAMPLE / "config" / "models.yaml").read_text()
+    models_text = (EXAMPLE / "config" / "models.json").read_text()
     assert "${VAR:-default}" not in models_text
     models = yaml.safe_load(models_text)["models"]
     route = models[0]["route"][0]
@@ -74,21 +74,20 @@ def test_example_manifest_and_config_are_self_contained() -> None:
 
 
 def test_demo_manifest_enables_signup_without_changing_stage_one() -> None:
-    stage_one = load_distribution_config(EXAMPLE / "distribution.yaml")
+    stage_one = load_distribution_config(EXAMPLE / "distribution.json")
     demo = load_distribution_config(DEMO_MANIFEST)
 
     assert stage_one.features.public_signup is False
     assert demo.distribution.id == "example"
     assert demo.site.public_base_url == "http://localhost:13001"
     assert demo.features.public_signup is True
-    assert Path(demo.paths.models) == (EXAMPLE / "config" / "models.yaml").resolve()
-    assert Path(demo.paths.routing) == (EXAMPLE / "config" / "routing.yaml").resolve()
+    assert demo.paths.models == ""
+    assert demo.paths.routing == ""
 
 
 def test_manifest_only_reference_has_no_dangling_config_paths() -> None:
-    reference = load_distribution_config(REPO / "config" / "examples" / "distribution.example.yaml")
-    assert Path(reference.paths.models).is_file()
-    assert Path(reference.paths.routing).is_file()
+    reference = load_distribution_config(REPO / "config" / "examples" / "distribution.example.json")
+    assert not any(reference.paths.model_dump().values())
 
     readme = (REPO / "README.md").read_text()
     assert "make up DISTRIBUTION=example" in readme
@@ -103,7 +102,7 @@ def test_example_registry_loads_with_its_fake_upstream_env(
     monkeypatch.setenv("EXAMPLE_UPSTREAM_MODEL", "example-upstream")
 
     router = FixedRouter()
-    count, infos = register_from_models_yaml(router, EXAMPLE / "config" / "models.yaml")
+    count, infos = register_from_models_yaml(router, EXAMPLE / "config" / "models.json")
 
     assert count == 1
     assert [info.model_id for info in infos] == ["example-chat"]
@@ -226,9 +225,7 @@ def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     assert backend["DB_ENABLED"] == "true"
     assert backend["DB_STORE_FULL_CONTENT"] == "false"
     assert backend["USER_AUTH_ENABLED"] == "true"
-    assert backend["DISTRIBUTION_CONFIG_PATH"] == (
-        "/app/distributions/example/distribution.demo.yaml"
-    )
+    assert json.loads(backend["SITE_CONFIGURATION"])["features"]["public_signup"] is True
     assert backend["SIGNUP_ENABLED"] == "true"
     assert backend["SIGNUP_REQUIRE_EMAIL_VERIFICATION"] == "false"
     assert backend["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
@@ -1802,7 +1799,7 @@ def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
     ):
         assert command in tutorial
 
-    models = yaml.safe_load((EXAMPLE / "config" / "models.yaml").read_text())["models"]
+    models = yaml.safe_load((EXAMPLE / "config" / "models.json").read_text())["models"]
     assert f'"model":"{models[0]["id"]}"' in compact
 
     fake = _load_module("_runnable_example_fake_tutorial", FAKE_PROVIDER / "server.py")

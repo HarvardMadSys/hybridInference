@@ -143,7 +143,7 @@ concurrency:
 
 该候选仍参与全池 RouteWise；实际派发取得槽位，完成或取消后按原规则释放。`limit` 是请求并发容量，不由 GPU 数量或 endpoint 地址自动推断。
 
-当前 `provider_type` 缺省为 `on_demand`，云端服务同样可以配置为 concurrency。参见 [候选解析](../../../apps/backend/routing/routewise/candidates.py)、[并发槽管理](../../../apps/backend/routing/routewise/concurrency.py) 和 [配置示例](../../../config/examples/models.routewise.yaml)。
+当前 `provider_type` 缺省为 `on_demand`，云端服务同样可以配置为 concurrency。参见 [候选解析](../../../apps/backend/routing/routewise/candidates.py)、[并发槽管理](../../../apps/backend/routing/routewise/concurrency.py) 和 [配置示例](../../../config/examples/models.routewise.json)。
 
 执行归属由部署配置决定。现有 factory 支持 `local_scope` / `local_ownership`；bootstrap 的 hostname 默认值可能把自建 LAN 或集群 DNS endpoint 归入 cloud。不要从 provider 名称、endpoint id 后缀或资源类型猜测归属，也不借本轮文档修改改变部署默认值。
 

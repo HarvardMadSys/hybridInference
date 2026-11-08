@@ -1888,3 +1888,18 @@ msgstr ""
 "\"degraded\"`；只有所有已配置的存储都连不上时才返回 503。`/health/ready` "
 "是严格版：只要有任何已配置的组件没起来，就返回 503。`/health/deep` 额外给出每个端点的可用率和熔断器状态，任何一个端点降级，它就报告 "
 "`degraded`。这三个端点在两秒内复用同一次共享的存储探测结果，并发的调用方会等待正在进行的那次探测，所以轮询它们不会每次都花一次数据库查询。"
+
+msgid "**Configuration is a deployment's, not the project's.** The repository ships runnable examples; a real deployment configures its registry, routing policy and branding in Admin and PostgreSQL. See [Configuration](#configuration)."
+msgstr "**配置属于具体部署，不属于项目本身。** 仓库提供可运行示例；实际部署应在 Admin 和 PostgreSQL 中配置注册表、路由策略和品牌信息。参见[配置](#configuration)。"
+
+msgid "Application documents are validated JSON settings in `app_config`: `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION` and `SITE_BRANDING`. Application YAML files and their path/mode selectors are not runtime inputs. A fresh gateway serves an empty model list and a neutral console that asks an administrator to configure it."
+msgstr "应用文档是 `app_config` 中经过验证的 JSON 设置：`MODEL_CATALOG`、`ROUTING_POLICY`、`ALERT_RULES`、`SITE_CONFIGURATION` 和 `SITE_BRANDING`。应用 YAML 文件及其路径或模式选择器不再是运行时输入。新网关提供空模型列表及中性控制台，并提示联系管理员配置。"
+
+msgid "The model catalog supplies the baseline; operational provider, key, route and weight state is applied on top. Ordinary Admin route edits synchronize between backend processes through committed, model-scoped change counters. Existing routing transition helpers retain execution and feedback ownership. Per-process acknowledgements distinguish saved configuration from applied configuration. Catalog/routing-policy/alert-rule changes remain explicitly restart-required."
+msgstr "模型目录提供基线，运行时的供应商、密钥、路由和权重状态在其上叠加。普通 Admin 路由修改通过已提交的按模型变更计数器在后端进程间同步。现有路由切换辅助函数保留执行和反馈的所有权。每个进程的确认状态区分已保存配置与已应用配置。目录、路由策略和告警规则修改仍明确要求重启。"
+
+msgid "Credentials are separate secret settings referenced by documents. The existing settings store owns validation, audit, conditional writes and backup/restore. An explicit offline importer handles old external YAML; startup never imports those files. See [Configuration](configuration.md) and the {download}`accepted design <../agents/specs/2026-11-08-database-only-configuration.md>`."
+msgstr "凭据保存在独立的秘密设置中，由文档引用。现有设置存储负责验证、审计、条件写入和备份恢复。旧的外部 YAML 通过显式离线导入器处理；启动时绝不导入这些文件。参见[配置](configuration.md)和{download}`accepted design <../agents/specs/2026-11-08-database-only-configuration.md>`。"
+
+msgid "**Alerting.** `alert_slack()` and `alert_on_transition()` in `apps/backend/serving/observability/alerts.py` post through an `AlertSink` to one Slack or WeCom webhook, selected in Admin Configuration. Channel changes take effect after a restart. Thresholds come from the `ALERT_RULES` database document; an empty document uses built-in thresholds. The circuit breaker pages on `circuit_open` transitions and on upstream-credential rejections, with per-endpoint cooldowns so a persistent fault re-pages on a fixed cadence instead of flooding."
+msgstr "**告警。** `apps/backend/serving/observability/alerts.py` 中的 `alert_slack()` 和 `alert_on_transition()` 通过 `AlertSink` 向 Admin Configuration 中选择的一个 Slack 或 WeCom webhook 发送消息。通道修改在重启后生效。阈值来自 `ALERT_RULES` 数据库文档；空文档使用内置阈值。熔断器在 `circuit_open` 状态切换及上游凭据被拒绝时通知，并按端点冷却，使持续故障按固定间隔再次通知，避免消息泛滥。"

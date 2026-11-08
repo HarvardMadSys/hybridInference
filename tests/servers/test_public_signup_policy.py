@@ -18,6 +18,7 @@ from serving.config.settings import get_settings
 from serving.servers.deps import get_db_logger, get_operational_store
 from serving.servers.routers import auth_routes, site_config
 from serving.utils.request_ip import ClientIpInfo
+from tests.fixtures.application_documents import seed_site
 from tests.fixtures.auth_factories import create_signup_request
 
 
@@ -66,7 +67,7 @@ async def signup_client(monkeypatch):
         ("active", "null", True, None, True),
         ("active", None, True, False, False),
         ("active", None, True, None, True),
-        ("dark", "false", True, None, True),
+        ("dark", "false", True, None, False),
         (None, None, False, None, False),
         (None, None, True, False, False),
         (None, None, False, True, True),
@@ -91,7 +92,7 @@ async def test_signup_policy_matches_public_configuration(
         if manifest_flag is not None:
             contents += f"features:\n  public_signup: {manifest_flag}\n"
         manifest.write_text(contents)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        seed_site(monkeypatch, manifest)
         monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
     get_settings.cache_clear()
     if runtime_override is not None:
@@ -115,7 +116,7 @@ async def test_signup_policy_matches_public_configuration(
         store.create_user.assert_not_awaited()
         auth_routes.check_and_record_signup.assert_not_awaited()
         auth_routes.verify_turnstile_token.assert_not_awaited()
-    if mode == "active" and manifest_flag == "false":
+    if mode is not None and manifest_flag == "false":
         store.get_setting.assert_not_awaited()
 
 
@@ -275,7 +276,8 @@ async def test_invalid_distribution_selection_cannot_enable_signup(
         manifest.write_text(
             "schema_version: 1\ndistribution: {id: example}\nfeatures: {public_signup: false}\n"
         )
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        seed_site(monkeypatch, manifest)
+    monkeypatch.setenv("SITE_CONFIGURATION", "invalid")
     get_settings.cache_clear()
 
     response = await client.post("/auth/signup", json=create_signup_request())
@@ -302,7 +304,7 @@ async def test_invalid_active_manifest_cannot_create_accounts(
     manifest = tmp_path / "private-manifest.yaml"
     if contents is not None:
         manifest.write_text(contents)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
 
@@ -328,7 +330,7 @@ async def test_runtime_read_failure_preserves_identity_and_closes_signup(
             "site: {public_base_url: 'https://example.test'}\n"
             "features: {public_signup: true, rag: false}\n"
         )
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+        seed_site(monkeypatch, manifest)
         monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
     get_settings.cache_clear()
     runtime = init_runtime_settings(store)
@@ -341,7 +343,7 @@ async def test_runtime_read_failure_preserves_identity_and_closes_signup(
     assert configuration.status_code == 200
     body = configuration.json()
     assert body["features"]["public_signup"] is False
-    if mode == "active":
+    if mode is not None:
         assert body["distribution"]["display_name"] == "Example Router"
         assert body["site"]["public_base_url"] == "https://example.test"
         assert body["features"]["rag"] is False

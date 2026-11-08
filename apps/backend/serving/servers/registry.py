@@ -1,8 +1,8 @@
 """Model registry and configuration loader.
 
 This module builds provider adapters from configuration and registers them on a
-``FixedRouter``. It supports both environment-based and YAML-based
-configuration. Prefer YAML (``config/models.yaml``) for reproducibility.
+``FixedRouter``. Runtime catalogs come from Admin/database documents; explicit
+legacy file and environment registration functions remain compatibility APIs.
 """
 
 from __future__ import annotations
@@ -527,7 +527,26 @@ def register_from_models_text(
         Tuple of (count of registered route identifiers including aliases,
         list of ModelRegistrationInfo for each model).
     """
-    data = yaml.safe_load(text) or {}
+    return register_from_models_document(
+        router,
+        yaml.safe_load(text) or {},
+        embedding_adapters=embedding_adapters,
+        continue_on_missing_env=continue_on_missing_env,
+        report=report,
+        origin=origin,
+    )
+
+
+def register_from_models_document(
+    router: FixedRouter,
+    data: dict[str, Any],
+    embedding_adapters: dict[str, Any] | None = None,
+    *,
+    continue_on_missing_env: bool = False,
+    report: ModelLoadReport | None = None,
+    origin: str = "Admin model catalog",
+) -> tuple[int, list[ModelRegistrationInfo]]:
+    """Register a database model document through the existing adapter boundary."""
     models: list[dict[str, Any]] = data.get("models", [])
     count = 0
     model_infos: list[ModelRegistrationInfo] = []
@@ -937,6 +956,25 @@ def register_from_models_text(
                 if route_metadata:
                     adapter_cfg["route_metadata"] = route_metadata
 
+                from serving.config.documents import resolve_credentials
+
+                def credential_value(name: str) -> str:
+                    value = resolve_reference(name)
+                    if value is None or not value.strip():
+                        unset_env_vars.add(name)
+                        raise MissingEnvBackedKeyError(f"Credential setting {name} is missing")
+                    return value
+
+                try:
+                    adapter_cfg = resolve_credentials(adapter_cfg, credential_value)
+                except MissingEnvBackedKeyError:
+                    if route_optional:
+                        logger.warning(
+                            "Skipping optional route with an unset credential for %s",
+                            top_cfg.get("id"),
+                        )
+                        continue
+                    raise
                 adapter = _make_adapter(kind, adapter_cfg)
                 adapters_with_weights.append((adapter, weight))
 

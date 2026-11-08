@@ -195,6 +195,28 @@ at once. It can also be set in `.env` (as `.env.example` notes), but the
 command line is the form to reach for when you want certainty about which
 profiles are active.
 
+### Diagnostics, deployment and recovery
+
+```bash
+make doctor
+make smoke MODEL=team-chat
+make deploy BACKEND_IMAGE=registry/backend@sha256:<digest> FRONTEND_IMAGE=registry/frontend@sha256:<digest> MODEL=team-chat
+make rollback MODEL=team-chat
+make backup BACKUP=/private/path/gateway.dump
+make restore-check BACKUP=/private/path/gateway.dump
+```
+
+Set `GATEWAY_API_KEY` for authenticated inference checks. Deployment records the
+running artifacts, pulls the pinned pair, migrates before switching, then checks
+readiness and smoke acceptance. Failed acceptance restores the previous images;
+rollback does not run old-image migrations. Later lifecycle commands retain the
+recorded image selection in `.ops/images.env`.
+
+Copy `.ops.env.example` to `.ops.env` to persist optional Compose profiles,
+cloud-agent networking and the pgAdmin host-port choice across commands.
+A restore check creates and drops its own randomly named database; it never
+restores over the deployment database.
+
 ### What a change actually requires
 
 Three different answers, and picking the wrong one looks like the change not
@@ -205,8 +227,8 @@ taking effect:
 | A setting on the admin **Configuration** tab | Nothing, unless it is marked **Restart required**: then select **Restart backend** on that tab, or run `make restart s=backend` |
 | A value in `.env` that stays in the environment — the database connection, ports, config paths, console values | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
 | Any other value in `.env` | Nothing happens once the database has the setting: change it on the **Configuration** tab instead. See [Upgrading a deployment that kept its settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env) |
-| A model registry or routing YAML | `make restart s=backend` — `config/` and `distributions/` are bind-mounted read-only, so no rebuild is needed |
-| A distribution branding YAML | `make restart s=backend` — `/site-config` serves the validated snapshot loaded at backend startup |
+| Model catalog, routing policy or alert rules in Admin Settings | Follow the **Restart required** marker; no image rebuild is needed |
+| Site configuration or branding in Admin Settings | Applies when settings refresh; no rebuild or restart |
 | A file in the mounted site-assets directory | No image rebuild; replace the file in the deployment overlay |
 | `AGENT_WEB_INTERNAL_URL` or `AGENT_CONTROL_PLANE_INTERNAL_URL` | `make up` — the `/agents` route handler reads them at runtime in the recreated frontend container |
 | A true build-only `NEXT_PUBLIC_*` compatibility value | `make build s=frontend` — see below |
@@ -286,24 +308,12 @@ deployment `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, `SITE_NAME` and the sender
 address of outgoing mail start out as those defaults until you change them on
 the tab.
 
-### Config file resolution
+### Application configuration
 
-The gateway picks each configuration file from an explicit
-`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, then an
-active distribution manifest, then the examples under `config/examples/`; see
-[How a gateway finds its config](configuration.md#how-a-gateway-finds-its-config).
-
-Note that the Compose file passes these through explicitly:
-
-```yaml
-ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-}
-MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-}
-DISTRIBUTION_CONFIG_PATH: ${DISTRIBUTION_CONFIG_PATH-}
-```
-
-An `--env-file` alone does not put a variable into a container's environment;
-these lines are what carry it in. Without them the gateway would silently fall
-back to the default files.
+Models, routing, alert rules, site identity and branding are database settings,
+not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections
+have no effect. See [Configuration](configuration.md) for the document controls
+and the explicit import command for an existing deployment.
 
 ### Local inference servers
 
@@ -433,9 +443,8 @@ Slack-compatible destination (Mattermost, Rocket.Chat, an egress proxy) tests
 normally. It must still be `https`. Discord, Telegram and arbitrary webhook
 formats are not supported by this selector.
 
-Rules and thresholds are a deployment's own; this repository ships no alerts
-file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-in
-thresholds apply. The rule types and evaluation live in
+Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings.
+Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in
 `apps/backend/serving/observability/`.
 
 Two auth rules are worth knowing apart, because their defaults differ on

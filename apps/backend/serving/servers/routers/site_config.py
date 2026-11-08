@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from serving.auth.signup_policy import is_public_signup_enabled
 from serving.config.app_config import get_config_health
@@ -38,11 +38,15 @@ _NEUTRAL: dict[str, Any] = {
 }
 
 
-async def _deployment_state() -> dict[str, Any]:
+async def _deployment_state(router_exec: Any = None) -> dict[str, Any]:
     """Return the top-level ``setup`` and ``configuration`` flags."""
+    routes = getattr(router_exec, "routes", None)
+    no_models = (
+        isinstance(routes, dict) and not routes and not getattr(router_exec, "embedding_routes", {})
+    )
     return {
         "setup": {"required": await refresh_setup_state()},
-        "configuration": {"incomplete": get_config_health().incomplete},
+        "configuration": {"incomplete": no_models or get_config_health().incomplete},
     }
 
 
@@ -64,7 +68,7 @@ def _public_features(features: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/site-config")
-async def get_site_config() -> dict[str, Any]:
+async def get_site_config(request: Request = None) -> dict[str, Any]:
     """Return the active distribution and its resolved public site identity.
 
     Read-only and unauthenticated: this is the same information the public
@@ -79,10 +83,11 @@ async def get_site_config() -> dict[str, Any]:
     except DistributionConfigError:
         raise HTTPException(
             status_code=503,
-            detail="Site configuration is unavailable. Check the distribution manifest and mode.",
+            detail="Ask an admin to configure the site in Admin Settings.",
         ) from None
     public_signup = await is_public_signup_enabled()
-    deployment_state = await _deployment_state()
+    services = getattr(request.app.state, "services", None) if request is not None else None
+    deployment_state = await _deployment_state(getattr(services, "router", None))
     phone_auth_enabled = is_sms_enabled()
     phone_policy = (
         {"phone_auth_policy": {"default_country_code": get_settings().sms_default_country_code}}

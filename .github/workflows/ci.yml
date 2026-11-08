@@ -1150,20 +1150,20 @@ jobs:
             exit 1
           fi
 
-          registry="distributions/example/config/models.yaml"
-          registry_backup="${RUNNER_TEMP}/tutorial-models-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.yaml"
+          registry="distributions/example/config/models.json"
+          registry_backup="${RUNNER_TEMP}/tutorial-models-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
           cp "${registry}" "${registry_backup}"
           restore_registry() {
             cp "${registry_backup}" "${registry}"
-            make restart s=backend DISTRIBUTION=example >/dev/null 2>&1 || true
+            make up DISTRIBUTION=example >/dev/null 2>&1 || true
             rm -f "${registry_backup}"
           }
           trap restore_registry EXIT
 
           backend_image_before="$(docker container inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")"
-          sed -i 's/name: Runnable Example Chat/name: Reloaded Example Chat/' "${registry}"
-          grep -q 'name: Reloaded Example Chat' "${registry}"
-          make restart s=backend DISTRIBUTION=example
+          sed -i 's/"name": "Runnable Example Chat"/"name": "Reloaded Example Chat"/' "${registry}"
+          grep -q '"name": "Reloaded Example Chat"' "${registry}"
+          make up DISTRIBUTION=example
           for _ in $(seq 1 30); do
             if models_json="$(curl --fail --silent "http://localhost:${port}/v1/models")" && \
               python3 -c 'import json, sys; assert json.load(sys.stdin)["data"][0]["name"] == "Reloaded Example Chat"' <<< "${models_json}"; then
@@ -1177,7 +1177,7 @@ jobs:
           test "${backend_image_after}" = "${backend_image_before}"
 
           cp "${registry_backup}" "${registry}"
-          make restart s=backend DISTRIBUTION=example
+          make up DISTRIBUTION=example
           rm -f "${registry_backup}"
           trap - EXIT
           SMOKE_BASE_URL="http://localhost:${port}" make smoke DISTRIBUTION=example

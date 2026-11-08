@@ -1,7 +1,5 @@
 """Configuration-error regressions for route-level embeddings paths."""
 
-from types import SimpleNamespace
-
 import pytest
 import yaml
 
@@ -154,9 +152,7 @@ async def test_bootstrap_does_not_serve_partial_registry_on_invalid_path(
             _model("/embeddings", model_id="valid-after"),
         ],
     )
-    monkeypatch.setattr(
-        bootstrap, "resolve_config_path", lambda _: SimpleNamespace(path=path, source="env")
-    )
+    monkeypatch.setattr(bootstrap, "get_document", lambda _: yaml.safe_load(path.read_text()))
 
     with pytest.raises(ValueError, match="invalid-middle"):
         await bootstrap._init_router_and_models(FixedRouter())
@@ -167,14 +163,12 @@ async def test_other_model_loading_errors_keep_existing_bootstrap_behavior(
     tmp_path, monkeypatch, caplog
 ):
     path = _write_models(tmp_path, [_model("/embeddings")])
-    monkeypatch.setattr(
-        bootstrap, "resolve_config_path", lambda _: SimpleNamespace(path=path, source="env")
-    )
+    monkeypatch.setattr(bootstrap, "get_document", lambda _: yaml.safe_load(path.read_text()))
 
     def fail(*args, **kwargs):
         raise ValueError("unrelated config error")
 
-    monkeypatch.setattr(bootstrap, "register_from_models_yaml", fail)
+    monkeypatch.setattr(bootstrap, "register_from_models_document", fail)
 
     assert await bootstrap._init_router_and_models(FixedRouter()) == ({}, [])
-    assert "Failed to load models.yaml: unrelated config error" in caplog.text
+    assert "Failed to load the Admin model catalog: unrelated config error" in caplog.text

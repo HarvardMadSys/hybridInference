@@ -6667,7 +6667,14 @@ def apply_persisted_provider_route_removals(
             )
 
 
-async def apply_persisted_provider_route_candidates(services, op_store) -> set[str]:
+async def apply_persisted_provider_route_candidates(
+    services,
+    op_store,
+    *,
+    model_ids: set[str] | None = None,
+    strict: bool = False,
+    lock_held: bool = False,
+) -> set[str]:
     """Apply persisted runtime provider route candidates to the in-process router.
 
     Returns ids for runtime-created models restored with a RouteWise strategy so
@@ -6703,6 +6710,8 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
 
     for row in rows:
         model_id = str(row["model_id"])
+        if model_ids is not None and model_id not in model_ids:
+            continue
         route_id = str(row["route_id"])
         installed_runtime_candidate: PreparedRouteCandidate | None = None
         try:
@@ -6774,7 +6783,11 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                 installed_runtime_candidate = candidate
                 strategy = strategy_overrides.get(model_id, "fixed")
                 if services.model_router_registry is not None:
-                    await _apply_model_router_strategy(
+                    await (
+                        _apply_model_router_strategy_locked
+                        if lock_held
+                        else _apply_model_router_strategy
+                    )(
                         services,
                         model_id,
                         strategy,
@@ -6830,7 +6843,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                         )
                     )
                 restored_routewise_model_ids.discard(model_id)
-            if not isinstance(exc, Exception):
+            if strict or not isinstance(exc, Exception):
                 raise
             logger.warning(
                 "Failed to apply provider route candidate for model=%s route_id=%s: %s",
@@ -6841,11 +6854,15 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
     return restored_routewise_model_ids
 
 
-async def apply_persisted_provider_route_configs(services, op_store) -> None:
+async def apply_persisted_provider_route_configs(
+    services, op_store, *, model_ids: set[str] | None = None, strict: bool = False
+) -> None:
     """Apply persisted provider route configs to the in-process router at boot."""
     rows = await op_store.list_all_provider_route_configs()
     for row in rows:
         model_id = str(row["model_id"])
+        if model_ids is not None and model_id not in model_ids:
+            continue
         route_id = str(row["route_id"])
         try:
             update = await _prepare_route_update(
@@ -6869,6 +6886,8 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
             _ensure_endpoint_free(update.route, route_id, update.endpoint_id)
             _install_route_update(services, update)
         except Exception as exc:
+            if strict:
+                raise
             logger.warning(
                 "Failed to apply provider route config for model=%s route_id=%s: %s",
                 model_id,
@@ -6892,23 +6911,39 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                     )
 
 
-async def apply_persisted_model_router_strategy_overrides(services, op_store) -> None:
+async def apply_persisted_model_router_strategy_overrides(
+    services,
+    op_store,
+    *,
+    model_ids: set[str] | None = None,
+    strict: bool = False,
+    lock_held: bool = False,
+) -> None:
     """Apply persisted per-model router strategy overrides at boot."""
     rows = await op_store.list_settings()
     for row in rows:
         key = str(row["key"])
         model_id = _model_id_from_strategy_setting_key(key)
-        if model_id is None:
+        if model_id is None or (model_ids is not None and model_id not in model_ids):
+            continue
+        # A runtime model is installed by its candidate rows below. It has no
+        # route yet on a newly observing worker, so its strategy is restored
+        # with that model rather than treated as an invalid existing route.
+        if strict and model_id not in services.router.routes:
             continue
         strategy = str(row["value"])
         try:
-            await _apply_model_router_strategy(
+            await (
+                _apply_model_router_strategy_locked if lock_held else _apply_model_router_strategy
+            )(
                 services,
                 model_id,
                 strategy,
                 start_managed=False,
             )
         except Exception as exc:
+            if strict:
+                raise
             logger.warning(
                 "Failed to apply model router strategy override for model=%s strategy=%s: %s",
                 model_id,
@@ -6917,7 +6952,14 @@ async def apply_persisted_model_router_strategy_overrides(services, op_store) ->
             )
 
 
-async def reconcile_live_routes_from_store(services, op_store) -> None:
+async def reconcile_live_routes_from_store(
+    services,
+    op_store,
+    *,
+    model_ids: set[str] | None = None,
+    strict: bool = False,
+    lock_held: bool = False,
+) -> None:
     """Reconcile the in-memory route table and router strategies with persisted state."""
     router = getattr(services, "router", None)
     routes = getattr(router, "routes", None)
@@ -6925,6 +6967,8 @@ async def reconcile_live_routes_from_store(services, op_store) -> None:
         return
 
     for model_id, route in list(routes.items()):
+        if model_ids is not None and model_id not in model_ids:
+            continue
         if not _is_canonical_model(model_id, route):
             continue
         if _is_runtime_created_route(route):
@@ -6971,11 +7015,21 @@ async def reconcile_live_routes_from_store(services, op_store) -> None:
                     stop_managed=True,
                 )
 
-    await apply_persisted_model_router_strategy_overrides(services, op_store)
-    await apply_persisted_provider_route_candidates(services, op_store)
-    await apply_persisted_provider_route_configs(services, op_store)
-    await sync_route_capability_overrides(services, op_store)
-    apply_persisted_provider_route_removals(services)
+    await apply_persisted_model_router_strategy_overrides(
+        services, op_store, model_ids=model_ids, strict=strict, lock_held=lock_held
+    )
+    await apply_persisted_provider_route_candidates(
+        services, op_store, model_ids=model_ids, strict=strict, lock_held=lock_held
+    )
+    await apply_persisted_provider_route_configs(
+        services, op_store, model_ids=model_ids, strict=strict
+    )
+    if model_ids is None:
+        await sync_route_capability_overrides(services, op_store)
+    else:
+        for model_id in sorted(model_ids):
+            await sync_route_capability_overrides(services, op_store, model_id)
+    apply_persisted_provider_route_removals(services, model_ids)
     _rebuild_routewise_routers(services)
     await _start_restored_routewise_routers(services)
 

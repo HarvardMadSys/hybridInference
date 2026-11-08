@@ -2600,3 +2600,174 @@ msgstr "`p95_latency_per_provider` 按上游服务商，从每个请求的请求
 #: ../developer/configuration.md
 msgid "`failed_request_rate` counts a request as failed when it ends in a 5xx, or in a 4xx an upstream returned. A 4xx the gateway issues itself, such as a 404 for a path that does not exist or a 422 for a body that does not validate, is not a service failure and does not count, and neither does a 429. `client_error_burst` counts the relayed client errors that bypass the circuit breaker, and `min_distinct_callers` (default `1`) sets how many API keys, grants or anonymous addresses they must come from before it pages. At `1`, one caller replaying a broken conversation pages, and so can any one key that sends malformed requests on purpose. A gateway that hands keys to the public can set it to `2` or more and then sees a single caller's loop only in the logs."
 msgstr "`failed_request_rate` 在请求以 5xx 结束，或以上游返回的 4xx 结束时，把它算作失败。网关自己给出的 4xx，例如访问不存在的路径得到的 404，或者请求体未通过校验得到的 422，不属于服务故障，不计入；429 也不计入。`client_error_burst` 统计绕过熔断器、由上游转发回来的客户端错误，`min_distinct_callers`（默认 `1`）规定这些错误至少要来自多少个 API 密钥、授权或匿名地址，才会发出告警。设为 `1` 时，一个调用方反复重放一段已损坏的对话就会触发告警，任何一个故意发送畸形请求的密钥也同样可以触发。向公众发放密钥的网关可以把它设为 `2` 或更高，这样单个调用方陷入的循环就只会出现在日志里。"
+
+msgid "Configure the gateway in **Admin → Settings**, **Providers** and **Routing**. Application configuration is stored in PostgreSQL. The gateway does not load model, routing, alert, distribution or branding YAML at runtime. Docker Compose and GitHub Actions still use their infrastructure YAML files."
+msgstr "在 **Admin → Settings**、**Providers** 和 **Routing** 中配置网关。应用配置存储在 PostgreSQL 中。网关在运行时不加载模型、路由、告警、分发或品牌 YAML。Docker Compose 和 GitHub Actions 仍使用基础设施 YAML 文件。"
+
+msgid "A fresh database has no assumed provider or model. The console remains available for first-run setup and shows **Ask admin to configure** when required configuration or models are missing. Users never see secret values or private configuration paths."
+msgstr "新数据库没有预设的供应商或模型。控制台仍可用于首次设置；缺少必要配置或模型时，会显示 **Ask admin to configure**。用户不会看到秘密值或私有配置路径。"
+
+msgid "Owner"
+msgstr "管理位置"
+
+msgid "Application settings and documents"
+msgstr "应用设置和文档"
+
+msgid "`app_config`, edited in Admin Settings"
+msgstr "`app_config`，在 Admin Settings 中编辑"
+
+msgid "Providers, credentials, live routes and overrides"
+msgstr "供应商、凭据、实时路由和覆盖项"
+
+msgid "Admin Providers and Routing"
+msgstr "Admin Providers 和 Routing"
+
+msgid "Database connection, host ports and container networking"
+msgstr "数据库连接、主机端口和容器网络"
+
+msgid "`.env` and Compose"
+msgstr "`.env` 和 Compose"
+
+msgid "Persistent lifecycle options"
+msgstr "持久化生命周期选项"
+
+msgid "`.ops.env`, copied from `.ops.env.example`"
+msgstr "`.ops.env`，从 `.ops.env.example` 复制"
+
+msgid "Application documents"
+msgstr "应用文档"
+
+msgid "The Models settings sub-tab includes these validated JSON documents. They use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
+msgstr "Models 设置子标签页包含以下经过验证的 JSON 文档。它们与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
+
+msgid "Purpose"
+msgstr "用途"
+
+msgid "Application"
+msgstr "生效方式"
+
+msgid "`MODEL_CATALOG`"
+msgstr "`MODEL_CATALOG`"
+
+msgid "Model metadata, aliases, router parameters and base routes"
+msgstr "模型元数据、别名、路由器参数和基础路由"
+
+msgid "Backend restart"
+msgstr "重启后端"
+
+msgid "`ROUTING_POLICY`"
+msgstr "`ROUTING_POLICY`"
+
+msgid "Optional deployment routing policy"
+msgstr "可选的部署路由策略"
+
+msgid "`ALERT_RULES`"
+msgstr "`ALERT_RULES`"
+
+msgid "Optional alert thresholds and rule switches"
+msgstr "可选的告警阈值和规则开关"
+
+msgid "`SITE_CONFIGURATION`"
+msgstr "`SITE_CONFIGURATION`"
+
+msgid "Public site identity and feature restrictions"
+msgstr "公共站点标识和功能限制"
+
+msgid "Settings refresh"
+msgstr "设置刷新"
+
+msgid "`SITE_BRANDING`"
+msgstr "`SITE_BRANDING`"
+
+msgid "Validated public branding"
+msgstr "经过验证的公共品牌信息"
+
+msgid "Empty routing and alert documents use the built-in policy and thresholds. Empty site documents use neutral branding. An empty model catalog supplies no models; models created in Admin Routing remain available independently."
+msgstr "空的路由和告警文档使用内置策略与阈值。空的站点文档使用中性品牌。空模型目录不提供任何模型；在 Admin Routing 中创建的模型仍可独立使用。"
+
+msgid "Database settings win over environment seeds, then registered defaults. Stored empty values are deliberate. Application file paths and distribution active/dark modes no longer select runtime configuration."
+msgstr "数据库设置优先于环境种子值，其次为注册默认值。已保存的空值是有意设置。应用文件路径和分发的 active/dark 模式不再选择运行时配置。"
+
+msgid "The upgrade migration copies existing `route_catalog` rows into `MODEL_CATALOG` and `ROUTING_POLICY` without overwriting settings an administrator already saved. Embedded credentials become separate secret settings. Legacy rows remain for previous-release compatibility, and later edits to those rows have no effect on the new release."
+msgstr "升级迁移将现有 `route_catalog` 行复制到 `MODEL_CATALOG` 和 `ROUTING_POLICY`，不会覆盖管理员已保存的设置。内嵌凭据转换为独立的秘密设置。旧行保留以兼容上一版本；随后对旧行的编辑不会影响新版本。"
+
+msgid "Existing external site, branding and alert files require one explicit import:"
+msgstr "现有外部站点、品牌和告警文件需要显式导入一次："
+
+msgid "Run this where the backend can read the old manifest and its referenced files. The command validates the resulting documents and stores missing settings in one conditional update. Existing settings remain unchanged. Check Admin Settings, restart the backend for catalog/rule changes, and keep the old files through the rollback window. Normal startup never invokes this importer."
+msgstr "在后端能读取旧清单及其引用文件的位置运行此命令。命令会验证生成的文档，并通过一次条件更新保存缺失设置。现有设置保持不变。检查 Admin Settings，为目录或规则修改重启后端，并在回退窗口结束前保留旧文件。正常启动绝不会调用此导入器。"
+
+msgid "It starts an empty, neutral gateway. Finish first-run setup, then add a provider and a model in Admin. Supplying a provider key alone does not install example models. The explicitly selected local tutorial is a separate, opt-in fixture."
+msgstr "它会启动一个空的中性网关。完成首次设置，然后在 Admin 中添加供应商和模型。仅提供供应商密钥不会安装示例模型。显式选择的本地教程是单独启用的测试示例。"
+
+msgid "Use **Admin → Routing → Create model** for ordinary additions. It supports pricing, context/output limits, modalities, tool support, router choice and an initial verified route. A new runtime model starts restricted to administrators."
+msgstr "普通添加操作使用 **Admin → Routing → Create model**。它支持定价、上下文和输出上限、模态、工具支持、路由器选择以及初始已验证路由。新建运行时模型默认仅管理员可用。"
+
+msgid "Use `MODEL_CATALOG` when aliases or additional catalog metadata are needed:"
+msgstr "需要别名或其他目录元数据时，使用 `MODEL_CATALOG`："
+
+msgid "Add `TEAM_PROVIDER_KEY` as a secret setting first. Documents refuse embedded credentials: use `${NAME}` references so ordinary backups contain the editable catalog while withholding secret values. The model registry expands whole-value references; routing policy references retain their existing expansion rules. See [Adding a model](adding-models.md) for the field reference."
+msgstr "先将 `TEAM_PROVIDER_KEY` 添加为秘密设置。文档拒绝内嵌凭据：使用 `${NAME}` 引用，使普通备份可以包含可编辑目录而不泄露秘密值。模型注册表展开完整值引用；路由策略引用保留原有展开规则。字段参考见[添加模型](adding-models.md)。"
+
+msgid "There is no runtime routing file. Set the optional `ROUTING_POLICY` document in Admin when deployment-wide policy is needed. Per-model `router` and `router_params` remain in the catalog; runtime strategy changes belong in Admin Routing. Fixed and RouteWise retain their existing selection and accounting."
+msgstr "运行时不再使用路由文件。需要部署级策略时，在 Admin 中设置可选的 `ROUTING_POLICY` 文档。每个模型的 `router` 和 `router_params` 仍保存在目录中；运行时策略修改在 Admin Routing 中完成。Fixed 和 RouteWise 保留现有选择和计量逻辑。"
+
+msgid "The retired model/routing/alert path variables and distribution active/dark modes no longer select configuration. Use the application documents instead. The standalone cloud agent owns its own settings; obsolete gateway `AGENT_*` values do not configure it."
+msgstr "已停用的模型、路由、告警路径变量和分发 active/dark 模式不再选择配置。请使用应用文档。独立云代理管理自己的设置；网关中废弃的 `AGENT_*` 值不会配置该代理。"
+
+msgid "Provider/key changes and ordinary route edits are persisted in the operational store. Backend processes observe committed changes and converge on their scoped model transitions, normally within ten seconds. The Models settings sub-tab shows **Applied in each backend process**, including failed, stale or unsupported processes. A stale process is never counted as successfully updated. Compare the registered process count with your deployment inventory."
+msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后端进程观察已提交修改，并通过各模型的切换机制收敛，通常不超过十秒。Models 设置子标签页显示 **Applied in each backend process**，包括失败、过期或不支持的进程。过期进程绝不会计为成功更新。请将注册进程数与部署清单比较。"
+
+msgid "Catalog changes marked **Restart required** still need a controlled backend restart. A save is not evidence that every process has applied the change."
+msgstr "标记为 **Restart required** 的目录修改仍需要受控重启后端。保存成功不能证明所有进程都已应用修改。"
+
+msgid "Add and verify providers and keys here. Credentials remain write-only. Built-in adapter kinds and catalog-owned provider names remain reserved."
+msgstr "在此添加并验证供应商和密钥。凭据仍为只写。内置适配器种类和目录管理的供应商名称仍为保留名称。"
+
+msgid "Create models, verify routes, edit their targets and capabilities, adjust weights, and disable or remove routes. Resetting a catalog-route override returns it to its database catalog baseline. The legacy API source label `yaml` and `yaml_weight` field remain compatibility names for that baseline."
+msgstr "创建模型、验证路由、修改目标和能力、调整权重，以及禁用或删除路由。重置目录路由的覆盖项会恢复其数据库目录基线。旧 API 来源标签 `yaml` 和 `yaml_weight` 字段保留为该基线的兼容名称。"
+
+msgid "Edit application documents, credentials, delivery settings, network policy, runtime switches and quotas here. Required fields and restart requirements are shown beside each setting."
+msgstr "在此编辑应用文档、凭据、消息投递设置、网络策略、运行时开关和配额。每项设置旁都会显示必填项和重启要求。"
+
+msgid "The model catalog provides the baseline. Stored runtime models, routes, strategy/capability overrides, weights and availability choices apply on top. Changing an override never edits the baseline document."
+msgstr "模型目录提供基线。持久化的运行时模型、路由、策略与能力覆盖项、权重及可用性选择叠加其上。修改覆盖项不会编辑基线文档。"
+
+msgid "A database row wins over the environment, even when empty. At first boot, registered environment settings seed missing rows. Subsequent environment edits do not replace them. Resetting a setting deliberately returns it to its registered environment/default behavior. Database connection and wiring stay in the environment because they are needed before settings can be read."
+msgstr "数据库行优先于环境，即使值为空。首次启动时，已注册的环境设置为缺失行提供种子值。此后修改环境不会替换这些行。重置设置会显式恢复其注册的环境或默认行为。数据库连接和基础设施连接设置仍留在环境中，因为读取设置之前就需要它们。"
+
+msgid "Analytics visibility switches affect the console without a backend restart."
+msgstr "分析可见性开关会直接影响控制台，无需重启后端。"
+
+msgid "Security-sensitive changes require the administrator's password. Conditional saves prevent overwriting another administrator's concurrent edits."
+msgstr "安全敏感修改需要管理员密码。条件保存可防止覆盖另一位管理员的并发编辑。"
+
+msgid "**Backup** exports every application document, setting, provider, runtime route and override. Secret values are omitted by default; references remain intact. **Backup with secrets** includes credentials after administrator reauthentication. Restore previews security-relevant changes and applies the confirmed bundle in one transaction. Withheld secrets keep the destination's existing values."
+msgstr "**Backup** 导出所有应用文档、设置、供应商、运行时路由和覆盖项。默认省略秘密值，引用保持完整。**Backup with secrets** 在管理员重新认证后包含凭据。恢复会预览安全相关修改，并在一个事务中应用确认后的备份包。未提供的秘密值保留目标环境的现有值。"
+
+msgid "This configuration bundle is distinct from a full database backup, which also preserves accounts, sessions, request history and operational state. Use `make backup BACKUP=/private/path/gateway.dump` and verify it with `make restore-check BACKUP=/private/path/gateway.dump`; see [Database](database.md#backup)."
+msgstr "此配置备份包不同于完整数据库备份；后者还保留账户、会话、请求历史和运行时状态。使用 `make backup BACKUP=/private/path/gateway.dump`，并通过 `make restore-check BACKUP=/private/path/gateway.dump` 验证；参见[数据库](database.md#backup)。"
+
+msgid "Ordinary settings refresh within ten seconds. Model catalogs, routing policy, alert rules and credentials captured by catalog routes apply after a backend restart, as explicitly marked in Admin. Restarting interrupts requests in flight, including streams. Ordinary Admin route edits synchronize without that restart."
+msgstr "普通设置在十秒内刷新。模型目录、路由策略、告警规则及目录路由捕获的凭据在后端重启后应用，Admin 中会明确标记。重启会中断正在处理的请求，包括流式请求。普通 Admin 路由修改无需重启即可同步。"
+
+msgid "`ALERTS_ENABLED`, the `ALERT_RULES` document and the alert engine still apply only after a restart. Other settings join live groups later, one group at a time."
+msgstr "`ALERTS_ENABLED`、`ALERT_RULES` 文档和告警引擎仍仅在重启后生效。其他设置将在以后逐组加入实时配置组。"
+
+msgid "The recovery CLI reads the same database and applies the same validation:"
+msgstr "恢复 CLI 读取同一个数据库，并执行相同的验证："
+
+msgid "A JSON file passed to `document` is explicit import input, not a runtime source. The CLI never prints a secret value."
+msgstr "传给 `document` 的 JSON 文件是显式导入输入，不是运行时来源。CLI 绝不打印秘密值。"
+
+msgid "The console shows **Ask admin to configure**. Administrators can open Settings or create a model in Routing. Other users should contact their administrator. No borrowed provider, model, key or deployment identity is silently selected."
+msgstr "控制台显示 **Ask admin to configure**。管理员可打开 Settings，或在 Routing 中创建模型。其他用户应联系管理员。系统不会默默选择借用的供应商、模型、密钥或部署标识。"
+
+msgid "Keep the database connection and infrastructure wiring in `.env`. Use Admin for application changes after first boot. See `.env.example` for the remaining infrastructure settings."
+msgstr "数据库连接和基础设施连接设置保留在 `.env` 中。首次启动后，通过 Admin 修改应用。其余基础设施设置见 `.env.example`。"
+
+msgid "Set `GATEWAY_API_KEY` in the shell when an inference smoke needs authentication. The smoke is explicit real inference and consumes the usual quota."
+msgstr "推理冒烟检查需要认证时，在 shell 中设置 `GATEWAY_API_KEY`。该检查显式执行真实推理，并消耗正常配额。"
+
+msgid "Set `ADMIN_ACCESS_TOKEN` for `make doctor` to report the running process's pending restarts; without it, diagnostics explicitly identify saved-only configuration status."
+msgstr "为 `make doctor` 设置 `ADMIN_ACCESS_TOKEN`，即可报告运行进程的待重启项；未设置时，诊断会明确标识其仅显示已保存配置状态。"

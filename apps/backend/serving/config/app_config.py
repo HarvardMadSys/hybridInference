@@ -359,6 +359,13 @@ def _value_problem(entry: ConfigEntry, raw: str | None) -> str | None:
         if entry.choices:
             return "must be one of " + ", ".join(entry.choices)
         return None
+    if entry.validator is not None:
+        try:
+            entry.validator(raw)
+        except (ValueError, TypeError):
+            return (
+                "must be a valid application document; check its JSON fields and secret references"
+            )
     typed = _typed(entry, raw)
     if entry.type in ("bool", "int", "float") and isinstance(typed, str):
         return {
@@ -435,9 +442,21 @@ def _in_force_raw(key: str, entry: ConfigEntry | None) -> tuple[str | None, str]
     if row is not None and _refusal(key, entry) is None:
         return row.value, "database"
     value = _environ_value(key, entry)
-    if value is not None and key not in _STATE.environment_aside:
+    if (
+        value is not None
+        and key not in _STATE.environment_aside
+        and (entry is None or entry.validator is None or _value_problem(entry, value) is None)
+    ):
         return value, "environment"
     return (entry.default if entry is not None else None), "default"
+
+
+def validation_problem(key: str) -> str | None:
+    """Return a configured value's validation problem without exposing its value."""
+    setting = entry(key)
+    row = _STATE.rows.get(key)
+    raw = row.value if row is not None else _environ_value(key, setting)
+    return _value_problem(setting, raw) if setting is not None else None
 
 
 def configured_value(key: str, default: str | None = None) -> str | None:
@@ -927,29 +946,25 @@ def refresh_health() -> ConfigHealth:
 # --- loading -----------------------------------------------------------------
 
 
-def _discover() -> dict[str, DiscoveredReference]:
-    """Scan the model registry, routing document and alerts file for ``${VAR}``.
+def _discover(rows: Mapping[str, ConfigRow] | None = None) -> dict[str, DiscoveredReference]:
+    """Discover references from database documents, never configuration files."""
+    from serving.config.documents import DOCUMENT_KEYS
 
-    A route catalog loaded earlier in this boot replaces the models and routing
-    files. Alerts stay a file.
-    """
-    from serving.config.distribution import resolve_config_path
-    from serving.config.route_catalog import installed_body
+    available = rows if rows is not None else _STATE.rows
 
-    paths = {}
-    for kind in ("models", "routing", "alerts"):
+    def text(kind: str) -> str:
+        row = available.get(DOCUMENT_KEYS[kind])
+        return row.value if row is not None else os.environ.get(DOCUMENT_KEYS[kind], "{}")
+
+    from serving.config.documents import parse
+
+    def document(kind: str) -> dict[str, Any]:
         try:
-            paths[kind] = resolve_config_path(kind).path  # type: ignore[arg-type]
-        except Exception:
-            logger.warning("Cannot locate the %s file to scan for settings", kind, exc_info=True)
-            paths[kind] = None
-    return registry.discover_references(
-        paths["models"],
-        paths["routing"],
-        paths["alerts"],
-        models_text=installed_body("models"),
-        routing_text=installed_body("routing"),
-    )
+            return parse(text(kind))
+        except ValueError:
+            return {}
+
+    return registry.discover_documents(document("models"), document("routing"), document("alerts"))
 
 
 def _build_entries(
@@ -1088,6 +1103,7 @@ def _apply(
     if boot:
         state.boot_rows = dict(rows)
     state.rows = rows
+    state.discovered = _discover(rows)
     state.resets = dict(resets or {})
     state.entries = _build_entries(rows, state.resets)
     state.live_keys = frozenset(
@@ -1145,6 +1161,7 @@ async def load(
     if bootstrap:
         async with store.transaction() as transaction:
             rows = await transaction.fetch_all()
+            _STATE.discovered = _discover(rows)
             rows = await _import_environment(transaction, rows)
             await _generate_secrets(transaction, rows)
             await _record_secrets(transaction)
@@ -2188,6 +2205,7 @@ def _security_relevant_entry(key: str, setting: ConfigEntry | None) -> bool:
         or setting.category in SECURITY_CATEGORIES
         or setting.origin != "static"
         or key in SECURITY_SETTING_KEYS
+        or setting.category == "application"
         or key.endswith("_URL")
     )
 
@@ -2209,7 +2227,11 @@ def _is_secret_row(key: str, row: ConfigRow, entries: Mapping[str, ConfigEntry])
     """Whether *row*'s value is a secret: as :func:`describe` decides, or by its name."""
     entry = entries.get(key) or registry.numbered_key_entry(key)
     if entry is not None:
-        return entry.secret or row.secret
+        return (
+            entry.secret
+            or row.secret
+            or (entry.validator is not None and _value_problem(entry, row.value) is not None)
+        )
     # A retired setting has no entry; its row's flag and its name decide.
     return row.secret or registry.is_secret_name(key)
 

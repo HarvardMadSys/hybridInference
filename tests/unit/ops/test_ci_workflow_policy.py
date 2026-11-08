@@ -434,8 +434,9 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert "backend_image_id=" in stage1
     assert "Stage 1 unexpectedly started" in stage1
     assert "Stage 1 unexpectedly created the example database volume" in stage1
-    assert "name: Reloaded Example Chat" in stage1
-    assert "make restart s=backend DISTRIBUTION=example" in stage1
+    assert '"name": "Reloaded Example Chat"' in stage1
+    assert "make up DISTRIBUTION=example" in stage1
+    assert "make restart s=backend DISTRIBUTION=example" not in stage1
     assert 'test "${backend_image_after}" = "${backend_image_before}"' in stage1
     assert "make demo DISTRIBUTION=example" in promote
     assert 'test "${provider_id}" = "${{ steps.stage1-state.outputs.provider_id }}"' in promote

@@ -7,17 +7,14 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
 import aiohttp
-import yaml
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys, provider_registry
 from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
-from serving.config.distribution import resolve_config_path
 from serving.config.provider_labels import BUILT_IN_DISPLAY_NAMES, humanize_provider
 from serving.schemas_admin import (
     CreateProviderDefinitionRequest,
@@ -104,22 +101,6 @@ def _display_name(provider: str) -> str:
     if provider in PROVIDER_TARGETS:
         return PROVIDER_TARGETS[provider].label
     return BUILT_IN_DISPLAY_NAMES.get(provider) or humanize_provider(provider)
-
-
-def _models_config_path() -> Path:
-    resolved = resolve_config_path("models")
-    if resolved.source != "default":
-        return resolved.path
-
-    cwd_path = resolved.path
-    if cwd_path.exists():
-        return cwd_path
-
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "config/models.yaml"
-        if candidate.exists():
-            return candidate
-    return cwd_path
 
 
 def _expand_config_string(value: Any) -> str:
@@ -274,38 +255,10 @@ def _merge_config_provider_spec(
     )
 
 
-#: The model registry file as last parsed: its path, the (modification time,
-#: size, inode) it was read at, and what it held.
-_MODELS_CONFIG_PARSE: tuple[Path, tuple[int, int, int], Any] | None = None
-
-
-def _parsed_models_config(path: Path) -> Any:
-    """The model registry file at *path*, parsed again only once it changes on disk.
-
-    PyYAML parses it in pure Python, about 90 ms for a 93 KB ``models.yaml``,
-    and every provider view of the admin console asks for it. The parse is
-    kept while the file's modification time, size and inode stay the same, so
-    an edit or a replacement is read again on the next call. What it returns
-    is shared: callers read it and never change it.
-    """
-    global _MODELS_CONFIG_PARSE
-    stat = path.stat()
-    signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-    cached = _MODELS_CONFIG_PARSE
-    if cached is not None and cached[0] == path and cached[1] == signature:
-        return cached[2]
-    # Stat before reading: a file changed in between is read again next time.
-    data = yaml.safe_load(path.read_text()) or {}
-    _MODELS_CONFIG_PARSE = (path, signature, data)
-    return data
-
-
 def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
-    path = _models_config_path()
-    if not path.exists():
-        return {}
+    from serving.config.documents import get as get_document
 
-    data = _parsed_models_config(path)
+    data = get_document("models")
     models = data.get("models") if isinstance(data, dict) else []
     if not isinstance(models, list):
         return {}

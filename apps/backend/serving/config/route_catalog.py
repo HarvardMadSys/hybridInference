@@ -1,14 +1,8 @@
-"""Database copy of the model registry and the routing file.
+"""Legacy route-catalog helpers retained for explicit previous-release tooling.
 
-The files remain the seed. The first boot that can reach the database stores
-each file that exists and is non-empty, and only when that kind has no row.
-From then on the stored document is what the process registers, resolves
-``${VAR}`` from, and scans for settings. A later edit to the file does not
-replace the row: delete the row and restart to import the file again.
-
-The text is stored unresolved, so a setting moved into ``app_config`` still
-fills ``${VAR}`` at registration. Alerts stay a file. The table is
-``0009_route_catalog``; this module only reads and inserts.
+The gateway no longer calls this module. Migration 0012 preserves existing rows
+as application settings; normal runtime configuration lives in app_config and
+serving.config.documents. No application files are imported at startup.
 """
 
 from __future__ import annotations
@@ -79,30 +73,6 @@ def installed_body(kind: str) -> str | None:
     return _installed.get(kind)
 
 
-def seed_texts() -> dict[str, str]:
-    """Read the models and routing files that exist, without resolving them.
-
-    A missing file is skipped. The built-in default path is included when that
-    file exists, so a checkout that boots on the example registry imports it.
-    """
-    from serving.config.distribution import resolve_config_path
-
-    texts: dict[str, str] = {}
-    for kind in KINDS:
-        try:
-            path = resolve_config_path(kind).path  # type: ignore[arg-type]
-        except Exception:
-            logger.warning("Cannot locate the %s file to import", kind, exc_info=True)
-            continue
-        if not path.is_file():
-            continue
-        try:
-            texts[kind] = path.read_text()
-        except OSError:
-            logger.warning("Cannot read %s to import it", path, exc_info=True)
-    return texts
-
-
 async def import_missing(conn: Any, texts: Mapping[str, str]) -> dict[str, str]:
     """Store each missing kind whose text is non-empty, then return every row.
 
@@ -112,7 +82,7 @@ async def import_missing(conn: Any, texts: Mapping[str, str]) -> dict[str, str]:
 
     Args:
         conn: An asyncpg connection. The caller owns its lifetime.
-        texts: Candidate documents, usually :func:`seed_texts`.
+        texts: Explicit legacy documents supplied by the caller.
 
     Returns:
         The stored documents keyed by kind, after this import.

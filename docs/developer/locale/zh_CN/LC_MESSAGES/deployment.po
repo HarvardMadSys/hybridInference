@@ -2057,3 +2057,33 @@ msgstr ""
 "`/auth/refresh` 都是同源的。代理会把每个应用的 cookie 限定在它自己的路径下，并拒绝任何与控制台 cookie 同名的 "
 "cookie，这能阻止应用替换或清除控制台的会话，但只有独立的源才能消除这种共享权限。让每个应用在同一个管理员门禁后面使用自己的主机名提供服务，需要为每个部署配置"
 " DNS 和隧道路由，这项工作作为后续事项跟踪。"
+
+msgid "Diagnostics, deployment and recovery"
+msgstr "诊断、部署与恢复"
+
+msgid "Set `GATEWAY_API_KEY` for authenticated inference checks. Deployment records the running artifacts, pulls the pinned pair, migrates before switching, then checks readiness and smoke acceptance. Failed acceptance restores the previous images; rollback does not run old-image migrations. Later lifecycle commands retain the recorded image selection in `.ops/images.env`."
+msgstr "为需要认证的推理检查设置 `GATEWAY_API_KEY`。部署会记录正在运行的镜像，拉取固定的一对镜像，在切换前运行迁移，然后检查就绪状态并执行冒烟验收。验收失败会恢复上一组镜像；回退不会运行旧镜像的迁移。后续生命周期命令保留 `.ops/images.env` 中记录的镜像选择。"
+
+msgid "Copy `.ops.env.example` to `.ops.env` to persist optional Compose profiles, cloud-agent networking and the pgAdmin host-port choice across commands. A restore check creates and drops its own randomly named database; it never restores over the deployment database."
+msgstr "将 `.ops.env.example` 复制到 `.ops.env`，即可在各命令间保留可选 Compose profiles、云代理网络和 pgAdmin 主机端口选择。恢复检查仅创建并删除自己随机命名的数据库，绝不会覆盖部署数据库。"
+
+msgid "Model catalog, routing policy or alert rules in Admin Settings"
+msgstr "Admin Settings 中的模型目录、路由策略或告警规则"
+
+msgid "Follow the **Restart required** marker; no image rebuild is needed"
+msgstr "遵循 **Restart required** 标记；无需重新构建镜像"
+
+msgid "Site configuration or branding in Admin Settings"
+msgstr "Admin Settings 中的站点配置或品牌信息"
+
+msgid "Applies when settings refresh; no rebuild or restart"
+msgstr "设置刷新时应用；无需重新构建或重启"
+
+msgid "Application configuration"
+msgstr "应用配置"
+
+msgid "Models, routing, alert rules, site identity and branding are database settings, not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections have no effect. See [Configuration](configuration.md) for the document controls and the explicit import command for an existing deployment."
+msgstr "模型、路由、告警规则、站点标识和品牌信息均为数据库设置，不是运行时文件。已停用的 `*_CONFIG_PATH` 和 active/dark 清单选择无效。文档管理及现有部署的显式导入命令见[配置](configuration.md)。"
+
+msgid "Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings. Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in `apps/backend/serving/observability/`."
+msgstr "在 Admin Settings 中通过 `ALERT_RULES` JSON 文档设置规则和阈值。留空时使用内置阈值；修改会标记为 Restart required。规则类型及求值逻辑位于 `apps/backend/serving/observability/`。"

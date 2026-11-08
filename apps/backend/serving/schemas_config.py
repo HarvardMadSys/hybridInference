@@ -148,6 +148,8 @@ class LiveGroupStatus(BaseModel):
     """A live configuration group across every registered process."""
 
     name: str
+    source: str | None = None
+    version: ConfigSourceVersion | None = None
     keys: list[str]
     schema_version: int
     contract: dict[str, Any] | None = Field(

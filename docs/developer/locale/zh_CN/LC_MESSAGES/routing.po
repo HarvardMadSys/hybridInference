@@ -3200,3 +3200,27 @@ msgstr ""
 "不会把它计入延迟画像；一次它看到已经完成的尝试随后被判为失败（比如空回复）时也一样，不归咎于端点的失败同样如此。不归咎于端点的失败指本网关在发出请求之前就拒绝了这次尝试（没有出站槽位，或者没有调用方可用的"
 " key），所以 RouteWise 会在其余候选中重新求解，而不是让请求失败。无状态的策略在 `record_observation` "
 "里直接返回 `None`；在线学习的策略在这里更新自己的模型。"
+
+msgid "the overlay's `ROUTING_POLICY`"
+msgstr "overlay 的 `ROUTING_POLICY`"
+
+msgid "the overlay's `MODEL_CATALOG`"
+msgstr "overlay 的 `MODEL_CATALOG`"
+
+msgid "For a registry you can run unedited against two loopback providers, with every option annotated, see [`config/examples/models.routewise.json`](../../config/examples/models.routewise.json)."
+msgstr "可直接针对两个回环供应商运行的目录示例见 [`config/examples/models.routewise.json`](../../config/examples/models.routewise.json)，其中提供了各选项说明。"
+
+msgid "RouteWise does not read prefill load: the latency estimates used by its LP and hedge choice have no backlog penalty, and it takes no prefill lease. The three keys of that withdrawn feature — `prefill_load_routing_enabled`, `prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are still accepted so an older registry keeps starting, but they have no effect whatever their value, and the backend logs a warning naming them once per process. Remove them from `MODEL_CATALOG`. FixedRouter's [prefill-aware selection](#prefill-aware-selection) is unchanged."
+msgstr "RouteWise 不读取预填充负载：其 LP 和对冲选择使用的延迟估计没有积压惩罚，也不获取预填充租约。该已撤回功能的三个键——`prefill_load_routing_enabled`、`prefill_load_scale_ms_per_1k` 和 `prefill_load_max_penalty_ms`——仍可接受，以便旧目录继续启动，但无论设置为何都不生效；后端每个进程会记录一次包含这些键名的警告。请从 `MODEL_CATALOG` 中删除它们。FixedRouter 的[预填充感知选择](#prefill-aware-selection)保持不变。"
+
+msgid "**Route weights.** RouteWise does not split traffic by weight. It chooses each request's route by cost and latency, and every route with a weight above `0` is a full candidate that can take any share of the traffic: a route weighted for a small share, such as a 1% staging canary or a last-resort fallback, becomes a peer like any other. Set such a route's weight to `0` to keep it out of RouteWise. `optional: true` does not mark a canary; it only decides whether a route whose environment is unset is skipped at startup. Switching a model to `routewise` in the admin console is therefore refused while any of its routes has a weight above `0` but below the model's heaviest route, and the router logs `routewise_route_weights_ignored` when such a weighting reaches a `routewise` model another way: `MODEL_CATALOG`, a weight override or a new route. A persisted switch is still applied at startup and on a configuration restore."
+msgstr "**路由权重。** RouteWise 不按权重分流。它根据成本和延迟为每个请求选择路由，所有权重大于 `0` 的路由都是完整候选，可能承担任意比例的流量：即使路由配置为很小份额，例如 1% 的预发布金丝雀或最后回退，也会成为同等候选。将其权重设为 `0` 才能排除在 RouteWise 外。`optional: true` 不表示金丝雀；它只决定环境值未设置时是否在启动时跳过路由。因此，只要模型存在权重大于 `0` 但小于其最大路由权重的路由，管理控制台就会拒绝将模型切换为 `routewise`。若这种权重通过其他方式进入 `routewise` 模型（`MODEL_CATALOG`、权重覆盖项或新路由），路由器会记录 `routewise_route_weights_ignored`。已持久化的切换仍会在启动和配置恢复时应用。"
+
+msgid "The route's `kind:` chooses its inference protocol; its `provider:` identifies the deployment's service/account and can differ from the kind. The fetcher must measure the account used by the corresponding routes, whether it uses their inference key or a separate billing credential. The [local quota example](../../config/examples/models.routewise.quota.json) uses `kind: openai_compat` with `provider: example_quota` and a matching registered source. It runs without a real supplier account; the default two-provider example remains unchanged until this separate registry is selected."
+msgstr "路由的 `kind:` 选择推理协议；`provider:` 标识部署的服务或账户，可以不同于适配器种类。无论使用推理密钥还是单独的账单凭据，抓取器都必须测量对应路由所用的账户。[本地配额示例](../../config/examples/models.routewise.quota.json)使用 `kind: openai_compat`、`provider: example_quota` 及匹配的已注册来源。它无需真实供应商账户；只有选择这个单独目录后才会改变默认的双供应商示例。"
+
+msgid "**Endpoint identity.** Latency profiles, availability tracking and request logs share one key per route, derived by `registry._make_provider_id` as `{model_id}:{location}`. `location` is `local-{port}` for a base URL on a local host, otherwise a name taken from the hostname (`api.minimax.io` → `minimax-api`) for the generic adapter kinds, and `{kind}-api` for the rest. So an edit that changes that derived part — a new port locally, a new vendor hostname remotely — renames the endpoint and restarts its latency profile, while one that does not (moving between local hosts on the same port) keeps it. A `route_id:` in a static `MODEL_CATALOG` never overrides it; that field belongs to the admin provider-routes API."
+msgstr "**端点标识。** 延迟画像、可用性跟踪和请求日志共用每条路由的一个键，由 `registry._make_provider_id` 生成为 `{model_id}:{location}`。若基础 URL 位于本地主机，`location` 为 `local-{port}`；否则对于通用适配器种类，使用从主机名提取的名称（`api.minimax.io` → `minimax-api`），其余为 `{kind}-api`。因此改变这部分的编辑（本地换端口或远端换供应商主机名）会重命名端点并重新建立延迟画像；不改变这部分的编辑（同端口下移动本地主机）则保留画像。静态 `MODEL_CATALOG` 中的 `route_id:` 不会覆盖该标识；此字段属于管理供应商路由 API。"
+
+msgid "Delete a registry route from this deployment, or restore it; the catalog baseline is not changed."
+msgstr "从此部署删除或恢复某条目录路由；不会修改目录基线。"

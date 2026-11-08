@@ -1,3 +1,7 @@
+# Infrastructure choices persist across every lifecycle command.
+-include .ops.env
+export CLOUD_AGENT_NETWORK PGADMIN_PUBLISH COMPOSE_PROFILES
+
 .PHONY: help format lint test migrate test-verbose test-cov test-db test-all test-external rag-ingest \
 	frontend-install frontend-lint frontend-type-check frontend-test frontend-check \
 	check-all all-with-frontend \
@@ -298,7 +302,16 @@ LOCAL_ENV_ARGS := $(if $(wildcard .env),--env-file .env,)
 ifeq ($(_IS_EXAMPLE),yes)
 LOCAL_ENV_ARGS :=
 endif
-COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+ARTIFACT_ENV_FILE := $(wildcard .ops/images.env)
+ifneq ($(ARTIFACT_ENV_FILE),)
+COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.artifacts.yml
+endif
+ifeq ($(_IS_EXAMPLE),yes)
+export MODEL_CATALOG := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/config/models.json"))))')
+export ROUTING_POLICY := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/config/routing.json"))))')
+export SITE_CONFIGURATION := $(shell python3 -c 'import json; print(json.dumps(json.load(open("distributions/example/distribution.json"))))')
+endif
+COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)$(if $(ARTIFACT_ENV_FILE), --env-file $(ARTIFACT_ENV_FILE),)
 # The full local demo is a third Compose layer on top of the runnable example.
 # Keep COMPOSE above untouched: `make up DISTRIBUTION=example` is the Stage 1
 # contract, while only the explicit demo targets opt into Postgres + frontend.
@@ -372,9 +385,12 @@ DEMO_SMOKE_SCRIPT := $(DISTRIBUTION_PATH)/full_smoke.py
 DEMO_SMOKE_STATE_ARG := $(if $(DEMO_SMOKE_STATE_FILE),--write-reset-state "$(DEMO_SMOKE_STATE_FILE)",)
 DEMO_SMOKE_EXPECT_STATE_ARG := $(if $(DEMO_SMOKE_EXPECT_STATE_FILE),--expect-existing-state "$(DEMO_SMOKE_EXPECT_STATE_FILE)",)
 
-smoke:  ## Verify the selected distribution's running stack
-	@test -f "$(SMOKE_SCRIPT)" || (echo "No smoke script for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
+smoke:  ## Check readiness and configuration; MODEL=<id> also checks inference
+ifeq ($(_IS_EXAMPLE),yes)
 	$(SMOKE_PYTHON) "$(SMOKE_SCRIPT)" --base-url "$(SMOKE_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)"
+else
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops smoke --base-url "$(SMOKE_BASE_URL)" --model "$(MODEL)" --compose $(COMPOSE)
+endif
 
 # Stage 2 deliberately reuses Stage 1's project and provider. --no-recreate
 # pins that promise: Compose's divergence check can otherwise decide an
@@ -402,7 +418,7 @@ demo-smoke: _require-demo  ## Verify the full demo through its frontend origin
 # on the schema the new image has just migrated. Start PREVIOUS_BACKEND_IMAGE
 # that way, without its migrations, and run the full smoke against it, its
 # recreate included. `make demo` returns to the current image.
-DEMO_PREVIOUS_COMPOSE = env COMPOSE_PROFILES= BACKEND_IMAGE="$(PREVIOUS_BACKEND_IMAGE)" docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) -f deploy/docker/docker-compose.digest-backend.yml $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+DEMO_PREVIOUS_COMPOSE = env COMPOSE_PROFILES= ROLLBACK_DISTRIBUTION_CONFIG_PATH=/app/distributions/example/distribution.demo.json ROLLBACK_DISTRIBUTION_CONFIG_MODE=active BACKEND_IMAGE="$(PREVIOUS_BACKEND_IMAGE)" docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) -f deploy/docker/docker-compose.digest-backend.yml $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
 demo-previous: _require-demo  ## Restore drill: PREVIOUS_BACKEND_IMAGE on the migrated demo database, smoked
 	@test -n "$(PREVIOUS_BACKEND_IMAGE)" || (echo "Set PREVIOUS_BACKEND_IMAGE to the image to restore"; exit 1)
 	$(DEMO_PREVIOUS_COMPOSE) up -d --no-deps --no-build --force-recreate --wait backend
@@ -461,3 +477,22 @@ else
 	$(COMPOSE) up -d
 endif
 endif
+
+.PHONY: doctor deploy rollback backup restore-check
+OPS_BASE_URL ?= http://localhost:$(FRONTEND_PORT)
+BACKUP ?= gateway.dump
+
+doctor:  ## Diagnose services, readiness, schema and missing configuration
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops doctor --base-url "$(OPS_BASE_URL)" --compose $(COMPOSE)
+
+deploy: docker-volumes  ## Deploy pinned BACKEND_IMAGE and FRONTEND_IMAGE with acceptance and rollback
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops deploy --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --backend-image "$(BACKEND_IMAGE)" --frontend-image "$(FRONTEND_IMAGE)" --compose $(COMPOSE)
+
+rollback:  ## Restore previously recorded images without running old migrations
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops rollback --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --compose $(COMPOSE)
+
+backup:  ## Write a private Postgres dump to BACKUP=<path>
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops backup --backup "$(BACKUP)" --compose $(COMPOSE)
+
+restore-check:  ## Restore BACKUP into an isolated scratch database and verify compatibility
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops restore-check --backup "$(BACKUP)" --compose $(COMPOSE)

@@ -1361,3 +1361,9 @@ msgid ""
 "Users table and the user dashboard's usage figures, and the last computed"
 " result of the admin console's slowest views"
 msgstr "每个请求一行（模型、provider、token、延迟、TTFT、状态、成本），外加仪表盘、管理后台用户表和用户仪表盘用量数字所用的小时级与天级汇总，以及管理后台最慢几个视图最近一次的计算结果"
+
+msgid "The standard lifecycle commands create a private dump and verify it in a separate scratch database:"
+msgstr "标准生命周期命令可创建私有转储，并在单独的临时数据库中验证："
+
+msgid "The dump includes every application document and secret in `app_config`. The restore check does not replace production data. The commands below remain available when a manual database restore is required."
+msgstr "转储包含 `app_config` 中的所有应用文档和秘密。恢复检查不会替换生产数据。需要手动恢复数据库时，仍可使用下方命令。"
