@@ -75,9 +75,10 @@ change every table, and a deploy applies them as a step of its own, with the
 image it is about to start, before it restarts the gateway:
 
 ```bash
-make migrate                                                  # the bundled Compose stack
-docker compose run --rm backend python -m migrations upgrade  # the same, by hand
-cd apps/backend && uv run python -m migrations upgrade        # a checkout
+make migrate                                            # the bundled Compose stack
+docker compose up -d --no-recreate --wait postgres      # the same, by hand:
+docker compose run --rm --no-deps backend python -m migrations upgrade
+cd apps/backend && uv run python -m migrations upgrade  # a checkout
 ```
 
 The command reads the gateway's own `DB_*` settings, and does nothing when
