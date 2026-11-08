@@ -1379,7 +1379,9 @@ async def initialize() -> AppServices:
         # logger's request pool, which nothing else uses, so slow work on the
         # general pool cannot hold up authentication (serving.storage.pools).
         pg_operational = PostgresOperationalStore(
-            db_logger.pool, request_pool=getattr(db_logger, "request_pool", None)
+            db_logger.pool,
+            request_pool=getattr(db_logger, "request_pool", None),
+            fence_secret=fence_secret,
         )
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
@@ -1396,8 +1398,12 @@ async def initialize() -> AppServices:
         # logging: in privacy mode (the default) ``persist_enabled`` is False, so
         # ``save`` no-ops and stateful /v1/responses degrades gracefully while
         # existing data stays purgeable.
+        # Its saves check the erasure fence, as the log store's writes do: a
+        # stream that outlives its account's hard delete stores nothing.
         responses_store = ResponseStore(
-            db_logger.pool, persist_enabled=settings.db_store_full_content
+            db_logger.pool,
+            persist_enabled=settings.db_store_full_content,
+            fence_secret=fence_secret,
         )
         logger.info(
             "Responses store initialized (Postgres; persist_enabled=%s)",

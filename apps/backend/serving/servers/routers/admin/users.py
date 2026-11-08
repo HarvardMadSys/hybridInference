@@ -1196,7 +1196,12 @@ async def hard_delete_user(
             await log_store.hard_delete_user_data(user_id)
             fence_established = True
 
-        # Purge stored Responses API rows (openai_responses).
+        # Purge stored Responses API rows (openai_responses). After the fence,
+        # and the cost counters (op_store, below) after it too: a stream still
+        # running saves its turn and records its cost when it ends. Those
+        # writes check the tombstone under its lock (ResponseStore.save,
+        # increment_user_costs), so one either committed before the fence and
+        # is purged here, or starts after it and writes nothing.
         if response_store is not None:
             await response_store.delete_user_responses(user_id)
 

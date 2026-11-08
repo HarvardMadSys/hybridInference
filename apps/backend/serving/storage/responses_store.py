@@ -40,6 +40,7 @@ import time
 from datetime import UTC
 from typing import Any
 
+from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
 from serving.storage.pools import GENERAL_ACQUIRE_TIMEOUT_SEC, request_connection
 from serving.utils.logging import get_logger
 
@@ -88,19 +89,56 @@ WHERE id = ANY(ARRAY(
 #: Minute past the hour the purge runs, clear of the rollups (5, 10, 15, 20, 25).
 _PURGE_MINUTE = 40
 
+_SAVE_COLUMNS = "id, user_id, response, messages, previous_response_id, model"
+_SAVE_VALUES = "$1, $2, $3::jsonb, $4::jsonb, $5, $6"
+_SAVE_CONFLICT = """
+ON CONFLICT (id) DO UPDATE SET
+    response = EXCLUDED.response,
+    messages = EXCLUDED.messages,
+    previous_response_id = EXCLUDED.previous_response_id,
+    model = EXCLUDED.model
+"""
+
+_SAVE_SQL = (
+    f"INSERT INTO openai_responses ({_SAVE_COLUMNS}) VALUES ({_SAVE_VALUES}){_SAVE_CONFLICT}"
+)
+
+# The save and its erasure-fence check in one statement, as an api_logs row is
+# written (serving.storage.erasure_fence): the row goes in only when no
+# tombstone covers its owner ($7), and the statement answers whether one did.
+# Run after the statement that took the owner's shared fence lock.
+_FENCED_SAVE_SQL = f"""
+WITH fence AS (
+    SELECT EXISTS (SELECT 1 FROM erasure_fence WHERE account_digest = ANY($7::text[])) AS hit
+),
+saved AS (
+    INSERT INTO openai_responses ({_SAVE_COLUMNS})
+    SELECT {_SAVE_VALUES} FROM fence WHERE NOT fence.hit
+    {_SAVE_CONFLICT}
+)
+SELECT hit FROM fence
+"""
+
 
 class ResponseStore:
     """Postgres-backed store for Responses API objects."""
 
-    def __init__(self, pool: Any, *, persist_enabled: bool = True) -> None:
+    def __init__(
+        self, pool: Any, *, persist_enabled: bool = True, fence_secret: str | None = None
+    ) -> None:
         """Wrap an asyncpg pool.
 
         ``persist_enabled`` gates *writes* only: when False (DB privacy mode)
         :meth:`save` is a no-op, but reads, deletes and the hard-delete purge
         still operate so existing rows remain retrievable and wipeable.
+
+        With ``fence_secret`` (the erasure fence's, as the log store has it),
+        :meth:`save` checks the erasure fence first and stores nothing for an
+        account that was hard-deleted.
         """
         self._pool = pool
         self.persist_enabled = persist_enabled
+        self._fence_secret = fence_secret
 
     def _connection(self) -> Any:
         """A connection for a call made while serving a request, waited for a bounded time.
@@ -123,28 +161,41 @@ class ResponseStore:
         previous_response_id: str | None = None,
         model: str | None = None,
     ) -> None:
-        """Persist (or replace) a response and its cumulative conversation."""
+        """Persist (or replace) a response and its cumulative conversation.
+
+        Nothing is stored for a hard-deleted account. A stream that was still
+        running when its account was erased saves its turn when it ends, after
+        the hard delete purged this table: with a fence secret, the save takes
+        the account's shared fence lock and checks its tombstone, as an
+        ``api_logs`` write does (:mod:`serving.storage.erasure_fence`). Either
+        the save commits before the hard delete establishes the tombstone --
+        and the hard delete purges this table after that -- or it sees the
+        tombstone and stores nothing.
+        """
         if not self.persist_enabled:
             return
+        args = (
+            response_id,
+            user_id,
+            json.dumps(response),
+            json.dumps(messages),
+            previous_response_id,
+            model,
+        )
+        fence_keys = (
+            [fence_account_digest(user_id, self._fence_secret)]
+            if self._fence_secret and user_id
+            else []
+        )
         async with self._connection() as conn:
-            await conn.execute(
-                """
-                INSERT INTO openai_responses
-                    (id, user_id, response, messages, previous_response_id, model)
-                VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
-                ON CONFLICT (id) DO UPDATE SET
-                    response = EXCLUDED.response,
-                    messages = EXCLUDED.messages,
-                    previous_response_id = EXCLUDED.previous_response_id,
-                    model = EXCLUDED.model
-                """,
-                response_id,
-                user_id,
-                json.dumps(response),
-                json.dumps(messages),
-                previous_response_id,
-                model,
-            )
+            if not fence_keys:
+                await conn.execute(_SAVE_SQL, *args)
+                return
+            async with conn.transaction():
+                await lock_fence_keys_shared(conn, fence_keys)
+                fenced = await conn.fetchval(_FENCED_SAVE_SQL, *args, fence_keys)
+        if fenced:
+            logger.info("Response %s not stored: its account was erased", response_id)
 
     async def get_response(self, response_id: str, *, user_id: str) -> bytes | None:
         """*user_id*'s stored Responses object *response_id*, as JSON text, or ``None``.

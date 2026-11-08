@@ -37,6 +37,7 @@ from serving.storage.base import (
     ProviderKeyRow,
     Row,
 )
+from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.utils.logging import get_logger
@@ -60,12 +61,9 @@ logger = get_logger(__name__)
 # (user, day) and per (key, day) first, as ON CONFLICT DO UPDATE requires.
 # The sums keep each increment's rounding (``spend_ledger.counted_amount``), so
 # a coalesced batch adds exactly what the separate increments would have.
-COST_INCREMENTS_SQL = """
-WITH batch AS (
-    SELECT *
-    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
-        AS b(user_id, day, key_id, cost_usd, requests)
-),
+# The counter writes of a cost batch, from its ``batch`` rows: shared by both
+# statements below.
+_COST_INCREMENT_WRITES = """
 account_rows AS (
     INSERT INTO user_daily_cost AS c (user_id, day, cost_usd, requests, last_request_at)
     SELECT user_id, day, SUM(cost_usd), SUM(requests), NOW()
@@ -89,10 +87,40 @@ key_rows AS (
 )
 SELECT txid_current()
 """
+COST_INCREMENTS_SQL = (
+    """
+WITH batch AS (
+    SELECT *
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
+        AS b(user_id, day, key_id, cost_usd, requests)
+),"""
+    + _COST_INCREMENT_WRITES
+)
+
+# The same, with each increment's erasure-fence digest ($6, NULL for none): an
+# increment whose account was hard-deleted is left out (see
+# ``PostgresOperationalStore.increment_user_costs``).
+COST_INCREMENTS_FENCED_SQL = (
+    """
+WITH batch AS (
+    SELECT b.user_id, b.day, b.key_id, b.cost_usd, b.requests
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[], $6::text[])
+        AS b(user_id, day, key_id, cost_usd, requests, fence_key)
+    WHERE NOT EXISTS (SELECT 1 FROM erasure_fence AS f WHERE f.account_digest = b.fence_key)
+),"""
+    + _COST_INCREMENT_WRITES
+)
 
 # How long to keep asking how a cost transaction ended after its COMMIT's
 # answer was lost: the delays before each try.
 _COMMIT_STATUS_RETRY_DELAYS = (0.0, 0.2, 1.0, 3.0)
+
+# The most accounts' shared fence locks one cost write takes. Every lock is an
+# entry in PostgreSQL's shared lock table, which holds about 64 per connection
+# (max_locks_per_transaction); a coalesced batch past this checks the fence in
+# its statement alone rather than risk filling the table and failing every
+# retry.
+_COST_FENCE_LOCKS_MAX = 512
 
 # Distinct ``api_logs.provider`` values with a row in the last $1 days; see
 # ``PostgresOperationalStore.list_user_activity_providers``.
@@ -416,7 +444,13 @@ REQUEST_PATH_READS = (
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool, *, request_pool: asyncpg.Pool | None = None) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        request_pool: asyncpg.Pool | None = None,
+        fence_secret: str | None = None,
+    ) -> None:
         """Initialize with a shared asyncpg pool.
 
         The LogStore owns the erasure-fence schema and tombstone checks; this
@@ -430,9 +464,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 :data:`~serving.storage.pools.REQUEST_ACQUIRE_TIMEOUT_SEC` for a
                 connection, from whichever pool, and then raise
                 :class:`~serving.storage.pools.DatabaseBusyError`.
+            fence_secret: The erasure fence's secret, given where this store
+                shares the log store's database (as bootstrap builds them):
+                cost increments then skip hard-deleted accounts
+                (:meth:`increment_user_costs`).
         """
         self._pool = pool
         self._request_pool = request_pool if request_pool is not None else pool
+        self._fence_secret = fence_secret
 
     def _request_connection(self) -> AbstractAsyncContextManager[Any]:
         """A connection for a request-path lookup: the request pool, a bounded wait."""
@@ -447,7 +486,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         transaction; request-path lookups use it as well.
         """
         pool = SingleConnectionPool(connection)
-        return PostgresOperationalStore(pool, request_pool=pool)
+        return PostgresOperationalStore(pool, request_pool=pool, fence_secret=self._fence_secret)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -3840,6 +3879,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         normally, aborted raises the original error, and an answer that cannot
         be had raises :class:`CostWriteOutcomeUnknown` -- retrying then could
         count the batch twice.
+
+        With a fence secret, an increment for a hard-deleted account is left
+        out. A stream still running when its account was erased records its
+        cost when it ends, after the hard delete purged these counters: the
+        write takes each account's shared fence lock and checks the tombstones,
+        as an ``api_logs`` write does (:mod:`serving.storage.erasure_fence`), so
+        it either commits before the hard delete establishes the tombstone --
+        and the hard delete purges the counters after that -- or skips the
+        account. Past :data:`_COST_FENCE_LOCKS_MAX` accounts, only the
+        statement's own check is made.
         """
         if not increments:
             return
@@ -3850,10 +3899,24 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             [increment.cost_usd for increment in increments],
             [increment.requests for increment in increments],
         )
+        fence_keys = (
+            [
+                fence_account_digest(increment.user_id, self._fence_secret)
+                for increment in increments
+            ]
+            if self._fence_secret
+            else None
+        )
         xid: int | None = None
         try:
             async with self._pool.acquire() as conn, conn.transaction():
-                xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+                if fence_keys is None:
+                    xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+                else:
+                    accounts = sorted(set(fence_keys))
+                    if len(accounts) <= _COST_FENCE_LOCKS_MAX:
+                        await lock_fence_keys_shared(conn, accounts)
+                    xid = await conn.fetchval(COST_INCREMENTS_FENCED_SQL, *args, fence_keys)
             return
         except Exception as exc:
             if xid is None:

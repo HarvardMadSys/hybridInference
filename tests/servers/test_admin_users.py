@@ -1550,6 +1550,42 @@ async def test_hard_delete_user_wipes_data(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_hard_delete_purges_what_a_running_stream_writes_after_the_fence(admin_client):
+    """Responses rows and cost counters go after the tombstone that keeps them out.
+
+    A stream that outlives the hard delete saves its turn and records its cost
+    when it ends; both writes check the tombstone, so each store must be purged
+    after the fence is established, never before.
+    """
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "status": "deleted",
+    }
+    op_store.hard_delete_user.return_value = {"users": 1}
+    log_store.hard_delete_user_data.return_value = {"api_logs": 0}
+    response_store = client._transport.app.state.services.responses_store
+    manager = MagicMock()
+    manager.attach_mock(log_store.hard_delete_user_data, "fence_and_api_logs")
+    manager.attach_mock(response_store.delete_user_responses, "responses")
+    manager.attach_mock(op_store.hard_delete_user, "account_and_cost_counters")
+
+    response = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True, "reason": "user requested"},
+    )
+
+    assert response.status_code == 200
+    assert [c[0] for c in manager.mock_calls] == [
+        "fence_and_api_logs",
+        "responses",
+        "account_and_cost_counters",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_hard_delete_aborts_when_resume_wins_race(admin_client):
     """Hard-delete aborts when a concurrent resume wins the race.
 
