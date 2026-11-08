@@ -82,17 +82,8 @@ msgid ""
 msgstr "**`routewise`**——考虑成本的策略，实现在单独的包里；见下文 [RouteWise](#routewise)。"
 
 #: ../developer/routing.md:47
-msgid ""
-"`router_params:` holds settings for the chosen strategy. An unknown "
-"strategy name stops startup with a message listing the known strategies, "
-"and a key the strategy does not accept stops it with a message naming "
-"that key. `ENABLE_ROUTEWISE=true` is an older switch that makes "
-"`routewise` the default when the routing file leaves `default_router` at "
-"`fixed`."
-msgstr ""
-"`router_params:` "
-"存放所选策略的设置。未知的策略名会让启动失败，错误消息会列出已知的策略；策略不接受的键也会让启动失败，错误消息会指出是哪个键。`ENABLE_ROUTEWISE=true`"
-" 是一个较早的开关：当路由配置文件里的 `default_router` 仍是 `fixed` 时，它会把默认策略换成 `routewise`。"
+msgid "`router_params:` holds settings for the chosen strategy. Admin refuses a catalog that names an unknown strategy, with a message listing the known strategies, or a key the strategy does not accept, with a message naming that key. A stored catalog with either registers no catalog model and logs the same message. `ENABLE_ROUTEWISE=true` is an older switch that makes `routewise` the default when the routing file leaves `default_router` at `fixed`."
+msgstr "`router_params:` 存放所选策略的设置。目录中写了未知的策略名（错误消息会列出已知的策略），或写了策略不接受的键（错误消息会指出是哪个键）时，Admin 会拒绝保存。已保存的目录若有这两种情况，不会注册任何目录模型，并记录同样的消息。`ENABLE_ROUTEWISE=true` 是一个较早的开关：当路由配置文件里的 `default_router` 仍是 `fixed` 时，它会把默认策略换成 `routewise`。"
 
 #: ../developer/routing.md:53
 msgid ""

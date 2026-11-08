@@ -54,9 +54,11 @@ Two strategies are registered out of the box:
 - **`routewise`** — a cost-aware strategy that lives in a separate package; see
   [RouteWise](#routewise) below.
 
-`router_params:` holds settings for the chosen strategy. An unknown strategy
-name stops startup with a message listing the known strategies, and a key the
-strategy does not accept stops it with a message naming that key. `ENABLE_ROUTEWISE=true` is an older switch that makes
+`router_params:` holds settings for the chosen strategy. Admin refuses a
+catalog that names an unknown strategy, with a message listing the known
+strategies, or a key the strategy does not accept, with a message naming that
+key. A stored catalog with either registers no catalog model and logs the same
+message. `ENABLE_ROUTEWISE=true` is an older switch that makes
 `routewise` the default when the routing file leaves `default_router` at
 `fixed`.
 

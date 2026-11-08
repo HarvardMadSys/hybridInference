@@ -2688,8 +2688,8 @@ msgstr "空的路由和告警文档使用内置策略与阈值。空的站点文
 msgid "Database settings win over environment seeds, then registered defaults. Stored empty values are deliberate. Application file paths and distribution active/dark modes no longer select runtime configuration."
 msgstr "数据库设置优先于环境种子值，其次为注册默认值。已保存的空值是有意设置。应用文件路径和分发的 active/dark 模式不再选择运行时配置。"
 
-msgid "The upgrade migration copies existing `route_catalog` rows into `MODEL_CATALOG` and `ROUTING_POLICY` without overwriting settings an administrator already saved. Embedded credentials become separate secret settings. Legacy rows remain for previous-release compatibility, and later edits to those rows have no effect on the new release."
-msgstr "升级迁移将现有 `route_catalog` 行复制到 `MODEL_CATALOG` 和 `ROUTING_POLICY`，不会覆盖管理员已保存的设置。内嵌凭据转换为独立的秘密设置。旧行保留以兼容上一版本；随后对旧行的编辑不会影响新版本。"
+msgid "The upgrade migration copies existing `route_catalog` rows into `MODEL_CATALOG` and `ROUTING_POLICY` without overwriting settings an administrator already saved. Embedded credentials become separate secret settings. The copy is held to the previous release's own registry rules, so what it ran still registers: duplicate aliases, a route without `kind`, an embedding model with `max_output_length: 0` or a top-level anchor block. A catalog it could not have run either registers no catalog model, and Admin and the log name the reason. Legacy rows remain for previous-release compatibility, and later edits to those rows have no effect on the new release."
+msgstr "升级迁移将现有 `route_catalog` 行复制到 `MODEL_CATALOG` 和 `ROUTING_POLICY`，不会覆盖管理员已保存的设置。内嵌凭据转换为独立的秘密设置。复制的目录沿用上一版本注册表自身的规则，因此上一版本能运行的内容仍会注册：重复的别名、没有 `kind` 的路由、`max_output_length: 0` 的嵌入模型或顶层锚点块。上一版本同样无法运行的目录不会注册任何目录模型，Admin 和日志会写明原因。旧行保留以兼容上一版本；随后对旧行的编辑不会影响新版本。"
 
 msgid "Site identity, branding and alert rules kept in files need one explicit import, with the new image, after the migrations and before it serves. Until then the new release runs with a neutral site and the built-in alert thresholds, so public signup or RAG that the old manifest turned off is on. The standard lifecycle commands import in that order when you name the old manifest as the backend container sees it: the value of the deployment's `DISTRIBUTION_CONFIG_PATH`, or its path in the checkout, such as `distributions/<name>/distribution.yaml`."
 msgstr "保存在文件中的站点标识、品牌和告警规则需要显式导入一次：用新镜像导入，在迁移之后、新版本开始服务之前。在此之前，新版本以中性站点和内置告警阈值运行，因此旧清单关闭的公开注册或 RAG 会处于开启状态。只要按后端容器看到的路径指定旧清单，标准生命周期命令就会按此顺序导入：即部署的 `DISTRIBUTION_CONFIG_PATH` 的值，或它在检出目录中的路径，例如 `distributions/<name>/distribution.yaml`。"
@@ -2720,6 +2720,14 @@ msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后
 
 msgid "Catalog changes marked **Restart required** still need a controlled backend restart. A save is not evidence that every process has applied the change."
 msgstr "标记为 **Restart required** 的目录修改仍需要受控重启后端。保存成功不能证明所有进程都已应用修改。"
+
+#: ../developer/configuration.md
+msgid "A process that cannot apply one model's change keeps serving that model's previous routes, lists the model as not applied, and retries it; other models and key changes still apply. A route edit keeps the model's RouteWise router, and what it has learned, unless the edit changes the strategy."
+msgstr "某个进程无法应用某个模型的修改时，会继续使用该模型之前的路由，将该模型列为未应用并重试；其他模型和密钥的修改照常应用。编辑路由会保留该模型的 RouteWise 路由器及其已学到的内容，除非这次编辑改变了策略。"
+
+#: ../developer/configuration.md
+msgid "Disabling a key that routes pin takes it out of service in every process until it is enabled again, and Admin refuses a disabled key when a route is created or edited. Deleting a pinned key leaves running processes on the route without that key, and a restarted process leaves the route out: repoint the routes before deleting the key."
+msgstr "停用被路由固定的密钥后，它会在每个进程中停止服务，直到重新启用；创建或编辑路由时，Admin 会拒绝已停用的密钥。删除被固定的密钥后，正在运行的进程会继续保留该路由但不再使用这个密钥，重启的进程则不再加载该路由：请先把这些路由改指向其他密钥，再删除它。"
 
 msgid "Add and verify providers and keys here. Credentials remain write-only. Built-in adapter kinds and catalog-owned provider names remain reserved."
 msgstr "在此添加并验证供应商和密钥。凭据仍为只写。内置适配器种类和目录管理的供应商名称仍为保留名称。"

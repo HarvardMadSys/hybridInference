@@ -52,7 +52,11 @@ modes no longer select runtime configuration.
 
 The upgrade migration copies existing `route_catalog` rows into `MODEL_CATALOG`
 and `ROUTING_POLICY` without overwriting settings an administrator already saved.
-Embedded credentials become separate secret settings. Legacy rows remain for
+Embedded credentials become separate secret settings. The copy is held to the
+previous release's own registry rules, so what it ran still registers: duplicate
+aliases, a route without `kind`, an embedding model with `max_output_length: 0`
+or a top-level anchor block. A catalog it could not have run either registers
+no catalog model, and Admin and the log name the reason. Legacy rows remain for
 previous-release compatibility, and later edits to those rows have no effect on
 the new release.
 
@@ -170,6 +174,17 @@ registered process count with your deployment inventory.
 
 Catalog changes marked **Restart required** still need a controlled backend
 restart. A save is not evidence that every process has applied the change.
+
+A process that cannot apply one model's change keeps serving that model's
+previous routes, lists the model as not applied, and retries it; other models
+and key changes still apply. A route edit keeps the model's RouteWise router,
+and what it has learned, unless the edit changes the strategy.
+
+Disabling a key that routes pin takes it out of service in every process until
+it is enabled again, and Admin refuses a disabled key when a route is created
+or edited. Deleting a pinned key leaves running processes on the route without
+that key, and a restarted process leaves the route out: repoint the routes
+before deleting the key.
 
 ### Providers tab
 

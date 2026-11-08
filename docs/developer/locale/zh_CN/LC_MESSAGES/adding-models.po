@@ -280,6 +280,10 @@ msgid "Display name"
 msgstr "展示名称"
 
 #: ../developer/adding-models.md
+msgid "Display name; defaults to `id`"
+msgstr "显示名称；默认为 `id`"
+
+#: ../developer/adding-models.md
 msgid "`provider`"
 msgstr ""
 
@@ -712,22 +716,12 @@ msgstr ""
 
 #: ../developer/adding-models.md:264
 #, python-brace-format
-msgid ""
-"A whole-value `${VAR}` reference must resolve to a non-blank path; it is "
-"not an instruction to use the default if the variable is missing. A "
-"missing or blank variable aborts startup for a required route. With "
-"`optional: true`, only that route is skipped, with a warning naming the "
-"model, route, and variable."
-msgstr ""
-"整个值写成 `${VAR}` "
-"时，它必须解析成非空白的路径；变量缺失并不意味着改用默认值。如果路由不是可选的，变量未设置或为空白都会导致启动失败。设置了 `optional: "
-"true` 时，只跳过这一条路由，并记一条写明模型、路由和变量名的警告。"
+msgid "A whole-value `${VAR}` reference must resolve to a non-blank path; it is not an instruction to use the default if the variable is missing. For a required route, a missing or blank variable means the catalog registers no models, with an error naming the model, route, and variable. With `optional: true`, only that route is skipped, with a warning naming the same."
+msgstr "整个值写成 `${VAR}` 时，它必须解析成非空白的路径；变量缺失并不意味着改用默认值。对于不是可选的路由，变量未设置或为空白时，整个目录都不会注册任何模型，并记录一条写明模型、路由和变量名的错误。设置了 `optional: true` 时，只跳过这一条路由，并记一条写明同样信息的警告。"
 
 #: ../developer/adding-models.md:269
-msgid ""
-"Any other invalid `embeddings_path` stops startup, even on an optional "
-"route, so the gateway never starts with part of the registry missing."
-msgstr "其他任何非法的 `embeddings_path` 都会导致启动失败，可选路由也不例外，免得网关带着残缺的注册表启动。"
+msgid "Admin refuses a catalog with any other invalid `embeddings_path`, even on an optional route. A stored catalog with one registers no catalog model and logs an error naming the model, so the gateway never serves part of the registry."
+msgstr "其他任何非法的 `embeddings_path`（可选路由也不例外）都会让 Admin 拒绝保存该目录。已保存的目录若含有这样的值，不会注册任何目录模型，并记录一条写明模型的错误，因此网关绝不会只提供注册表的一部分。"
 
 #: ../developer/adding-models.md:272
 msgid "Supported adapter kinds"
@@ -1608,5 +1602,5 @@ msgid "`include_usage_in_stream`"
 msgstr "`include_usage_in_stream`"
 
 #: ../developer/adding-models.md
-msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: a model-wide or non-boolean value (`\"false\"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
-msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是布尔值：在模型级配置或使用非布尔值（`\"false\"`、`null`）属于配置错误，会使服务无法启动。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"
+msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: Admin refuses a model-wide or non-boolean value (`\"false\"`, `null`) when the catalog is saved, and a stored catalog with one registers no catalog model and logs an error. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
+msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是布尔值：保存目录时，Admin 会拒绝模型级配置或非布尔值（`\"false\"`、`null`）；已保存的目录若含有这样的值，不会注册任何目录模型，并会记录一条错误。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"

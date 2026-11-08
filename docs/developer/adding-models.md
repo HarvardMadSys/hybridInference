@@ -46,7 +46,7 @@ itself and are read only at the model level.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | Yes | Unique model identifier; the name clients send |
-| `name` | string | Yes | Display name |
+| `name` | string | No | Display name; defaults to `id` |
 | `provider` | string | Yes | Provider/adapter kind; also the default `route[].kind` when no `route:` list is given. Note the collision: at the model level `provider:` selects an adapter, while `provider:` on a *route* is only an analytics label — see the route-fields table |
 | `base_url` | string | Yes, here or on every route | API endpoint base URL |
 | `api_key` | string | No | API authentication key |
@@ -206,7 +206,7 @@ Beyond the model fields above, a route entry accepts:
 | `provider` / `provider_display_name` | string | Analytics label override only — it renames the row in the dashboard and does **not** select an adapter; that is `kind`. See [Naming a route in the dashboard](add-local-model.md#naming-a-route-in-the-dashboard) |
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
 | `deployment_type` | string | Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency) |
-| `include_usage_in_stream` | bool | Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: a model-wide or non-boolean value (`"false"`, `null`) is a config error that stops startup. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields |
+| `include_usage_in_stream` | bool | Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: Admin refuses a model-wide or non-boolean value (`"false"`, `null`) when the catalog is saved, and a stored catalog with one registers no catalog model and logs an error. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
 
 A route reports its `kind` as the provider label — the value recorded in
@@ -252,12 +252,14 @@ than `null`, and parent (`..`) path segments are rejected. Explicit `null` and
 `""` still select the default URL inference.
 
 A whole-value `${VAR}` reference must resolve to a non-blank path; it is not an
-instruction to use the default if the variable is missing. A missing or blank
-variable aborts startup for a required route. With `optional: true`, only that
-route is skipped, with a warning naming the model, route, and variable.
+instruction to use the default if the variable is missing. For a required
+route, a missing or blank variable means the catalog registers no models, with
+an error naming the model, route, and variable. With `optional: true`, only
+that route is skipped, with a warning naming the same.
 
-Any other invalid `embeddings_path` stops startup, even on an optional route,
-so the gateway never starts with part of the registry missing.
+Admin refuses a catalog with any other invalid `embeddings_path`, even on an
+optional route. A stored catalog with one registers no catalog model and logs
+an error naming the model, so the gateway never serves part of the registry.
 
 ### Supported adapter kinds
 
