@@ -53,6 +53,32 @@
       "type": "model"
     },
     {
+      "capabilities": {
+        "effort": {
+          "high": {
+            "supported": true
+          },
+          "low": {
+            "supported": true
+          },
+          "max": {
+            "supported": true
+          },
+          "medium": {
+            "supported": false
+          },
+          "supported": true,
+          "xhigh": {
+            "supported": false
+          }
+        }
+      },
+      "created_at": "1970-01-01T00:00:00Z",
+      "display_name": "mapped-reasoner",
+      "id": "mapped-reasoner",
+      "type": "model"
+    },
+    {
       "created_at": "1970-01-01T00:00:00Z",
       "display_name": "undeclared-reasoner",
       "id": "undeclared-reasoner",

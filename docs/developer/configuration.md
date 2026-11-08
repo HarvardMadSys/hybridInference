@@ -375,7 +375,7 @@ backend.
 | Create a model that is not in the registry | **Create model** | `POST /admin/routing/provider-route-models`; `POST /admin/routing/provider-route-model-verifications` tries the route without registering it | `provider_route_candidates`, plus a strategy and required-role marker in `site_settings` |
 | Add a route to an existing model | **Add provider route** | `POST /admin/routing/provider-route-candidates/{model_id}`; `.../provider-route-candidate-verifications/{model_id}` to check first; `PATCH` / `DELETE /admin/routing/provider-route-candidates/{model_id}/{route_id}` edits it in place or deletes it | `provider_route_candidates` |
 | Point a registry route somewhere else | **Edit** | `PUT /admin/routing/provider-routes/{model_id}/{route_id}`; `.../provider-route-verifications/{model_id}/{route_id}` to check first (it checks a runtime route's edit too); `DELETE` removes the override and restores the YAML route (**Reset config**) | `provider_route_configs` |
-| Change what a route accepts: context window, max output, image input, tool calling | **Edit** on each route | `PUT /admin/routing/provider-route-capabilities/{model_id}/{route_id}`; `DELETE` returns the route to the values it has from the registry or its creation | `provider_route_capabilities` |
+| Change what a route accepts: context window, max output, image input, tool calling, reasoning-effort levels | **Edit** on each route | `PUT /admin/routing/provider-route-capabilities/{model_id}/{route_id}`; `DELETE` returns the route to the values it has from the registry or its creation | `provider_route_capabilities` |
 | Disable or enable a route of either source | **Disable** / **Enable** | `PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` with `{"disabled": true}`; the route keeps its configuration and weights, and nothing (selection, retry, fallback, offload) picks it until it is enabled | `provider_route_states` |
 | Choose which routes batch work may use | **Allow batch** / **Stop batch**, and **Batch default**; a **Batch** badge marks the routes it may use | `PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` with `{"batch_allowed": true}`, `false`, or `null` to follow the route's locality again; by default only the gateway's own servers take batch work — see [Which routes batch work may use](batches.md#which-routes-batch-work-may-use) | `provider_route_batch_policies` |
 | Delete a registry route from this deployment | **Delete**, then **Restore** | `POST /admin/routing/provider-route-removals/{model_id}/{route_id}`; `DELETE` on the same path restores it with its edits and weights. models.yaml is not changed | `provider_route_states` |
@@ -437,6 +437,22 @@ database transaction; a restore that fails is logged. Route listings report
 `capabilities_overridden`. A change applies in the gateway process that handles
 the admin request; a deployment running several gateway processes sees it in
 the others after their next restart.
+
+The same form and body carry a route's reasoning-effort map
+(`reasoning_effort_map`, see
+[Mapping reasoning-effort levels on a route](adding-models.md#mapping-reasoning-effort-levels-on-a-route)):
+**Reasoning effort levels**, one row per public level and the value the
+upstream receives for it. Unlike the four, it is optional in the body: left out
+or `null` (as in every override stored before it existed), the route keeps the
+map it has from the registry or its creation, so saving the four alone never
+clears one, and saving a map never changes the four or `supported_params`. A
+map replaces the route's own; resetting returns to it. The console sends no map
+while the rows match the route's default. A route whose adapter does not send
+`reasoning_effort` refuses a map (422), and a route added from the console
+never takes another route's map. Route listings also report
+`reasoning_effort_mappable` and `reasoning_efforts_published`, the levels the
+live route offers clients. A save answers only once the route this process
+serves uses the saved map; otherwise it answers 409.
 
 ### Settings tab
 

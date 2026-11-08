@@ -225,6 +225,8 @@ the order `reasoning_efforts` declares them; the Anthropic shape (an
 
 A value is published only when every route of the model delivers it:
 
+- a route with a `reasoning_effort_map` delivers the map's public levels (its
+  keys, in their order), never the upstream values it sends;
 - an `openai_compat` route (OpenRouter included) with `reasoning_effort` in
   `supported_params` delivers its `reasoning_efforts`;
 - a route without `reasoning_effort` in `supported_params` delivers none, and
@@ -235,6 +237,57 @@ A value is published only when every route of the model delivers it:
   domain, or a domain that is not a list of distinct level names.
 
 Auto models publish nothing, because selection picks the model per request.
+
+### Mapping reasoning-effort levels on a route
+
+The level a client chooses and the value a server takes are not always the
+same word. A route can declare the translation with `reasoning_effort_map`:
+each key is a **public level** (what clients send as `reasoning_effort` on
+Chat Completions, `reasoning.effort` on Responses or `output_config.effort` on
+Messages, and what `/v1/models` offers them), and each value is the **upstream
+value** this route's server receives as `reasoning_effort`.
+
+```yaml
+models:
+  - id: example-reasoner
+    name: Example reasoner
+    provider: vllm
+    route:
+      - kind: vllm
+        base_url: ${EXAMPLE_REASONER_BASE_URL}
+        # Public level -> what this server's reasoning_effort takes.
+        reasoning_effort_map:
+          low: high
+          high: xhigh
+          max: max
+```
+
+On that route:
+
+- exactly the keys are offered and accepted, in this order: the listing above
+  publishes `low`, `high` and `max`. Any other level, `xhigh` and `medium`
+  included, is refused with a 400 before anything is sent; it is never dropped
+  or rounded to a neighbour. A thinking switch such as `none` is not a level
+  unless the map names it;
+- a level is translated once, on the route that serves the request, from the
+  level the client sent. A retry, a fallback to another route or a reroute
+  starts again from the client's level, and a route without a map sends it
+  unchanged;
+- the map is the whole declaration: the route forwards `reasoning_effort`
+  whether or not `supported_params` names it, and `reasoning_efforts` is not
+  read for it;
+- a request that names no level sends none, so the server's own default
+  applies. The gateway adds no default. Clients have their own: Claude Code,
+  for one, sends `output_config.effort: high` when its user chose nothing.
+
+The map is a fact about one server, so it is declared on the route and
+rejected on the model (including a shorthand model without a route list), and
+only a route whose adapter sends `reasoning_effort` (an OpenAI-compatible
+kind) may carry one: on `anthropic`, `claude` or `gemini` it is a
+configuration error. Each key and value is one short word of letters, digits,
+`_`, `.` or `-`. Routes without a map behave as they always did. An admin can
+set or replace a route's map from the console; see
+[Route capabilities](configuration.md#routing-tab).
 
 ### Automatic DeepSeek prices
 
@@ -312,6 +365,7 @@ Beyond the model fields above, a route entry accepts:
 | `provider_type` | string | RouteWise cost category: `on_demand`, `quota`, or `concurrency` |
 | `deployment_type` | string | Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency) |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
+| `reasoning_effort_map` | dict | Route-only. The public reasoning-effort levels this route takes, each mapped to the value its upstream receives as `reasoning_effort`; see [Mapping reasoning-effort levels on a route](#mapping-reasoning-effort-levels-on-a-route) |
 
 A route reports its `kind` as the provider label — the value recorded in
 `api_logs.provider` and grouped on by every provider-scoped admin view. Two

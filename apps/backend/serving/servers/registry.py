@@ -25,6 +25,7 @@ from serving.adapters import (
     OpenRouterAdapter,
 )
 from serving.adapters.base import validate_deployment_type
+from serving.adapters.reasoning_effort import EFFORT_MAP_FIELD, validate_effort_map
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
@@ -892,6 +893,26 @@ def register_from_models_text(
                 else:
                     adapter_cfg.pop("null_cache_details_means_miss", None)
 
+                # The route's strict public -> upstream reasoning-effort map
+                # (serving.adapters.reasoning_effort). Route-level ONLY: it is a
+                # claim about which values one server accepts, and a model-level
+                # map would ride along to every fallback, translating levels for
+                # a server that never takes those names.
+                if EFFORT_MAP_FIELD in m:
+                    raise ValueError(
+                        f"{EFFORT_MAP_FIELD} for model {top_cfg.get('id')!r} must be "
+                        "declared on a route, not on the model (including shorthand "
+                        "models without a route list): it states which values one "
+                        "server accepts."
+                    )
+                if EFFORT_MAP_FIELD in r:
+                    try:
+                        adapter_cfg[EFFORT_MAP_FIELD] = validate_effort_map(r[EFFORT_MAP_FIELD])
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"{exc} (model {top_cfg.get('id')!r}, route {route_index})"
+                        ) from exc
+
                 # Route-level input_modalities override (default: inherit the
                 # model-level declaration). Lets a narrower fallback (e.g. a
                 # text-only mirror of a vision model) advertise fewer modalities
@@ -938,6 +959,14 @@ def register_from_models_text(
                     adapter_cfg["route_metadata"] = route_metadata
 
                 adapter = _make_adapter(kind, adapter_cfg)
+                if adapter_cfg.get(EFFORT_MAP_FIELD) and not getattr(
+                    adapter, "forwards_reasoning_effort", False
+                ):
+                    raise ValueError(
+                        f"{EFFORT_MAP_FIELD} on model {top_cfg.get('id')!r}, route "
+                        f"{route_index} (kind {kind!r}): this adapter does not send "
+                        "reasoning_effort, so there is nothing to translate"
+                    )
                 adapters_with_weights.append((adapter, weight))
 
                 # Register adapter for runtime key-pool management. We always

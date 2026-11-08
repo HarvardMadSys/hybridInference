@@ -38,6 +38,7 @@ from pydantic import ValidationError
 
 from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX, is_auto_model_id
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
+from serving.adapters.reasoning_effort import declared_public_levels
 from serving.auto_mode import auto_mode_for
 from serving.batch.profiles import AnthropicProfile, profile_violation
 from serving.config.batch_routes import (
@@ -339,10 +340,8 @@ def openai_translation_problem(body: dict[str, Any], adapter: Any = None) -> str
             return "output_config: only effort is translated; format needs a native route"
         effort = output_config.get("effort")
         if adapter is not None and effort is not None:
-            config = getattr(adapter, "config", None)
-            supported = getattr(config, "supported_params", None) or ()
-            declared = getattr(config, "reasoning_efforts", None) or ()
-            if "reasoning_effort" not in supported or effort not in declared:
+            declared = declared_public_levels(getattr(adapter, "config", None))
+            if effort not in declared:
                 return f"output_config.effort {effort!r} is not supported by this model"
     return None
 

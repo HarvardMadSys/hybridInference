@@ -77,6 +77,45 @@
     {
       "context_length": 8192,
       "created": 0,
+      "id": "mapped-reasoner",
+      "input_modalities": [
+        "text"
+      ],
+      "max_output_length": 4096,
+      "name": "mapped-reasoner",
+      "object": "model",
+      "on_demand": false,
+      "openrouter": null,
+      "output_modalities": [
+        "text"
+      ],
+      "owned_by": "p",
+      "pricing": {
+        "completion": "0",
+        "image": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+        "prompt": "0",
+        "request": "0"
+      },
+      "quantization": "bf16",
+      "reasoning": {
+        "supported_efforts": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "supported_features": [],
+      "supported_sampling_parameters": [
+        "max_tokens",
+        "stream",
+        "temperature"
+      ]
+    },
+    {
+      "context_length": 8192,
+      "created": 0,
       "id": "undeclared-reasoner",
       "input_modalities": [
         "text"

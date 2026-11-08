@@ -87,6 +87,13 @@ RUNTIME_CAPABILITIES = {
     "input_modalities": ["text", "image"],
     "supports_tools": True,
 }
+
+
+def _served(capabilities: dict) -> dict:
+    """``capabilities`` as a route row reports them: with its effort map, ``None`` if unset."""
+    return {"reasoning_effort_map": None, **capabilities}
+
+
 OPENROUTER_DEEPINFRA_PRICING = {
     "prompt": "0.15",
     "completion": "1.15",
@@ -2559,7 +2566,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
     assert row["api_key_id"] == "db-openrouter"
     # The route keeps the capabilities it declared when it was added.
     assert json.loads(row["capabilities"]) == RUNTIME_CAPABILITIES
-    assert payload["capabilities"] == RUNTIME_CAPABILITIES
+    assert payload["capabilities"] == _served(RUNTIME_CAPABILITIES)
     # A limit does not change where requests go, so nothing is sent upstream.
     verify_mock.assert_not_awaited()
     _index, runtime_adapter, _weight, _endpoint = _live_entry(route_executor, PARASAIL_ENDPOINT_ID)
@@ -7671,8 +7678,8 @@ async def test_put_route_capabilities_overrides_a_yaml_route(admin_client, monke
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["capabilities"] == RUNTIME_CAPABILITIES
-    assert body["capabilities_baseline"] == DEFAULT_CAPABILITIES
+    assert body["capabilities"] == _served(RUNTIME_CAPABILITIES)
+    assert body["capabilities_baseline"] == _served(DEFAULT_CAPABILITIES)
     assert body["capabilities_overridden"] is True
     op_store.upsert_route_capability_override.assert_awaited_once_with(
         "minimax-fast", "minimax-fast:featherless-api", RUNTIME_CAPABILITIES, "admin-token"
@@ -7715,7 +7722,7 @@ async def test_delete_route_capabilities_returns_the_route_to_its_baseline(admin
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["capabilities"] == DEFAULT_CAPABILITIES
+    assert body["capabilities"] == _served(DEFAULT_CAPABILITIES)
     assert body["capabilities_overridden"] is False
     assert op_store.capability_rows == {}
     adapter = _route_adapter(route_executor, "minimax-fast:featherless-api")
@@ -7741,7 +7748,7 @@ async def test_put_route_capabilities_keeps_audio_and_video(admin_client):
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["capabilities"] == edited
+    assert response.json()["capabilities"] == _served(edited)
     _assert_capabilities_values(adapter, edited)
     stored = op_store.capability_rows[("minimax-fast", "minimax-fast:featherless-api")]
     assert json.loads(stored["capabilities"]) == edited
@@ -7814,7 +7821,7 @@ async def test_route_capability_override_survives_a_target_edit_and_its_reset(ad
         headers=AUTH,
     )
     assert edited.status_code == 200, edited.text
-    assert edited.json()["capabilities"] == NARROW_CAPABILITIES
+    assert edited.json()["capabilities"] == _served(NARROW_CAPABILITIES)
     _assert_capabilities_values(
         _route_adapter(route_executor, "minimax-fast:featherless-api"), NARROW_CAPABILITIES
     )
@@ -7828,7 +7835,7 @@ async def test_route_capability_override_survives_a_target_edit_and_its_reset(ad
     )
     reset = await client.delete(f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}", headers=AUTH)
     assert reset.status_code == 200, reset.text
-    assert reset.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert reset.json()["capabilities"] == _served(RUNTIME_CAPABILITIES)
     _assert_capabilities_values(
         _route_adapter(route_executor, "minimax-fast:featherless-api"), RUNTIME_CAPABILITIES
     )
@@ -7837,7 +7844,7 @@ async def test_route_capability_override_survives_a_target_edit_and_its_reset(ad
     cleared = await client.delete(
         f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}", headers=AUTH
     )
-    assert cleared.json()["capabilities"] == DEFAULT_CAPABILITIES
+    assert cleared.json()["capabilities"] == _served(DEFAULT_CAPABILITIES)
 
 
 # -- Saving capabilities with a route's target edit ---------------------------
@@ -7866,8 +7873,8 @@ async def test_config_route_edit_saves_its_capabilities_in_the_same_request(admi
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["base_url"] == "https://api.featherless.ai/v2"
-    assert body["capabilities"] == RUNTIME_CAPABILITIES
-    assert body["capabilities_baseline"] == DEFAULT_CAPABILITIES
+    assert body["capabilities"] == _served(RUNTIME_CAPABILITIES)
+    assert body["capabilities_baseline"] == _served(DEFAULT_CAPABILITIES)
     assert body["capabilities_overridden"] is True
     verify_mock.assert_awaited_once()
     op_store.upsert_provider_route_config.assert_awaited_once()
@@ -7907,7 +7914,7 @@ async def test_config_route_edit_can_return_its_capabilities_to_the_baseline(adm
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["capabilities"] == DEFAULT_CAPABILITIES
+    assert body["capabilities"] == _served(DEFAULT_CAPABILITIES)
     assert body["capabilities_overridden"] is False
     assert op_store.capability_rows == {}
     adapter = _route_adapter(route_executor, FEATHERLESS)
@@ -7937,7 +7944,7 @@ async def test_config_route_edit_without_capabilities_leaves_them(admin_client):
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["capabilities"] == NARROW_CAPABILITIES
+    assert response.json()["capabilities"] == _served(NARROW_CAPABILITIES)
     op_store.upsert_route_capability_override.assert_not_awaited()
     op_store.delete_route_capability_override.assert_not_awaited()
     assert _audited_actions() == ["routing.provider_routes.update"]
@@ -8051,8 +8058,8 @@ async def test_runtime_route_edit_saves_its_capabilities_in_the_same_request(adm
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["capabilities"] == NARROW_CAPABILITIES
-    assert body["capabilities_baseline"] == RUNTIME_CAPABILITIES
+    assert body["capabilities"] == _served(NARROW_CAPABILITIES)
+    assert body["capabilities_baseline"] == _served(RUNTIME_CAPABILITIES)
     assert body["capabilities_overridden"] is True
     # The row keeps the route's declaration; the override has its own row.
     assert json.loads(table.row("minimax-fast", MINIMAX_ROUTE_ID)["capabilities"]) == (
@@ -8081,14 +8088,14 @@ async def test_runtime_route_limit_edit_saves_its_capabilities(admin_client):
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["capabilities"] == NARROW_CAPABILITIES
+    assert response.json()["capabilities"] == _served(NARROW_CAPABILITIES)
     adapter = _live_entry(route_executor, MINIMAX_ROUTE_ID)[1]
     assert adapter is before
     _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
 
     reset = await _patch_candidate(client, MINIMAX_ROUTE_ID, {"reset_capabilities": True})
     assert reset.status_code == 200, reset.text
-    assert reset.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert reset.json()["capabilities"] == _served(RUNTIME_CAPABILITIES)
     assert reset.json()["capabilities_overridden"] is False
     assert op_store.capability_rows == {}
 
@@ -8389,7 +8396,7 @@ async def test_creating_a_model_clears_capability_overrides_left_under_its_name(
 
     assert response.status_code == 200, response.text
     assert op_store.capability_rows == {}
-    assert response.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert response.json()["capabilities"] == _served(RUNTIME_CAPABILITIES)
 
 
 def _assert_capabilities_values(adapter, capabilities: dict) -> None:
@@ -8448,8 +8455,8 @@ async def test_runtime_route_edit_keeps_its_capability_override_and_declaration(
     assert edited.status_code == 200, edited.text
     body = edited.json()
     assert body["endpoint_id"] == new_endpoint_id
-    assert body["capabilities"] == NARROW_CAPABILITIES
-    assert body["capabilities_baseline"] == RUNTIME_CAPABILITIES
+    assert body["capabilities"] == _served(NARROW_CAPABILITIES)
+    assert body["capabilities_baseline"] == _served(RUNTIME_CAPABILITIES)
     assert body["capabilities_overridden"] is True
     assert table.weights == {(model_id, new_endpoint_id): 3.0}
     assert set(op_store.capability_rows) == {(model_id, route_id)}
@@ -8462,7 +8469,7 @@ async def test_runtime_route_edit_keeps_its_capability_override_and_declaration(
     # Resetting it afterwards returns the moved route to its declaration.
     reset = await client.delete(path, headers=AUTH)
     assert reset.status_code == 200, reset.text
-    assert reset.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert reset.json()["capabilities"] == _served(RUNTIME_CAPABILITIES)
     assert reset.json()["capabilities_overridden"] is False
 
 
@@ -8516,7 +8523,7 @@ async def test_a_deleted_config_route_keeps_its_capability_override_for_its_rest
     row = {r["route_id"]: r for r in removed.json()["routes"]}[CHUTES]
     assert row["removed"] is True
     # Listed with the values its restore brings back.
-    assert row["capabilities"] == NARROW_CAPABILITIES
+    assert row["capabilities"] == _served(NARROW_CAPABILITIES)
     assert row["capabilities_overridden"] is True
 
     # A sibling's edit re-reads the model's overrides; the deleted route's row is
@@ -8546,14 +8553,14 @@ async def test_a_deleted_config_route_keeps_its_capability_override_for_its_rest
     assert restored.status_code == 200, restored.text
     row = {r["route_id"]: r for r in restored.json()["routes"]}[CHUTES]
     assert row["override_applied"] is True
-    assert row["capabilities"] == NARROW_CAPABILITIES
-    assert row["capabilities_baseline"] == DEFAULT_CAPABILITIES
+    assert row["capabilities"] == _served(NARROW_CAPABILITIES)
+    assert row["capabilities_baseline"] == _served(DEFAULT_CAPABILITIES)
     adapter = _route_adapter(route_executor, CHUTES)
     assert adapter.config.openrouter_pinned_provider == "parasail"
     _assert_capabilities_values(adapter, NARROW_CAPABILITIES)
     # Its baseline survived the delete and the edit's re-application.
     cleared = await client.delete(chutes_path, headers=AUTH)
-    assert cleared.json()["capabilities"] == DEFAULT_CAPABILITIES
+    assert cleared.json()["capabilities"] == _served(DEFAULT_CAPABILITIES)
 
 
 @pytest.mark.asyncio
@@ -8581,7 +8588,7 @@ async def test_a_config_route_deleted_at_boot_keeps_its_capability_override(admi
     listed = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
     row = {r["route_id"]: r for r in listed.json()["routes"]}[CHUTES]
     assert row["removed"] is True
-    assert row["capabilities"] == NARROW_CAPABILITIES
+    assert row["capabilities"] == _served(NARROW_CAPABILITIES)
 
     restored = await _restore(client, CHUTES)
 
@@ -8601,7 +8608,7 @@ async def test_disable_and_enable_keep_a_routes_capability_override(admin_client
     disabled = await _set_state(client, FEATHERLESS, True)
 
     assert disabled.status_code == 200, disabled.text
-    assert disabled.json()["capabilities"] == NARROW_CAPABILITIES
+    assert disabled.json()["capabilities"] == _served(NARROW_CAPABILITIES)
     assert disabled.json()["capabilities_overridden"] is True
     # A disabled route is listed and editable, capabilities included.
     edited = await client.put(path, json=RUNTIME_CAPABILITIES, headers=AUTH)
@@ -8613,7 +8620,7 @@ async def test_disable_and_enable_keep_a_routes_capability_override(admin_client
     enabled = await _set_state(client, FEATHERLESS, False)
 
     assert enabled.status_code == 200, enabled.text
-    assert enabled.json()["capabilities"] == RUNTIME_CAPABILITIES
+    assert enabled.json()["capabilities"] == _served(RUNTIME_CAPABILITIES)
     assert enabled.json()["capabilities_overridden"] is True
     assert set(op_store.capability_rows) == {("minimax-fast", FEATHERLESS)}
     _assert_capabilities_values(_route_adapter(route_executor, FEATHERLESS), RUNTIME_CAPABILITIES)
@@ -9309,3 +9316,250 @@ async def test_the_batch_endpoint_refuses_a_value_that_is_not_a_choice(admin_cli
     )
 
     assert response.status_code == 422
+
+
+# -- the reasoning-effort map through the capability path ----------------------
+#
+# The map is part of a route's capability override: set with the other four
+# values, cleared by a reset, stored with them and applied to the route that
+# serves. It is optional in the override: a row without it -- every row stored
+# before it existed -- keeps the route's own map from models.yaml.
+
+EFFORT_ROUTE_ID = "minimax-fast:featherless-api"
+EFFORT_CAPABILITIES_PATH = f"/admin/routing/provider-route-capabilities/{YAML_ROUTE_PATH}"
+ROUTE_EFFORT_MAP = {"low": "high", "high": "xhigh", "max": "max"}
+YAML_EFFORT_MAP = {"high": "high"}
+
+
+def _with_effort_map(capabilities: dict, effort_map: dict | None = ROUTE_EFFORT_MAP) -> dict:
+    return {**capabilities, "reasoning_effort_map": effort_map}
+
+
+def _stored_capabilities(op_store) -> dict | None:
+    row = op_store.capability_rows.get(("minimax-fast", EFFORT_ROUTE_ID))
+    return None if row is None else json.loads(row["capabilities"])
+
+
+@pytest.mark.asyncio
+async def test_setting_a_map_serves_it_and_publishes_its_public_levels(admin_client):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    adapter = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    params_before = list(adapter.config.supported_params)
+
+    response = await client.put(
+        EFFORT_CAPABILITIES_PATH, json=_with_effort_map(DEFAULT_CAPABILITIES), headers=AUTH
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["capabilities"]["reasoning_effort_map"] == ROUTE_EFFORT_MAP
+    assert body["capabilities_baseline"]["reasoning_effort_map"] is None
+    assert body["capabilities_overridden"] is True
+    assert body["reasoning_effort_mappable"] is True
+    # Read off the live route: what /v1/models now lists for it.
+    assert body["reasoning_efforts_published"] == ["low", "high", "max"]
+    assert adapter.config.reasoning_effort_map == ROUTE_EFFORT_MAP
+    # The map is its own declaration: supported_params are left as they were.
+    assert adapter.config.supported_params == params_before
+    assert _stored_capabilities(op_store) == _with_effort_map(DEFAULT_CAPABILITIES)
+
+
+@pytest.mark.asyncio
+async def test_an_override_without_a_map_keeps_the_routes_own(admin_client):
+    """Saving the four limits alone, as an old console or an old row does, keeps models.yaml's map."""
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    adapter = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    adapter.config.reasoning_effort_map = dict(YAML_EFFORT_MAP)
+
+    response = await client.put(EFFORT_CAPABILITIES_PATH, json=RUNTIME_CAPABILITIES, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"]["reasoning_effort_map"] == YAML_EFFORT_MAP
+    assert adapter.config.reasoning_effort_map == YAML_EFFORT_MAP
+    assert adapter.config.context_length == RUNTIME_CAPABILITIES["context_length"]
+    assert _stored_capabilities(op_store) == RUNTIME_CAPABILITIES  # no map key written
+
+
+@pytest.mark.asyncio
+async def test_an_old_stored_row_inherits_the_yaml_map_at_boot(admin_client):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    adapter = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    adapter.config.reasoning_effort_map = dict(YAML_EFFORT_MAP)
+    # A row written before the field existed.
+    op_store.capability_rows[("minimax-fast", EFFORT_ROUTE_ID)] = {
+        "model_id": "minimax-fast",
+        "route_id": EFFORT_ROUTE_ID,
+        "capabilities": json.dumps(RUNTIME_CAPABILITIES),
+        "updated_by": "admin",
+    }
+
+    await provider_routes.sync_route_capability_overrides(client.app.state.services, op_store)
+
+    assert adapter.config.context_length == RUNTIME_CAPABILITIES["context_length"]
+    assert adapter.config.reasoning_effort_map == YAML_EFFORT_MAP
+
+
+@pytest.mark.asyncio
+async def test_a_reset_returns_to_the_yaml_map(admin_client):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    adapter = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    adapter.config.reasoning_effort_map = dict(YAML_EFFORT_MAP)
+    await client.put(
+        EFFORT_CAPABILITIES_PATH, json=_with_effort_map(DEFAULT_CAPABILITIES), headers=AUTH
+    )
+    assert adapter.config.reasoning_effort_map == ROUTE_EFFORT_MAP
+
+    response = await client.delete(EFFORT_CAPABILITIES_PATH, headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["capabilities"]["reasoning_effort_map"] == YAML_EFFORT_MAP
+    assert response.json()["reasoning_efforts_published"] == ["high"]
+    assert adapter.config.reasoning_effort_map == YAML_EFFORT_MAP
+    assert _stored_capabilities(op_store) is None
+
+
+@pytest.mark.asyncio
+async def test_a_connection_only_edit_keeps_the_effort_override(admin_client):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    await client.put(
+        EFFORT_CAPABILITIES_PATH, json=_with_effort_map(DEFAULT_CAPABILITIES), headers=AUTH
+    )
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json=FEATHERLESS_V2_TARGET,
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["base_url"] == "https://api.featherless.ai/v2"
+    assert body["capabilities"]["reasoning_effort_map"] == ROUTE_EFFORT_MAP
+    rebuilt = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    assert rebuilt.config.base_url == "https://api.featherless.ai/v2"
+    assert rebuilt.config.reasoning_effort_map == ROUTE_EFFORT_MAP
+    assert _stored_capabilities(op_store) == _with_effort_map(DEFAULT_CAPABILITIES)
+
+
+@pytest.mark.asyncio
+async def test_an_edit_saves_target_and_map_together(admin_client):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+
+    response = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={**FEATHERLESS_V2_TARGET, "capabilities": _with_effort_map(RUNTIME_CAPABILITIES)},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    rebuilt = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    assert rebuilt.config.base_url == "https://api.featherless.ai/v2"
+    assert rebuilt.config.reasoning_effort_map == ROUTE_EFFORT_MAP
+    assert response.json()["reasoning_efforts_published"] == ["low", "high", "max"]
+    assert _stored_capabilities(op_store) == _with_effort_map(RUNTIME_CAPABILITIES)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "effort_map",
+    [{}, {"low": ""}, {"low high": "x"}, ["low"], {"low": 2}],
+    ids=["empty", "blank", "spaces", "list", "number"],
+)
+async def test_a_malformed_map_is_refused_and_nothing_changes(admin_client, effort_map):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+
+    response = await client.put(
+        EFFORT_CAPABILITIES_PATH,
+        json=_with_effort_map(DEFAULT_CAPABILITIES, effort_map),
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert _stored_capabilities(op_store) is None
+    assert _route_adapter(route_executor, EFFORT_ROUTE_ID).config.reasoning_effort_map == {}
+
+
+@pytest.mark.asyncio
+async def test_a_map_on_a_route_that_sends_no_effort_is_refused(admin_client):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    adapter = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    adapter.forwards_reasoning_effort = False  # as a native Anthropic or Gemini route
+
+    response = await client.put(
+        EFFORT_CAPABILITIES_PATH, json=_with_effort_map(DEFAULT_CAPABILITIES), headers=AUTH
+    )
+
+    assert response.status_code == 422, response.text
+    assert "sends reasoning_effort" in response.text
+    assert _stored_capabilities(op_store) is None
+    listed = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+    row = {r["route_id"]: r for r in listed.json()["routes"]}[EFFORT_ROUTE_ID]
+    assert row["reasoning_effort_mappable"] is False
+    assert row["reasoning_efforts_published"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_save_the_route_does_not_take_is_not_reported_as_done(admin_client, monkeypatch):
+    client, _op_store, _route_executor, _routewise, _verify = admin_client
+
+    async def applies_nothing(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(provider_routes, "sync_route_capability_overrides", applies_nothing)
+
+    response = await client.put(
+        EFFORT_CAPABILITIES_PATH, json=_with_effort_map(DEFAULT_CAPABILITIES), headers=AUTH
+    )
+
+    assert response.status_code == 409, response.text
+    assert "not serving the saved reasoning-effort map" in response.text
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_route_takes_only_the_map_it_declares(admin_client):
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    # The model's first route (the template a runtime route is cloned from) has one.
+    _route_adapter(route_executor, "minimax-fast:chutes-api").config.reasoning_effort_map = {
+        "max": "max"
+    }
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+    base = {
+        "route_type": "on_demand",
+        "upstream_provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_id": "db-openrouter",
+        "provider_model_id": "minimax/minimax-m2.5",
+        "weight": 1.0,
+    }
+
+    plain = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={**base, "openrouter_provider": "parasail", "capabilities": RUNTIME_CAPABILITIES},
+        headers=AUTH,
+    )
+    mapped = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            **base,
+            "openrouter_provider": "novita",
+            "capabilities": _with_effort_map(RUNTIME_CAPABILITIES),
+        },
+        headers=AUTH,
+    )
+
+    assert plain.status_code == 200, plain.text
+    assert mapped.status_code == 200, mapped.text
+    assert plain.json()["capabilities"]["reasoning_effort_map"] is None
+    assert mapped.json()["capabilities"]["reasoning_effort_map"] == ROUTE_EFFORT_MAP
+    declared = [call.args[12] for call in op_store.upsert_provider_route_candidate.await_args_list]
+    assert declared == [RUNTIME_CAPABILITIES, _with_effort_map(RUNTIME_CAPABILITIES)]

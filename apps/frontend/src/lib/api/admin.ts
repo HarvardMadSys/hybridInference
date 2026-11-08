@@ -2582,6 +2582,10 @@ export interface ProviderRoute {
   /** What it has from models.yaml or its creation; differs only while overridden. */
   capabilities_baseline?: RouteCapabilities;
   capabilities_overridden?: boolean;
+  /** Whether this route's adapter sends `reasoning_effort`, so a map can apply. */
+  reasoning_effort_mappable?: boolean;
+  /** The public levels the live route delivers; `null` when unknown. */
+  reasoning_efforts_published?: string[] | null;
 }
 
 /** A route's context window, output cap, input modalities and tool support, as served. */
@@ -2590,6 +2594,11 @@ export interface RouteCapabilities {
   max_output_length: number;
   input_modalities: string[];
   supports_tools: boolean;
+  /**
+   * Public level -> the value the upstream receives as `reasoning_effort`, in
+   * the order the levels are offered; `null` when the route has none.
+   */
+  reasoning_effort_map?: Record<string, string> | null;
 }
 
 interface ListProviderRoutesResponse {
@@ -2671,6 +2680,11 @@ export interface RuntimeModelCapabilities {
   /** `text`, plus any of `image`, `audio` and `video`. */
   input_modalities: string[];
   supports_tools: boolean;
+  /**
+   * Optional: `null` (or absent) keeps the route's own map from models.yaml or
+   * its creation; a map replaces it. Keys are public levels, values upstream.
+   */
+  reasoning_effort_map?: Record<string, string> | null;
 }
 
 interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {

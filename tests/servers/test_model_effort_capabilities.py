@@ -52,6 +52,10 @@ GOLDEN = Path(__file__).resolve().parents[1] / "fixtures" / "model_effort_listin
 #: through an OpenAI-compatible upstream, as the screenshot's model was.
 DEEPSEEK_LIKE = "deepseek-like-reasoner"
 DEEPSEEK_LIKE_DOMAIN = ["high", "max"]
+#: A route with a reasoning_effort_map: three public levels, each sent upstream
+#: under another name. Declared by this test; the shape is the generic contract.
+MAPPED = "mapped-reasoner"
+MAPPED_EFFORTS = {"low": "high", "high": "xhigh", "max": "max"}
 
 
 class _Passive(BaseAdapter):
@@ -104,6 +108,11 @@ def fixture_router(*, admin_only_reasoner: bool = False) -> FixedRouter:
         admin_only=admin_only_reasoner,
     )
     router.register_route("plain-chat", [(_compat("plain-chat", params=[]), 1.0)])
+    # Neither supported_params nor reasoning_efforts name the parameter: the
+    # map alone declares it, and only its public levels are listed.
+    mapped = _compat(MAPPED, params=[])
+    mapped.config.reasoning_effort_map = dict(MAPPED_EFFORTS)
+    router.register_route(MAPPED, [(mapped, 1.0)])
     # Takes the parameter but declares no domain: incomplete, so unknown.
     router.register_route(
         "undeclared-reasoner", [(_compat("undeclared-reasoner", params=effort), 1.0)]
@@ -257,6 +266,7 @@ async def test_openai_listing_publishes_the_reasoning_object():
     entries = _entries((await fetch_listings())["openai"])
     assert entries[DEEPSEEK_LIKE]["reasoning"] == {"supported_efforts": DEEPSEEK_LIKE_DOMAIN}
     assert entries["plain-chat"]["reasoning"] == {"supported_efforts": []}
+    assert entries[MAPPED]["reasoning"] == {"supported_efforts": ["low", "high", "max"]}
     assert entries["mixed-routes"]["reasoning"] == {"supported_efforts": ["high", "max"]}
     assert entries["minimal-only"]["reasoning"] == {"supported_efforts": ["none", "minimal"]}
     for unknown in ("undeclared-reasoner", "malformed-domain", "native-anthropic"):
@@ -287,6 +297,14 @@ async def test_anthropic_listing_publishes_capabilities_effort():
         "max": {"supported": True},
     }
     assert entries["plain-chat"]["capabilities"]["effort"]["supported"] is False
+    assert entries[MAPPED]["capabilities"]["effort"] == {
+        "supported": True,
+        "low": {"supported": True},
+        "medium": {"supported": False},
+        "high": {"supported": True},
+        "xhigh": {"supported": False},
+        "max": {"supported": True},
+    }
     assert entries["minimal-only"]["capabilities"]["effort"]["supported"] is False
     for unknown in ("undeclared-reasoner", "malformed-domain", "native-anthropic"):
         assert "capabilities" not in entries[unknown]
@@ -383,6 +401,7 @@ async def test_every_advertised_level_reaches_the_upstream(
         if "capabilities" in entry
     }
     assert advertised[DEEPSEEK_LIKE] == ["high", "max"]
+    assert advertised[MAPPED] == ["low", "high", "max"]
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://gateway.test") as client:
         for model, levels in advertised.items():
@@ -399,4 +418,6 @@ async def test_every_advertised_level_reaches_the_upstream(
                     },
                 )
                 assert response.status_code == 200, (model, level)
-                assert sent and sent[-1]["reasoning_effort"] == level, (model, level)
+                # A mapped route sends the level's upstream name; others, the level.
+                expected = MAPPED_EFFORTS[level] if model == MAPPED else level
+                assert sent and sent[-1]["reasoning_effort"] == expected, (model, level)

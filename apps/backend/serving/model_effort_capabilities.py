@@ -9,14 +9,17 @@ domain is assumed.
 
 **Per adapter.** Only :class:`OpenAICompatAdapter` (and its subclasses)
 forwards ``reasoning_effort`` to the provider, and only when the parameter is
-in the route's ``supported_params``
-(``OpenAICompatAdapter._apply_supported_passthrough_params``). Every surface
+in the route's ``supported_params`` or the route declares a
+``reasoning_effort_map`` (``OpenAICompatAdapter._apply_supported_passthrough_params``,
+``serving.adapters.reasoning_effort``). Every surface
 reaches it the same way: ``/v1/chat/completions`` passes the field through,
 ``/v1/responses`` maps ``reasoning.effort`` onto it, and ``/v1/messages`` maps
 ``output_config.effort`` onto it only for a value in the declared domain
 (``anthropic_messages._apply_reasoning_effort``). So an adapter is
 
-- **known, with a domain** -- forwards the parameter and declares a well-formed
+- **known, with a domain** -- a route with a ``reasoning_effort_map``: its
+  public levels (the map's keys, never the upstream values it sends); or a
+  route that forwards the parameter and declares a well-formed
   ``reasoning_efforts`` list: exactly those values;
 - **known, with none** -- an adapter that forwards the parameter but whose
   route leaves it out of ``supported_params``: the field is dropped on every
@@ -40,24 +43,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from serving.adapters.reasoning_effort import EFFORT_PARAM, effort_contract
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-#: The parameter whose values this describes.
-EFFORT_PARAM = "reasoning_effort"
 #: The levels the Anthropic Models API describes in ``capabilities.effort``.
 ANTHROPIC_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 #: A declared value longer than this is not a level; the domain is malformed.
 _MAX_LEVEL_CHARS = 32
 
 
-def _declared_domain(config: Any) -> list[str] | None:
-    """The route's declared values, or ``None`` when none or any is malformed."""
-    declared = getattr(config, "reasoning_efforts", None)
-    if not isinstance(declared, (list, tuple)) or not declared:
-        return None
+def _well_formed(levels: tuple[str, ...]) -> list[str] | None:
+    """``levels`` as a published domain, or ``None`` when any value is malformed."""
     domain: list[str] = []
-    for value in declared:
+    for value in levels:
         if (
             not isinstance(value, str)
             or not value
@@ -74,11 +74,12 @@ def adapter_effort_domain(adapter: Any) -> list[str] | None:
     """The values ``adapter``'s route delivers: a list (maybe empty), or ``None`` for unknown."""
     if not getattr(adapter, "forwards_reasoning_effort", False):
         return None
-    config = getattr(adapter, "config", None)
-    supported = getattr(config, "supported_params", None) or ()
-    if EFFORT_PARAM not in supported:
+    contract = effort_contract(getattr(adapter, "config", None))
+    if not contract.forwards:
         return []
-    return _declared_domain(config)
+    if contract.levels is None:
+        return None
+    return _well_formed(contract.levels)
 
 
 def model_effort_domain(adapters: Iterable[Any]) -> list[str] | None:

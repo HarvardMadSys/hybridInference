@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from serving.adapters.reasoning_effort import validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
 
@@ -1737,12 +1738,15 @@ class ListOpenRouterProviderOptionsResponse(BaseModel):
 
 
 class RouteCapabilitiesItem(BaseModel):
-    """A route's context window, output cap, input modalities and tool support, as served."""
+    """A route's context window, output cap, input modalities, tool support and effort map."""
 
     context_length: int
     max_output_length: int
     input_modalities: list[str]
     supports_tools: bool
+    # Public level -> the value the upstream receives as ``reasoning_effort``;
+    # ``None`` when the route has no map (its legacy behavior applies).
+    reasoning_effort_map: dict[str, str] | None = None
 
 
 class ProviderRouteItem(BaseModel):
@@ -1792,6 +1796,12 @@ class ProviderRouteItem(BaseModel):
     capabilities: RouteCapabilitiesItem
     capabilities_baseline: RouteCapabilitiesItem
     capabilities_overridden: bool = False
+    # Whether this route's adapter sends ``reasoning_effort`` at all, so a
+    # ``reasoning_effort_map`` can apply to it.
+    reasoning_effort_mappable: bool = False
+    # The public levels this route delivers, as the model listings read it from
+    # the live route: a list (maybe empty), or ``None`` when it is unknown.
+    reasoning_efforts_published: list[str] | None = None
 
 
 class ListProviderRoutesResponse(BaseModel):
@@ -1845,6 +1855,18 @@ class RuntimeModelCapabilities(BaseModel):
     max_output_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
     input_modalities: list[str] = Field(..., min_length=1)
     supports_tools: StrictBool
+    # Optional, unlike the four above: ``None`` (or absent, as in every row
+    # stored before it existed) keeps the route's own map from models.yaml or
+    # its creation; a map replaces it. Keys are the public levels clients send
+    # and the listings publish, in this order; values are what the upstream
+    # receives as ``reasoning_effort``. See ``serving.adapters.reasoning_effort``.
+    reasoning_effort_map: dict[str, str] | None = None
+
+    @field_validator("reasoning_effort_map", mode="before")
+    @classmethod
+    def validate_reasoning_effort_map(cls, value: Any) -> Any:
+        """Refuse a malformed map; keep its order."""
+        return None if value is None else validate_effort_map(value)
 
     @field_validator("input_modalities")
     @classmethod
