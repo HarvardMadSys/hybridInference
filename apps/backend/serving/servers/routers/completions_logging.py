@@ -29,7 +29,7 @@ from typing import Any
 from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
-from serving.storage.bounded_log import bound_rejected_log_payload
+from serving.storage.bounded_log import bound_log_payload
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -131,11 +131,12 @@ class CompletionsLogger:
         for assembling the dict; this method only owns the asyncio
         scheduling so the row write doesn't block the HTTP response.
 
-        The one exception is a refused request (a 4xx other than 499): its
-        prompt, body, tool definitions, model id and error are queued as the
-        bounded summary :func:`serving.storage.bounded_log.bound_rejected_log_payload`
-        makes, so an unbilled request can neither make the gateway serialize
-        and store whatever it sent nor hold its body in this queue.
+        The one exception is the size of what it stores
+        (:func:`serving.storage.bounded_log.bound_log_payload`): a refused
+        request (a 4xx other than 499) is queued as a bounded summary, and any
+        other row keeps its conversation within a generous bound and the rest
+        of its body within a small one, so no request can make the gateway
+        serialize and store whatever it sent, nor hold it in this queue.
 
         The payload joins a bounded queue drained by a fixed pool of
         ``_LOG_WORKERS`` worker tasks (issue #133): pending payloads are
@@ -210,7 +211,7 @@ class CompletionsLogger:
 
         # The producer's context, as a per-request task would have copied it:
         # the write and its log lines are attributed to this row's request.
-        item = (request_id, bound_rejected_log_payload(log_data), contextvars.copy_context())
+        item = (request_id, bound_log_payload(log_data), contextvars.copy_context())
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
@@ -426,6 +427,7 @@ class CompletionsLogger:
         success: bool,
         cached_tokens: int | None = None,
         status_code: int | None = None,
+        uncharged: bool = False,
     ) -> None:
         """Emit a ``RoutingObservation`` for online-learning routers.
 
@@ -444,6 +446,11 @@ class CompletionsLogger:
         carries its own in its ``failed_attempts`` record. Both reach the
         observation, so a learning router can leave a request refused for its
         own content out of what it learns about the endpoint.
+
+        ``uncharged`` says the failure that ended the request is one no
+        endpoint is charged with (``routing.telemetry.is_uncharged_failure``:
+        nothing was sent, say); each earlier failed attempt says so in its
+        record. Both reach the observation for the same reason.
         """
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         terminal_key = endpoint_id or provider or "unknown"
@@ -482,6 +489,7 @@ class CompletionsLogger:
                     cached_tokens=None,
                     strategy_metadata={"routewise": {"quota_committed": 0.0}},
                     status_code=_status_or_none(attempt.get("status_code")),
+                    uncharged=attempt.get("uncharged") is True,
                 )
             )
 
@@ -499,6 +507,7 @@ class CompletionsLogger:
             cached_tokens=cached_tokens,
             strategy_metadata=strategy_metadata,
             status_code=None if success else status_code,
+            uncharged=not success and uncharged,
         )
         active_router.record_observation(obs)
 

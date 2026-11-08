@@ -331,17 +331,82 @@ async def test_an_inherited_null_quota_stays_null(keys):
 
 
 async def test_a_first_key_takes_the_offered_quota(keys):
-    """Nothing to inherit from: revoked history does not count as the account."""
+    """An account that never held a key has no quota of its own yet."""
     store, pool = keys
     await _user(store, "u-admkey-first")
-    await _key(pool, "u-admkey-first", "first-old", "revoked")
-    await _set_quota(pool, "first-old", "7.0000")
 
     await _create(
         store, "u-admkey-first", "first-new", quota_daily_cost_usd=100.0, inherit_account_quota=True
     )
 
     assert (await _quotas(pool, "u-admkey-first"))["first-new"] == ("100.0000", None)
+
+
+async def test_revoking_every_key_does_not_reset_the_account_quota(keys):
+    """An admin's cut and monthly cap outlive the keys they were set on (H19).
+
+    Revoking every key and creating one used to give the new key the role
+    default and no monthly cap.
+    """
+    store, pool = keys
+    await _user(store, "u-admkey-cut")
+    await _key(pool, "u-admkey-cut", "cut-old", "revoked")
+    await _set_quota(pool, "cut-old", "2.0000", "20.0000")
+
+    await _create(
+        store, "u-admkey-cut", "cut-new", quota_daily_cost_usd=100.0, inherit_account_quota=True
+    )
+
+    assert (await _quotas(pool, "u-admkey-cut"))["cut-new"] == ("2.0000", "20.0000")
+
+
+async def test_with_no_live_key_the_most_recently_used_revoked_key_holds_the_quota(keys):
+    """The key revoked last carried the account's quota when it went.
+
+    Here an older key was used after a newer one was revoked, as it is when a
+    spare key is revoked unused: the older key, revoked later, holds the quota.
+    """
+    store, pool = keys
+    user = "u-admkey-last"
+    await _user(store, user)
+    await _key(pool, user, "last-old", "revoked")
+    await _key(pool, user, "last-spare", "revoked")
+    await _set_quota(pool, "last-old", "2.0000", "20.0000")
+    await _set_quota(pool, "last-spare", "100.0000")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET created_at = NOW() - INTERVAL '2 days', "
+            "last_used_at = NOW() - INTERVAL '1 hour' WHERE key_prefix = $1",
+            f"{_PREFIX}-last-old",
+        )
+        await conn.execute(
+            "UPDATE api_keys SET created_at = NOW() - INTERVAL '1 day', last_used_at = NULL "
+            "WHERE key_prefix = $1",
+            f"{_PREFIX}-last-spare",
+        )
+
+    await _create(store, user, "last-new", quota_daily_cost_usd=100.0, inherit_account_quota=True)
+
+    assert (await _quotas(pool, user))["last-new"] == ("2.0000", "20.0000")
+
+
+async def test_a_live_key_holds_the_quota_over_any_revoked_one(keys):
+    store, pool = keys
+    user = "u-admkey-live"
+    await _user(store, user)
+    await _key(pool, user, "live-dead", "revoked")
+    await _key(pool, user, "live-on", "active")
+    await _set_quota(pool, "live-dead", "2.0000", "20.0000")
+    await _set_quota(pool, "live-on", "300.0000")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET last_used_at = NOW() + INTERVAL '1 hour' WHERE key_prefix = $1",
+            f"{_PREFIX}-live-dead",
+        )
+
+    await _create(store, user, "live-new", quota_daily_cost_usd=100.0, inherit_account_quota=True)
+
+    assert (await _quotas(pool, user))["live-new"] == ("300.0000", None)
 
 
 async def test_an_admin_key_sets_the_account_quota_on_every_live_key(keys):

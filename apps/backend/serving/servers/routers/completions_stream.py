@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any
 
 from routing.endpoint_health import http_status_of
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
+from routing.telemetry import is_uncharged_failure
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
@@ -42,7 +44,14 @@ from serving.servers.routers.routing_info import (
     merge_adapter_routing,
 )
 from serving.storage.utils import json_safe
-from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
+from serving.stream import (
+    StreamQueue,
+    StreamText,
+    make_role_chunk,
+    new_completion_id,
+    pump_stream,
+    stamp_completion_id,
+)
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
@@ -169,20 +178,6 @@ def _unparseable_tool_call_arguments(
     return findings
 
 
-def _joined(parts: list[str]) -> str:
-    """Return ``parts`` joined, keeping the result as the list's only element.
-
-    Streamed text is accumulated as a list of pieces and joined when read:
-    appending to a string held in an attribute, a closure variable or a dict
-    copies all of it on every piece -- quadratic over a stream, seconds of event
-    loop for a long answer -- which a list append does not. Keeping the join
-    makes a second read free, and later pieces still append after it.
-    """
-    if len(parts) > 1:
-        parts[:] = ["".join(parts)]
-    return parts[0] if parts else ""
-
-
 class ToolCallAccumulator:
     """Merge tool_calls deltas indexed by ``index`` into complete tool calls.
 
@@ -190,15 +185,16 @@ class ToolCallAccumulator:
     payload) needs the merged form. Mirrors the prior inline merge logic
     from completions.py lines 543-570.
 
-    A call's name and arguments arrive in pieces and are kept that way, joined
-    by :meth:`to_list` (see :func:`_joined`): a long tool call -- a file
-    written by an agent -- arrives in thousands of argument fragments.
+    A call's name and arguments arrive in pieces and are kept as
+    :class:`~serving.stream.StreamText`, read by :meth:`to_list`: a long tool
+    call -- a file written by an agent -- arrives in thousands of argument
+    fragments.
     """
 
     def __init__(self) -> None:
         self._calls: dict[int, dict[str, Any]] = {}
-        # Per call index: the name pieces and the arguments pieces.
-        self._pieces: dict[int, tuple[list[str], list[str]]] = {}
+        # Per call index: the name and the arguments so far.
+        self._pieces: dict[int, tuple[StreamText, StreamText]] = {}
 
     def add(self, deltas: list[dict[str, Any]]) -> None:
         """Merge a list of tool_call deltas into the accumulator."""
@@ -211,7 +207,7 @@ class ToolCallAccumulator:
                     "type": tc_delta.get("type") or "function",
                     "function": {"name": "", "arguments": ""},
                 }
-                self._pieces[idx] = ([], [])
+                self._pieces[idx] = (StreamText(), StreamText())
             id_delta = tc_delta.get("id")
             if not self._calls[idx]["id"] and isinstance(id_delta, str) and id_delta:
                 self._calls[idx]["id"] = id_delta
@@ -220,13 +216,13 @@ class ToolCallAccumulator:
                 self._calls[idx]["type"] = type_delta
             fn_delta = tc_delta.get("function")
             if isinstance(fn_delta, dict):
-                name_pieces, argument_pieces = self._pieces[idx]
+                name, arguments = self._pieces[idx]
                 name_delta = fn_delta.get("name")
                 if isinstance(name_delta, str):
-                    name_pieces.append(name_delta)
+                    name.append(name_delta)
                 arguments_delta = fn_delta.get("arguments")
                 if isinstance(arguments_delta, str):
-                    argument_pieces.append(arguments_delta)
+                    arguments.append(arguments_delta)
 
     def __bool__(self) -> bool:
         return bool(self._calls)
@@ -234,9 +230,9 @@ class ToolCallAccumulator:
     def to_list(self) -> list[dict[str, Any]]:
         """Return tool_calls sorted by ``index`` for the final message."""
         for idx, call in self._calls.items():
-            name_pieces, argument_pieces = self._pieces[idx]
-            call["function"]["name"] = _joined(name_pieces)
-            call["function"]["arguments"] = _joined(argument_pieces)
+            name, arguments = self._pieces[idx]
+            call["function"]["name"] = name.text
+            call["function"]["arguments"] = arguments.text
         return [tc for _, tc in sorted(self._calls.items())]
 
 
@@ -389,10 +385,10 @@ class StreamSession:
         # Streaming-loop state
         self._yielded_first_chunk = False
         self._chunk_count = 0
-        # The answer and the reasoning so far, as the pieces they arrived in;
-        # read through ``_final_text`` / ``_final_reasoning`` (see ``_joined``).
-        self._text_pieces: list[str] = []
-        self._reasoning_pieces: list[str] = []
+        # The answer and the reasoning so far (see ``StreamText``); read
+        # through ``_final_text`` / ``_final_reasoning``.
+        self._text = StreamText()
+        self._reasoning = StreamText()
         self._finish_reason_for_db = "stop"
         self._tool_calls = ToolCallAccumulator()
         self._ttft = _TTFTTracker(start_time)
@@ -406,6 +402,12 @@ class StreamSession:
         # ends its stream with a ``_routing`` block of its own (openai_compat
         # does) would otherwise drop them from the request log.
         self._adapter_routing: dict[str, Any] | None = None
+        # Whether the attempt in flight has left the gateway, for billing a
+        # stream the client leaves: the outbound limiter marks it when it gives
+        # the request its slot (``dispatch_watch.report_sent``). The router
+        # announces an attempt before the adapter fetches remote media, waits
+        # for a slot or sends anything.
+        self._dispatch = DispatchRecord()
         self._provider_from_ctx: str | None = None
         # Upstream label resolved on the failure path, exposed for the caller
         # (see ``error_provider``). ``None`` until this stream fails.
@@ -524,20 +526,19 @@ class StreamSession:
             # Keepalive: a background task drains adapter_chunks into a
             # queue.  The generator pulls with a short timeout; on timeout
             # it yields an SSE comment so intermediate proxies see activity
-            # and don't drop the connection during long upstream pauses.
+            # and don't drop the connection during long upstream pauses. The
+            # queue is bounded, so a client that stops reading stops the reads
+            # from the upstream too (see ``pump_stream``).
             last_client_yield = time.monotonic()
-            chunk_queue: asyncio.Queue = asyncio.Queue()
+            chunk_queue = StreamQueue()
 
-            async def _adapter_reader() -> None:
-                try:
-                    async for item in adapter_chunks:
-                        await chunk_queue.put(item)
-                except Exception as exc:
-                    await chunk_queue.put(exc)
-                finally:
-                    await chunk_queue.put(_SENTINEL)
-
-            reader_task = asyncio.create_task(_adapter_reader())
+            # The reader runs the router, and the adapter under it, in a copy of
+            # this context: the record pushed for it is the one the outbound
+            # limiter marks when the request leaves the gateway.
+            with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: self._dispatch}):
+                reader_task = asyncio.create_task(
+                    pump_stream(adapter_chunks, chunk_queue, end=_SENTINEL)
+                )
             try:
                 while True:
                     try:
@@ -780,13 +781,13 @@ class StreamSession:
 
     @property
     def _final_text(self) -> str:
-        """The content streamed so far, joined (see ``_joined``)."""
-        return _joined(self._text_pieces)
+        """The content streamed so far."""
+        return self._text.text
 
     @property
     def _final_reasoning(self) -> str:
-        """The reasoning streamed so far, joined (see ``_joined``)."""
-        return _joined(self._reasoning_pieces)
+        """The reasoning streamed so far."""
+        return self._reasoning.text
 
     # -- internal: per-chunk handlers ---------------------------------------
 
@@ -841,7 +842,7 @@ class StreamSession:
                 # What appending it to the answer string raised, here, at the
                 # chunk that carried it, as before: the stream fails with it.
                 raise TypeError(f"stream content delta is {type(content_piece).__name__}, not str")
-            self._text_pieces.append(content_piece)
+            self._text.append(content_piece)
 
         reasoning_piece = delta.get("reasoning_content")
         if not (isinstance(reasoning_piece, str) and reasoning_piece):
@@ -849,7 +850,7 @@ class StreamSession:
         if not (isinstance(reasoning_piece, str) and reasoning_piece):
             reasoning_piece = delta.get("thinking")
         if isinstance(reasoning_piece, str) and reasoning_piece:
-            self._reasoning_pieces.append(reasoning_piece)
+            self._reasoning.append(reasoning_piece)
 
         tool_calls_delta = delta.get("tool_calls")
         if tool_calls_delta:
@@ -1083,6 +1084,9 @@ class StreamSession:
                     completion_tokens=0,
                     success=False,
                     status_code=http_status_of(exc),
+                    # Nothing sent (no outbound slot, no usable key): no
+                    # evidence about the endpoint the failure names.
+                    uncharged=is_uncharged_failure(exc),
                 )
             except Exception:
                 logger.exception(
@@ -1179,11 +1183,13 @@ class StreamSession:
 
         Billed only once the router chose the endpoint and began the attempt
         -- the same condition the success path bills on (``_adapter_routing``,
-        which carries the price). Before that the upstream was never asked,
-        and there is no price to charge at. Never raises: billing must not
-        cost the request its log row.
+        which carries the price) -- and only while that attempt has left the
+        gateway (``DispatchRecord.sent``). Before that the client was waiting
+        on the gateway (a remote image, an outbound slot, a local engine's
+        queue) and no upstream was asked for anything. Never raises: billing
+        must not cost the request its log row.
         """
-        if not self._adapter_routing:
+        if not self._adapter_routing or not self._dispatch.sent:
             return None, False
         try:
             usage, estimated = self._cancelled_usage()

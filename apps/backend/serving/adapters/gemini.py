@@ -9,7 +9,7 @@ from typing import Any
 
 import aiohttp
 
-from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import estimate_prompt_tokens_bounded, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
 from .openai_compat import (
@@ -474,7 +474,8 @@ class GeminiAdapter(BaseAdapter):
                 reasoning_reported="thoughtsTokenCount" in usage_meta,
             )
         else:
-            prompt_tokens = estimate_prompt_tokens(messages)
+            # Bounded, on the event loop: exact up to the inline bound.
+            prompt_tokens = estimate_prompt_tokens_bounded(messages)
             completion_tokens = estimate_text_tokens(text_content)
             usage = UsageInfo(
                 prompt_tokens=int(prompt_tokens),
@@ -720,8 +721,9 @@ class GeminiAdapter(BaseAdapter):
             # so it comes back on every exit path this ``finally`` covers.
             slot.release(status_code=upstream_outcome)
 
-        # Prefer upstream precise values, fall back to estimation
-        final_prompt_tokens = prompt_tokens or estimate_prompt_tokens(messages)
+        # Prefer upstream precise values, fall back to estimation: bounded, as
+        # this runs on the event loop and the prompt is the caller's size.
+        final_prompt_tokens = prompt_tokens or estimate_prompt_tokens_bounded(messages)
 
         if completion_tokens_upstream > 0:
             final_completion_tokens = completion_tokens_upstream

@@ -10,6 +10,7 @@ hide it from the router. The limiter's reports are pinned in
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import contextmanager
 from typing import Any
@@ -20,7 +21,12 @@ import pytest
 from serving.adapters.anthropic import AnthropicAdapter
 from serving.adapters.base import ModelConfig
 from serving.adapters.claude import ClaudeAdapter
-from serving.adapters.dispatch_watch import report_first_token, report_queued, report_sent
+from serving.adapters.dispatch_watch import (
+    DispatchRecord,
+    report_first_token,
+    report_queued,
+    report_sent,
+)
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.http import AsyncHTTPClient
 from serving.utils import context as req_ctx
@@ -91,6 +97,56 @@ def test_a_broken_watch_is_logged_not_raised(caplog):
 
     failures = [r for r in caplog.records if r.getMessage() == "upstream_dispatch_watch_failed"]
     assert [record.hook for record in failures] == ["on_first_token"]
+
+
+# ------------------------------------------------------- the dispatch record
+
+
+def _recorded(record: DispatchRecord):
+    return req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: record})
+
+
+def test_a_record_is_sent_once_the_limiter_gives_the_request_its_slot():
+    """It carries the route the router was dispatching to, so a cut-off call can be priced."""
+    record = DispatchRecord()
+
+    with _recorded(record):
+        report_queued()
+        assert not record.sent
+        with req_ctx.push(provider="zai"):
+            report_sent()
+
+    assert record.sent
+    assert record.provider == "zai"
+
+
+def test_an_attempt_waiting_for_another_slot_is_off_the_wire():
+    """A key rotation or a fallback after a refused attempt: nothing is being generated."""
+    record = DispatchRecord()
+
+    with _recorded(record):
+        report_sent()
+        report_queued()
+
+    assert not record.sent
+
+
+async def test_a_hedged_leg_waiting_for_its_slot_leaves_the_other_on_the_wire():
+    record = DispatchRecord()
+    primary_sent = asyncio.Event()
+
+    async def primary() -> None:
+        report_sent()
+        primary_sent.set()
+
+    async def backup() -> None:
+        await primary_sent.wait()
+        report_queued()
+
+    with _recorded(record):
+        await asyncio.gather(asyncio.create_task(primary()), asyncio.create_task(backup()))
+
+    assert record.sent
 
 
 # ------------------------------------------------------ OpenAI-compatible

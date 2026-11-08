@@ -17,7 +17,10 @@ from typing import Any
 
 import pytest
 
-from serving.adapters.anthropic_translator import anthropic_request_to_openai
+from serving.adapters.anthropic_translator import (
+    INPUT_SEED_SINK_KEY,
+    anthropic_request_to_openai,
+)
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.routers import anthropic_messages
 from serving.utils import tokens
@@ -67,6 +70,29 @@ async def test_a_short_turn_is_seeded_with_the_exact_estimate() -> None:
     body = _body(2_000)
     oai_messages, _ = anthropic_request_to_openai(body)
     assert await _seed(body) == estimate_prompt_tokens(oai_messages)
+
+
+@pytest.mark.asyncio
+async def test_the_seed_counts_the_tool_definitions() -> None:
+    body = _body(2_000)
+    body["tools"] = [
+        {"name": f"tool_{i}", "description": "Edits files. " * 50, "input_schema": {}}
+        for i in range(5)
+    ]
+    oai_messages, oai_params = anthropic_request_to_openai(copy.deepcopy(body))
+    # As count_tokens counts it: the messages plus the serialized tool schemas.
+    expected = estimate_prompt_tokens(oai_messages) + tokens.estimate_text_tokens(
+        json.dumps(oai_params["tools"])
+    )
+    sink: dict[str, Any] = {}
+    adapter = _Upstream(ModelConfig(id="m", name="m", provider="test", base_url="http://t"))
+    seed = None
+    async for frame in adapter.stream_messages(body, request_id="r", usage_sink=sink):
+        if frame.startswith(b"event: message_start"):
+            seed = json.loads(frame.split(b"data: ", 1)[1])["message"]["usage"]["input_tokens"]
+    assert seed == expected
+    # Declared as the guess it is, for the router's cancel billing.
+    assert sink[INPUT_SEED_SINK_KEY] == seed
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -512,7 +513,14 @@ async def log_rejection_from(
     reason = elide_middle(reason, LOGGED_ERROR_MAX_CHARS) if reason else reason
 
     ctx = req_ctx.get()
+    # The row's key. A request id the client chose (X-Request-ID) is not one:
+    # it can repeat, and a repeat is not stored (request_id is unique), so a
+    # client could keep its own refusals out of the log. Such a row gets an id
+    # of its own and keeps the client's in metadata.
+    client_request_id = ctx.get("client_request_id")
     request_id = ctx.get("request_id") or ""
+    if client_request_id or not request_id:
+        request_id = f"rej_{uuid.uuid4().hex}"
     # Whether the key that named this caller was still live. Set only where an
     # identity is resolved *without* authenticating it — the blocked-IP path,
     # which reaches accounts whose credential was revoked, expired or
@@ -539,6 +547,8 @@ async def log_rejection_from(
         "user_id": None if identified_not_authenticated else resolved_user_id,
         "ip": source.client_ip(),
     }
+    if client_request_id:
+        metadata["client_request_id"] = client_request_id
     if credential_state:
         metadata["credential_state"] = credential_state
     if identified_not_authenticated:

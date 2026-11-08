@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -19,13 +20,27 @@ from serving.servers.routers.admin._common import (
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Iterator, Mapping
 
     from serving.audit import AuditActor
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/admin")
+
+#: Characters of JSONL gathered before they are sent, and the event loop is
+#: given back. A page of 500 rows with long prompts is 35-126 MB of JSON; built
+#: as one string it held the loop for 114-375 ms.
+_CHUNK_CHARS = 1024 * 1024
+
+#: Characters of one long text field (a prompt, a response) escaped in one go,
+#: so a single large row is serialized a slice at a time.
+_FIELD_SLICE_CHARS = 256 * 1024
+
+#: The text fields of a row with content, as the export writes them.
+_TEXT_FIELDS = ("prompt", "response")
+#: Its JSONB fields, written decoded.
+_JSONB_FIELDS = ("tools", "metadata", "request_payload")
 
 
 def _decode_jsonish(value: Any) -> Any:
@@ -37,6 +52,65 @@ def _decode_jsonish(value: Any) -> Any:
     except json.JSONDecodeError:
         logger.warning("admin export: malformed JSONB string, returning raw")
         return value
+
+
+def _json_pieces(value: Any) -> Iterator[str]:
+    """``json.dumps(value)`` in pieces: a long string is escaped one slice at a time.
+
+    Escaping works character by character, and a Python string is sliced by
+    code point, so the pieces join to exactly what one call would return.
+    """
+    if not isinstance(value, str) or len(value) <= _FIELD_SLICE_CHARS:
+        yield json.dumps(value)
+        return
+    yield '"'
+    for start in range(0, len(value), _FIELD_SLICE_CHARS):
+        yield json.dumps(value[start : start + _FIELD_SLICE_CHARS])[1:-1]
+    yield '"'
+
+
+def _record_pieces(row: Mapping[str, Any], *, include_content: bool) -> Iterator[str]:
+    """One JSONL line for *row*, in pieces that join to its record's ``json.dumps`` and a newline.
+
+    The line is the record the export has always written, field for field and
+    byte for byte; only the work of writing it is split, so that no step of it
+    is bigger than one slice of a text field or one JSONB value.
+    """
+    record: dict[str, Any] = {
+        "request_id": row["request_id"],
+        "timestamp": row["timestamp"].isoformat(),
+        "user_id": row["user_id"],
+        "user_name": row["user_name"],
+        "user_email": row["user_email"],
+        "model_id": row["model_id"],
+        "provider": row["provider"],
+        "ttft_ms": row["ttft_ms"],
+        "latency_ms": row["latency_ms"],
+        "prompt_tokens": row["prompt_tokens"],
+        "completion_tokens": row["completion_tokens"],
+        "reasoning_tokens": row["reasoning_tokens"],
+        "cache_read_tokens": row["cache_read_tokens"],
+        "cache_write_tokens": row["cache_write_tokens"],
+        "total_tokens": row["total_tokens"],
+        "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
+        "status_code": row["status_code"],
+        "error": row["error"],
+        # The batch whose worker ran it; None for a direct request.
+        "batch_job_id": row.get("batch_job_id"),
+    }
+    if not include_content:
+        yield json.dumps(record) + "\n"
+        return
+    # The content fields follow the others, as json.dumps writes a dict: each
+    # after ", ", its key, then ": ".
+    yield json.dumps(record)[:-1]
+    for name in _TEXT_FIELDS:
+        yield f', "{name}": '
+        yield from _json_pieces(row[name])
+    for name in _JSONB_FIELDS:
+        yield f', "{name}": '
+        yield json.dumps(_decode_jsonish(row[name]))
+    yield "}\n"
 
 
 @router.get("/export/requests")
@@ -218,40 +292,22 @@ async def admin_export_requests(
                 )
             if not rows:
                 break
-            # One chunk per page rather than one per row: a page is at most
-            # ``batch_size`` lines, and the response sends each chunk as it is.
-            lines: list[str] = []
+            # Sent about a MiB at a time, each chunk built from rows written a
+            # piece at a time (_record_pieces), with the event loop given back
+            # after each: however fast the client reads, and however long the
+            # prompts, no step holds the loop for more than one chunk's work.
+            pieces: list[str] = []
+            gathered = 0
             for row in rows:
-                record: dict[str, Any] = {
-                    "request_id": row["request_id"],
-                    "timestamp": row["timestamp"].isoformat(),
-                    "user_id": row["user_id"],
-                    "user_name": row["user_name"],
-                    "user_email": row["user_email"],
-                    "model_id": row["model_id"],
-                    "provider": row["provider"],
-                    "ttft_ms": row["ttft_ms"],
-                    "latency_ms": row["latency_ms"],
-                    "prompt_tokens": row["prompt_tokens"],
-                    "completion_tokens": row["completion_tokens"],
-                    "reasoning_tokens": row["reasoning_tokens"],
-                    "cache_read_tokens": row["cache_read_tokens"],
-                    "cache_write_tokens": row["cache_write_tokens"],
-                    "total_tokens": row["total_tokens"],
-                    "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
-                    "status_code": row["status_code"],
-                    "error": row["error"],
-                    # The batch whose worker ran it; None for a direct request.
-                    "batch_job_id": row.get("batch_job_id"),
-                }
-                if include_content:
-                    record["prompt"] = row["prompt"]
-                    record["response"] = row["response"]
-                    record["tools"] = _decode_jsonish(row["tools"])
-                    record["metadata"] = _decode_jsonish(row["metadata"])
-                    record["request_payload"] = _decode_jsonish(row["request_payload"])
-                lines.append(json.dumps(record) + "\n")
-            yield "".join(lines)
+                for piece in _record_pieces(row, include_content=include_content):
+                    pieces.append(piece)
+                    gathered += len(piece)
+                    if gathered >= _CHUNK_CHARS:
+                        yield "".join(pieces)
+                        pieces, gathered = [], 0
+                        await asyncio.sleep(0)
+            if pieces:
+                yield "".join(pieces)
             if len(rows) < batch_size:
                 break
             cursor_ts = rows[-1]["timestamp"]

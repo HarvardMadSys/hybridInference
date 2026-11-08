@@ -1,10 +1,10 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { resendVerification, verifyEmail } from '@/lib/api/auth';
+import { useLinkToken } from '@/lib/hooks/useLinkToken';
 import { getErrorMessage, APIError } from '@/lib/utils/errors';
 import { useT } from '@/components/providers/useT';
 import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
@@ -17,7 +17,8 @@ export const dynamic = 'force-dynamic';
 function VerifyEmailContent(): JSX.Element {
   const t = useT();
   const skin = useAuthAppearance();
-  const searchParams = useSearchParams();
+  // Taken out of the address once read: see useLinkToken.
+  const token = useLinkToken();
   const [status, setStatus] = useState<'loading' | 'success' | 'error' | 'already_verified'>(
     'loading',
   );
@@ -46,8 +47,6 @@ function VerifyEmailContent(): JSX.Element {
   };
 
   useEffect(() => {
-    const token = searchParams.get('token');
-
     if (!token) {
       setStatus('error');
       setMessage(t('auth.verify.missing_token', 'Missing verification token'));
@@ -76,7 +75,7 @@ function VerifyEmailContent(): JSX.Element {
           setMessage(getErrorMessage(err));
         }
       });
-  }, [searchParams, t]);
+  }, [token, t]);
 
   const titles: Record<typeof status, string> = {
     loading: t('auth.verify.loading_title', 'Verifying Email'),

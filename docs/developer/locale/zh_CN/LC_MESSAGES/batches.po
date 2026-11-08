@@ -333,6 +333,14 @@ msgid "if your role no longer allows batches, they pause until it does."
 msgstr "如果你的角色不再允许使用批量推理，批次会暂停，直到重新允许为止。"
 
 #: ../developer/batches.md:88
+msgid ""
+"The quotas and budgets count your requests still running at what they may"
+" cost. When those alone stand in the way, and what has been charged leaves"
+" room, nothing pauses: the request waits half a minute and is checked "
+"again."
+msgstr "配额和预算会把你仍在运行的请求按其可能的费用计入。如果只是这些请求挡住了去路，而已计费的金额仍有余量，就不会暂停：该请求等待半分钟后再次检查。"
+
+#: ../developer/batches.md:88
 msgid "So keep the key you created a batch with until the batch finishes."
 msgstr "所以在批次完成之前，请保留创建它所用的 key。"
 
@@ -596,14 +604,16 @@ msgstr "`GET /v1/batches/{id}/results` 按你提交的顺序分页列出批次�
 
 #: ../developer/batches.md:265
 msgid ""
-"`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the "
-"next page with `after` set to the page's `last_id`. Every request of the "
-"batch is listed, finished or not. A request still `queued` or `running` "
-"has no `response` yet, but may retain its last `error` while being "
-"retried. Read the results once the batch is in a final status, or read "
-"them again later."
+"`limit` is 1–1000 (default 100). A page also stops at about 8 MiB of "
+"results, so large ones (embeddings, say) come a few to a page. When "
+"`has_more` is `true`, ask for the next page with `after` set to the page's "
+"`last_id`. Every request of the batch is listed, finished or not. A "
+"request still `queued` or `running` has no `response` yet, but may retain"
+" its last `error` while being retried. Read the results once the batch is"
+" in a final status, or read them again later."
 msgstr ""
-"`limit` 为 1–1000，默认 100。当 `has_more` 为 `true` 时，将本页的 `last_id` 作为 `after`"
+"`limit` 为 1–1000，默认 100。一页的结果累计约 8 MiB 时也会截止，因此较大的结果（例如 embeddings）每页只有几条。"
+"当 `has_more` 为 `true` 时，将本页的 `last_id` 作为 `after`"
 " 获取下一页。批次中的所有请求都会列出，无论是否完成。仍处于 `queued` 或 `running` 的请求尚无 "
 "`response`，但在重试时可能保留上一次的 `error`。请在批次达到最终状态后读取结果，或稍后再次读取。"
 
@@ -678,6 +688,17 @@ msgstr ""
 #: ../developer/batches.md:41
 msgid "Another server error after every retry"
 msgstr "所有重试之后仍是其他服务器错误"
+
+#: ../developer/batches.md:41
+msgid "`result_too_large`"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid ""
+"The response was larger than one request may store, or the batch's "
+"responses had reached their storage limit (the requests still to run then"
+" fail without running)"
+msgstr "响应超过了单个请求可以存储的大小，或者批次的响应已达到存储上限（此后尚未运行的请求不再运行，直接失败）"
 
 #: ../developer/batches.md:41
 msgid "`batch_failed`"
@@ -823,12 +844,15 @@ msgid ""
 "`GET /v1/files/{id}` returns one, and `DELETE /v1/files/{id}` deletes one"
 " for good: a deleted output file is not written again, though the batch "
 "still names it. Deleting an input file does not affect a batch already "
-"created from it."
+"created from it. A download is a stream: it may run for as long as "
+"`STREAM_REQUEST_TIMEOUT_SECONDS` allows (an hour by default), not only the"
+" 120 seconds an ordinary request gets."
 msgstr ""
 "用 `GET /v1/files/{id}/content` 下载它们。结果文件每次下载都是相同的字节，其大小和 SHA-256（即 "
 "`ETag`）在批次结束时就已确定。`GET /v1/files` 列出你的文件，`GET /v1/files/{id}` "
 "返回其中一个，`DELETE /v1/files/{id}` "
 "将其永久删除：被删除的输出文件不会重新生成，尽管批次仍会引用它。删除输入文件不影响已经用它创建的批次。"
+"下载以流的方式返回：它可以持续到 `STREAM_REQUEST_TIMEOUT_SECONDS` 允许的时长（默认一小时），而不只是普通请求的 120 秒。"
 
 #: ../developer/batches.md:404
 msgid "The official OpenAI SDKs work with this flow:"
@@ -1206,7 +1230,10 @@ msgid ""
 "`\"{webhook-id}.{webhook-timestamp}.{body}\"` with the secret's base64 "
 "part as the key). A delivery that is not answered with a `2xx` is retried"
 " with backoff, up to eight attempts; the same event can arrive more than "
-"once, so deduplicate on `webhook-id`."
+"once, so deduplicate on `webhook-id`. Your events go out one at a time, "
+"beside other users'. An endpoint that fails three deliveries in a row by "
+"timing out gets none for ten minutes, and longer each further time, up to"
+" an hour."
 msgstr ""
 "批次结束、其结果可读之后，网关会 POST "
 "一个事件：`batch.completed`、`batch.failed`、`batch.expired` 或 "
@@ -1217,6 +1244,7 @@ msgstr ""
 "signature`（`v1,` 加上以密钥的 base64 部分为 key、对 `\"{webhook-id}.{webhook-"
 "timestamp}.{body}\"` 计算的 base64 HMAC-SHA256）。没有得到 `2xx` "
 "回应的投递会带退避重试，最多八次；同一事件可能到达不止一次，请按 `webhook-id` 去重。"
+"你的事件逐个发出，与其他用户的事件并行。某个端点若连续三次投递都因超时失败，十分钟内不再向它投递，之后每再失败一次等待更久，最长一小时。"
 
 #: ../developer/batches.md:585
 msgid ""
@@ -1493,6 +1521,14 @@ msgstr "已结束批次的保留时间"
 #: ../developer/batches.md:41
 msgid "7 days"
 msgstr "7 天"
+
+#: ../developer/batches.md:41
+msgid "Responses one batch may store"
+msgstr "一个批次可以存储的响应总量"
+
+#: ../developer/batches.md:41
+msgid "8 GiB in all; 4 MiB per request"
+msgstr "总计 8 GiB；每个请求 4 MiB"
 
 #: ../developer/batches.md:693
 msgid ""
@@ -1889,6 +1925,27 @@ msgid "Largest response one batch request may store"
 msgstr "单个批量请求可以存储的最大响应"
 
 #: ../developer/batches.md:41
+msgid "`BATCH_MAX_RESULTS_MB_PER_BATCH`"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid "8192"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid ""
+"Responses one batch may store in all, in MiB. Once they reach it, a "
+"response that does not fit fails with `result_too_large`, and so does "
+"every request of that batch still to run, without running. Counted in "
+"each gateway process from the results it records; after a restart, what a"
+" batch already stored counts at its stored, compressed size. `0` removes "
+"the limit"
+msgstr ""
+"一个批次总共可以存储的响应大小，单位 MiB。达到上限后，放不下的响应会以 `result_too_large` "
+"失败，该批次尚未运行的请求也不再运行，同样失败。由每个网关进程根据自己记录的结果分别计数；重启之后，批次已存储的结果按其存储（压缩后）的大小计入。`0`"
+" 表示不设上限"
+
+#: ../developer/batches.md:41
 msgid "`BATCH_FILES_MAX_TOTAL_MB_PER_USER`"
 msgstr ""
 
@@ -1909,8 +1966,10 @@ msgid "60"
 msgstr ""
 
 #: ../developer/batches.md:41
-msgid "Input files one user may upload per hour"
-msgstr "一个用户每小时可以上传的输入文件数"
+msgid ""
+"Input files one user may upload per hour, uploads that failed included "
+"(those counted in each gateway process on its own)"
+msgstr "一个用户每小时可以上传的输入文件数，失败的上传也计入（失败的上传由每个网关进程各自计数）"
 
 #: ../developer/batches.md:41
 msgid "`BATCH_FILE_RETENTION_DAYS`"

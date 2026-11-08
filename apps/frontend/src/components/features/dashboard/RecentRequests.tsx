@@ -330,10 +330,12 @@ export function RecentRequests(): JSX.Element {
           {data && (
             <span className="text-xs text-gray-500">
               {fill(
-                data.total === 1
+                data.total === 1 && !data.total_capped
                   ? t('dashboard.requests.total_one', '{count} total request')
                   : t('dashboard.requests.total_other', '{count} total requests'),
-                { count: fmt.number(data.total) },
+                // The list reaches back so far; an account with older requests
+                // reads "10,000+".
+                { count: `${fmt.number(data.total)}${data.total_capped ? '+' : ''}` },
               )}
             </span>
           )}

@@ -38,13 +38,13 @@ router = APIRouter()
 #: mid-send, which would drop the report silently.
 _ALERT_TASKS: set[asyncio.Task[Any]] = set()
 
-#: How long anonymous ``/health`` answers from its last store probe. The probe
-#: is a ``SELECT 1`` per store plus the outage/recovery alert bookkeeping; any
-#: caller can ask for it, as often as it likes, and the container probe, load
-#: balancers and monitors all poll it. Two seconds keeps it current for every
-#: one of them and bounds the database work to one probe per window, however
-#: many callers there are. ``/health/ready`` and ``/health/deep`` still probe on
-#: every call.
+#: How long the anonymous health endpoints (``/health``, ``/health/ready``,
+#: ``/health/deep``) answer from their last store probe. The probe is a
+#: ``SELECT 1`` per store plus the outage/recovery alert bookkeeping; any caller
+#: can ask for it, as often as it likes, and the container probe, load
+#: balancers, readiness checks and monitors all poll it. Two seconds keeps it
+#: current for every one of them and bounds the database work to one probe per
+#: window, however many callers there are and whichever endpoint they ask.
 HEALTH_PROBE_TTL_SEC = 2.0
 
 #: The last probe, keyed by the stores it probed. Concurrent callers share the
@@ -270,7 +270,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
 
 
 async def _cached_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
-    """:func:`_test_store_health` for ``/health``: shared for a moment, run once at a time.
+    """:func:`_test_store_health` for the health endpoints: shared for a moment, run once at a time.
 
     The alert transitions it reports are evaluated by the probe itself, so they
     fire once per probe rather than once per caller. Each caller gets its own
@@ -421,7 +421,8 @@ async def health_ready(
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "not_ready", "reason": "proxy_discovery_unavailable"}
 
-    store_health = await _test_store_health(op_store, log_store)
+    # The probe /health shares: at most HEALTH_PROBE_TTL_SEC old.
+    store_health = await _cached_store_health(op_store, log_store)
 
     if store_health["all_healthy"]:
         return {
@@ -464,7 +465,8 @@ async def deep_health(
     """
     routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
-    store_health = await _test_store_health(op_store, log_store)
+    # The probe /health shares: at most HEALTH_PROBE_TTL_SEC old.
+    store_health = await _cached_store_health(op_store, log_store)
     db_connected = store_health["healthy"]
 
     provider_status = (

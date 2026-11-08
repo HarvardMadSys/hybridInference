@@ -121,6 +121,18 @@ describe('configuration client', () => {
     expect(init.method).toBe('DELETE');
   });
 
+  it('sends the password a security-relevant reset needs in the DELETE body', async () => {
+    fetchMock.mockResolvedValueOnce(json(EMPTY));
+
+    await resetConfigKey('SMTP_PASSWORD', { password: 'admin-password' });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toMatch(/\/admin\/config\/SMTP_PASSWORD$/);
+    expect(init.method).toBe('DELETE');
+    expect(JSON.parse(init.body as string)).toEqual({ password: 'admin-password' });
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+  });
+
   it('asks for a restart with POST /admin/system/restart', async () => {
     fetchMock.mockResolvedValueOnce(json({ restarting: true, instance: 'abc123' }, 202));
 

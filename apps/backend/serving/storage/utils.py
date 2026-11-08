@@ -549,19 +549,39 @@ def agent_name_from_prompt(
     return None
 
 
-def strip_null_bytes(value: Any) -> Any:
-    """Recursively remove PostgreSQL-incompatible null bytes from strings."""
+#: How deeply nested a value :func:`strip_null_bytes` copies. A client decides
+#: the nesting of what it sends, and a value nested past Python's recursion limit
+#: (about 1000) makes every recursive step after this one -- ``json_safe``,
+#: ``json.dumps``, Postgres' JSONB parser -- fail, so the row of a request that
+#: was served and billed would never be written. No real request nests this deep.
+MAX_STORED_DEPTH = 64
+
+#: What stands in for a container nested deeper than :data:`MAX_STORED_DEPTH`.
+DEPTH_ELIDED = "…"
+
+
+def strip_null_bytes(value: Any, _depth: int = 0) -> Any:
+    """Return a copy of *value* without PostgreSQL-incompatible null bytes in its strings.
+
+    Dict keys are cleaned too, and tuples become lists. The copy is what a row
+    stores, so it also stops at :data:`MAX_STORED_DEPTH`: a container nested
+    deeper is replaced by :data:`DEPTH_ELIDED`. The recursion is therefore
+    bounded, whatever nesting a client sends, and so is every recursive step
+    that follows on the copy.
+    """
     if isinstance(value, str):
         return value.replace("\x00", "")
-    if isinstance(value, dict):
-        return {
-            strip_null_bytes(k) if isinstance(k, str) else k: strip_null_bytes(v)
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [strip_null_bytes(v) for v in value]
-    if isinstance(value, tuple):
-        return [strip_null_bytes(v) for v in value]
+    if isinstance(value, dict | list | tuple):
+        if _depth >= MAX_STORED_DEPTH:
+            return DEPTH_ELIDED
+        if isinstance(value, dict):
+            return {
+                (k.replace("\x00", "") if isinstance(k, str) else k): strip_null_bytes(
+                    v, _depth + 1
+                )
+                for k, v in value.items()
+            }
+        return [strip_null_bytes(v, _depth + 1) for v in value]
     return value
 
 

@@ -109,9 +109,14 @@ _STALE_SWEEP_INTERVAL_SEC = 60
 # 429 covers quota-exceeded and concurrency-limit rejections — expected user-facing
 # rate limiting, not service failures, so excluded from the failure-rate alert.
 #
-# Neither 404 nor 401 is blanket-excluded, for the same reason in both cases: the
-# gateway's own client-driven rejection and a relayed upstream failure share a
-# status code, and only the second is a service failure.
+# Any other 4xx counts only when an upstream returned it: the request was routed
+# and the error path published the upstream's ``provider`` onto the record. The
+# gateway's own 4xx is a verdict on the request -- an unrouted path's 404 or
+# 405, a body over the limit (413), one that does not validate (422), a
+# gateway-issued 401 -- and anyone can send those anonymously. Counting them let
+# a stream of requests for ``/v1/<anything>`` page the operator as a service
+# failure every cooldown. A relayed upstream failure keeps counting, and that is
+# what matters for both statuses that used to be special-cased:
 #
 # 404: an upstream provider can return 404 for a routed completion (bad provider
 # model id / endpoint path), which the gateway re-raises — a genuine
@@ -125,23 +130,25 @@ _STALE_SWEEP_INTERVAL_SEC = 60
 # the first attempt; the auth_failure_spike rule that used to page is opt-in,
 # see ``alert_config.AuthFailureSpikeConfig``), but an upstream
 # 401 means the gateway's *own* configured credential was refused — a 100%-fatal,
-# all-users outage. Only the former is excluded, via upstream attribution
-# (``provider``) on the record. Blanket-excluding 401 is why a local endpoint
-# rejecting the gateway's key for an hour never reached this rule.
+# all-users outage. Blanket-excluding 401 is why a local endpoint rejecting the
+# gateway's key for an hour never reached this rule.
+#
+# A 5xx counts whoever answered it: the gateway failing is a service failure.
 _FAILED_REQUEST_IGNORED_STATUSES = frozenset({429})
 
 
 def _is_failed_request(item: dict) -> bool:
     """Return True if a window item counts as a service-side failed request.
 
-    Excludes the client-driven statuses in ``_FAILED_REQUEST_IGNORED_STATUSES``
-    (429), gateway model-not-found 404s (a request for an unknown or unauthorized
-    model — tagged via ``req_ctx.mark_model_not_found``), an on-demand upstream's
-    "model queued" 503s (``req_ctx.mark_model_queued``), and gateway-issued 401
-    auth challenges. Genuine upstream 404s and 401s carry provider attribution /
-    no model-not-found tag and still count. This mirrors the DB-query alerter,
-    which excludes the model-not-found error strings (not all 404s) from
-    ``FAILURE_PREDICATE_SQL``.
+    A 5xx counts, except an on-demand upstream's "model queued" 503
+    (``req_ctx.mark_model_queued``). A 4xx counts only with upstream
+    attribution (``provider``), except the client-driven statuses in
+    ``_FAILED_REQUEST_IGNORED_STATUSES`` (429) and gateway model-not-found
+    404s (``req_ctx.mark_model_not_found``): the gateway's own 4xx -- an
+    unrouted path, an oversized or invalid body, an auth challenge -- is a
+    verdict on the request, not a failure of the service. This mirrors the
+    DB-query alerter, which excludes the model-not-found error strings (not all
+    404s) from ``FAILURE_PREDICATE_SQL``.
     """
     status = item["status"]
     if status < 400:
@@ -152,7 +159,9 @@ def _is_failed_request(item: dict) -> bool:
     # capacity, nothing failed (``serving.exceptions.UpstreamModelQueued``).
     if item.get("client_error_kind") == MODEL_QUEUED:
         return False
-    if status == 401 and not item.get("provider"):
+    if status >= 500:
+        return True
+    if not item.get("provider"):
         return False
     return not (status == 404 and item.get("client_error_kind") == MODEL_NOT_FOUND)
 
@@ -434,7 +443,10 @@ class _LatencyWindow:
 
 
 class FailedRequestRateRule:
-    """Rule 1: 4xx/5xx error rate over a sliding window.
+    """Rule 1: failed-request rate over a sliding window.
+
+    A failure is a 5xx, or a 4xx an upstream returned (:func:`_is_failed_request`);
+    every request with a status counts toward the total.
 
     The rate and the card's top-N come from tallies the window keeps in step as
     requests arrive and age out (:class:`_TalliedWindow`), so a record costs the
@@ -895,8 +907,10 @@ class AuthFailureSpikeRule:
         self._incident.observe(arrived, window_count=count, now=now)
 
         def breach_context() -> dict[str, Any]:
-            # The only full pass over the window, and only for a breached
-            # evaluation; a record that breaches nothing reads just its size.
+            # The only full pass over the window. Deferred (below), so it runs
+            # when a breach is actually sent or opens a history episode, not on
+            # every failure while one is breached: a source that keeps failing
+            # fills this window, and paid for a pass over it per failure.
             return {
                 "count": count,
                 "window_sec": self._cfg.window_sec,
@@ -918,6 +932,7 @@ class AuthFailureSpikeRule:
             stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
             resolution_context=resolution_context,
+            defer_context=True,
         )
 
 
@@ -1287,6 +1302,11 @@ class ClientErrorBurstRule:
     routinely quotes the offending request back (a tool call's arguments, a
     message body). The endpoint and status are what an operator acts on; the
     text is one log query away and stays out of Slack.
+
+    **Distinct callers.** Each event carries an opaque ``caller`` (one per API
+    key, grant or anonymous address; ``unknown`` where none was set). A breach
+    also needs ``min_distinct_callers`` of them in the window, so a deployment
+    can refuse to let one key page it; the card says how many there were.
     """
 
     name = "client_error_burst"
@@ -1298,7 +1318,13 @@ class ClientErrorBurstRule:
         # breached record would cost that caller nothing and the loop plenty.
         self._endpoints = _Tally()
         self._statuses = _Tally()
-        self._window = _TalliedWindow(cfg.window_sec, self._endpoints, self._statuses)
+        # Callers are chosen by whoever sends the requests, so their tally is
+        # bounded; past the bound the count is a floor, which only ever makes
+        # more callers than any sensible minimum.
+        self._callers = _Tally(max_keys=_MAX_TRACKED_OFFENDERS)
+        self._window = _TalliedWindow(
+            cfg.window_sec, self._endpoints, self._statuses, self._callers
+        )
 
     async def on_record(self, record: logging.LogRecord) -> None:
         """Track breaker-exempt client errors and alert when they burst in-window."""
@@ -1318,18 +1344,23 @@ class ClientErrorBurstRule:
         now = time.time()
         endpoint_id = getattr(record, "endpoint_id", None)
         status = getattr(record, "status", None)
+        caller = getattr(record, "caller", None)
         count = self._window.add(
             now,
             (
                 str(endpoint_id) if endpoint_id else None,
                 None if status is None else str(status),
+                str(caller) if caller else "unknown",
             ),
         )
+        callers = len(self._callers)
+        callers_capped = self._callers.untracked > 0
 
         def breach_context() -> dict[str, Any]:
             return {
                 "count": count,
                 "window_sec": self._cfg.window_sec,
+                "distinct_callers": f"{callers}+ (capped)" if callers_capped else callers,
                 "top_endpoints": _top_offenders(self._endpoints),
                 "top_status_codes": _top_offenders(self._statuses),
                 # Spelled out because the absence of a circuit-open page next to
@@ -1350,7 +1381,10 @@ class ClientErrorBurstRule:
             # PendingPrefixCacheLeakRule and AuthFailureSpikeRule. (AuthIpBlocked
             # reads its threshold the other way only because a default of 1 has
             # to make one block a breach.)
-            breached=count > self._cfg.threshold_count,
+            breached=(
+                count > self._cfg.threshold_count
+                and (callers_capped or callers >= self._cfg.min_distinct_callers)
+            ),
             # WARN, not ERROR: every request counted here was refused for being
             # malformed, which may be entirely the caller's doing. It needs a
             # human to look; it is not yet evidence the gateway is broken.

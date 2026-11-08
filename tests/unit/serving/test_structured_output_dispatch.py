@@ -20,6 +20,7 @@ from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.batch.dispatch import dispatch_item
 from serving.servers.deps import AppServices
+from serving.storage.utils import calculate_cost
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,17 +42,18 @@ BODY = {
 
 
 class _Upstream(BaseAdapter):
-    def __init__(self, *replies: str) -> None:
-        super().__init__(
-            ModelConfig(
-                id=MODEL,
-                name=MODEL,
-                provider="openai",
-                base_url="https://upstream.test",
-                # The gateway's own server, so batch work may use it.
-                deployment_type="self_hosted",
-            )
+    def __init__(self, *replies: str, pricing: dict[str, str] | None = None) -> None:
+        config = ModelConfig(
+            id=MODEL,
+            name=MODEL,
+            provider="openai",
+            base_url="https://upstream.test",
+            # The gateway's own server, so batch work may use it.
+            deployment_type="self_hosted",
         )
+        if pricing is not None:
+            config.pricing = pricing
+        super().__init__(config)
         self.replies = list(replies)
         self.calls: list[list[dict[str, Any]]] = []
 
@@ -124,3 +126,43 @@ async def test_a_reply_that_never_conforms_is_still_a_reply():
     assert result.error is None, result
     assert result.response["choices"][0]["message"]["content"] == "still prose"
     assert row["metadata"]["structured_output"]["conforms"] is False
+
+
+async def test_every_upstream_call_is_billed_not_only_the_reply_returned():
+    """Three generations are three charges' worth (H18): the retries used to be free.
+
+    The row is logged with what was billed, so its cost is the charge; the
+    client's copy keeps the usage of the reply it gets.
+    """
+    pricing = {"prompt": "1", "completion": "2"}
+    upstream = _Upstream("prose", "more prose", "still prose", pricing=pricing)
+
+    result, row = await _run(upstream)
+
+    one_call = calculate_cost({"prompt_tokens": 10, "completion_tokens": 5}, pricing)
+    assert len(upstream.calls) == 3
+    assert result.cost_usd == pytest.approx(3 * one_call)
+    assert (row["usage"]["prompt_tokens"], row["usage"]["completion_tokens"]) == (30, 15)
+    assert row["usage"]["total_tokens"] == 45
+    assert calculate_cost(row["usage"], row["pricing"]) == pytest.approx(result.cost_usd)
+    assert result.response["usage"]["prompt_tokens"] == 10
+
+
+async def test_summed_usage_keeps_a_total_only_when_every_call_reported_one():
+    """A total some calls lacked would decide how reasoning is billed; cache stays unreported."""
+    from serving.servers.routers.completions import _total_usage
+
+    both = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    usage = _total_usage(
+        [{**both, "reasoning_tokens": 3, "cache_read_tokens": 4}, {"prompt_tokens": 1}, None]
+    )
+
+    assert usage == {
+        "prompt_tokens": 11,
+        "completion_tokens": 5,
+        "total_tokens": None,
+        "reasoning_tokens": 3,
+        "cache_read_tokens": 4,
+    }
+    assert _total_usage([both, both])["total_tokens"] == 30
+    assert _total_usage([None, {}]) is None

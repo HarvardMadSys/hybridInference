@@ -1,5 +1,6 @@
 """Base adapter interface and shared utilities for LLM providers."""
 
+import json
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -328,9 +329,11 @@ class BaseAdapter(ABC):
 
         ``usage_sink`` receives the Anthropic counts and, when the upstream
         reported usage, its OpenAI-shaped counts under ``OPENAI_USAGE_SINK_KEY``
-        (see :meth:`messages`).
+        (see :meth:`messages`). Before the first event it also receives, under
+        ``INPUT_SEED_SINK_KEY``, the estimate message_start is seeded with.
         """
         from serving.adapters.anthropic_translator import (
+            INPUT_SEED_SINK_KEY,
             OPENAI_USAGE_SINK_KEY,
             OpenAIToAnthropicStreamTranslator,
             anthropic_request_to_openai,
@@ -344,16 +347,25 @@ class BaseAdapter(ABC):
         # Seed message_start.usage.input_tokens with an estimate: OpenAI streams
         # report prompt tokens only in the final chunk, but Anthropic clients
         # read input usage from message_start. The exact count replaces this in
-        # the terminal message_delta once the upstream reports it. It is also
-        # the input a stream cut off after message_start is billed for, so it
-        # stays a tiktoken estimate -- but a bounded one: this runs on the event
-        # loop for every streamed turn, and a full encode of a coding agent's
-        # context took tens of milliseconds there. Exact up to
-        # INLINE_ESTIMATE_MAX_CHARS of text, sampled within a few percent beyond.
+        # the terminal message_delta once the upstream reports it. Counted as
+        # count_tokens counts the request: the messages plus the serialized tool
+        # definitions, which are input too, and often most of a coding agent's
+        # prompt. Bounded, because this runs on the event loop for every
+        # streamed turn, and a full encode of a coding agent's context took tens
+        # of milliseconds there: exact up to INLINE_ESTIMATE_MAX_CHARS of text,
+        # sampled beyond.
+        tools = oai_params.get("tools")
         try:
-            input_estimate = estimate_prompt_tokens_bounded(oai_messages)
+            input_estimate = estimate_prompt_tokens_bounded(
+                oai_messages, extra_texts=(json.dumps(tools),) if tools else ()
+            )
         except Exception:
             input_estimate = 0
+        if usage_sink is not None:
+            # A guess, not a count: declared so that a stream cut off after
+            # message_start is billed from the router's own estimate of the
+            # request rather than from this number.
+            usage_sink[INPUT_SEED_SINK_KEY] = input_estimate
         translator = OpenAIToAnthropicStreamTranslator(
             model=body.get("model", ""), input_tokens_estimate=input_estimate
         )

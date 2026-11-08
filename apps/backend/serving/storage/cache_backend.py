@@ -13,8 +13,11 @@ import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from copy import deepcopy
+from datetime import date, time as time_of_day, timedelta
+from decimal import Decimal
 from itertools import islice
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -301,18 +304,52 @@ class InMemoryCache(CacheBackend):
         }
 
 
+#: The leaf types of a decoded JSON value, which a copy shares rather than copies.
+_JSON_LEAVES = frozenset({str, int, float, bool, type(None)})
+
+#: Other values a copy may share with the original: none of them changes in place.
+_SHARED_VALUES = (
+    str,
+    int,
+    float,
+    bytes,
+    tuple,
+    frozenset,
+    Decimal,
+    date,
+    time_of_day,
+    timedelta,
+    UUID,
+)
+
+
 def _snapshot(value: Any) -> Any:
-    """Return an independent deep copy of a cache value.
+    """Return a copy of a cache value that shares no mutable object with it.
 
     Rows returned from the cache must not alias the stored object that later
     reads will hand out, and the stored object must not alias whatever was
     written after a cache miss. A consumer that mutates one returned row must
-    never corrupt a later read of the same key. Deep-copying is the only way to
-    fully isolate the cache's stored value from every returned reference; the
-    cached rows here are shallow dicts whose ``preferences`` value is itself a
-    mutable dict, so a shallow copy would leak the nested object.
+    never corrupt a later read of the same key. The cached rows here are dicts
+    whose ``preferences`` value is itself a mutable dict, so a shallow copy
+    would leak the nested object.
+
+    The rows are database rows: dicts and lists of scalars, nested a level or
+    two. Those two containers are rebuilt here and their immutable leaves
+    shared, at about a tenth of what :func:`copy.deepcopy` costs a row -- its
+    memo and reduce protocol serve arbitrary object graphs, and this runs on
+    every cache hit of the auth lookups. Any other type still goes through
+    deepcopy.
     """
-    # Scalars and immutable values are copied by reference at no cost.
-    if value is None or isinstance(value, (str, int, float, bool, bytes, tuple, frozenset)):
+    kind = type(value)
+    if kind in _JSON_LEAVES:
+        return value
+    if kind is dict:
+        return {
+            key: item if type(item) in _JSON_LEAVES else _snapshot(item)
+            for key, item in value.items()
+        }
+    if kind is list:
+        return [item if type(item) in _JSON_LEAVES else _snapshot(item) for item in value]
+    if isinstance(value, _SHARED_VALUES):
         return value
     return deepcopy(value)

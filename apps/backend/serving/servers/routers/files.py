@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -35,12 +35,16 @@ from serving.batch.delivery import DownloadInterrupted, stream_lines, stream_upl
 from serving.batch.multipart import MultipartError, boundary_of, limited, read_multipart
 from serving.servers.auth import reads_every_owner, verify_batch_management_identity
 from serving.servers.deps import get_batch_file_store, get_batch_store
+from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.storage.batch_file_store import (
     CHUNK_BYTES,
     BatchFileOwnerUnavailable,
     BatchFileQuotaExceeded,
 )
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 logger = get_logger(__name__)
 
@@ -118,6 +122,20 @@ def content_disposition(name: str) -> str:
     clean = safe_filename(name)
     ascii_name = clean.encode("ascii", "replace").decode("ascii").replace("?", "_")
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(clean, safe='')}"
+
+
+def jsonl_download(
+    request: Request, body: AsyncIterator[bytes], *, headers: dict[str, str]
+) -> StreamingResponse:
+    """A JSONL download, marked as the long-lived stream it is.
+
+    ``TimeoutMiddleware`` ends a response at ``REQUEST_TIMEOUT_SECONDS``
+    (120 s by default) even after its status went out, so a large file would
+    stop short behind a ``200``. Marked as streaming, a download gets the
+    stream cap (``STREAM_REQUEST_TIMEOUT_SECONDS``) instead, as SSE does.
+    """
+    request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
+    return StreamingResponse(body, media_type="application/jsonl", headers=headers)
 
 
 def _not_found(file_id: str) -> HTTPException:
@@ -364,6 +382,7 @@ async def retrieve_file(
 @router.get("/v1/files/{file_id}/content", response_model=None)
 async def file_content(
     file_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
     file_store=Depends(get_batch_file_store),
@@ -393,7 +412,7 @@ async def file_content(
                 expected=row,
             )
         )
-    return StreamingResponse(body, media_type="application/jsonl", headers=headers)
+    return jsonl_download(request, body, headers=headers)
 
 
 async def _guarded(stream: Any) -> Any:

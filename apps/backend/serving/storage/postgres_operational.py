@@ -20,6 +20,7 @@ from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
     HardDeleteStateChanged,
+    PreferencesTooLargeError,
     SelfDeleteRefused,
 )
 from serving.storage import user_usage_rollup
@@ -28,6 +29,7 @@ from serving.storage.audit_schema import (
     insert_audit_row,
 )
 from serving.storage.base import (
+    USER_PREFERENCES_MAX_BYTES,
     CostIncrement,
     CostWriteOutcomeUnknown,
     OperationalStore,
@@ -35,6 +37,7 @@ from serving.storage.base import (
     ProviderKeyRow,
     Row,
 )
+from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.utils.logging import get_logger
@@ -58,12 +61,9 @@ logger = get_logger(__name__)
 # (user, day) and per (key, day) first, as ON CONFLICT DO UPDATE requires.
 # The sums keep each increment's rounding (``spend_ledger.counted_amount``), so
 # a coalesced batch adds exactly what the separate increments would have.
-COST_INCREMENTS_SQL = """
-WITH batch AS (
-    SELECT *
-    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
-        AS b(user_id, day, key_id, cost_usd, requests)
-),
+# The counter writes of a cost batch, from its ``batch`` rows: shared by both
+# statements below.
+_COST_INCREMENT_WRITES = """
 account_rows AS (
     INSERT INTO user_daily_cost AS c (user_id, day, cost_usd, requests, last_request_at)
     SELECT user_id, day, SUM(cost_usd), SUM(requests), NOW()
@@ -87,10 +87,40 @@ key_rows AS (
 )
 SELECT txid_current()
 """
+COST_INCREMENTS_SQL = (
+    """
+WITH batch AS (
+    SELECT *
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[])
+        AS b(user_id, day, key_id, cost_usd, requests)
+),"""
+    + _COST_INCREMENT_WRITES
+)
+
+# The same, with each increment's erasure-fence digest ($6, NULL for none): an
+# increment whose account was hard-deleted is left out (see
+# ``PostgresOperationalStore.increment_user_costs``).
+COST_INCREMENTS_FENCED_SQL = (
+    """
+WITH batch AS (
+    SELECT b.user_id, b.day, b.key_id, b.cost_usd, b.requests
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[], $6::text[])
+        AS b(user_id, day, key_id, cost_usd, requests, fence_key)
+    WHERE NOT EXISTS (SELECT 1 FROM erasure_fence AS f WHERE f.account_digest = b.fence_key)
+),"""
+    + _COST_INCREMENT_WRITES
+)
 
 # How long to keep asking how a cost transaction ended after its COMMIT's
 # answer was lost: the delays before each try.
 _COMMIT_STATUS_RETRY_DELAYS = (0.0, 0.2, 1.0, 3.0)
+
+# The most accounts' shared fence locks one cost write takes. Every lock is an
+# entry in PostgreSQL's shared lock table, which holds about 64 per connection
+# (max_locks_per_transaction); a coalesced batch past this checks the fence in
+# its statement alone rather than risk filling the table and failing every
+# retry.
+_COST_FENCE_LOCKS_MAX = 512
 
 # Distinct ``api_logs.provider`` values with a row in the last $1 days; see
 # ``PostgresOperationalStore.list_user_activity_providers``.
@@ -115,6 +145,27 @@ ORDER BY provider
 """
 
 
+def _preferences_subset(column: str, *keys: str) -> str:
+    """SQL for the entries *keys* of the preferences *column*, as a JSON object.
+
+    A key the document lacks is left out, as is every key when the column
+    holds no object (``->`` yields NULL there, and the nulls are stripped).
+    """
+    pairs = ", ".join(f"'{key}', {column} -> '{key}'" for key in keys)
+    return f"jsonb_strip_nulls(jsonb_build_object({pairs}))"
+
+
+# The preferences entries a request acts on: the models an administrator has
+# disabled for the account (serving.model_access.DISABLED_MODELS_PREFERENCE_KEY)
+# and, for the console, its interface language. The lookups every request makes
+# select these and never the whole document. Its other entries (the prober
+# layout) are the account holder's to fill, and decoding them on every request,
+# and copying them on every cache hit, would put work in proportion to their
+# size on the event loop each time.
+_REQUEST_PREFERENCE_KEYS = ("disabled_models", "locale")
+_USER_ROW_PREFERENCES = _preferences_subset("preferences", *_REQUEST_PREFERENCE_KEYS)
+_KEY_AUTH_PREFERENCES = f"{_preferences_subset('u.preferences', 'disabled_models')} AS preferences"
+
 # Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name),
 # in select order.
 _USER_COLUMNS = (
@@ -136,7 +187,17 @@ _USER_COLUMNS = (
     "admin_note",
     "suspension_message",
 )
-_USER_SELECT = ", ".join(_USER_COLUMNS)
+_USER_SELECT = ", ".join(
+    f"{_USER_ROW_PREFERENCES} AS preferences" if column == "preferences" else column
+    for column in _USER_COLUMNS
+)
+
+# A stored preferences document this large (its stored size, which reading
+# costs nothing) is one written before writes were bounded; a whole-document
+# read takes the request entries alone from it. Far above
+# USER_PREFERENCES_MAX_BYTES, so an administrator's entries added to a full
+# document never push it over.
+_PREFERENCES_READ_MAX_BYTES = 4 * USER_PREFERENCES_MAX_BYTES
 
 # The preferences column as a JSON object, whatever an older row holds there
 # (SQL NULL, or a JSON scalar), so a key can be set on it or removed from it.
@@ -318,6 +379,25 @@ async def _sync_account_quota(
     )
 
 
+#: The key whose quota a key added to an account takes (``create_key`` with
+#: ``inherit_account_quota``). An unrevoked key when the account has one: each
+#: carries the account quota (:func:`_sync_account_quota`). Failing that, the
+#: most recently revoked key, which carried it when it was revoked: the quota is
+#: the account's, so revoking every key must not reset it, or a cut an admin
+#: made -- a lowered daily limit, a monthly cap -- would end with the next key
+#: the user creates. Revocation keeps no time of its own, so the most recently
+#: revoked key is taken to be the one last used or created: a key is used until
+#: it is revoked, and an account that holds one key at a time revokes each
+#: before it creates the next.
+ACCOUNT_QUOTA_SOURCE_SQL = (
+    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys WHERE user_id = $1 "
+    "ORDER BY status = 'revoked', "
+    "CASE WHEN status = 'revoked' THEN GREATEST(created_at, last_used_at) END DESC NULLS LAST, "
+    "created_at, id "
+    "LIMIT 1"
+)
+
+
 def _coerce_user_row(row: Any) -> Row | None:
     """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
 
@@ -364,7 +444,13 @@ REQUEST_PATH_READS = (
 class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     """OperationalStore backed by an asyncpg connection pool."""
 
-    def __init__(self, pool: asyncpg.Pool, *, request_pool: asyncpg.Pool | None = None) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        request_pool: asyncpg.Pool | None = None,
+        fence_secret: str | None = None,
+    ) -> None:
         """Initialize with a shared asyncpg pool.
 
         The LogStore owns the erasure-fence schema and tombstone checks; this
@@ -378,9 +464,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 :data:`~serving.storage.pools.REQUEST_ACQUIRE_TIMEOUT_SEC` for a
                 connection, from whichever pool, and then raise
                 :class:`~serving.storage.pools.DatabaseBusyError`.
+            fence_secret: The erasure fence's secret, given where this store
+                shares the log store's database (as bootstrap builds them):
+                cost increments then skip hard-deleted accounts
+                (:meth:`increment_user_costs`).
         """
         self._pool = pool
         self._request_pool = request_pool if request_pool is not None else pool
+        self._fence_secret = fence_secret
 
     def _request_connection(self) -> AbstractAsyncContextManager[Any]:
         """A connection for a request-path lookup: the request pool, a bounded wait."""
@@ -395,7 +486,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         transaction; request-path lookups use it as well.
         """
         pool = SingleConnectionPool(connection)
-        return PostgresOperationalStore(pool, request_pool=pool)
+        return PostgresOperationalStore(pool, request_pool=pool, fence_secret=self._fence_secret)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -1427,7 +1518,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 f"k.quota_monthly_cost_usd, {_AUTH_KEY_COLUMNS}, "
-                f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests "
+                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
+                "u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1461,7 +1553,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "SELECT k.id, k.user_id, k.user_name, k.quota_daily_cost_usd, "
                 "k.quota_monthly_cost_usd, am.account_spent_month_usd, "
                 f"{_AUTH_KEY_COLUMNS}, ks.key_spent_today_usd, ks.key_spent_month_usd, "
-                f"{identity}, u.role, u.email_verified, u.preferences, u.max_concurrent_requests, "
+                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
+                "u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -1486,8 +1579,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         identity = _JOINED_USER_IDENTITY
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
-                f"SELECT k.user_id, {identity}, u.role, u.email_verified, u.preferences, "
-                "u.max_concurrent_requests, k.allowed_models "
+                f"SELECT k.user_id, {identity}, u.role, u.email_verified, "
+                f"{_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, k.allowed_models "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "WHERE k.key_hash = $1 "
@@ -1581,11 +1674,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Insert a new API key. Returns the inserted row.
 
         The quota is the account's (see :meth:`OperationalStore.create_key`).
-        With ``inherit_account_quota`` a key added to an account that already
-        has an unrevoked key takes that account's quota, and the given values
-        only seed a first key. Without it the given values become the
-        account's, and every other unrevoked key of the user is set to them in
-        the same transaction.
+        With ``inherit_account_quota`` a key added to an account that has held
+        a key takes the account's quota (:data:`ACCOUNT_QUOTA_SOURCE_SQL`),
+        and the given values only seed an account's first key. Without it the
+        given values become the account's, and every other unrevoked key of
+        the user is set to them in the same transaction.
 
         ``max_active_keys`` caps the account's active keys. Everything runs
         under the account lock (:func:`_lock_account_keys`), so two concurrent
@@ -1618,12 +1711,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     raise APIKeyLimitReachedError(max_active_keys)
             daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
             if inherit_account_quota:
-                current = await conn.fetchrow(
-                    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd "
-                    "FROM api_keys WHERE user_id = $1 AND status <> 'revoked' "
-                    "ORDER BY created_at, id LIMIT 1",
-                    user_id,
-                )
+                current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
                 if current is not None:
                     daily = current["quota_daily_cost_usd"]
                     monthly = current["quota_monthly_cost_usd"]
@@ -2017,8 +2105,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def session_is_live(self, user_id: str, sid: str) -> bool:
         """Whether *user_id*'s session *sid* exists, unrevoked and unexpired.
 
-        Found through ``idx_auth_sessions_user`` (user_id, expires_at): ``sid``
-        has no index of its own, and an account holds few sessions.
+        One probe of ``idx_auth_sessions_user_sid`` (user_id, sid), however
+        many sessions the account holds.
         """
         async with self._request_connection() as conn:
             return bool(
@@ -2049,11 +2137,11 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 session_id,
             )
 
-    async def revoke_session(self, session_id: str) -> None:
-        """Set ``revoked = TRUE`` on the session."""
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Set ``revoked = TRUE`` on the session; return its account, or None if none."""
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE auth_sessions SET revoked = TRUE WHERE id = $1",
+            return await conn.fetchval(
+                "UPDATE auth_sessions SET revoked = TRUE WHERE id = $1 RETURNING user_id",
                 session_id,
             )
 
@@ -2076,6 +2164,17 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 except_sid,
             )
         return int(result.split()[-1])
+
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Revoke *user_id*'s session *sid*, found through the account's sessions."""
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE auth_sessions SET revoked = TRUE "
+                "WHERE user_id = $1 AND sid = $2 AND revoked IS NOT TRUE",
+                user_id,
+                sid,
+            )
+        return int(result.split()[-1]) > 0
 
     # -- browser sessions ----------------------------------------------------
 
@@ -2238,17 +2337,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
         return remaining
 
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Sign every account out of one browser and retire its cookie."""
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Sign every account out of one browser and retire its cookie.
+
+        Returns the accounts whose sessions were revoked.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             # Same lock as attach: a racing sign-in starts a fresh browser.
             await conn.execute(
                 "SELECT 1 FROM browser_sessions WHERE id = $1 FOR UPDATE", browser_session_id
             )
-            await conn.execute(
+            revoked = await conn.fetch(
                 "UPDATE auth_sessions SET revoked = TRUE WHERE id IN ("
                 "SELECT auth_session_id FROM browser_session_accounts "
-                "WHERE browser_session_id = $1)",
+                "WHERE browser_session_id = $1) RETURNING user_id",
                 browser_session_id,
             )
             await conn.execute(
@@ -2259,6 +2361,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "UPDATE browser_sessions SET revoked = TRUE, active_user_id = NULL WHERE id = $1",
                 browser_session_id,
             )
+        return sorted({row["user_id"] for row in revoked})
 
     # -- login events --------------------------------------------------------
 
@@ -2653,23 +2756,58 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     # -- user preferences ----------------------------------------------------
 
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """Return the preferences JSONB column for *user_id*, parsed as dict."""
+        """Return the preferences JSONB column for *user_id*, parsed as dict.
+
+        An oversized document (see ``_PREFERENCES_READ_MAX_BYTES``) reads as its
+        request entries. The CASE tries the stored size first, which costs no
+        read of the value, and measures the JSON text only of a document that
+        passes it.
+        """
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT preferences FROM users WHERE id = $1", user_id)
+            row = await conn.fetchrow(
+                "SELECT CASE "
+                f"WHEN pg_column_size(preferences) > $2 THEN {_USER_ROW_PREFERENCES} "
+                f"WHEN octet_length(preferences::text) > $2 THEN {_USER_ROW_PREFERENCES} "
+                "ELSE preferences END AS preferences FROM users WHERE id = $1",
+                user_id,
+                _PREFERENCES_READ_MAX_BYTES,
+            )
         coerced = _coerce_user_row(row)
         return coerced["preferences"] if coerced else {}
 
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
-        """Set one preference key in place, leaving every other key as it is."""
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
+        """Set one preference key in place, leaving every other key as it is.
+
+        The size bound is in the UPDATE's WHERE, so it is measured on the
+        document as it is when the write lands, other keys' concurrent writes
+        included.
+        """
+        updated = f"jsonb_set({_PREFERENCES_OBJECT}, ARRAY[$2::text], $3::jsonb, true)"
         async with self._pool.acquire() as conn:
-            status = await conn.execute(
-                f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
-                "ARRAY[$2::text], $3::jsonb, true) WHERE id = $1",
+            if max_total_bytes is None:
+                status = await conn.execute(
+                    f"UPDATE users SET preferences = {updated} WHERE id = $1",
+                    user_id,
+                    key,
+                    json.dumps(value),
+                )
+                return status == "UPDATE 1"
+            written = await conn.fetchval(
+                f"UPDATE users SET preferences = {updated} "
+                f"WHERE id = $1 AND octet_length({updated}::text) <= $4 RETURNING true",
                 user_id,
                 key,
                 json.dumps(value),
+                max_total_bytes,
             )
-        return status == "UPDATE 1"
+            if written:
+                return True
+            exists = await conn.fetchval("SELECT true FROM users WHERE id = $1", user_id)
+        if exists:
+            raise PreferencesTooLargeError(max_total_bytes)
+        return False
 
     async def delete_user_preference(self, user_id: str, key: str) -> bool:
         """Remove one preference key in place, leaving every other key as it is."""
@@ -3745,6 +3883,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         normally, aborted raises the original error, and an answer that cannot
         be had raises :class:`CostWriteOutcomeUnknown` -- retrying then could
         count the batch twice.
+
+        With a fence secret, an increment for a hard-deleted account is left
+        out. A stream still running when its account was erased records its
+        cost when it ends, after the hard delete purged these counters: the
+        write takes each account's shared fence lock and checks the tombstones,
+        as an ``api_logs`` write does (:mod:`serving.storage.erasure_fence`), so
+        it either commits before the hard delete establishes the tombstone --
+        and the hard delete purges the counters after that -- or skips the
+        account. Past :data:`_COST_FENCE_LOCKS_MAX` accounts, only the
+        statement's own check is made.
         """
         if not increments:
             return
@@ -3755,10 +3903,24 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             [increment.cost_usd for increment in increments],
             [increment.requests for increment in increments],
         )
+        fence_keys = (
+            [
+                fence_account_digest(increment.user_id, self._fence_secret)
+                for increment in increments
+            ]
+            if self._fence_secret
+            else None
+        )
         xid: int | None = None
         try:
             async with self._pool.acquire() as conn, conn.transaction():
-                xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+                if fence_keys is None:
+                    xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+                else:
+                    accounts = sorted(set(fence_keys))
+                    if len(accounts) <= _COST_FENCE_LOCKS_MAX:
+                        await lock_fence_keys_shared(conn, accounts)
+                    xid = await conn.fetchval(COST_INCREMENTS_FENCED_SQL, *args, fence_keys)
             return
         except Exception as exc:
             if xid is None:

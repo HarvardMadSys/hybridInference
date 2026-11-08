@@ -24,7 +24,7 @@ import pytest
 from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.servers.routers import anthropic_messages as amod
-from serving.servers.routers.completions_stream import ToolCallAccumulator, _joined
+from serving.servers.routers.completions_stream import ToolCallAccumulator
 from tests.unit.servers.test_completions_stream import _make_session
 
 pytestmark = pytest.mark.unit
@@ -32,16 +32,6 @@ pytestmark = pytest.mark.unit
 PIECE = "x" * 40
 PIECES = 60_000  # 2.4 MB per field; the old appends copied ~70 GB to build it
 BOUND_S = 2.5
-
-
-def test_joined_keeps_one_string_and_appends_after_it():
-    parts = ["a", "b", "c"]
-
-    assert _joined(parts) == "abc"
-    assert parts == ["abc"]  # a second read joins nothing
-    parts.append("d")
-    assert _joined(parts) == "abcd"
-    assert _joined([]) == ""
 
 
 def test_tool_call_arguments_join_on_read_and_keep_growing():
@@ -314,3 +304,74 @@ def test_a_responses_stream_accumulates_in_linear_time():
     assert message["reasoning_content"] == piece * pieces
     assert message["tool_calls"][0]["function"]["arguments"] == piece * pieces
     assert elapsed < 2 * BOUND_S, f"{3 * pieces} deltas took {elapsed:.2f}s to translate"
+
+
+# ---------------------------------------------------------------------------
+# What a long answer costs to hold
+# ---------------------------------------------------------------------------
+#
+# A list of the pieces kept one string object per token in each layer: about
+# 60 bytes for a token of four characters, fifteen times the text. Each layer
+# now holds about a byte per character (``serving.stream.StreamText``).
+
+TOKEN = "abcd"
+TOKENS = 100_000
+#: Bytes held per character of text; the lists held about 15.
+HELD_PER_CHAR = 3
+#: One chunk as the stream carries it: parsed afresh for each token, as the
+#: stream parses it, so that every piece is a string object of its own.
+CHUNK = json.dumps({"choices": [{"index": 0, "delta": {"content": TOKEN, "reasoning": TOKEN}}]})
+DELTA = json.dumps({"index": 0, "delta": {"type": "text_delta", "text": TOKEN}})
+
+
+def _held(build) -> int:
+    """Bytes still allocated after *build* runs, while its result is kept."""
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        before = tracemalloc.get_traced_memory()[0]
+        kept = build()
+        held = tracemalloc.get_traced_memory()[0] - before
+    finally:
+        tracemalloc.stop()
+    assert kept is not None
+    return held
+
+
+def test_the_chat_stream_session_holds_about_a_byte_per_character():
+    def build():
+        session = _make_session()
+        for _ in range(TOKENS):
+            session._accumulate_state_from_chunk(json.loads(CHUNK))
+        return session
+
+    assert _held(build) < HELD_PER_CHAR * 2 * TOKENS * len(TOKEN)
+
+
+def test_the_messages_accumulator_holds_about_a_byte_per_character():
+    def build():
+        acc = amod._apply_sse_payload(None, "message_start", {"message": {"id": "m"}})
+        acc = amod._apply_sse_payload(
+            acc, "content_block_start", {"index": 0, "content_block": {"type": "text"}}
+        )
+        for _ in range(TOKENS):
+            acc = amod._apply_sse_payload(acc, "content_block_delta", json.loads(DELTA))
+        return acc
+
+    assert _held(build) < HELD_PER_CHAR * TOKENS * len(TOKEN)
+
+
+def test_the_responses_translator_holds_about_a_byte_per_character():
+    from serving.responses_translator import ResponsesStreamTranslator
+
+    def build():
+        translator = ResponsesStreamTranslator(
+            response_id="resp_1", created_at=0, model="m", request_body={}
+        )
+        for _ in range(TOKENS):
+            for _event in translator._process_obj(json.loads(CHUNK)):
+                pass
+        return translator
+
+    assert _held(build) < HELD_PER_CHAR * 2 * TOKENS * len(TOKEN)

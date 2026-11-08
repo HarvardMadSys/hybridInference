@@ -110,11 +110,18 @@ order from the outside in is:
    `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when
    `Content-Length` declares more, otherwise as soon as the bytes received pass
    the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`.
-   Behind the console, `/v1`, `/anthropic`, `/internal/playground` and
-   `/user/batch-files` stream through route handlers and are bounded only
-   here. The console's other paths are Next.js rewrites, which copy a body in
-   memory up to 32 MiB (`middlewareClientMaxBodySize`), this limit's default:
-   raising `REQUEST_MAX_BODY_MB` past it does not reach them.
+   Behind the console, every gateway path that takes a request body streams
+   through a route handler and is bounded only here, so raising
+   `REQUEST_MAX_BODY_MB` takes effect behind the console too.
+
+Control routes get a much smaller body limit: 256 KiB under `/auth/`, `/user/`,
+`/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 MiB under
+`/admin/`. FastAPI reads and decodes a route's declared body model before any
+dependency runs, authentication included, so an anonymous caller's body is
+decoded before the `401`. The routes that legitimately take a larger body (a
+configuration restore, the playground, the alert-history ingest) and
+`/v1/embeddings` read theirs only once the caller is authenticated, and keep
+`REQUEST_MAX_BODY_MB`.
 
 Middleware order matters: streaming responses are `StreamingResponse`
 objects that must not be buffered. Any new middleware that reads a response body
@@ -139,7 +146,10 @@ dependency on every inference endpoint. It resolves, in order:
 The same dependency enforces the caller's daily spend quota and returns `429`
 with a shared payload builder (`apps/backend/serving/quota.py`) whichever door
 the request came through. A separate `enforce_user_concurrency` dependency holds a
-per-user in-flight slot for the duration of the request.
+per-user in-flight slot for the duration of the request. Which budget the slot
+comes from depends on the model (a concurrency-exempt model has its own), so the
+body is read before the slot is taken; a caller may have four bodies read that
+way at once, and a fifth request gets the same `429` before its body is read.
 
 The spend the gate reads comes from the counter tables (`user_daily_cost`,
 `api_key_daily_cost`), and the spend ledger (`apps/backend/serving/spend_ledger.py`)
@@ -147,8 +157,12 @@ adds what those tables do not show yet:
 
 - **Requests in flight.** `enforce_user_concurrency` (and the batch worker, for
   each item) checks the quotas and the key's budgets again and reserves the
-  request's estimated cost (`ESTIMATED_REQUEST_COST_USD`) in one step, then
-  releases the reservation when the request ends, however it ends. Requests
+  request's estimated cost in one step, then releases the reservation when the
+  request ends, however it ends. A request is refused only when not even
+  `ESTIMATED_REQUEST_COST_USD` fits, as at the gate. An online request then
+  reserves what it may cost (its prompt and its `max_tokens` at its model's
+  prices, at most `MAX_RESERVED_REQUEST_COST_USD`), or what its limits have left
+  if that is less; a batch item reserves `ESTIMATED_REQUEST_COST_USD`. Requests
   admitted at the same time therefore cannot all fit into the same remaining
   budget.
 - **Costs not yet written.** A finished request's cost is recorded in the
@@ -158,17 +172,24 @@ adds what those tables do not show yet:
   The ledger keeps counting a cost until its write is confirmed (and for a
   while after, for a gate whose read began before it landed), so the delay
   never lets a request past a limit. A failed write is retried; shutdown
-  writes what is left and logs anything it could not.
+  writes what is left and logs anything it could not. An entry the counters
+  refuse for its own values, such as one that would overflow its counter, is
+  set aside rather than retried, so it cannot hold back other accounts' costs:
+  it stays counted in the process and is logged (`cost_counter_write_refused`)
+  and alerted, for an operator to reconcile. One request adds at most $1,000;
+  a larger cost is recorded as $1,000, logged (`cost_above_request_ceiling`)
+  and alerted.
 
 The ledger is per process. With several worker processes each sees only its
 own requests in flight and costs not yet written, so the limits are protected
 within each process, not across them; production runs one worker.
 
-A streamed response the client closes early, or that the gateway's request
-timeout cuts off, is billed for what the upstream already did: the usage it
+A response the client closes early, or that the gateway's request timeout cuts
+off, is billed for what the upstream already did, streamed or not: the usage it
 reported, or else an estimate of the prompt and of the output so far
-(`metadata.usage_estimated` marks the estimate). A request the upstream fails
-is not billed.
+(`metadata.usage_estimated` marks the estimate). A non-streaming request is
+billed so only once it has left the gateway; one still waiting for an outbound
+slot was never seen upstream. A request the upstream fails is not billed.
 
 Read-only endpoints such as `/v1/models` use `optional_verify_api_key` instead:
 a missing or invalid key is anonymous rather than rejected, and the key only
@@ -492,12 +513,12 @@ The gateway reports through these; it has no Prometheus exporter:
   admin dashboards and usage reporting.
 - **Health endpoints.** `/health` is a liveness check that returns 200 with
   `status: "degraded"` when a configured store is down but traffic can still be
-  served, and 503 only when every configured store is unreachable. It answers
-  from one shared store probe for two seconds, and concurrent callers wait for
-  the probe in flight, so polling it does not cost a database query per call.
+  served, and 503 only when every configured store is unreachable.
   `/health/ready` is the strict variant: 503 unless everything configured is up.
   `/health/deep` adds per-endpoint availability and circuit state, and reports
-  `degraded` when any endpoint is.
+  `degraded` when any endpoint is. All three answer from one shared store probe
+  for two seconds, and concurrent callers wait for the probe in flight, so
+  polling them does not cost a database query per call.
 - **Alerting.** `alert_slack()` and `alert_on_transition()` in
   `apps/backend/serving/observability/alerts.py` post through an `AlertSink` to
   one Slack or WeCom webhook, selected in Admin Configuration. Channel changes
@@ -557,10 +578,11 @@ The repository ships Dockerfiles and Compose files under `deploy/docker/`:
 in `apps/frontend/`), and `docker-compose.yml`. Systemd units live in
 `deploy/systemd/`.
 
-The console and the API share one origin: the Next.js rewrites in
-`apps/frontend/next.config.js` proxy `/v1`, `/anthropic`, `/auth`, `/user`,
-`/admin`, `/health`, and `/site-config` to the backend, so a browser session and
-an API key reach the same paths on the same host. Those rewrites — not a reverse
+The console and the API share one origin: the console's route handlers forward
+`/v1`, `/anthropic`, `/auth`, `/user`, `/admin` and the published `/internal`
+paths to the backend, and the Next.js rewrites in `apps/frontend/next.config.js`
+forward `/health` and `/site-config`, so a browser session and an API key reach
+the same paths on the same host. Those handlers and rewrites — not a reverse
 proxy config — are [the public path table](public-path-table.md). The frontend
 has its own toolchain and quality gates, separate from the Python `make`
 targets.

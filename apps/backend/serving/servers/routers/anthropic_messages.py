@@ -37,8 +37,10 @@ from routing.prefill_load import (
     priority_for_prefill,
     prompt_anchor,
 )
+from serving.adapters import dispatch_watch
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
@@ -66,6 +68,7 @@ from serving.grant_auth import ledger_attribution
 from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.observability.rejection_log import RejectionSource, log_rejection_from
 from serving.pricing import effective_pricing, require_source_pricing
+from serving.request_limits import messages_limit_problem
 from serving.servers.auth import (
     _next_utc_midnight,
     verify_api_key,
@@ -87,6 +90,7 @@ from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import ledger_for
 from serving.storage.bounded_log import bound_rejected_log_payload
 from serving.storage.utils import calculate_cost
+from serving.stream import StreamQueue, StreamText, pump_stream
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -1083,6 +1087,7 @@ def _schedule_log_store_task(
     op_store: Any = None,
     user_id: str | None = None,
     completions_logger=None,
+    charge: bool | None = None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget).
 
@@ -1095,6 +1100,9 @@ def _schedule_log_store_task(
     ``op_store`` / ``user_id``, when supplied, advance the per-user daily quota
     counter for successful (status 200) requests via
     :func:`_schedule_messages_cost_increment`; error rows are logged only.
+    ``charge`` overrides that rule for a row whose status does not say whether
+    it is billed: a stream the client cut short is billed for what the upstream
+    did, whatever status its row is logged with.
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
@@ -1188,7 +1196,7 @@ def _schedule_log_store_task(
     # Successful, billed requests must also advance the daily quota counter that
     # verify_api_key enforces; error rows (status != 200) are logged but never
     # billed, matching the chat/embedding paths.
-    if status_code == 200:
+    if charge if charge is not None else status_code == 200:
         _schedule_messages_cost_increment(
             op_store, user_id, usage_for_cost, pricing, api_key_id=metadata.get("api_key_id")
         )
@@ -1223,15 +1231,18 @@ def _is_content_delta(event_type: str, payload: Any) -> bool:
 # --- Anthropic SSE accumulator ---------------------------------------------
 
 
-class _Fragments(list):
-    """The pieces of one streamed string field of a block, joined when it finalizes.
+class _Fragments(StreamText):
+    """One streamed string field of a block, built up until the block finalizes.
 
     A block's ``text``, ``thinking`` and ``_partial_json`` arrive one delta at a
     time. Rebuilding the dict item's string per delta copied all of it on every
     token -- quadratic in the block, seconds of event loop for a long answer.
-    The pieces are held here instead and joined once, by :func:`_finalize_block`.
-    A type of its own, so it is never mistaken for a value an upstream sent.
+    The field is kept here instead (see :class:`~serving.stream.StreamText`)
+    and read once, by :func:`_finalize_block`. A type of its own, so it is
+    never mistaken for a value an upstream sent.
     """
+
+    __slots__ = ()
 
 
 def _append_fragment(block: dict, key: str, piece: Any) -> None:
@@ -1246,7 +1257,9 @@ def _append_fragment(block: dict, key: str, piece: Any) -> None:
     if isinstance(current, _Fragments):
         current.append(piece)
     elif isinstance(current, str):
-        block[key] = _Fragments((current, piece))
+        fragments = _Fragments(current)
+        fragments.append(piece)
+        block[key] = fragments
     else:
         raise TypeError(f"{key} is {type(current).__name__}, not str")
 
@@ -1255,8 +1268,9 @@ def _apply_sse_payload(acc: dict | None, event_type: str, payload: Any) -> dict 
     """Update *acc* in place with one Anthropic SSE event's parsed ``data``; return it.
 
     Best-effort: an event of an unexpected shape is ignored, so streaming
-    logging never affects the forwarded client stream. String fields keep their pieces in :class:`_Fragments` until the block
-    finalizes; read the accumulator through :func:`_finalize_response_acc`.
+    logging never affects the forwarded client stream. String fields are kept in
+    :class:`_Fragments` until the block finalizes; read the accumulator through
+    :func:`_finalize_response_acc`.
     """
     if event_type in ("ping", "message_stop", "error", ""):
         return acc
@@ -1355,11 +1369,11 @@ def _apply_sse_payload(acc: dict | None, event_type: str, payload: Any) -> dict 
 
 
 def _finalize_block(block: dict) -> None:
-    """Join streamed fields, resolve a tool_use block's partial JSON, drop sentinel keys."""
+    """Read streamed fields, resolve a tool_use block's partial JSON, drop sentinel keys."""
     for key in ("text", "thinking", "_partial_json"):
         value = block.get(key)
         if isinstance(value, _Fragments):
-            block[key] = "".join(value)
+            block[key] = value.text
     if block.get("type") == "tool_use" and "_partial_json" in block:
         raw = block.pop("_partial_json")
         try:
@@ -1473,8 +1487,11 @@ def _resolve_stream_usage(
     Recovery, applied only when ``request_usage`` is empty:
       1. Real partial input/cache usage observed on the forwarded stream
          (``response_acc``'s ``message_start`` -- the native passthrough
-         captures these even mid-stream).
-      2. Estimate input tokens from the request payload (messages + system).
+         captures these even mid-stream). Not the estimate a translated
+         stream seeded message_start with, which the adapter declares under
+         ``INPUT_SEED_SINK_KEY``: that is a guess, not a count.
+      2. Estimate input tokens from the request payload (messages, system and
+         tool definitions).
       3. Output: the larger of any observed count and an estimate from the
          accumulated assistant content.
 
@@ -1503,12 +1520,24 @@ def _resolve_stream_usage(
     # 1. Real partial input/cache usage captured from the forwarded SSE. The
     #    native passthrough fills message_start.input_tokens (and cache counts)
     #    mid-stream; its output_tokens is only a placeholder, handled in step 3.
+    #    A translated stream's message_start carries the adapter's seed
+    #    instead, unless the upstream reported usage before it: an estimate
+    #    made before the upstream was asked. It goes to step 2, which bills the
+    #    tool definitions too, as a stream cut before message_start is billed.
+    from serving.adapters.anthropic_translator import INPUT_SEED_SINK_KEY
+
+    seed = request_usage.get(INPUT_SEED_SINK_KEY)
     acc_usage = response_acc.get("usage") if isinstance(response_acc, dict) else None
     if isinstance(acc_usage, dict):
         for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
             value = acc_usage.get(key)
             if key == "input_tokens":
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value > 0
+                    and value != seed
+                ):
                     base[key] = value
             else:
                 cache_count = optional_token_count(value)
@@ -1579,6 +1608,89 @@ def _log_failure(
         )
 
 
+def _finalize_cancelled_message(
+    *,
+    sent: bool,
+    timed_out: bool,
+    adapter,
+    canonical: str,
+    request_id: str,
+    request_payload: dict[str, Any] | None,
+    messages_for_log,
+    metadata: dict[str, Any],
+    params_for_log: dict[str, Any],
+    start: float,
+    log_store,
+    op_store: Any,
+    user_id: str | None,
+    completions_logger=None,
+) -> None:
+    """Bill and log a non-streaming request a cancellation cut off before it answered.
+
+    The gateway's own deadline (504) or the client leaving (499). The upstream
+    goes on with what it was sent, so once the request left the gateway
+    (*sent*, ``DispatchRecord``) it is billed as an interrupted stream is: its
+    input estimated from the request -- messages, system prompt and tool
+    definitions (:func:`_estimate_request_input_tokens`) -- and no output, with
+    ``metadata.usage_estimated``. Before that the upstream never saw it, and it
+    is logged unbilled. Billed whether or not there is a log store: that is
+    noise, not money.
+
+    Must not suspend, and never raises: it runs while the request task is being
+    cancelled.
+    """
+    if timed_out:
+        status_code, terminal_state = 504, "request_timeout"
+        error_text = "Request cancelled: gateway request timeout exceeded"
+    else:
+        status_code, terminal_state = 499, "client_disconnect"
+        error_text = "Client disconnected before the response was ready"
+    usage: dict[str, Any] = {}
+    log_metadata: dict[str, Any] = {**metadata, "terminal_state": terminal_state}
+    pricing: dict[str, str] = {}
+    try:
+        pricing = effective_pricing(adapter.config) or {}
+        if sent:
+            input_tokens = _estimate_request_input_tokens(request_payload)
+            usage = {"input_tokens": input_tokens, "output_tokens": 0}
+            log_metadata["usage_estimated"] = True
+            _schedule_messages_cost_increment(
+                op_store,
+                user_id,
+                {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": input_tokens,
+                },
+                pricing,
+                api_key_id=metadata.get("api_key_id"),
+            )
+    except Exception:
+        logger.exception(f"[{request_id}] Billing a cancelled request failed")
+    if not log_store:
+        return
+    try:
+        _schedule_log_store_task(
+            log_store,
+            request_id=request_id,
+            model_id=canonical,
+            provider=adapter.config.provider,
+            usage=usage,
+            latency_ms=int((time.time() - start) * 1000),
+            status_code=status_code,
+            pricing=pricing,
+            metadata=log_metadata,
+            params=params_for_log,
+            prompt=messages_for_log,
+            response=None,
+            error=error_text,
+            request_payload=request_payload,
+            completions_logger=completions_logger,
+        )
+    except Exception:
+        logger.exception(f"[{request_id}] Logging a cancelled request failed")
+
+
 _SSE_LEFTOVER_CAP = 65536
 
 
@@ -1644,6 +1756,24 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     if metadata is not None and not isinstance(metadata, dict):
         return "Invalid field: metadata must be an object"
     return None
+
+
+#: The answer to a body nested too deeply to copy (:func:`_copy_of`).
+_NESTED_TOO_DEEPLY = "Request body is nested too deeply"
+
+
+def _copy_of(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a deep copy of *body*, or None when it is nested too deeply to copy.
+
+    ``copy.deepcopy`` recurses for every level of nesting, and past about 500
+    levels it reaches the interpreter's recursion limit: a client's own
+    nesting raised ``RecursionError``, answered 500, which the 5xx-rate alert
+    counts against the gateway. The caller answers None with a 400.
+    """
+    try:
+        return copy.deepcopy(body)
+    except RecursionError:
+        return None
 
 
 # --- Protocol execution, shared with the batch worker (issue #1690) ----------
@@ -1929,6 +2059,10 @@ async def execute_messages(
         return _messages_error(400, "Missing required field: messages")
     if body.get("max_tokens") is None:
         return _messages_error(400, "Missing required field: max_tokens")
+    # Element counts before anything walks the messages (serving/request_limits.py).
+    limit_problem = messages_limit_problem(body)
+    if limit_problem is not None:
+        return _messages_error(400, limit_problem)
     shape_error = _shape_error(body)
     if shape_error is not None:
         return _messages_error(400, shape_error)
@@ -1993,7 +2127,9 @@ async def execute_messages(
                 req_ctx.mark_model_not_found()
                 return _messages_error(404, model_not_found_detail(model_id, user_ctx=user_ctx))
             return _messages_error(exc.status_code, exc.detail or "")
-        client_request = copy.deepcopy(body)
+        client_request = _copy_of(body)
+        if client_request is None:
+            return _messages_error(400, _NESTED_TOO_DEEPLY)
         apply_to_anthropic_body(auto_selection, body)
         hide_served_model(auto_selection)
         model_id = auto_selection.model_id
@@ -2045,7 +2181,9 @@ async def execute_messages(
     # The request's one snapshot, what the client sent: logged as the body, and
     # the source of the logged messages further down. An auto request took it
     # before selection rewrote the body.
-    request_payload_for_log = client_request if client_request is not None else copy.deepcopy(body)
+    request_payload_for_log = client_request if client_request is not None else _copy_of(body)
+    if request_payload_for_log is None:
+        return _messages_error(400, _NESTED_TOO_DEEPLY)
 
     # Which session this request belongs to. This is the surface Claude Code
     # uses, and it sends no ``X-Session-ID``: it packs the run into
@@ -2318,6 +2456,9 @@ async def execute_messages(
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
+            # Marked by the outbound limiter when the request leaves the gateway
+            # (``dispatch_watch.report_sent``); see the usage resolution below.
+            upstream_dispatch = DispatchRecord()
             stream_failed = False
             stream_status_code: int = 200
             stream_error_message: str | None = None
@@ -2345,21 +2486,14 @@ async def execute_messages(
                 # Consume the upstream via a queue + background reader so idle
                 # gaps can be filled with keepalive heartbeats without cancelling
                 # the upstream read (see _KEEPALIVE_INTERVAL / _MAX_STREAM_IDLE).
-                # The queue MUST stay unbounded: a bounded queue can wedge teardown
-                # -- if a fast upstream fills it while the client is gone, the
-                # reader parks on put(), and on cancel its finally sentinel-put
-                # blocks forever on the full queue, leaking the upstream connection.
-                chunk_queue: asyncio.Queue = asyncio.Queue()
-
-                async def _reader() -> None:
-                    try:
-                        async for c in upstream:
-                            await chunk_queue.put(c)
-                    except Exception as exc:
-                        # Forward upstream errors to the main loop to re-raise.
-                        await chunk_queue.put(exc)
-                    finally:
-                        await chunk_queue.put(_STREAM_SENTINEL)
+                # The queue is bounded, so a client that stops reading stops the
+                # reads from the upstream too instead of the gateway buffering
+                # the rest of the generation. Teardown cannot wedge on it:
+                # ``pump_stream``, cancelled by the ``finally`` below, puts
+                # nothing more on its way out -- not even the sentinel, which a
+                # full queue nobody drains would never take -- and closes the
+                # upstream, connection included, wherever it was waiting.
+                chunk_queue = StreamQueue()
 
                 def _account_sse(raw: bytes) -> bool:
                     """Parse ``raw`` into events and apply them to this request's state.
@@ -2404,7 +2538,11 @@ async def execute_messages(
                             prefill_load.release(prefill_lease, prefill_confirmed=True)
                     return well_formed
 
-                reader_task = asyncio.create_task(_reader())
+                # The adapter runs in the reader's copy of this context.
+                with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: upstream_dispatch}):
+                    reader_task = asyncio.create_task(
+                        pump_stream(upstream, chunk_queue, end=_STREAM_SENTINEL)
+                    )
                 idle_seconds = 0.0
                 saw_upstream_frame = False
                 try:
@@ -2635,6 +2773,18 @@ async def execute_messages(
                     },
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+            except (asyncio.CancelledError, GeneratorExit):
+                # The client went away (its task is cancelled, or this
+                # generator closed), or the gateway's own deadline cancelled
+                # the response. Neither is the upstream's failure, so the stream
+                # is not marked failed and is billed as before; but its row is
+                # not a 200 either. 499 or 504, as the chat surface logs them.
+                timed_out = False
+                if ctx.timeout_probe is not None:
+                    with contextlib.suppress(Exception):
+                        timed_out = bool(ctx.timeout_probe())
+                stream_status_code = 504 if timed_out else 499
+                raise
             finally:
                 # Idempotent: a stream that reached first content already
                 # returned this above. Everything else -- an upstream error, a
@@ -2656,7 +2806,10 @@ async def execute_messages(
                     # than logging a 0-token row. Failed streams keep their
                     # zeros: don't attribute usage/cost to an errored request.
                     try:
-                        if stream_failed:
+                        if stream_failed or not upstream_dispatch.sent:
+                            # Failed, or cut off before the request left the
+                            # gateway (waiting for a remote image or an outbound
+                            # slot), when no upstream had been asked for anything.
                             resolved_usage, usage_estimated = request_usage, False
                         else:
                             resolved_usage, usage_estimated = _resolve_stream_usage(
@@ -2698,6 +2851,9 @@ async def execute_messages(
                         op_store=op_store,
                         user_id=user_ctx.get("user_id"),
                         completions_logger=completions_logger,
+                        # Billed unless the upstream failed it, whatever status
+                        # a stream the client cut short is logged with.
+                        charge=not stream_failed,
                     )
 
         return MessagesStream(
@@ -2711,13 +2867,16 @@ async def execute_messages(
     # This request's own sink: the adapter's OpenAI-shaped counts for the log,
     # kept out of the response the client receives.
     request_usage: dict[str, Any] = {}
+    # Marked when the request leaves the gateway, for billing a cancellation.
+    dispatch = dispatch_watch.DispatchRecord()
     try:
-        resp = await adapter.messages(
-            body,
-            request_id=request_id,
-            usage_sink=request_usage,
-            extra_headers=forwarded_headers,
-        )
+        with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: dispatch}):
+            resp = await adapter.messages(
+                body,
+                request_id=request_id,
+                usage_sink=request_usage,
+                extra_headers=forwarded_headers,
+            )
         prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         # Not str(exc.detail): unlike the router's own HTTPExceptions (static
@@ -2905,6 +3064,33 @@ async def execute_messages(
             completions_logger=completions_logger,
         )
         return _messages_error(502, error_message)
+    except asyncio.CancelledError:
+        # The gateway's deadline or the client gone: not the upstream's failure,
+        # so nothing is recorded against the endpoint. The upstream goes on with
+        # the request, so it is billed and logged, without awaiting anything; a
+        # batch attempt cut off at its deadline is settled by the batch worker.
+        if ctx.batch is None:
+            timed_out = False
+            if ctx.timeout_probe is not None:
+                with contextlib.suppress(Exception):
+                    timed_out = bool(ctx.timeout_probe())
+            _finalize_cancelled_message(
+                sent=dispatch.sent,
+                timed_out=timed_out,
+                adapter=adapter,
+                canonical=canonical,
+                request_id=request_id,
+                request_payload=request_payload_for_log,
+                messages_for_log=messages_for_log,
+                metadata=metadata,
+                params_for_log=params_for_log,
+                start=start,
+                log_store=log_store,
+                op_store=op_store,
+                user_id=user_ctx.get("user_id"),
+                completions_logger=completions_logger,
+            )
+        raise
 
     finally:
         # Every except arm above returns its own error response, so this is the
@@ -2998,6 +3184,9 @@ async def anthropic_count_tokens(
         return _anthropic_error(400, "Missing required field: model")
     if "messages" not in body:
         return _anthropic_error(400, "Missing required field: messages")
+    limit_problem = messages_limit_problem(body)
+    if limit_problem is not None:
+        return _anthropic_error(400, limit_problem)
 
     # Enforce the same model visibility as /v1/messages: an unknown, admin-only,
     # or per-user-disabled model must 404 here too, so token counting can't be

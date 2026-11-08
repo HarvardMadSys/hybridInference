@@ -806,10 +806,15 @@ class CachedOperationalStore(OperationalStore):
             session_id, new_refresh_token_hash=new_refresh_token_hash, new_jti=new_jti
         )
 
-    async def revoke_session(self, session_id: str) -> None:
-        """Delegate, then forget every session's liveness (whose this was is not known)."""
-        await self._store.revoke_session(session_id)
-        await self._forget_sessions()
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Delegate, then forget the owning account's session liveness.
+
+        Every account's, as before, only when the store cannot say whose the
+        session was.
+        """
+        owner = await self._store.revoke_session(session_id)
+        await self._forget_sessions(owner if isinstance(owner, str) else None)
+        return owner
 
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delegate, then forget the account's session liveness."""
@@ -819,6 +824,12 @@ class CachedOperationalStore(OperationalStore):
     async def revoke_user_sessions(self, user_id: str, *, except_sid: str | None = None) -> int:
         """Delegate, then forget the account's session liveness."""
         revoked = await self._store.revoke_user_sessions(user_id, except_sid=except_sid)
+        await self._forget_sessions(user_id)
+        return revoked
+
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Delegate, then forget the account's session liveness."""
+        revoked = await self._store.revoke_session_by_sid(user_id, sid)
         await self._forget_sessions(user_id)
         return revoked
 
@@ -878,10 +889,20 @@ class CachedOperationalStore(OperationalStore):
         await self._forget_sessions(user_id)
         return remaining
 
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Delegate, then forget every session's liveness (the browser's accounts are not known)."""
-        await self._store.revoke_browser_session(browser_session_id)
-        await self._forget_sessions()
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Delegate, then forget the session liveness of the accounts it signed out.
+
+        Signing out of every account in one browser is any user's to ask for; it
+        must not flush every other account's cached answers with them. Every
+        account's, as before, only when the store cannot say whose they were.
+        """
+        accounts = await self._store.revoke_browser_session(browser_session_id)
+        if isinstance(accounts, list) and all(isinstance(a, str) for a in accounts):
+            for account in accounts:
+                await self._forget_sessions(account)
+        else:
+            await self._forget_sessions()
+        return accounts
 
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
@@ -1161,9 +1182,13 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_user_auth_caches(user_id)
 
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
         """Delegate then invalidate user and auth caches."""
-        found = await self._store.set_user_preference(user_id, key, value)
+        found = await self._store.set_user_preference(
+            user_id, key, value, max_total_bytes=max_total_bytes
+        )
         await self._invalidate_preferences(user_id)
         return found
 

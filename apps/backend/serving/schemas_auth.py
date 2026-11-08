@@ -341,12 +341,34 @@ class UserProfileUpdate(BaseModel):
         return value
 
 
-class LLMProberLayoutState(BaseModel):
-    """Persisted llm-prober layout for one user account."""
+#: Most models one section of a saved llm-prober layout may list (the same
+#: bound as a key's model allowlist).
+LLM_PROBER_LAYOUT_MAX_MODELS = 200
+#: Most providers a layout may pin for one model.
+LLM_PROBER_LAYOUT_MAX_PROVIDERS = 32
+#: Longest model or provider name a layout may hold.
+LLM_PROBER_LAYOUT_NAME_MAX_LENGTH = 256
 
-    direct_models: list[str] = Field(default_factory=list)
-    direct_providers: dict[str, list[str]] = Field(default_factory=dict)
-    e2e_models: list[str] = Field(default_factory=list)
+_LayoutName = Annotated[str, Field(max_length=LLM_PROBER_LAYOUT_NAME_MAX_LENGTH)]
+
+
+class LLMProberLayoutState(BaseModel):
+    """Persisted llm-prober layout for one user account.
+
+    Every list and name is bounded, and the saved document as a whole is
+    bounded by ``USER_PREFERENCES_MAX_BYTES`` when it is written.
+    """
+
+    direct_models: list[_LayoutName] = Field(
+        default_factory=list, max_length=LLM_PROBER_LAYOUT_MAX_MODELS
+    )
+    direct_providers: dict[
+        _LayoutName,
+        Annotated[list[_LayoutName], Field(max_length=LLM_PROBER_LAYOUT_MAX_PROVIDERS)],
+    ] = Field(default_factory=dict, max_length=LLM_PROBER_LAYOUT_MAX_MODELS)
+    e2e_models: list[_LayoutName] = Field(
+        default_factory=list, max_length=LLM_PROBER_LAYOUT_MAX_MODELS
+    )
 
 
 class LLMProberLayoutResponse(BaseModel):
@@ -661,5 +683,8 @@ class RecentRequestsResponse(BaseModel):
 
     requests: list[RecentRequestItem]
     total: int
+    #: True when the account has requests older than the ones the list reaches
+    #: back over, so ``total`` is a lower bound ("10,000+").
+    total_capped: bool = False
     limit: int
     offset: int

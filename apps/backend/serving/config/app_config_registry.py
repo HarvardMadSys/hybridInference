@@ -664,9 +664,21 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         case_sensitive=True,
         setup=True,
     ),
-    _setting("smtp_host", "email", "SMTP server host.", "str", setup=True),
     _setting(
-        "smtp_port", "email", "SMTP server port.", "int", setup=True, minimum=1, maximum=65_535
+        "smtp_host",
+        "email",
+        "SMTP server host. The server's TLS certificate must be valid for this name.",
+        "str",
+        setup=True,
+    ),
+    _setting(
+        "smtp_port",
+        "email",
+        "SMTP server port. Port 465 uses TLS from the start; any other port must offer STARTTLS.",
+        "int",
+        setup=True,
+        minimum=1,
+        maximum=65_535,
     ),
     _setting(
         "smtp_user",
@@ -992,16 +1004,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         default="3600",
     ),
     # Read per request by serving.servers.middleware.body_limit, which falls
-    # back to the same default for a missing or invalid value.
+    # back to the same default for a missing or invalid value and holds a
+    # larger one to the same maximum.
     ConfigEntry(
         "REQUEST_MAX_BODY_MB",
         "routing",
         "Largest request body, in MiB, the gateway reads; a larger one gets 413 before "
-        "it is parsed. Raise it for requests that carry many images or long media. "
-        "Batch uploads keep their own limit, BATCH_MAX_BODY_MB.",
+        "it is parsed. Raise it for requests that carry many images or long media, up "
+        "to 256. Batch uploads keep their own limit, BATCH_MAX_BODY_MB.",
         type="int",
         default="32",
         minimum=1,
+        maximum=256,
     ),
     # --- batch inference ---------------------------------------------------
     # Read through serving.batch.config, which falls back to the same defaults
@@ -1167,6 +1181,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     ConfigEntry(
+        "BATCH_MAX_RESULTS_MB_PER_BATCH",
+        "batch",
+        "Responses one batch may store in all, in MiB (counted by each gateway process "
+        "from the results it records). Once a batch's results reach it, a response that "
+        "does not fit fails with result_too_large, and so does every request of that "
+        "batch still to run, without running. 0 removes the limit.",
+        type="int",
+        default="8192",
+        minimum=0,
+    ),
+    ConfigEntry(
         "BATCH_FILES_MAX_TOTAL_MB_PER_USER",
         "batch",
         "Uploaded batch input files one user may keep at once, in MiB.",
@@ -1177,7 +1202,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_FILE_UPLOADS_PER_HOUR",
         "batch",
-        "Batch input files one user may upload per hour.",
+        "Batch input files one user may upload per hour, uploads that failed included.",
         type="int",
         default="60",
         minimum=1,

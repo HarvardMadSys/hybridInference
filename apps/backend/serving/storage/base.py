@@ -56,6 +56,13 @@ class ProviderDefinitionRow:
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
 
+USER_PREFERENCES_MAX_BYTES = 16 * 1024
+"""The most an account holder's own writes may leave in their preferences, as JSON text.
+
+Their saved prober layout, the largest entry, comes to a few KiB even listing
+every model of a deployment of dozens; the language choice is under 100 bytes.
+"""
+
 
 class CostIncrement(NamedTuple):
     """One addition to the cost counters (``user_daily_cost``, ``api_key_daily_cost``).
@@ -202,6 +209,11 @@ class OperationalStore(ABC):
         email_verified, created_at, last_login_at, password_hash, preferences.
         ``email`` is None for an account created without one (the first-run
         setup administrator), which signs in with ``login_name`` instead.
+
+        ``preferences`` holds only the entries a request acts on
+        (``disabled_models`` and ``locale``): every console request reads
+        this row, so it does not carry the rest. The whole document is
+        :meth:`get_user_preferences`.
         """
 
     @abstractmethod
@@ -649,9 +661,11 @@ class OperationalStore(ABC):
         account must therefore carry the same values. Implementations keep it
         that way:
 
-        - ``inherit_account_quota=True`` (a user adding a key): when the
-          account already holds an unrevoked key, the new key takes its quota
-          and the given values are ignored; they only seed a first key.
+        - ``inherit_account_quota=True`` (a user adding a key): the new key
+          takes the account's quota and the given values are ignored; they
+          only seed the account's first key. The account's quota is that of
+          its unrevoked keys, or with none of those, of its most recently
+          revoked key: revoking every key must not reset a limit an admin set.
         - ``inherit_account_quota=False`` (an admin setting one): the given
           values become the account's, written to every unrevoked key of the
           user in the same transaction.
@@ -809,8 +823,12 @@ class OperationalStore(ABC):
         """Update the session with a new refresh token hash and JTI."""
 
     @abstractmethod
-    async def revoke_session(self, session_id: str) -> None:
-        """Set ``revoked = TRUE`` on the session."""
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Set ``revoked = TRUE`` on the session; return the account it belongs to.
+
+        ``None`` when there is no such session. A caching layer forgets that
+        account's cached session liveness, and no other account's.
+        """
 
     @abstractmethod
     async def delete_user_sessions(self, user_id: str) -> None:
@@ -821,6 +839,14 @@ class OperationalStore(ABC):
         """Revoke every live session of *user_id* but the one whose sid is *except_sid*.
 
         Returns how many sessions were revoked.
+        """
+
+    @abstractmethod
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Revoke *user_id*'s session *sid*, the ``sid`` claim of an access token.
+
+        Whichever browser holds it can no longer refresh it. Returns whether a
+        session was still live to revoke.
         """
 
     # -- browser sessions ----------------------------------------------------
@@ -893,8 +919,12 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Revoke every account's session in a browser, and the browser session."""
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Revoke every account's session in a browser, and the browser session.
+
+        Returns the accounts whose sessions were revoked, so a caching layer
+        forgets their cached session liveness and no other account's.
+        """
 
     # -- login events (audit) ------------------------------------------------
 
@@ -1284,15 +1314,33 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """Return the preferences JSONB column for *user_id*, parsed as dict."""
+        """Return the preferences JSONB column for *user_id*, parsed as dict.
+
+        A document stored far over :data:`USER_PREFERENCES_MAX_BYTES`, which
+        only a write made before that bound existed can have left, reads as
+        just the entries ``get_user_by_id`` carries: decoding it must not cost
+        more than a bounded one, and the account holder's next save of the
+        oversized entry replaces it.
+        """
 
     # Preferences are written one key at a time, in the database. A whole-column
     # write from a value read earlier loses whatever another request wrote to a
     # different key in between, so there is deliberately no such method.
 
     @abstractmethod
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
-        """Set one preference key atomically; return False when there is no such user."""
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
+        """Set one preference key atomically; return False when there is no such user.
+
+        With *max_total_bytes*, the write is refused, leaving the row as it
+        was, when the account's whole preferences document would come out
+        larger than that as JSON text: it raises
+        :class:`~serving.exceptions.PreferencesTooLargeError`. Pass it for a
+        value the account holder chose (:data:`USER_PREFERENCES_MAX_BYTES`).
+        An administrator's write passes none, so an account holder cannot
+        block one by filling their own document.
+        """
 
     @abstractmethod
     async def delete_user_preference(self, user_id: str, key: str) -> bool:
@@ -2216,7 +2264,8 @@ class LogStore(ABC):
         ``limit`` rows from the window, still ordered ascending for replay.
 
         ``include_metadata`` drives the per-row metadata JSON that only the
-        latency replay reads (``endpoint_id`` and ``failed_attempts``).  The
+        latency replay reads (``endpoint_id``, ``failed_attempts`` and
+        RouteWise's own ``attempt_ttft_ms``).  The
         envelope replay needs token counts alone, so it passes ``False`` and
         implementations may leave those fields unset rather than fetching and
         decoding a JSON document per row.

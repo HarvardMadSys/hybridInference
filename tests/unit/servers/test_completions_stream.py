@@ -1526,3 +1526,42 @@ async def test_arguments_json_loads_cannot_handle_still_finish_the_stream():
     assert log_data["status_code"] == 200
     message = log_data["response"]["choices"][0]["message"]
     assert message["tool_calls"][0]["function"]["arguments"] == arguments
+
+
+# ---------------------------------------------------------------------------
+# A client that stops reading
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_stops_reading_stops_the_upstream_reads_and_still_tears_down():
+    """The reader runs a bounded way ahead of the client, not to the end of the generation.
+
+    An unbounded queue let the reader drain the whole upstream into memory while
+    the client read nothing: about 260 bytes per token for up to an hour.
+    """
+    from serving.stream import STREAM_QUEUE_MAX_ITEMS, make_stream_chunk
+
+    session = _make_session()
+    produced = 0
+    closed = False
+
+    async def upstream():
+        nonlocal produced, closed
+        try:
+            for _ in range(5_000):
+                produced += 1
+                yield make_stream_chunk(model="gpt-4", content="token")
+                await asyncio.sleep(0)
+            yield "data: [DONE]\n\n"
+        finally:
+            closed = True
+
+    frames = session.stream(upstream())
+    await frames.__anext__()  # the client reads one frame, then stops reading
+    for _ in range(500):
+        await asyncio.sleep(0)
+    assert produced <= STREAM_QUEUE_MAX_ITEMS + 4
+
+    await asyncio.wait_for(frames.aclose(), timeout=2)  # then goes away
+    assert closed  # the upstream request was ended, not left to the collector

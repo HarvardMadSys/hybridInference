@@ -18,11 +18,18 @@ at the same time overshoot a limit by as much as they cost together:
   bounded set of entries instead of one background task per request. A cost
   counts here until its write is confirmed, and for a while after that, for a
   gate whose read of the table may have been taken before the write landed.
+  An entry the counters refuse for its own values (one that would overflow
+  them) is set aside and reported rather than sent again, so it cannot hold
+  back everyone else's.
 
-A gate adds both to what it read (:meth:`SpendCheck.refusal`). The estimate a
-request reserves is :data:`serving.quota.ESTIMATED_REQUEST_COST_USD`, the same
-optimistic charge every gate already adds for the request it is checking, so a
-caller with nothing else running is answered exactly as before.
+A gate adds both to what it read (:meth:`SpendCheck.refusal`), and refuses a
+request only when not even :data:`serving.quota.ESTIMATED_REQUEST_COST_USD`,
+the optimistic charge every gate already adds for the request it is checking,
+fits: a caller with nothing else running is answered exactly as before. What a
+request then reserves is an estimate of its own cost
+(:func:`serving.quota.estimate_request_cost`), up to what its limits have left
+(:meth:`SpendLedger.admit`), so requests running together cannot overshoot a
+limit by much more than one of them costs.
 
 Everything here is per process. With several worker processes each one sees
 only its own requests in flight and its own costs not yet written, so a limit
@@ -36,7 +43,7 @@ import contextlib
 import time
 import weakref
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
@@ -47,7 +54,7 @@ from serving.storage.base import CostIncrement, CostWriteOutcomeUnknown
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
 logger = get_logger(__name__)
 
@@ -67,6 +74,28 @@ _RETRY_MAX_SECONDS = 30.0
 
 #: The counters store dollars to six places, rounding each increment.
 _MICRO = Decimal("0.000001")
+
+#: The most one request adds to the counters. No real request comes near it:
+#: $1,000 pays for two million tokens at $500 per million, past the largest
+#: context window and the dearest price of any model served today. A larger
+#: cost is a bad usage report or price -- a malformed or impostor upstream --
+#: and taken whole it can overflow a counter, which holds under $1M
+#: (``DECIMAL(12, 6)``).
+MAX_REQUEST_COST_USD = 1000.0
+
+#: SQLSTATE classes in which the counters refuse an entry's own values: 22, data
+#: exception (a counter overflowing is 22003), and 23, integrity constraint
+#: violation. Written again, the entry fails the same way.
+_REFUSED_SQLSTATE_CLASSES = frozenset({"22", "23"})
+
+#: SQLSTATE classes in which the database failed rather than an entry:
+#: connection (08), transaction rollback (40), resources (53), operator
+#: intervention (57) and system (58) errors.
+_UNAVAILABLE_SQLSTATE_CLASSES = frozenset({"08", "40", "53", "57", "58"})
+
+#: Entries written one by one that may fail in a row, none going in, before the
+#: store is taken to be failing rather than those entries.
+_MAX_FAILURES_BEFORE_ANY_WRITE = 3
 
 _Key = tuple[str, int | None, str]  # user id, API key id, UTC day
 
@@ -107,6 +136,21 @@ class _Unconfirmed:
 
     cost: float = 0.0
     requests: int = 0
+
+
+@dataclass(slots=True)
+class _Outcome:
+    """What one write did with each entry of its batch, and the last error it met."""
+
+    applied: list[_Key] = field(default_factory=list)
+    # Not applied: written again later.
+    failed: list[_Key] = field(default_factory=list)
+    # Perhaps applied: never written again. Each with its error, which names
+    # the transaction to reconcile.
+    unknown: list[tuple[_Key, Exception]] = field(default_factory=list)
+    # Refused for its own values: never written again either.
+    refused: list[tuple[_Key, Exception]] = field(default_factory=list)
+    error: Exception | None = None
 
 
 class Reservation:
@@ -166,7 +210,7 @@ class SpendCheck:
     def admit(
         self, amount: float = quota.ESTIMATED_REQUEST_COST_USD
     ) -> tuple[Reservation | None, quota.BudgetRefusal | None]:
-        """Check again and reserve *amount*, in one step; see :meth:`SpendLedger.admit`.
+        """Check again and reserve up to *amount*, in one step; see :meth:`SpendLedger.admit`.
 
         Without a ledger (no store) there is nothing to reserve in: only checked.
         """
@@ -194,6 +238,19 @@ def _refusal(
     )
 
 
+def _headroom(check: SpendCheck, extra: tuple[float, float, float, float]) -> float:
+    """What the tightest of *check*'s limits has left, counting *extra* (see :func:`_refusal`)."""
+    day, month, key_day, key_month = extra
+    left = [check.account_quota_usd - (check.account_spent_usd + day)]
+    if check.account_quota_monthly_usd is not None:
+        left.append(check.account_quota_monthly_usd - (check.account_spent_month_usd + month))
+    if check.key_budget_daily_usd is not None:
+        left.append(check.key_budget_daily_usd - (check.key_spent_today_usd + key_day))
+    if check.key_budget_monthly_usd is not None:
+        left.append(check.key_budget_monthly_usd - (check.key_spent_month_usd + key_month))
+    return min(left)
+
+
 def spend_check_of(user_ctx: Mapping[str, Any] | None) -> SpendCheck | None:
     """The :class:`SpendCheck` an authenticated caller's gate made, if it made one."""
     check = user_ctx.get(SPEND_CHECK_KEY) if user_ctx else None
@@ -216,11 +273,13 @@ class SpendLedger:
         # Handed to the write in flight.
         self._writing: dict[_Key, _Amount] = {}
         # Per user, everything recorded and not yet confirmed written: pending,
-        # being written, or written with an outcome nobody could tell.
+        # being written, written with an outcome nobody could tell, or refused.
         self._unconfirmed: dict[str, dict[tuple[int | None, str], _Unconfirmed]] = {}
         # Writes confirmed: (when, {user: [(key, day, cost), ...]}).
         self._landed: deque[tuple[float, dict[str, list[tuple[int | None, str, float]]]]] = deque()
         self._unknown: list[tuple[_Key, _Amount]] = []
+        # Entries the counters refused for their own values, set aside.
+        self._refused: list[tuple[_Key, _Amount]] = []
         self._writer: asyncio.Task[None] | None = None
         self._retry: asyncio.TimerHandle | None = None
         self._retry_delay = 0.0
@@ -234,16 +293,27 @@ class SpendLedger:
     def admit(
         self, check: SpendCheck, amount: float = quota.ESTIMATED_REQUEST_COST_USD
     ) -> tuple[Reservation | None, quota.BudgetRefusal | None]:
-        """Admit a request against *check*: reserve *amount*, or say which limit refuses it.
+        """Admit a request against *check*: reserve its cost, or say which limit refuses it.
 
         The check and the reservation happen in one step with nothing awaited
         between them, so two requests admitted at the same moment cannot both
         fit into the same remaining budget. Whoever takes the reservation
         releases it when the request ends.
+
+        The request is refused only when not even the flat minimum
+        (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD`) fits, as every gate
+        refuses. It then reserves *amount*, what it may cost -- but no more than
+        its tightest limit has left, and never less than that minimum: a
+        request is not refused because its worst case does not fit, yet while
+        it runs it holds what is left, so the requests admitted alongside it
+        cannot overshoot the limit together.
         """
-        refusal = self.refusal(check)
+        extra = self._extra(check.user_id, check.key_id, check.read_at)
+        refusal = _refusal(check, extra)
         if refusal is not None:
             return None, refusal
+        if amount > quota.ESTIMATED_REQUEST_COST_USD:
+            amount = max(quota.ESTIMATED_REQUEST_COST_USD, min(amount, _headroom(check, extra)))
         reservation = Reservation(self, check.user_id, check.key_id, amount)
         _add_reserved(self._reserved_users, check.user_id, amount)
         if check.key_id is not None:
@@ -309,9 +379,38 @@ class SpendLedger:
         the next. Returns the write task that will carry it, or the one in
         flight, or None when no write could be started (no running loop, or
         waiting out a failed one); everything recorded is written either way.
+
+        A cost above :data:`MAX_REQUEST_COST_USD` cannot be a real request's: it
+        is recorded as that ceiling, and logged and alerted for an operator.
         """
         if not user_id or not cost_usd > 0:
             return None
+        if cost_usd > MAX_REQUEST_COST_USD:
+            logger.error(
+                "A request's cost is beyond any real request's; recording the ceiling",
+                extra={
+                    "event": "cost_above_request_ceiling",
+                    "user_id": user_id,
+                    "api_key_id": api_key_id,
+                    "cost_usd": repr(cost_usd),
+                    "ceiling_usd": MAX_REQUEST_COST_USD,
+                },
+            )
+            context = {
+                "cost_usd": repr(cost_usd),
+                "ceiling_usd": MAX_REQUEST_COST_USD,
+                "logs": "event cost_above_request_ceiling names the account",
+            }
+            _send_alert(
+                lambda alerts: alerts.alert_slack(
+                    alerts.AlertSeverity.ERROR,
+                    "Request cost above the per-request ceiling",
+                    context,
+                    dedupe_key="cost_above_request_ceiling",
+                    cooldown_sec=3600,
+                )
+            )
+            cost_usd = MAX_REQUEST_COST_USD
         day = utc_day()
         key: _Key = (user_id, api_key_id, day)
         self._pending.setdefault(key, _Amount()).add(cost_usd, counted_amount(cost_usd), 1)
@@ -352,36 +451,42 @@ class SpendLedger:
             return
         self._writing = batch
         try:
-            applied, failed, unknown, error = await _write(store, batch)
+            outcome = await _write(store, batch)
         except BaseException:
             # Cancelled mid-write (shutdown): whether it landed is unknown.
             self._mark_unknown(list(batch.items()), None)
             raise
         finally:
             self._writing = {}
-        if applied:
-            self._land(applied, batch)
-        if unknown:
-            self._mark_unknown([(key, batch[key]) for key in unknown], error)
-        if failed:
-            for key in failed:
+        if outcome.applied:
+            self._land(outcome.applied, batch)
+        for error, keys in _by_error(outcome.unknown):
+            self._mark_unknown([(key, batch[key]) for key in keys], error)
+        if outcome.refused:
+            self._set_aside([(key, batch[key], error) for key, error in outcome.refused])
+        if outcome.failed:
+            for key in outcome.failed:
                 self._pending.setdefault(key, _Amount()).add(
                     batch[key].cost, batch[key].counted, batch[key].requests
                 )
             self._schedule_retry()
         else:
             self._retry_delay = 0.0
-        if error is not None:
+        if outcome.error is not None:
             logger.warning(
                 "Writing the cost counters failed; %s",
-                "retrying" if failed else "outcome unknown",
+                "retrying" if outcome.failed else "not retried",
                 extra={
                     "event": "cost_counter_write_failed",
-                    "error_type": type(error).__name__,
+                    "error_type": type(outcome.error).__name__,
                     "entries": len(batch),
+                    "applied": len(outcome.applied),
+                    "failed": len(outcome.failed),
+                    "unknown": len(outcome.unknown),
+                    "refused": len(outcome.refused),
                 },
             )
-            raise error
+            raise outcome.error
 
     def _land(self, keys: list[_Key], batch: dict[_Key, _Amount]) -> None:
         by_user: dict[str, list[tuple[int | None, str, float]]] = {}
@@ -431,6 +536,47 @@ class SpendLedger:
             },
         )
 
+    def _set_aside(self, entries: list[tuple[_Key, _Amount, Exception]]) -> None:
+        # Written alone, each was refused for its own values (a counter would
+        # overflow, say), so writing it again would fail again -- and, written
+        # with others, hold their costs back too. Kept out of the counters and
+        # still counted here, like an unknown outcome, for an operator to
+        # reconcile from this record.
+        self._refused.extend((key, amount) for key, amount, _ in entries)
+        logger.error(
+            "The cost counters refused entries; set aside, still counted in this process",
+            extra={
+                "event": "cost_counter_write_refused",
+                "entries": [
+                    {
+                        "user_id": key[0],
+                        "api_key_id": key[1],
+                        "day": key[2],
+                        "cost_usd": str(amount.counted),
+                        "requests": amount.requests,
+                        "error_type": type(error).__name__,
+                        "sqlstate": getattr(error, "sqlstate", None),
+                    }
+                    for key, amount, error in entries
+                ],
+            },
+        )
+        context = {
+            "entries": len(entries),
+            "cost_usd": str(sum((amount.counted for _, amount, _ in entries), Decimal(0))),
+            "error": type(entries[0][2]).__name__,
+            "logs": "event cost_counter_write_refused lists each entry to reconcile",
+        }
+        _send_alert(
+            lambda alerts: alerts.alert_slack(
+                alerts.AlertSeverity.ERROR,
+                "Cost counters refused an entry",
+                context,
+                dedupe_key="cost_counter_write_refused",
+                cooldown_sec=3600,
+            )
+        )
+
     def _schedule_retry(self) -> None:
         if self._retry is not None:
             return
@@ -476,11 +622,13 @@ class SpendLedger:
     def unwritten(self) -> tuple[float, int]:
         """Costs recorded and not known written (dollars, requests), for shutdown's report.
 
-        What is pending, what a write still in flight carries, and what was
-        written with an outcome nobody could tell.
+        What is pending, what a write still in flight carries, what was
+        written with an outcome nobody could tell, and what the counters
+        refused.
         """
         amounts = [*self._pending.values(), *self._writing.values()]
         amounts += [amount for _, amount in self._unknown]
+        amounts += [amount for _, amount in self._refused]
         return sum(a.cost for a in amounts), sum(a.requests for a in amounts)
 
 
@@ -504,49 +652,141 @@ def _remove_reserved(table: dict[Any, list[float]], who: Any, amount: float) -> 
         entry[0] -= amount
 
 
-async def _write(
-    store: Any, batch: dict[_Key, _Amount]
-) -> tuple[list[_Key], list[_Key], list[_Key], Exception | None]:
-    """Write *batch*; return the keys applied, failed (not applied), unknown, and an error.
+async def _write(store: Any, batch: dict[_Key, _Amount]) -> _Outcome:
+    """Write *batch*; say what became of each entry.
 
     A store that applies a batch atomically and exactly once
     (``atomic_cost_increments``, the PostgreSQL store) takes it in one call.
-    Any other store is written one entry at a time with ``increment_user_cost``.
+    That call fails whole when the counters refuse any one entry, so a batch
+    that fails for anything but the store being down is written again one
+    entry at a time, each exactly once as well: an entry the counters refuse
+    is then set aside, and cannot hold back everyone else's costs. Any other
+    store is written one entry at a time with ``increment_user_cost``.
     """
     keys = list(batch)
-    if getattr(store, "atomic_cost_increments", False) is True:
-        increments = [
-            CostIncrement(
-                user_id=key[0],
-                day=key[2],
-                api_key_id=key[1],
-                cost_usd=batch[key].counted,
-                requests=batch[key].requests,
-            )
-            for key in keys
-        ]
-        try:
-            await store.increment_user_costs(increments)
-        except CostWriteOutcomeUnknown as exc:
-            return [], [], keys, exc
-        except Exception as exc:
-            return [], keys, [], exc
-        return keys, [], [], None
-    applied: list[_Key] = []
-    failed: list[_Key] = []
-    error: Exception | None = None
-    for key in keys:
-        amount = batch[key]
-        try:
+    if getattr(store, "atomic_cost_increments", False) is not True:
+
+        async def write_one(key: _Key) -> None:
+            amount = batch[key]
             await store.increment_user_cost(
                 key[0], amount.cost, day=key[2], api_key_id=key[1], requests=amount.requests
             )
+
+        return await _write_each(keys, write_one)
+    try:
+        await store.increment_user_costs([_increment(key, batch[key]) for key in keys])
+    except CostWriteOutcomeUnknown as exc:
+        return _Outcome(unknown=[(key, exc) for key in keys], error=exc)
+    except Exception as exc:
+        if len(keys) > 1 and not _unavailable(exc):
+
+            async def write_alone(key: _Key) -> None:
+                await store.increment_user_costs([_increment(key, batch[key])])
+
+            return await _write_each(keys, write_alone)
+        if _refused(exc):
+            return _Outcome(refused=[(key, exc) for key in keys], error=exc)
+        return _Outcome(failed=keys, error=exc)
+    return _Outcome(applied=keys)
+
+
+async def _write_each(keys: list[_Key], write_one: Callable[[_Key], Awaitable[None]]) -> _Outcome:
+    """Write each entry on its own, until the store rather than an entry is failing."""
+    outcome = _Outcome()
+    for position, key in enumerate(keys):
+        try:
+            await write_one(key)
+        except CostWriteOutcomeUnknown as exc:
+            outcome.unknown.append((key, exc))
+            outcome.error = exc
         except Exception as exc:
-            failed.append(key)
-            error = error or exc
+            outcome.error = exc
+            if _refused(exc):
+                outcome.refused.append((key, exc))
+                continue
+            outcome.failed.append(key)
+            # The rest wait for the retry, without a futile try each.
+            if _unavailable(exc) or (
+                not outcome.applied and len(outcome.failed) >= _MAX_FAILURES_BEFORE_ANY_WRITE
+            ):
+                outcome.failed.extend(keys[position + 1 :])
+                break
         else:
-            applied.append(key)
-    return applied, failed, [], error
+            outcome.applied.append(key)
+    return outcome
+
+
+def _increment(key: _Key, amount: _Amount) -> CostIncrement:
+    return CostIncrement(
+        user_id=key[0],
+        day=key[2],
+        api_key_id=key[1],
+        cost_usd=amount.counted,
+        requests=amount.requests,
+    )
+
+
+def _sqlstate_class(exc: Exception) -> str:
+    """The two-character class of the SQLSTATE a database error carries, or ''."""
+    sqlstate = getattr(exc, "sqlstate", None)
+    return sqlstate[:2] if isinstance(sqlstate, str) else ""
+
+
+def _refused(exc: Exception) -> bool:
+    """Whether the store refused the entry's own values, so it would fail again.
+
+    A database's data or integrity error says so, and so does a driver that
+    rejects an argument before sending it (asyncpg's ``DataError`` there is a
+    ``ValueError``) or an arithmetic error on the amount.
+    """
+    return _sqlstate_class(exc) in _REFUSED_SQLSTATE_CLASSES or isinstance(
+        exc, ValueError | ArithmeticError
+    )
+
+
+def _unavailable(exc: Exception) -> bool:
+    """Whether the store itself failed, so no entry would go in just now."""
+    return isinstance(exc, OSError | TimeoutError) or (
+        _sqlstate_class(exc) in _UNAVAILABLE_SQLSTATE_CLASSES
+    )
+
+
+def _by_error(entries: list[tuple[_Key, Exception]]) -> list[tuple[Exception, list[_Key]]]:
+    """*entries* grouped by the error each met, in order."""
+    groups: dict[int, tuple[Exception, list[_Key]]] = {}
+    for key, error in entries:
+        groups.setdefault(id(error), (error, []))[1].append(key)
+    return list(groups.values())
+
+
+#: Alerts sent and still running, kept so they are not collected mid-send.
+_ALERTS: set[asyncio.Task[Any]] = set()
+
+
+def _send_alert(send: Callable[[Any], Awaitable[Any]]) -> None:
+    """Page the configured channel, if any, without waiting: ``send(alerts)`` in a task.
+
+    *send* calls ``alert_slack`` on the :mod:`serving.observability.alerts`
+    module it is handed, each call site with its own literal key, as the
+    alert-type catalog requires. Imported on use, which keeps this module's
+    imports light; a failed send is logged, never raised.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    from serving.observability import alerts
+
+    async def run() -> None:
+        try:
+            await send(alerts)
+        except Exception:
+            # The log record already holds everything; the page is extra.
+            logger.warning("Sending a cost counter alert failed", exc_info=True)
+
+    task = loop.create_task(run())
+    _ALERTS.add(task)
+    task.add_done_callback(_ALERTS.discard)
 
 
 # Per store, weakly: a store that goes away (tests make many) takes its

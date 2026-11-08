@@ -201,6 +201,76 @@ class TestAdminAnalyticsRoute:
         assert resp.status_code == 422
 
 
+class TestAdminAnalyticsCache:
+    """Nine api_logs range scans per view, run once per period, window and generation."""
+
+    @pytest.fixture
+    def cached_app(self, mock_db_logger):
+        from serving.servers.routers.admin import analytics
+
+        analytics._ANALYTICS_CACHE.clear()
+        conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        conn.fetchrow = AsyncMock(
+            return_value={"active_users": 7, "avg_turns": None, "avg_user_turns": None}
+        )
+        conn.fetch = AsyncMock(return_value=[])
+        # The erasure generation a hard delete advances.
+        self.generation = 3
+        conn.fetchval = AsyncMock(side_effect=lambda *_a, **_k: self.generation)
+        app = FastAPI(title="Admin Analytics Cache Test")
+        app.state.services = AppServices(  # type: ignore[attr-defined]
+            router=MagicMock(), db_logger=mock_db_logger, routing_manager=None
+        )
+        app.include_router(admin_router.router)
+
+        async def _fake_admin() -> str:
+            return "admin@test"
+
+        app.dependency_overrides[verify_admin_access] = _fake_admin
+        yield app, conn
+        analytics._ANALYTICS_CACHE.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_view_is_computed_once_and_shared(self, cached_app):
+        import asyncio
+
+        app, conn = cached_app
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            first, second = await asyncio.gather(
+                client.get("/admin/analytics?period=day"),
+                client.get("/admin/analytics?period=day"),
+            )
+            third = await client.get("/admin/analytics?period=day")
+
+        assert first.status_code == second.status_code == third.status_code == 200
+        assert first.json() == second.json() == third.json()
+        # One summary query: three requests, one computation.
+        assert conn.fetchrow.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_each_period_and_each_erasure_has_its_own_summary(self, cached_app):
+        app, conn = cached_app
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await client.get("/admin/analytics?period=day")
+            await client.get("/admin/analytics?period=week")
+            assert conn.fetchrow.await_count == 2
+
+            # A user's hard delete advances the generation: nothing computed
+            # before it, which may name that user, is served after it.
+            self.generation = 4
+            await client.get("/admin/analytics?period=day")
+            assert conn.fetchrow.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_without_the_generation_nothing_is_cached(self, cached_app):
+        app, conn = cached_app
+        conn.fetchval = AsyncMock(side_effect=RuntimeError("no admin_view_state"))
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for _ in range(2):
+                assert (await client.get("/admin/analytics?period=day")).status_code == 200
+        assert conn.fetchrow.await_count == 2
+
+
 class TestAdminGrowthRoute:
     """GET /admin/analytics/growth — the daily DAU / token series and its slope."""
 

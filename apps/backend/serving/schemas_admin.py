@@ -40,6 +40,11 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     )
     notes: str | None = Field(None, description="Admin notes")
     metadata: dict[str, Any] | None = Field(None, description="Custom metadata")
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed for a key for any account "
+        "other than the caller's own",
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -466,6 +471,10 @@ class UpdateUserRequest(BaseModel):
     # Admin-authored message shown to the user on login while suspended.
     # Send "" or null to clear it.
     suspension_message: str | None = Field(None, max_length=2000)
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed to raise the role",
+    )
 
 
 class UpdateUserResponse(BaseModel):

@@ -25,6 +25,7 @@ sends to the one configured channel.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -138,19 +139,44 @@ FAILED_REQUEST_RATE_SQL = (
     "WHERE timestamp > NOW() - make_interval(mins => $1)"
 )
 
-# Returns top status codes, providers, models, and a sample error message for
-# the same failure window. $1 = window_minutes (int). Shares FAILURE_PREDICATE_SQL
-# with the count query so the two never drift.
+# Returns top status codes, providers, models, and the newest failure's error and
+# status for the same failure window. $1 = window_minutes (int). Shares
+# FAILURE_PREDICATE_SQL with the count query so the two never drift. The two
+# samples are ordered identically, ``id`` breaking a timestamp tie, so both
+# come from one row. The error text is read only to name its type; see
+# ``error_type_of``.
 FAILED_REQUEST_BREAKDOWN_SQL = f"""
 SELECT
     string_agg(DISTINCT status_code::text, ', ' ORDER BY status_code::text) FILTER (WHERE status_code IS NOT NULL) AS status_codes,
     string_agg(DISTINCT provider, ', ' ORDER BY provider) FILTER (WHERE provider IS NOT NULL) AS providers,
     string_agg(DISTINCT model_id, ', ' ORDER BY model_id) FILTER (WHERE model_id IS NOT NULL) AS models,
-    (array_agg(error ORDER BY timestamp DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_error
+    (array_agg(error ORDER BY timestamp DESC, id DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_error,
+    (array_agg(status_code ORDER BY timestamp DESC, id DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_status
 FROM api_logs
 WHERE timestamp > NOW() - make_interval(mins => $1)
 AND {FAILURE_PREDICATE_SQL}
 """
+
+#: What an ``api_logs.error`` value starts with when it can be named without
+#: quoting it: the exception class ``format_exception_for_db`` prefixes, or a
+#: gateway code standing alone (``quota_exceeded``, ``ip_blocked``).
+_ERROR_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,79}(?=:|$)")
+
+#: Said instead of an error that starts with neither, such as a handler's own
+#: sentence.
+UNCLASSIFIED_ERROR = "unclassified"
+
+
+def error_type_of(error: str) -> str:
+    """Name the kind of failure an ``api_logs.error`` value records, never its text.
+
+    The text after the class is the upstream's own message, and an upstream
+    routinely quotes the request back (a prompt, a tool call's arguments), so
+    it must not reach Slack or WeCom. The class and the status are what an
+    operator acts on; the row itself is one query away.
+    """
+    match = _ERROR_TYPE.match(error)
+    return match.group(0) if match else UNCLASSIFIED_ERROR
 
 
 async def count_recent_failures(pool: asyncpg.Pool, window_minutes: int) -> int:
@@ -200,6 +226,9 @@ async def count_recent_failures_and_total(
 async def fetch_failure_breakdown(pool: asyncpg.Pool, window_minutes: int) -> dict:
     """Return a breakdown dict with status codes, providers, models, and a sample error.
 
+    The sample is the newest failure's type and status (``sample_error_type``,
+    ``sample_status``), not its text: see :func:`error_type_of`.
+
     Returns an empty dict on any query error so callers can degrade gracefully.
     """
     try:
@@ -214,7 +243,9 @@ async def fetch_failure_breakdown(pool: asyncpg.Pool, window_minutes: int) -> di
         if row["models"]:
             result["models"] = row["models"]
         if row["sample_error"]:
-            result["sample_error"] = row["sample_error"][:200]
+            result["sample_error_type"] = error_type_of(row["sample_error"])
+            if row["sample_status"] is not None:
+                result["sample_status"] = int(row["sample_status"])
         return result
     except Exception:
         logger.exception("failed_request_alerter: breakdown query failed")

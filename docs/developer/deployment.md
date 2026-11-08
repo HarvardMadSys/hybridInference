@@ -544,16 +544,22 @@ account before, including the one you used for setup, holds a device cookie
 valid for 180 days) and gets five attempts per 15 minutes of its own, so other
 people's guesses never lock it out. Together, the account's browsers that hold
 one get `LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget
-only requests carrying such a cookie count against. Changing `JWT_SECRET_KEY`
-invalidates every device cookie until that browser's next sign-in.
+only requests carrying such a cookie count against, and once it is spent they
+are limited like any other browser. Each password has its own budget: cookies
+from before a password change or reset cannot spend the one your browsers share
+after it. Changing `JWT_SECRET_KEY` invalidates every device cookie until that
+browser's next sign-in.
 
 Other browsers share the limits with their address, and behind the bundled
-Compose file's console proxy every browser has the same address unless
-[trusted-proxy settings](trusted-proxies-and-client-ips.md) name the console;
+Compose file's console every browser has the same address unless the gateway
+trusts the header your edge sets, which is safe only while the console is
+reachable through that edge alone (see
+[Behind the console](trusted-proxies-and-client-ips.md#behind-the-console));
 `admin` is the first username anyone tries. The pages that mail a link to an
 address anyone types, password reset and resending the verification email,
 are limited too: three of each kind an hour per address, whether or not an
-account has it, and ten an hour per client address. The counts are held
+account has it, and ten an hour per client address when the backend can tell
+clients apart (without that, the per-address limit alone). The counts are held
 in memory, so a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
 when set, still reaches the admin API, and the command-line tools work on the
 database directly.
@@ -717,21 +723,24 @@ those credentials.
 
 ### pgAdmin (optional)
 
+Set `PGADMIN_PASSWORD` in `.env` first, then:
+
 ```bash
 make up COMPOSE_PROFILES=admin
 ```
 
-pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so an SSH
-tunnel to that port is enough to reach it. The console can also proxy it at
-`/pgadmin/`, gated on an admin session by
-`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on every
-unexpected condition, including a backend it cannot reach.
+The console serves pgAdmin at `/pgadmin/` (`SCRIPT_NAME=/pgadmin`), gated on an
+admin session by `apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which
+denies on every unexpected condition, including a backend it cannot reach.
+pgAdmin publishes no host port, since one would skip that gate;
+`PGADMIN_PUBLISH=1` adds one on `127.0.0.1` for an SSH tunnel.
 
-One thing to get right: whether pgAdmin *also* asks for its own login is set by
-`PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The Compose service
-falls back to `False`, which serves pgAdmin with no login at all; `.env.example`
-suggests `True`, which turns pgAdmin's own login on behind the console's gate.
-`True` is the safer of the two.
+Behind the console's gate pgAdmin asks for its own login, `PGADMIN_EMAIL` and
+`PGADMIN_PASSWORD`: `PGADMIN_CONFIG_SERVER_MODE` defaults to `True`, and
+`False` serves pgAdmin with no login at all. There is no fallback password:
+without one pgAdmin will not set up its volume. It keeps the login it first
+started with, so a volume first started without a password, or with server
+mode off, needs the steps in [Authentication](database.md#authentication).
 
 pgAdmin is on a network of its own, `pgadmin`, shared only with the console and
 the database. The backend and any other service on `hybridinference` cannot

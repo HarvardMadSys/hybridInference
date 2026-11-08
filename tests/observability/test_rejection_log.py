@@ -789,3 +789,55 @@ async def test_an_ordinary_rejection_carries_no_grant_attribution(fake_log_store
     )
     metadata = fake_log_store.log_request.call_args.kwargs["metadata"]
     assert not {"agent_grant_id", "request_started_at", "attribution_version"} & set(metadata)
+
+
+# --- the row key ---------------------------------------------------------------
+#
+# ``api_logs.request_id`` is unique, and a row whose key is already there is not
+# stored. A client chooses its own X-Request-ID, so it must not be the key.
+
+
+async def _rejection_row(fake_log_store, runtime_on, **seed) -> dict:
+    from serving.utils import context as req_ctx
+
+    req_ctx.reset_request_scope(**seed)
+    fake_log_store.log_request.reset_mock()
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request("/v1/chat/completions"),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="limit=1",
+        user={"user_id": "u1", "role": "free"},
+        model_id="m",
+    )
+    return fake_log_store.log_request.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_a_client_chosen_request_id_is_not_the_row_key(fake_log_store, runtime_on):
+    seed = {"request_id": "my-id", "client_request_id": "my-id"}
+    first = await _rejection_row(fake_log_store, runtime_on, **seed)
+    second = await _rejection_row(fake_log_store, runtime_on, **seed)
+
+    assert first["request_id"].startswith("rej_")
+    assert first["request_id"] != second["request_id"]
+    assert first["metadata"]["client_request_id"] == "my-id"
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_request_id_is_still_the_row_key(fake_log_store, runtime_on):
+    row = await _rejection_row(
+        fake_log_store, runtime_on, request_id="0123456789abcdef01234567", client_request_id=None
+    )
+    assert row["request_id"] == "0123456789abcdef01234567"
+    assert "client_request_id" not in row["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_outside_a_request_gets_a_key_of_its_own(fake_log_store, runtime_on):
+    first = await _rejection_row(fake_log_store, runtime_on, request_id=None)
+    second = await _rejection_row(fake_log_store, runtime_on, request_id=None)
+    assert first["request_id"].startswith("rej_")
+    assert first["request_id"] != second["request_id"]

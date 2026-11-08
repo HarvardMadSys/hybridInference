@@ -91,7 +91,7 @@ route is not in that order: it comes next after an attempt that waited out its
 queue budget or its engine's first token, and last otherwise (see
 [Queue-wait offload](#queue-wait-offload)).
 
-Three deliberate exceptions:
+Four deliberate exceptions:
 
 - **A pinned request never falls back.** The caller asked for one endpoint, so
   a silent switch would produce a misleading result.
@@ -99,15 +99,29 @@ Three deliberate exceptions:
   Splicing a second provider into a committed SSE stream would duplicate role
   events, switch voice mid-message, and produce mismatched usage totals; the
   truncated stream is the lesser harm.
-- **A request two routes refuse as malformed stops there.** A 400, 404, 413 or
-  422 is usually the answering server's own verdict, so the walk goes on after
-  the first one; after a second it stops, and the request is reported as if
-  every route had failed. Otherwise every malformed request reached every
-  weighted route, a 1% fallback or a canary included. A context-window refusal
-  does not count: fallback already passes over every route whose window is no
-  wider and keeps the wider ones. The stop is logged as
-  `request_refusal_fallback_stopped`; the hybrid composition walks its plan
-  under the same bound.
+- **A request two routes refuse as malformed stops there.** A 400 or 422 is
+  usually the answering server's own verdict, so the walk goes on after the
+  first one; after a second it stops, and the request is reported as if every
+  route had failed. Otherwise every malformed request reached every weighted
+  route, a 1% fallback or a canary included. A context-window refusal does not
+  count: fallback already passes over every route whose window is no wider and
+  keeps the wider ones. Nor does a 404 or a 413, which usually describes the
+  route that answered (a model that server does not serve, a proxy's body
+  limit), so the walk goes on to the routes that may serve it. The stop is
+  logged as `request_refusal_fallback_stopped`; the hybrid composition walks its
+  plan under the same bound.
+- **A request the endpoints fail on reaches at most two more routes.** A 5xx,
+  or a connection dropped once open, after the request left the gateway is
+  what an engine that crashed, ran out of memory or restarted on the request
+  looks like, and such a request does the same to the next engine. Once one
+  endpoint has failed on it that way, at most two more routes are tried, which
+  still covers one or two routes down with a healthy one behind them. Only the
+  first of those failures is charged to a circuit breaker: charged to every
+  route, three such requests opened every circuit of a model for a cooldown. A
+  route that refuses the connection, and a request that never left the
+  gateway, count for neither rule. The stop is logged as
+  `endpoint_fault_fallback_stopped` and a charge left off as
+  `repeat_fault_skip_breaker`.
 
 Successful responses carry a `_routing` blob (`provider`, `base_url`,
 `endpoint_id`, plus `fallback` and `failed_attempts` when a fallback ran) so
@@ -229,6 +243,11 @@ selection signal.
   them.
 - A lease is released at the first token, not at end of stream: a long cheap
   decode is not prefill pressure.
+- A lease is taken when selection commits, so concurrent selections spread,
+  but it counts toward the affinity ceiling only once its request has left the
+  gateway. A request still fetching remote media or waiting for an outbound
+  slot is in no engine's queue. No lease counts for more than its route's
+  context window, the most one request can make an engine prefill.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -236,7 +255,7 @@ selection signal.
 | `ROUTING_PREFILL_INTERVENE_TOKENS` | `50000` | Backlog at which load starts overriding the weighted draw. |
 | `ROUTING_PREFILL_ELEPHANT_TOKENS` | `200000` | Estimated un-cached tokens at which a prompt counts as an elephant. |
 | `ROUTING_PREFILL_ELEPHANT_LIMIT` | `1` | Concurrent elephants allowed per endpoint. |
-| `ROUTING_PREFILL_AFFINITY_CEILING` | `150000` | Backlog above which an affinity pin is abandoned. |
+| `ROUTING_PREFILL_AFFINITY_CEILING` | `150000` | Backlog above which a request skips its affinity pin. |
 | `ROUTING_PREFILL_HINT_TTL_SEC` | `1200` | Lifetime of the per-(caller, endpoint) prompt-size memory. |
 
 This module never blocks, rejects, or queues a request. The worst it does is
@@ -278,9 +297,10 @@ the admin playground) publishes nothing and shares one anonymous binding.
 4. If the pinned endpoint is no longer admissible — weight `0`, or its circuit
    is open — the entry is dropped and a fresh weighted pick runs.
 5. If the pinned endpoint's prefill backlog is above
-   `ROUTING_PREFILL_AFFINITY_CEILING`, the pin is abandoned for this request and
-   selection re-runs *excluding* that endpoint, then re-pins to whatever it
-   picks. A pin is a cache-locality optimisation, not a promise to queue.
+   `ROUTING_PREFILL_AFFINITY_CEILING`, the pin is skipped for this request and
+   selection re-runs *excluding* that endpoint. The pin stays, so the next
+   request returns to the endpoint holding the caller's prefix. A pin is a
+   cache-locality optimisation, not a promise to queue.
 6. After the TTL elapses with no traffic the entry expires. Expired entries are
    swept lazily once the table exceeds `AFFINITY_SWEEP_THRESHOLD` (1000).
 7. However busy its caller, a pin lasts at most one day from when it was made
@@ -303,13 +323,17 @@ the admin playground) publishes nothing and shares one anonymous binding.
 
 The gateway limits how many requests it keeps open at once against each
 provider account — one limit per provider label and API key — and queues the
-rest. The limit adapts: it starts at `UPSTREAM_CONCURRENCY_INITIAL_LIMIT`,
-drops by one each time the provider answers `429`, and rises by one after every
-`UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` successful responses, up to
-`UPSTREAM_CONCURRENCY_MAX_LIMIT`. A request that cannot get a slot within
-`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` fails over to the model's next
-route, and is not counted against the endpoint's circuit breaker: the provider
-never saw it.
+rest. A route with several keys sends a request on another of its keys that
+has room before it queues one. The limit adapts: it starts at
+`UPSTREAM_CONCURRENCY_INITIAL_LIMIT`, drops by one each time the provider
+answers `429`, and rises by one after every
+`UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` successful responses, or with the
+first success a minute after it last changed, up to
+`UPSTREAM_CONCURRENCY_MAX_LIMIT`. Each rise the provider answers with a `429`
+doubles that minute, up to 32 minutes, until a rise holds. A request that
+cannot get a slot within `UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` fails over
+to the model's next route, and is not counted against the endpoint's circuit
+breaker: the provider never saw it.
 
 Self-hosted engines bypass the provider-key limit because they schedule their
 own work. Set `deployment_type: self_hosted` on a route to an engine you operate,
@@ -630,6 +654,33 @@ Remove them from `models.yaml`. FixedRouter's
 it, so it was removed, and a registry that still sets it starts with the same
 warning.
 
+**Hedging.** With `latency_hedge_mode: probability_target`, a request whose
+primary has not started answering by a checkpoint may be raced against a
+backup on another endpoint. The checkpoints read each endpoint's latency
+window, which describes requests of the usual size, so RouteWise also fits each
+endpoint's time to first token against prompt size and expects a longer prompt
+to start later by its extra prefill, on the backup as on the primary: a prompt
+that is merely long to prefill is not sent to a second endpoint to be
+prefilled again. A primary that refuses the request as malformed (a refusal
+FixedRouter's two-refusal bound counts) or as too long for its context window
+gets no backup, and RouteWise stops re-solving once two endpoints have refused
+a request as malformed, the bound FixedRouter applies. The stream race's
+60-second deadline is recorded as a failed attempt of each leg still open, but
+is charged to neither circuit breaker.
+
+**Route weights.** RouteWise does not split traffic by weight. It chooses each
+request's route by cost and latency, and every route with a weight above `0` is
+a full candidate that can take any share of the traffic: a route weighted for a
+small share, such as a 1% staging canary or a last-resort fallback, becomes a
+peer like any other. Set such a route's weight to `0` to keep it out of
+RouteWise. `optional: true` does not mark a canary; it only decides whether a
+route whose environment is unset is skipped at startup. Switching a model to
+`routewise` in the admin console is therefore refused while any of its routes
+has a weight above `0` but below the model's heaviest route, and the router
+logs `routewise_route_weights_ignored` when such a weighting reaches a
+`routewise` model another way: `models.yaml`, a weight override or a new route.
+A persisted switch is still applied at startup and on a configuration restore.
+
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
 exactly against the usage records a provider's quota fetcher returns. RouteWise
@@ -750,10 +801,10 @@ Each key in a `KeyPool` (`apps/backend/serving/adapters/key_pool.py`) carries a
   hard-fail a request another route could serve.
 
 The caller's role reaches the pool through the request context, published by
-the API-key auth dependency. Requests with no user identity — health probes,
-warmups, the admin playground — carry no role and are treated as unrestricted:
-reservation withholds capacity from lower *tiers*, not from the gateway's own
-machinery.
+the API-key auth dependency, and by the playground for the console user it
+serves. Requests with no user identity — health probes, warmups — carry no role
+and are treated as unrestricted: reservation withholds capacity from lower
+*tiers*, not from the gateway's own machinery.
 
 **Managing it.** Reservation is declared through the admin API rather than an
 env var, because pool membership comes from each route's `api_keys` list, which
@@ -1007,11 +1058,23 @@ execution failure may try another candidate), `bound_endpoint` (the resolved
 adapter binding), `require_target`, and `required_modalities`.
 `RoutingObservation` (`routers.py`) is how the serving layer reports a
 completed request — endpoint id, TTFT, total latency, token counts, success,
-the upstream HTTP status of a failure (`status_code`, when it had one), and a
+the upstream HTTP status of a failure (`status_code`, when it had one), whether
+the failure is one no endpoint is charged with (`uncharged`), and a
 `strategy_metadata` dict the strategy itself populated during selection.
-RouteWise leaves a failure whose status blames the request itself (the
-breaker's client-error rule: a 4xx other than 408, 429, 401 and 407) out of
-its latency profiles.
+RouteWise learns only what an attempt shows about its endpoint. Its latency
+sample is the attempt's own time to first content, which the router measures
+from that attempt's dispatch (a hedge leg's from its own start) and returns in
+`strategy_metadata`. It prefers that over the observation's TTFT, which can
+include gateway work and a hedge's delay, and never reads total latency, which
+is mostly the generation a caller asked for: a non-streaming success counts
+toward an endpoint's error share but not toward its latency mean. RouteWise
+leaves a failure whose status blames the request itself (the breaker's
+client-error rule: a 4xx other than 408, 429, 401 and 407) out of its latency
+profiles, and likewise a failure of an attempt it saw complete, such as an
+empty completion, and an uncharged one. An uncharged failure means this gateway
+refused the attempt before sending it — no outbound slot, no usable key for
+the caller — so RouteWise re-solves over the other candidates instead of
+failing the request.
 A stateless strategy returns `None` from `record_observation`; an
 online-learning one updates its model there.
 

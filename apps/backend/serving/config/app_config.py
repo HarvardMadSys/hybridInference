@@ -2103,6 +2103,7 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 "custom": entry.origin == "custom",
                 "invalid": invalid,
                 "used_by": list(entry.used_by),
+                "security_relevant": _security_relevant_entry(key, entry),
                 "updated_at": stamped.updated_at if stamped is not None else None,
                 "updated_by": stamped.updated_by if stamped is not None else None,
                 "group": registry.managed_group(key),
@@ -2132,6 +2133,63 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
 def entry(key: str) -> ConfigEntry | None:
     """Return *key*'s entry as this process last read the configuration, if it has one."""
     return _STATE.entries.get(key) or registry.numbered_key_entry(key)
+
+
+#: Categories every setting of which is security-relevant (:func:`security_relevant`).
+SECURITY_CATEGORIES: frozenset[str] = frozenset({"security", "network", "phone", "privacy"})
+
+#: Security-relevant settings outside :data:`SECURITY_CATEGORIES`: where mail goes,
+#: who hears about new accounts and where users are told to write, the identity
+#: issuer's keys and redirects, private batch webhook targets and who may submit
+#: batches, request content storage, whether alerts are sent at all, and the
+#: request body limit.
+SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "EMAIL_PROVIDER",
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_USER",
+        "SMTP_FROM_EMAIL",
+        "SIGNUP_NOTIFY_EMAILS",
+        "SITE_SUPPORT_EMAIL",
+        "IDENTITY_ISSUER",
+        "IDENTITY_ALLOWED_REDIRECTS",
+        "IDENTITY_JWT_RETIRING_PUBLIC_KEYS",
+        "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
+        "BATCH_MIN_ROLE",
+        "DB_STORE_FULL_CONTENT",
+        "ALERTS_ENABLED",
+        "REQUEST_MAX_BODY_MB",
+    }
+)
+
+
+def security_relevant(key: str) -> bool:
+    """Whether changing *key* needs the signed-in administrator's confirmation and password.
+
+    What signs and encrypts, who administers and who may sign in, which networks
+    are trusted, where the gateway sends requests, credentials, mail and users,
+    what it stores and whether it reports trouble: every secret, every setting
+    of :data:`SECURITY_CATEGORIES`, every variable a configuration file
+    references or an administrator adds, every ``*_URL`` setting and the keys in
+    :data:`SECURITY_SETTING_KEYS`. A name with no entry is a variable a change
+    would add, which a configuration file reads. A configuration restore lists
+    a change to any of them for confirmation, and ``PATCH /admin/config`` and
+    ``DELETE /admin/config/{key}`` ask for the password before they store one.
+    """
+    return _security_relevant_entry(key, entry(key))
+
+
+def _security_relevant_entry(key: str, setting: ConfigEntry | None) -> bool:
+    if setting is None:
+        return True
+    return (
+        setting.secret
+        or setting.category in SECURITY_CATEGORIES
+        or setting.origin != "static"
+        or key in SECURITY_SETTING_KEYS
+        or key.endswith("_URL")
+    )
 
 
 def source_version() -> revisions.SourceVersion | None:
@@ -2197,6 +2255,21 @@ class RestoreSummary:
     #: Secrets the backup withheld that this deployment has no value for: they
     #: stay unset, following the environment or their default.
     not_restored: tuple[str, ...] = ()
+
+
+class RestoreNotLoaded(Exception):
+    """A restore committed, but this process could not read the configuration back.
+
+    The restored rows are stored: the next periodic refresh (within
+    :data:`REFRESH_INTERVAL_SECONDS`), or a restart, applies them here; every
+    other process applies them on its own refresh as usual.
+    """
+
+    def __init__(self, summary: RestoreSummary, cause: Exception) -> None:
+        super().__init__(f"the restore committed; reading it back failed ({type(cause).__name__})")
+        #: What the committed restore changed, kept and could not restore.
+        self.summary = summary
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -2411,6 +2484,7 @@ async def restore_rows(
     items: Sequence[Mapping[str, Any]],
     *,
     updated_by: str,
+    check_plan: Callable[[AppConfigStore, RestoreSummary], Awaitable[None]] | None = None,
     before_commit: Callable[[AppConfigStore], Awaitable[None]] | None = None,
 ) -> RestoreSummary:
     """Replace ``app_config`` with *items* in one transaction, then reload.
@@ -2429,6 +2503,12 @@ async def restore_rows(
     Args:
         items: Stored row dicts (``key``, ``value``, ``secret``, ``source``).
         updated_by: Identity of the administrator performing the restore.
+        check_plan: Optional async hook run inside the transaction, under its
+            write lock, once the restore is planned against the rows as they
+            are now and before anything is written, given the transaction's
+            store and the plan's summary: the place to refuse a restore whose
+            effect differs from what was confirmed before the transaction
+            began. If it raises, nothing is written.
         before_commit: Optional async hook run inside the ``app_config``
             transaction after validation and table writes, given the
             transaction's store, whose connection other stores can write on
@@ -2437,6 +2517,10 @@ async def restore_rows(
 
     Returns:
         What the restore changed, kept and could not restore, by key.
+
+    Raises:
+        RestoreNotLoaded: The restore committed, but reading it back into this
+            process failed; it carries the summary.
     """
     store = await _writable_store()
     async with store.transaction() as transaction:
@@ -2448,6 +2532,8 @@ async def restore_rows(
             api_keys_exist=await transaction.api_keys_exist(),
             updated_by=updated_by,
         )
+        if check_plan is not None:
+            await check_plan(transaction, plan.summary)
         for key in sorted(plan.to_delete):
             await transaction.delete(key)
         if plan.target_rows:
@@ -2458,5 +2544,14 @@ async def restore_rows(
         if before_commit is not None:
             await before_commit(transaction)
 
-    await _reload(store)
+    # Committed: from here on nothing may report the restore as not made.
+    try:
+        await _reload(store)
+    except Exception as exc:
+        logger.error(
+            "A configuration restore committed, but reading it back failed (%s); the next "
+            "refresh applies it",
+            type(exc).__name__,
+        )
+        raise RestoreNotLoaded(plan.summary, exc) from exc
     return plan.summary

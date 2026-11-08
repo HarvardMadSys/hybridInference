@@ -14,6 +14,7 @@ from serving.storage import (
     user_usage_rollup,
 )
 from serving.storage.base import LogStore, Row
+from serving.storage.bounded_log import bound_payload_leftovers
 from serving.storage.erasure_fence import (
     api_logs_fence_keys,
     check_erasure_fence,
@@ -23,6 +24,7 @@ from serving.storage.erasure_fence import (
     validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
+from serving.storage.pools import history_read_connection
 from serving.storage.utils import (
     agent_name_from_prompt,
     calculate_cost,
@@ -267,6 +269,15 @@ class PostgresLogStore(LogStore):
                 stored_messages=sanitized_prompt,
                 stored_tools=sanitized_tools,
             )
+            # What the body still repeats of the prompt column, or holds of
+            # each message besides it (fields the gateway ignored), is held to
+            # a small bound: the conversation itself is in the prompt column.
+            sanitized_request_payload, leftovers_cut = bound_payload_leftovers(
+                sanitized_request_payload,
+                prompt_stored=isinstance(sanitized_prompt, list) and bool(sanitized_prompt),
+            )
+            if leftovers_cut:
+                sanitized_metadata = {**(sanitized_metadata or {}), "payload_truncated": True}
             prompt_str = (
                 json.dumps(sanitized_prompt)
                 if isinstance(sanitized_prompt, list)
@@ -602,7 +613,10 @@ class PostgresLogStore(LogStore):
         return {window: dict(stats) for window, stats in detail.items()}
 
     async def _read_user_usage(self, user_id: str, windows: tuple[str, ...]) -> dict[str, Any]:
-        async with self.pool.acquire() as conn:
+        # A history read: a bounded share of the general pool and a bounded wait
+        # for it (serving.storage.pools), so it neither hangs behind slow work
+        # nor, many at once, takes the pool from the log writers.
+        async with history_read_connection(self.pool) as conn:
             return await user_usage_rollup.fetch_usage_windows(conn, user_id, windows)
 
     async def get_batch_usage(
@@ -979,9 +993,16 @@ class PostgresLogStore(LogStore):
                     or _string_or_none(row.get("provider"))
                 )
                 failed_attempts = metadata.get("failed_attempts")
+                # The attempt's own time to first content, as RouteWise measured
+                # it (``routing.routewise.router``); the ttft_ms column runs from
+                # request entry, through a hedge's delay.
+                attempt_ttft_ms = (
+                    routewise.get("attempt_ttft_ms") if isinstance(routewise, dict) else None
+                )
             else:
                 endpoint_id = None
                 failed_attempts = None
+                attempt_ttft_ms = None
             normalized.append(
                 {
                     "timestamp": row.get("timestamp"),
@@ -989,6 +1010,7 @@ class PostgresLogStore(LogStore):
                     "provider": row.get("provider"),
                     "endpoint_id": endpoint_id,
                     "ttft_ms": row.get("ttft_ms"),
+                    "attempt_ttft_ms": attempt_ttft_ms,
                     "latency_ms": row.get("latency_ms"),
                     "status_code": row.get("status_code"),
                     "error": row.get("error"),
