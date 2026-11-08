@@ -24,6 +24,7 @@ from serving.storage.erasure_fence import (
     validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
+from serving.storage.pools import history_read_connection
 from serving.storage.utils import (
     agent_name_from_prompt,
     calculate_cost,
@@ -612,7 +613,10 @@ class PostgresLogStore(LogStore):
         return {window: dict(stats) for window, stats in detail.items()}
 
     async def _read_user_usage(self, user_id: str, windows: tuple[str, ...]) -> dict[str, Any]:
-        async with self.pool.acquire() as conn:
+        # A history read: a bounded share of the general pool and a bounded wait
+        # for it (serving.storage.pools), so it neither hangs behind slow work
+        # nor, many at once, takes the pool from the log writers.
+        async with history_read_connection(self.pool) as conn:
             return await user_usage_rollup.fetch_usage_windows(conn, user_id, windows)
 
     async def get_batch_usage(

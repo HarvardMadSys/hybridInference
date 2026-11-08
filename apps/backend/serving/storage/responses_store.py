@@ -40,6 +40,7 @@ import time
 from datetime import UTC
 from typing import Any
 
+from serving.storage.pools import GENERAL_ACQUIRE_TIMEOUT_SEC, request_connection
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -101,6 +102,17 @@ class ResponseStore:
         self._pool = pool
         self.persist_enabled = persist_enabled
 
+    def _connection(self) -> Any:
+        """A connection for a call made while serving a request, waited for a bounded time.
+
+        The store shares the general pool with the log writers, batch work and
+        rollups. A load or save waits at most
+        :data:`~serving.storage.pools.GENERAL_ACQUIRE_TIMEOUT_SEC` for one, then
+        raises :class:`~serving.storage.pools.DatabaseBusyError` (a 503 with
+        ``Retry-After``) instead of hanging the request behind slow work.
+        """
+        return request_connection(self._pool, timeout=GENERAL_ACQUIRE_TIMEOUT_SEC)
+
     async def save(
         self,
         *,
@@ -114,7 +126,7 @@ class ResponseStore:
         """Persist (or replace) a response and its cumulative conversation."""
         if not self.persist_enabled:
             return
-        async with self._pool.acquire() as conn:
+        async with self._connection() as conn:
             await conn.execute(
                 """
                 INSERT INTO openai_responses
@@ -142,7 +154,7 @@ class ResponseStore:
         -- or ``None`` if not found. JSON columns are decoded to Python objects;
         ``messages_bytes`` is the size of the stored conversation as JSON text.
         """
-        async with self._pool.acquire() as conn:
+        async with self._connection() as conn:
             row = await conn.fetchrow(
                 "SELECT id, user_id, response, messages, previous_response_id, model "
                 "FROM openai_responses WHERE id = $1",
@@ -166,7 +178,7 @@ class ResponseStore:
         When ``user_id`` is given the delete is scoped to that owner so one
         user cannot delete another's response.
         """
-        async with self._pool.acquire() as conn:
+        async with self._connection() as conn:
             if user_id is None:
                 result = await conn.execute(
                     "DELETE FROM openai_responses WHERE id = $1", response_id

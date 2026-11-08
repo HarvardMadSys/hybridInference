@@ -1202,6 +1202,8 @@ async def get_usage(
     Supports periods: today, week, month, all. ``today`` and ``month`` start at
     00:00 UTC, when the daily quota resets; ``week`` is the last 7 days.
     """
+    from serving.storage.pools import DatabaseBusyError
+
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
@@ -1267,6 +1269,9 @@ async def get_usage(
         else:
             period_data = _zero
             spent_month = 0.0
+    except DatabaseBusyError:
+        # No connection for it in time: a 503 the console retries, not zeros.
+        raise
     except Exception as exc:
         logger.warning(
             "Failed to query usage stats for user_id=%s: %s",

@@ -29,13 +29,17 @@ Sizes, per gateway process:
   under PostgreSQL's default ``max_connections`` of 100.
 
 A user's reads of their own request history on the general pool
-(``/user/recent-requests``) are bounded twice over: each reads a bounded number
-of rows, and at most :data:`HISTORY_READS_MAX` of them hold a general-pool
-connection at once in a process, however many users ask
+(``/user/recent-requests``, ``/user/usage``) are bounded twice over: each reads
+a bounded number of rows, and at most :data:`HISTORY_READS_MAX` of them hold a
+general-pool connection at once in a process, however many users ask
 (:func:`history_read_connection`), so the log writers, batch work and rollups
 always keep the rest of the pool. One waits at most
 :data:`HISTORY_READ_WAIT_SEC` for its turn and its connection, and then fails
-with :class:`DatabaseBusyError` like a request-path lookup.
+with :class:`DatabaseBusyError` like a request-path lookup. The Responses store's
+loads and saves, made while a request is served, wait at most
+:data:`GENERAL_ACQUIRE_TIMEOUT_SEC` for a general-pool connection the same way
+(:func:`request_connection` with that timeout). Neither opens a connection of
+its own: the budget above is unchanged.
 """
 
 from __future__ import annotations
@@ -70,6 +74,13 @@ REQUEST_COMMAND_TIMEOUT_SEC = 5
 #: pool uses.
 REQUEST_ACQUIRE_TIMEOUT_SEC = 3.0
 
+#: How long a store call made while serving a request waits for a general-pool
+#: connection: the Responses store's loads and saves. Its own statements are
+#: single-row; a wait this long means slow work holds the pool, and the request
+#: is answered (a 503 with ``Retry-After``, or a response left unstored) rather
+#: than left hanging behind it.
+GENERAL_ACQUIRE_TIMEOUT_SEC = 5.0
+
 #: How many general-pool connections users' reads of their own request history
 #: may hold at once, per process: under half the pool, so the log writers keep
 #: most of it whatever users ask for.
@@ -91,8 +102,9 @@ class DatabaseBusyError(RuntimeError):
     """No connection came free in time for the request being served.
 
     For a request-path lookup within :data:`REQUEST_ACQUIRE_TIMEOUT_SEC`, for a
-    history read within :data:`HISTORY_READ_WAIT_SEC`. Answered with a 503 and
-    ``Retry-After`` by the app's exception handler.
+    history read within :data:`HISTORY_READ_WAIT_SEC`, for another call made
+    while serving a request within :data:`GENERAL_ACQUIRE_TIMEOUT_SEC`. Answered
+    with a 503 and ``Retry-After`` by the app's exception handler.
     """
 
 
