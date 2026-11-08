@@ -131,8 +131,8 @@ function renderUsers() {
 it('sends exactly one PATCH for an account-settings save', async () => {
   mockList('active');
   vi.mocked(getUserDetail)
-    .mockResolvedValueOnce(detail())
-    .mockResolvedValueOnce(detail({ role: 'pro' }));
+    .mockResolvedValueOnce(detail({ role: 'pro' }))
+    .mockResolvedValueOnce(detail({ role: 'free' }));
   vi.mocked(updateUser).mockResolvedValue({
     user_id: 'fixture-user',
     updated_fields: ['role'],
@@ -142,16 +142,60 @@ it('sends exactly one PATCH for an account-settings save', async () => {
 
   fireEvent.click(await screen.findByText('fixture@example.test'));
   await screen.findByRole('combobox', { name: 'Role' });
-  chooseOption('Role', 'pro');
+  chooseOption('Role', 'free');
   expect(updateUser).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
 
+  // A lower role is the administrator's to set: nothing to confirm.
   expect(screen.queryByRole('dialog')).toBeNull();
   await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Saved'));
   await waitFor(() =>
     expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull(),
   );
-  expect(vi.mocked(updateUser).mock.calls).toEqual([['fixture-user', { role: 'pro' }]]);
+  expect(vi.mocked(updateUser).mock.calls).toEqual([['fixture-user', { role: 'free' }]]);
+});
+
+it('asks for the password before it raises a role, and sends it with the one PATCH', async () => {
+  mockList('active');
+  vi.mocked(getUserDetail)
+    .mockResolvedValueOnce(detail())
+    .mockResolvedValueOnce(detail({ role: 'admin' }));
+  vi.mocked(updateUser)
+    .mockRejectedValueOnce(new Error('Current password is incorrect.'))
+    .mockResolvedValueOnce({ user_id: 'fixture-user', updated_fields: ['role'], message: 'ok' });
+  renderUsers();
+
+  fireEvent.click(await screen.findByText('fixture@example.test'));
+  await screen.findByRole('combobox', { name: 'Role' });
+  chooseOption('Role', 'admin');
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('Give fixture@example.test the admin role?');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Enter your password to raise this role.',
+  );
+  expect(updateUser).not.toHaveBeenCalled();
+
+  fireEvent.change(within(dialog).getByLabelText('Your password'), {
+    target: { value: 'wrong' },
+  });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  // A refusal keeps the dialog open, with the reason, for another try.
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Current password is incorrect.',
+  );
+
+  fireEvent.change(within(dialog).getByLabelText('Your password'), {
+    target: { value: 'right' },
+  });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(vi.mocked(updateUser).mock.calls).toEqual([
+    ['fixture-user', { role: 'admin', password: 'wrong' }],
+    ['fixture-user', { role: 'admin', password: 'right' }],
+  ]);
 });
 
 it('approves on the click and toasts a failure, then approves on the next click', async () => {

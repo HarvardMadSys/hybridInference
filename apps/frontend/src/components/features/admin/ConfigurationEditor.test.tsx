@@ -2968,3 +2968,103 @@ describe('adding a variable after a save elsewhere', () => {
     expect(vi.mocked(patchConfig).mock.calls[1][1]).toEqual({ expectedVersion: v(5) });
   });
 });
+
+describe('security-relevant settings', () => {
+  /** The configuration of a backend that marks what needs the password. */
+  function guardedConfig(): ConfigResponse {
+    const base = makeConfig();
+    return {
+      ...base,
+      entries: [
+        ...base.entries.map((item) => ({
+          ...item,
+          security_relevant: item.category !== 'general',
+        })),
+        entry({
+          key: 'SITE_NAME',
+          category: 'general',
+          value: 'Gateway',
+          security_relevant: false,
+        }),
+      ],
+      categories: [
+        ...base.categories,
+        { id: 'general', label: 'General', description: 'Site identity.' },
+      ],
+    };
+  }
+
+  it('asks for the password before it saves one, and sends it with the save', async () => {
+    await renderTab(guardedConfig());
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    save('Email (SMTP)');
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('SMTP_PORT');
+    expect(patchConfig).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'Enter your password to save these settings.',
+    );
+    expect(patchConfig).not.toHaveBeenCalled();
+
+    fireEvent.change(within(dialog).getByLabelText('Your password'), {
+      target: { value: 'admin-password' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(patchConfig).mock.calls[0][0]).toEqual({
+      values: { SMTP_PORT: 2525 },
+      password: 'admin-password',
+    });
+  });
+
+  it('sends the password with each reset it guards, and asks nothing for the others', async () => {
+    vi.mocked(resetConfigKey).mockResolvedValue(guardedConfig());
+    vi.mocked(patchConfig).mockResolvedValue(guardedConfig());
+    await renderTab(guardedConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Reset SMTP_PORT' }));
+    save('Email (SMTP)');
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Your password'), {
+      target: { value: 'admin-password' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(resetConfigKey).mock.calls[0]).toEqual([
+      'SMTP_PORT',
+      { password: 'admin-password' },
+    ]);
+
+    // A setting that is not security-relevant saves on the click.
+    fireEvent.change(screen.getByLabelText('SITE_NAME'), { target: { value: 'Renamed' } });
+    save('General');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(patchConfig).mock.calls[0][0]).toEqual({ values: { SITE_NAME: 'Renamed' } });
+  });
+
+  it('asks for the password to add a variable, which a configuration file reads', async () => {
+    await renderTab(guardedConfig());
+    fireEvent.click(screen.getByRole('button', { name: 'Add variable' }));
+    const form = screen.getByRole('form', { name: 'Add variable' });
+    fireEvent.change(within(form).getByLabelText('Name'), { target: { value: 'MY_REGION' } });
+    fireEvent.change(within(form).getByLabelText('Value'), { target: { value: 'eu' } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+    expect(await within(form).findByRole('alert')).toHaveTextContent('Enter your password');
+    expect(patchConfig).not.toHaveBeenCalled();
+
+    fireEvent.change(within(form).getByLabelText('Your password'), {
+      target: { value: 'admin-password' },
+    });
+    fireEvent.click(within(form).getByRole('button', { name: 'Add variable' }));
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(patchConfig).mock.calls[0][0]).toEqual({
+      values: { MY_REGION: 'eu' },
+      secrets: { MY_REGION: false },
+      password: 'admin-password',
+    });
+  });
+});

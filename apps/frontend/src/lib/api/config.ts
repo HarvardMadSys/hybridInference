@@ -81,6 +81,12 @@ export interface ConfigEntry {
   invalid: string | null;
   /** Model ids whose routes reference this variable. */
   used_by: string[];
+  /**
+   * Saving or resetting it needs the administrator's password (and the admin
+   * token cannot): a signing secret, a trusted network, where mail and users
+   * are sent. An older backend omits it, and asks for nothing.
+   */
+  security_relevant?: boolean;
   /** When the database row was last written; `null` when there is none. */
   updated_at: string | null;
   updated_by: string | null;
@@ -243,6 +249,12 @@ interface ConfigPatchRequest {
    * custom variable secret. One-way: `false` never makes a secret readable.
    */
   secrets?: Record<string, boolean>;
+  /**
+   * The signed-in administrator's password: needed when `values` changes a
+   * `security_relevant` setting, or adds a variable. 400 when it is missing or
+   * wrong; 403 for the admin token.
+   */
+  password?: string;
 }
 
 export type AlertNotificationChannel = 'slack' | 'wecom';
@@ -346,15 +358,23 @@ export async function patchConfig(
 
 /**
  * Remove a setting's database row: it falls back to the environment, then its
- * default, and a custom variable disappears. 409 for an immutable key.
+ * default, and a custom variable disappears. 409 for an immutable key. A
+ * `security_relevant` setting needs the administrator's `password`, sent in the
+ * request body.
  */
 export async function resetConfigKey(
   key: string,
-  options?: ConfigWriteOptions,
+  options?: ConfigWriteOptions & { password?: string },
 ): Promise<ConfigResponse> {
+  const password = options?.password;
   const resp = await fetchWithAuth(API_BASE, `/admin/config/${encodeURIComponent(key)}`, {
     method: 'DELETE',
-    headers: { accept: 'application/json', ...ifMatch(options) },
+    headers: {
+      accept: 'application/json',
+      ...(password !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...ifMatch(options),
+    },
+    ...(password !== undefined ? { body: JSON.stringify({ password }) } : {}),
   });
   return readConfig(resp);
 }

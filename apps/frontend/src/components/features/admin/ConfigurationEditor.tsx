@@ -1,15 +1,6 @@
 'use client';
 
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type MutableRefObject,
-  type ReactNode,
-} from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
@@ -18,6 +9,7 @@ import {
   NOT_A_LOGIN_FIELD,
 } from '@/components/features/configuration/ConfigEntryField';
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
+import { ReauthPassword } from '@/components/features/admin/confirm/ReauthPassword';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
@@ -121,36 +113,6 @@ function downloadBackupJson(payload: ConfigBackupPayload): void {
   }
 }
 
-/**
- * The administrator's password, inside a confirmation dialog. The dialog's body
- * is fixed when it opens, so the field keeps its own state and hands the value
- * to the write through `valueRef`.
- */
-function ReauthPassword({
-  valueRef,
-  label,
-}: {
-  valueRef: MutableRefObject<string>;
-  label: string;
-}) {
-  const [value, setValue] = useState('');
-  return (
-    <label className="block text-[12px] text-gray-700">
-      {label}
-      <input
-        type="password"
-        value={value}
-        onChange={(event) => {
-          setValue(event.target.value);
-          valueRef.current = event.target.value;
-        }}
-        autoComplete="current-password"
-        className="mt-1 w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-[13px] text-gray-900 focus:border-gray-500 focus:outline-none"
-      />
-    </label>
-  );
-}
-
 /** One `domain:name` label from the backup API, as a dialog lists it. */
 function backupItem(label: string): string {
   const at = label.indexOf(':');
@@ -182,6 +144,19 @@ interface CategorySave {
    * starts: a read that completes while it is in flight cannot move it.
    */
   expectedVersion: ConfigSourceVersion | null;
+  /**
+   * The keys among `values` and `resets` that only the administrator's
+   * password may change, and the password given for them.
+   */
+  guarded?: readonly string[];
+  password?: string;
+}
+
+/** The keys among `keys` whose change needs the administrator's password. */
+function securityRelevantKeys(group: ConfigGroup, keys: readonly string[]): string[] {
+  return keys.filter(
+    (key) => group.entries.find((entry) => entry.key === key)?.security_relevant === true,
+  );
 }
 
 /**
@@ -273,6 +248,8 @@ export function useConfigurationEditor({
   // download with secret values, which asks for the password. A plain one is not.
   const backupConfirmation = useConfirmAction();
   const backupPassword = useRef('');
+  // A save that changes a security-relevant setting asks for it the same way.
+  const settingsPassword = useRef('');
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
   const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
@@ -478,7 +455,7 @@ export function useConfigurationEditor({
     for (const key of resets) delete values[key];
     const secrets = groupKeys(group, pendingSecrets);
     if (Object.keys(values).length + secrets.length + resets.length === 0) return;
-    void commitSave({
+    const save: CategorySave = {
       group,
       values,
       secrets,
@@ -486,10 +463,50 @@ export function useConfigurationEditor({
       // Taken now, from the version this category's changes were made on: a read
       // that completes while the save is in flight cannot move it.
       expectedVersion: saveBase(draftVersions, group.id, config?.source_version),
+    };
+    // A secret flag alone is not one: it only hides a value.
+    const guarded = securityRelevantKeys(group, [...Object.keys(values), ...resets]);
+    if (guarded.length === 0) {
+      void commitSave(save);
+      return;
+    }
+    // A signing secret, the trusted networks, where mail and users go: a stolen
+    // session must not change them on its own, so the backend asks for the
+    // password, and the admin token cannot give one.
+    settingsPassword.current = '';
+    backupConfirmation.request({
+      title: `Save security settings in ${group.label}?`,
+      confirmLabel: 'Save changes',
+      busyLabel: 'Saving…',
+      body: (
+        <div className="space-y-2">
+          <p>
+            {guarded.length === 1 ? 'This setting decides' : 'These settings decide'} who can sign
+            in or administer the gateway, what it trusts, or where it sends requests, keys, mail and
+            users: <KeyList keys={guarded} />. Confirm the change with your password.
+          </p>
+          <ReauthPassword valueRef={settingsPassword} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const password = settingsPassword.current;
+        if (!password) throw new Error('Enter your password to save these settings.');
+        settingsPassword.current = '';
+        // A refusal, a wrong password included, is shown beside the save.
+        await commitSave({ ...save, guarded, password });
+      },
     });
   };
 
-  const commitSave = async ({ group, values, secrets, resets, expectedVersion }: CategorySave) => {
+  const commitSave = async ({
+    group,
+    values,
+    secrets,
+    resets,
+    expectedVersion,
+    guarded = [],
+    password,
+  }: CategorySave) => {
     if (saveInFlight.current) return;
     saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
@@ -522,9 +539,15 @@ export function useConfigurationEditor({
       if (keys.length > 0 || secrets.length > 0) {
         attempted = [...new Set([...keys, ...secrets])];
         const next = await patchConfig(
-          secrets.length > 0
-            ? { values, secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
-            : { values },
+          {
+            values,
+            ...(secrets.length > 0
+              ? { secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
+              : {}),
+            ...(password !== undefined && keys.some((key) => guarded.includes(key))
+              ? { password }
+              : {}),
+          },
           ...versioned(base),
         );
         const committed = committedVersion(next, base);
@@ -548,7 +571,10 @@ export function useConfigurationEditor({
       for (const key of resets) {
         attempted = [key];
         failedReset = key;
-        const next = await resetConfigKey(key, ...versioned(base));
+        const next =
+          password !== undefined && guarded.includes(key)
+            ? await resetConfigKey(key, { ...(base ? { expectedVersion: base } : {}), password })
+            : await resetConfigKey(key, ...versioned(base));
         const committed = committedVersion(next, base);
         chain(base, committed);
         base = committed;
@@ -1268,6 +1294,10 @@ export function AddVariableControl({ editor }: { editor: ConfigurationEditor }) 
     return (
       <AddVariableForm
         existingKeys={new Set(editor.config.entries.map((entry) => entry.key))}
+        // A backend that marks security-relevant settings asks for the password
+        // to add a variable, which a configuration file reads; an older one does
+        // not mark them, and asks for nothing.
+        askPassword={editor.config.entries.some((entry) => entry.security_relevant !== undefined)}
         expectedVersion={editor.addVariableVersion}
         onCancel={close}
         onConflict={editor.reloadForAdd}
@@ -1355,12 +1385,15 @@ export function ConfigurationBackupSection({ editor }: { editor: ConfigurationEd
 /** A custom variable: a `${VAR}` reference in models.yaml the registry cannot see. */
 function AddVariableForm({
   existingKeys,
+  askPassword,
   expectedVersion,
   onAdded,
   onCancel,
   onConflict,
 }: {
   existingKeys: ReadonlySet<string>;
+  /** Whether the backend asks for the administrator's password to add a variable. */
+  askPassword: boolean;
   /**
    * The version the add is conditional on: the one the form opened on, moved
    * only by this page's own writes and by `onConflict`. A save elsewhere since
@@ -1383,6 +1416,9 @@ function AddVariableForm({
   // whatever the request says (a flag only ever adds secrecy). Any other name
   // is the administrator's choice.
   const [secretChoice, setSecretChoice] = useState(false);
+  // A configuration file reads the variable, so adding one is a
+  // security-relevant change: the backend asks for the password.
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const writes = useConfirmAction();
   const saving = writes.busy;
@@ -1432,6 +1468,10 @@ function AddVariableForm({
       setError(`${key} is already listed. Edit it in its category.`);
       return;
     }
+    if (askPassword && !password) {
+      setError('Enter your password: a configuration file reads the variable you add.');
+      return;
+    }
     setError(null);
     // Taken now: the version this attempt is conditional on, whatever a read
     // brings in while it is in flight.
@@ -1444,6 +1484,7 @@ function AddVariableForm({
           {
             values: { [key]: value },
             secrets: { [key]: secret },
+            ...(askPassword ? { password } : {}),
           },
           ...versioned(base),
         ).catch((err: unknown) => {
@@ -1528,6 +1569,22 @@ function AddVariableForm({
         <p id={`${baseId}-secret-note`} className="mt-1 text-[11px] text-gray-500">
           A name like this one is always secret.
         </p>
+      ) : null}
+      {askPassword ? (
+        <div className="mt-3 max-w-sm">
+          <label htmlFor={`${baseId}-password`} className={FORM_LABEL}>
+            Your password
+          </label>
+          <input
+            id={`${baseId}-password`}
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            disabled={saving}
+            autoComplete="current-password"
+            className={TEXT_FIELD}
+          />
+        </div>
       ) : null}
       {error ? (
         <p className="mt-2 text-[12px] text-red-600" role="alert">
