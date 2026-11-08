@@ -993,9 +993,16 @@ class PostgresLogStore(LogStore):
                     or _string_or_none(row.get("provider"))
                 )
                 failed_attempts = metadata.get("failed_attempts")
+                # The attempt's own time to first content, as RouteWise measured
+                # it (``routing.routewise.router``); the ttft_ms column runs from
+                # request entry, through a hedge's delay.
+                attempt_ttft_ms = (
+                    routewise.get("attempt_ttft_ms") if isinstance(routewise, dict) else None
+                )
             else:
                 endpoint_id = None
                 failed_attempts = None
+                attempt_ttft_ms = None
             normalized.append(
                 {
                     "timestamp": row.get("timestamp"),
@@ -1003,6 +1010,7 @@ class PostgresLogStore(LogStore):
                     "provider": row.get("provider"),
                     "endpoint_id": endpoint_id,
                     "ttft_ms": row.get("ttft_ms"),
+                    "attempt_ttft_ms": attempt_ttft_ms,
                     "latency_ms": row.get("latency_ms"),
                     "status_code": row.get("status_code"),
                     "error": row.get("error"),

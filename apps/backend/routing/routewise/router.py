@@ -395,6 +395,90 @@ def _row_refused_for_its_content(status_code: Any) -> bool:
     return is_client_error_status(_int_status(status_code))
 
 
+# Decision-metadata keys the router writes while it executes an attempt. They
+# travel with the decision metadata into ``_routing`` and come back on the
+# request's observation as ``strategy_metadata["routewise"]``.
+#
+# ``attempt_ttft_ms`` is the serving attempt's own time to first content,
+# measured from when that attempt was dispatched -- for a hedge, from when the
+# winning leg started -- and None when it produced none or is not streamed. It
+# is the only TTFT RouteWise learns from a request: the serving layer's clock
+# starts at request entry and keeps running through gateway work, earlier
+# attempts and a hedge's delay, and a non-streaming request has no first token
+# at all, only a wall time made mostly of the generation the caller asked for.
+#
+# ``attempt_completed`` is True once the attempt returned or its stream ended
+# without an exception. A failure the serving layer reports after that -- an
+# empty completion -- is its verdict on the response, not an endpoint fault.
+_ATTEMPT_TTFT_MS_KEY = "attempt_ttft_ms"
+_ATTEMPT_COMPLETED_KEY = "attempt_completed"
+
+
+def _first_content_ms(adapter: Any, attempt_started: float) -> float:
+    """Return a serving attempt's time to first content, in milliseconds.
+
+    ``attempt_started`` is the ``time.perf_counter()`` reading taken when the
+    attempt was dispatched. A hedge's winner is timed from when its own leg
+    started instead: a backup did not exist during the hedge delay, and charging
+    it that delay would make the leg that rescued the request look slow.
+    """
+    if isinstance(adapter, HedgedAdapter):
+        leg_ms = adapter.winner_first_content_ms()
+        if leg_ms is not None:
+            return leg_ms
+    return max(0.0, (time.perf_counter() - attempt_started) * 1000.0)
+
+
+def _routewise_observation_metadata(obs: RoutingObservation) -> Mapping[str, Any]:
+    """Return the decision metadata an observation carries back, or an empty mapping."""
+    strategy_metadata = getattr(obs, "strategy_metadata", None)
+    if not isinstance(strategy_metadata, dict):
+        return {}
+    routewise = strategy_metadata.get("routewise")
+    return routewise if isinstance(routewise, dict) else {}
+
+
+def _positive_ms(value: Any) -> float | None:
+    """Return ``value`` as a positive millisecond count, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if 0.0 < value < float("inf") else None
+
+
+def _observed_attempt_ttft_ms(obs: RoutingObservation) -> float | None:
+    """Return the per-attempt TTFT a successful observation carries, or None.
+
+    The router's own measurement wins whenever the observation brings the
+    decision metadata back, None included: a request RouteWise executed without
+    a first token (a non-streaming one) is an untimed success, whatever the
+    serving layer measured. Only an observation without that metadata -- one
+    built outside a RouteWise decision -- falls back to its ``ttft_ms``.
+    ``total_latency_ms`` is never a TTFT.
+    """
+    routewise = _routewise_observation_metadata(obs)
+    if _ATTEMPT_TTFT_MS_KEY in routewise:
+        return _positive_ms(routewise[_ATTEMPT_TTFT_MS_KEY])
+    return _positive_ms(getattr(obs, "ttft_ms", None))
+
+
+def _failure_is_endpoint_evidence(obs: RoutingObservation) -> bool:
+    """Return whether a failed observation says something about the endpoint's latency.
+
+    Left out: a refusal the upstream blamed on the request
+    (``_refused_for_its_content``), and a terminal failure of an attempt the
+    router saw complete -- the serving layer judging a finished response
+    unusable, an empty completion above all, which any caller can produce with
+    a stop sequence.
+    """
+    if _refused_for_its_content(obs):
+        return False
+    return not (
+        getattr(obs, "terminal", True)
+        and _routewise_observation_metadata(obs).get(_ATTEMPT_COMPLETED_KEY) is True
+    )
+
+
 # Where a request's prefix-cache blocks are kept in its routing context.
 _PREFIX_BLOCKS_KEY = "prefix_cache_blocks"
 
@@ -1475,18 +1559,23 @@ class RouteWiseRouter:
         )
 
     def _latency_estimate(self, endpoint_id: str, now: float) -> tuple[float, str]:
+        prior_ms = self._latency_history_priors_ms.get(endpoint_id)
+        if prior_ms is not None and prior_ms > 0:
+            base_ms, base_source = prior_ms, "history_prior"
+        else:
+            base_ms, base_source = self.config.latency_unprofiled_ttft_ms, "fallback"
         profile = self._latency_profiles.get(endpoint_id)
         if profile is not None and profile.total_count(now) > 0:
             mean = profile.mean_with_errors_sec(
                 now,
                 error_penalty_ms=RATE_LIMIT_ERROR_PENALTY_MS,
+                # An untimed success in a window with no timed one starts
+                # answering, as far as anyone knows, like the prior says.
+                untimed_success_ms=base_ms,
             )
             if mean is not None:
                 return mean, "profile"
-        prior_ms = self._latency_history_priors_ms.get(endpoint_id)
-        if prior_ms is not None and prior_ms > 0:
-            return prior_ms / 1000.0, "history_prior"
-        return self.config.latency_unprofiled_ttft_ms / 1000.0, "fallback"
+        return base_ms / 1000.0, base_source
 
     def _mean_ttft_sec(self, endpoint_id: str, now: float) -> float:
         return self._latency_estimate(endpoint_id, now)[0]
@@ -2750,24 +2839,8 @@ class RouteWiseRouter:
         if obs.completion_tokens > 0:
             self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
-        if (
-            obs.endpoint_id
-            and obs.endpoint_id in self._latency_profiles
-            and not _refused_for_its_content(obs)
-        ):
-            now = time.time()
-            error_type: str | None = None if obs.success else "error"
-            latency_ms = (
-                obs.ttft_ms
-                if obs.ttft_ms is not None
-                else obs.total_latency_ms
-                if obs.success
-                else -1.0
-            )
-            if error_type is None and latency_ms > 0:
-                self._record_latency_success(obs.endpoint_id, now, latency_ms)
-            else:
-                self._latency_profiles[obs.endpoint_id].record(now, latency_ms, error_type)
+        if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:
+            self._record_latency_outcome(obs)
 
         if obs.prompt_tokens > 0 and obs.completion_tokens > 0:
             sample_cost = self._reference_api_cost(
@@ -2785,6 +2858,27 @@ class RouteWiseRouter:
             obs.completion_tokens,
             obs.success,
         )
+
+    def _record_latency_outcome(self, obs: RoutingObservation) -> None:
+        """Feed one observed attempt into its endpoint's latency profile.
+
+        A success with a per-attempt TTFT is a timed sample; one without -- a
+        non-streaming response -- is an untimed success, which keeps the error
+        share honest without moving the latency estimate. A failure is an error
+        sample only when it is evidence about the endpoint
+        (``_failure_is_endpoint_evidence``).
+        """
+        endpoint_id = obs.endpoint_id
+        now = time.time()
+        if obs.success:
+            ttft_ms = _observed_attempt_ttft_ms(obs)
+            if ttft_ms is not None:
+                self._record_latency_success(endpoint_id, now, ttft_ms)
+            else:
+                self._latency_profiles[endpoint_id].record(now, -1.0, None)
+            return
+        if _failure_is_endpoint_evidence(obs):
+            self._latency_profiles[endpoint_id].record(now, -1.0, "error")
 
     def bootstrap_from_log_rows(
         self,
@@ -2940,18 +3034,21 @@ class RouteWiseRouter:
 
     @classmethod
     def _bootstrap_latency_ms(cls, row: Mapping[str, Any], success: bool) -> float:
+        """Return the TTFT a replayed row contributes, or -1.0 for none.
+
+        The same rule as a live observation (``_observed_attempt_ttft_ms``): the
+        router's per-attempt measurement when the row's metadata carries one,
+        otherwise the logged TTFT, and never ``latency_ms`` -- a non-streaming
+        row's wall time is mostly the generation its caller asked for. A
+        success with neither replays as an untimed success.
+        """
         if not success:
             return -1.0
-        ttft_ms = row.get("ttft_ms")
-        if ttft_ms is not None:
-            try:
-                return float(ttft_ms)
-            except (TypeError, ValueError):
-                pass
-        try:
-            return float(row.get("latency_ms") or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
+        for key in (_ATTEMPT_TTFT_MS_KEY, "ttft_ms"):
+            ttft_ms = _positive_ms(row.get(key))
+            if ttft_ms is not None:
+                return ttft_ms
+        return -1.0
 
     @classmethod
     def _bootstrap_error_type(cls, row: Mapping[str, Any]) -> str:
@@ -3001,6 +3098,9 @@ class RouteWiseRouter:
             endpoint_id = endpoint_id_for_adapter(adapter)
             # No req_ctx.UPSTREAM_PRIORITY here, deliberately: see the note on
             # _execute_stream_adapter.
+            # A non-streaming response has no first token to time: what the call
+            # takes is mostly the generation the caller asked for.
+            decision.metadata[_ATTEMPT_TTFT_MS_KEY] = None
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 result = await adapter.chat_completion(messages, **params)
@@ -3011,6 +3111,7 @@ class RouteWiseRouter:
                     # A composite adapter may replace its config with the leg
                     # that actually served, so resolve the endpoint after the call.
                     self._on_success(endpoint_id_for_adapter(adapter))
+            decision.metadata[_ATTEMPT_COMPLETED_KEY] = True
             if getattr(adapter, "config", None) is not original_config:
                 decision.metadata["backup_won"] = True
             return result
@@ -3049,15 +3150,21 @@ class RouteWiseRouter:
             with req_ctx.push(model=model_id, provider=adapter.config.provider):
                 self._ensure_health(endpoint_id)
                 first = True
+                decision.metadata[_ATTEMPT_TTFT_MS_KEY] = None
+                attempt_started = time.perf_counter()
                 async for chunk in adapter.stream_chat_completion(messages, **params):
                     if first and has_non_empty_content(chunk):
                         first = False
+                        decision.metadata[_ATTEMPT_TTFT_MS_KEY] = _first_content_ms(
+                            adapter, attempt_started
+                        )
                         # HedgedAdapter already records the winning leg. For
                         # other adapters, resolve the endpoint after first output
                         # in case the adapter swapped its serving config.
                         if not getattr(adapter, "reports_leg_outcomes", False):
                             self._on_success(endpoint_id_for_adapter(adapter))
                     yield chunk
+                decision.metadata[_ATTEMPT_COMPLETED_KEY] = True
         finally:
             if getattr(adapter, "config", None) is not original_config:
                 decision.metadata["backup_won"] = True

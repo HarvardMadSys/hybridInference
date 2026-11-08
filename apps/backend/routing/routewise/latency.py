@@ -38,10 +38,14 @@ class ProviderProfile:
     _events: deque[tuple[float, float, str | None]] = field(init=False, repr=False)
     # Running aggregates over exactly the outcomes currently in ``_events``.
     # A "timed success" (no error, positive TTFT) feeds the count and the sum;
-    # an error feeds the error count; a success recorded without a usable TTFT
-    # is in neither, which is what the scan-based implementation counted too.
+    # an error feeds the error count. An "untimed success" -- a success with no
+    # TTFT to give, such as a non-streaming response, whose wall time is mostly
+    # the generation the caller asked for -- feeds only its own count: it is
+    # evidence that the endpoint answers, so it keeps the error share honest,
+    # but it says nothing about how fast the endpoint starts answering.
     _success_count: int = field(default=0, init=False, repr=False)
     _success_sum_ms: float = field(default=0.0, init=False, repr=False)
+    _untimed_success_count: int = field(default=0, init=False, repr=False)
     _error_count: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -55,6 +59,8 @@ class ProviderProfile:
         elif ttft_ms > 0:
             self._success_count += 1
             self._success_sum_ms += ttft_ms
+        else:
+            self._untimed_success_count += 1
 
     def _remove_from_aggregates(self, event: tuple[float, float, str | None]) -> None:
         _ts, ttft_ms, error_type = event
@@ -63,6 +69,8 @@ class ProviderProfile:
         elif ttft_ms > 0:
             self._success_count -= 1
             self._success_sum_ms -= ttft_ms
+        else:
+            self._untimed_success_count -= 1
         # Re-anchor on empty so repeated add/subtract cycles cannot accumulate
         # floating-point drift in the running sum.
         if self._success_count <= 0:
@@ -80,7 +88,8 @@ class ProviderProfile:
         Args:
             timestamp: Unix timestamp of the request.
             ttft_ms: Time to first token in milliseconds.  Non-positive values
-                are treated as missing TTFT.
+                are treated as missing TTFT: a success without one is recorded
+                as an untimed success.
             error_type: None for success, or error type string.
         """
         events = self._events
@@ -121,11 +130,12 @@ class ProviderProfile:
             if error_type is None and ttft_ms > 0 and ttft_ms / 1000.0 <= threshold_sec
         )
 
+        # Only timed successes describe the latency distribution, so only they
+        # are F_success's denominator. Every outcome -- untimed successes too --
+        # describes how often the endpoint answers at all.
         f_success = success_within / success_count
-        # Denominator counts real outcomes (timed successes + errors); a success
-        # recorded with a non-positive TTFT is not a real outcome and must not
-        # inflate it, which would otherwise deflate the CDF.
-        success_rate = 1.0 - (error_count / (success_count + error_count))
+        outcomes = success_count + self._untimed_success_count + error_count
+        success_rate = 1.0 - (error_count / outcomes)
         return success_rate * f_success
 
     def mean_with_errors_sec(
@@ -133,14 +143,36 @@ class ProviderProfile:
         current_time: float,
         *,
         error_penalty_ms: float,
+        untimed_success_ms: float | None = None,
     ) -> float | None:
-        """Return success mean with failed attempts as synthetic penalty samples."""
+        """Return success mean with failed attempts as synthetic penalty samples.
+
+        An untimed success weighs in at the timed successes' mean -- it is
+        assumed to start answering like the requests that were timed -- so it
+        dilutes the error penalty without moving the latency estimate. With no
+        timed success in the window it weighs in at ``untimed_success_ms`` (the
+        caller's prior), or is left out when the caller gives none.
+        """
         self._prune(current_time)
-        total = self._success_count + self._error_count
-        if total == 0:
-            return None
-        penalized = self._success_sum_ms + self._error_count * float(error_penalty_ms)
-        return penalized / total / 1000.0
+        timed = self._success_count
+        errors = self._error_count
+        untimed = self._untimed_success_count
+        if timed:
+            success_mean_ms = self._success_sum_ms / timed
+        elif untimed and untimed_success_ms is not None:
+            success_mean_ms = float(untimed_success_ms)
+        else:
+            untimed = 0
+            success_mean_ms = 0.0
+        if not untimed:
+            total = timed + errors
+            if total == 0:
+                return None
+            penalized = self._success_sum_ms + errors * float(error_penalty_ms)
+            return penalized / total / 1000.0
+        successes = timed + untimed
+        penalized = successes * success_mean_ms + errors * float(error_penalty_ms)
+        return penalized / (successes + errors) / 1000.0
 
     def mean_ttft_sec(self, current_time: float) -> float:
         """Return mean successful TTFT in seconds within the current window."""
@@ -162,9 +194,17 @@ class ProviderProfile:
         return self._success_count
 
     def total_count(self, current_time: float) -> int:
-        """Return successful latency samples plus failed attempts in the window."""
+        """Return successful latency samples plus failed attempts in the window.
+
+        Untimed successes are not counted: alone they carry no latency evidence.
+        """
         self._prune(current_time)
         return self._success_count + self._error_count
+
+    def untimed_success_count(self, current_time: float) -> int:
+        """Return successes recorded without a TTFT in the current window."""
+        self._prune(current_time)
+        return self._untimed_success_count
 
     def last_event_time(self, current_time: float) -> float | None:
         """Return the newest retained event timestamp, or None when empty."""

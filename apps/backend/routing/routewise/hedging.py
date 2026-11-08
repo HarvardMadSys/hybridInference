@@ -118,6 +118,8 @@ class HedgedAdapter(BaseAdapter):
         self.hedge_success_probability: float | None = None
         self.failed_attempts: list[dict[str, Any]] = []
         self.leg_first_content_ttft_ms: dict[str, float] = {}
+        # Event-loop time the leg that won the stream race was started.
+        self._winner_started_at: float | None = None
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
         self._stream_backup_gen: AsyncGenerator[str, None] | None = None
         self._stream_backup_released = False
@@ -126,6 +128,21 @@ class HedgedAdapter(BaseAdapter):
         self.stream_race_deadline_sec = (
             None if stream_race_deadline_sec is None else max(0.0, float(stream_race_deadline_sec))
         )
+
+    def winner_first_content_ms(self) -> float | None:
+        """Return the stream race winner's time to first content, from its own start.
+
+        The primary is timed from when it was dispatched and a backup from when
+        it was started, so a winning backup is not charged the hedge delay it
+        did not exist for. None before a stream race has a winner.
+        """
+        recorded = self.leg_first_content_ttft_ms.get(_endpoint_id_from_adapter(self))
+        if recorded is not None:
+            return recorded
+        started = self._winner_started_at
+        if started is None:
+            return None
+        return max(0.0, (asyncio.get_running_loop().time() - started) * 1000.0)
 
     def _start_backup_at(
         self,
@@ -626,6 +643,7 @@ class HedgedAdapter(BaseAdapter):
                     # Tiebreaker: primary wins.
                     self.event_sink.record_success(primary_endpoint)
                     # self.config stays as primary.config (already correct).
+                    self._winner_started_at = schedule_start
                     self._schedule_stream_backup_cleanup(
                         next_task=backup_next_task,
                         close_generator=True,
@@ -635,6 +653,7 @@ class HedgedAdapter(BaseAdapter):
                     return primary_gen, backup_gen, primary_buffer
                 elif primary_has_content:
                     self.event_sink.record_success(primary_endpoint)
+                    self._winner_started_at = schedule_start
                     self._schedule_stream_backup_cleanup(
                         next_task=backup_next_task,
                         close_generator=True,
@@ -649,6 +668,7 @@ class HedgedAdapter(BaseAdapter):
                     assert self.backup is not None
                     self.config = self.backup.config
                     self.backup_won = True
+                    self._winner_started_at = backup_start
                     _cancel_task(primary_next_task)
                     _cancel_task(hedge_timer_task)
                     _cancel_task(race_deadline_task)
@@ -697,6 +717,7 @@ class HedgedAdapter(BaseAdapter):
 
             # Return primary's buffer (even if empty -- no content from either).
             self.event_sink.record_success(primary_endpoint)
+            self._winner_started_at = schedule_start
             _cancel_task(race_deadline_task)
             return primary_gen, backup_gen, primary_buffer
 

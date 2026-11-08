@@ -2264,7 +2264,8 @@ class LogStore(ABC):
         ``limit`` rows from the window, still ordered ascending for replay.
 
         ``include_metadata`` drives the per-row metadata JSON that only the
-        latency replay reads (``endpoint_id`` and ``failed_attempts``).  The
+        latency replay reads (``endpoint_id``, ``failed_attempts`` and
+        RouteWise's own ``attempt_ttft_ms``).  The
         envelope replay needs token counts alone, so it passes ``False`` and
         implementations may leave those fields unset rather than fetching and
         decoding a JSON document per row.

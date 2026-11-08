@@ -1033,9 +1033,17 @@ adapter binding), `require_target`, and `required_modalities`.
 completed request — endpoint id, TTFT, total latency, token counts, success,
 the upstream HTTP status of a failure (`status_code`, when it had one), and a
 `strategy_metadata` dict the strategy itself populated during selection.
-RouteWise leaves a failure whose status blames the request itself (the
-breaker's client-error rule: a 4xx other than 408, 429, 401 and 407) out of
-its latency profiles.
+RouteWise learns only what an attempt shows about its endpoint. Its latency
+sample is the attempt's own time to first content, which the router measures
+from that attempt's dispatch (a hedge leg's from its own start) and returns in
+`strategy_metadata`. It prefers that over the observation's TTFT, which can
+include gateway work and a hedge's delay, and never reads total latency, which
+is mostly the generation a caller asked for: a non-streaming success counts
+toward an endpoint's error share but not toward its latency mean. RouteWise
+leaves a failure whose status blames the request itself (the breaker's
+client-error rule: a 4xx other than 408, 429, 401 and 407) out of its latency
+profiles, and likewise a failure of an attempt it saw complete, such as an
+empty completion.
 A stateless strategy returns `None` from `record_observation`; an
 online-learning one updates its model there.
 
