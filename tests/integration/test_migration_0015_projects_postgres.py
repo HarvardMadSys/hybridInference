@@ -1,4 +1,4 @@
-"""``0012_projects``: the project model and the backfill that fills it."""
+"""``0015_projects``: the project model and the backfill that fills it."""
 
 from __future__ import annotations
 
@@ -20,8 +20,11 @@ async def scratch():
         yield name
 
 
-async def test_the_previous_release_keeps_working_while_it_runs(scratch):
-    await mig.upgrade(scratch, "0011_trim_oversized_preferences")
+@pytest.mark.parametrize(
+    "previous_revision", ["0011_trim_oversized_preferences", "0014_legacy_catalog_mirror"]
+)
+async def test_the_previous_release_keeps_working_while_it_runs(scratch, previous_revision):
+    await mig.upgrade(scratch, previous_revision)
     async with mig.connected(scratch) as conn:
         await conn.execute(
             "INSERT INTO users (id, email, password_hash) VALUES ('u-old', 'old@x.test', 'h')"
