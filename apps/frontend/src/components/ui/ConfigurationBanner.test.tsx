@@ -68,7 +68,7 @@ describe('ConfigurationBanner', () => {
     expect(banner).toHaveTextContent('Ask admin to configure');
     expect(screen.getByRole('link', { name: 'Open Settings' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/settings?tab=models',
+      '/dashboard/admin/settings?tab=models&missing=1',
     );
   });
 

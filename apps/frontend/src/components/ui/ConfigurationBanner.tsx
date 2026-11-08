@@ -54,8 +54,11 @@ function MissingConfigurationNotice(): JSX.Element | null {
         {state.user.is_admin ? (
           <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span className="font-semibold">Ask admin to configure</span>
+            {/* Filtered to the required settings that have no value, on every
+                sub-tab; clearing the filter lands on Models, where an empty
+                catalog -- the other way to be incomplete -- is fixed. */}
             <Link
-              href={`${ADMIN_SETTINGS_PATH}?tab=models`}
+              href={`${ADMIN_SETTINGS_PATH}?tab=models&missing=1`}
               prefetch={false}
               className="font-medium underline underline-offset-2"
             >
