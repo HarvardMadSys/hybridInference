@@ -77,6 +77,8 @@ class CostIncrement(NamedTuple):
     api_key_id: int | None
     cost_usd: Decimal | float
     requests: int = 1
+    org_id: str | None = None
+    project_id: str | None = None
 
 
 class CostWriteOutcomeUnknown(Exception):
@@ -652,6 +654,7 @@ class OperationalStore(ABC):
         inherit_account_quota: bool = False,
         name: str | None = None,
         max_active_keys: int | None = None,
+        project_id: str | None = None,
     ) -> Row:
         """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
 
@@ -693,6 +696,74 @@ class OperationalStore(ABC):
         api_key_encrypted, budget_daily_usd, budget_monthly_usd,
         allowed_models, spent_today_usd, spent_month_usd``; never the hash.
         The spend is the key's over the current UTC day and month.
+        """
+
+    # -- projects ------------------------------------------------------------
+    #
+    # A project belongs to the owner's personal organization. Its budgets are
+    # sub-limits of the account ceiling, and its allowlist narrows the models
+    # its keys may call. The Default project of each account is where keys go
+    # when the caller names none.
+
+    @abstractmethod
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        description: str | None = None,
+        budget_daily_usd: Decimal | float | None = None,
+        budget_monthly_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+        max_concurrent_requests: int | None = None,
+    ) -> Row:
+        """Insert a project under the user's personal organization."""
+
+    @abstractmethod
+    async def list_projects(self, user_id: str) -> list[Row]:
+        """Return the user's active projects, newest first."""
+
+    @abstractmethod
+    async def get_default_project(self, user_id: str) -> Row | None:
+        """Return the user's Default project."""
+
+    @abstractmethod
+    async def get_project(self, user_id: str, project_id: str) -> Row | None:
+        """Return one active project owned by *user_id*, or None."""
+
+    @abstractmethod
+    async def update_project(
+        self, user_id: str, project_id: str, changes: dict[str, Any]
+    ) -> Row | None:
+        """Update named project columns; return the row, or None when absent."""
+
+    @abstractmethod
+    async def archive_project(self, user_id: str, project_id: str) -> int:
+        """Archive a project and revoke its keys; return keys revoked."""
+
+    @abstractmethod
+    async def get_project_spend(self, project_id: str) -> tuple[float, float]:
+        """The project's spend on the current UTC day and month, ``(today, month)``."""
+
+    @abstractmethod
+    async def count_project_keys(self, project_id: str) -> int:
+        """Return how many active keys the project holds."""
+
+    @abstractmethod
+    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
+        """Update an organization's ceilings or status; return the row."""
+
+    @abstractmethod
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Return the status of the account's personal organization, or None."""
+
+    @abstractmethod
+    async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
+        """Return ``(daily, monthly)`` ceilings for the account, monthly None when unset.
+
+        Reads the personal organization first and falls back to the legacy key
+        quota while the organization has no ceiling of its own.
         """
 
     @abstractmethod
@@ -1188,6 +1259,8 @@ class OperationalStore(ABC):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
 
@@ -1204,6 +1277,8 @@ class OperationalStore(ABC):
         writes them.
 
         Args:
+            org_id: Organization attributed at request admission.
+            project_id: Project attributed at request admission.
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
             day: Date string (YYYY-MM-DD). Defaults to UTC today.
@@ -1233,6 +1308,8 @@ class OperationalStore(ABC):
                 day=increment.day,
                 api_key_id=increment.api_key_id,
                 requests=increment.requests,
+                org_id=increment.org_id,
+                project_id=increment.project_id,
             )
 
     @abstractmethod

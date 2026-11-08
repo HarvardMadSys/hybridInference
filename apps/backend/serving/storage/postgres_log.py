@@ -108,7 +108,7 @@ _LOG_COLUMNS = """
     tools, upstream_cost_usd,
     num_turns, num_user_turns, num_tool_calls,
     last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
+    served_model_id, served_endpoint_id, agent_job_id, batch_job_id, key_id, project_id
 """
 _LOG_VALUES = """
     $1, $2, $3,
@@ -121,7 +121,7 @@ _LOG_VALUES = """
     $26::jsonb, $27,
     $28, $29, $30,
     $31, $32, $33,
-    $34, $35, $36, $37
+    $34, $35, $36, $37, $38, $39
 """
 
 
@@ -397,6 +397,8 @@ class PostgresLogStore(LogStore):
                     served_endpoint,
                     (sanitized_metadata or {}).get("agent_job_id"),
                     (sanitized_metadata or {}).get("batch_job_id"),
+                    (sanitized_metadata or {}).get("api_key_id"),
+                    (sanitized_metadata or {}).get("project_id"),
                 ),
             )
         if fenced:

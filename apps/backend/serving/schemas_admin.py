@@ -45,6 +45,9 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
         description="The signed-in administrator's password: needed for a key for any account "
         "other than the caller's own",
     )
+    project_id: str | None = Field(
+        None, description="Project to bind the key to; the user's Default when omitted"
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -65,6 +68,8 @@ class CreateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     quota_monthly_cost_usd: Decimal | None
     expires_at: datetime | None
     created_at: datetime
+    project_id: str | None = None
+    project_name: str | None = None
     warning: str = Field(
         default="⚠️ Save this API key now. It cannot be retrieved later.",
         description="Security warning",
@@ -86,6 +91,8 @@ class APIKeyListItem(BaseModel):  # type: ignore[no-any-unimported]
     usage_today_usd: Decimal = Field(default=Decimal("0"), description="Cost spent today")
     usage_month_usd: Decimal = Field(default=Decimal("0"), description="Cost spent this month")
     notes: str | None
+    project_id: str | None = None
+    project_name: str | None = None
 
 
 class ListAPIKeysResponse(BaseModel):  # type: ignore[no-any-unimported]

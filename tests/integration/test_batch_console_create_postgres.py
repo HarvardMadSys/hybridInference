@@ -1018,10 +1018,7 @@ async def test_a_revoked_key_fails_an_unfinished_batch(gateway):
 
 async def test_zero_quota_still_uploads_and_checks_but_does_not_submit(gateway):
     gw, alice = gateway, gateway.users["alice"]
-    async with gw.pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE api_keys SET quota_daily_cost_usd = 0 WHERE user_id = $1", alice["user_id"]
-        )
+    await gw.users["op_store"].update_key(alice["user_id"], quota_daily_cost_usd=Decimal("0"))
     source = await upload(gw, alice, jsonl([chat_row("z-1", gw.chat.config.id)]))
     report = (await preflight(gw, alice, source["id"])).json()
     assert report["valid"] is True
@@ -1032,10 +1029,7 @@ async def test_zero_quota_still_uploads_and_checks_but_does_not_submit(gateway):
 
 async def test_a_spent_monthly_quota_is_named_in_the_refusal(gateway):
     gw, alice = gateway, gateway.users["alice"]
-    async with gw.pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE api_keys SET quota_monthly_cost_usd = 0 WHERE user_id = $1", alice["user_id"]
-        )
+    await gw.users["op_store"].update_key(alice["user_id"], quota_monthly_cost_usd=Decimal("0"))
     source = await upload(gw, alice, jsonl([chat_row("mq-1", gw.chat.config.id)]))
     report = (await preflight(gw, alice, source["id"])).json()
     refused = await submit(gw, alice, await submission(gw, alice, source, report))
