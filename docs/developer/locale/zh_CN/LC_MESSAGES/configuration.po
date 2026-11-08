@@ -2592,3 +2592,7 @@ msgstr ""
 #~ "key pool, such as `MINIMAX_API_KEY2`, "
 #~ "once one is set;"
 #~ msgstr "provider key 池里带编号的额外 key，比如 `MINIMAX_API_KEY2`，只要设置了其中一个就会列出；"
+
+#: ../developer/configuration.md
+msgid "`p95_latency_per_provider` reads each request's duration from its request-log line, per upstream provider, for successful requests and failures alike. A request served through the chat completions router (`/v1/chat/completions`, its compatibility routes and `/v1/responses`) names the model and the provider that served it on that line. The duration is the whole request, so a stream's runs to its last byte: set `threshold_ms`, and per-provider `overrides`, above the time a provider normally takes to finish your traffic."
+msgstr "`p95_latency_per_provider` 按上游服务商，从每个请求的请求日志行读取其耗时，成功的请求和失败的请求都计入。经由聊天补全路由器处理的请求（`/v1/chat/completions`、它的兼容路由以及 `/v1/responses`）会在这一行写明为其提供服务的模型和服务商。耗时指整个请求的时长，流式请求要算到最后一个字节：请把 `threshold_ms` 以及各服务商的 `overrides` 设得高于某个服务商完成你的流量通常所需的时间。"

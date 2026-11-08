@@ -76,6 +76,14 @@ covers less than `window_sec`, and a rate alert says
 any other path still count toward the rate, and the line says how many it left
 out.
 
+`p95_latency_per_provider` reads each request's duration from its request-log
+line, per upstream provider, for successful requests and failures alike. A
+request served through the chat completions router (`/v1/chat/completions`, its
+compatibility routes and `/v1/responses`) names the model and the provider that
+served it on that line. The duration is the whole request, so a stream's runs
+to its last byte: set `threshold_ms`, and per-provider `overrides`, above the
+time a provider normally takes to finish your traffic.
+
 The files are not the whole story once a database is configured. The admin
 console writes providers, keys, routes, weights and per-model overrides to the
 operational store, and the gateway re-applies that state on top of the loaded

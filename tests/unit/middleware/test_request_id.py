@@ -120,14 +120,14 @@ async def test_clearing_provider_preserves_reader_defaults() -> None:
 async def test_reset_keeps_keys_outside_the_request_scope() -> None:
     """Only per-request keys are cleared; unrelated context is left alone.
 
-    ``model`` and similar are scoped by the self-unwinding ``req_ctx.push``
-    around the adapter call rather than by this reset, so a blanket wipe would
-    be clearing state the middleware has no business owning.
+    ``upstream_queue_deadline`` and similar are scoped by the self-unwinding
+    ``req_ctx.push`` around the adapter call rather than by this reset, so a
+    blanket wipe would be clearing state the middleware has no business owning.
     """
-    req_ctx.update({"model": "kept-model"})
+    req_ctx.update({req_ctx.UPSTREAM_QUEUE_DEADLINE: "kept-deadline"})
     captured: dict = {}
     await _drive([], captured)
-    assert captured.get("model") == "kept-model"
+    assert captured.get(req_ctx.UPSTREAM_QUEUE_DEADLINE) == "kept-deadline"
 
 
 #: The per-request keys as of this change, spelled out here rather than read from
@@ -147,6 +147,9 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "affinity_key",
         "client_error_kind",
         "provider",
+        # Published with ``provider`` once routing resolves, for the request
+        # log's line; a leftover would name the last request's model.
+        "model",
         "pricing_time",
         "pricing_snapshot",
         # Written durably by the Anthropic Messages surface, which has no

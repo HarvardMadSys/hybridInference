@@ -133,6 +133,10 @@ REQUEST_SCOPED_KEYS = (
     PRICING_SNAPSHOT,
     CLIENT_ERROR_KIND,
     PROVIDER,
+    # The model that served, published with PROVIDER once routing resolves
+    # (``routing_info.publish_served_route``); a leftover would put the last
+    # request's model on the next request's log line.
+    "model",
     # Trusted-probe verdict published by the inference handlers.
     # RequestLogMiddleware demotes probe request lines from it, so a leftover
     # True would demote the *next* request on the task — a request to a path
