@@ -1,5 +1,18 @@
 name: CI
 
+# Unreviewed code on self-hosted runners. A push to murphy/dev/* and a
+# dispatch on any ref run that ref's code, which no one has reviewed, on the
+# persistent self-hosted hosts with sudo and docker, which is root there. The
+# publish jobs below run on hosts of the same pool. In this repository they
+# keep their registry login in a Docker config of their own and leave no token
+# in the checkout, which takes the publishing credential out of the places
+# every job shares; nothing here protects a job on a host that earlier code
+# already owns. These would, and they are the operator's choices to make:
+#   - drop the murphy/dev/* trigger, so that only reviewed code (dev, main)
+#     runs here and pull requests run GitHub-hosted;
+#   - gate workflow_dispatch behind a protected environment, or route it to
+#     GitHub-hosted runners as pull requests are;
+#   - publish from dedicated or ephemeral runners that run nothing else.
 on:
   workflow_dispatch:
   schedule:
@@ -1005,6 +1018,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          # The token holds packages: read, and nothing here fetches again.
+          persist-credentials: false
 
       - name: Select tutorial ports
         id: tutorial-port
@@ -1552,6 +1567,17 @@ jobs:
   # The explicit result checks are the real gate. The precheck's RESULT is
   # deliberately not required: if it failed, its empty output simply means
   # "build" — the safe direction.
+  #
+  # Credentials (every job that logs in to the registry, here and in
+  # build-candidates.yml): the login goes in a Docker config of the job's own
+  # under RUNNER_TEMP, never in the runner account's ~/.docker/config.json.
+  # Every job on these hosts reads and writes that file, push CI on unreviewed
+  # branches included, and the job's packages: write token would sit there
+  # for as long as the job ran; two publish jobs on one host could also log
+  # each other out of it. A last step removes the login, and the runner empties
+  # RUNNER_TEMP after the job anyway. The CLI plugins stay visible, since
+  # buildx may be installed for the runner account alone. The checkouts here
+  # leave no token in .git/config either.
   publish-backend-precheck:
     name: Publish backend candidate (precheck)
     # ONE existence query, shared by both arch builds and the stitch. When
@@ -1605,12 +1631,26 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
+      - name: Keep the registry login in this job's own Docker config
+        # See "Credentials" above publish-backend-precheck in ci.yml.
+        run: |
+          set -euo pipefail
+          plugins="${DOCKER_CONFIG:-${HOME}/.docker}/cli-plugins"
+          docker_config="${RUNNER_TEMP}/docker-config"
+          rm -rf "${docker_config}"
+          mkdir -m 0700 "${docker_config}"
+          if [ -d "${plugins}" ]; then
+            ln -s "${plugins}" "${docker_config}/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-backend-precheck.outputs.existing == ''
         with:
           # Full fetch avoids the intermittent unresolved-delta failures seen
           # with shallow clones on the self-hosted runner pool.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Isolate the Buildx config per job
         run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
@@ -1647,6 +1687,10 @@ jobs:
           cache-from: type=gha,scope=backend-arm64
           cache-to: type=gha,mode=min,scope=backend-arm64
 
+      - name: Remove the registry login
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/docker-config/config.json"
+
   publish-backend-amd64:
     name: Publish backend candidate (amd64)
     # Native twin of the arm64 half, on the dedicated x86_64 build runner.
@@ -1664,10 +1708,24 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
+      - name: Keep the registry login in this job's own Docker config
+        # See "Credentials" above publish-backend-precheck in ci.yml.
+        run: |
+          set -euo pipefail
+          plugins="${DOCKER_CONFIG:-${HOME}/.docker}/cli-plugins"
+          docker_config="${RUNNER_TEMP}/docker-config"
+          rm -rf "${docker_config}"
+          mkdir -m 0700 "${docker_config}"
+          if [ -d "${plugins}" ]; then
+            ln -s "${plugins}" "${docker_config}/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-backend-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Isolate the Buildx config per job
         run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
@@ -1699,6 +1757,10 @@ jobs:
           cache-from: type=gha,scope=backend-amd64
           cache-to: type=gha,mode=min,scope=backend-amd64
 
+      - name: Remove the registry login
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/docker-config/config.json"
+
   publish-backend:
     name: Publish backend candidate
     # The stitch: assemble both native halves into one manifest list under
@@ -1716,6 +1778,19 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Keep the registry login in this job's own Docker config
+        # See "Credentials" above publish-backend-precheck in ci.yml.
+        run: |
+          set -euo pipefail
+          plugins="${DOCKER_CONFIG:-${HOME}/.docker}/cli-plugins"
+          docker_config="${RUNNER_TEMP}/docker-config"
+          rm -rf "${docker_config}"
+          mkdir -m 0700 "${docker_config}"
+          if [ -d "${plugins}" ]; then
+            ln -s "${plugins}" "${docker_config}/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
       - name: Log in to GHCR
         if: needs.publish-backend-precheck.outputs.existing == ''
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -1772,6 +1847,10 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Remove the registry login
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/docker-config/config.json"
+
   # ---- Neutral console candidate publishing -----------------------------
   # W7 makes the console an upstream artifact too. These jobs deliberately
   # pass no distribution branding or private route target: deployments inject
@@ -1821,10 +1900,24 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
+      - name: Keep the registry login in this job's own Docker config
+        # See "Credentials" above publish-backend-precheck in ci.yml.
+        run: |
+          set -euo pipefail
+          plugins="${DOCKER_CONFIG:-${HOME}/.docker}/cli-plugins"
+          docker_config="${RUNNER_TEMP}/docker-config"
+          rm -rf "${docker_config}"
+          mkdir -m 0700 "${docker_config}"
+          if [ -d "${plugins}" ]; then
+            ln -s "${plugins}" "${docker_config}/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-console-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Isolate the Buildx config per job
         run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
@@ -1877,6 +1970,10 @@ jobs:
             fi
           '
 
+      - name: Remove the registry login
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/docker-config/config.json"
+
   publish-console-amd64:
     name: Publish console candidate (amd64)
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
@@ -1889,10 +1986,24 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
+      - name: Keep the registry login in this job's own Docker config
+        # See "Credentials" above publish-backend-precheck in ci.yml.
+        run: |
+          set -euo pipefail
+          plugins="${DOCKER_CONFIG:-${HOME}/.docker}/cli-plugins"
+          docker_config="${RUNNER_TEMP}/docker-config"
+          rm -rf "${docker_config}"
+          mkdir -m 0700 "${docker_config}"
+          if [ -d "${plugins}" ]; then
+            ln -s "${plugins}" "${docker_config}/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         if: needs.publish-console-precheck.outputs.existing == ''
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Isolate the Buildx config per job
         run: echo "BUILDX_CONFIG=${RUNNER_TEMP}/buildx" >> "${GITHUB_ENV}"
@@ -1943,6 +2054,10 @@ jobs:
             fi
           '
 
+      - name: Remove the registry login
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/docker-config/config.json"
+
   publish-console:
     name: Publish console candidate
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-console-arm64.result == 'success' && needs.publish-console-amd64.result == 'success' }}
@@ -1953,6 +2068,19 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Keep the registry login in this job's own Docker config
+        # See "Credentials" above publish-backend-precheck in ci.yml.
+        run: |
+          set -euo pipefail
+          plugins="${DOCKER_CONFIG:-${HOME}/.docker}/cli-plugins"
+          docker_config="${RUNNER_TEMP}/docker-config"
+          rm -rf "${docker_config}"
+          mkdir -m 0700 "${docker_config}"
+          if [ -d "${plugins}" ]; then
+            ln -s "${plugins}" "${docker_config}/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
       - name: Log in to GHCR
         if: needs.publish-console-precheck.outputs.existing == ''
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -2003,3 +2131,7 @@ jobs:
               echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-console@${INDEX}\` (tag \`dev-${GITHUB_SHA:0:8}\`)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the registry login
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/docker-config/config.json"
