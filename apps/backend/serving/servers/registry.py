@@ -11,6 +11,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -102,12 +103,13 @@ def resolve_reference(name: str) -> str | None:
 
 
 class RegistryConfigError(ValueError):
-    """A registry entry that is wrong, not merely unready: startup must stop.
+    """A catalog entry that is wrong, not merely unready: nothing is registered.
 
-    Registration otherwise ends at the first bad entry and the process serves
-    whatever was registered before it, which drops every later model without
-    an error. A missing environment value is different: that model is skipped
-    (see :class:`MissingEnvBackedKeyError`).
+    Registration is all or nothing, so one bad entry cannot leave the process
+    serving the models listed before it and silently dropping the rest. A
+    missing setting is different: that model is skipped (see
+    :class:`MissingEnvBackedKeyError`). The message names the model, the route
+    and the field, never a configured value.
     """
 
 
@@ -743,6 +745,47 @@ def _parse_role_gate(model: dict[str, Any], model_id: str) -> tuple[bool, str]:
     return admin_only, required_role
 
 
+def _register_embedding_model(
+    router: FixedRouter,
+    embedding_adapters: dict[str, Any],
+    model_id: str,
+    adapters_with_weights: list[tuple[Any, float]],
+    emb_adapter: Any,
+    *,
+    aliases: list[str],
+    admin_only: bool,
+    required_role: str,
+) -> None:
+    """Publish one embedding model's adapter and its access gate, aliases included."""
+    embedding_adapters[model_id] = emb_adapter
+    for alias in aliases:
+        embedding_adapters[alias] = emb_adapter
+    router.register_embedding_route(
+        model_id,
+        adapters_with_weights,
+        aliases=aliases,
+        admin_only=admin_only,
+        required_role=required_role,
+    )
+    # Every adapter key, including aliases, must have a gate.
+    _gate = router.embedding_routes
+    for _key in [model_id, *aliases]:
+        assert _key in _gate and _key in embedding_adapters, (
+            f"embedding registration invariant violated for {_key!r}: "
+            "adapter table and access-gate record must both exist"
+        )
+
+
+def _register_key_adapters(providers: set[str], registrations: list[tuple[str, object]]) -> None:
+    """Hand one model's adapters to runtime key-pool management."""
+    from serving.adapters import dynamic_keys
+
+    for provider_key in providers:
+        dynamic_keys.register_known_provider(provider_key)
+    for provider_key, adapter in registrations:
+        dynamic_keys.register_adapter_for_provider(provider_key, adapter)
+
+
 def register_from_models_yaml(
     router: FixedRouter,
     path: Path,
@@ -845,12 +888,24 @@ def register_from_models_document(
 ) -> tuple[int, list[ModelRegistrationInfo]]:
     """Register a database model document through the existing adapter boundary.
 
-    Every entry is checked first (:func:`check_model_entry`), so an entry
-    registration refuses is refused before any model is registered.
+    All of it or none of it. Every entry is checked (:func:`check_model_entry`)
+    and every adapter built before anything reaches *router*,
+    *embedding_adapters* or the provider-key registry, so an entry that cannot
+    register leaves them as they were instead of serving the models listed
+    before it. A model whose setting is unset is skipped instead, when
+    *continue_on_missing_env* allows.
+
+    Raises:
+        RegistryConfigError: An entry cannot be registered; the message names
+            the model.
+        MissingEnvBackedKeyError: A setting a model needs is unset, and
+            *continue_on_missing_env* is false.
     """
     models: list[dict[str, Any]] = check_models_document(data)
     count = 0
     model_infos: list[ModelRegistrationInfo] = []
+    # What registration writes, applied only once every model is built.
+    registrations: list[Callable[[], None]] = []
     # A model whose credential is unset is skipped, one warning per model, deep
     # in the log. Someone following the quickstart sees only an empty
     # /v1/models and then "Model not found", which sends them looking for a
@@ -1313,46 +1368,46 @@ def register_from_models_document(
                     emb_adapter = (
                         ordered[0] if len(ordered) == 1 else FallbackEmbeddingAdapter(ordered)
                     )
-                    embedding_adapters[model_id] = emb_adapter
-                    for alias in aliases:
-                        embedding_adapters[alias] = emb_adapter
                     # Embedding models bypass the weighted FixedRouter.
                     # Record their gate only when an adapter was configured;
                     # an optional route whose environment is unset is skipped.
                     admin_only, required_role = _parse_role_gate(m, model_id)
-                    router.register_embedding_route(
+                    registrations.append(
+                        partial(
+                            _register_embedding_model,
+                            router,
+                            embedding_adapters,
+                            model_id,
+                            adapters_with_weights,
+                            emb_adapter,
+                            aliases=aliases,
+                            admin_only=admin_only,
+                            required_role=required_role,
+                        )
+                    )
+                    count += 1 + len(aliases)
+            else:
+                # Chat models go through the full FixedRouter
+                admin_only, required_role = _parse_role_gate(m, model_id)
+                registrations.append(
+                    partial(
+                        router.register_route,
                         model_id,
                         adapters_with_weights,
                         aliases=aliases,
                         admin_only=admin_only,
                         required_role=required_role,
                     )
-                    # Every adapter key, including aliases, must have a gate.
-                    _gate = router.embedding_routes
-                    for _key in [model_id, *aliases]:
-                        assert _key in _gate and _key in embedding_adapters, (
-                            f"embedding registration invariant violated for {_key!r}: "
-                            "adapter table and access-gate record must both exist"
-                        )
-                    count += 1 + len(aliases)
-            else:
-                # Chat models go through the full FixedRouter
-                admin_only, required_role = _parse_role_gate(m, model_id)
-                router.register_route(
-                    model_id,
-                    adapters_with_weights,
-                    aliases=aliases,
-                    admin_only=admin_only,
-                    required_role=required_role,
                 )
                 count += 1 + len(aliases)
 
-            from serving.adapters import dynamic_keys
-
-            for provider_key in dynamic_key_providers:
-                dynamic_keys.register_known_provider(provider_key)
-            for provider_key, adapter in dynamic_key_registrations:
-                dynamic_keys.register_adapter_for_provider(provider_key, adapter)
+            registrations.append(
+                partial(
+                    _register_key_adapters,
+                    dynamic_key_providers,
+                    dynamic_key_registrations,
+                )
+            )
 
             # Collect per-model metadata for bootstrap (RouteWise strategy resolution)
             model_infos.append(
@@ -1373,6 +1428,18 @@ def register_from_models_document(
                     str(alias) for alias in (m.get("aliases") or [])
                 ]
             continue
+        except RegistryConfigError:
+            raise
+        except Exception as exc:
+            # An adapter that would not build (a backend extension's factory,
+            # say): name the model, as a refused entry is named.
+            raise RegistryConfigError(
+                f"model {m.get('id')!r} could not be registered: {exc!r}"
+            ) from exc
+
+    # Every model is built: only now does anything reach the router.
+    for register in registrations:
+        register()
 
     if report is not None:
         report.unset_env_vars.update(unset_env_vars)
