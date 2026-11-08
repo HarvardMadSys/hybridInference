@@ -28,6 +28,7 @@ from routing.endpoint_health import (
     DispatchClaim,
     EndpointHealthRegistry,
     _http_status_of,
+    failed_handling_request,
     failure_may_lose_prefix_cache,
 )
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
@@ -363,12 +364,17 @@ class _RouteAttempt:
     attempt it retries. ``adapter`` can be a binding's adapter instead, and an
     admin edit can put a new adapter behind the same endpoint id mid-request,
     so neither of those identifies a retry.
+
+    ``sent`` is whether the request had left the gateway when the attempt
+    failed (``_DispatchReport``): only then can its failure be the endpoint
+    failing on the request (``_failed_on_request``).
     """
 
     adapter: BaseAdapter
     error: BaseException
     offload: str | None = None
     route: BaseAdapter | None = None
+    sent: bool = False
 
 
 def _describes_request(exc: BaseException) -> bool:
@@ -739,6 +745,61 @@ def _stops_after_request_refusals(model_id: str, attempts: Sequence[_RouteAttemp
     )
 
 
+# How many more routes one request may try once an endpoint has failed on it.
+#
+# A 5xx, or a connection dropped once open, after the request had left the
+# gateway (``_failed_on_request``) is what an engine that crashed, ran out of
+# memory or restarted on the request looks like -- and a request that does that
+# to one engine will do it to the next. Walked on without a bound, such a
+# request was replayed on every route of its model and charged to every
+# breaker: three of them opened every circuit for a cooldown, and every other
+# caller of the model got a 503. Two more routes still cover the ordinary
+# failover -- one route down and another healthy, or two down and a third
+# healthy -- while bounding how many engines one request reaches. Each such
+# failure after the first is also kept off its breaker (``_charges_breaker``).
+_ROUTES_AFTER_ENDPOINT_FAULT = 2
+
+
+def _failed_on_request(attempt: _RouteAttempt) -> bool:
+    """Return whether ``attempt`` failed at an endpoint its request had reached."""
+    return attempt.sent and failed_handling_request(attempt.error)
+
+
+def _charges_breaker(earlier: Sequence[_RouteAttempt], attempt: _RouteAttempt) -> bool:
+    """Return whether a failed attempt is charged to its endpoint's breaker.
+
+    A request charges at most one breaker for failing on the endpoints it
+    reached: once one endpoint has failed on it, the next one failing the same
+    way is likely the request, not the endpoint, and charging each let a few
+    such requests open every circuit of a model. Every other failure is charged
+    as before, so a route that is simply down still opens its own circuit.
+    """
+    return not (_failed_on_request(attempt) and any(_failed_on_request(a) for a in earlier))
+
+
+def _stops_after_endpoint_fault(model_id: str, attempts: Sequence[_RouteAttempt]) -> bool:
+    """Return whether the walk ends: enough routes tried since an endpoint failed on the request.
+
+    Logs ``endpoint_fault_fallback_stopped`` when it returns True. See
+    ``_ROUTES_AFTER_ENDPOINT_FAULT`` for the policy.
+    """
+    first = next((i for i, attempt in enumerate(attempts) if _failed_on_request(attempt)), None)
+    if first is None or len(attempts) - first - 1 < _ROUTES_AFTER_ENDPOINT_FAULT:
+        return False
+    logger.info(
+        "Stopping fallback for %s: %d routes tried after an endpoint failed on the request",
+        model_id,
+        len(attempts) - first - 1,
+        extra={
+            "event": "endpoint_fault_fallback_stopped",
+            "model_id": model_id,
+            "endpoint_ids": [endpoint_id_for_adapter(attempt.adapter) for attempt in attempts],
+            "fault_endpoint_id": endpoint_id_for_adapter(attempts[first].adapter),
+        },
+    )
+    return True
+
+
 class _PrimaryOffload(NamedTuple):
     """How one request's primary attempt relates to its model's offload route.
 
@@ -995,6 +1056,7 @@ class FixedRouter:
         reason: str = "error",
         detail: str | None = None,
         exc: BaseException | None = None,
+        charge: bool = True,
     ) -> None:
         # An endpoint failing with a 5xx or with no answer at all may have lost
         # its prefix cache (restart, OOM, a container replaced under the same
@@ -1009,6 +1071,20 @@ class FixedRouter:
         # busiest.
         if failure_may_lose_prefix_cache(exc):
             self._prefill_load.forget_endpoint(endpoint_id)
+        if not charge:
+            # The request's earlier attempt was charged for failing the same
+            # way (``_charges_breaker``); the hints above are still forgotten,
+            # since this endpoint may have restarted all the same.
+            logger.info(
+                "repeat_fault_skip_breaker",
+                extra={
+                    "event": "repeat_fault_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "reason": reason,
+                    "detail": detail,
+                },
+            )
+            return
         self._health_registry.record_failure(
             endpoint_id,
             reason=reason,
@@ -2748,7 +2824,11 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
+            attempts = [
+                _RouteAttempt(
+                    primary, primary_error, primary_plan.reason, primary, primary_report.sent
+                )
+            ]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
@@ -2885,19 +2965,23 @@ class FixedRouter:
                     _mark_offload(resp["_routing"], attempts)
                     return resp
                 except Exception as fallback_error:
+                    attempt = _RouteAttempt(
+                        execution, fallback_error, offload_reason, adapter, fallback_report.sent
+                    )
                     self._on_failure(
                         endpoint_id,
                         reason="chat_exception",
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
+                        charge=_charges_breaker(attempts, attempt),
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(
-                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
-                    )
+                    attempts.append(attempt)
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
-                    if _stops_after_request_refusals(model_id, attempts):
+                    if _stops_after_request_refusals(
+                        model_id, attempts
+                    ) or _stops_after_endpoint_fault(model_id, attempts):
                         break
                     continue
                 finally:
@@ -3087,7 +3171,11 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
+            attempts = [
+                _RouteAttempt(
+                    primary, primary_error, primary_plan.reason, primary, primary_report.sent
+                )
+            ]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -3248,16 +3336,18 @@ class FixedRouter:
                             chunks_yielded = True
                     return
                 except Exception as fallback_error:
+                    attempt = _RouteAttempt(
+                        execution, fallback_error, offload_reason, adapter, fallback_report.sent
+                    )
                     self._on_failure(
                         adapter_endpoint_id,
                         reason="stream_exception",
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
+                        charge=_charges_breaker(attempts, attempt),
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(
-                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
-                    )
+                    attempts.append(attempt)
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
@@ -3280,7 +3370,9 @@ class FixedRouter:
                         raise
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
-                    if _stops_after_request_refusals(model_id, attempts):
+                    if _stops_after_request_refusals(
+                        model_id, attempts
+                    ) or _stops_after_endpoint_fault(model_id, attempts):
                         break
                     continue
                 finally:

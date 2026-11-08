@@ -91,7 +91,7 @@ route is not in that order: it comes next after an attempt that waited out its
 queue budget or its engine's first token, and last otherwise (see
 [Queue-wait offload](#queue-wait-offload)).
 
-Three deliberate exceptions:
+Four deliberate exceptions:
 
 - **A pinned request never falls back.** The caller asked for one endpoint, so
   a silent switch would produce a misleading result.
@@ -110,6 +110,18 @@ Three deliberate exceptions:
   limit), so the walk goes on to the routes that may serve it. The stop is
   logged as `request_refusal_fallback_stopped`; the hybrid composition walks its
   plan under the same bound.
+- **A request the endpoints fail on reaches at most two more routes.** A 5xx,
+  or a connection dropped once open, after the request left the gateway is
+  what an engine that crashed, ran out of memory or restarted on the request
+  looks like, and such a request does the same to the next engine. Once one
+  endpoint has failed on it that way, at most two more routes are tried, which
+  still covers one or two routes down with a healthy one behind them. Only the
+  first of those failures is charged to a circuit breaker: charged to every
+  route, three such requests opened every circuit of a model for a cooldown. A
+  route that refuses the connection, and a request that never left the
+  gateway, count for neither rule. The stop is logged as
+  `endpoint_fault_fallback_stopped` and a charge left off as
+  `repeat_fault_skip_breaker`.
 
 Successful responses carry a `_routing` blob (`provider`, `base_url`,
 `endpoint_id`, plus `fallback` and `failed_attempts` when a fallback ran) so

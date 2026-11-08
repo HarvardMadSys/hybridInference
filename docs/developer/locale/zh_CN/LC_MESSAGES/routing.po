@@ -3023,8 +3023,8 @@ msgid "Use `deployment_type: self_hosted` for an engine on another machine; its 
 msgstr "另一台机器上的引擎应使用 `deployment_type: self_hosted`；路由的 `base_url` 可以保留私有 IP 或 DNS 名。只声明这个字段不会启用队列上限，也不会预留卸载路由：这两项需要另行在 **Queue offload** 中配置。预留的卸载路由不接收常规加权流量；如果希望两条路由都接收常规流量，应设置路由权重，不要预留卸载路由。"
 
 #: ../developer/routing.md:94
-msgid "Three deliberate exceptions:"
-msgstr "有三个有意为之的例外："
+msgid "Four deliberate exceptions:"
+msgstr "有四个有意为之的例外："
 
 #: ../developer/routing.md:102
 msgid ""
@@ -3045,6 +3045,27 @@ msgstr ""
 "上下文窗口不足的拒绝不计入：回退本来就会跳过所有窗口不更宽的路由，保留更宽的那些。404 或 413 也不计入，它通常说明的是作答的那个路由（那台服务器不提供这个模型，"
 "或者某个代理的请求体大小上限），所以会继续走向可能提供这个模型的路由。这次停止会记录为 `request_refusal_fallback_stopped`；"
 "混合组合在遍历它的计划时也遵守同样的上限。"
+
+#: ../developer/routing.md:113
+msgid ""
+"**A request the endpoints fail on reaches at most two more routes.** A 5xx, "
+"or a connection dropped once open, after the request left the gateway is "
+"what an engine that crashed, ran out of memory or restarted on the request "
+"looks like, and such a request does the same to the next engine. Once one "
+"endpoint has failed on it that way, at most two more routes are tried, "
+"which still covers one or two routes down with a healthy one behind them. "
+"Only the first of those failures is charged to a circuit breaker: charged "
+"to every route, three such requests opened every circuit of a model for a "
+"cooldown. A route that refuses the connection, and a request that never "
+"left the gateway, count for neither rule. The stop is logged as "
+"`endpoint_fault_fallback_stopped` and a charge left off as "
+"`repeat_fault_skip_breaker`."
+msgstr ""
+"**端点在其上出错的请求，最多再试两个路由**。请求离开网关之后得到 5xx，或者连接建立后又断开，这正是引擎在这个请求上崩溃、"
+"内存耗尽或重启时从外面看到的样子，而这样的请求到了下一个引擎也会如此。一旦有一个端点这样在它上面出错，最多再试两个路由；"
+"一两个路由宕掉、后面还有一个健康路由的情况仍然能覆盖到。这些失败里只有第一次计入熔断器：如果每个路由都计入，三个这样的请求就会让一个模型的所有熔断器打开一整个冷却期。"
+"拒绝连接的路由，以及根本没有离开网关的请求，两条规则都不计入。这次停止会记录为 `endpoint_fault_fallback_stopped`，"
+"没有计入熔断器的那次会记录为 `repeat_fault_skip_breaker`。"
 
 #: ../developer/routing.md:224
 msgid ""
