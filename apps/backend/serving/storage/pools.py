@@ -21,7 +21,10 @@ Sizes, per gateway process:
 - request pool: 2 to 4. Its queries are primary-key and index lookups that
   take about a millisecond, one or two per request, so four connections serve
   thousands a second -- far more than a gateway process handles -- and two are
-  kept open so the steady state never waits for a new connection.
+  kept open so the steady state never waits for a new connection. A statement
+  on it is stopped after :data:`REQUEST_COMMAND_TIMEOUT_SEC`: with four
+  connections, one lookup gone slow must not hold a quarter of the pool for the
+  general pool's minute.
 - at most 14 connections in all (18 with the alert-history pool's 4), well
   under PostgreSQL's default ``max_connections`` of 100.
 """
@@ -43,8 +46,13 @@ GENERAL_POOL_MAX_SIZE = 10
 REQUEST_POOL_MIN_SIZE = 2
 REQUEST_POOL_MAX_SIZE = 4
 
-#: Statement timeout on both pools, in seconds: unchanged.
+#: Statement timeout on the general pool, in seconds: unchanged.
 COMMAND_TIMEOUT_SEC = 60
+
+#: Statement timeout on the request pool, in seconds. Thousands of times what
+#: one of its lookups takes, so it trips only on a stalled lookup, which then
+#: gives its connection back rather than keeping it for a minute.
+REQUEST_COMMAND_TIMEOUT_SEC = 5
 
 #: How long a request-path lookup waits for a connection. About a thousand
 #: times what one lookup takes, so it trips only when the database or the
@@ -73,8 +81,9 @@ async def request_connection(pool: Any, *, timeout: float | None = None) -> Asyn
     """A connection from *pool* for a request-path lookup, waited for at most *timeout*.
 
     *timeout* defaults to :data:`REQUEST_ACQUIRE_TIMEOUT_SEC`. Only the wait for
-    the connection is bounded: a statement that then runs long is the pool's
-    ``command_timeout``'s to stop, and its error is not turned into this one.
+    the connection is bounded here: a statement that then runs long is the
+    pool's ``command_timeout``'s to stop (:data:`REQUEST_COMMAND_TIMEOUT_SEC` on
+    the request pool), and its error is not turned into this one.
 
     Raises:
         DatabaseBusyError: No connection came free in time.

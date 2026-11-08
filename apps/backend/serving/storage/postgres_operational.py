@@ -2066,8 +2066,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
     async def session_is_live(self, user_id: str, sid: str) -> bool:
         """Whether *user_id*'s session *sid* exists, unrevoked and unexpired.
 
-        Found through ``idx_auth_sessions_user`` (user_id, expires_at): ``sid``
-        has no index of its own, and an account holds few sessions.
+        One probe of ``idx_auth_sessions_user_sid`` (user_id, sid), however
+        many sessions the account holds.
         """
         async with self._request_connection() as conn:
             return bool(

@@ -112,6 +112,10 @@ async def test_a_slow_statement_is_not_reported_as_a_busy_pool():
 
 def test_the_wait_is_seconds_not_minutes():
     assert 1 <= pools.REQUEST_ACQUIRE_TIMEOUT_SEC <= 5
+    # A request-pool statement gone slow gives its connection back in seconds:
+    # four of them held for the general pool's minute would refuse every request.
+    assert 1 <= pools.REQUEST_COMMAND_TIMEOUT_SEC <= 10
+    assert pools.REQUEST_COMMAND_TIMEOUT_SEC < pools.COMMAND_TIMEOUT_SEC
     assert pools.REQUEST_POOL_MAX_SIZE < pools.GENERAL_POOL_MAX_SIZE
     # Both pools together stay far below PostgreSQL's default of 100.
     assert pools.REQUEST_POOL_MAX_SIZE + pools.GENERAL_POOL_MAX_SIZE <= 20
@@ -208,7 +212,11 @@ async def test_the_logger_opens_a_general_and_a_request_pool(created):
     sizes = [(c["min_size"], c["max_size"], c["command_timeout"]) for c in created]
     assert sizes == [
         (pools.GENERAL_POOL_MIN_SIZE, pools.GENERAL_POOL_MAX_SIZE, pools.COMMAND_TIMEOUT_SEC),
-        (pools.REQUEST_POOL_MIN_SIZE, pools.REQUEST_POOL_MAX_SIZE, pools.COMMAND_TIMEOUT_SEC),
+        (
+            pools.REQUEST_POOL_MIN_SIZE,
+            pools.REQUEST_POOL_MAX_SIZE,
+            pools.REQUEST_COMMAND_TIMEOUT_SEC,
+        ),
     ]
     assert (logger.pool, logger.request_pool) == (created[0]["pool"], created[1]["pool"])
 

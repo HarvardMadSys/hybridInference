@@ -85,3 +85,29 @@ async def test_deleted_sessions_are_not_live(store):
 
     assert await store.session_is_live(USER, "sess_1") is False
     assert await store.session_is_live(OTHER, "sess_other") is True
+
+
+async def test_the_lookup_is_one_probe_however_many_sessions_the_account_holds(store):
+    """An account that signed in thousands of times: its sid is found, not searched for.
+
+    Through ``(user_id, expires_at)`` the lookup read every unexpired session of
+    the account to find the one sid -- on the request pool, on every request a
+    console token makes.
+    """
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO auth_sessions (id, user_id, refresh_token_hash, sid, expires_at) "
+            "SELECT 'as-many-' || g, $1, 'hash-many-' || g, 'sess_many_' || g, "
+            "NOW() + INTERVAL '30 days' FROM generate_series(1, 3000) AS g",
+            USER,
+        )
+        await conn.execute("ANALYZE auth_sessions")
+        plan = await conn.fetchval(
+            "EXPLAIN (ANALYZE, FORMAT JSON) SELECT EXISTS (SELECT 1 FROM auth_sessions "
+            "WHERE user_id = $1 AND expires_at > NOW() AND sid = $2 AND revoked IS NOT TRUE)",
+            USER,
+            "sess_many_1234",
+        )
+    text = str(plan)
+    assert "idx_auth_sessions_user_sid" in text
+    assert await store.session_is_live(USER, "sess_many_1234") is True

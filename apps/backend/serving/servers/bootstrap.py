@@ -1093,7 +1093,11 @@ async def initialize() -> AppServices:
                             backfill_missing as backfill_request_volume,
                             register_rollup_job as register_request_volume_job,
                         )
-                        from serving.storage import daily_activity_rollup, user_usage_rollup
+                        from serving.storage import (
+                            daily_activity_rollup,
+                            session_retention,
+                            user_usage_rollup,
+                        )
                         from serving.storage.responses_store import (
                             register_retention_job as register_responses_retention_job,
                         )
@@ -1107,6 +1111,8 @@ async def initialize() -> AppServices:
                             daily_activity_rollup.register_rollup_job(sched, db_logger.pool)
                             # Stored Responses past their retention, hourly.
                             register_responses_retention_job(sched, db_logger.pool)
+                            # The rows of ended console sessions, hourly.
+                            session_retention.register_retention_job(sched, db_logger.pool)
 
                             # Failed-request alerter: one job, paused while
                             # neither SLACK_WEBHOOK_URL nor
