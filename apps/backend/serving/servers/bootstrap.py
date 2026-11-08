@@ -74,9 +74,9 @@ from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices, database_enabled
 from .model_availability import record_skipped_models
 from .registry import (
-    EmbeddingsPathConfigError,
     ModelLoadReport,
     ModelRegistrationInfo,
+    RegistryConfigError,
     register_from_models_text,
     register_from_models_yaml,
 )
@@ -806,9 +806,10 @@ async def _init_router_and_models(
                 )
         else:
             _register_models_from_file(router, embedding_adapters, model_infos)
-    except EmbeddingsPathConfigError:
-        # A rejected explicit path must abort startup, not leave the server
-        # running on whatever models were registered before the bad entry.
+    except RegistryConfigError:
+        # An entry the registry refuses outright (an explicit embeddings path,
+        # a capability flag that is not a YAML boolean) must abort startup, not
+        # leave the server running on whatever models were registered before it.
         raise
     except Exception as exc:
         source = "the database route catalog" if stored_models is not None else "models.yaml"
