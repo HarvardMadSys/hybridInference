@@ -104,6 +104,84 @@ def _count_usage(message: SSEMessage, usage: dict[str, int]) -> None:
         extract_anthropic_usage_from_sse(f"{frame}\n".encode(), usage)
 
 
+# -- What the native passthrough refuses ---------------------------------------
+#
+# The passthrough forwards the caller's body and ``anthropic-beta`` header. Some
+# of what they can ask for runs on the provider's servers and is billed per use
+# on top of tokens -- web search, web fetch, code execution containers, tool
+# search, the advisor (a second model), MCP connectors, Agent Skills -- and none
+# of it reaches the gateway's billing: the usage it reads is input and output
+# tokens. Until the gateway can price that work, such a request is refused,
+# before anything is sent, rather than served at the operator's expense.
+
+#: Anthropic-defined tool types the *client* executes: Claude asks for the call
+#: and the caller runs it, as with a custom tool, so the request costs only its
+#: tokens. Every other ``type`` is refused, a future server tool included.
+_CLIENT_TOOL_TYPE_PREFIXES = ("bash_", "text_editor_", "memory_", "computer_")
+#: Top-level fields that set the provider's servers to work: MCP connectors, and
+#: the code-execution container Agent Skills run in.
+_SERVER_SIDE_FIELDS = ("mcp_servers", "container")
+#: Betas that exist to enable that work.
+_SERVER_TOOL_BETA_PREFIXES = (
+    "mcp-client-",
+    "code-execution-",
+    "web-fetch-",
+    "web-search-",
+    "advisor-tool-",
+    "skills-",
+)
+
+
+class ServerToolRefused(aiohttp.ClientResponseError):
+    """A native request for provider-side tool work the gateway cannot bill.
+
+    A 400 raised before anything is sent upstream: a ``ClientResponseError`` so
+    ``/v1/messages`` answers ``invalid_request_error`` with its message, and the
+    endpoint's breaker exempts it as the caller's request, as for any 4xx.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            request_info=None,  # type: ignore[arg-type]
+            history=(),
+            status=400,
+            message=message,
+        )
+
+    def __str__(self) -> str:
+        # ``ClientResponseError.__str__`` reads the request's URL, and there is
+        # no request.
+        return f"400, message={self.message!r}"
+
+
+def refuse_server_tools(body: dict[str, Any], extra_headers: dict[str, str] | None) -> None:
+    """Raise :class:`ServerToolRefused` when the request asks for a server-side tool.
+
+    Checks the tools' ``type`` (custom tools and :data:`_CLIENT_TOOL_TYPE_PREFIXES`
+    pass), the top-level :data:`_SERVER_SIDE_FIELDS` and the forwarded betas.
+    """
+    unsupported = "is not available through this gateway, which cannot bill the work it does"
+    for name in _SERVER_SIDE_FIELDS:
+        if body.get(name) is not None:
+            raise ServerToolRefused(f"`{name}` {unsupported}.")
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for index, tool in enumerate(tools):
+            kind = tool.get("type") if isinstance(tool, dict) else None
+            if kind is None or kind == "custom":
+                continue
+            if isinstance(kind, str) and kind.startswith(_CLIENT_TOOL_TYPE_PREFIXES):
+                continue
+            raise ServerToolRefused(
+                f"tools.{index}: the server tool {kind!r} {unsupported}. "
+                "Define your own tool and run it instead."
+            )
+    betas = (extra_headers or {}).get("anthropic-beta") or ""
+    for beta in (part.strip() for part in betas.split(",")):
+        if beta.startswith(_SERVER_TOOL_BETA_PREFIXES):
+            raise ServerToolRefused(f"The beta {beta!r} {unsupported}.")
+
+
 #: The ``anthropic-version`` values a batch item may carry upstream; the batch
 #: profiles (serving/batch/profiles.py) are held to this set by a test.
 _KNOWN_BATCH_VERSIONS = frozenset({"2023-06-01", "2026-10-21"})
@@ -422,7 +500,12 @@ class AnthropicAdapter(BaseAdapter):
         ``usage_sink`` is accepted for interface compatibility and left empty:
         the response's own Anthropic usage is all there is, with thinking
         already counted in ``output_tokens`` and no separate reasoning count.
+
+        Raises:
+            ServerToolRefused: The request asks for a server-side tool
+                (:func:`refuse_server_tools`); nothing was sent.
         """
+        refuse_server_tools(body, extra_headers)
         forward = dict(body)
         forward["model"] = self._upstream_model()
 
@@ -450,7 +533,12 @@ class AnthropicAdapter(BaseAdapter):
         Forwards raw upstream SSE bytes to the caller and accumulates the
         per-event usage counts into ``usage_sink`` so the router can
         record them in DB logging once the stream completes.
+
+        Raises:
+            ServerToolRefused: The request asks for a server-side tool
+                (:func:`refuse_server_tools`); nothing was sent.
         """
+        refuse_server_tools(body, extra_headers)
         forward = dict(body)
         forward["model"] = self._upstream_model()
         forward["stream"] = True
