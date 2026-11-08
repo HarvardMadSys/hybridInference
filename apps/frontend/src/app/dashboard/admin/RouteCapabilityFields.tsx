@@ -331,7 +331,7 @@ function ReasoningEffortFields({
   const keeps =
     context?.defaultMap && Object.keys(context.defaultMap).length
       ? `keeps its default mapping (${describeEffortMap(context.defaultMap)})`
-      : 'passes reasoning_effort on as before, with no mapping';
+      : 'handles reasoning_effort as it did before, with no mapping';
   return (
     <div className="mt-4" role="group" aria-labelledby={labelId}>
       <p id={labelId} className="text-[12px] font-medium text-gray-500">

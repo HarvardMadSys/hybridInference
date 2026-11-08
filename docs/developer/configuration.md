@@ -442,12 +442,14 @@ The same form and body carry a route's reasoning-effort map
 (`reasoning_effort_map`, see
 [Mapping reasoning-effort levels on a route](adding-models.md#mapping-reasoning-effort-levels-on-a-route)):
 **Reasoning effort levels**, one row per public level and the value the
-upstream receives for it. Unlike the four, it is optional in the body: left out
-or `null` (as in every override stored before it existed), the route keeps the
-map it has from the registry or its creation, so saving the four alone never
-clears one, and saving a map never changes the four or `supported_params`. A
-map replaces the route's own; resetting returns to it. The console sends no map
-while the rows match the route's default. A route whose adapter does not send
+upstream receives for it. Unlike the four, it is optional in the body. Left
+out, the route keeps the effort setting it has (a map set in the console, or
+else its own), so saving the four alone never clears one; an override stored
+before the field existed has none and follows the route's own map from the
+registry or its creation. `null` returns the route to that map while keeping
+the four. A map replaces the route's own, and saving one never changes the four
+or `supported_params`; resetting returns to the route's own map. The console
+sends a map only when its rows differ from the route's default. A route whose adapter does not send
 `reasoning_effort` refuses a map (422), and a route added from the console
 never takes another route's map. Route listings also report
 `reasoning_effort_mappable` and `reasoning_efforts_published`, the levels the

@@ -474,15 +474,20 @@ function withDefaultEffortMap(
   return { ...draft, reasoning_effort_map: defaults.reasoning_effort_map ?? null };
 }
 
-// A map equal to the route's default is not sent, so the route goes on
-// following its default rather than holding a copy of it.
+// The effort map to save with the other values. Different from the route's
+// default: the map. Equal to it: none is sent, which keeps the route's current
+// setting -- or, when a console map is in use now, null, which returns the
+// route to its default instead of keeping that map.
 function effortMapToSend(
   draft: RuntimeModelCapabilities,
   defaults: RouteCapabilities,
+  served: RouteCapabilities,
 ): RuntimeModelCapabilities {
   if (!sameEffortMap(draft.reasoning_effort_map, defaults.reasoning_effort_map)) return draft;
   const { reasoning_effort_map: _default, ...rest } = draft;
-  return rest;
+  return sameEffortMap(served.reasoning_effort_map, defaults.reasoning_effort_map)
+    ? rest
+    : { ...rest, reasoning_effort_map: null };
 }
 
 const CAPABILITY_FIELDS_INVALID = 'Fix the context length and max output to save.';
@@ -1142,7 +1147,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (!draft) return null;
     return sameCapabilities(draft, editCapabilities)
       ? null
-      : { capabilities: effortMapToSend(draft, editCapabilityDefaults) };
+      : { capabilities: effortMapToSend(draft, editCapabilityDefaults, editCapabilities) };
   })();
   const capabilityEditChanges: Change[] = (() => {
     if (!editingRoute || !editCapabilitySave || !editCapabilities || !editCapabilityDefaults) {

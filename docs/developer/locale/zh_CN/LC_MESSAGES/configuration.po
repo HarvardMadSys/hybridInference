@@ -3,7 +3,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-11-08 04:34-0500\n"
+"POT-Creation-Date: 2026-11-08 04:54-0500\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -1453,30 +1453,33 @@ msgid ""
 "(`reasoning_effort_map`, see [Mapping reasoning-effort levels on a route"
 "](adding-models.md#mapping-reasoning-effort-levels-on-a-route)): "
 "**Reasoning effort levels**, one row per public level and the value the "
-"upstream receives for it. Unlike the four, it is optional in the body: "
-"left out or `null` (as in every override stored before it existed), the "
-"route keeps the map it has from the registry or its creation, so saving "
-"the four alone never clears one, and saving a map never changes the four "
-"or `supported_params`. A map replaces the route's own; resetting returns "
-"to it. The console sends no map while the rows match the route's default."
-" A route whose adapter does not send `reasoning_effort` refuses a map "
-"(422), and a route added from the console never takes another route's "
-"map. Route listings also report `reasoning_effort_mappable` and "
-"`reasoning_efforts_published`, the levels the live route offers clients. "
-"A save answers only once the route this process serves uses the saved "
-"map; otherwise it answers 409."
+"upstream receives for it. Unlike the four, it is optional in the body. "
+"Left out, the route keeps the effort setting it has (a map set in the "
+"console, or else its own), so saving the four alone never clears one; an "
+"override stored before the field existed has none and follows the route's"
+" own map from the registry or its creation. `null` returns the route to "
+"that map while keeping the four. A map replaces the route's own, and "
+"saving one never changes the four or `supported_params`; resetting "
+"returns to the route's own map. The console sends a map only when its "
+"rows differ from the route's default. A route whose adapter does not send"
+" `reasoning_effort` refuses a map (422), and a route added from the "
+"console never takes another route's map. Route listings also report "
+"`reasoning_effort_mappable` and `reasoning_efforts_published`, the levels"
+" the live route offers clients. A save answers only once the route this "
+"process serves uses the saved map; otherwise it answers 409."
 msgstr ""
 "同一个表单和请求体还携带路由的推理强度映射（`reasoning_effort_map`，参见[在路由上映射推理强度档位](adding-"
 "models.md#mapping-reasoning-effort-levels-on-a-route)）：**Reasoning effort"
-" levels**，每行一个公开档位及上游为它收到的取值。与那四项不同，它在请求体中是可选的：省略或为 "
-"`null`（该字段出现之前保存的每条覆盖都是如此）时，路由保留它来自注册表或创建时的映射，因此只保存那四项永远不会清除映射，保存映射也永远不会改变那四项或"
-" `supported_params`。映射会替换路由自己的映射；重置则回到它。当各行与路由的默认值一致时，控制台不发送映射。适配器不发送 "
+" "
+"levels**，每行一个公开档位及上游为它收到的取值。与那四项不同，它在请求体中是可选的。省略时，路由保留它当前的推理强度设置（控制台设置的映射，否则为它自己的映射），因此只保存那四项永远不会清除映射；该字段出现之前保存的覆盖没有映射，沿用路由来自注册表或创建时的映射。`null`"
+" 让路由回到那个映射，同时保留那四项。映射会替换路由自己的映射，保存映射也永远不会改变那四项或 "
+"`supported_params`；重置则回到路由自己的映射。只有当各行与路由的默认值不同时，控制台才发送映射。适配器不发送 "
 "`reasoning_effort` 的路由会拒绝映射（422），从控制台添加的路由也绝不会沿用其他路由的映射。路由列表还会报告 "
 "`reasoning_effort_mappable` 和 "
 "`reasoning_efforts_published`，即当前生效路由向客户端提供的档位。只有在本进程所服务的路由已使用保存的映射后，保存才会成功返回；否则返回"
 " 409。"
 
-#: ../developer/configuration.md:457
+#: ../developer/configuration.md:459
 msgid "Settings tab"
 msgstr "Settings 标签页"
 
@@ -1543,32 +1546,32 @@ msgstr ""
 msgid "`batch_model_limits`"
 msgstr ""
 
-#: ../developer/configuration.md:465
+#: ../developer/configuration.md:467
 msgid "How the two layers combine"
 msgstr "两层如何叠加"
 
-#: ../developer/configuration.md:467
+#: ../developer/configuration.md:469
 msgid ""
 "The registry is loaded first and the stored state is applied on top of "
 "it, in this order at boot; each admin change is also applied to the "
 "running router the moment it is saved."
 msgstr "启动时先加载注册表，再按下面的顺序把已存状态叠加上去；管理员的每次改动在保存时也会立即应用到运行中的 router 上。"
 
-#: ../developer/configuration.md:471
+#: ../developer/configuration.md:473
 msgid "Custom provider definitions, skipping any slug the code or registry owns."
 msgstr "自定义 provider 定义；代码或注册表里已有的 slug 会被跳过。"
 
-#: ../developer/configuration.md:472
+#: ../developer/configuration.md:474
 msgid ""
 "Stored provider keys, seeded into each provider's pool beside the "
 "environment keys."
 msgstr "已存的 provider key，加入各个 provider 的 key 池，与环境变量里的 key 并列。"
 
-#: ../developer/configuration.md:474
+#: ../developer/configuration.md:476
 msgid "Per-model router strategy overrides."
 msgstr "按模型设置的 router 策略覆盖项。"
 
-#: ../developer/configuration.md:475
+#: ../developer/configuration.md:477
 msgid ""
 "Runtime routes. A runtime model is restored only if its creation "
 "finished; a stored route whose model is no longer in the registry is "
@@ -1578,17 +1581,17 @@ msgstr ""
 "运行时路由。运行时模型只有在创建过程完整结束后才会被恢复；如果一条已存路由对应的模型已经不在注册表里，它会被跳过并记录警告，所以从 YAML "
 "里删掉一个模型，不会因为一行残留数据又把它带回来。"
 
-#: ../developer/configuration.md:479
+#: ../developer/configuration.md:481
 msgid "Route overrides, retargeting the registry routes they name."
 msgstr "路由覆盖项，把对应的注册表路由改指到新的目标。"
 
-#: ../developer/configuration.md:480
+#: ../developer/configuration.md:482
 msgid ""
 "Route capability overrides, last of the route state, so they reach every "
 "route the steps above installed."
 msgstr "路由能力覆盖项，在路由状态里最后应用，这样上面各步装好的每条路由都能覆盖到。"
 
-#: ../developer/configuration.md:482
+#: ../developer/configuration.md:484
 msgid ""
 "Key tier reservations, re-read now that every provider is known; then "
 "weight overrides, disabled providers, offload routes and model "
@@ -1597,7 +1600,7 @@ msgstr ""
 "key 的层级预留：此时所有 provider 都已加载，所以再读一遍。然后是权重覆盖项、已禁用的 "
 "provider、卸载路由和模型可见性，这些会加载到解析器里，供 router 在处理请求时查询。"
 
-#: ../developer/configuration.md:486
+#: ../developer/configuration.md:488
 msgid ""
 "Two rules follow from that order. A stored change never edits the file it"
 " overrides: delete the override and the registry route, weight or "
@@ -1612,11 +1615,11 @@ msgstr ""
 "的行，这份文档就优先于之后对文件的修改；删掉这一行再重启，才会重新导入。见[数据库中的模型和路由文档](#model-and-routing-"
 "documents-in-the-database)。"
 
-#: ../developer/configuration.md:493
+#: ../developer/configuration.md:495
 msgid "Settings stored in the database"
 msgstr "存储在数据库中的设置项"
 
-#: ../developer/configuration.md:495
+#: ../developer/configuration.md:497
 msgid ""
 "Everything the gateway reads that is not one of the files above, the "
 "database connection or container wiring is a *setting*: provider keys, "
@@ -1632,29 +1635,29 @@ msgstr ""
 "的密钥。有数据库的网关把它们存在 `app_config` 表里，由管理员在管理控制台的 **Settings** "
 "标签页上编辑。`DB_ENABLED=false` 的网关没有存储的设置项，只读环境变量和内置默认值。"
 
-#: ../developer/configuration.md:504
+#: ../developer/configuration.md:506
 msgid "Where a value comes from"
 msgstr "值从哪里来"
 
-#: ../developer/configuration.md:506
+#: ../developer/configuration.md:508
 msgid "Each setting resolves in this order:"
 msgstr "每个设置项按以下顺序取值："
 
-#: ../developer/configuration.md:508
+#: ../developer/configuration.md:510
 msgid ""
 "its row in the database — even an empty one, which is how a setting is "
 "cleared;"
 msgstr "数据库里它的那一行——哪怕值为空也算，清空一个设置项靠的就是这个；"
 
-#: ../developer/configuration.md:510
+#: ../developer/configuration.md:512
 msgid "the environment variable of the same name;"
 msgstr "同名的环境变量；"
 
-#: ../developer/configuration.md:511
+#: ../developer/configuration.md:513
 msgid "the built-in default."
 msgstr "内置默认值。"
 
-#: ../developer/configuration.md:513
+#: ../developer/configuration.md:515
 msgid ""
 "The environment is a starting point. At every start, a setting that has a"
 " non-empty value in the environment and no row in the database is copied "
@@ -1674,7 +1677,7 @@ msgstr ""
 "重置它，让环境变量、再往后是默认值重新生效。重置是持久的：数据库会记住这次重置，下次启动时不会再把这个变量复制进来，之后对它的修改也会生效。**Settings**"
 " 标签页上的开关（`USER_AUTH_ENABLED`、`SIGNUP_ENABLED` 等）也以同样的方式从环境变量复制过去。"
 
-#: ../developer/configuration.md:525
+#: ../developer/configuration.md:527
 msgid ""
 "An environment value that is not valid on its own — a CIDR range that "
 "does not parse, a number that is not one — is not copied in. The backend "
@@ -1693,7 +1696,7 @@ msgstr ""
 "一节），环境变量无效时这个命令照样能用。数据库连接设置（`DB_HOST`、`DB_PORT` "
 "等）是例外：读取数据库需要它们，所以其中任何一个无效，后端都会停下来。"
 
-#: ../developer/configuration.md:535
+#: ../developer/configuration.md:537
 msgid ""
 "Settings that depend on each other — `TRUST_X_REAL_IP` needs "
 "`TRUST_PROXY_HEADERS` — are judged together, and a stored value wins "
@@ -1714,7 +1717,7 @@ msgstr ""
 "`TRUST_X_REAL_IP` 关闭的状态下运行；要把两者都打开，就在 Settings 标签页上或用 `python -m "
 "serving.config.manage set` 一起修改。只有环境变量自己（不涉及任何存储值）违反的规则才会让后端停下，并指出是哪条规则。"
 
-#: ../developer/configuration.md:548
+#: ../developer/configuration.md:550
 msgid ""
 "On the first start against an empty database the backend also generates "
 "the two secrets it cannot run without, `JWT_SECRET_KEY` and "
@@ -1731,11 +1734,11 @@ msgstr ""
 "accounts)。如果数据库里已经有 API key，后端宁可拒绝启动，也不会为它生成新的 "
 "`API_KEY_SECRET`，因为新密钥会让所有这些 key 失效。"
 
-#: ../developer/configuration.md:556
+#: ../developer/configuration.md:558
 msgid "Analytics sections"
 msgstr "Analytics 区块"
 
-#: ../developer/configuration.md:558
+#: ../developer/configuration.md:560
 msgid ""
 "In **Admin → Settings → Common → Analytics**, toggle **Token Usage**, "
 "**Users and Requests**, **Performance Metrics** and **Growth Rate** "
@@ -1754,7 +1757,7 @@ msgstr ""
 " 默认关闭。保存后重新打开 Analytics "
 "即可，无需重启后端。关闭的区块会隐藏，且不请求其数据。数据仍持续收集，因此重新启用区块后可以查看已有历史。"
 
-#: ../developer/configuration.md:567
+#: ../developer/configuration.md:569
 msgid ""
 "The runtime keys are `analytics_token_usage_enabled`, "
 "`analytics_users_and_requests_enabled`, "
@@ -1770,11 +1773,11 @@ msgstr ""
 "Token Usage 和 Users and Requests。Performance Metrics 保留原有时间窗口，Growth Rate"
 " 独立提供 30、60 或 90 天的范围。"
 
-#: ../developer/configuration.md:573
+#: ../developer/configuration.md:575
 msgid "On the Settings tab"
 msgstr "在 Settings 标签页上"
 
-#: ../developer/configuration.md:575
+#: ../developer/configuration.md:577
 msgid ""
 "The tab opens on **Common**, with the switches and limits changed most "
 "often: sign-up, per-user concurrency and the daily quotas among them. The"
@@ -1795,7 +1798,7 @@ msgstr ""
 "**Usually set once** 下。这个标签页逐个说明设置项的用途，并标出每个值的来源。搜索或勾选 **Missing only** "
 "时，会同时查找所有子标签页。除了网关自己读取的所有设置项，它还列出："
 
-#: ../developer/configuration.md:586
+#: ../developer/configuration.md:588
 #, python-brace-format
 msgid ""
 "every `${VAR}` the active model registry and routing file name, under "
@@ -1805,7 +1808,7 @@ msgstr ""
 "当前模型注册表和路由配置文件引用的每一个 `${VAR}`，列在 **Providers** 下，并注明用到它的模型；告警规则引用的则列在 "
 "**Alerts** 下；"
 
-#: ../developer/configuration.md:589
+#: ../developer/configuration.md:591
 msgid ""
 "numbered extra keys for a provider's key pool, `MINIMAX_API_KEY1` to "
 "`MINIMAX_API_KEY20` beside `MINIMAX_API_KEY` for instance, once one is "
@@ -1816,7 +1819,7 @@ msgstr ""
 "`MINIMAX_API_KEY20`，只要设置了其中一个就会列出。每个有值的 key 都会加入池子：中间有一个空着并不会让列表就此结束，同一个 "
 "key 填了两次也只算一次；"
 
-#: ../developer/configuration.md:593
+#: ../developer/configuration.md:595
 #, python-brace-format
 msgid ""
 "variables added with **Add variable**, for a `${VAR}` reference the "
@@ -1824,7 +1827,7 @@ msgid ""
 " to."
 msgstr "用 **Add variable** 添加的变量，用于网关暂时还看不到的 `${VAR}` 引用，比如你即将切换过去的那份注册表里的引用。"
 
-#: ../developer/configuration.md:596
+#: ../developer/configuration.md:598
 msgid ""
 "It leaves out the settings that offer nothing to choose: one with a "
 "single accepted value, such as `EMAIL_PROVIDER` while SMTP is the only "
@@ -1838,7 +1841,7 @@ msgstr ""
 "`EMAIL_PROVIDER`；还有没注册短信服务时的手机号相关设置，因为没有短信服务它们不起任何作用。这类设置在需要处理时仍会显示（必填却为空、存储的值无法生效，或者正在等待重启），`python"
 " -m serving.config.manage list` 也始终会列出它们。"
 
-#: ../developer/configuration.md:603
+#: ../developer/configuration.md:605
 #, python-brace-format
 msgid ""
 "Secrets are write-only: the tab shows whether one is set, never its "
@@ -1859,7 +1862,7 @@ msgstr ""
 " 或 `SA_JSON`，就是密钥；用这样的名字添加的变量一定是密钥。管理员也可以用 **Mark as secret** "
 "把从配置文件里发现的变量、带编号的变量或手动添加的变量标为密钥。这个操作只能单向进行：密钥一旦标记，就再也不会显示出来，即使重置之后也一样。"
 
-#: ../developer/configuration.md:614
+#: ../developer/configuration.md:616
 #, python-brace-format
 msgid ""
 "A save is checked as a whole, against everything it leaves in force, so "
@@ -1884,11 +1887,11 @@ msgstr ""
 "`MODELS_CONFIG_PATH`，不能在这里设置。这个标签页背后是 `GET` 和 `PATCH /admin/config`，以及 "
 "`DELETE /admin/config/{key}`。"
 
-#: ../developer/configuration.md:627
+#: ../developer/configuration.md:629
 msgid "Backup and restore"
 msgstr "备份与恢复"
 
-#: ../developer/configuration.md:629
+#: ../developer/configuration.md:631
 msgid ""
 "**Backup** (`GET /admin/config/backup`) downloads every setting an "
 "administrator can change as one JSON file: the stored settings, the "
@@ -1910,7 +1913,7 @@ msgstr ""
 "true`）会把这些值以明文写进文件，前提是已登录的管理员再输入一次账号密码。admin token "
 "不能请求这些值；没有密码的账号（用手机注册的）要先设置一个。保管这个文件要像保管密钥本身一样小心。"
 
-#: ../developer/configuration.md:640
+#: ../developer/configuration.md:642
 msgid ""
 "**Restore** (`POST /admin/config/restore`) replaces all of it in one "
 "database transaction, so a failure anywhere leaves the deployment as it "
@@ -1938,11 +1941,11 @@ msgstr ""
 "/admin/config/restore/preview`；脚本则要把这份列表作为 `confirm_security_changes` 连同 "
 "`password` 一起发回，改动与确认的列表不一致的恢复会被以 409 拒绝。admin token 只能恢复不涉及这些改动的文件。"
 
-#: ../developer/configuration.md:656
+#: ../developer/configuration.md:658
 msgid "When a change applies"
 msgstr "改动何时生效"
 
-#: ../developer/configuration.md:658
+#: ../developer/configuration.md:660
 msgid ""
 "Most settings apply as soon as they are saved: at once in the backend "
 "process that served the save, and within ten seconds in every other one. "
@@ -1960,7 +1963,7 @@ msgstr ""
 "`DB_STORE_FULL_CONTENT` 也是。告警渠道和失败请求告警阈值在操作者激活它们的[实时配置组](#settings-that-"
 "apply-without-a-restart)之前也属于这一类。"
 
-#: ../developer/configuration.md:667
+#: ../developer/configuration.md:669
 msgid ""
 "While such a change is waiting, the tab shows a **Restart pending** "
 "notice with a **Restart backend** button. The button (`POST "
@@ -1990,11 +1993,11 @@ msgstr ""
 "hybridinference-backend`。重启会切断正在处理的请求，流式请求也不例外。控制台以 `/health` 的 "
 "`instance` 字段换成另一个进程作为重启完成的标志，所以后端回来得再快也不会被漏掉。"
 
-#: ../developer/configuration.md:684
+#: ../developer/configuration.md:686
 msgid "Settings that apply without a restart"
 msgstr "无需重启即可生效的设置项"
 
-#: ../developer/configuration.md:686
+#: ../developer/configuration.md:688
 msgid ""
 "A live group is a set of settings the backend applies together, without a"
 " restart, once an operator has activated it. The first one, "
@@ -2026,7 +2029,7 @@ msgstr ""
 msgid "When the failed-request alert pages"
 msgstr "失败请求告警何时发出"
 
-#: ../developer/configuration.md:695
+#: ../developer/configuration.md:697
 msgid ""
 "Once the group is active, a save reaches every backend process within "
 "about ten seconds. Each process checks the whole group first: a pair of "
@@ -2045,7 +2048,7 @@ msgstr ""
 "`WECOM_ALERTS_WEBHOOK_URL` 时失败请求告警才运行；只设置 `SLACK_ALERTS_WEBHOOK_URL` "
 "不会启动它。"
 
-#: ../developer/configuration.md:705
+#: ../developer/configuration.md:707
 msgid ""
 "The Alerts category shows where the saved configuration stands. **Applied"
 " in each backend process** names the saved version — for example "
@@ -2066,7 +2069,7 @@ msgstr ""
 " 表示进程正在使用已保存的渠道和阈值，并不说明消息是否送达了渠道，送达请用 **Send test** 检查。**Send test** "
 "使用已保存的 webhook（或你输入的地址），不一定是某个进程正在使用的那个。"
 
-#: ../developer/configuration.md:718
+#: ../developer/configuration.md:720
 msgid ""
 "After a channel change, alerts already under way finish on the old "
 "channel, and the recovery message of an incident opened earlier goes to "
@@ -2075,7 +2078,7 @@ msgid ""
 "threshold takes effect at the next check after the change has applied."
 msgstr "换渠道之后，已经在发送的告警仍在旧渠道完成，此前打开的事故的恢复消息会发到新渠道。失败请求告警在切换前后保留冷却时间和未关闭的事故。它仍然每分钟检查一次，所以新阈值在改动应用之后的下一次检查才生效。"
 
-#: ../developer/configuration.md:724
+#: ../developer/configuration.md:726
 msgid ""
 "The console saves conditionally: if someone else saved the configuration "
 "after you started editing a category, your save is refused, nothing is "
@@ -2084,18 +2087,18 @@ msgid ""
 "category, never moves unsaved changes onto values you have not seen."
 msgstr "控制台按条件保存：如果在你开始编辑某个分类之后有人保存了配置，你的保存会被拒绝，不写入任何内容，页面会重新加载最新值，并保留你未保存的改动，供你核对后再次保存。重新加载或在其他分类中保存，都不会把未保存的改动挪到你没有看过的值之上。"
 
-#: ../developer/configuration.md:730
+#: ../developer/configuration.md:732
 msgid ""
 "`ALERTS_ENABLED`, the alert rules file and the alert engine still apply "
 "only after a restart. Other settings join live groups later, one group at"
 " a time."
 msgstr "`ALERTS_ENABLED`、告警规则文件和告警引擎仍然只在重启后生效。其他设置项以后会逐组加入实时配置组。"
 
-#: ../developer/configuration.md:733
+#: ../developer/configuration.md:735
 msgid "Activating a live group"
 msgstr "激活实时配置组"
 
-#: ../developer/configuration.md:735
+#: ../developer/configuration.md:737
 msgid ""
 "A group stays inactive until an operator activates it, and a backend "
 "upgrade never activates one by itself. Until then its settings behave as "
@@ -2105,13 +2108,13 @@ msgstr ""
 "组在操作者激活之前一直不生效，后端升级也不会自动激活它。在此之前，它的设置项按 **Restart required** "
 "的方式工作。等每个后端进程都运行支持它的版本之后再激活："
 
-#: ../developer/configuration.md:740
+#: ../developer/configuration.md:742
 msgid ""
 "Deploy the build everywhere and check that each process registered: "
 "`python -m serving.config.manage live status`."
 msgstr "把该版本部署到所有地方，并检查每个进程都已登记：`python -m serving.config.manage live status`。"
 
-#: ../developer/configuration.md:742
+#: ../developer/configuration.md:744
 msgid ""
 "Preview what activation applies. It shows each setting's saved value (a "
 "secret only as set or not set) and the processes whose value in use "
@@ -2122,7 +2125,7 @@ msgstr ""
 "预览激活会应用什么。它显示每个设置项已保存的值（秘密值只显示是否已设置），以及正在使用的值与之不同的进程——等待重启时保存的值会在激活时立刻生效，可能改变告警发往的地方：`python"
 " -m serving.config.manage live preview alerts.runtime`。"
 
-#: ../developer/configuration.md:747
+#: ../developer/configuration.md:749
 msgid ""
 "Activate with the version the preview printed, and the number of backend "
 "processes your deployment runs: `python -m serving.config.manage live "
@@ -2134,13 +2137,13 @@ msgstr ""
 "alerts.runtime --expect <epoch>:<revision> --expect-instances "
 "<N>`。如果预览之后配置有变化、有正在运行的进程不支持该组，或者进程数不符，命令会拒绝激活。"
 
-#: ../developer/configuration.md:752
+#: ../developer/configuration.md:754
 msgid ""
 "Check `live status`, or the Alerts category, until every process has "
 "applied the latest revision."
 msgstr "查看 `live status` 或 Alerts 分类，直到每个进程都应用了最新版本。"
 
-#: ../developer/configuration.md:755
+#: ../developer/configuration.md:757
 msgid ""
 "If a process cannot apply the group when it is activated — a saved value "
 "is invalid, say — the group stays active and the process keeps the values"
@@ -2148,7 +2151,7 @@ msgid ""
 "a restart."
 msgstr "如果激活时某个进程无法应用该组（例如某个已保存的值无效），该组仍保持激活，该进程继续使用原来的值。修正该设置并再次保存即可，无需重启就会生效。"
 
-#: ../developer/configuration.md:759
+#: ../developer/configuration.md:761
 msgid ""
 "`live deactivate alerts.runtime --expect <epoch>:<revision>` turns the "
 "group off. A running process then keeps the values it last applied until "
@@ -2161,7 +2164,7 @@ msgstr ""
 "`live deactivate alerts.runtime --expect <epoch>:<revision>` "
 "会关闭该组。之后正在运行的进程会一直保留它最后应用的值，直到重启，而不会回到启动时的值；之后启动的进程使用已保存的值。在每个进程都重启之前，两者可能不同，状态会显示出来。退回到不认识该组的版本属于部署，不是配置改动。"
 
-#: ../developer/configuration.md:766
+#: ../developer/configuration.md:768
 msgid ""
 "A configuration backup does not include this status. Restoring a backup "
 "applies its `app_config` rows to live groups like any other save, and "
@@ -2175,11 +2178,11 @@ msgstr ""
 "-m serving.config.manage live reset-epoch --expect "
 "<epoch>:<revision>`：它会开始新的版本历史，并让每个进程重新登记。"
 
-#: ../developer/configuration.md:773
+#: ../developer/configuration.md:775
 msgid "Without the console"
 msgstr "不通过控制台"
 
-#: ../developer/configuration.md:775
+#: ../developer/configuration.md:777
 msgid ""
 "A setting can break the console that edits it — a value that stops sign-"
 "in from working, say. `python -m serving.config.manage` changes stored "
@@ -2189,7 +2192,7 @@ msgstr ""
 "某个设置项可能把用来编辑它的控制台本身弄坏——比如一个让登录失效的值。这时可以用 `python -m "
 "serving.config.manage` 在命令行里修改已存储的设置项，校验规则和控制台完全一样："
 
-#: ../developer/configuration.md:784
+#: ../developer/configuration.md:786
 msgid ""
 "`list` shows every setting, `get KEY` one of them, `set KEY VALUE` stores"
 " a value — add `--secret` to mark a discovered, numbered or added "
@@ -2204,7 +2207,7 @@ msgstr ""
 "则像标签页上的 **Reset** 一样重置它，让环境变量或默认值重新生效。它从不打印密钥的值。正在运行的后端会在大约十秒内读到改动；标着 "
 "**Restart required** 的设置项则要等下次重启。"
 
-#: ../developer/configuration.md:791
+#: ../developer/configuration.md:793
 msgid ""
 "The tool talks to the database directly with the `DB_*` connection "
 "settings alone, so it needs no sign-in and still runs when another "
@@ -2224,11 +2227,11 @@ msgstr ""
 "`127.0.0.1:5432` 连上 Postgres。重置管理员密码的命令也是同样的用法，见[第一个管理员账号](deployment.md"
 "#the-first-admin-account)。"
 
-#: ../developer/configuration.md:802
+#: ../developer/configuration.md:804
 msgid "Missing settings"
 msgstr "缺失的设置项"
 
-#: ../developer/configuration.md:804
+#: ../developer/configuration.md:806
 msgid ""
 "Some settings are required: the two generated secrets, every variable a "
 "model route needs to load (unless the route is `optional: true`), and "
@@ -2251,7 +2254,7 @@ msgstr ""
 "API key 发起请求时，这个 `404` 会说明部署的配置不完整；其他人得到的则和请求一个部署里根本没有定义的模型时一样，都是“not "
 "found”，所以从这个差别里看不出任何超出其可用范围的信息。"
 
-#: ../developer/configuration.md:817
+#: ../developer/configuration.md:819
 msgid ""
 "A deployment that leaves a model's credential unset on purpose — a route "
 "it does not use yet, or a canary it enables elsewhere — should mark that "
@@ -2261,7 +2264,7 @@ msgstr ""
 "如果部署有意不设置某个模型的凭据——比如一条暂时不用的路由，或者在别处才启用的 canary——就应该在模型注册表里给那条路由标上 "
 "`optional: true`。这样这条路由会被悄悄跳过，它的变量也不会被报告为缺失。"
 
-#: ../developer/configuration.md:823
+#: ../developer/configuration.md:825
 msgid ""
 "Settings are stored in plaintext. Anyone who can read the database — a "
 "`pg_dump`, a backup, a `psql` or pgAdmin session — can read every "
@@ -2272,30 +2275,30 @@ msgstr ""
 "设置项以明文存储。任何能读到数据库的人——通过 `pg_dump`、备份，或者 `psql`、pgAdmin 会话——都能读到每一个 "
 "provider key，解密用户存下的 API key，并签发管理员 token。要像保护这些凭据本身那样，保护数据库的访问权限和备份。"
 
-#: ../developer/configuration.md:829
+#: ../developer/configuration.md:831
 msgid "Environment variables"
 msgstr "环境变量"
 
-#: ../developer/configuration.md:831
+#: ../developer/configuration.md:833
 msgid ""
 "The environment keeps what the backend needs before it can reach its "
 "database and what describes the containers rather than the application:"
 msgstr "环境变量里留下的，是后端连上数据库之前就需要的东西，以及描述容器而不是应用本身的东西："
 
-#: ../developer/configuration.md:834
+#: ../developer/configuration.md:836
 msgid ""
 "the database connection: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, "
 "`DB_PASSWORD`, `DB_ENABLED`;"
 msgstr "数据库连接：`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`DB_ENABLED`；"
 
-#: ../developer/configuration.md:836
+#: ../developer/configuration.md:838
 msgid ""
 "the configuration files: `MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH`, "
 "`ALERTS_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH`, "
 "`DISTRIBUTION_CONFIG_MODE`;"
 msgstr "配置文件：`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`、`DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE`；"
 
-#: ../developer/configuration.md:839
+#: ../developer/configuration.md:841
 msgid ""
 "the backend process: `LOG_FILE`, `BACKEND_EXTENSIONS`, "
 "`GEOIP_COUNTRY_DB`, `GEOIP_COUNTRY_PROVIDER`, `WEB_CONCURRENCY`, "
@@ -2305,13 +2308,13 @@ msgstr ""
 "后端进程：`LOG_FILE`、`BACKEND_EXTENSIONS`、`GEOIP_COUNTRY_DB`、`GEOIP_COUNTRY_PROVIDER`、`WEB_CONCURRENCY`、`SUPERVISOR_RESTARTS_BACKEND`，以及控制台也会读取的"
 " `REFRESH_TOKEN_COOKIE_NAME`；"
 
-#: ../developer/configuration.md:842
+#: ../developer/configuration.md:844
 msgid ""
 "Compose and the console: host ports and bind addresses, the console's "
 "build values and its runtime ones such as `AGENT_WEB_INTERNAL_URL`."
 msgstr "Compose 和控制台：宿主机端口和绑定地址，控制台的构建期取值，以及 `AGENT_WEB_INTERNAL_URL` 这类运行期取值。"
 
-#: ../developer/configuration.md:845
+#: ../developer/configuration.md:847
 #, python-brace-format
 msgid ""
 "The gateway reads a `.env` file from its working directory and the "
@@ -2328,15 +2331,15 @@ msgstr ""
 "variables)列出了你最可能要设置的设置项。其他设置项如果在环境变量里有值，会按上文所述在启动时导入数据库。永远不要把密钥写进模型注册表或 "
 "manifest：在那里用 `${VAR}` 引用它。"
 
-#: ../developer/configuration.md:854
+#: ../developer/configuration.md:856
 msgid "Running with your configuration"
 msgstr "用你自己的配置运行"
 
-#: ../developer/configuration.md:860
+#: ../developer/configuration.md:862
 msgid "Then check what actually loaded:"
 msgstr "然后检查实际加载了什么："
 
-#: ../developer/configuration.md:867
+#: ../developer/configuration.md:869
 msgid ""
 "The startup log says what was loaded. `Registered N routes from <path>` "
 "names the registry file that was used; `[distribution dark mode] ...` "
@@ -2348,7 +2351,7 @@ msgstr ""
 "指出实际使用的是哪个注册表文件；`[distribution dark mode] ...` 这几行显示 manifest "
 "启用后会改变什么；`Skipping model '<id>' ... after env expansion` 逐个列出凭据没有设置的模型。"
 
-#: ../developer/configuration.md:872
+#: ../developer/configuration.md:874
 msgid ""
 "`GET /routing` requires no credentials and returns, for every published "
 "route, its provider label and its weight. Each route's upstream "
@@ -2367,11 +2370,11 @@ msgstr ""
 "/admin/routing` 必须带这些凭据，并且还会返回未发布的路由。它们的输出要当作敏感信息：那是你的上游拓扑，包括 base URL "
 "里的主机和端口。"
 
-#: ../developer/configuration.md:882
+#: ../developer/configuration.md:884
 msgid "Optional phone authentication"
 msgstr "可选手机号认证"
 
-#: ../developer/configuration.md:884
+#: ../developer/configuration.md:886
 msgid ""
 "Phone signup, login and binding are disabled by default. Install a "
 "distribution-owned SMS provider, configure its delivery settings, then "
@@ -2387,7 +2390,7 @@ msgstr ""
 "选择已注册的服务；注册了短信服务之后，手机号相关设置才会出现在该页面。网关通过 `/site-config` 发布 "
 "`features.phone_auth`；共享表单仅在该功能可用时显示手机号选项。原有邮箱登录和首次启动管理员登录保持可用。"
 
-#: ../developer/configuration.md:886
+#: ../developer/configuration.md:888
 msgid ""
 "Account identifiers use international format, such as `+12025550123`. "
 "`SMS_DEFAULT_COUNTRY_CODE` optionally supplies a calling code for local "
@@ -2401,7 +2404,7 @@ msgstr ""
 "可为本地号码补充区号；留空时必须输入国际格式。`SMS_ALLOWED_PREFIXES` "
 "可通过逗号分隔的前缀限制目的地。发行版选择发送服务支持的号码策略；账号存储和验证码策略仍由共享核心负责。"
 
-#: ../developer/configuration.md:888
+#: ../developer/configuration.md:890
 msgid ""
 "Codes expire after 300 seconds by default, allow at most five guesses, "
 "and can be consumed once. PostgreSQL serializes send and verification "
@@ -2418,7 +2421,7 @@ msgstr ""
 "处理继续复用注册流程。手机号注册遵循开放注册和审核策略，不会自动合并邮箱账号，也不会创建密码。和邮箱注册一样，首次运行设置完成之前，手机号注册会被拒绝并返回"
 " `503`。绑定需要已认证会话及专属于该账号的验证码。"
 
-#: ../developer/configuration.md:890
+#: ../developer/configuration.md:892
 msgid ""
 "Startup adds phone identity columns and durable code tables and makes "
 "password hashes nullable. When a long-running `pg_dump` holds the users "

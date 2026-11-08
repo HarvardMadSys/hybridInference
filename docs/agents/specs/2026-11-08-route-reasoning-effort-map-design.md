@@ -58,10 +58,15 @@ distinct from "no levels" (parameter not forwarded).
 
 The map is one more, optional, field of the route capability override
 (`RuntimeModelCapabilities.reasoning_effort_map`), on the existing PUT/DELETE
-capability endpoints and route-edit bodies. `null` or absent -- every row
-stored before the field existed -- inherits the route's own (models.yaml or
-creation) map, so a connection-only edit or a four-value save never clears it,
-and saving a map never touches the four or `supported_params`. The baseline in
+capability endpoints and route-edit bodies. Absent keeps the route's current
+effort setting (its console map if one is set), so a connection-only edit or a
+four-value save never clears it; a row stored before the field existed has
+none and inherits the route's own (models.yaml or creation) map; `null` returns
+to that map; a map sets it. Saving a map never touches the four or
+`supported_params`. Stored rows keep the map as ordered `[public, upstream]`
+pairs, because a JSONB object reorders keys (found by the running acceptance:
+`low, high, max` came back as `low, max, high`); the object form is accepted
+everywhere else. The baseline in
 `route_metadata.capability_baseline` carries the map, so reset and target
 rebuilds restore it. A runtime route never clones another route's map. Saves
 are confirmed against the live adapter (409 otherwise). The console shows a

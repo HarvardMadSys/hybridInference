@@ -4900,6 +4900,34 @@ describe('ProviderRoutesTab', () => {
         expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
       });
 
+      it('returns a console map to the default while saving other values', async () => {
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(mappedRoute);
+        const dialog = await renderWithRoute({
+          ...mappedRoute,
+          capabilities: {
+            ...ROUTE_CAPABILITIES,
+            max_output_length: 4096,
+            reasoning_effort_map: EFFORT_MAP,
+          },
+          capabilities_baseline: ROUTE_CAPABILITIES,
+          capabilities_overridden: true,
+        });
+
+        for (let i = 0; i < 3; i += 1) {
+          fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
+        }
+        saveRouteEdit();
+
+        // The four stay set in the console; the map is cleared explicitly.
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, max_output_length: 4096, reasoning_effort_map: null },
+          );
+        });
+      });
+
       it('offers no map on a route whose adapter sends no effort', async () => {
         const dialog = await renderWithRoute({ ...route, reasoning_effort_mappable: false });
         expect(

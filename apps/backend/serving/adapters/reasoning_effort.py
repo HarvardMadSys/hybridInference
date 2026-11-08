@@ -77,29 +77,60 @@ class ReasoningEffortRefused(aiohttp.ClientResponseError):
         return f"400, message={self.message!r}"
 
 
+def _entries(raw: Any) -> list[tuple[Any, Any]]:
+    """``raw``'s (public, upstream) entries, in order: a mapping, or a list of pairs.
+
+    The list form is how a map is stored: a JSONB object does not keep key
+    order, and the order is the order the levels are published in.
+    """
+    if isinstance(raw, Mapping):
+        return list(raw.items())
+    if isinstance(raw, list) and all(
+        isinstance(pair, (list, tuple)) and len(pair) == 2 for pair in raw
+    ):
+        return [(pair[0], pair[1]) for pair in raw]
+    raise ValueError(f"{EFFORT_MAP_FIELD} must be a mapping of public level to upstream value")
+
+
 def validate_effort_map(raw: Any) -> dict[str, str]:
     """Return ``raw`` as a public -> upstream map, or raise ``ValueError`` saying why.
 
-    A non-empty mapping of level tokens to level tokens, each public level once
-    (a YAML or JSON object cannot repeat a key). Order is kept: it is the order
-    the levels are published in.
+    A non-empty mapping of level tokens to level tokens (or the stored list of
+    ``[public, upstream]`` pairs), each public level once. Order is kept: it is
+    the order the levels are published in.
     """
-    if not isinstance(raw, Mapping):
-        raise ValueError(f"{EFFORT_MAP_FIELD} must be a mapping of public level to upstream value")
-    if not raw:
+    entries = _entries(raw)
+    if not entries:
         raise ValueError(f"{EFFORT_MAP_FIELD} must name at least one level")
-    if len(raw) > MAX_MAP_ENTRIES:
+    if len(entries) > MAX_MAP_ENTRIES:
         raise ValueError(f"{EFFORT_MAP_FIELD} may name at most {MAX_MAP_ENTRIES} levels")
     cleaned: dict[str, str] = {}
-    for public, upstream in raw.items():
+    for public, upstream in entries:
         for role, value in (("public level", public), ("upstream value", upstream)):
             if not isinstance(value, str) or not _LEVEL_RE.fullmatch(value):
                 raise ValueError(
                     f"{EFFORT_MAP_FIELD} {role} {value!r} must be a short token "
                     "(letters, digits, '_', '.', '-'; at most 32 characters)"
                 )
+        if public in cleaned:
+            raise ValueError(f"{EFFORT_MAP_FIELD} names public level {public!r} twice")
         cleaned[public] = upstream
     return cleaned
+
+
+def stored_effort_map(effort_map: Mapping[str, str] | None) -> list[list[str]] | None:
+    """``effort_map`` as it is stored: ``[[public, upstream], ...]`` in order, ``None`` for none."""
+    return [[public, upstream] for public, upstream in effort_map.items()] if effort_map else None
+
+
+def read_effort_map(raw: Any) -> dict[str, str]:
+    """A map as stored or declared (object or pairs), as a dict; ``{}`` for none or malformed."""
+    if raw is None:
+        return {}
+    try:
+        return validate_effort_map(raw)
+    except ValueError:
+        return {}
 
 
 @dataclass(frozen=True)
@@ -178,6 +209,8 @@ __all__ = [
     "ReasoningEffortRefused",
     "declared_public_levels",
     "effort_contract",
+    "read_effort_map",
+    "stored_effort_map",
     "translate_effort",
     "upstream_effort",
     "validate_effort_map",

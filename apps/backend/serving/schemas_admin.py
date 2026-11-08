@@ -11,11 +11,12 @@ from pydantic import (
     SecretStr,
     StrictBool,
     StrictInt,
+    field_serializer,
     field_validator,
     model_validator,
 )
 
-from serving.adapters.reasoning_effort import validate_effort_map
+from serving.adapters.reasoning_effort import stored_effort_map, validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
 
@@ -1748,6 +1749,12 @@ class RouteCapabilitiesItem(BaseModel):
     # ``None`` when the route has no map (its legacy behavior applies).
     reasoning_effort_map: dict[str, str] | None = None
 
+    @field_validator("reasoning_effort_map", mode="before")
+    @classmethod
+    def read_reasoning_effort_map(cls, value: Any) -> Any:
+        """Accept the stored list-of-pairs form too, keeping its order."""
+        return None if not value else validate_effort_map(value)
+
 
 class ProviderRouteItem(BaseModel):
     """Runtime provider target for one model route candidate."""
@@ -1865,8 +1872,17 @@ class RuntimeModelCapabilities(BaseModel):
     @field_validator("reasoning_effort_map", mode="before")
     @classmethod
     def validate_reasoning_effort_map(cls, value: Any) -> Any:
-        """Refuse a malformed map; keep its order."""
+        """Refuse a malformed map; keep its order (an object, or stored pairs)."""
         return None if value is None else validate_effort_map(value)
+
+    @field_serializer("reasoning_effort_map")
+    def store_reasoning_effort_map(self, value: dict[str, str] | None) -> list[list[str]] | None:
+        """Dump the map as ordered ``[public, upstream]`` pairs: the form that is stored.
+
+        A JSONB object does not keep key order, and the order is the order the
+        levels are offered in.
+        """
+        return stored_effort_map(value)
 
     @field_validator("input_modalities")
     @classmethod

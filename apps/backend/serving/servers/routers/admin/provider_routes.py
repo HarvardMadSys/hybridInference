@@ -25,7 +25,7 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
-from serving.adapters.reasoning_effort import EFFORT_MAP_FIELD
+from serving.adapters.reasoning_effort import EFFORT_MAP_FIELD, read_effort_map, stored_effort_map
 from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
 from serving.config.batch_routes import default_batch_allowed
@@ -2145,8 +2145,26 @@ def _capability_config_fields(capabilities: dict[str, Any]) -> dict[str, Any]:
         "max_output_length": capabilities["max_output_length"],
         "input_modalities": capabilities["input_modalities"],
         "supports_tools": capabilities["supports_tools"],
-        EFFORT_MAP_FIELD: dict(capabilities.get(EFFORT_MAP_FIELD) or {}),
+        EFFORT_MAP_FIELD: read_effort_map(capabilities.get(EFFORT_MAP_FIELD)),
     }
+
+
+def _with_kept_effort_map(
+    route, route_id: str, capabilities: dict[str, Any] | None, *, sent: bool
+) -> dict[str, Any] | None:
+    """``capabilities``, keeping the route's current effort override when the body named none.
+
+    The map is the one optional value of an override. Left out of a save, the
+    route keeps the effort setting it has -- its console map if one is set --
+    so a client that only knows the four (an older console, a script) never
+    clears one. ``null`` asks for the route's own map (models.yaml or its
+    creation); a map sets it.
+    """
+    if sent or capabilities is None:
+        return capabilities
+    current = (getattr(route, CAPABILITY_OVERRIDES_ATTR, None) or {}).get(route_id) or {}
+    kept = current.get(EFFORT_MAP_FIELD)
+    return {**capabilities, EFFORT_MAP_FIELD: kept} if kept else capabilities
 
 
 def _refuse_unmappable_effort(adapter, capabilities: dict[str, Any] | None) -> None:
@@ -2177,7 +2195,7 @@ def _require_served_effort_map(adapter, capabilities: dict[str, Any] | None) -> 
     if wanted is None:
         wanted = _baseline_capabilities(config).get(EFFORT_MAP_FIELD)
     served = getattr(config, EFFORT_MAP_FIELD, None) or {}
-    if list((wanted or {}).items()) != list(served.items()):
+    if list(read_effort_map(wanted).items()) != list(served.items()):
         raise HTTPException(
             status_code=409,
             detail=(
@@ -2226,7 +2244,11 @@ def _declared_capabilities(adapter) -> dict[str, Any] | None:
         or route_metadata.get(_DECLARED_CAPABILITIES) is not True
     ):
         return None
-    return _baseline_capabilities(config)
+    declared = _baseline_capabilities(config)
+    if EFFORT_MAP_FIELD in declared:
+        # Stored as ordered pairs: a JSONB object would lose the offer order.
+        declared[EFFORT_MAP_FIELD] = stored_effort_map(read_effort_map(declared[EFFORT_MAP_FIELD]))
+    return declared
 
 
 def _apply_capability_overrides(route, entries: list[tuple[object, float, str]]) -> None:
@@ -2266,7 +2288,7 @@ def _apply_capability_overrides(route, entries: list[tuple[object, float, str]])
         if effort_map is None:
             effort_map = baseline.get(EFFORT_MAP_FIELD)
         forwards = getattr(adapter, "forwards_reasoning_effort", False)
-        setattr(config, EFFORT_MAP_FIELD, dict(effort_map or {}) if forwards else {})
+        setattr(config, EFFORT_MAP_FIELD, read_effort_map(effort_map) if forwards else {})
         config.route_metadata = route_metadata
 
 
@@ -5252,17 +5274,22 @@ def _route_capability_write(
         return None
     # Its override is kept, and applies again when the route is restored.
     _refuse_removed_route(route, route_id)
-    if payload.capabilities is not None:
-        _refuse_unmappable_effort(
-            serving_adapter, payload.capabilities.model_dump(exclude_none=True)
+    capabilities = (
+        None
+        if payload.capabilities is None
+        else _with_kept_effort_map(
+            route,
+            route_id,
+            payload.capabilities.model_dump(exclude_none=True),
+            sent=EFFORT_MAP_FIELD in payload.capabilities.model_fields_set,
         )
+    )
+    _refuse_unmappable_effort(serving_adapter, capabilities)
     return RouteCapabilityWrite(
         model_id=model_id,
         route_id=route_id,
         route=route,
-        capabilities=None
-        if payload.capabilities is None
-        else payload.capabilities.model_dump(exclude_none=True),
+        capabilities=capabilities,
         old_capabilities=_config_capabilities(adapter.config),
     )
 
@@ -5275,11 +5302,13 @@ async def _change_route_capabilities(
     capabilities: dict[str, Any] | None,
     admin_id: str,
     actor: AuditActor,
+    effort_map_sent: bool = True,
 ) -> ProviderRouteItem:
     """Store or clear one route's capability override and serve the route with it."""
     model_id, route_id, _route = _split_model_route_path(services, model_route_path)
     async with model_router_transition_lock(services, model_id):
         model_id, route_id, route = _split_model_route_path(services, model_route_path)
+        capabilities = _with_kept_effort_map(route, route_id, capabilities, sent=effort_map_sent)
         # Its override is kept, and applies again when the route is restored.
         _refuse_removed_route(route, route_id)
         entries = _raw_route_entries(route)
@@ -5351,6 +5380,7 @@ async def update_provider_route_capabilities(
         capabilities=payload.model_dump(exclude_none=True),
         admin_id=admin_id,
         actor=actor,
+        effort_map_sent=EFFORT_MAP_FIELD in payload.model_fields_set,
     )
 
 

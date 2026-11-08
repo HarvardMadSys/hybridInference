@@ -9335,6 +9335,14 @@ def _with_effort_map(capabilities: dict, effort_map: dict | None = ROUTE_EFFORT_
     return {**capabilities, "reasoning_effort_map": effort_map}
 
 
+def _stored_form(capabilities: dict) -> dict:
+    """``capabilities`` as stored: the effort map as ordered [public, upstream] pairs."""
+    effort_map = capabilities.get("reasoning_effort_map")
+    if effort_map is None:
+        return capabilities
+    return {**capabilities, "reasoning_effort_map": [[k, v] for k, v in effort_map.items()]}
+
+
 def _stored_capabilities(op_store) -> dict | None:
     row = op_store.capability_rows.get(("minimax-fast", EFFORT_ROUTE_ID))
     return None if row is None else json.loads(row["capabilities"])
@@ -9361,7 +9369,7 @@ async def test_setting_a_map_serves_it_and_publishes_its_public_levels(admin_cli
     assert adapter.config.reasoning_effort_map == ROUTE_EFFORT_MAP
     # The map is its own declaration: supported_params are left as they were.
     assert adapter.config.supported_params == params_before
-    assert _stored_capabilities(op_store) == _with_effort_map(DEFAULT_CAPABILITIES)
+    assert _stored_capabilities(op_store) == _stored_form(_with_effort_map(DEFAULT_CAPABILITIES))
 
 
 @pytest.mark.asyncio
@@ -9438,7 +9446,7 @@ async def test_a_connection_only_edit_keeps_the_effort_override(admin_client):
     rebuilt = _route_adapter(route_executor, EFFORT_ROUTE_ID)
     assert rebuilt.config.base_url == "https://api.featherless.ai/v2"
     assert rebuilt.config.reasoning_effort_map == ROUTE_EFFORT_MAP
-    assert _stored_capabilities(op_store) == _with_effort_map(DEFAULT_CAPABILITIES)
+    assert _stored_capabilities(op_store) == _stored_form(_with_effort_map(DEFAULT_CAPABILITIES))
 
 
 @pytest.mark.asyncio
@@ -9456,7 +9464,7 @@ async def test_an_edit_saves_target_and_map_together(admin_client):
     assert rebuilt.config.base_url == "https://api.featherless.ai/v2"
     assert rebuilt.config.reasoning_effort_map == ROUTE_EFFORT_MAP
     assert response.json()["reasoning_efforts_published"] == ["low", "high", "max"]
-    assert _stored_capabilities(op_store) == _with_effort_map(RUNTIME_CAPABILITIES)
+    assert _stored_capabilities(op_store) == _stored_form(_with_effort_map(RUNTIME_CAPABILITIES))
 
 
 @pytest.mark.asyncio
@@ -9562,4 +9570,46 @@ async def test_a_runtime_route_takes_only_the_map_it_declares(admin_client):
     assert plain.json()["capabilities"]["reasoning_effort_map"] is None
     assert mapped.json()["capabilities"]["reasoning_effort_map"] == ROUTE_EFFORT_MAP
     declared = [call.args[12] for call in op_store.upsert_provider_route_candidate.await_args_list]
-    assert declared == [RUNTIME_CAPABILITIES, _with_effort_map(RUNTIME_CAPABILITIES)]
+    assert declared == [RUNTIME_CAPABILITIES, _stored_form(_with_effort_map(RUNTIME_CAPABILITIES))]
+
+
+@pytest.mark.asyncio
+async def test_a_save_without_a_map_keeps_the_console_map_and_null_returns_to_yaml(admin_client):
+    """Absent keeps the route's current effort setting; null follows models.yaml again."""
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    adapter = _route_adapter(route_executor, EFFORT_ROUTE_ID)
+    adapter.config.reasoning_effort_map = dict(YAML_EFFORT_MAP)
+    await client.put(
+        EFFORT_CAPABILITIES_PATH, json=_with_effort_map(DEFAULT_CAPABILITIES), headers=AUTH
+    )
+
+    four = {**DEFAULT_CAPABILITIES, "max_output_length": 2048}
+    kept = await client.put(EFFORT_CAPABILITIES_PATH, json=four, headers=AUTH)
+
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["capabilities"]["max_output_length"] == 2048
+    assert kept.json()["capabilities"]["reasoning_effort_map"] == ROUTE_EFFORT_MAP
+    assert adapter.config.reasoning_effort_map == ROUTE_EFFORT_MAP
+    assert _stored_capabilities(op_store) == _stored_form(_with_effort_map(four))
+
+    # The same through a route edit's capabilities.
+    edited = await client.put(
+        f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+        json={**FEATHERLESS_V2_TARGET, "capabilities": four},
+        headers=AUTH,
+    )
+    assert edited.status_code == 200, edited.text
+    assert _route_adapter(route_executor, EFFORT_ROUTE_ID).config.reasoning_effort_map == (
+        ROUTE_EFFORT_MAP
+    )
+
+    followed = await client.put(
+        EFFORT_CAPABILITIES_PATH, json={**four, "reasoning_effort_map": None}, headers=AUTH
+    )
+    assert followed.status_code == 200, followed.text
+    assert followed.json()["capabilities"]["reasoning_effort_map"] == YAML_EFFORT_MAP
+    assert followed.json()["capabilities"]["max_output_length"] == 2048
+    assert _route_adapter(route_executor, EFFORT_ROUTE_ID).config.reasoning_effort_map == (
+        YAML_EFFORT_MAP
+    )
+    assert _stored_capabilities(op_store) == four
