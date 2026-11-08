@@ -27,6 +27,8 @@ interface ApiKeyResponse {
   api_key: string;
   key_prefix: string;
   name?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
   warning: string;
   created_at: string;
 }
@@ -54,6 +56,9 @@ export interface ApiKeyListItem {
   budget_monthly_usd?: number | null;
   /** Model ids the key may call; null or absent is every model the account may use. */
   allowed_models?: string[] | null;
+  /** The project the key belongs to. */
+  project_id?: string | null;
+  project_name?: string | null;
 }
 
 interface ApiKeyListResponse {
@@ -182,11 +187,14 @@ export async function getModels(): Promise<ModelCatalogResponse> {
 }
 
 /** Create another key for the account; `name` labels it and may be omitted. */
-export async function createApiKey(name?: string | null): Promise<ApiKeyResponse> {
+export async function createApiKey(
+  name?: string | null,
+  projectId?: string | null,
+): Promise<ApiKeyResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name ?? null }),
+    body: JSON.stringify({ name: name ?? null, project_id: projectId ?? null }),
   });
   return jsonOrThrow<ApiKeyResponse>(resp);
 }
@@ -352,4 +360,67 @@ export async function getRecentRequests(
   if (keyPrefix) params.set('key_prefix', keyPrefix);
   const resp = await fetchWithAuth(API_BASE, `/user/recent-requests?${params.toString()}`);
   return jsonOrThrow<RecentRequestsResponse>(resp);
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  is_default: boolean;
+  budget_daily_usd?: number | null;
+  budget_monthly_usd?: number | null;
+  allowed_models?: string[] | null;
+  max_concurrent_requests?: number | null;
+  spent_today_usd: number;
+  spent_month_usd: number;
+  key_count: number;
+  created_at: string;
+}
+
+/** Settings to change on a project: a field left out is unchanged, `null` clears it. */
+export interface ProjectUpdate {
+  name?: string;
+  description?: string | null;
+  budget_daily_usd?: number | null;
+  budget_monthly_usd?: number | null;
+  allowed_models?: string[] | null;
+  max_concurrent_requests?: number | null;
+}
+
+export interface ProjectCreate extends ProjectUpdate {
+  name: string;
+}
+
+export async function listProjects(): Promise<Project[]> {
+  const resp = await fetchWithAuth(API_BASE, '/user/projects');
+  return jsonOrThrow<Project[]>(resp);
+}
+
+export async function createProject(body: ProjectCreate): Promise<Project> {
+  const resp = await fetchWithAuth(API_BASE, '/user/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow<Project>(resp);
+}
+
+export async function updateProject(projectId: string, changes: ProjectUpdate): Promise<Project> {
+  const resp = await fetchWithAuth(API_BASE, `/user/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes),
+  });
+  return jsonOrThrow<Project>(resp);
+}
+
+export async function archiveProject(
+  projectId: string,
+): Promise<{ project_id: string; archived_at: string; keys_revoked: number }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/user/projects/${encodeURIComponent(projectId)}/archive`,
+    { method: 'POST' },
+  );
+  return jsonOrThrow(resp);
 }

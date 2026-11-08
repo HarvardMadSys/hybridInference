@@ -70,7 +70,7 @@ async def test_one_statement_writes_the_account_and_the_key_counter():
     await _store(conn).increment_user_cost("u1", 0.5, day="2026-11-02", api_key_id=7)
 
     [call] = conn.fetchval.await_args_list
-    sql, users, days, keys, costs, requests = call.args
+    sql, users, days, keys, costs, requests, _orgs, _projects = call.args
     assert sql is COST_INCREMENTS_SQL
     assert "INSERT INTO user_daily_cost" in sql
     assert "INSERT INTO api_key_daily_cost" in sql
@@ -104,6 +104,8 @@ async def test_a_batch_goes_out_in_one_statement_with_its_request_counts():
         [7, None],
         [Decimal("0.000300"), Decimal("1.250000")],
         [3, 1],
+        [None, None],
+        [None, None],
     )
 
 

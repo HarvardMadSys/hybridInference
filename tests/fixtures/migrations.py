@@ -94,3 +94,40 @@ async def ensure_api_logs_tables(conn: Any) -> None:
     for name in API_LOGS_REVISIONS:
         for statement in importlib.import_module(f"migrations.versions.{name}").STATEMENTS:
             await conn.execute(statement)
+
+    for statement in importlib.import_module(
+        "migrations.versions.0012_projects"
+    ).API_LOG_STATEMENTS:
+        await conn.execute(statement)
+
+
+async def prepare_current_schema(conn: Any) -> None:
+    """Build the current schema in a fixture's private search path."""
+    from alembic.operations import Operations
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from migrations import alembic_config
+    from migrations.baseline import run
+
+    await run(conn)
+    schema = await conn.fetchval("SELECT current_schema()")
+    database = await conn.fetchval("SELECT current_database()")
+    scripts = ScriptDirectory.from_config(alembic_config(url(database)))
+    engine = create_async_engine(
+        url(database), connect_args={"server_settings": {"search_path": schema}}
+    )
+
+    def apply_revisions(connection: Any) -> None:
+        context = MigrationContext.configure(connection)
+        with context.begin_transaction(), Operations.context(context):
+            for revision in reversed(list(scripts.walk_revisions(base="0001_baseline"))):
+                if revision.revision != "0001_baseline":
+                    revision.module.upgrade()
+
+    try:
+        async with engine.connect() as connection:
+            await connection.run_sync(apply_revisions)
+    finally:
+        await engine.dispose()

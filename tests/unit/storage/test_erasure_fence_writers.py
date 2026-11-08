@@ -125,7 +125,7 @@ async def test_a_cost_write_locks_every_accounts_fence_key_and_leaves_erased_one
     # Each account once, in the one order every writer takes them in.
     assert lock_args == ([fence_account_advisory_key(d) for d in sorted(digests.values())],)
     assert sql is COST_INCREMENTS_FENCED_SQL
-    assert args[5] == [digests["u-b"], digests["u-a"], digests["u-b"]]
+    assert args[7] == [digests["u-b"], digests["u-a"], digests["u-b"]]
     assert "WHERE NOT EXISTS (SELECT 1 FROM erasure_fence" in sql
 
 
@@ -138,7 +138,7 @@ async def test_a_huge_batch_checks_the_fence_in_its_statement_without_the_locks(
 
     ((sql, args),) = conn.calls
     assert sql is COST_INCREMENTS_FENCED_SQL
-    assert len(args[5]) == 3
+    assert len(args[7]) == 3
 
 
 async def test_without_a_fence_secret_the_cost_write_is_unchanged():
@@ -148,7 +148,7 @@ async def test_without_a_fence_secret_the_cost_write_is_unchanged():
 
     ((sql, args),) = conn.calls
     assert sql is COST_INCREMENTS_SQL
-    assert len(args) == 5
+    assert len(args) == 7
 
 
 async def test_a_store_on_one_connection_keeps_the_fence():

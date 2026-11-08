@@ -31,6 +31,7 @@ def mock_op_store():
     store.get_auth_context_by_key_hash = AsyncMock()
     store.update_key_last_used = AsyncMock()
     store.get_user_cost_today = AsyncMock(return_value=0.0)
+    store.get_personal_org_status = AsyncMock(return_value=None)
     return store
 
 

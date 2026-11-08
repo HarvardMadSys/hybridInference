@@ -236,6 +236,24 @@ def is_model_outside_grant_scope(canonical_model_id: str, user_ctx: dict[str, An
 #: allowlist, since revoking the key says "no models" more plainly.
 KEY_ALLOWED_MODELS_KEY = "key_allowed_models"
 
+#: Set when the caller's key belongs to a project with a model allowlist.
+#: Absent (or None) means the project does not narrow access. An empty list is
+#: treated as unrestricted, as it is stored: the console does not allow saving
+#: an empty project allowlist.
+PROJECT_ALLOWED_MODELS_KEY = "project_allowed_models"
+
+
+def is_model_outside_project_scope(
+    canonical_model_id: str, user_ctx: dict[str, Any] | None
+) -> bool:
+    """Return True if the caller's project does not list this model."""
+    if not user_ctx:
+        return False
+    allowed = user_ctx.get(PROJECT_ALLOWED_MODELS_KEY)
+    if allowed is None or not allowed:
+        return False
+    return canonical_model_id not in set(allowed)
+
 
 def is_model_outside_key_scope(canonical_model_id: str, user_ctx: dict[str, Any] | None) -> bool:
     """Return True if the caller's API key does not allow this model.
@@ -264,6 +282,7 @@ class ModelAccessDenial(enum.Enum):
     ROLE = "role"
     DISABLED = "disabled"
     OUTSIDE_KEY = "outside_key"
+    OUTSIDE_PROJECT = "outside_project"
     OUTSIDE_GRANT = "outside_grant"
 
 
@@ -330,6 +349,8 @@ async def model_access_denial(
         return ModelAccessDenial.DISABLED
     if is_model_outside_key_scope(canonical, user_ctx):
         return ModelAccessDenial.OUTSIDE_KEY
+    if is_model_outside_project_scope(canonical, user_ctx):
+        return ModelAccessDenial.OUTSIDE_PROJECT
     if grant_scope and is_model_outside_grant_scope(canonical, user_ctx):
         return ModelAccessDenial.OUTSIDE_GRANT
     return None

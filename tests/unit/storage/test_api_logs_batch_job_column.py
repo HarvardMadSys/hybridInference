@@ -69,7 +69,7 @@ async def test_a_batch_rows_job_lands_in_its_own_column(make_writer):
     sql, *_ = args = conn.execute.await_args.args
     assert "agent_job_id, batch_job_id" in sql
     assert "$36, $37" in sql
-    assert len(args) == BATCH_JOB_ARG + 1
+    assert len(args) == BATCH_JOB_ARG + (3 if make_writer is _postgres_log_store else 1)
     assert args[AGENT_JOB_ARG] == "job-1"
     assert args[BATCH_JOB_ARG] == "batch_1"
 

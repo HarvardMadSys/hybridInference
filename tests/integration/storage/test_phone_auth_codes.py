@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
-from migrations.baseline import operational_store
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -40,7 +40,7 @@ async def phone_store():
             min_size=2, max_size=12, server_settings={"search_path": schema}
         )
         async with pool.acquire() as conn:
-            await operational_store.create_tables(conn)  # the baseline's, in this schema
+            await prepare_current_schema(conn)
         store = PostgresOperationalStore(pool)
         yield store
     finally:
@@ -179,6 +179,8 @@ async def test_phone_uniqueness_and_no_synthetic_email_under_signup_race(phone_s
     assert user["email"] is None
     assert user["password_hash"] is None
     assert user["phone_verified"] is True
+    projects = await phone_store.list_projects(user["id"])
+    assert [project["id"] for project in projects] == [f"proj_d_{user['id']}"]
 
 
 async def test_binding_preserves_uniqueness_existing_phone_and_account_status(phone_store):

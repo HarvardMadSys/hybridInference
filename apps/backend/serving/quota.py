@@ -146,7 +146,7 @@ def exceeded_payload(
     return body, headers
 
 
-Scope = Literal["key", "account"]
+Scope = Literal["key", "project", "account"]
 Window = Literal["day", "month"]
 
 
@@ -165,6 +165,7 @@ class BudgetRefusal:
     spent_usd: float
     key_prefix: str | None = None
     key_label: str | None = None
+    scope_name: str | None = None
 
     def reset_at(self, now: datetime | None = None) -> datetime:
         """When the window's counter starts again."""
@@ -185,15 +186,20 @@ def first_refusal(
     key_budget_monthly_usd: float | None = None,
     key_spent_today_usd: float = 0.0,
     key_spent_month_usd: float = 0.0,
+    project_budget_daily_usd: float | None = None,
+    project_budget_monthly_usd: float | None = None,
+    project_spent_today_usd: float = 0.0,
+    project_spent_month_usd: float = 0.0,
+    project_name: str | None = None,
     key_prefix: str | None = None,
     key_label: str | None = None,
 ) -> BudgetRefusal | None:
     """Return the narrowest limit this request does not fit under, or None.
 
-    Checked in order key/day, key/month, account/day, account/month, so a
+    Checked in order key, project, account (day then month at each level), so a
     refusal names the narrowest limit that ran out. Each uses the same
-    optimistic estimate, so a key and its account behave alike near their
-    limits. A key budget or a monthly quota of None is no limit there.
+    optimistic estimate, so the levels behave alike near their limits. A NULL
+    budget or monthly quota is no limit there.
     """
     if _over(key_budget_daily_usd, key_spent_today_usd):
         return BudgetRefusal(
@@ -207,6 +213,22 @@ def first_refusal(
             key_spent_month_usd,
             key_prefix,
             key_label,
+        )
+    if _over(project_budget_daily_usd, project_spent_today_usd):
+        return BudgetRefusal(
+            "project",
+            "day",
+            float(project_budget_daily_usd),
+            project_spent_today_usd,
+            scope_name=project_name,
+        )
+    if _over(project_budget_monthly_usd, project_spent_month_usd):
+        return BudgetRefusal(
+            "project",
+            "month",
+            float(project_budget_monthly_usd),
+            project_spent_month_usd,
+            scope_name=project_name,
         )
     if _over(account_quota_usd, account_spent_usd):
         return BudgetRefusal("account", "day", account_quota_usd, account_spent_usd)
@@ -245,6 +267,13 @@ def refusal_payload(
             else "Monthly quota exhausted. Contact the operator of this deployment."
         )
         named: dict[str, Any] = {}
+    elif refusal.scope == "project":
+        error = f"Project {period} budget exceeded"
+        message = (
+            f"Project {refusal.scope_name!r} reached its {period} budget "
+            f"of ${refusal.limit_usd:.2f}. Raise the project's budget in the console."
+        )
+        named = {"project": refusal.scope_name}
     else:
         error = f"API key {period} budget exceeded"
         message = (

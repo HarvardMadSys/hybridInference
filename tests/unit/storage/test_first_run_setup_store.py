@@ -110,14 +110,14 @@ class TestCreateUser:
         await store.create_user(
             user_id="u1", email=None, password_hash="h", login_name="Admin", email_verified=True
         )
-        sql, *params = pg_conn.execute.await_args.args
+        sql, *params = pg_conn.execute.await_args_list[0].args
         assert "login_name" in sql
         assert params[1] is None  # email
         assert params[-1] == "admin"  # login_name, lowercased
 
     async def test_signup_account_is_unchanged(self, store, pg_conn):
         await store.create_user(user_id="u1", email="Bob@Example.com", password_hash="h")
-        params = pg_conn.execute.await_args.args[1:]
+        params = pg_conn.execute.await_args_list[0].args[1:]
         assert params[1] == "bob@example.com"
         assert params[-1] is None
 
@@ -282,6 +282,11 @@ class _SimulatedConnection:
             self._ops.append(("insert", args[0], args[1], "ON CONFLICT" in sql))
         elif "DELETE FROM site_settings" in sql:
             self._ops.append(("delete", args[0], args[0] in self._settings()))
+        elif any(
+            table in sql
+            for table in ("organizations", "org_members", "projects", "UPDATE api_keys SET org_id")
+        ):
+            pass
         elif "INSERT INTO admin_audit_log" in sql:
             self._ops.append(("audit", args))
         else:

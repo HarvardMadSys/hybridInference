@@ -78,6 +78,11 @@ function refusalText(error: BatchConsoleError, t: Translate): string {
         'batches.create.refused.key_budget',
         "The API key this batch runs under has spent its budget. Raise it on the key's page, or submit after it renews; uploading and checking stay free.",
       );
+    case 'project_budget_exceeded':
+      return t(
+        'batches.create.refused.project_budget',
+        "The project this batch runs under has spent its budget. Raise it on the project's page, or submit after it renews; uploading and checking stay free.",
+      );
     default:
       return error.message;
   }

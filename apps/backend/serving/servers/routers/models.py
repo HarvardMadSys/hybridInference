@@ -34,7 +34,7 @@ from serving.auto_mode import AutoMode, auto_mode_enabled, candidate_info
 from serving.model_access import model_access_denial
 from serving.pricing import PricingUnavailableError, effective_pricing
 from serving.schemas import ModelItem, ModelList
-from serving.servers.auth import optional_verify_api_key
+from serving.servers.auth import optional_verify_api_key, verify_api_key_for_balance
 from serving.servers.deps import (
     get_auto_mode,
     get_embedding_adapters,
@@ -384,3 +384,99 @@ async def _build_model_list_async(
         )
 
     return ModelList(data=models)
+
+
+@router.get("/v1/key")
+async def describe_key(
+    user_ctx: dict[str, Any] = Depends(verify_api_key_for_balance),
+) -> dict[str, Any]:
+    """Describe the calling API key: project, models, budgets and remaining spend."""
+    from serving import quota
+
+    key_allowed = user_ctx.get("key_allowed_models")
+    project_allowed = user_ctx.get("project_allowed_models")
+    if key_allowed is None and project_allowed is None:
+        models: list[str] | None = None
+    elif key_allowed is None:
+        models = list(project_allowed or [])
+    elif project_allowed is None:
+        models = list(key_allowed or [])
+    else:
+        models = [model for model in key_allowed if model in set(project_allowed)]
+
+    account_daily = float(user_ctx.get("quota_daily_cost_usd") or 0.0)
+    account_daily_spent = float(user_ctx.get("spent_today_usd") or 0.0)
+    account_monthly = user_ctx.get("quota_monthly_cost_usd")
+    account_month_spent = float(user_ctx.get("account_spent_month_usd") or 0.0)
+    project_daily = user_ctx.get("project_budget_daily_usd")
+    project_daily_spent = float(user_ctx.get("project_spent_today_usd") or 0.0)
+    project_monthly = user_ctx.get("project_budget_monthly_usd")
+    project_month_spent = float(user_ctx.get("project_spent_month_usd") or 0.0)
+
+    return {
+        "key_prefix": user_ctx.get("key_prefix"),
+        "project": {
+            "id": user_ctx.get("project_id"),
+            "name": user_ctx.get("project_name"),
+        },
+        "models": models,
+        "budgets": {
+            "key": {
+                window: (
+                    None
+                    if user_ctx.get(limit) is None
+                    else {
+                        "limit_usd": float(user_ctx[limit]),
+                        "spent_usd": float(user_ctx.get(spend) or 0),
+                        "remaining_usd": max(
+                            0.0, float(user_ctx[limit]) - float(user_ctx.get(spend) or 0)
+                        ),
+                    }
+                )
+                for window, limit, spend in (
+                    ("day", "budget_daily_usd", "key_spent_today_usd"),
+                    ("month", "budget_monthly_usd", "key_spent_month_usd"),
+                )
+            },
+            "account": {
+                "day": {
+                    "limit_usd": account_daily,
+                    "spent_usd": account_daily_spent,
+                    "remaining_usd": max(0.0, account_daily - account_daily_spent),
+                },
+                "month": (
+                    None
+                    if account_monthly is None
+                    else {
+                        "limit_usd": float(account_monthly),
+                        "spent_usd": account_month_spent,
+                        "remaining_usd": max(0.0, float(account_monthly) - account_month_spent),
+                    }
+                ),
+            },
+            "project": {
+                "day": (
+                    None
+                    if project_daily is None
+                    else {
+                        "limit_usd": float(project_daily),
+                        "spent_usd": project_daily_spent,
+                        "remaining_usd": max(0.0, float(project_daily) - project_daily_spent),
+                    }
+                ),
+                "month": (
+                    None
+                    if project_monthly is None
+                    else {
+                        "limit_usd": float(project_monthly),
+                        "spent_usd": project_month_spent,
+                        "remaining_usd": max(0.0, float(project_monthly) - project_month_spent),
+                    }
+                ),
+            },
+        },
+        "reset_at": {
+            "day": quota.next_utc_midnight().isoformat(),
+            "month": quota.next_utc_month_start().isoformat(),
+        },
+    }

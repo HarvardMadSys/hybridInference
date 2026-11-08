@@ -8,6 +8,7 @@ import { ApiKeyManager } from './ApiKeyManager';
 
 vi.mock('@/lib/hooks', () => ({
   useApiKeys: vi.fn(),
+  useProjects: vi.fn(() => ({ data: [] })),
   useCreateApiKey: vi.fn(),
   useDeleteApiKey: vi.fn(),
   useRegenerateApiKey: vi.fn(),
@@ -311,7 +312,9 @@ describe('ApiKeyManager with several keys', () => {
     expect(input).toHaveFocus();
     fireEvent.change(input, { target: { value: '  ci  ' } });
     fireEvent.submit(input.closest('form')!);
-    await waitFor(() => expect(mutations.create.mutateAsync).toHaveBeenCalledWith('ci'));
+    await waitFor(() =>
+      expect(mutations.create.mutateAsync).toHaveBeenCalledWith({ name: 'ci', projectId: null }),
+    );
     expect(window.prompt).not.toHaveBeenCalled();
     expect(await screen.findByText('hyi-new')).toBeInTheDocument();
   });

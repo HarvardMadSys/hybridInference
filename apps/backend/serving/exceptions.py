@@ -112,6 +112,10 @@ class DuplicateAPIKeyError(UserFacingError):
     pass
 
 
+class ProjectNotFoundError(UserFacingError):
+    """The project is absent, archived, or owned by another account."""
+
+
 class APIKeyLimitReachedError(UserFacingError):
     """The account already holds as many active API keys as it may."""
 

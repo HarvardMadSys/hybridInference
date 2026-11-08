@@ -1375,6 +1375,10 @@
     "source": "A batch runs under your active API key, and you have none. Create one on the dashboard, then submit again.",
     "text": "批处理任务以你当前有效的 API 密钥运行，而你还没有密钥。请先在仪表盘创建，然后再提交。"
   },
+  "batches.create.refused.project_budget": {
+    "source": "The project this batch runs under has spent its budget. Raise it on the project's page, or submit after it renews; uploading and checking stay free.",
+    "text": "这个批次所用的项目已用完预算。请在该项目的页面调高预算，或等预算重置后再提交；上传和校验仍然免费。"
+  },
   "batches.create.refused.quota": {
     "source": "Your daily quota is spent. Submit after it renews (00:00 UTC) or once it is raised; uploading and checking stay free.",
     "text": "你今天的额度已用完。请在额度重置（UTC 0 点）或调整后再提交；上传和校验仍然免费。"
@@ -1843,6 +1847,10 @@
     "source": "Created in the console",
     "text": "在控制台创建"
   },
+  "batches.paused.account_budget": {
+    "source": "Paused: the account this batch runs under has spent its quota. It is checked again after {until}; raise the account quota to resume sooner.",
+    "text": "已暂停：这个批次所用的账户已用完额度。将在 {until} 之后再次检查；调高账户额度可以更早恢复。"
+  },
   "batches.paused.key_budget": {
     "source": "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
     "text": "已暂停：这个批次所用的 API key 已用完预算。将在 {until} 之后再次检查；在该 key 的页面调高预算可以更早恢复。"
@@ -1854,6 +1862,10 @@
   "batches.paused.other": {
     "source": "Paused until {until}.",
     "text": "已暂停，直到 {until}。"
+  },
+  "batches.paused.project_budget": {
+    "source": "Paused: the project this batch runs under has spent its budget. It is checked again after {until}; raise the project's budget on its page to resume sooner.",
+    "text": "已暂停：这个批次所用的项目已用完预算。将在 {until} 之后再次检查；在该项目的页面调高预算可以更早恢复。"
   },
   "batches.paused.quota": {
     "source": "Paused: your daily quota is spent. It resumes after {until} (when the quota renews at 00:00 UTC) or once your quota is raised.",
@@ -2459,10 +2471,6 @@
     "source": "Your account's daily quota of {amount} also applies.",
     "text": "账户的每日额度 {amount} 同时生效。"
   },
-  "dashboard.key_detail.all_models": {
-    "source": "All models",
-    "text": "全部模型"
-  },
   "dashboard.key_detail.back": {
     "source": "API Keys",
     "text": "API key"
@@ -2527,10 +2535,6 @@
     "source": "Limits saved.",
     "text": "限制已保存。"
   },
-  "dashboard.key_detail.some_models": {
-    "source": "Only the models selected below",
-    "text": "仅限下面选中的模型"
-  },
   "dashboard.key_detail.spend_note": {
     "source": "Counted since usage was first attributed to keys. Regenerating the key keeps its spend.",
     "text": "从开始按 key 统计用量时算起。重新生成 key 不会清零花费。"
@@ -2550,10 +2554,6 @@
   "dashboard.key_detail.today": {
     "source": "Today",
     "text": "今天"
-  },
-  "dashboard.key_detail.unavailable": {
-    "source": "no longer available",
-    "text": "已不可用"
   },
   "dashboard.key_detail.zero_hint": {
     "source": "A budget of 0 pauses the key.",
@@ -4196,5 +4196,169 @@
   "terms.s9.title": {
     "source": "9. Changes to These Terms",
     "text": "9. 条款变更"
+  },
+  "console.nav.projects": {
+    "source": "Projects",
+    "text": "项目"
+  },
+  "dashboard.keys.project_label": {
+    "source": "Project",
+    "text": "项目"
+  },
+  "dashboard.projects.archive": {
+    "source": "Archive",
+    "text": "归档"
+  },
+  "dashboard.projects.archive_prompt": {
+    "source": "Archive {name}? Its keys stop working immediately. Its usage history stays available.",
+    "text": "归档 {name}？其密钥将立即失效，使用记录会保留。"
+  },
+  "dashboard.projects.archived_toast": {
+    "source": "Project archived. {count} key(s) revoked.",
+    "text": "项目已归档，已撤销 {count} 个密钥。"
+  },
+  "dashboard.projects.concurrency_label": {
+    "source": "Max concurrent requests",
+    "text": "最大并发请求数"
+  },
+  "dashboard.projects.create": {
+    "source": "Create Project",
+    "text": "创建项目"
+  },
+  "dashboard.projects.created_toast": {
+    "source": "Project created.",
+    "text": "项目已创建。"
+  },
+  "dashboard.projects.daily_budget": {
+    "source": "Daily {amount}",
+    "text": "每日 {amount}"
+  },
+  "dashboard.projects.daily_label": {
+    "source": "Daily budget (USD)",
+    "text": "每日预算（美元）"
+  },
+  "dashboard.projects.default_badge": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "dashboard.projects.edit": {
+    "source": "Edit Project",
+    "text": "编辑项目"
+  },
+  "dashboard.projects.empty": {
+    "source": "No projects yet.",
+    "text": "暂无项目。"
+  },
+  "dashboard.projects.invalid_limits": {
+    "source": "Enter non-negative budgets and a positive whole concurrency limit.",
+    "text": "请输入非负预算和正整数并发限制。"
+  },
+  "dashboard.projects.key_count": {
+    "source": "{count} key(s)",
+    "text": "{count} 个密钥"
+  },
+  "dashboard.projects.load_failed": {
+    "source": "Failed to load projects. Please try again later.",
+    "text": "无法加载项目，请稍后重试。"
+  },
+  "dashboard.projects.monthly_budget": {
+    "source": "Monthly {amount}",
+    "text": "每月 {amount}"
+  },
+  "dashboard.projects.monthly_label": {
+    "source": "Monthly budget (USD)",
+    "text": "每月预算（美元）"
+  },
+  "dashboard.projects.name_label": {
+    "source": "Name",
+    "text": "名称"
+  },
+  "dashboard.projects.name_required": {
+    "source": "Name is required.",
+    "text": "请输入名称。"
+  },
+  "dashboard.projects.no_daily_budget": {
+    "source": "No daily budget",
+    "text": "未设置每日预算"
+  },
+  "dashboard.projects.no_limit": {
+    "source": "No limit",
+    "text": "无限制"
+  },
+  "dashboard.projects.no_monthly_budget": {
+    "source": "No monthly budget",
+    "text": "未设置每月预算"
+  },
+  "dashboard.projects.spend_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
+  },
+  "dashboard.projects.spend_today": {
+    "source": "{amount} today",
+    "text": "今日 {amount}"
+  },
+  "dashboard.projects.subtitle": {
+    "source": "Group API keys under a shared budget and model allowlist. Keys without a project use your Default project.",
+    "text": "将 API 密钥分组，共享预算和模型允许列表。未指定项目的密钥使用默认项目。"
+  },
+  "dashboard.projects.title": {
+    "source": "Projects",
+    "text": "项目"
+  },
+  "dashboard.projects.updated_toast": {
+    "source": "Project updated.",
+    "text": "项目已更新。"
+  },
+  "common.edit": {
+    "source": "Edit",
+    "text": "编辑"
+  },
+  "dashboard.keys.project_default": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "dashboard.keys.project_placeholder": {
+    "source": "Account default",
+    "text": "账户默认项目"
+  },
+  "dashboard.model_picker.all_models": {
+    "source": "All models",
+    "text": "全部模型"
+  },
+  "dashboard.model_picker.clear_all": {
+    "source": "Clear all",
+    "text": "全部清除"
+  },
+  "dashboard.model_picker.pick_a_model": {
+    "source": "Pick at least one model, or choose All models.",
+    "text": "至少选择一个模型，或选择全部模型。"
+  },
+  "dashboard.model_picker.select_all": {
+    "source": "Select all",
+    "text": "全选"
+  },
+  "dashboard.model_picker.selected_count": {
+    "source": "{count} selected",
+    "text": "已选择 {count} 个"
+  },
+  "dashboard.model_picker.some_models": {
+    "source": "Only the models selected below",
+    "text": "仅以下选中的模型"
+  },
+  "dashboard.model_picker.unavailable": {
+    "source": "no longer available",
+    "text": "已不可用"
+  },
+  "dashboard.projects.models_hint": {
+    "source": "Other models answer requests from this project as if they did not exist, and its model list shows only these.",
+    "text": "其他模型对这个项目的请求就像不存在一样，用它获取的模型列表也只包含这些模型。"
+  },
+  "dashboard.projects.models_title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "dashboard.projects.pick_a_model": {
+    "source": "Pick at least one model, or allow all models.",
+    "text": "至少选择一个模型，或允许全部模型。"
   }
 }

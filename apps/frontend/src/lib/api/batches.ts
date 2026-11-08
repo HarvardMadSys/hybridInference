@@ -96,7 +96,15 @@ export interface ConsoleBatch {
   created_via?: 'console' | 'api';
   /** Set while the batch is paused: until when, and why (`quota`, `role`, or null if unknown). */
   paused_until?: number | null;
-  paused_reason?: 'quota' | 'monthly_quota' | 'role' | 'key_budget' | string | null;
+  paused_reason?:
+    | 'quota'
+    | 'monthly_quota'
+    | 'role'
+    | 'key_budget'
+    | 'project_budget'
+    | 'account_budget'
+    | string
+    | null;
 }
 
 /** A source file's state for its owner. */

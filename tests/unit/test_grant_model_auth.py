@@ -212,7 +212,7 @@ async def test_removing_the_quota_lookup_makes_that_test_fail(store, token, monk
     """
     store.spend = CUSTOM_QUOTA
 
-    async def _no_gate(_op_store, _user_id):
+    async def _no_gate(_op_store, _user_id, _context):
         return None
 
     monkeypatch.setattr(model_auth, "_quota_check", _no_gate)
@@ -453,3 +453,26 @@ def test_ordinary_traffic_gains_no_attribution_keys() -> None:
     plain = {"user_id": "u", "role": "free", "authenticated": True}
     assert model_auth.ledger_attribution(plain, started_at=1.0) == {}
     assert model_auth.ledger_attribution(None, started_at=1.0) == {}
+
+
+async def test_grant_uses_default_project_attribution_and_limits(store, token) -> None:
+    store.keys[0].update(
+        {
+            "org_id": "org_personal",
+            "project_id": "proj_default",
+            "project_name": "Default",
+            "project_budget_daily_usd": 1.0,
+            "project_spent_today_usd": 0.25,
+            "project_allowed_models": ["glm-5.1"],
+            "project_max_concurrent_requests": 2,
+        }
+    )
+    context = await authenticate_grant_model_call(token, op_store=store)
+    assert context["project_id"] == "proj_default"
+    assert context["org_id"] == "org_personal"
+    assert context["project_allowed_models"] == ["glm-5.1"]
+    assert context["project_max_concurrent_requests"] == 2
+    store.keys[0]["project_spent_today_usd"] = 1.0
+    with pytest.raises(AgentQuotaExceeded) as caught:
+        await authenticate_grant_model_call(token, op_store=store)
+    assert caught.value.refusal.scope == "project"
