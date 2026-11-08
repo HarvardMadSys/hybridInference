@@ -3,7 +3,9 @@
 # Adds an image reference to the backend service so `docker compose up
 # --no-build` runs a pulled candidate instead of building from the host
 # checkout. Everything else is unchanged: the checkout keeps supplying
-# config/, distributions/, var/data and .env as mounts.
+# distributions/, var/data and .env as mounts and env files, and the base
+# file still carries the retired configuration selectors a rolled-back older
+# image reads.
 #
 # Usage (driven by the "Deploy Staging by Digest" workflow):
 #   BACKEND_IMAGE=ghcr.io/<owner>/hybridinference-backend@sha256:... \
@@ -13,8 +15,3 @@
 services:
   backend:
     image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be a full image@sha256 reference}
-    # Only older-image rollback needs a file-based public site identity. New
-    # images ignore these retired inputs and use database documents.
-    environment:
-      DISTRIBUTION_CONFIG_PATH: ${ROLLBACK_DISTRIBUTION_CONFIG_PATH-}
-      DISTRIBUTION_CONFIG_MODE: ${ROLLBACK_DISTRIBUTION_CONFIG_MODE-dark}

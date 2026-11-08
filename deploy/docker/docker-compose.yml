@@ -97,6 +97,26 @@ services:
       ALERT_RULES: ${ALERT_RULES-}
       SITE_CONFIGURATION: ${SITE_CONFIGURATION-}
       SITE_BRANDING: ${SITE_BRANDING-}
+      # Retired selectors, kept for the rollback window. This release reads
+      # the documents above from the database and ignores these, warning at
+      # boot while one is set; the release before it read its manifest and its
+      # model, routing and alert files through them. A deploy that fails
+      # acceptance, and `make rollback`, start that release again from this
+      # file, and these lines are what carry a deployment's values -- from its
+      # overlay's deploy/*.env or .env -- into its container, which the
+      # --env-file layer alone does not do. `import-legacy`, run in the new
+      # image, reads ALERTS_CONFIG_PATH from here too. Remove the values once
+      # no earlier release will run.
+      #
+      # No value here, so Compose takes each one from those files or the
+      # shell, and a selector set nowhere stays out of the container: unset is
+      # what the previous release expects (its mode then defaults to dark),
+      # and a default here would outrank its manifest.
+      DISTRIBUTION_CONFIG_PATH:
+      DISTRIBUTION_CONFIG_MODE:
+      MODELS_CONFIG_PATH:
+      ROUTING_CONFIG_PATH:
+      ALERTS_CONFIG_PATH:
       # Which environment alerts are labelled with. Left unset upstream so
       # the existing inference from the base URL still applies; a
       # deployment states it outright, because inferring it makes the

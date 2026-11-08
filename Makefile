@@ -429,7 +429,13 @@ demo-smoke: _require-demo  ## Verify the full demo through its frontend origin
 # on the schema the new image has just migrated. Start PREVIOUS_BACKEND_IMAGE
 # that way, without its migrations, and run the full smoke against it, its
 # recreate included. `make demo` returns to the current image.
-DEMO_PREVIOUS_COMPOSE = env COMPOSE_PROFILES= ROLLBACK_DISTRIBUTION_CONFIG_PATH=/app/distributions/example/distribution.demo.json ROLLBACK_DISTRIBUTION_CONFIG_MODE=active BACKEND_IMAGE="$(PREVIOUS_BACKEND_IMAGE)" docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) -f deploy/docker/docker-compose.digest-backend.yml $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+#
+# An image from before the database-backed configuration reads its public site
+# identity from the manifest its deployment still names, as a deployment keeps
+# doing for its rollback window. The shell outranks every env file, and the
+# base Compose file passes the selectors on.
+DEMO_PREVIOUS_SELECTORS := DISTRIBUTION_CONFIG_PATH=/app/$(DISTRIBUTION_PATH)/distribution.demo.json DISTRIBUTION_CONFIG_MODE=active
+DEMO_PREVIOUS_COMPOSE = env COMPOSE_PROFILES= $(DEMO_PREVIOUS_SELECTORS) BACKEND_IMAGE="$(PREVIOUS_BACKEND_IMAGE)" docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) -f deploy/docker/docker-compose.digest-backend.yml $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
 demo-previous: _require-demo  ## Restore drill: PREVIOUS_BACKEND_IMAGE on the migrated demo database, smoked
 	@test -n "$(PREVIOUS_BACKEND_IMAGE)" || (echo "Set PREVIOUS_BACKEND_IMAGE to the image to restore"; exit 1)
 	$(DEMO_PREVIOUS_COMPOSE) up -d --no-deps --no-build --force-recreate --wait backend

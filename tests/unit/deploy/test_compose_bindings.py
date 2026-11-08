@@ -43,8 +43,13 @@ def _render(
     example: bool = False,
     overlays: tuple[Path, ...] = (),
     extra: tuple[str, ...] = (),
+    env_files: tuple[Path, ...] = (),
 ) -> dict:
-    """Use only fixture environment values, never a developer's deployment."""
+    """Use only fixture environment values, never a developer's deployment.
+
+    *env_files* come before the fixture's own, as a distribution's deploy/*.env
+    files come before .env; unlike that one, they are no container's env_file.
+    """
     env_file = tmp_path / "compose.env"
     settings = list(extra)
     args = [docker_cli, "compose", "-f", str(COMPOSE)]
@@ -66,6 +71,8 @@ def _render(
     if host is not None:
         settings.append(f"FRONTEND_HOST={host}")
     env_file.write_text("\n".join(settings) + "\n")
+    for path in env_files:
+        args.extend(["--env-file", str(path)])
     args.extend(["--env-file", str(env_file), "config", "--format", "json"])
     # Keep Docker's CLI discovery environment, but exclude ambient Compose and
     # application settings which would override the env files under test.
@@ -227,3 +234,59 @@ def test_probe_urls_follow_make_extra_env_files_and_local_overrides(
     assert gateway_ops.published_base_url([], "backend") == (
         "http://127.0.0.1:38080" if local_override else "http://127.0.0.1:28080"
     )
+
+
+# What a deployment of the release before database-backed configuration names
+# in its overlay's deploy/*.env: the previous image reads its files through them.
+_RETIRED_SELECTORS = {
+    "DISTRIBUTION_CONFIG_PATH": "/app/distributions/site/distribution.yaml",
+    "DISTRIBUTION_CONFIG_MODE": "active",
+    "MODELS_CONFIG_PATH": "/app/distributions/site/config/models.yaml",
+    "ROUTING_CONFIG_PATH": "/app/distributions/site/config/routing.yaml",
+    "ALERTS_CONFIG_PATH": "/app/distributions/site/config/alerts.yaml",
+}
+_PINNED = (
+    "BACKEND_IMAGE=registry.example/backend@sha256:" + "a" * 64,
+    "FRONTEND_IMAGE=registry.example/frontend@sha256:" + "b" * 64,
+)
+
+
+@pytest.mark.parametrize(
+    "overlay",
+    [None, "docker-compose.artifacts.yml", "docker-compose.digest-backend.yml"],
+    ids=["source", "deploy-and-rollback", "digest"],
+)
+def test_a_rolled_back_backend_still_gets_its_configuration_selectors(
+    tmp_path: Path, docker_cli: str, overlay: str | None
+) -> None:
+    """A failed deploy or `make rollback` starts the previous image from these files.
+
+    That image reads its manifest, models, routing and alert files through
+    these variables; without them it reopens public signup, drops the
+    manifest's feature restrictions and branding, and alerts on the built-in
+    thresholds. Every way a pinned image is started must carry them.
+    """
+    overlays = (COMPOSE.parent / overlay,) if overlay else ()
+    # The overlay's env file, not .env: Compose reads it, the container does not.
+    deployment = tmp_path / "backend.env"
+    deployment.write_text("".join(f"{key}={value}\n" for key, value in _RETIRED_SELECTORS.items()))
+    backend = _render(
+        tmp_path, docker_cli, None, overlays=overlays, extra=_PINNED, env_files=(deployment,)
+    )["services"]["backend"]
+
+    for key, value in _RETIRED_SELECTORS.items():
+        assert backend["environment"].get(key) == value, key
+
+
+def test_unset_configuration_selectors_stay_out_of_the_container(
+    tmp_path: Path, docker_cli: str
+) -> None:
+    """Unset must stay unset: the previous release then defaults to dark mode.
+
+    An empty mode is an error there, and a path default would outrank the
+    manifest, so Compose may only pass on what a deployment sets.
+    """
+    environment = _render(tmp_path, docker_cli, None)["services"]["backend"]["environment"]
+
+    for key in _RETIRED_SELECTORS:
+        assert environment.get(key) is None, key
