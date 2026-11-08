@@ -49,6 +49,7 @@ from .upstream_limiter import (
     UpstreamSlot,
     acquire_upstream_slot,
     is_local_endpoint,
+    try_acquire_upstream_slot,
 )
 
 if TYPE_CHECKING:
@@ -872,6 +873,38 @@ class OpenAICompatAdapter(BaseAdapter):
             deployment_type=self.config.deployment_type,
         )
 
+    def _try_upstream_slot(self, api_key: str | None) -> UpstreamSlot | None:
+        """Take an outbound slot for *api_key* if one is free now; None otherwise."""
+        return try_acquire_upstream_slot(
+            self._key_pool_provider_label,
+            api_key,
+            base_url=self.config.base_url,
+            deployment_type=self.config.deployment_type,
+        )
+
+    def _lease_key(
+        self, affinity_key: str | None, role: str | None, tried: set[int]
+    ) -> tuple[str, Any, UpstreamSlot | None]:
+        """Lease the next key to send on: one with an outbound slot free now, if any.
+
+        Returns ``(api_key, lease, slot)``. Every key the caller may use and has
+        not tried is asked for a free slot first, in the pool's order, so a
+        request does not queue on a full key while a sibling has room (the
+        caller's binding stays on its key). When none has one, the slot is None
+        and the key is the one :meth:`KeyPool.acquire` picks, for the caller to
+        wait on.
+
+        Raises:
+            KeyPoolExhausted: No key is left for this caller.
+        """
+        pool = self._key_pool
+        assert pool is not None
+        picked = pool.acquire_with(affinity_key, self._try_upstream_slot, role=role, exclude=tried)
+        if picked is not None:
+            return picked
+        api_key, lease = pool.acquire(affinity_key, role=role, exclude=tried)
+        return api_key, lease, None
+
     async def _post_with_pool(
         self, url: str, payload: dict[str, Any], *, max_body_bytes: int | None = None
     ) -> dict[str, Any]:
@@ -953,7 +986,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
+                api_key, lease, slot = self._lease_key(affinity_key, role, tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -977,18 +1010,22 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
-            try:
-                slot = await self._acquire_upstream_slot(api_key)
-            except UpstreamSaturated as saturated:
-                # This key's outbound allowance is full. Rotate rather than
-                # fail: sibling keys are separate accounts with their own
-                # allowances, and ``tried`` already holds this one so the next
-                # pass picks a different key. The lease is released neutrally —
-                # nothing was sent, so the key is neither credited with a
-                # success nor charged with a failure, and it must not be muted.
-                self._key_pool.release(lease, status_code=None)
-                last_error = saturated
-                continue
+            if slot is None:
+                # Every key this caller may use is at its outbound limit: wait
+                # in line for this one.
+                try:
+                    slot = await self._acquire_upstream_slot(api_key)
+                except UpstreamSaturated as saturated:
+                    # This key's outbound allowance stayed full. Rotate rather
+                    # than fail: sibling keys are separate accounts with their
+                    # own allowances, and ``tried`` already holds this one so the
+                    # next pass picks a different key. The lease is released
+                    # neutrally — nothing was sent, so the key is neither
+                    # credited with a success nor charged with a failure, and it
+                    # must not be muted.
+                    self._key_pool.release(lease, status_code=None)
+                    last_error = saturated
+                    continue
 
             headers = self._build_headers(api_key_override=api_key)
             try:
@@ -1128,7 +1165,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
+                api_key, lease, slot = self._lease_key(affinity_key, role, tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -1153,16 +1190,17 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
-            try:
-                slot = await self._acquire_upstream_slot(api_key)
-            except UpstreamSaturated as saturated:
-                # Same rotation as the non-streaming path: this key's outbound
-                # allowance is full, a sibling's may not be. Neutral lease
-                # release — nothing was sent, so the key is neither credited nor
-                # muted.
-                self._key_pool.release(lease, status_code=None)
-                last_error = saturated
-                continue
+            if slot is None:
+                try:
+                    slot = await self._acquire_upstream_slot(api_key)
+                except UpstreamSaturated as saturated:
+                    # Same rotation as the non-streaming path: this key's
+                    # outbound allowance stayed full, a sibling's may not be.
+                    # Neutral lease release — nothing was sent, so the key is
+                    # neither credited nor muted.
+                    self._key_pool.release(lease, status_code=None)
+                    last_error = saturated
+                    continue
 
             headers = self._build_headers(api_key_override=api_key)
             stream_iter = self.http.stream_post(

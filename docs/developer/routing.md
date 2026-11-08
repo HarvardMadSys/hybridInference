@@ -303,13 +303,17 @@ the admin playground) publishes nothing and shares one anonymous binding.
 
 The gateway limits how many requests it keeps open at once against each
 provider account — one limit per provider label and API key — and queues the
-rest. The limit adapts: it starts at `UPSTREAM_CONCURRENCY_INITIAL_LIMIT`,
-drops by one each time the provider answers `429`, and rises by one after every
-`UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` successful responses, up to
-`UPSTREAM_CONCURRENCY_MAX_LIMIT`. A request that cannot get a slot within
-`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` fails over to the model's next
-route, and is not counted against the endpoint's circuit breaker: the provider
-never saw it.
+rest. A route with several keys sends a request on another of its keys that
+has room before it queues one. The limit adapts: it starts at
+`UPSTREAM_CONCURRENCY_INITIAL_LIMIT`, drops by one each time the provider
+answers `429`, and rises by one after every
+`UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` successful responses, or with the
+first success a minute after it last changed, up to
+`UPSTREAM_CONCURRENCY_MAX_LIMIT`. Each rise the provider answers with a `429`
+doubles that minute, up to 32 minutes, until a rise holds. A request that
+cannot get a slot within `UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` fails over
+to the model's next route, and is not counted against the endpoint's circuit
+breaker: the provider never saw it.
 
 Self-hosted engines bypass the provider-key limit because they schedule their
 own work. Set `deployment_type: self_hosted` on a route to an engine you operate,
