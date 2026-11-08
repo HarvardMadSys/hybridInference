@@ -23,7 +23,13 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from serving.http import AsyncHTTPClient, read_error_text, stream_timeout
+from serving.http import (
+    AsyncHTTPClient,
+    UpstreamPayloadTooLarge,
+    read_error_text,
+    stream_timeout,
+)
+from serving.servers.sse import SSEFrameTooLarge, SSEMessage, SSEParser
 from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -53,29 +59,49 @@ from .upstream_limiter import UpstreamSlot, upstream_slot
 logger = get_logger(__name__)
 
 
-async def _with_eof_frame_terminator(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    r"""Yield ``source``'s bytes, then the frame terminator SSE requires at EOF.
+def _feed(parser: SSEParser, raw: bytes) -> list[SSEMessage]:
+    """Feed one read to *parser* and return the events it completed.
 
-    The frame loop below accumulates into a buffer and parses a frame only once
-    it sees the ``\n\n`` delimiter. An upstream that closes the body straight
-    after its last event -- without that trailing blank line -- therefore leaves
-    the event unparsed, and here that event is usually ``message_delta`` /
-    ``message_stop``: the request's output-token count and its ``stop_reason``.
-    Losing them silently undercounts usage (and so cost).
+    The adapter's own loops appended every read to one buffer and searched all
+    of it for the blank line that ends a frame: quadratic in a frame's length,
+    and unbounded for an upstream that never ends one. :class:`SSEParser` keeps
+    an unfinished frame as pieces and fails one past its limit, raised here as
+    the ``UpstreamPayloadTooLarge`` the shared client raises for it.
 
-    Appending the delimiter at the end of a clean body completes that frame. The
-    scope is deliberately "clean EOF only": an aborted read raises out of
-    ``source`` before the terminator is reached, so a genuinely half-received
-    frame is still never parsed. Appending to a body that *did* end with the
-    delimiter is a no-op -- it produces one empty frame, which the loop ignores.
-
-    Only for a loop that consumes the bytes. The Anthropic-format passthrough
-    forwards every chunk to the client verbatim, so it drains its own residue
-    instead of taking bytes this helper synthesized.
+    At a clean end of body, ``parser.flush()`` returns the event the upstream
+    left without its terminating blank line -- usually ``message_delta`` /
+    ``message_stop``, the output-token count and ``stop_reason``. An aborted
+    read raises out of the read loop first, so a half-received frame is never
+    parsed.
     """
-    async for chunk in source:
-        yield chunk
-    yield b"\n\n"
+    try:
+        return parser.feed(raw)
+    except SSEFrameTooLarge as exc:
+        raise UpstreamPayloadTooLarge(str(exc)) from exc
+
+
+async def _sse_events(source: AsyncIterator[bytes]) -> AsyncIterator[SSEMessage]:
+    """Yield the SSE events of ``source``, the unterminated last one included (:func:`_feed`)."""
+    parser = SSEParser()
+    async for raw in source:
+        for message in _feed(parser, raw):
+            yield message
+    for message in parser.flush():
+        yield message
+
+
+def _data_lines(message: SSEMessage) -> list[str]:
+    """Return the payload of each ``data:`` line of *message*, stripped, blanks dropped."""
+    return [line.strip() for line in message.data.split("\n") if line.strip()]
+
+
+def _count_usage(message: SSEMessage, usage: dict[str, int]) -> None:
+    """Fold the usage counts in one passthrough event into *usage*."""
+    from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
+
+    frame = "".join(f"data: {line}\n" for line in _data_lines(message))
+    if frame:
+        extract_anthropic_usage_from_sse(f"{frame}\n".encode(), usage)
 
 
 #: The ``anthropic-version`` values a batch item may carry upstream; the batch
@@ -316,47 +342,38 @@ class AnthropicAdapter(BaseAdapter):
                     message=error_body[:500],
                     headers=resp.headers,
                 )
-            buf = b""
-            async for raw in _with_eof_frame_terminator(resp.content.iter_any()):
-                buf += raw
-                while b"\n\n" in buf:
-                    frame, buf = buf.split(b"\n\n", 1)
-                    for line in frame.split(b"\n"):
-                        if not line.startswith(b"data: "):
-                            continue
-                        payload_bytes = line[len(b"data: ") :].strip()
-                        if not payload_bytes:
-                            continue
-                        try:
-                            evt = json.loads(payload_bytes)
-                        except json.JSONDecodeError:
-                            continue
+            async for message in _sse_events(resp.content.iter_any()):
+                for payload in _data_lines(message):
+                    try:
+                        evt = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
 
-                        # Before the handler keeps a tool call's JSON back: a
-                        # router waiting on a first token must hear it now.
-                        if not saw_output and is_output_event(evt):
-                            saw_output = True
-                            report_first_token()
+                    # Before the handler keeps a tool call's JSON back: a
+                    # router waiting on a first token must hear it now.
+                    if not saw_output and is_output_event(evt):
+                        saw_output = True
+                        report_first_token()
 
-                        result = handle_stream_event(evt, accum)
+                    result = handle_stream_event(evt, accum)
 
-                        if result.input_tokens:
-                            input_tokens = result.input_tokens
-                        if result.output_tokens:
-                            output_tokens = result.output_tokens
-                        if result.cache_read_tokens:
-                            cache_read_input_tokens = result.cache_read_tokens
-                        if result.cache_read_reported:
-                            cache_read_reported = True
-                        if result.cache_write_tokens:
-                            cache_creation_input_tokens = result.cache_write_tokens
+                    if result.input_tokens:
+                        input_tokens = result.input_tokens
+                    if result.output_tokens:
+                        output_tokens = result.output_tokens
+                    if result.cache_read_tokens:
+                        cache_read_input_tokens = result.cache_read_tokens
+                    if result.cache_read_reported:
+                        cache_read_reported = True
+                    if result.cache_write_tokens:
+                        cache_creation_input_tokens = result.cache_write_tokens
 
-                        if result.text_delta:
-                            total_content += result.text_delta
-                            yield self.format_stream_chunk(result.text_delta, self.config.id)
+                    if result.text_delta:
+                        total_content += result.text_delta
+                        yield self.format_stream_chunk(result.text_delta, self.config.id)
 
-                        if result.finish_reason:
-                            finish_reason = result.finish_reason
+                    if result.finish_reason:
+                        finish_reason = result.finish_reason
 
         # Always emit final usage chunk and [DONE] after upstream closes,
         # even if message_stop was never received (truncated upstream).
@@ -434,8 +451,6 @@ class AnthropicAdapter(BaseAdapter):
         per-event usage counts into ``usage_sink`` so the router can
         record them in DB logging once the stream completes.
         """
-        from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
-
         forward = dict(body)
         forward["model"] = self._upstream_model()
         forward["stream"] = True
@@ -469,19 +484,17 @@ class AnthropicAdapter(BaseAdapter):
                     message=error_body[:500],
                     headers=resp.headers,
                 )
-            buf = b""
+            parser = SSEParser()
             async for chunk in resp.content.iter_any():
                 yield chunk
-                buf += chunk
-                while b"\n\n" in buf:
-                    frame, buf = buf.split(b"\n\n", 1)
-                    extract_anthropic_usage_from_sse(frame + b"\n\n", usage)
+                for message in _feed(parser, chunk):
+                    _count_usage(message, usage)
             # Clean EOF with the last event left unterminated: complete it for
             # usage extraction, or this request's output tokens go uncounted.
             # Only our accounting needs this -- the client already received
             # those bytes verbatim above, so nothing is added to the wire.
-            if buf.strip():
-                extract_anthropic_usage_from_sse(buf + b"\n\n", usage)
+            for message in parser.flush():
+                _count_usage(message, usage)
 
         if usage_sink is not None:
             usage_sink.update(usage)
