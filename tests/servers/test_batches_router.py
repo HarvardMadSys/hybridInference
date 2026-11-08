@@ -1798,3 +1798,69 @@ async def test_delete_is_409_while_an_upstream_request_lease_is_live(client, sto
         "running requests to finish before deleting it"
     )
     assert batch["id"] in store.batches
+
+
+@pytest.mark.parametrize("number", ["1e999", "-1e999"])
+async def test_overflowing_json_number_is_refused_before_storage(client, store, number):
+    raw = json.dumps(_body()).replace('"hello"', '{"nested": [' + number + "]}")
+    response = await client.post("/v1/batches", content=raw, headers=_auth())
+    assert response.status_code == 400, response.text
+    assert not store.created
+
+
+@pytest.mark.parametrize(
+    "extra", [{"temperature": 3}, {"top_p": 2}, {"max_output_tokens": 0}, {"seed": []}]
+)
+async def test_invalid_responses_parameters_refuse_entire_batch(client, store, extra):
+    body = {"model": MODEL, "input": "hello", **extra}
+    response = await client.post(
+        "/v1/batches",
+        json={"requests": [_request("bad", body, url="/v1/responses")]},
+        headers=_auth(),
+    )
+    assert response.status_code == 400, response.text
+    assert not store.created
+
+
+@pytest.mark.parametrize("target", ["chat", "messages", "responses"])
+async def test_admission_checks_online_element_limits(client, store, monkeypatch, target):
+    from serving import request_limits
+
+    monkeypatch.setattr(request_limits, "MAX_MESSAGES", 1)
+    if target == "responses":
+        body = {"model": MODEL, "input": ["one", "two"]}
+        url, headers = "/v1/responses", _auth()
+    else:
+        body = _chat()
+        body["messages"] *= 2
+        if target == "messages":
+            body["max_tokens"] = 16
+        url = "/v1/messages" if target == "messages" else "/v1/chat/completions"
+        headers = _versioned("2023-06-01") if target == "messages" else _auth()
+    response = await client.post(
+        "/v1/batches", json={"requests": [_request("bad", body, url=url)]}, headers=headers
+    )
+    assert response.status_code == 400, response.text
+    assert "Too many" in _message(response)
+    assert not store.created
+
+
+@pytest.mark.parametrize("case", ["instructions", "stop"])
+async def test_responses_admission_checks_translated_chat_limits(client, store, monkeypatch, case):
+    from serving import request_limits
+
+    body = {"model": MODEL, "input": "hello"}
+    if case == "instructions":
+        monkeypatch.setattr(request_limits, "MAX_MESSAGES", 1)
+        body["instructions"] = "be brief"
+    else:
+        monkeypatch.setattr(request_limits, "MAX_STOP_SEQUENCES", 1)
+        body["stop"] = ["one", "two"]
+    response = await client.post(
+        "/v1/batches",
+        json={"requests": [_request("bad", body, url="/v1/responses")]},
+        headers=_auth(),
+    )
+    assert response.status_code == 400, response.text
+    assert "Too many" in _message(response)
+    assert not store.created

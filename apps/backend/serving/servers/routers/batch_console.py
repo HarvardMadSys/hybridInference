@@ -534,6 +534,11 @@ def _require_webhooks(webhook_store: Any) -> Any:
     return webhook_store
 
 
+def _require_webhook_surface(webhook_store: Any = Depends(get_batch_webhook_store)) -> None:
+    """Hide API webhook routes before authentication and schema validation."""
+    _require_webhooks(webhook_store)
+
+
 async def _save_webhook(
     webhook_store: Any,
     user_id: str,
@@ -641,7 +646,7 @@ def _key_owner(user_ctx: dict[str, Any]) -> str:
     return user_ctx.get("user_id") or "anonymous"
 
 
-@router.get("/v1/batch_webhook")
+@router.get("/v1/batch_webhook", dependencies=[Depends(_require_webhook_surface)])
 async def get_webhook(
     user_ctx: dict = Depends(verify_batch_management_identity),
     webhook_store=Depends(get_batch_webhook_store),
@@ -651,7 +656,7 @@ async def get_webhook(
     return _webhook_view(await webhook_store.get_webhook(_key_owner(user_ctx)))
 
 
-@router.put("/v1/batch_webhook")
+@router.put("/v1/batch_webhook", dependencies=[Depends(_require_webhook_surface)])
 async def put_webhook(
     settings: WebhookSettings,
     user_ctx: dict = Depends(verify_batch_management_identity),
@@ -668,7 +673,7 @@ async def put_webhook(
     )
 
 
-@router.delete("/v1/batch_webhook")
+@router.delete("/v1/batch_webhook", dependencies=[Depends(_require_webhook_surface)])
 async def delete_webhook(
     user_ctx: dict = Depends(verify_batch_management_identity),
     webhook_store=Depends(get_batch_webhook_store),
@@ -678,7 +683,7 @@ async def delete_webhook(
     return {"deleted": await webhook_store.delete_webhook(_key_owner(user_ctx))}
 
 
-@router.get("/v1/batch_webhook/events")
+@router.get("/v1/batch_webhook/events", dependencies=[Depends(_require_webhook_surface)])
 async def webhook_events(
     user_ctx: dict = Depends(verify_batch_management_identity),
     webhook_store=Depends(get_batch_webhook_store),

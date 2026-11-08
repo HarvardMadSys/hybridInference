@@ -379,7 +379,18 @@ def _model_queued(retry_after: float | None = 30.0) -> BaseException:
     return error
 
 
-@pytest.mark.parametrize(("retry_after", "requeue_after"), [(30.0, 30.0), (None, 120.0)])
+@pytest.mark.parametrize(
+    ("retry_after", "requeue_after"),
+    [
+        (30.0, 30.0),
+        (0.0, 0.0),
+        (None, 120.0),
+        (-1.0, 120.0),
+        (float("inf"), 120.0),
+        (float("nan"), 120.0),
+        (1e300, 168 * 3600.0),
+    ],
+)
 async def test_a_model_queued_answer_is_requeued_not_failed(retry_after, requeue_after):
     app, services = _setup(_Upstream(error=_model_queued(retry_after)))
 

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, Request
@@ -119,6 +120,20 @@ def gone_error() -> HTTPException:
     )
 
 
+def declared_length_exceeds(request: Request, limit: int) -> bool:
+    """Whether an ASCII decimal Content-Length exceeds *limit*, without parsing an integer.
+
+    A valid decimal may exceed Python's integer conversion limit. Malformed
+    values are left to the HTTP server; the caller still bounds streamed bytes.
+    """
+    declared = request.headers.get("content-length")
+    if declared is None or not declared.isascii() or not declared.isdecimal():
+        return False
+    digits = declared.lstrip("0") or "0"
+    maximum = str(limit)
+    return (len(digits), digits) > (len(maximum), maximum)
+
+
 async def read_body(request: Request, limit: int) -> bytearray:
     """Read the request body, refusing it with 413 once it passes ``limit`` bytes.
 
@@ -126,8 +141,7 @@ async def read_body(request: Request, limit: int) -> bytearray:
     read; otherwise the stream is counted as it arrives, which also bounds a body
     sent without a length.
     """
-    declared = request.headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > limit:
+    if declared_length_exceeds(request, limit):
         raise too_large(limit)
     body = bytearray()
     async for chunk in request.stream():
@@ -173,6 +187,14 @@ def has_invalid_unicode(value: Any) -> bool:
 def reject_json_constant(name: str) -> Any:
     """``parse_constant`` refusing ``NaN`` and ``Infinity`` (not JSON; Postgres refuses them)."""
     raise ValueError(f"{name} is not valid JSON")
+
+
+def finite_json_float(text: str) -> float:
+    """Decode a JSON number without overflowing to an unstorable infinity."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("A JSON number is too large; use a finite number")
+    return value
 
 
 async def precheck_active(store: Any, owner: str, config: BatchConfig) -> None:

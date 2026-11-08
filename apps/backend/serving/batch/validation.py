@@ -33,7 +33,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
-from serving.batch.admission import has_invalid_unicode
+from serving.batch.admission import finite_json_float, has_invalid_unicode
 from serving.batch.profiles import PROFILES
 from serving.batch.targets import TARGET_URLS, AdmissionContext, ItemRejected, admit_item
 from serving.servers.auth import StoredKeyRejected, authenticate_stored_key
@@ -128,7 +128,7 @@ def _parse_line(line_no: int, raw: bytes, endpoint: str) -> dict[str, Any]:
     if not text.strip():
         raise _Invalid("empty_line", f"Line {line_no} is empty.", line_no)
     try:
-        entry = json.loads(text, parse_constant=_reject_constant)
+        entry = json.loads(text, parse_constant=_reject_constant, parse_float=finite_json_float)
     except (ValueError, RecursionError):
         raise _Invalid("invalid_json_line", f"Line {line_no} is not valid JSON.", line_no) from None
     if not isinstance(entry, dict):

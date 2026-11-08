@@ -167,3 +167,15 @@ async def test_chunks_of_short_lines_are_split_in_linear_time():
 
     assert count == 4 * len(chunk) // len(line)
     assert elapsed < 4.0, f"split {count} lines in {elapsed:.1f}s"
+
+
+async def test_file_parser_rejects_overflowing_numbers_even_inside_freeform_fields():
+    import pytest
+
+    from serving.batch.validation import _Invalid, _parse_line
+
+    raw = b'{"custom_id":"a","url":"/v1/chat/completions","body":{"model":"m","metadata":{"nested":[1e999]}}}'
+    with pytest.raises(_Invalid) as caught:
+        _parse_line(3, raw, "/v1/chat/completions")
+    assert caught.value.entry["code"] == "invalid_json_line"
+    assert caught.value.entry["line"] == 3

@@ -274,7 +274,7 @@ async def stream_lines(
                     _mismatch(batch_id, kind, size, digest, expected)
                     raise DownloadInterrupted(batch_id)
                 yield bytes(chunk)
-        if not await store.batch_exists(batch_id):
+        if keeper.lost or not await store.batch_exists(batch_id):
             raise DownloadInterrupted(batch_id)
         if expected is not None and (size != limit or digest.hexdigest() != expected.get("sha256")):
             _mismatch(batch_id, kind, size, digest, expected)
@@ -387,5 +387,7 @@ async def stream_requests(
                 await pacer.step(int(item.get("bytes") or 0) + len(line))
             if lines:
                 yield "".join(lines).encode("utf-8")
+        if keeper.lost or not await store.batch_exists(batch_id):
+            raise DownloadInterrupted(batch_id)
     finally:
         await keeper.close()

@@ -2243,7 +2243,8 @@ class BatchStore:
         """Record that an attempt's upstream call is about to begin.
 
         From here on, an attempt that never reports back has an unknown cost
-        rather than none.
+        rather than none. An expired claim cannot start a new upstream call,
+        even before another worker has taken it over.
         """
         async with self._pool.acquire() as conn:
             result = await conn.execute(
@@ -2252,7 +2253,7 @@ class BatchStore:
                 WHERE item_id = $1 AND attempt_no = $3 AND outcome IS NULL
                   AND EXISTS (SELECT 1 FROM batch_items
                               WHERE id = $1 AND status = 'running' AND claimed_by = $2
-                                AND attempt_seq = $3)
+                                AND attempt_seq = $3 AND lease_expires_at > clock_timestamp())
                 """,
                 item_id,
                 worker_id,

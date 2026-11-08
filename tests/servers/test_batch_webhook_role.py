@@ -209,3 +209,18 @@ async def test_batch_enabled_off_still_hides_every_route(
 
     assert response.status_code == 404
     assert lookups == [] and store.calls == []
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [(method, "/v1/batch_webhook") for method in ("GET", "PUT", "DELETE")]
+    + [("GET", "/v1/batch_webhook/events")],
+)
+@pytest.mark.parametrize("headers", [{}, AUTH], ids=["unauthenticated", "invalid-body"])
+async def test_disabled_api_webhooks_are_hidden_before_authentication_or_body_validation(
+    client, settings, store, lookups, method, path, headers
+):
+    settings["BATCH_ENABLED"] = "0"
+    response = await client.request(method, path, json={}, headers=headers)
+    assert response.status_code == 404
+    assert lookups == [] and store.calls == []

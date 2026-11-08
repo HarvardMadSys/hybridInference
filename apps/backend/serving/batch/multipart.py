@@ -145,9 +145,13 @@ async def read_multipart(
             if state == "headers":
                 index = buffer.find(b"\r\n\r\n")
                 if index < 0:
-                    if len(buffer) > MAX_HEADER_BYTES:
+                    # A terminator may be split across chunks; its first
+                    # three bytes are not part of the header size.
+                    if len(buffer) > MAX_HEADER_BYTES + 3:
                         raise MultipartError("part headers are too large")
                     break
+                if index > MAX_HEADER_BYTES:
+                    raise MultipartError("part headers are too large")
                 headers: dict[str, str] = {}
                 for line in buffer[:index].split(b"\r\n"):
                     name, _, value = line.decode("latin-1").partition(":")
@@ -167,6 +171,19 @@ async def read_multipart(
                 state = "body"
             if state == "body":
                 index = buffer.find(separator)
+                while index >= 0:
+                    end = index + len(separator)
+                    if len(buffer) < end + 2 or buffer[end : end + 2] in (b"\r\n", b"--"):
+                        break
+                    # A boundary prefix is ordinary file data unless followed
+                    # by a delimiter-line ending. Keep looking past it.
+                    index = buffer.find(separator, end)
+                if index >= 0 and len(buffer) < index + len(separator) + 2:
+                    # The suffix may arrive in the next network chunk. Keep
+                    # the candidate until it can be distinguished from data.
+                    await emit(buffer[:index])
+                    buffer = buffer[index:]
+                    break
                 if index < 0:
                     keep = len(separator)
                     if len(buffer) > keep:
