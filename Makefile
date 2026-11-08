@@ -280,6 +280,14 @@ endif
 ifeq ($(CLOUD_AGENT_NETWORK),1)
 COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.cloud-agent.yml
 endif
+# pgAdmin publishes no host port unless asked: the console reaches it on its
+# own network, behind the admin session check, and a host port skips that
+# check. PGADMIN_PUBLISH=1 publishes it on 127.0.0.1, port PGADMIN_PORT (5050
+# unless set), for an SSH tunnel. Pass it with COMPOSE_PROFILES=admin on every
+# command, or the next one recreates pgAdmin without the port.
+ifeq ($(PGADMIN_PUBLISH),1)
+COMPOSE_FILE_ARGS += -f deploy/docker/docker-compose.pgadmin-port.yml
+endif
 # A host-local `.env` remains last whenever it exists, preserving its override
 # precedence. Public runnable examples deliberately need no secret file, so do
 # not hand Compose a path that is absent on a fresh clone.

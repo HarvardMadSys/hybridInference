@@ -723,21 +723,24 @@ those credentials.
 
 ### pgAdmin (optional)
 
+Set `PGADMIN_PASSWORD` in `.env` first, then:
+
 ```bash
 make up COMPOSE_PROFILES=admin
 ```
 
-pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so an SSH
-tunnel to that port is enough to reach it. The console can also proxy it at
-`/pgadmin/`, gated on an admin session by
-`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on every
-unexpected condition, including a backend it cannot reach.
+The console serves pgAdmin at `/pgadmin/` (`SCRIPT_NAME=/pgadmin`), gated on an
+admin session by `apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which
+denies on every unexpected condition, including a backend it cannot reach.
+pgAdmin publishes no host port, since one would skip that gate;
+`PGADMIN_PUBLISH=1` adds one on `127.0.0.1` for an SSH tunnel.
 
-One thing to get right: whether pgAdmin *also* asks for its own login is set by
-`PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The Compose service
-falls back to `False`, which serves pgAdmin with no login at all; `.env.example`
-suggests `True`, which turns pgAdmin's own login on behind the console's gate.
-`True` is the safer of the two.
+Behind the console's gate pgAdmin asks for its own login, `PGADMIN_EMAIL` and
+`PGADMIN_PASSWORD`: `PGADMIN_CONFIG_SERVER_MODE` defaults to `True`, and
+`False` serves pgAdmin with no login at all. There is no fallback password:
+without one pgAdmin will not set up its volume. It keeps the login it first
+started with, so a volume first started without a password, or with server
+mode off, needs the steps in [Authentication](database.md#authentication).
 
 pgAdmin is on a network of its own, `pgadmin`, shared only with the console and
 the database. The backend and any other service on `hybridinference` cannot

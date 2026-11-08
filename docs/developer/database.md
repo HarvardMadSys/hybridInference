@@ -327,9 +327,10 @@ docker exec -it hybridinference-postgres psql -U "$DB_USER" -d "$DB_NAME"
 ```
 
 Useful starting points: `\dt` for the table list and `\d api_logs` for the request
-log's columns. `make ps` shows the published bindings — Postgres and pgAdmin
-should both read `127.0.0.1:...`; anything else means the database is listening
-beyond this host.
+log's columns. `make ps` shows the published bindings — Postgres should read
+`127.0.0.1:...`, and pgAdmin shows none unless you published it, when it reads
+`127.0.0.1:...` too; anything else means the database is listening beyond this
+host.
 
 ## Optional: pgAdmin
 
@@ -354,22 +355,36 @@ around it (Compose then reports the network as still in use). Pass
 
 ### Authentication
 
-Two separate gates can protect pgAdmin, and by default only the console's is on:
+Two separate gates protect pgAdmin, and by default both are on:
 
-- `PGADMIN_CONFIG_SERVER_MODE` defaults to `False`, which serves pgAdmin with **no
-  login of its own**. Set it to `True` in `.env` and pgAdmin asks for
-  `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` (which themselves default to
-  `admin@local.dev` / `admin` — change them before enabling this).
 - Reached through the console at `/pgadmin/`, the request is gated on an admin
   session by a Next.js route handler
   (`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`), which asks the backend
-  to verify the caller. Reached directly on its published port
-  (`127.0.0.1:${PGADMIN_PORT:-5050}`, loopback only), that gate does not apply —
-  use an SSH tunnel:
+  to verify the caller. By default this is the only way in: pgAdmin publishes
+  no host port.
+- `PGADMIN_CONFIG_SERVER_MODE` defaults to `True`, so pgAdmin asks for its own
+  login, `PGADMIN_EMAIL` / `PGADMIN_PASSWORD`. Set the password in `.env` before
+  pgAdmin first starts. There is no fallback: without one pgAdmin refuses to set
+  up its volume and says so in `docker logs hybridinference-pgadmin`. `False`
+  serves pgAdmin with **no login of its own**.
 
-  ```bash
-  ssh -L 5050:127.0.0.1:5050 <user>@<your-gateway-host>
-  ```
+pgAdmin keeps the login it first started with in its volume and ignores these
+settings afterwards. A volume first started with no password, under the
+earlier Compose fallback, signs in as `admin@local.dev` / `admin`: change that
+password in pgAdmin. One first started with server mode off has no login at
+all, so once server mode is on nobody can sign in: reset the volume as
+described below, which removes only pgAdmin's saved connections.
+
+For an SSH tunnel, `PGADMIN_PUBLISH=1` publishes pgAdmin on the host's
+loopback, on port `PGADMIN_PORT` (5050 unless set). Pass it on every command
+that touches pgAdmin, as with the profile. That port skips the console's gate
+and every account on the host can reach it, so pgAdmin's own login is the
+only gate there: do not combine it with server mode off.
+
+```bash
+make up COMPOSE_PROFILES=admin PGADMIN_PUBLISH=1
+ssh -L 5050:127.0.0.1:5050 <user>@<your-gateway-host>
+```
 
 pgAdmin's *master password* prompt never appears:
 `PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` is pinned to `"False"` in the Compose

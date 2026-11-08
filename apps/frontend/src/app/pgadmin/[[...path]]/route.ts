@@ -12,8 +12,8 @@
  *
  * A rewrite alone cannot replace it: rewrites cannot authenticate. Whether
  * pgAdmin also asks for a login depends on the host — `SERVER_MODE` defaults
- * to False in the pgadmin service, and a host that sets it True gains a second
- * gate. This code cannot tell which, so it assumes it is the only thing in
+ * to True in the pgadmin service, a second gate, and a host may set it False.
+ * This code cannot tell which, so it assumes it is the only thing in
  * front of a database console: it fails closed on every unexpected condition
  * rather than falling through.
  */

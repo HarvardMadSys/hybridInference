@@ -33,11 +33,21 @@ def docker_cli() -> str:
     return docker
 
 
-def _render(tmp_path: Path, docker_cli: str, host: str | None, *, example: bool = False) -> dict:
+def _render(
+    tmp_path: Path,
+    docker_cli: str,
+    host: str | None,
+    *,
+    example: bool = False,
+    overlays: tuple[Path, ...] = (),
+    extra: tuple[str, ...] = (),
+) -> dict:
     """Use only fixture environment values, never a developer's deployment."""
     env_file = tmp_path / "compose.env"
-    settings = []
+    settings = list(extra)
     args = [docker_cli, "compose", "-f", str(COMPOSE)]
+    for overlay in overlays:
+        args.extend(["-f", str(overlay)])
     if example:
         for overlay in ("docker-compose.yml", "docker-compose.demo.yml"):
             args.extend(["-f", str(EXAMPLE / overlay)])
@@ -97,3 +107,26 @@ def test_example_keeps_its_local_ports_and_accepts_a_host_override(
     }.items():
         (port,) = services[name]["ports"]
         assert (port["host_ip"], port["published"], port["target"]) == expected
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_pgadmin_renders_with_its_own_login_and_no_port_unless_published(
+    tmp_path: Path, docker_cli: str, published: bool
+) -> None:
+    """No password set must not stop Compose: pgAdmin refuses a new volume itself.
+
+    And with the profile on, pgAdmin keeps its login and publishes nothing
+    unless the opt-in overlay is named, which binds loopback only.
+    """
+    overlays = (COMPOSE.parent / "docker-compose.pgadmin-port.yml",) if published else ()
+    pgadmin = _render(
+        tmp_path, docker_cli, None, overlays=overlays, extra=("COMPOSE_PROFILES=admin",)
+    )["services"]["pgadmin"]
+
+    assert pgadmin["environment"]["PGADMIN_CONFIG_SERVER_MODE"] == "True"
+    assert pgadmin["environment"]["PGADMIN_DEFAULT_PASSWORD"] == ""
+    if published:
+        (port,) = pgadmin["ports"]
+        assert (port["host_ip"], port["published"], port["target"]) == ("127.0.0.1", "5050", 80)
+    else:
+        assert "ports" not in pgadmin

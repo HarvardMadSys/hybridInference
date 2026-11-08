@@ -203,7 +203,8 @@ Next.js route handler, and every one of its decisions generalizes:
   `200` admits. A backend that is down, slow, or answering something unexpected
   denies. It assumes it is the only thing standing in front of a database
   console, because it cannot tell whether pgAdmin has its own login (that
-  depends on `PGADMIN_CONFIG_SERVER_MODE`, which defaults to `False`).
+  depends on `PGADMIN_CONFIG_SERVER_MODE`, which a deployment can set to
+  `False`).
 - **Strip the console's own session cookie** before forwarding. pgAdmin has no
   use for it, and forwarding a session credential to a proxied app is how those
   leak.
