@@ -505,8 +505,8 @@ msgstr ""
 
 #: ../developer/database.md
 msgid ""
-"Per-user daily spend used for quota enforcement, the same per API key for the console's per-key spend, and counters for every organization, project and key scope by day and month"
-msgstr "每个用户每天的花费，用于配额控制；按 API key 统计的同类数据，用于控制台展示每把 key 的花费；以及每个组织、项目和 key 按日和月统计的计数器"
+"Per-user daily spend used for quota enforcement, the same per API key for the console's per-key spend, and counters for each project scope by day and month, which project budgets enforce"
+msgstr "每个用户每天的花费，用于配额控制；按 API key 统计的同类数据，用于控制台展示每把 key 的花费；以及每个项目按日和月统计的计数器，供项目预算执行使用"
 
 #: ../developer/database.md
 msgid "RouteWise"
