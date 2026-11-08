@@ -3576,6 +3576,94 @@ async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCand
         raise HTTPException(status_code=400, detail=_verification_error_detail(exc)) from exc
 
 
+def _url_host(url: str | None) -> str | None:
+    """The lower-cased host of *url*, without a trailing dot; None when it names none."""
+    if not url:
+        return None
+    try:
+        host = urlparse(url if "://" in url else f"https://{url.lstrip('/')}").hostname
+    except ValueError:
+        return None
+    return host.rstrip(".").lower() if host else None
+
+
+def _hosts_given_keys(prepared: PreparedRouteUpdate | PreparedRouteCandidate) -> set[str]:
+    """The hosts the gateway already sends *prepared*'s keys to.
+
+    The provider's own host, its default base URL (which a deployment's
+    ``*_BASE_URL`` setting or a custom provider's definition sets), and the host
+    of every live route that draws on the same provider's keys.
+    """
+    hosts = {
+        host
+        for url in dynamic_keys.get_registered_base_urls(prepared.key_provider)
+        if (host := _url_host(url)) is not None
+    }
+    try:
+        own_host = _url_host(_target_for_provider(prepared.upstream_provider).default_base_url)
+    except HTTPException:
+        own_host = None
+    if own_host is not None:
+        hosts.add(own_host)
+    return hosts
+
+
+async def _verify_dry_run(
+    op_store,
+    actor: AuditActor,
+    *,
+    model_id: str,
+    route_id: str | None,
+    prepared: PreparedRouteUpdate | PreparedRouteCandidate,
+) -> None:
+    """Check *prepared* against its upstream, saving nothing, and record that it was checked.
+
+    A check sends the provider's stored key -- the one named, or the provider's
+    own -- to the route's base URL. Saving nothing, it left nothing to see, so a
+    base URL of anyone's choosing collected the key unnoticed. A check now goes
+    only where those keys already go: the provider's own host, or the host of a
+    live route that sends them. Saving a route checks its upstream the same way,
+    and the audit log records where it points.
+
+    Raises:
+        HTTPException: 422 for a host the keys do not go to; 400 when the
+            upstream refuses the check.
+    """
+    details: dict[str, Any] = {
+        "model_id": model_id,
+        "route_id": route_id,
+        "upstream_provider": prepared.upstream_provider,
+        "base_url": prepared.base_url,
+        "api_key_id": prepared.api_key_id,
+    }
+
+    async def audit(error: str | None = None) -> None:
+        await log_admin_action(
+            op_store,
+            action="routing.provider_routes.verify",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details=details if error is None else {**details, "error": error},
+            success=error is None,
+        )
+
+    host = _url_host(prepared.base_url)
+    if host is None or host not in _hosts_given_keys(prepared):
+        await audit("the provider's keys do not go to this host")
+        raise HTTPException(
+            status_code=422,
+            detail=f"Verify would send {prepared.key_provider}'s stored API keys to {host}, "
+            "where no route of that provider sends them. Save the route instead: saving checks "
+            "it against the upstream the same way, and the audit log records where it points.",
+        )
+    try:
+        await _verify_provider_route(prepared)
+    except HTTPException as exc:
+        await audit(str(exc.detail))
+        raise
+    await audit()
+
+
 async def _prepare_candidate_from_payload(
     services,
     op_store,
@@ -4592,10 +4680,14 @@ async def create_provider_route_model(
 async def verify_provider_route_model(
     payload: CreateProviderRouteModelRequest,
     _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> VerifyProviderRouteResponse:
-    """Verify a new runtime model route without registering or persisting it."""
+    """Verify a new runtime model route without registering or persisting it.
+
+    Audited, and only where the provider's keys already go (:func:`_verify_dry_run`).
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
     if payload.strategy != "fixed" and services.model_router_registry is None:
@@ -4606,7 +4698,13 @@ async def verify_provider_route_model(
         op_store,
         payload=payload,
     )
-    await _verify_provider_route(candidate)
+    await _verify_dry_run(
+        op_store,
+        actor,
+        model_id=payload.model_id,
+        route_id=candidate.route_id,
+        prepared=candidate,
+    )
     return VerifyProviderRouteResponse(ok=True)
 
 
@@ -4760,10 +4858,14 @@ async def verify_provider_route_candidate(
     model_id: str,
     payload: CreateProviderRouteRequest,
     _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> VerifyProviderRouteResponse:
-    """Verify a runtime provider route candidate without persisting it."""
+    """Verify a runtime provider route candidate without persisting it.
+
+    Audited, and only where the provider's keys already go (:func:`_verify_dry_run`).
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
@@ -4773,7 +4875,13 @@ async def verify_provider_route_candidate(
         model_id=model_id,
         payload=payload,
     )
-    await _verify_provider_route(candidate)
+    await _verify_dry_run(
+        op_store,
+        actor,
+        model_id=candidate.adapter.config.id,
+        route_id=candidate.route_id,
+        prepared=candidate,
+    )
     return VerifyProviderRouteResponse(ok=True)
 
 
@@ -5485,13 +5593,15 @@ async def verify_provider_route_update(
     model_route_path: str,
     payload: UpdateProviderRouteRequest,
     _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> VerifyProviderRouteResponse:
     """Verify a provider route edit without persisting or installing it.
 
     Serves the edit form for both route kinds: a runtime-added route is
-    prepared exactly as its candidate PATCH would build it.
+    prepared exactly as its candidate PATCH would build it. Audited, and only
+    where the provider's keys already go (:func:`_verify_dry_run`).
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -5507,7 +5617,9 @@ async def verify_provider_route_update(
             route=route,
             edit=_candidate_edit_from_update(payload, runtime_adapter),
         )
-        await _verify_provider_route(edit.candidate)
+        await _verify_dry_run(
+            op_store, actor, model_id=model_id, route_id=route_id, prepared=edit.candidate
+        )
         return VerifyProviderRouteResponse(ok=True)
 
     context = await _prepare_update_context_from_payload(
@@ -5516,7 +5628,13 @@ async def verify_provider_route_update(
         model_route_path=model_route_path,
         payload=payload,
     )
-    await _verify_provider_route(context.update)
+    await _verify_dry_run(
+        op_store,
+        actor,
+        model_id=context.model_id,
+        route_id=context.route_id,
+        prepared=context.update,
+    )
     return VerifyProviderRouteResponse(ok=True)
 
 

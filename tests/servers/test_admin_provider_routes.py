@@ -3346,9 +3346,10 @@ async def test_route_edit_resolves_listed_single_static_key(
     assert rows[0]["status"] == "active"
     assert key not in listed.text
     key_id = rows[0]["id"] if explicit_key else None
+    # The provider's own host: a check sends its stored key nowhere else.
     payload = {
         "upstream_provider": provider,
-        "base_url": "https://replacement.example.test/v1",
+        "base_url": "https://static.example.test/v2",
         "api_key_id": key_id,
         "provider_model_id": "static-model",
     }
@@ -4826,6 +4827,78 @@ async def test_custom_provider_route_update_uses_definition_chat_path(admin_clie
         fake_routewise.refresh_route_table.assert_not_called()
     finally:
         provider_registry.unregister_provider_definition("tencent_token_plan")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_key_id", ["db-minimax", None], ids=["named-key", "provider-keys"])
+async def test_a_check_never_sends_a_stored_key_to_a_host_its_routes_do_not_use(
+    admin_client, api_key_id
+):
+    """Verify saves nothing, so a base URL of anyone's choosing would collect the key unseen."""
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("minimax", "cpk-stored-minimax-secret")
+    op_store.list_provider_keys_full.return_value = ["cpk-stored-minimax-secret"]
+    audit = provider_routes.log_admin_action
+    audit.reset_mock()
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidate-verifications/minimax-fast",
+        json={
+            "capabilities": RUNTIME_CAPABILITIES,
+            "route_type": "on_demand",
+            "upstream_provider": "minimax",
+            "base_url": "https://keys.attacker.example/v1",
+            "api_key_id": api_key_id,
+            "provider_model_id": "anything",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert "keys.attacker.example" in response.json()["detail"]
+    assert "cpk-stored-minimax-secret" not in response.text
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    audit.assert_awaited_once()
+    call = audit.await_args.kwargs
+    assert call["action"] == "routing.provider_routes.verify"
+    assert call["success"] is False
+    assert call["details"]["base_url"] == "https://keys.attacker.example/v1"
+    assert call["details"]["api_key_id"] == api_key_id
+    assert "cpk-stored-minimax-secret" not in repr(call)
+
+
+@pytest.mark.asyncio
+async def test_every_check_is_audited_with_its_outcome(admin_client):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    audit = provider_routes.log_admin_action
+    body = {
+        "capabilities": RUNTIME_CAPABILITIES,
+        "route_type": "on_demand",
+        "upstream_provider": "openrouter",
+        "openrouter_provider": "parasail",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_id": "db-openrouter",
+        "provider_model_id": "minimax/minimax-m2.5",
+        "weight": 1,
+    }
+    path = "/admin/routing/provider-route-candidate-verifications/minimax-fast"
+
+    audit.reset_mock()
+    assert (await client.post(path, json=body, headers=AUTH)).status_code == 200
+    ok = audit.await_args.kwargs
+    assert (ok["action"], ok["success"]) == ("routing.provider_routes.verify", True)
+    assert ok["target"] == AuditTarget.model("minimax-fast")
+    assert ok["details"]["upstream_provider"] == "openrouter[parasail]"
+
+    audit.reset_mock()
+    verify_mock.side_effect = HTTPException(status_code=400, detail="Provider said no")
+    assert (await client.post(path, json=body, headers=AUTH)).status_code == 400
+    failed = audit.await_args.kwargs
+    assert failed["success"] is False
+    assert failed["details"]["error"] == "Provider said no"
 
 
 @pytest.mark.asyncio
