@@ -661,9 +661,10 @@ window, which describes requests of the usual size, so RouteWise also fits each
 endpoint's time to first token against prompt size and expects a longer prompt
 to start later by its extra prefill, on the backup as on the primary: a prompt
 that is merely long to prefill is not sent to a second endpoint to be
-prefilled again. A primary that refuses the request itself (400, 404, 413 or
-422) gets no backup, and RouteWise stops re-solving once two endpoints have
-refused a request that way, the bound FixedRouter applies. The stream race's
+prefilled again. A primary that refuses the request as malformed (a refusal
+FixedRouter's two-refusal bound counts) or as too long for its context window
+gets no backup, and RouteWise stops re-solving once two endpoints have refused
+a request as malformed, the bound FixedRouter applies. The stream race's
 60-second deadline is recorded as a failed attempt of each leg still open, but
 is charged to neither circuit breaker.
 

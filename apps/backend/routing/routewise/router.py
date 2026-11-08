@@ -62,9 +62,10 @@ from routing.routers import (
     ROUTE_REFUSAL_NO_CAPACITY,
     AllCircuitsOpenError,
     TargetUnavailableError,
-    _describes_request,
+    _counts_as_request_refusal,
     adapter_supports_modalities,
     describe_route_refusals,
+    exceeds_context_window,
     request_refusals_end_fallback,
 )
 from routing.streaming import has_non_empty_content
@@ -396,13 +397,17 @@ def _is_routewise_retryable_error(exc: BaseException) -> bool:
 def _primary_failure_starts_backup(exc: BaseException) -> bool:
     """Return whether a hedge sends the request to a backup after its primary failed with ``exc``.
 
-    Not after a refusal that describes the request itself (FixedRouter's
-    request-describing statuses: 400, 404, 413, 422). The backup would be sent
-    the same malformed or oversized request, and both endpoints billed for its
-    upload and tokenization; RouteWise does not re-solve after such a refusal
-    either. Every other failure starts the backup at once, as before.
+    Not after the primary refused the request as malformed -- the refusals
+    FixedRouter's two-refusal bound counts (``_counts_as_request_refusal``) --
+    nor as too long for its context window (``exceeds_context_window``), the
+    refusal a second endpoint most predictably repeats; RouteWise has no
+    window-aware skip to pass over endpoints that could not fit it. The backup
+    would be sent the same request and both endpoints billed for its upload and
+    tokenization, and RouteWise does not re-solve after either refusal. Every
+    other failure starts the backup at once, as before: a 404 or 413 that is
+    about the route that answered, say.
     """
-    return not _describes_request(exc)
+    return not (_counts_as_request_refusal(exc) or exceeds_context_window(exc))
 
 
 def _attempt_failures(

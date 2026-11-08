@@ -5,8 +5,9 @@
   long prompt that was merely prefilling looked stuck at every checkpoint and a
   backup prefilled the whole prompt again -- both legs billed upstream, the
   user billed once.
-- A primary that refused the request as malformed (400, 404, 413, 422) started
-  a backup at once, which refused it again.
+- A primary that refused the request as malformed (FixedRouter's request
+  refusals) or as too long for its window started a backup at once, which
+  refused it again.
 - RouteWise's re-solves had no bound on such refusals; FixedRouter stops after
   two (``request_refusals_end_fallback``).
 - The stream race deadline (``HedgeStreamRaceTimeout``) was charged to both
@@ -29,8 +30,8 @@ from tests.unit.routing.test_routewise_router import _FakeRouteTable, _make_adap
 
 
 class _Status(RuntimeError):
-    def __init__(self, status_code: int) -> None:
-        super().__init__(f"upstream answered {status_code}")
+    def __init__(self, status_code: int, message: str | None = None) -> None:
+        super().__init__(message or f"upstream answered {status_code}")
         self.status_code = status_code
 
 
@@ -214,16 +215,26 @@ def _failing(calls: dict[str, int], name: str, exc: BaseException):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("status", [400, 404, 413, 422])
-async def test_a_request_refusal_is_not_sent_to_a_backup(status):
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        pytest.param(lambda: _Status(400), id="400"),
+        pytest.param(lambda: _Status(422), id="422"),
+        pytest.param(
+            lambda: _Status(400, "This model's maximum context length is 131072 tokens"),
+            id="too-long",
+        ),
+    ],
+)
+async def test_a_request_refusal_is_not_sent_to_a_backup(refusal):
     router, (a, b) = _priced_router(
         [("m:a", "0.3"), ("m:b", "0.4")],
         latency_hedge_mode="probability_target",
         latency_slo_sec=3.0,
     )
     calls: dict[str, int] = {}
-    a.chat_completion = _failing(calls, "m:a", _Status(status))
-    b.chat_completion = _failing(calls, "m:b", _Status(status))
+    a.chat_completion = _failing(calls, "m:a", refusal())
+    b.chat_completion = _failing(calls, "m:b", refusal())
 
     with pytest.raises(_Status):
         await router.chat_completion("m", [{"role": "user", "content": "x"}])
