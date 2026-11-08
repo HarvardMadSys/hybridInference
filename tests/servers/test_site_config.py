@@ -338,8 +338,9 @@ async def test_an_invalid_stored_site_document_serves_the_neutral_document(clien
     body = response.json()
     assert body["distribution"]["id"] == "neutral"
     assert body["branding"] is None
-    # It may have carried a restriction: signup is reported closed, as the
-    # signup API closes it, and the configuration incomplete.
+    # It may have carried a restriction: signup and RAG are reported off, as
+    # their APIs close them, and the configuration incomplete.
     assert body["features"]["public_signup"] is False
+    assert body["features"]["rag"] is False
     assert body["configuration"]["incomplete"] is True
     assert "models.yaml" not in response.text

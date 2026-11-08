@@ -88,9 +88,9 @@ async def get_site_config(request: Request = None) -> dict[str, Any]:
 
     A site document that does not validate gets the neutral document too, not
     an error: every console page reads this one, Admin Settings included, where
-    the document is corrected. Public signup is reported closed, as the signup
-    API closes it, since the document may have carried that restriction, and
-    the configuration is reported incomplete.
+    the document is corrected. Public signup and RAG are reported off, as their
+    APIs close them, since the document may have carried those restrictions,
+    and the configuration is reported incomplete.
     """
     try:
         config = get_active_distribution_config()
@@ -115,6 +115,8 @@ async def get_site_config(request: Request = None) -> dict[str, Any]:
             "features": _public_features(
                 {
                     **_NEUTRAL["features"],
+                    # The RAG API answers 503 meanwhile; the console hides it.
+                    **({"rag": False} if site_invalid else {}),
                     "public_signup": public_signup,
                     "phone_auth": phone_auth_enabled,
                 }
