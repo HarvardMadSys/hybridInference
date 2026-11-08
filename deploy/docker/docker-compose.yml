@@ -15,6 +15,21 @@
 # Volumes will always be: hybridinference_postgres_data, hybridinference_pgadmin_data, etc.
 name: hybridinference
 
+# Every service rotates its log. Docker's json-file driver otherwise keeps a
+# container's whole log, on the disk Postgres uses, and the backend logs
+# request headers at INFO: a client sending large headers could fill that
+# disk. The driver stays json-file, so `docker logs` and anything reading the
+# files work as before; each container keeps at most 5 files of 100 MB.
+#
+# A service's logging is part of its configuration, so the first `make up`
+# after this recreates each running service once, Postgres included: a
+# restart of a few seconds.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "5"
+
 services:
   # ===== Application =====
 
@@ -24,6 +39,7 @@ services:
       dockerfile: deploy/docker/Dockerfile.backend
     container_name: hybridinference-backend
     restart: unless-stopped
+    logging: *logging
     # Source-revision stamp on the running container. A digest deploy sets
     # BUILD_SHA to the image's revision label. The digest path's last-known-good
     # restore reads this label back from the container it is about to replace
@@ -230,6 +246,7 @@ services:
       SITE_ASSETS_DIR: ${SITE_ASSETS_DIR-}
     ports:
       - "${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}:3001"
+    logging: *logging
     # The image runs as an unprivileged user and needs no capability at all.
     security_opt:
       - no-new-privileges:true
@@ -256,6 +273,7 @@ services:
     image: postgres:16
     container_name: hybridinference-postgres
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: ${DB_NAME:?DB_NAME must be set in .env file}
       POSTGRES_USER: ${DB_USER:?DB_USER must be set in .env file}
@@ -324,6 +342,7 @@ services:
     image: dpage/pgadmin4:9.19
     container_name: hybridinference-pgadmin
     restart: unless-stopped
+    logging: *logging
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@local.dev}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}

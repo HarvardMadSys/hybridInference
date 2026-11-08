@@ -13,11 +13,42 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
+OVERLAYS = sorted((REPO / "deploy" / "docker").glob("docker-compose.*.yml"))
 FRONTEND_DOCKERFILE = REPO / "deploy" / "docker" / "Dockerfile.frontend"
 
 
-def _services() -> dict:
-    return yaml.safe_load(COMPOSE.read_text())["services"]
+def _services(path: Path = COMPOSE) -> dict:
+    return yaml.safe_load(path.read_text())["services"]
+
+
+ROTATED = {"driver": "json-file", "options": {"max-size": "100m", "max-file": "5"}}
+
+
+def test_every_service_rotates_its_log() -> None:
+    """json-file keeps a container's whole log otherwise, on the disk Postgres uses.
+
+    The backend logs request headers at INFO, so a client sending large
+    headers could fill that disk.
+    """
+    for name, service in _services().items():
+        assert service.get("logging") == ROTATED, name
+
+
+def test_the_overlays_keep_the_base_log_rotation() -> None:
+    """A service an overlay adds, or whose logging it sets, would escape the rotation."""
+    assert OVERLAYS, "the overlay scan went blind"
+    base = _services()
+    for overlay in OVERLAYS:
+        for name, service in _services(overlay).items():
+            assert name in base, f"{overlay.name} adds {name}, which the base does not rotate"
+            assert "logging" not in service, f"{overlay.name} overrides {name}'s logging"
+
+
+def test_the_env_example_writes_no_log_file() -> None:
+    """LOG_FILE is a plain file handler: inside a container it grows unrotated."""
+    lines = (REPO / ".env.example").read_text().splitlines()
+
+    assert not [line for line in lines if line.strip().startswith("LOG_FILE=")]
 
 
 def test_the_console_has_a_memory_ceiling() -> None:
