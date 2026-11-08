@@ -314,9 +314,9 @@ _RESULT_COLUMNS = (
 # the item after which to start, $3 the statuses to keep or NULL, $4 how many
 # to look at). Then the chosen ones ($2) are rendered as text once each,
 # measured, and cut by the database where their total passes the byte budget
-# ($3), so only what fits is sent. The first one is always sent, however large. The innermost subquery has a
-# LIMIT, so it is never merged into the ones above it: each value is rendered
-# once, not once more for its size.
+# ($3), so only what fits is sent. The first one is always sent, however
+# large. The innermost subquery has a LIMIT, so it is never merged into the
+# ones above it: each value is rendered once, not once more for its size.
 _RESULT_SIZES_SQL = """
     SELECT id,
            COALESCE(pg_column_size(response), 0) + COALESCE(pg_column_size(error), 0) AS stored
