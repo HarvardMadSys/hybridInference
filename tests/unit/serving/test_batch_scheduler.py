@@ -137,12 +137,18 @@ class FakeStore:
             }
         )
 
-    async def claim_items(self, *, model_id, worker_id, limit, max_running, lease_seconds):
-        self.claims.append({"model_id": model_id, "limit": limit, "max_running": max_running})
+    async def claim_items(
+        self, *, model_id, worker_id, limit, max_running, lease_seconds, user_rooms=None
+    ):
+        rooms = dict(user_rooms or {})
+        self.claims.append(
+            {"model_id": model_id, "limit": limit, "max_running": max_running, "user_rooms": rooms}
+        )
         now = datetime.now(UTC)
         live = self.count("running", model_id)
         room = min(limit, max_running - live)
         claimed = []
+        per_user: Counter[str] = Counter()
         for item in self.items.values():
             if len(claimed) >= room:
                 break
@@ -152,6 +158,10 @@ class FakeStore:
                 continue
             if item["next_attempt_at"] is not None and item["next_attempt_at"] > now:
                 continue
+            user_room = rooms.get(item["user_id"])
+            if user_room is not None and per_user[item["user_id"]] >= user_room:
+                continue
+            per_user[item["user_id"]] += 1
             item.update(
                 status="running",
                 attempts=item["attempts"] + 1,
@@ -706,6 +716,109 @@ async def test_a_full_batch_quota_defers_the_item(worker, dispatch, settings):
     assert len(deferred) == 1
     assert deferred[0]["attempts"] == 0
     assert deferred[0]["next_attempt_at"] >= before + timedelta(seconds=SLOW.slot_retry_seconds)
+    assert len(dispatch.calls) == 1
+    gate.set()
+
+
+# Rounds every few milliseconds, and a deferred item claimable again at once: an
+# owner at their quota would be claimed, looked up and handed back every round.
+BUSY = SchedulerTimings(
+    poll_seconds=0.005,
+    idle_poll_seconds=0.005,
+    sweep_seconds=3600,
+    heartbeat_seconds=3600,
+    slot_retry_seconds=0.001,
+    stop_grace_seconds=0.05,
+    record_retry_seconds=(0.0,),
+)
+
+
+async def test_an_owner_at_their_batch_quota_is_skipped_by_the_claim(
+    worker, dispatch, settings, auth
+):
+    settings["BATCH_ROLE_CONCURRENCY_INTERNAL"] = "2"
+    store = FakeStore()
+    store.add(500)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store, timings=BUSY)
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 2 and store.calls["release_item"] == 62)
+    lookups = len(auth.calls)
+    await until(lambda: len(store.claims) >= 20)
+
+    # Only the first claim, made before the owner's quota was known, handed
+    # back what it took (64 claimed, 2 run); every later one was told the
+    # owner has no room, so nothing more is claimed, looked up or handed back.
+    assert store.calls["release_item"] == 62
+    assert len(auth.calls) == lookups <= 64
+    assert len(dispatch.calls) == 2
+    assert all(claim["user_rooms"] == {OWNER: 0} for claim in store.claims[1:])
+    gate.set()
+    await until(lambda: store.count("completed") >= 10)
+
+
+async def test_a_claim_is_told_how_much_of_the_owners_quota_is_left(worker, dispatch, settings):
+    settings["BATCH_ROLE_CONCURRENCY_INTERNAL"] = "5"
+    store = FakeStore()
+    store.add(1, model="m1", batch="b1")
+    gates = (dispatch.hold("m1"), dispatch.hold("m2"))
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+    store.add(10, model="m2", batch="b2")
+    scheduler.notify()
+    await until(lambda: dispatch.running["m2"] == 4)
+
+    claim = next(claim for claim in store.claims if claim["model_id"] == "m2")
+    assert claim["user_rooms"] == {OWNER: 4}
+    assert store.count("queued", "m2") == 6
+    assert store.calls["release_item"] == 0
+    for gate in gates:
+        gate.set()
+
+
+async def test_handing_an_item_back_to_wait_does_not_wake_the_loop(worker, dispatch, settings):
+    settings["BATCH_ROLE_CONCURRENCY_INTERNAL"] = "1"
+    store = FakeStore()
+    store.add(3)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store)  # SLOW: only wake-ups start a round
+
+    scheduler.start()
+    await until(lambda: store.calls["release_item"] == 2)
+    await settle()
+
+    assert store.calls["active_models"] == 1
+    gate.set()
+    # The item that ran frees a slot, and that does wake the loop.
+    await until(lambda: store.calls["active_models"] >= 2)
+
+
+async def test_an_owner_known_to_be_at_quota_is_not_looked_up_again(
+    worker, dispatch, settings, auth
+):
+    """A claim that hands such an owner's item over anyway is deferred before the lookup."""
+    settings["BATCH_ROLE_CONCURRENCY_INTERNAL"] = "1"
+
+    class RoomlessStore(FakeStore):
+        async def claim_items(self, **options):
+            options.pop("user_rooms", None)
+            return await super().claim_items(**options)
+
+    store = RoomlessStore()
+    store.add(3)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store, timings=BUSY)
+
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1 and store.calls["release_item"] >= 2)
+    lookups = len(auth.calls)
+    await until(lambda: store.calls["release_item"] >= 20)
+
+    # Claimed and handed back again and again, but looked up no more.
+    assert len(auth.calls) == lookups <= 3
     assert len(dispatch.calls) == 1
     gate.set()
 

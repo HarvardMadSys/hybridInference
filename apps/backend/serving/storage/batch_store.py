@@ -31,7 +31,8 @@ items from here, so whatever coordinates the processes lives in SQL:
   take turns first and batches second: the user claimed from least recently
   goes first, and splitting work into more batches does not earn a user more
   turns. A user's own running items are capped by the worker, per role
-  (``serving.batch.scheduler``), not here.
+  (``serving.batch.scheduler``), not here; the worker passes how many more of
+  a user's items it can run, and a claim hands it no more than that.
 - **Leases**: a claimed item stays ``running`` until ``lease_expires_at``, which
   its worker keeps extending (:meth:`BatchStore.heartbeat`). The item of a
   worker that died is claimable again once its lease has run out, and that
@@ -315,19 +316,27 @@ _FAILED_ITEM_COPY_COLUMNS = (
 # contributing its claimable items in id order. Users take turns first (the
 # user served least recently first, by ``claim_seq``), then their batches
 # (interleaved, the one served least recently first), so splitting the same
-# work into more batches earns no extra turns. Users already at their running cap ($3 and $4: user
-# ids and remaining room, $5 the default room; 0 for no cap) are skipped. Read
+# work into more batches earns no extra turns. A user the claimant names a
+# room for ($3 the user ids, $4 the room of each) gets at most that many
+# items, and none at a room of 0: the claimant's own count of the user's
+# running cap. Anyone else may get up to the claim's limit ($2). Read
 # without locks; the claim re-checks.
 _CLAIM_CANDIDATES_SQL = f"""
-    WITH jobs AS (
-        SELECT j.id, j.user_id, j.claim_seq, j.created_at, s.claim_seq AS user_seq
+    WITH rooms AS (
+        SELECT t.user_id, t.room FROM unnest($3::text[], $4::int[]) AS t(user_id, room)
+    ),
+    jobs AS (
+        SELECT j.id, j.user_id, j.claim_seq, j.created_at, s.claim_seq AS user_seq,
+               LEAST($2, COALESCE(r.room, $2)) AS user_room
         FROM batch_jobs AS j
         LEFT JOIN batch_user_state AS s ON s.user_id = j.user_id
+        LEFT JOIN rooms AS r ON r.user_id = j.user_id
         WHERE {_claimable_job_sql("j")}
           AND j.model_ids ? $1
+          AND COALESCE(r.room, $2) > 0
     ),
     candidates AS (
-        SELECT jobs.user_id, jobs.user_seq, jobs.id AS batch_id, i.id,
+        SELECT jobs.user_id, jobs.user_seq, jobs.user_room, jobs.id AS batch_id, i.id,
                jobs.claim_seq, jobs.created_at,
                row_number() OVER (PARTITION BY jobs.id ORDER BY i.id) AS batch_pos
         FROM jobs
@@ -343,7 +352,7 @@ _CLAIM_CANDIDATES_SQL = f"""
                   OR (bi.status = 'running' AND bi.lease_expires_at <= now())
               )
             ORDER BY bi.id
-            LIMIT $2
+            LIMIT jobs.user_room
         ) AS i
     ),
     ranked AS (
@@ -356,6 +365,7 @@ _CLAIM_CANDIDATES_SQL = f"""
     )
     SELECT r.id, r.batch_id, r.user_id
     FROM ranked AS r
+    WHERE r.user_pos <= r.user_room
     ORDER BY r.user_pos, r.user_seq ASC NULLS FIRST, r.user_id, r.batch_pos, r.id
     LIMIT $2
 """
@@ -1790,6 +1800,7 @@ class BatchStore:
         limit: int,
         max_running: int,
         lease_seconds: int,
+        user_rooms: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         """Claim up to *limit* items of one model for *worker_id*.
 
@@ -1797,6 +1808,11 @@ class BatchStore:
         whose lease is live across the deployment and claims at most
         ``max_running`` minus that many. Users take turns, then their batches
         (see :data:`_CLAIM_CANDIDATES_SQL`).
+
+        ``user_rooms`` caps what a user named in it gets, by the claimant's
+        own count of how many more of that user's items it may run: a user at
+        0 is skipped, so the claimant is not handed work it can only give
+        back. A user not named in it is not capped here.
 
         A claimed item becomes ``running`` under a lease of *lease_seconds*,
         with its attempt counted and an attempt record opened; an item taken
@@ -1829,7 +1845,14 @@ class BatchStore:
             room = min(limit, max_running - live)
             if room <= 0:
                 return []
-            candidates = await conn.fetch(_CLAIM_CANDIDATES_SQL, model_id, room)
+            rooms = user_rooms or {}
+            candidates = await conn.fetch(
+                _CLAIM_CANDIDATES_SQL,
+                model_id,
+                room,
+                list(rooms),
+                [max(0, int(value)) for value in rooms.values()],
+            )
             if not candidates:
                 return []
             owners = {

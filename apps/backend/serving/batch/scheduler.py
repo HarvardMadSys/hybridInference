@@ -31,7 +31,11 @@ slot of the owner's batch quota -- ``BATCH_ROLE_CONCURRENCY_<ROLE>``, counted in
 this process by a limiter of the worker's own, apart from the interactive
 per-user limiter, so batch work and the owner's own requests never compete for
 one budget -- its attempt is marked as dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
-on its target. A failure that may pass (a 408/425/429, a 5xx) is
+on its target. A claim is told how many more of each owner's items this
+process can run, by the role the owner last authenticated with, so an owner
+whose quota is taken is skipped rather than claimed, looked up and handed back;
+an item handed back to wait does not wake the loop. A failure that may pass (a
+408/425/429, a 5xx) is
 retried with exponential backoff for as long as its batch's window is open:
 it fails with its last error once the next try would start after the window
 closes. A batch with no window (``BATCH_COMPLETION_WINDOW_HOURS`` 0, a null
@@ -102,6 +106,8 @@ logger = get_logger(__name__)
 QUEUED_GAP_SECONDS = 3600.0
 #: The long-wait alert repeats at most daily while the wait goes on.
 QUEUED_ALERT_COOLDOWN_SECONDS = 86400
+#: Owners whose role the worker remembers between claims (see ``_owner_rooms``).
+_MAX_REMEMBERED_OWNERS = 4096
 
 
 @dataclass(frozen=True)
@@ -177,12 +183,17 @@ class _InFlight:
     # after it. None when the claim did not say (retries are then bounded by
     # ``max_attempts`` alone).
     expires_at: datetime | None = None
+    # The batch's owner, whose batch quota the item counts against.
+    user_id: str = ""
     task: asyncio.Task[None] | None = None
     # The item has been handed back to the store (finished, scheduled for
     # retry or released), so it is no longer this process's to release.
     settled: bool = False
     # Its upstream call began: a release now leaves its cost unknown.
     dispatched: bool = False
+    # It was handed back to wait (deferred): its end frees no capacity worth
+    # waking the loop for.
+    deferred: bool = False
 
 
 def _default_worker_id() -> str:
@@ -265,6 +276,13 @@ class BatchScheduler:
         self._stopping = False
         self._in_flight: dict[int, _InFlight] = {}
         self._running: Counter[str] = Counter()
+        # Per owner: their items in flight here, the batch quota slots those
+        # hold, and the role they last authenticated with, which says what
+        # their quota is. A claim is told how much room each owner has left,
+        # so an owner at their quota is not claimed only to be handed back.
+        self._owner_running: Counter[str] = Counter()
+        self._owner_slots: Counter[str] = Counter()
+        self._owner_roles: dict[str, tuple[str, bool]] = {}
         self._failure_streak: Counter[str] = Counter()
         self._cooldown_until: dict[str, float] = {}
         # A model's current wait for capacity upstream: since when, the latest
@@ -616,6 +634,7 @@ class BatchScheduler:
             limit=room,
             max_running=cap,
             lease_seconds=self._timings.lease_seconds,
+            user_rooms=self._owner_rooms(cfg),
         )
         if not items:
             return
@@ -677,9 +696,11 @@ class BatchScheduler:
             model_id=item["model_id"],
             attempt=int(item.get("attempt_seq") or item["attempts"]),
             expires_at=item.get("expires_at"),
+            user_id=str(item.get("user_id") or ""),
         )
         self._in_flight[entry.item_id] = entry
         self._running[entry.model_id] += 1
+        self._owner_running[entry.user_id] += 1
         return entry
 
     def _forget(self, entry: _InFlight) -> None:
@@ -688,8 +709,69 @@ class BatchScheduler:
         self._running[entry.model_id] -= 1
         if self._running[entry.model_id] <= 0:
             del self._running[entry.model_id]
+        self._owner_running[entry.user_id] -= 1
+        if self._owner_running[entry.user_id] <= 0:
+            del self._owner_running[entry.user_id]
+        if entry.deferred:
+            # Handed back to wait: whatever kept it from running (its owner's
+            # quota, an unreachable store) has not changed, and waking the loop
+            # would only claim the next of the same owner's items to defer too.
+            return
         # A slot on the model is free again: let the loop fill it now.
         self.notify()
+
+    # -- each owner's batch quota -------------------------------------------------
+
+    def _owner_cap(self, owner: str, cfg: BatchConfig) -> int | None:
+        """The owner's batch quota by the role they last authenticated with.
+
+        None when this process has not authenticated them yet, or their role
+        has no cap. The same lookup the quota's own limiter makes.
+        """
+        known = self._owner_roles.get(owner)
+        if known is None:
+            return None
+        role, is_admin = known
+        limits = cfg.role_concurrency
+        if is_admin:
+            cap = limits.get("admin", 0)
+        elif role in limits:
+            cap = limits[role]
+        else:
+            cap = limits.get("free", 0)
+        return cap if cap > 0 else None
+
+    def _owner_rooms(self, cfg: BatchConfig) -> dict[str, int]:
+        """How many more items of each known owner this process can run now.
+
+        An item in flight counts whether or not it has taken its slot yet, so
+        the models claimed one after the other in a round never hand the same
+        owner more than their quota between them.
+        """
+        rooms: dict[str, int] = {}
+        for owner in self._owner_roles:
+            cap = self._owner_cap(owner, cfg)
+            if cap is not None:
+                rooms[owner] = max(0, cap - self._owner_running[owner])
+        return rooms
+
+    def _remember_role(self, owner: str, user_ctx: dict[str, Any]) -> None:
+        """Note the role an owner just authenticated with, for the next claim's rooms."""
+        role = user_ctx.get("role", "free") or "free"
+        self._owner_roles.pop(owner, None)
+        self._owner_roles[owner] = (role, bool(user_ctx.get("is_admin", False)))
+        if len(self._owner_roles) > _MAX_REMEMBERED_OWNERS:
+            # Forget the owner seen longest ago with nothing running here; it
+            # is looked up again on its next item.
+            for stale in self._owner_roles:
+                if not self._owner_running[stale]:
+                    del self._owner_roles[stale]
+                    break
+
+    def _owner_at_cap(self, owner: str, cfg: BatchConfig) -> bool:
+        """Whether every slot of the owner's batch quota is taken here, as last known."""
+        cap = self._owner_cap(owner, cfg)
+        return cap is not None and self._owner_slots[owner] >= cap
 
     def _model_failed(self, model_id: str) -> None:
         streak = self._failure_streak[model_id] + 1
@@ -828,6 +910,11 @@ class BatchScheduler:
 
         batch_id = item["batch_id"]
         owner = item["user_id"]
+        if self._owner_at_cap(entry.user_id, cfg):
+            # Every slot of the owner's quota is taken here: no use looking the
+            # owner up only to find that out.
+            await self._defer_for_slot(entry)
+            return
         try:
             user_ctx = await authenticate_stored_key(
                 item.get("key_hash"), getattr(self._services, "operational_store", None)
@@ -848,6 +935,7 @@ class BatchScheduler:
             )
             await self._release(entry, delay=self._timings.owner_retry_seconds)
             return
+        self._remember_role(entry.user_id, user_ctx)
 
         role = user_ctx.get("role") or "free"
         if not may_use_batch(role, cfg):
@@ -880,10 +968,9 @@ class BatchScheduler:
             )
             return
         dispatch_body = self._dispatch_body(item, entry, target)
-        give_back = await self._take_user_slot(user_ctx, entry.model_id)
+        give_back = await self._take_user_slot(user_ctx, entry.model_id, owner=entry.user_id)
         if give_back is None:
-            logger.debug("batch item %s: owner at concurrency limit; deferred", entry.item_id)
-            await self._release(entry, delay=self._timings.slot_retry_seconds)
+            await self._defer_for_slot(entry)
             return
         reservation = None
         try:
@@ -973,13 +1060,14 @@ class BatchScheduler:
         return {**body, "model": entry.model_id}
 
     async def _take_user_slot(
-        self, user_ctx: dict[str, Any], model: str
+        self, user_ctx: dict[str, Any], model: str, *, owner: str = ""
     ) -> Callable[[], None] | None:
         """Take a slot of the owner's batch quota; return how to give it back.
 
         The quota is the owner's role's ``BATCH_ROLE_CONCURRENCY_<ROLE>``, held
         across every model. ``None`` when the owner has none free. *model* only
-        labels the deferral in the logs.
+        labels the deferral in the logs; *owner* is the batch's owner, whose
+        slots held here the next claim's rooms count.
         """
         user_id = str(user_ctx.get("user_id") or "")
         granted, _limit, _role = await self._role_slots.try_acquire(
@@ -989,8 +1077,12 @@ class BatchScheduler:
         )
         if not granted:
             return None
+        self._owner_slots[owner] += 1
 
         def give_back() -> None:
+            self._owner_slots[owner] -= 1
+            if self._owner_slots[owner] <= 0:
+                del self._owner_slots[owner]
             try:
                 self._role_slots.release(user_id)
             except Exception:
@@ -1157,7 +1249,12 @@ class BatchScheduler:
     async def _release(
         self, entry: _InFlight, *, delay: float | None = None, dispatched: bool = False
     ) -> None:
-        """Hand the item back to the queue without using up its attempt."""
+        """Hand the item back to the queue without using up its attempt.
+
+        With a *delay* the item waits; so does whatever held it back, and its
+        end does not wake the loop (see :meth:`_forget`).
+        """
+        entry.deferred = delay is not None
         await self._store.release_item(
             item_id=entry.item_id,
             worker_id=self._worker_id,
@@ -1168,6 +1265,11 @@ class BatchScheduler:
             dispatched=dispatched,
         )
         entry.settled = True
+
+    async def _defer_for_slot(self, entry: _InFlight) -> None:
+        """Hand back an item whose owner has no batch quota slot free here."""
+        logger.debug("batch item %s: owner at concurrency limit; deferred", entry.item_id)
+        await self._release(entry, delay=self._timings.slot_retry_seconds)
 
     async def _fail_batch(self, batch_id: str, reason: str) -> None:
         failed = await self._store.fail_batch(

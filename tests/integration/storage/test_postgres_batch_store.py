@@ -719,6 +719,35 @@ async def test_batches_take_turns(store):
     assert await _claim(store, model) == []
 
 
+async def test_a_claim_hands_a_user_no_more_than_the_room_the_worker_names(store):
+    model = _model()
+    first = await _create(store, _items(model, 4, prefix="a1"), user="alice")
+    second = await _create(store, _items(model, 4, prefix="a2"), user="alice")
+    await _create(store, _items(model, 4, prefix="b"), user="bob")
+
+    async def claim(rooms: dict[str, int], limit: int = 10) -> list[dict[str, Any]]:
+        return await store.claim_items(
+            model_id=model,
+            worker_id="worker-1",
+            limit=limit,
+            max_running=100,
+            lease_seconds=300,
+            user_rooms=rooms,
+        )
+
+    # A user at no room is skipped altogether; anyone not named is not capped.
+    claimed = await claim({"alice": 0})
+    assert [item["user_id"] for item in claimed] == ["bob"] * 4
+    # A user with room gets that many, across all their batches together.
+    claimed = await claim({"alice": 3})
+    assert len(claimed) == 3
+    assert {item["user_id"] for item in claimed} == {"alice"}
+    assert {item["batch_id"] for item in claimed} == {first["id"], second["id"]}
+    # Room never lets a claim past its own limit.
+    assert len(await claim({"alice": 50}, limit=2)) == 2
+    assert len(await claim({})) == 3
+
+
 async def test_an_expired_lease_is_reclaimed_and_the_attempt_counts(pool, store):
     model = _model()
     created = await _create(store, _items(model, 2))
