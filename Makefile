@@ -546,5 +546,5 @@ rollback:  ## Restore previously recorded images without running old migrations
 backup:  ## Write a private Postgres dump to BACKUP=<path>
 	$(SMOKE_PYTHON) -m ops.admin.gateway_ops backup --backup "$(BACKUP)" --compose $(COMPOSE)
 
-restore-check:  ## Restore BACKUP into an isolated scratch database and verify compatibility
+restore-check:  ## Restore BACKUP into a throwaway PostgreSQL server and migrate it to this release
 	$(SMOKE_PYTHON) -m ops.admin.gateway_ops restore-check --backup "$(BACKUP)" --compose $(COMPOSE)

@@ -290,3 +290,40 @@ def test_unset_configuration_selectors_stay_out_of_the_container(
 
     for key in _RETIRED_SELECTORS:
         assert environment.get(key) is None, key
+
+
+def test_the_restore_drill_server_shares_nothing_with_the_deployment_database(
+    tmp_path: Path, docker_cli: str
+) -> None:
+    """`make restore-check` restores into this server, so it must stand apart.
+
+    Its own volume and an internal network that only the migrating one-off
+    backend joins; no published port; the deployment's image and credentials.
+    """
+    config = _render(
+        tmp_path,
+        docker_cli,
+        None,
+        overlays=(COMPOSE.parent / "docker-compose.restore-check.yml",),
+        extra=("RESTORE_CHECK_NAME=gateway-restore-test", "RESTORE_CHECK_IMAGE=postgres:16.15"),
+    )
+    scratch = config["services"]["restore-check"]
+    deployment = config["services"]["postgres"]
+
+    assert scratch["image"] == deployment["image"]
+    assert scratch["container_name"] == "gateway-restore-test"
+    assert "ports" not in scratch
+    (volume,) = scratch["volumes"]
+    assert volume["target"] == "/var/lib/postgresql/data"
+    assert config["volumes"][volume["source"]]["name"] == "gateway-restore-test"
+    assert volume["source"] not in {mount["source"] for mount in deployment["volumes"]}
+    assert set(scratch["networks"]) == {"restore-check"}
+    assert config["networks"]["restore-check"] == {
+        "name": "gateway-restore-test",
+        "internal": True,
+        "ipam": {},
+    }
+    assert "restore-check" in config["services"]["backend"]["networks"]
+    assert "restore-check" not in deployment["networks"]
+    for key in ("POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD"):
+        assert scratch["environment"][key] == deployment["environment"][key]

@@ -4,8 +4,8 @@ Compose arguments come from the Makefile as an argv list, never a shell command.
 Only deploy and rollback recreate application services. Each deployment keeps
 its record -- the images it is pinned to and the releases it ran -- in a state
 directory of its own, which the Makefile names after the selected distribution.
-A restore drill creates and drops its own randomly named database, never the
-deployment's database.
+A restore drill runs in a throwaway PostgreSQL server with its own container,
+volume and network, never in the deployment's database server.
 """
 
 from __future__ import annotations
@@ -31,6 +31,10 @@ _IMAGE_ID = re.compile(r"^sha256:[a-f0-9]{64}$")
 
 #: The overlay that starts the application services from pinned images.
 _ARTIFACTS = "deploy/docker/docker-compose.artifacts.yml"
+#: The overlay that defines the restore drill's throwaway database server.
+_RESTORE_OVERLAY = "deploy/docker/docker-compose.restore-check.yml"
+_RESTORE_SERVICE = "restore-check"
+_GIB = 1 << 30
 
 # What the operations themselves raise and report; anything else is a bug.
 _FAILURES = (OSError, ValueError, subprocess.CalledProcessError, http.client.HTTPException)
@@ -432,40 +436,120 @@ def backup(args: argparse.Namespace) -> None:
     print(f"Database backup completed: {args.backup}")
 
 
-def restore_check(args: argparse.Namespace) -> None:
-    """Restore into a unique scratch database and check schema compatibility."""
-    name = "gateway_restore_" + uuid.uuid4().hex
-    prefix = [*args.compose, "exec", "-T", "postgres", "sh", "-c"]
-    command([*prefix, 'exec createdb -U "$POSTGRES_USER" "$1"', "restore-check", name])
+def _database_bytes(compose: list[str]) -> int | None:
+    """Return the deployment database's size, or None when its server is not running."""
     try:
+        output = command(
+            [
+                *compose,
+                "exec",
+                "-T",
+                "postgres",
+                "sh",
+                "-c",
+                'exec psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc '
+                '"SELECT pg_database_size(current_database())"',
+            ],
+            capture=True,
+            text=True,
+        ).stdout
+        return int(output.strip())
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+
+
+def _free_bytes(compose: list[str], env: dict[str, str]) -> int:
+    """Return the free space on the filesystem that holds the scratch server's volume."""
+    output = command(
+        [*compose, "exec", "-T", _RESTORE_SERVICE, "df", "-Pk", "/var/lib/postgresql/data"],
+        capture=True,
+        text=True,
+        env=env,
+    ).stdout
+    return int(output.strip().splitlines()[-1].split()[3]) * 1024
+
+
+def _remove_scratch(name: str) -> None:
+    """Remove the drill's container, volume and network, and name any that stayed."""
+    left = []
+    for kind in ("container", "volume", "network"):
+        removal = ["docker", kind, "rm", *(["--force"] if kind == "container" else []), name]
+        with contextlib.suppress(OSError, subprocess.CalledProcessError):
+            command(removal, capture=True)
+        try:
+            command(["docker", kind, "inspect", name], capture=True)
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        left.append(kind)
+    if left:
+        print(
+            f"restore-check could not remove its {' and '.join(left)} {name}; the volume holds "
+            f"a copy of the backup. Remove them with `docker <kind> rm {name}`.",
+            file=sys.stderr,
+        )
+
+
+def restore_check(args: argparse.Namespace) -> None:
+    """Restore a backup into a throwaway server and migrate it to this release's head.
+
+    The scratch server runs the deployment's PostgreSQL image with its own
+    container, volume and internal network, so the restore adds no load, WAL
+    or data to the server the gateway uses. Its volume still lives where Docker
+    keeps volumes, which is normally the disk of the deployment's own, so the
+    drill first checks there is room: twice the deployment database's size (the
+    dump's, when that server is not running) plus 1 GiB.
+    """
+    dump_bytes = args.backup.stat().st_size  # a missing dump fails before anything starts
+    image = _compose_config(args.compose)["services"]["postgres"]["image"]
+    name = "gateway-restore-" + uuid.uuid4().hex[:16]
+    compose = [*args.compose, "-f", _RESTORE_OVERLAY]
+    env = {**os.environ, "RESTORE_CHECK_NAME": name, "RESTORE_CHECK_IMAGE": image}
+    needed = 2 * max(_database_bytes(args.compose) or 0, dump_bytes) + _GIB
+    try:
+        command([*compose, "up", "-d", "--no-deps", "--wait", _RESTORE_SERVICE], env=env)
+        free = _free_bytes(compose, env)
+        if free < needed:
+            raise ValueError(
+                f"The restore check needs about {needed / _GIB:.1f} GiB free where Docker keeps "
+                f"volumes and {free / _GIB:.1f} GiB is free; free some space or run the check "
+                "on another host"
+            )
         with args.backup.open("rb") as stream:
             command(
                 [
-                    *prefix,
-                    'exec pg_restore -U "$POSTGRES_USER" -d "$1" --exit-on-error',
-                    "restore-check",
-                    name,
+                    *compose,
+                    "exec",
+                    "-T",
+                    _RESTORE_SERVICE,
+                    "sh",
+                    "-c",
+                    # Owners and grants name roles of the deployment's server
+                    # that a fresh one lacks; the gateway's own user owns all.
+                    'exec pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" '
+                    "--no-owner --no-privileges --exit-on-error",
                 ],
                 stdin=stream,
+                env=env,
             )
-        command(
-            [
-                *args.compose,
-                "run",
-                "--rm",
-                "--no-deps",
-                "-e",
-                f"DB_NAME={name}",
-                "backend",
-                "python",
-                "-m",
-                "migrations",
-                "status",
-            ]
-        )
+        # The release's own migrations, as a deploy runs them: a backup taken
+        # before an upgrade is behind, and restoring it means migrating it.
+        migrations = [
+            *compose,
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            f"DB_HOST={_RESTORE_SERVICE}",
+            "backend",
+            "python",
+            "-m",
+            "migrations",
+        ]
+        command([*migrations, "upgrade"], env=env)
+        command([*migrations, "status"], env=env)
     finally:
-        command([*prefix, 'exec dropdb -U "$POSTGRES_USER" "$1"', "restore-check", name])
-    print("Isolated restore check passed")
+        _remove_scratch(name)
+    print("Isolated restore check passed: the backup restores and migrates to this release")
 
 
 def main() -> int:

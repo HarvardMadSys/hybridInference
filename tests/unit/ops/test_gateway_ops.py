@@ -263,25 +263,129 @@ def test_deploy_refuses_mutable_image_tags_before_any_command(tmp_path, monkeypa
     run.assert_not_called()
 
 
-def test_restore_check_drops_only_its_generated_scratch_database_even_on_failure(
-    tmp_path, monkeypatch
+class FakeDocker:
+    """Answer the restore drill's commands; record each with its environment."""
+
+    def __init__(self, *, free_gib=100, database_bytes=10 << 20, fail_on=None, left=()):
+        self.calls = []
+        self.free_kib = free_gib << 20
+        self.database_bytes = database_bytes
+        self.fail_on = fail_on
+        self.left = set(left)
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if self.fail_on and any(self.fail_on in str(token) for token in argv):
+            raise subprocess.CalledProcessError(1, argv)
+        if argv[-3:] == ["config", "--format", "json"]:
+            return argparse.Namespace(
+                stdout=json.dumps({"services": {"postgres": {"image": "pg:x"}}})
+            )
+        if "pg_database_size" in argv[-1]:
+            return argparse.Namespace(stdout=f"{self.database_bytes}\n")
+        if "df" in argv:
+            return argparse.Namespace(
+                stdout="Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+                f"/dev/sda1 999999999 1 {self.free_kib} 1% /var/lib/postgresql/data\n"
+            )
+        if argv[0] == "docker" and argv[2:3] == ["inspect"] and argv[1] not in self.left:
+            raise subprocess.CalledProcessError(1, argv)  # removed: inspect finds nothing
+        return argparse.Namespace(stdout="")
+
+    def lines(self):
+        return [" ".join(argv) for argv, _ in self.calls]
+
+
+def test_restore_check_never_restores_into_the_deployment_database_server(tmp_path, monkeypatch):
+    """A restore there costs the serving database its disk, WAL and buffers."""
+    args = arguments(tmp_path)
+    args.backup.write_bytes(b"private dump")
+    docker = FakeDocker()
+    monkeypatch.setattr(ops, "command", docker)
+    ops.restore_check(args)
+
+    lines = docker.lines()
+    against_deployment = [line for line in lines if " exec -T postgres " in line]
+    assert len(against_deployment) == 1 and "pg_database_size" in against_deployment[0]
+    assert not any(word in line for line in lines for word in ("createdb", "dropdb"))
+
+    (started,) = [(argv, kw) for argv, kw in docker.calls if "up" in argv]
+    name = started[1]["env"]["RESTORE_CHECK_NAME"]
+    assert name.startswith("gateway-restore-")
+    assert started[1]["env"]["RESTORE_CHECK_IMAGE"] == "pg:x"
+    assert started[0][-5:] == ["up", "-d", "--no-deps", "--wait", "restore-check"]
+    assert ops._RESTORE_OVERLAY in started[0]
+
+    (restored,) = [(argv, kw) for argv, kw in docker.calls if "pg_restore" in argv[-1]]
+    assert restored[0][restored[0].index("exec") : restored[0].index("exec") + 3] == [
+        "exec",
+        "-T",
+        "restore-check",
+    ]
+    assert restored[1]["stdin"].name == str(args.backup)
+
+
+def test_restore_check_migrates_a_backup_from_before_the_upgrade(tmp_path, monkeypatch):
+    """A backup one release behind is a valid backup: restoring it means migrating it."""
+    args = arguments(tmp_path)
+    args.backup.write_bytes(b"private dump")
+    docker = FakeDocker()
+    monkeypatch.setattr(ops, "command", docker)
+    ops.restore_check(args)
+    migrations = [line for line in docker.lines() if "python -m migrations" in line]
+    assert [line.rsplit(" ", 1)[1] for line in migrations] == ["upgrade", "status"]
+    for line in migrations:
+        assert "run --rm --no-deps -e DB_HOST=restore-check backend" in line
+        assert ops._RESTORE_OVERLAY in line
+
+
+@pytest.mark.parametrize("failing", ["pg_restore", "upgrade", "df"])
+def test_restore_check_removes_its_server_volume_and_network_even_on_failure(
+    tmp_path, monkeypatch, failing
 ):
     args = arguments(tmp_path)
     args.backup.write_bytes(b"private dump")
-    calls = []
-
-    def run(argv, **kwargs):
-        calls.append(argv)
-        if any("pg_restore" in token for token in argv):
-            raise ValueError("broken dump")
-
-    monkeypatch.setattr(ops, "command", run)
-    with pytest.raises(ValueError, match="broken dump"):
+    docker = FakeDocker(fail_on=failing)
+    monkeypatch.setattr(ops, "command", docker)
+    with pytest.raises(subprocess.CalledProcessError):
         ops.restore_check(args)
-    name = calls[0][-1]
-    assert name.startswith("gateway_restore_")
-    assert calls[-1][-1] == name
-    assert any("dropdb" in token for token in calls[-1])
+    name = next(kw["env"]["RESTORE_CHECK_NAME"] for argv, kw in docker.calls if "up" in argv)
+    removed = [argv[1] for argv, _ in docker.calls if argv[:1] == ["docker"] and "rm" in argv]
+    assert removed == ["container", "volume", "network"]
+    assert all(
+        argv[-1] == name for argv, _ in docker.calls if argv[:1] == ["docker"] and "rm" in argv
+    )
+
+
+def test_restore_check_names_what_it_could_not_remove(tmp_path, monkeypatch, capsys):
+    args = arguments(tmp_path)
+    args.backup.write_bytes(b"private dump")
+    monkeypatch.setattr(ops, "command", FakeDocker(left={"volume"}))
+    ops.restore_check(args)
+    err = capsys.readouterr().err
+    assert "could not remove its volume gateway-restore-" in err
+    assert "copy of the backup" in err
+
+
+def test_restore_check_refuses_before_restoring_when_the_disk_is_short(tmp_path, monkeypatch):
+    """Twice the database plus 1 GiB must be free where the scratch volume lives."""
+    args = arguments(tmp_path)
+    args.backup.write_bytes(b"private dump")
+    docker = FakeDocker(free_gib=5, database_bytes=3 << 30)
+    monkeypatch.setattr(ops, "command", docker)
+    with pytest.raises(ValueError, match=r"needs about 7\.0 GiB free .* 5\.0 GiB is free"):
+        ops.restore_check(args)
+    assert not any("pg_restore" in line for line in docker.lines())
+    assert any(line.startswith("docker volume rm") for line in docker.lines())
+
+
+def test_restore_check_measures_the_dump_when_the_database_is_not_running(tmp_path, monkeypatch):
+    args = arguments(tmp_path)
+    args.backup.write_bytes(b"x" * (3 << 20))
+    docker = FakeDocker(free_gib=1, fail_on="pg_database_size")
+    monkeypatch.setattr(ops, "command", docker)
+    with pytest.raises(ValueError, match=r"needs about 1\.0 GiB free"):
+        ops.restore_check(args)
 
 
 def test_backup_is_private_and_uses_no_tty(tmp_path, monkeypatch):
