@@ -258,9 +258,27 @@ def boot_value(key: str, default: str | None = None) -> str | None:
     entry = registry.extension_entry(key)
     fallback = default if default is not None else (entry.default if entry is not None else None)
     value = _environ_value(key, entry)
-    if entry is not None and _value_problem(entry, value):
+    # An application document from the environment that its validator refuses
+    # counts as unset, as a stored one does (:func:`_apply`): served, it would
+    # bypass the checks every write makes, inline credentials included.
+    checked = entry if entry is not None else _document_entry(key)
+    if checked is not None and _value_problem(checked, value):
         return fallback
     return value if value is not None else fallback
+
+
+def _document_entry(key: str) -> ConfigEntry | None:
+    """Return *key*'s entry when it is an application document, else ``None``.
+
+    Every other key is answered without the registry, which settings read
+    while modules are still importing must not build.
+    """
+    from serving.config.documents import KEY_KINDS
+
+    if key not in KEY_KINDS:
+        return None
+    entry = _STATE.entries.get(key) or registry.static_entry(key)
+    return entry if entry is not None and entry.validator is not None else None
 
 
 # LOG_LEVEL and LOG_FORMAT are database-backed too. Logging cannot import this
@@ -489,7 +507,10 @@ def _in_force_raw(key: str, entry: ConfigEntry | None) -> tuple[str | None, str]
 
 def validation_problem(key: str) -> str | None:
     """Return a configured value's validation problem without exposing its value."""
-    setting = entry(key)
+    # A document is judged before anything is loaded too: config_value counts
+    # an invalid one from the environment as unset, and a caller that must
+    # fail closed on it (the public site policy) asks here.
+    setting = entry(key) or _document_entry(key)
     row = _STATE.rows.get(key)
     raw = row.value if row is not None else _environ_value(key, setting)
     return _value_problem(setting, raw) if setting is not None else None
@@ -1271,7 +1292,13 @@ async def _import_environment(
         value = _environ_value(key, entry)
         if entry.origin == "custom" or key in rows or key in unusable or not (value or "").strip():
             continue
-        if registry.extension_entry(key) is not None or key in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+        if (
+            registry.extension_entry(key) is not None
+            or key in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            or entry.validator is not None
+        ):
+            # Outside Settings' schema. An application document is judged by
+            # its own validator: a seed every write would refuse is never stored.
             problem = _value_problem(entry, value)
             if problem is not None:
                 logger.warning("Not importing invalid %s from the environment: %s", key, problem)
@@ -1384,9 +1411,10 @@ def require_valid_environment() -> None:
     called once the stored configuration is in force, instead of failing before
     the database could be read:
 
-    - An environment value that is not valid on its own, left at its default:
-      a valid stored value for the setting applies, and the gateway starts with
-      a warning; without one it must not.
+    - An environment value that is not valid on its own, left at its default,
+      an application document its validator refuses included: a valid stored
+      value for the setting applies, and the gateway starts with a warning;
+      without one it must not.
     - The rules between settings: the configuration in force, stored values
       over the environment, must satisfy every one.
 
@@ -1420,10 +1448,15 @@ def require_valid_environment() -> None:
             )
         else:
             unresolved[key] = problem
-    # Extension fields and dynamically registered provider names are outside
-    # Settings' schema. Apply the same DB-over-env rule to their registry bounds.
+    # Extension fields, dynamically registered provider names and application
+    # documents are outside Settings' schema. Apply the same DB-over-env rule to
+    # their registry bounds and document validators.
     for key, entry in _STATE.entries.items():
-        if registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+        if (
+            registry.extension_entry(key) is None
+            and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            and entry.validator is None
+        ):
             continue
         problem = _value_problem(entry, _environ_value(key, entry))
         if problem is None:
@@ -1797,11 +1830,20 @@ def _damage(
     for key in written:
         entry = entries.get(key)
         if entry is None or (
-            registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            registry.extension_entry(key) is None
+            and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            and entry.validator is None
         ):
             continue
         problem = _value_problem(entry, _resolve(after, key, entry))
         if problem and not _value_problem(entry, _resolve(rows, key, entry)):
+            if entry.validator is not None and key not in after:
+                # A reset puts the environment's document back in force, which
+                # startup refuses (require_valid_environment).
+                problem = (
+                    f"its environment value is not valid ({problem}); correct or remove the "
+                    "variable first"
+                )
             return _Damage(key, (problem,))
     if not any(
         (entry := registry.static_entry(key)) is not None and entry.field is not None

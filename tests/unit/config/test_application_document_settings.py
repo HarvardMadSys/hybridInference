@@ -8,11 +8,14 @@ import pytest
 
 from serving.config import app_config
 from serving.config.app_config_registry import static_entries
+from serving.config.distribution import DistributionConfigError, get_active_distribution_config
+from serving.config.documents import get
 from serving.config.settings import get_settings
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
 INLINE = "inline-provider-credential"
 INVALID_CATALOG = json.dumps({"models": [{"id": "one", "api_key": INLINE}]})
+VALID_CATALOG = json.dumps({"models": [{"id": "one", "api_key": "${ONE_KEY}"}]})
 
 
 @pytest.fixture(autouse=True)
@@ -52,3 +55,69 @@ async def test_a_reason_never_repeats_a_reference_the_validator_expanded(monkeyp
         await app_config.update({"ROUTING_POLICY": json.dumps(policy)}, updated_by="admin")
     assert "/local_deployment/0/endpoint endpoint must start with http://" in refused.value.detail
     assert "private-endpoint-credential" not in refused.value.detail
+
+
+# --- documents from the environment -------------------------------------------
+
+
+async def test_an_invalid_environment_document_is_neither_imported_nor_served(monkeypatch, caplog):
+    monkeypatch.setenv("MODEL_CATALOG", INVALID_CATALOG)
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        store = await load(bootstrap=True)
+    assert "MODEL_CATALOG" not in store.rows
+    assert "Not importing invalid MODEL_CATALOG from the environment" in caplog.text
+    assert INLINE not in caplog.text
+    # It counts as unset: never served, inline credential and all.
+    assert app_config.config_value("MODEL_CATALOG") is None
+    assert get("models") == {}
+
+
+async def test_a_valid_environment_document_is_still_imported(monkeypatch):
+    monkeypatch.setenv("MODEL_CATALOG", VALID_CATALOG)
+    store = await load(bootstrap=True)
+    assert store.rows["MODEL_CATALOG"].value == VALID_CATALOG
+    assert get("models")["models"][0]["api_key"] == "${ONE_KEY}"
+
+
+async def test_startup_refuses_an_invalid_environment_document_nothing_replaces(monkeypatch):
+    monkeypatch.setenv("MODEL_CATALOG", INVALID_CATALOG)
+    await load()
+    with pytest.raises(app_config.ConfigBootstrapError) as refused:
+        app_config.require_valid_environment()
+    assert "MODEL_CATALOG: /models/0/api_key must reference" in str(refused.value)
+    assert INLINE not in str(refused.value)
+
+
+async def test_a_valid_stored_document_wins_over_an_invalid_environment_one(monkeypatch, caplog):
+    monkeypatch.setenv("MODEL_CATALOG", INVALID_CATALOG)
+    await load([row("MODEL_CATALOG", VALID_CATALOG)])
+    with caplog.at_level("WARNING", logger="serving.config.app_config"):
+        app_config.require_valid_environment()
+    assert "Ignoring invalid MODEL_CATALOG from the environment" in caplog.text
+    assert INLINE not in caplog.text
+    assert get("models")["models"][0]["api_key"] == "${ONE_KEY}"
+
+
+async def test_a_reset_cannot_put_an_invalid_environment_document_back_in_force(monkeypatch):
+    monkeypatch.setenv("MODEL_CATALOG", INVALID_CATALOG)
+    store = await load([row("MODEL_CATALOG", VALID_CATALOG)])
+    with pytest.raises(app_config.ConfigUpdateError) as refused:
+        await app_config.delete("MODEL_CATALOG", updated_by="admin")
+    assert refused.value.status_code == 409
+    assert "its environment value is not valid" in refused.value.detail
+    assert INLINE not in refused.value.detail
+    assert store.rows["MODEL_CATALOG"].value == VALID_CATALOG
+
+
+def test_an_invalid_environment_site_document_closes_the_site_before_anything_loads(
+    monkeypatch,
+):
+    # Counting it as unset would drop the restriction it was meant to carry.
+    monkeypatch.setenv(
+        "SITE_CONFIGURATION",
+        json.dumps(
+            {"schema_version": 1, "distribution": {"id": "x"}, "features": {"public-signup": False}}
+        ),
+    )
+    with pytest.raises(DistributionConfigError):
+        get_active_distribution_config()

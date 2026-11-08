@@ -921,6 +921,11 @@ def test_a_model_level_provider_is_not_a_registry_row(tmp_path, monkeypatch):
     A Kimi model served through the coding endpoint and Ollama never calls the
     Moonshot API, so a `kimi` row would point at a URL no route uses.
     """
+    from serving.servers import registry
+
+    # The coding endpoint's kind comes from a startup extension; without one the
+    # catalog is not valid, and an invalid catalog is never served.
+    monkeypatch.setitem(registry.ADAPTER_FACTORIES, "kimi_coding", lambda cfg: None)
     _write_models_config(
         tmp_path,
         monkeypatch,
