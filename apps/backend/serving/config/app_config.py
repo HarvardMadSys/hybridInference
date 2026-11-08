@@ -362,10 +362,8 @@ def _value_problem(entry: ConfigEntry, raw: str | None) -> str | None:
     if entry.validator is not None:
         try:
             entry.validator(raw)
-        except (ValueError, TypeError):
-            return (
-                "must be a valid application document; check its JSON fields and secret references"
-            )
+        except (ValueError, TypeError) as exc:
+            return _validator_problem(exc)
     typed = _typed(entry, raw)
     if entry.type in ("bool", "int", "float") and isinstance(typed, str):
         return {
@@ -389,6 +387,44 @@ def _value_problem(entry: ConfigEntry, raw: str | None) -> str | None:
         if not allowed:
             return "must be one of " + ", ".join(entry.choices)
     return None
+
+
+#: Said of a document whose validator gave no reason that is safe to repeat.
+_DOCUMENT_PROBLEM = (
+    "must be a valid application document; check its JSON fields and secret references"
+)
+
+#: How many of a validation error's reasons :func:`_validator_problem` names.
+_REASONS_SHOWN = 3
+
+
+def _validator_problem(exc: BaseException) -> str:
+    """Return why a validator refused a document, naming fields and types, never a value.
+
+    The reason is shown in Admin and logged, and a document can carry a
+    credential, or a reference the validator has already expanded into one.
+    A pydantic error, raised or wrapped (``raise ... from``), prints its input,
+    so its reason is rebuilt from each error's location and message; any other
+    reason that still names an input is replaced with a generic one.
+    """
+    cause: BaseException | None = exc
+    while cause is not None and not isinstance(cause, ValidationError):
+        cause = cause.__cause__
+    if isinstance(cause, ValidationError):
+        errors = cause.errors(include_url=False, include_context=False, include_input=False)
+        reasons = []
+        for error in errors[:_REASONS_SHOWN]:
+            location = "/".join(str(part) for part in error.get("loc") or ())
+            message = _error_message(error)
+            reasons.append(f"/{location} {message}" if location else message)
+        if len(errors) > _REASONS_SHOWN:
+            reasons.append(f"{len(errors) - _REASONS_SHOWN} more")
+        reason = "; ".join(reasons)
+    else:
+        reason = str(exc)
+    if not reason.strip() or "input_value" in reason:
+        return _DOCUMENT_PROBLEM
+    return reason
 
 
 def _environ_value(key: str, entry: ConfigEntry | None) -> str | None:
