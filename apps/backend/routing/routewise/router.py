@@ -428,6 +428,17 @@ _ATTEMPT_TTFT_MS_KEY = "attempt_ttft_ms"
 _ATTEMPT_COMPLETED_KEY = "attempt_completed"
 
 
+async def _close_stream(stream: Any) -> None:
+    """Close an async stream that may still be open; a failure to close is not raised.
+
+    A no-op for a stream that already finished. Cancellation still propagates.
+    """
+    aclose = getattr(stream, "aclose", None)
+    if callable(aclose):
+        with contextlib.suppress(Exception):
+            await aclose()
+
+
 def _memoized_cdf_ms(profile: ProviderProfile, now: float) -> Callable[[float], float]:
     """Return ``profile``'s CDF in milliseconds at ``now``, remembering each value asked for.
 
@@ -2794,6 +2805,10 @@ class RouteWiseRouter:
                             event_sink=self._health_registry,
                             hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
                             checkpoint_backup_selector=_select_checkpoint_backup_for_request,
+                            # The decision owns the primary's capacity until the
+                            # primary's leg ends without ending the request; the
+                            # hedge then takes the release over (exactly once).
+                            primary_release_handoff=reservation.hand_off,
                         )
                     if self.prefix_cache.enabled:
                         self._stash_prefix_for_commit(
@@ -3225,6 +3240,7 @@ class RouteWiseRouter:
     ) -> AsyncIterator[Any]:
         adapter = decision.adapter
         original_config = getattr(adapter, "config", None)
+        stream: AsyncIterator[Any] | None = None
         try:
             endpoint_id = endpoint_id_for_adapter(adapter)
             # Deliberately no req_ctx.UPSTREAM_PRIORITY, in either execution
@@ -3246,7 +3262,8 @@ class RouteWiseRouter:
                 first = True
                 decision.metadata[_ATTEMPT_TTFT_MS_KEY] = None
                 attempt_started = time.perf_counter()
-                async for chunk in adapter.stream_chat_completion(messages, **params):
+                stream = adapter.stream_chat_completion(messages, **params)
+                async for chunk in stream:
                     if first and has_non_empty_content(chunk):
                         first = False
                         decision.metadata[_ATTEMPT_TTFT_MS_KEY] = _first_content_ms(
@@ -3260,10 +3277,18 @@ class RouteWiseRouter:
                     yield chunk
                 decision.metadata[_ATTEMPT_COMPLETED_KEY] = True
         finally:
-            if getattr(adapter, "config", None) is not original_config:
-                decision.metadata["backup_won"] = True
-            self._apply_hedge_execution_metadata(decision)
-            decision.release()
+            try:
+                # Closed here, in this task, before the reservation goes: a
+                # caller that leaves mid-stream would otherwise leave the
+                # adapter's stream -- a hedge's legs, and the backup's capacity
+                # with them -- to the event loop's async-generator finalizer,
+                # which runs at some later point, in another context.
+                await _close_stream(stream)
+            finally:
+                if getattr(adapter, "config", None) is not original_config:
+                    decision.metadata["backup_won"] = True
+                self._apply_hedge_execution_metadata(decision)
+                decision.release()
 
     # ------------------------------------------------------------------
     # chat_completion / stream_chat_completion: merge decision metadata
@@ -3481,18 +3506,26 @@ class RouteWiseRouter:
                         failed_attempts=trace.failed_attempts,
                     )
                     decision.metadata["is_streaming"] = True
-                    async for chunk in self._execute_stream_adapter(
+                    attempt_stream = self._execute_stream_adapter(
                         decision,
                         model_id,
                         messages,
                         **params,
-                    ):
-                        self.pending_prefix_cache.touch(str(request_id))
-                        if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
-                            done_chunk = chunk
-                            continue
-                        yield chunk
-                        chunks_yielded = True
+                    )
+                    try:
+                        async for chunk in attempt_stream:
+                            self.pending_prefix_cache.touch(str(request_id))
+                            if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
+                                done_chunk = chunk
+                                continue
+                            yield chunk
+                            chunks_yielded = True
+                    finally:
+                        # A caller that leaves stops this generator at the
+                        # yield above; close the attempt now, in this task, so
+                        # its stream and reservation are released here and
+                        # not by the event loop's finalizer later.
+                        await _close_stream(attempt_stream)
 
                     decision.metadata["is_streaming"] = True
                     routing: dict[str, Any] = {}
