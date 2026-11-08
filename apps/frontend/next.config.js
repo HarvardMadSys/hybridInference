@@ -149,6 +149,19 @@ const nextConfig = {
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
         ],
       },
+      // A password-reset or verification link carries its token in the
+      // address. The page takes it out once read (src/lib/hooks/useLinkToken.ts),
+      // but what the page requests before then -- its scripts, the session
+      // check -- would send the whole address to this origin as the Referer,
+      // and the gateway logs it. `strict-origin` sends the origin alone, to this
+      // origin and every other. Not `no-referrer`, which hides the origin too:
+      // the policy stays with the document as it moves on to other pages, and
+      // the Turnstile challenge on the sign-up and phone sign-in forms checks
+      // the site it is embedded in. Last, so it replaces the policy above.
+      {
+        source: '/:page(reset-password|verify-email)',
+        headers: [{ key: 'Referrer-Policy', value: 'strict-origin' }],
+      },
     ];
   },
   async rewrites() {
