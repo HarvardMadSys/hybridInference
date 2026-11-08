@@ -1504,3 +1504,93 @@ async def test_a_committed_restore_whose_caches_fail_to_refresh_is_audited(
     assert store.rows["SITE_NAME"].value == "Restored Lab"
     audit.assert_awaited_once()
     assert "ConnectionResetError" in audit.await_args.kwargs["details"]["not_loaded"]
+
+
+# --- the confirmed plan is checked again inside the transaction (review L9) -
+
+
+@pytest.mark.asyncio
+async def test_a_setting_changed_during_the_confirmation_is_not_reverted_unconfirmed(
+    console_admin, monkeypatch
+) -> None:
+    client, store, audit, _account = console_admin
+    store.has_api_keys = True
+    store.rows["TRUSTED_PROXIES"] = row("TRUSTED_PROXIES", "10.0.0.0/8")
+    await app_config.refresh()
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_settings = AsyncMock(
+        return_value=[{"key": "signup_enabled", "value": "true", "value_type": "bool"}]
+    )
+    op_store.set_setting = AsyncMock()
+    # The bundle leaves TRUSTED_PROXIES as it is: not a change, not confirmed.
+    bundle = _security_bundle()
+    bundle["app_config"].append(
+        {"key": "TRUSTED_PROXIES", "value": "10.0.0.0/8", "secret": False, "source": "admin"}
+    )
+    changes = (
+        await client.post("/admin/config/restore/preview", headers=AUTH, json=bundle)
+    ).json()["security_changes"]
+    assert "app_config:TRUSTED_PROXIES" not in changes
+
+    real_confirm = config_backup_routes._confirm_administrator
+
+    async def confirm_while_another_admin_saves(*args, **kwargs) -> None:
+        await real_confirm(*args, **kwargs)
+        store.rows["TRUSTED_PROXIES"] = row("TRUSTED_PROXIES", "192.168.0.0/16")
+
+    monkeypatch.setattr(
+        config_backup_routes, "_confirm_administrator", confirm_while_another_admin_saves
+    )
+    before = dict(store.rows)
+    audit.reset_mock()
+    response = await client.post(
+        "/admin/config/restore",
+        headers=AUTH,
+        json={**bundle, "confirm_security_changes": changes, "password": ADMIN_PASSWORD},
+    )
+
+    assert response.status_code == 409, response.text
+    assert "app_config:TRUSTED_PROXIES" in response.json()["detail"]
+    assert "Nothing was restored" in response.json()["detail"]
+    # The other administrator's change stands; nothing of the restore was written.
+    assert store.rows["TRUSTED_PROXIES"].value == "192.168.0.0/16"
+    assert {key: stored for key, stored in store.rows.items() if key != "TRUSTED_PROXIES"} == {
+        key: stored for key, stored in before.items() if key != "TRUSTED_PROXIES"
+    }
+    op_store.set_setting.assert_not_awaited()
+    audit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_sign_up_switch_changed_during_the_restore_is_not_reverted(config_client) -> None:
+    """The other tables are read again on the transaction's connection too."""
+    client, store, audit = config_client
+    current = {"signup_enabled": "false"}
+    op_store = client._transport.app.state.services.operational_store
+
+    async def list_settings():
+        return [{"key": "signup_enabled", "value": current["signup_enabled"], "value_type": "bool"}]
+
+    op_store.list_settings = AsyncMock(side_effect=list_settings)
+    op_store.set_setting = AsyncMock()
+    bundle = await _exported(client)
+    assert {s["key"]: s["value"] for s in bundle["site_settings"]} == {"signup_enabled": "false"}
+
+    real_restore_rows = app_config.restore_rows
+
+    async def restore_rows_after_a_save_elsewhere(*args, **kwargs):
+        # Another administrator opens sign-up after the plan, before the lock.
+        current["signup_enabled"] = "true"
+        return await real_restore_rows(*args, **kwargs)
+
+    before = dict(store.rows)
+    audit.reset_mock()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(app_config, "restore_rows", restore_rows_after_a_save_elsewhere)
+        response = await client.post("/admin/config/restore", headers=AUTH, json=bundle)
+
+    assert response.status_code == 409, response.text
+    assert "site_settings:signup_enabled" in response.json()["detail"]
+    assert store.rows == before
+    op_store.set_setting.assert_not_awaited()
+    audit.assert_not_awaited()

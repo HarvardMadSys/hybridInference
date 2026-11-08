@@ -874,6 +874,18 @@ async def _restore_plan(
     summary = await app_config.preview_restore_rows(
         [row.model_dump() for row in payload.app_config]
     )
+    changes, not_restored = await _restore_labels(payload, op_store, summary)
+    return changes, not_restored, summary
+
+
+async def _restore_labels(
+    payload: ConfigBackupPayload, op_store: Any, summary: app_config.RestoreSummary
+) -> tuple[list[str], list[str]]:
+    """The security-relevant changes and unrestorable secrets of *payload*, as sorted labels.
+
+    *summary* is the ``app_config`` plan; *op_store* reads the other tables, on
+    the restore transaction's connection when it is given one.
+    """
     changes = {f"app_config:{key}" for key in summary.changed if _security_relevant_setting(key)}
     not_restored = {f"app_config:{key}" for key in summary.not_restored}
 
@@ -998,7 +1010,7 @@ async def _restore_plan(
         # Who may sign up: an empty allowlist admits every address.
         changes.add("signup_allowed_domains")
 
-    return sorted(changes), sorted(not_restored), summary
+    return sorted(changes), sorted(not_restored)
 
 
 @contextlib.asynccontextmanager
@@ -1031,6 +1043,39 @@ async def _stores_in(
 
     async with connection() as conn:
         yield bound(op_store, conn), bound(batch_store, conn)
+
+
+async def _check_confirmed_plan(
+    transaction: Any,
+    summary: app_config.RestoreSummary,
+    *,
+    payload: ConfigBackupPayload,
+    op_store: Any,
+    batch_store: Any,
+    confirmed: list[str],
+) -> None:
+    """Refuse a restore whose security-relevant changes are no longer *confirmed*.
+
+    What was confirmed was planned before the password check, outside the
+    restore transaction; another administrator's change since -- a setting the
+    bundle would now overwrite -- must not be reverted unconfirmed. So the plan
+    is made again under the transaction's write lock (*summary*), the other
+    tables read on its connection, before anything is written.
+
+    Raises:
+        app_config.ConfigUpdateError: 409 when the changes differ; nothing is
+            written.
+    """
+    async with _stores_in(transaction, op_store, batch_store) as (tx_op_store, _tx_batch):
+        now, _not_restored = await _restore_labels(payload, tx_op_store, summary)
+    if now != confirmed:
+        moved = sorted(set(now) ^ set(confirmed))
+        raise app_config.ConfigUpdateError(
+            409,
+            "The configuration changed while this backup was being restored, so it would no "
+            f"longer change exactly what was confirmed ({', '.join(moved)}). Nothing was "
+            "restored: preview the restore again.",
+        )
 
 
 async def _apply_operational_and_batch_stores(
@@ -1617,6 +1662,16 @@ async def restore_config_backup(
     app_config_dicts = [row.model_dump() for row in payload.app_config]
     admin_user_id = get_admin_user_id(request)
 
+    async def check_plan(transaction: Any, summary: app_config.RestoreSummary) -> None:
+        await _check_confirmed_plan(
+            transaction,
+            summary,
+            payload=payload,
+            op_store=op_store,
+            batch_store=batch_store,
+            confirmed=security_changes,
+        )
+
     async def apply_in_transaction(transaction: Any) -> None:
         async with _stores_in(transaction, op_store, batch_store) as (tx_op_store, tx_batch):
             await _apply_operational_and_batch_stores(
@@ -1627,7 +1682,10 @@ async def restore_config_backup(
     not_loaded: str | None = None
     try:
         summary = await app_config.restore_rows(
-            app_config_dicts, updated_by=admin_id, before_commit=apply_in_transaction
+            app_config_dicts,
+            updated_by=admin_id,
+            check_plan=check_plan,
+            before_commit=apply_in_transaction,
         )
     except app_config.RestoreNotLoaded as exc:
         summary = exc.summary

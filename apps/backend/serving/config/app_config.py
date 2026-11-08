@@ -2484,6 +2484,7 @@ async def restore_rows(
     items: Sequence[Mapping[str, Any]],
     *,
     updated_by: str,
+    check_plan: Callable[[AppConfigStore, RestoreSummary], Awaitable[None]] | None = None,
     before_commit: Callable[[AppConfigStore], Awaitable[None]] | None = None,
 ) -> RestoreSummary:
     """Replace ``app_config`` with *items* in one transaction, then reload.
@@ -2502,6 +2503,12 @@ async def restore_rows(
     Args:
         items: Stored row dicts (``key``, ``value``, ``secret``, ``source``).
         updated_by: Identity of the administrator performing the restore.
+        check_plan: Optional async hook run inside the transaction, under its
+            write lock, once the restore is planned against the rows as they
+            are now and before anything is written, given the transaction's
+            store and the plan's summary: the place to refuse a restore whose
+            effect differs from what was confirmed before the transaction
+            began. If it raises, nothing is written.
         before_commit: Optional async hook run inside the ``app_config``
             transaction after validation and table writes, given the
             transaction's store, whose connection other stores can write on
@@ -2525,6 +2532,8 @@ async def restore_rows(
             api_keys_exist=await transaction.api_keys_exist(),
             updated_by=updated_by,
         )
+        if check_plan is not None:
+            await check_plan(transaction, plan.summary)
         for key in sorted(plan.to_delete):
             await transaction.delete(key)
         if plan.target_rows:
