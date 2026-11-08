@@ -58,7 +58,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from serving.batch import admission
@@ -99,7 +98,7 @@ from serving.servers.deps import (
     get_router,
     get_services,
 )
-from serving.servers.routers.files import content_disposition
+from serving.servers.routers.files import content_disposition, jsonl_download
 from serving.storage.batch_store import (
     PHASE_SEALED,
     PHASE_VALIDATING,
@@ -112,6 +111,8 @@ from serving.storage.batch_store import (
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from fastapi.responses import StreamingResponse
+
     from serving.batch.config import BatchConfig
 
 logger = get_logger(__name__)
@@ -741,6 +742,7 @@ def results_final(row: dict[str, Any]) -> bool:
 @router.get("/v1/batches/{batch_id}/output.jsonl", response_model=None)
 async def export_batch_results(
     batch_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
@@ -751,8 +753,8 @@ async def export_batch_results(
         raise _not_found(batch_id)
     if not results_final(row):
         raise HTTPException(409, f"Batch '{batch_id}' has not finished; its results are not final")
-    return StreamingResponse(
+    return jsonl_download(
+        request,
         stream_lines(store=store, batch_id=batch_id, kind="all"),
-        media_type="application/jsonl",
         headers={"content-disposition": content_disposition(f"{batch_id}.jsonl")},
     )

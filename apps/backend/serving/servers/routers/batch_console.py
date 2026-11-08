@@ -30,10 +30,9 @@ Every route writes only the caller's own webhook.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from serving.batch.config import batch_config, may_use_batch
@@ -53,7 +52,7 @@ from serving.servers.deps import (
     get_current_user,
 )
 from serving.servers.routers.batches import results_final
-from serving.servers.routers.files import content_disposition
+from serving.servers.routers.files import content_disposition, jsonl_download
 from serving.storage.batch_store import (
     PHASE_VALIDATING,
     SURFACE_OPENAI_FILE,
@@ -62,6 +61,9 @@ from serving.storage.batch_store import (
     BatchDeleteInProgress,
 )
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -380,7 +382,7 @@ async def get_my_batch(
 
 
 async def _requests_download(
-    store: Any, batch_id: str, owner: str, *, unfinished: bool
+    request: Request, store: Any, batch_id: str, owner: str, *, unfinished: bool
 ) -> StreamingResponse:
     row = await store.get_batch(batch_id, user_id=owner)
     if row is None:
@@ -399,9 +401,9 @@ async def _requests_download(
             raise HTTPException(409, "This batch has not finished; its results are not final")
         statuses = UNFINISHED_STATUSES
         name = f"{batch_id}_unfinished.jsonl"
-    return StreamingResponse(
+    return jsonl_download(
+        request,
         stream_requests(store=store, batch_id=batch_id, url=url, statuses=statuses),
-        media_type="application/jsonl",
         headers={
             "content-disposition": content_disposition(name),
             "cache-control": "no-store",
@@ -412,17 +414,21 @@ async def _requests_download(
 @router.get("/user/batches/{batch_id}/requests", response_model=None)
 async def download_my_requests(
     batch_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
     """Download a batch's stored requests as an input file (``custom_id, method, url, body``)."""
     store = _require_store(store)
-    return await _requests_download(store, batch_id, current_user["user_id"], unfinished=False)
+    return await _requests_download(
+        request, store, batch_id, current_user["user_id"], unfinished=False
+    )
 
 
 @router.get("/user/batches/{batch_id}/unfinished-requests", response_model=None)
 async def download_my_unfinished_requests(
     batch_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
@@ -432,7 +438,9 @@ async def download_my_unfinished_requests(
     again. Not a retry: nothing runs until a new batch is submitted.
     """
     store = _require_store(store)
-    return await _requests_download(store, batch_id, current_user["user_id"], unfinished=True)
+    return await _requests_download(
+        request, store, batch_id, current_user["user_id"], unfinished=True
+    )
 
 
 @router.post("/user/batches/{batch_id}/cancel")
@@ -473,6 +481,7 @@ async def delete_my_batch(
 @router.get("/user/batches/{batch_id}/results", response_model=None)
 async def download_my_results(
     batch_id: str,
+    request: Request,
     kind: str = Query("all", pattern="^(all|output|error)$"),
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
@@ -486,9 +495,9 @@ async def download_my_results(
         raise HTTPException(409, "This batch has not finished; its results are not final")
     if row.get("api_surface") != SURFACE_OPENAI_FILE:
         kind = "all"
-    return StreamingResponse(
+    return jsonl_download(
+        request,
         stream_lines(store=store, batch_id=batch_id, kind=kind),
-        media_type="application/jsonl",
         headers={"content-disposition": content_disposition(f"{batch_id}_{kind}.jsonl")},
     )
 

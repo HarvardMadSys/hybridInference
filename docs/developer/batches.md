@@ -436,7 +436,9 @@ bytes every time it is downloaded, and its size and SHA-256 (the `ETag`) are
 fixed when the batch ends. `GET /v1/files` lists your files, `GET
 /v1/files/{id}` returns one, and `DELETE /v1/files/{id}` deletes one for good:
 a deleted output file is not written again, though the batch still names it.
-Deleting an input file does not affect a batch already created from it.
+Deleting an input file does not affect a batch already created from it. A
+download is a stream: it may run for as long as `STREAM_REQUEST_TIMEOUT_SECONDS`
+allows (an hour by default), not only the 120 seconds an ordinary request gets.
 
 The official OpenAI SDKs work with this flow:
 
