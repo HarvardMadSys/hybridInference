@@ -1890,11 +1890,47 @@ async def _active_env_keys_for_provider(op_store, key_provider: str) -> list[str
     return active_keys
 
 
+async def _active_db_keys(op_store, key_provider: str) -> set[str]:
+    """Return the raw values of *key_provider*'s active key rows; a 503 if unreadable."""
+    try:
+        return set(await op_store.list_provider_keys_full(key_provider))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to load provider keys for {key_provider}: {exc}",
+        ) from exc
+
+
+async def _withhold_disabled_keys(
+    op_store, adapter, *, key_provider: str, api_key_id: str | None
+) -> None:
+    """Take a disabled pinned key out of a restored route's pool, keeping the binding.
+
+    The key stays in the route's config, which is what binds the route to it,
+    so the credential reconcile puts it back in the pool once the key is
+    enabled, as it does for a route that was serving when the key was disabled.
+    """
+    if api_key_id is None or api_key_id.startswith("env:"):
+        return
+    active_keys = await _active_db_keys(op_store, key_provider)
+    configured = [*(adapter.config.api_keys or []), adapter.config.api_key]
+    if all(key in active_keys for key in configured if key):
+        return
+    pool = getattr(adapter, "_key_pool", None)
+    if pool is None:
+        # Nothing to take the key out of: the route would serve it.
+        raise HTTPException(status_code=409, detail="Provider key is disabled")
+    for key in pool.snapshot_keys():
+        if key not in active_keys:
+            pool.remove_key(key)
+
+
 async def _resolve_key_material(
     op_store,
     *,
     key_provider: str,
     api_key_id: str | None,
+    restoring: bool = False,
 ) -> tuple[str | None, list[str] | None]:
     # Every route/candidate/model install resolves its key material here, so this is
     # where a provider's tier declarations get loaded before its adapter registers.
@@ -1939,6 +1975,12 @@ async def _resolve_key_material(
             status_code=400,
             detail=f"Provider key belongs to {row_provider!r}, expected {key_provider!r}",
         )
+    # A disabled key is no key material for a new or edited route. A stored
+    # route being restored keeps its binding instead, and its builder takes the
+    # key out of the pool (_withhold_disabled_keys). Judged by value, as the
+    # pools are reconciled: a credential another active row holds keeps serving.
+    if not restoring and raw_key not in await _active_db_keys(op_store, key_provider):
+        raise HTTPException(status_code=409, detail="Provider key is disabled")
     dynamic_keys.mark_db_key_for_provider(key_provider, raw_key)
     return None, [raw_key]
 
@@ -2526,12 +2568,15 @@ async def _prepare_route_candidate(
     endpoint_id: str | None = None,
     replacing_route_id: str | None = None,
     validate_url: bool = True,
+    restoring: bool = False,
 ) -> PreparedRouteCandidate:
     """Build a runtime route for an existing model, cloning its first route's config.
 
     ``replacing_route_id`` builds a replacement for that route (an edit), so it
     is left out of the identity check. ``validate_url=False`` is only for an
-    edit that keeps the route's exact registered URL and target.
+    edit that keeps the route's exact registered URL and target. ``restoring``
+    builds a stored route, which keeps a disabled pinned key's binding without
+    serving the key.
     """
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
@@ -2586,6 +2631,7 @@ async def _prepare_route_candidate(
         op_store,
         key_provider=target.key_provider,
         api_key_id=api_key_id,
+        restoring=restoring,
     )
 
     template_adapter = entries[0][0]
@@ -2652,6 +2698,10 @@ async def _prepare_route_candidate(
         cfg["concurrency"] = {"limit": concurrency_limit}
 
     adapter = _make_adapter(target.kind, cfg)
+    if restoring:
+        await _withhold_disabled_keys(
+            op_store, adapter, key_provider=target.key_provider, api_key_id=api_key_id
+        )
     return PreparedRouteCandidate(
         route=route,
         route_id=candidate_route_id,
@@ -2692,11 +2742,14 @@ async def _prepare_model_route_candidate(
     endpoint_id: str | None = None,
     existing_model: bool = False,
     validate_url: bool = True,
+    restoring: bool = False,
 ) -> PreparedRouteCandidate:
     """Build the route a runtime model is created (or restored) from.
 
     ``existing_model`` rebuilds that route for a model already registered (an
     edit); the caller checks its identity against the model's other routes.
+    ``restoring`` builds a stored route, which keeps a disabled pinned key's
+    binding without serving the key.
     """
     model_id = model_id.strip() if existing_model else _validate_new_model_id(services, model_id)
     if route_type not in {"quota", "concurrency", "on_demand"}:
@@ -2744,6 +2797,7 @@ async def _prepare_model_route_candidate(
         op_store,
         key_provider=target.key_provider,
         api_key_id=api_key_id,
+        restoring=restoring,
     )
 
     cfg: dict[str, Any] = {
@@ -2793,6 +2847,10 @@ async def _prepare_model_route_candidate(
         cfg["concurrency"] = {"limit": concurrency_limit}
 
     adapter = _make_adapter(target.kind, cfg)
+    if restoring:
+        await _withhold_disabled_keys(
+            op_store, adapter, key_provider=target.key_provider, api_key_id=api_key_id
+        )
     return PreparedRouteCandidate(
         route=None,
         route_id=candidate_route_id,
@@ -2826,11 +2884,14 @@ async def _prepare_route_update(
     concurrency_limit_override: int | None = None,
     deployment_type_override: str | None = None,
     removed_entry: tuple[object, float, str] | None = None,
+    restoring: bool = False,
 ) -> PreparedRouteUpdate:
     """Build a config route's edited adapter without installing it.
 
     ``removed_entry`` is the models.yaml entry of a deleted route, for a restore
     that prepares the route's saved edit before the route is served again.
+    ``restoring`` builds a saved edit, which keeps a disabled pinned key's
+    binding without serving the key.
     """
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
@@ -2884,6 +2945,7 @@ async def _prepare_route_update(
         op_store,
         key_provider=target.key_provider,
         api_key_id=api_key_id,
+        restoring=restoring,
     )
     provider_model_id = provider_model_id_override or _resolve_provider_model_id(
         model_id, upstream_provider, entries, current_adapter
@@ -2944,6 +3006,10 @@ async def _prepare_route_update(
     )
 
     adapter = _make_adapter(target.kind, cfg)
+    if restoring:
+        await _withhold_disabled_keys(
+            op_store, adapter, key_provider=target.key_provider, api_key_id=api_key_id
+        )
 
     return PreparedRouteUpdate(
         route=route,
@@ -6482,6 +6548,7 @@ async def _prepare_restored_route_edit(
             concurrency_limit_override=override_row.get("concurrency_limit"),
             deployment_type_override=override_row.get("deployment_type"),
             removed_entry=baseline_entry,
+            restoring=True,
         )
         # Checked before anything was built; this holds the line if the edit
         # resolves to another endpoint than that check saw.
@@ -6780,6 +6847,7 @@ async def apply_persisted_provider_route_candidates(
                     capabilities=_stored_capabilities(row),
                     strategy=strategy_overrides.get(model_id, "fixed"),
                     endpoint_id=row.get("endpoint_id"),
+                    restoring=True,
                 )
                 _install_provider_route_model(
                     services,
@@ -6833,6 +6901,7 @@ async def apply_persisted_provider_route_candidates(
                     capabilities=_stored_capabilities(row),
                     deployment_type=row.get("deployment_type") or "auto",
                     endpoint_id=row.get("endpoint_id"),
+                    restoring=True,
                 )
                 _install_route_candidate(services, candidate)
         except BaseException as exc:
@@ -6888,6 +6957,7 @@ async def apply_persisted_provider_route_configs(
                 quota_limit_override=row.get("quota_limit"),
                 concurrency_limit_override=row.get("concurrency_limit"),
                 deployment_type_override=row.get("deployment_type"),
+                restoring=True,
             )
             # Runtime routes are restored first, so one that holds the endpoint
             # this edit moves to keeps it: the edit is skipped (its row kept)

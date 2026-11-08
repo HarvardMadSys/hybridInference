@@ -337,7 +337,19 @@ async def admin_client(monkeypatch):
     op_store.delete_runtime_model_state = AsyncMock(return_value=True)
     op_store.get_provider_key_full = AsyncMock(return_value=None)
     op_store.list_provider_keys = AsyncMock(return_value=[])
-    op_store.list_provider_keys_full = AsyncMock(return_value=[])
+
+    async def list_provider_keys_full(provider, *, exclude_ids=None):
+        # The row a test resolves by id is an active key of its provider, as
+        # the table would list it; a test lists other active keys as before.
+        listed = list(op_store.list_provider_keys_full.return_value)
+        row = op_store.get_provider_key_full.return_value
+        if isinstance(row, tuple) and row[0] == provider and row[1] not in listed:
+            listed.append(row[1])
+        return listed
+
+    op_store.list_provider_keys_full = AsyncMock(
+        return_value=[], side_effect=list_provider_keys_full
+    )
     op_store.list_disabled_provider_env_key_hashes = AsyncMock(return_value=set())
     op_store.get_user_by_id = AsyncMock(return_value=None)
     op_store.create_audit_log = AsyncMock()

@@ -482,14 +482,19 @@ def is_active_env_static_key(provider: str, key: str) -> bool:
 
     Used to avoid evicting a raw value from the pool when disabling a DB row
     that happens to share its value with a (non-disabled) env-sourced key.
+    Judged by each adapter's recorded key sources: a runtime route pinned to a
+    DB key carries it in its config too, and counting that as an env copy kept
+    a disabled or deleted key in the route's pool.
     """
     with _lock:
         if env_key_hash(key) in _disabled_env_key_hashes.get(provider, set()):
             return False
-        return any(
-            key in _gather_static_keys(adapter)
-            for adapter in _adapters_by_provider.get(provider, [])
-        )
+        sources = _adapter_key_sources.get(provider, {})
+        for adapter in _adapters_by_provider.get(provider, []):
+            owned = sources.get(id(adapter))
+            if key in (owned.env if owned is not None else _gather_static_keys(adapter)):
+                return True
+        return False
 
 
 def env_key_hash(key: str) -> str:
