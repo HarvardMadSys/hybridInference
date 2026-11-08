@@ -4,14 +4,17 @@ This module provides:
 - ``ProviderProfile``: time-windowed latency and error tracking per endpoint
   with empirical CDF computation (errors count as missed deadlines).
 
-Every summary except the threshold-dependent CDF is answered from running
-aggregates rather than a scan of the window. ``_latency_estimate`` asks each
-candidate endpoint for its mean on every routing decision, so a scan there
-costs ``O(candidates * window samples)`` per request.
+Every summary is answered from state kept as outcomes enter and leave the
+window rather than from a scan of it. ``_latency_estimate`` asks each candidate
+endpoint for its mean on every routing decision, and the hedge planner asks for
+CDF values at every checkpoint of every slow request, on the event loop and
+under the router's commit lock: a scan there costs ``O(window samples)`` per
+question, with up to 5000 samples per endpoint.
 """
 
 from __future__ import annotations
 
+import bisect
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -47,10 +50,16 @@ class ProviderProfile:
     _success_sum_ms: float = field(default=0.0, init=False, repr=False)
     _untimed_success_count: int = field(default=0, init=False, repr=False)
     _error_count: int = field(default=0, init=False, repr=False)
+    # The timed successes' TTFTs, in seconds and sorted, so the CDF's count of
+    # samples within a threshold is a bisection. Kept in the unit the CDF
+    # compares in, computed by the same division, so the answer is exactly the
+    # scan's: ``ttft_ms / 1000.0 <= threshold_sec``.
+    _sorted_ttft_sec: list[float] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.max_samples = max(int(self.max_samples), 1)
         self._events = deque(maxlen=self.max_samples)
+        self._sorted_ttft_sec = []
 
     def _add_to_aggregates(self, event: tuple[float, float, str | None]) -> None:
         _ts, ttft_ms, error_type = event
@@ -59,6 +68,7 @@ class ProviderProfile:
         elif ttft_ms > 0:
             self._success_count += 1
             self._success_sum_ms += ttft_ms
+            bisect.insort(self._sorted_ttft_sec, ttft_ms / 1000.0)
         else:
             self._untimed_success_count += 1
 
@@ -69,6 +79,12 @@ class ProviderProfile:
         elif ttft_ms > 0:
             self._success_count -= 1
             self._success_sum_ms -= ttft_ms
+            sorted_ttft = self._sorted_ttft_sec
+            # Equal values are interchangeable, so removing the first one is
+            # removing this one.
+            index = bisect.bisect_left(sorted_ttft, ttft_ms / 1000.0)
+            if index < len(sorted_ttft):
+                del sorted_ttft[index]
         else:
             self._untimed_success_count -= 1
         # Re-anchor on empty so repeated add/subtract cycles cannot accumulate
@@ -76,6 +92,7 @@ class ProviderProfile:
         if self._success_count <= 0:
             self._success_count = 0
             self._success_sum_ms = 0.0
+            self._sorted_ttft_sec.clear()
 
     def record(
         self,
@@ -122,13 +139,7 @@ class ProviderProfile:
         if success_count == 0:
             return 0.0
         error_count = self._error_count
-        # Only the share below the threshold depends on the threshold, so this
-        # is the one summary that still has to look at the samples themselves.
-        success_within = sum(
-            1
-            for _ts, ttft_ms, error_type in self._events
-            if error_type is None and ttft_ms > 0 and ttft_ms / 1000.0 <= threshold_sec
-        )
+        success_within = bisect.bisect_right(self._sorted_ttft_sec, threshold_sec)
 
         # Only timed successes describe the latency distribution, so only they
         # are F_success's denominator. Every outcome -- untimed successes too --

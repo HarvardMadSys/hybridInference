@@ -43,7 +43,7 @@ from llm_routewise.core import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection, Iterable, Mapping
+    from collections.abc import AsyncIterator, Callable, Collection, Iterable, Mapping
 
     from routing.protocols import RoutingRequestOptions
     from routing.route_table import RouteTableView
@@ -70,7 +70,7 @@ from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
-from serving.utils.tokens import estimate_prompt_tokens, run_tokenization
+from serving.utils.tokens import estimate_prompt_tokens_bounded, run_tokenization
 from serving.utils.workers import configured_worker_count
 
 from .candidates import (
@@ -414,6 +414,23 @@ _ATTEMPT_TTFT_MS_KEY = "attempt_ttft_ms"
 _ATTEMPT_COMPLETED_KEY = "attempt_completed"
 
 
+def _memoized_cdf_ms(profile: ProviderProfile, now: float) -> Callable[[float], float]:
+    """Return ``profile``'s CDF in milliseconds at ``now``, remembering each value asked for.
+
+    The hedge math asks a primary for the same two or three values once per
+    backup candidate at every checkpoint; this answers each one once.
+    """
+    cache: dict[float, float] = {}
+
+    def cdf_ms(value_ms: float) -> float:
+        value = cache.get(value_ms)
+        if value is None:
+            value = cache[value_ms] = profile.cdf_at(value_ms / 1000.0, now)
+        return value
+
+    return cdf_ms
+
+
 def _first_content_ms(adapter: Any, attempt_started: float) -> float:
     """Return a serving attempt's time to first content, in milliseconds.
 
@@ -481,6 +498,9 @@ def _failure_is_endpoint_evidence(obs: RoutingObservation) -> bool:
 
 # Where a request's prefix-cache blocks are kept in its routing context.
 _PREFIX_BLOCKS_KEY = "prefix_cache_blocks"
+# Where a request's prompt-token estimate is kept in its routing context, with
+# the messages it was taken from.
+_PROMPT_TOKENS_KEY = "prompt_tokens_estimate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1543,7 +1563,19 @@ class RouteWiseRouter:
             tokens = 0
         if tokens > 0:
             return tokens
-        return estimate_prompt_tokens(context.get("messages") or [])
+        # Every solve of the request asks -- the first decision and each
+        # re-solve -- on the event loop under the commit lock, and the prompt is
+        # caller-sized: an exact count tokenized all of it every time (a
+        # quarter of a second at 1 MiB, seconds at 30 MiB). The bounded estimate
+        # is exact up to INLINE_ESTIMATE_MAX_CHARS of text and a close sample
+        # beyond it, and it is taken once per request.
+        messages = context.get("messages")
+        memo = context.get(_PROMPT_TOKENS_KEY)
+        if isinstance(memo, tuple) and memo[0] is messages:
+            return memo[1]
+        estimate = estimate_prompt_tokens_bounded(messages or [])
+        context[_PROMPT_TOKENS_KEY] = (messages, estimate)
+        return estimate
 
     def _predict_output(
         self,
@@ -2287,6 +2319,9 @@ class RouteWiseRouter:
             for candidate in candidates
             if candidate.endpoint_id not in decision.trace.excluded_endpoint_ids
         ]
+        # One read of the primary's CDF per value for this checkpoint: every
+        # backup candidate, and the look ahead below, ask for the same ones.
+        primary_cdf_ms = _memoized_cdf_ms(primary_profile, checkpoint_ts)
         current = self._select_hedge_candidate_at_elapsed(
             primary_profile=primary_profile,
             candidates=candidates,
@@ -2294,6 +2329,7 @@ class RouteWiseRouter:
             now=checkpoint_ts,
             elapsed_sec=elapsed_sec,
             latency_slo_sec=latency_slo_sec,
+            primary_cdf_ms=primary_cdf_ms,
         )
         if current is None:
             return None
@@ -2303,6 +2339,17 @@ class RouteWiseRouter:
         )
         # Primary failure asks for an immediate backup at an arbitrary elapsed
         # time; only scheduled checkpoints should defer to a later checkpoint.
+        #
+        # Deferring means "a later checkpoint could still hedge", and only the
+        # next checkpoint needs asking. For one snapshot of the profiles, a
+        # candidate's combined success probability never rises with elapsed
+        # time: it is ``1 - p_violate(t) * (1 - B(slo - t))``, where
+        # ``p_violate(t) = (1 - F(slo)) / (1 - F(t))`` grows as the primary's CDF
+        # F does and the backup's ``B(slo - t)`` shrinks as its time runs out.
+        # A candidate feasible at any later checkpoint is therefore feasible at
+        # the next one, so the full scan this replaced -- every later checkpoint
+        # times every candidate, on the event loop under the commit lock --
+        # decided exactly the same thing.
         if scheduled_checkpoint:
             for future_elapsed in checkpoints_sec:
                 if future_elapsed <= elapsed_sec + 1e-9:
@@ -2314,9 +2361,11 @@ class RouteWiseRouter:
                     now=checkpoint_ts,
                     elapsed_sec=future_elapsed,
                     latency_slo_sec=latency_slo_sec,
+                    primary_cdf_ms=primary_cdf_ms,
                 )
                 if future is not None:
                     return None
+                break
 
         backup = current.provider
         # Only now, at the one exit that actually hands out a second adapter:
@@ -2359,7 +2408,10 @@ class RouteWiseRouter:
         now: float,
         elapsed_sec: float,
         latency_slo_sec: float,
+        primary_cdf_ms: Callable[[float], float] | None = None,
     ) -> BackupCandidate[FeasibleProviderCandidate] | None:
+        if primary_cdf_ms is None:
+            primary_cdf_ms = _memoized_cdf_ms(primary_profile, now)
         backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
         for candidate in candidates:
             if candidate.endpoint_id == selected.endpoint_id:
@@ -2368,7 +2420,7 @@ class RouteWiseRouter:
             if profile is None:
                 continue
             success_probability = combined_success_probability(
-                lambda value_ms: primary_profile.cdf_at(value_ms / 1000.0, now),
+                primary_cdf_ms,
                 lambda value_ms, backup_profile=profile: backup_profile.cdf_at(
                     value_ms / 1000.0,
                     now,
