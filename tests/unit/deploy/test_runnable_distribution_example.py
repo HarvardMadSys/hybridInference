@@ -800,6 +800,53 @@ def test_demo_make_contract_uses_the_third_layer_without_down_or_forced_build(
     assert f'--expect-existing-state "{state_file}"' in resumed_smoke
 
 
+def test_the_restore_drill_runs_the_rollback_code_path(tmp_path: Path) -> None:
+    """CI's restore drill must exercise what `make rollback` does, not a side door.
+
+    It used to start the previous image through the digest overlay with
+    drill-only variables, so a rollback losing the older image's configuration
+    selectors -- through the overlay `make rollback` uses -- passed CI.
+    """
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "distributions" / "example" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE / "deploy" / "backend.env", deploy / "backend.env")
+    shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    shutil.copy2(DEMO_COMPOSE, deploy / "docker-compose.demo.yml")
+    shutil.copy2(EXAMPLE / "EXAMPLE_OVERLAY", deploy.parent / "EXAMPLE_OVERLAY")
+    shutil.copy2(FULL_SMOKE, deploy.parent / "full_smoke.py")
+
+    output = _make_dry_run(
+        "demo-previous",
+        "DISTRIBUTION=example",
+        "PREVIOUS_BACKEND_IMAGE=ghcr.io/example/backend:dev-previous",
+        cwd=sandbox,
+    )
+    selectors = (
+        "DISTRIBUTION_CONFIG_PATH=/app/distributions/example/distribution.demo.json "
+        "DISTRIBUTION_CONFIG_MODE=active docker compose"
+    )
+    state = ".ops/example/restore-drill"
+    (record,) = [line for line in output.splitlines() if "previous.json" in line]
+    assert f'> "{state}/previous.json"' in record
+    (rollback,) = [line for line in output.splitlines() if "gateway_ops rollback" in line]
+    assert f'--state "{state}"' in rollback
+    assert '--base-url "http://localhost:13001"' in rollback
+    assert f"--compose env COMPOSE_PROFILES= {selectors}" in rollback
+    assert "-f distributions/example/deploy/docker-compose.demo.yml" in rollback
+    (smoke,) = [line for line in output.splitlines() if "full_smoke.py" in line]
+    assert f"--recreate-command env COMPOSE_PROFILES= {selectors}" in smoke
+    assert (
+        f"-f deploy/docker/docker-compose.artifacts.yml --env-file {state}/images.env "
+        "up -d --no-deps --no-build --force-recreate --wait backend"
+    ) in smoke
+    assert "digest-backend" not in output
+    assert "ROLLBACK_" not in output
+    assert output.index("previous.json") < output.index("gateway_ops rollback")
+    assert output.index("gateway_ops rollback") < output.index("full_smoke.py")
+
+
 def test_demo_lifecycle_is_declared_by_artifacts_not_a_known_distribution_name(
     tmp_path: Path,
 ) -> None:

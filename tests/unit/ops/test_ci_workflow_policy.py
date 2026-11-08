@@ -480,6 +480,14 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
         < stage3.index("make demo DISTRIBUTION=example")
         < stage3.index("make demo-smoke DISTRIBUTION=example")
     )
+    restore_drill = by_name["Restore the previous backend on the migrated database"]["run"]
+    assert "make demo-previous DISTRIBUTION=example" in restore_drill
+    # The drill rolls back as `make rollback` does: to the recorded image's ID.
+    assert "docker container inspect --format '{{.Image}}'" in restore_drill
+    assert "docker image inspect --format '{{.Id}}' \"${image}\"" in restore_drill
+    assert restore_drill.index("make demo-previous DISTRIBUTION=example") < restore_drill.index(
+        "make demo DISTRIBUTION=example"
+    )
     assert "make demo-down DISTRIBUTION=example" in resume_smoke
     assert resume_smoke.index("tutorial-provider.log") < resume_smoke.index(
         "make demo-down DISTRIBUTION=example"

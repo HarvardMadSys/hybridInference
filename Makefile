@@ -451,21 +451,31 @@ demo-smoke: _require-demo  ## Verify the full demo through its frontend origin
 	@test -f "$(DEMO_SMOKE_SCRIPT)" || (echo "No full smoke script for DISTRIBUTION=$(DISTRIBUTION)"; exit 1)
 	$(SMOKE_PYTHON) "$(DEMO_SMOKE_SCRIPT)" --base-url "$(DEMO_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)" $(DEMO_SMOKE_STATE_ARG) $(DEMO_SMOKE_EXPECT_STATE_ARG) --recreate-command $(DEMO_COMPOSE) up -d --no-deps --force-recreate --wait backend
 
-# The restore drill: a failed deploy brings back the image that ran before it,
-# on the schema the new image has just migrated. Start PREVIOUS_BACKEND_IMAGE
-# that way, without its migrations, and run the full smoke against it, its
-# recreate included. `make demo` returns to the current image.
+# The restore drill, through the code `make rollback` runs. A failed deploy
+# brings back the images that ran before it, on the schema the new image has
+# just migrated, without running their migrations. Record
+# PREVIOUS_BACKEND_IMAGE, with the console that is running, as the release to
+# return to, in a record of the drill's own; gateway_ops then starts it as
+# `make rollback` does, through the pinned-artifact overlay and the base
+# file's pass-throughs, and runs the deploy acceptance on it. The full smoke
+# follows, its recreate included. The deployment's own record is never
+# touched, so `make demo` afterwards returns to the current image.
 #
 # An image from before the database-backed configuration reads its public site
 # identity from the manifest its deployment still names, as a deployment keeps
 # doing for its rollback window. The shell outranks every env file, and the
 # base Compose file passes the selectors on.
-DEMO_PREVIOUS_SELECTORS := DISTRIBUTION_CONFIG_PATH=/app/$(DISTRIBUTION_PATH)/distribution.demo.json DISTRIBUTION_CONFIG_MODE=active
-DEMO_PREVIOUS_COMPOSE = env COMPOSE_PROFILES= $(DEMO_PREVIOUS_SELECTORS) BACKEND_IMAGE="$(PREVIOUS_BACKEND_IMAGE)" docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) -f deploy/docker/docker-compose.digest-backend.yml $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
-demo-previous: _require-demo  ## Restore drill: PREVIOUS_BACKEND_IMAGE on the migrated demo database, smoked
+DEMO_DRILL_STATE := $(OPS_STATE)/restore-drill
+DEMO_PREVIOUS_COMPOSE := env COMPOSE_PROFILES= DISTRIBUTION_CONFIG_PATH=/app/$(DISTRIBUTION_PATH)/distribution.demo.json DISTRIBUTION_CONFIG_MODE=active docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+DEMO_PREVIOUS_PINNED := $(DEMO_PREVIOUS_COMPOSE) -f deploy/docker/docker-compose.artifacts.yml --env-file $(DEMO_DRILL_STATE)/images.env
+demo-previous: _require-demo  ## Restore drill: roll back to PREVIOUS_BACKEND_IMAGE on the migrated demo database, smoked
 	@test -n "$(PREVIOUS_BACKEND_IMAGE)" || (echo "Set PREVIOUS_BACKEND_IMAGE to the image to restore"; exit 1)
-	$(DEMO_PREVIOUS_COMPOSE) up -d --no-deps --no-build --force-recreate --wait backend
-	$(SMOKE_PYTHON) "$(DEMO_SMOKE_SCRIPT)" --base-url "$(DEMO_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)" $(DEMO_SMOKE_EXPECT_STATE_ARG) --recreate-command $(DEMO_PREVIOUS_COMPOSE) up -d --no-deps --no-build --force-recreate --wait backend
+	mkdir -p -m 700 "$(DEMO_DRILL_STATE)"
+	backend="$$(docker image inspect --format '{{.Id}}' "$(PREVIOUS_BACKEND_IMAGE)")" && \
+	frontend="$$(docker container inspect --format '{{.Image}}' "$$($(DEMO_COMPOSE) ps -q frontend)")" && \
+	printf '{"backend": "%s", "frontend": "%s"}\n' "$$backend" "$$frontend" > "$(DEMO_DRILL_STATE)/previous.json"
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops rollback --state "$(DEMO_DRILL_STATE)" --base-url "$(DEMO_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)" --compose $(DEMO_PREVIOUS_COMPOSE)
+	$(SMOKE_PYTHON) "$(DEMO_SMOKE_SCRIPT)" --base-url "$(DEMO_BASE_URL)" --timeout "$(SMOKE_TIMEOUT)" $(DEMO_SMOKE_EXPECT_STATE_ARG) --recreate-command $(DEMO_PREVIOUS_PINNED) up -d --no-deps --no-build --force-recreate --wait backend
 
 demo-down: _require-demo  ## Stop the full demo while preserving its database
 	$(DEMO_COMPOSE) down

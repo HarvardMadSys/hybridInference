@@ -1227,6 +1227,10 @@ jobs:
         # this image has just migrated, and without running that image's
         # migrations. The previous dev candidate must start there and keep
         # serving the accounts, keys and requests the smoke above created.
+        # `make demo-previous` starts it through `make rollback`'s own code:
+        # the pinned-artifact overlay, the base file's pass-through of the
+        # configuration selectors an older image reads, and the deploy
+        # acceptance.
         env:
           PREVIOUS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           GHCR_TOKEN: ${{ github.token }}
@@ -1264,7 +1268,9 @@ jobs:
             DEMO_SMOKE_EXPECT_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \
             DEMO_BASE_URL="http://localhost:${port}" \
             make demo-previous DISTRIBUTION=example
-          test "$(docker container inspect --format '{{.Config.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")" = "${image}"
+          # A rollback starts the recorded image by its ID.
+          test "$(docker container inspect --format '{{.Image}}' "${EXAMPLE_BACKEND_CONTAINER_NAME}")" = \
+            "$(docker image inspect --format '{{.Id}}' "${image}")"
           # Back to this image: its migration finds the database at its head.
           make demo DISTRIBUTION=example
           DEMO_SMOKE_EXPECT_STATE_FILE="${EXAMPLE_RESET_STATE_FILE}" \
