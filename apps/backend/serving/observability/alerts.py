@@ -40,7 +40,7 @@ from serving.observability.alert_transitions import (
 )
 from serving.observability.alert_types import alert_type_of
 from serving.utils import context as req_ctx
-from serving.utils.secret_urls import UrlRedaction, posting_to
+from serving.utils.secret_urls import UrlRedaction, posting_to, scrub
 
 log = logging.getLogger(__name__)
 
@@ -407,6 +407,35 @@ def _format_message(
     if info["base_url"]:
         lines.append(f"• {bold('Base URL:')} {info['base_url']}")
     return "\n".join(lines)
+
+
+def redact_webhook_urls(text: str) -> str:
+    """Scrub every configured alert webhook URL out of ``text``, for a log line.
+
+    A webhook URL is the credential itself, and an exception raised around a
+    post can quote it: an HTTP client's error names the request URL (an
+    aiohttp ``ClientResponseError`` does in its repr). :func:`_post_json`
+    scrubs the URL it holds from its own lines. This is for a line rendered
+    further away -- a post that raised past the sender, a shutdown flush -- and
+    scrubs each webhook the ``alerts.runtime`` group configures, in every
+    spelling :func:`serving.utils.secret_urls.url_redaction` knows, leaving the
+    host and a fingerprint.
+    """
+    try:
+        config = alert_runtime.current()
+        urls = {
+            config.slack_alerts_webhook_url.strip(),
+            config.slack_webhook_url.strip(),
+            config.wecom_alerts_webhook_url.strip(),
+        }
+    except Exception:
+        # Nothing to match against: say nothing rather than risk the secret.
+        return "[withheld: the alert channel configuration could not be read]"
+    # Longest first, so a URL that extends another is not cut by the shorter one.
+    for url in sorted(urls, key=len, reverse=True):
+        if url:
+            text = scrub(text, url)
+    return text
 
 
 async def _post_json(
@@ -929,7 +958,12 @@ async def alert_slack(
         sent = outcome.accepted
         return sent
     except Exception:
-        log.exception("alert_slack post raised; suppressing")
+        # Rendered and scrubbed rather than handed to ``log.exception``: an
+        # exception a sink raised can quote the webhook it was posting to.
+        log.error(
+            "alert_slack post raised; suppressing\n%s",
+            redact_webhook_urls(traceback.format_exc()),
+        )
         return False
     finally:
         async with _DEDUPE_LOCK:

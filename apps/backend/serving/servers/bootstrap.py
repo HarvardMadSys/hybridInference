@@ -50,7 +50,7 @@ from serving.extensions import load_backend_extensions
 from serving.http import AsyncHTTPClient
 from serving.observability import alert_runtime
 from serving.observability.alert_history import runtime as alert_history_runtime
-from serving.observability.alerts import flush_settling
+from serving.observability.alerts import flush_settling, redact_webhook_urls
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
     RouteWiseRouter,
@@ -2170,7 +2170,12 @@ async def shutdown(services: AppServices) -> None:
     try:
         await asyncio.wait_for(flush_settling(), timeout=_SETTLE_FLUSH_BUDGET_SEC)
     except Exception as exc:
-        logger.warning(f"Settling circuit recoveries were not all announced: {exc!r}")
+        # Scrubbed: an exception raised by a post can quote its webhook URL,
+        # which is the credential (an aiohttp ClientResponseError's repr does).
+        logger.warning(
+            "Settling circuit recoveries were not all announced: %s",
+            redact_webhook_urls(_describe_exc(exc)),
+        )
 
     # Alert history last among the alert producers' dependents: every producer
     # above has stopped, so it waits for sends still in flight, writes its open
