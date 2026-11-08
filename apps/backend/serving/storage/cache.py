@@ -613,6 +613,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_account_budgets(user_id)
 
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_personal_org_status(user_id)
+
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
     ) -> tuple[Row, Row] | None:

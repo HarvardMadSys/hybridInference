@@ -519,10 +519,9 @@ async def _slot_for_canonical(
 
 
 def scope_concurrency_limits(user: dict[str, Any]) -> list[tuple[str, str, int]]:
-    """Return shared key, project and organization slots with explicit caps."""
+    """Return the shared project and organization slots with explicit caps."""
     limits = []
     for scope, scope_id in (
-        ("key", user.get("api_key_id")),
         ("project", user.get("project_id")),
         ("org", user.get("org_id")),
     ):
@@ -530,6 +529,21 @@ def scope_concurrency_limits(user: dict[str, Any]) -> list[tuple[str, str, int]]
         if scope_id is not None and capacity is not None:
             limits.append((scope, f"scope:{scope}:{scope_id}", int(capacity)))
     return limits
+
+
+def _rejection_prompt(request: Request) -> list[dict[str, Any]] | str:
+    """The cached request body's prompt for the rejection log, or empty.
+
+    Never reads the body: forcing the server to await the full body of a
+    request it is rejecting would be a slowloris/DoS foothold.
+    """
+    cached_json = getattr(request, "_json", None)
+    if cached_json is None:
+        return ""
+    try:
+        return extract_prompt_from_body(cached_json)
+    except Exception:
+        return ""
 
 
 async def enforce_user_concurrency(
@@ -633,19 +647,6 @@ async def enforce_user_concurrency(
                 "route": request.url.path,
             },
         )
-        # Best-effort prompt capture for the rejection log. Only read the body
-        # if it was already parsed and cached (Starlette stores it on
-        # ``request._json`` after ``await request.json()`` — which the exemption
-        # check above does for POSTs with a resolver/router). Never trigger a
-        # fresh body read here: forcing the server to await the full body of a
-        # request it is rejecting would be a slowloris/DoS foothold.
-        rejected_prompt: list[dict[str, Any]] | str = ""
-        cached_json = getattr(request, "_json", None)
-        if cached_json is not None:
-            try:
-                rejected_prompt = extract_prompt_from_body(cached_json)
-            except Exception:
-                rejected_prompt = ""
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
@@ -653,7 +654,7 @@ async def enforce_user_concurrency(
                 error_code="concurrency_limit_exceeded",
                 reason=f"limit={limit} role={role_label}",
                 user=user,
-                prompt=rejected_prompt,
+                prompt=_rejection_prompt(request),
             )
         )
         raise HTTPException(
@@ -675,6 +676,16 @@ async def enforce_user_concurrency(
         for scope, scoped_key, capacity in scope_concurrency_limits(user):
             granted, limit, _ = await limiter.try_acquire(scoped_key, role, is_admin, capacity)
             if not granted:
+                asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+                    log_rejection(
+                        request=request,
+                        status_code=429,
+                        error_code="concurrency_limit_exceeded",
+                        reason=f"scope={scope} limit={limit}",
+                        user=user,
+                        prompt=_rejection_prompt(request),
+                    )
+                )
                 raise HTTPException(
                     status_code=429,
                     detail={

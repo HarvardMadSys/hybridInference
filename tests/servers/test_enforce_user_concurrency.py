@@ -775,7 +775,7 @@ async def test_a_caller_at_its_intake_budget_is_refused_before_another_body_is_r
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["key", "project", "org"])
+@pytest.mark.parametrize("scope", ["project", "org"])
 async def test_scope_cap_rejects_and_releases_other_slots(scope):
     user = {
         "user_id": "u-scope",
@@ -787,7 +787,7 @@ async def test_scope_cap_rejects_and_releases_other_slots(scope):
     }
     limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _make_app(user, limiter)
-    scoped_id = {"key": 7, "project": "proj_test", "org": "org_test"}[scope]
+    scoped_id = {"project": "proj_test", "org": "org_test"}[scope]
     scoped_key = f"scope:{scope}:{scoped_id}"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         pending = asyncio.create_task(client.get("/probe"))

@@ -1031,10 +1031,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             org_id = personal_org_id(user_id)
             await conn.execute(
                 "DELETE FROM spend_counters WHERE scope_id = $1 "
-                "OR scope_id IN (SELECT id FROM projects WHERE org_id = $1) "
-                "OR scope_id IN (SELECT 'key:' || id::text FROM api_keys WHERE user_id = $2)",
+                "OR scope_id IN (SELECT id FROM projects WHERE org_id = $1)",
                 org_id,
-                user_id,
             )
             await conn.execute("DELETE FROM organizations WHERE id = $1", org_id)
 
@@ -1856,6 +1854,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             await _sync_account_quota(
                 conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
             )
+            # Without inheritance the given quota is the account's; the
+            # organization ceiling is what the gate enforces, so write it too.
+            if not inherit_account_quota:
+                await conn.execute(
+                    "UPDATE organizations SET budget_daily_usd = $2, budget_monthly_usd = $3 "
+                    "WHERE id = $1",
+                    org,
+                    daily,
+                    monthly,
+                )
         return dict(row)
 
     async def count_active_keys(self, user_id: str) -> int:
@@ -2043,7 +2051,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         return _parse_command_tag_count(revoked)
 
     async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
-        """Update the organization's ceilings and status."""
+        """Update the organization's ceilings and status.
+
+        A personal organization's budget is the account's quota: its unrevoked
+        keys are given it too, so the console's key columns and the enforced
+        ceiling cannot diverge.
+        """
         allowed = {
             "name",
             "status",
@@ -2060,13 +2073,30 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             assignments.append(f"{name} = ${len(values)}::{_COLUMN_CASTS[name]}")
         if not assignments:
             return None
-        async with self._pool.acquire() as conn:
+        from serving.storage.project_backfill import personal_org_user_id
+
+        user_id = personal_org_user_id(org_id)
+        async with self._pool.acquire() as conn, conn.transaction():
+            if user_id is not None:
+                await _lock_account_keys(conn, user_id)
             row = await conn.fetchrow(
                 f"UPDATE organizations SET {', '.join(assignments)} "
                 f"WHERE id = ${len(values) + 1}::text RETURNING *",
                 *values,
                 org_id,
             )
+            if row is not None and row["kind"] == "personal" and user_id is not None:
+                for key, column in (
+                    ("budget_daily_usd", "quota_daily_cost_usd"),
+                    ("budget_monthly_usd", "quota_monthly_cost_usd"),
+                ):
+                    if key in changes:
+                        await conn.execute(
+                            f"UPDATE api_keys SET {column} = $1 "
+                            "WHERE user_id = $2 AND status <> 'revoked'",
+                            changes[key],
+                            user_id,
+                        )
         return dict(row) if row else None
 
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
@@ -2098,6 +2128,15 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             quota.resolve_quota(daily),
             None if monthly is None else float(monthly),
         )
+
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Return the status of the account's personal organization, or None."""
+        from serving.storage.project_backfill import personal_org_id
+
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT status FROM organizations WHERE id = $1", personal_org_id(user_id)
+            )
 
     async def count_project_keys(self, project_id: str) -> int:
         """Count active keys attached to a project."""

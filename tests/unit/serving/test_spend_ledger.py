@@ -270,7 +270,7 @@ async def test_another_days_cost_counts_for_the_month_only(monkeypatch):
     ledger = SpendLedger(_AtomicStore())
     day = utc_day()
     other_day = day[:8] + ("02" if day[8:] != "02" else "03")
-    ledger._unconfirmed["u1"] = {(None, other_day): spend_ledger._Unconfirmed(0.5, 1)}
+    ledger._unconfirmed["u1"] = {(None, other_day, None): spend_ledger._Unconfirmed(0.5, 1)}
 
     assert _check(ledger, account_quota_usd=0.1).refusal() is None
     month = _check(ledger, account_quota_usd=10.0, account_quota_monthly_usd=0.1)
@@ -546,7 +546,7 @@ async def test_an_unexplained_batch_failure_still_lets_the_others_through():
         f"user-{index}" for index in range(10)
     }
     # Not refused for its values, as far as anyone can tell: kept for a retry.
-    assert list(ledger._pending) == [("odd", None, utc_day())]
+    assert list(ledger._pending) == [("odd", None, utc_day(), None)]
     assert ledger._refused == []
 
 
@@ -558,8 +558,8 @@ async def test_a_cost_beyond_any_real_request_is_recorded_as_the_ceiling(caplog,
 
     ceiling = spend_ledger.MAX_REQUEST_COST_USD
     day = utc_day()
-    assert ledger._pending[("u1", None, day)].cost == ceiling
-    assert ledger._pending[("u2", None, day)].counted == counted_amount(ceiling)
+    assert ledger._pending[("u1", None, day, None)].cost == ceiling
+    assert ledger._pending[("u2", None, day, None)].counted == counted_amount(ceiling)
     assert [
         r.user_id
         for r in caplog.records
@@ -629,6 +629,25 @@ async def test_project_cost_keeps_attribution_through_the_coalesced_writer():
     increment = store.batches[0][0]
     assert (increment.org_id, increment.project_id) == ("org_shared", "proj_shared")
     assert check.refusal().scope == "project"
+
+
+async def test_keyless_cost_records_keep_their_own_project():
+    from serving.utils import context as req_ctx
+
+    store = _AtomicStore()
+    ledger = SpendLedger(store)
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_a", req_ctx.ORG_ID: "org_shared"})
+    ledger.record("u1", 0.02)
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_b"})
+    ledger.record("u1", 0.03)
+    req_ctx.reset_request_scope()
+
+    assert await ledger.flush()
+    increments = [increment for batch in store.batches for increment in batch]
+    assert {(increment.project_id, float(increment.cost_usd)) for increment in increments} == {
+        ("proj_a", 0.02),
+        ("proj_b", 0.03),
+    }
 
 
 async def test_project_headroom_caps_a_large_reservation():

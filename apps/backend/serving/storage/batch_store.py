@@ -2614,9 +2614,9 @@ class BatchStore:
     ) -> int:
         """Hold a user's validating and in-progress batches back from claims until *until*.
 
-        ``reason`` (``quota``, ``monthly_quota``, ``role``, ``key_budget``,
-        ``project_budget`` or ``account_budget``) is what the console shows. With
-        ``key_hash``, only the batches created with that API key.
+        ``reason`` (``quota``, ``monthly_quota``, ``role``, ``key_budget`` or
+        ``project_budget``) is what the console shows. With ``key_hash``, only the
+        batches created with that API key.
 
         Returns:
             The number of batches paused.

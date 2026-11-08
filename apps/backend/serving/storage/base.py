@@ -755,6 +755,10 @@ class OperationalStore(ABC):
         """Update an organization's ceilings or status; return the row."""
 
     @abstractmethod
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Return the status of the account's personal organization, or None."""
+
+    @abstractmethod
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Return ``(daily, monthly)`` ceilings for the account, monthly None when unset.
 

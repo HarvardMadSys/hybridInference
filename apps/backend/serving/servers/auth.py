@@ -888,6 +888,13 @@ async def _resolve_effective_identity(
             on_behalf_of,
         )
         return caller
+    if await op_store.get_personal_org_status(target["id"]) == "suspended":
+        logger.warning(
+            "X-On-Behalf-Of target %r belongs to a suspended organization; "
+            "attributing request to the service account",
+            on_behalf_of,
+        )
+        return caller
     # The end user's own quotas, daily and monthly, gate what is spent on their
     # behalf; their spend counters are keyed by user_id, so they meet the same
     # limits as their own key would.

@@ -375,3 +375,39 @@ async def test_coalesced_cost_write_attributes_project_and_honors_erasure(store,
         finally:
             async with store._pool.acquire() as conn:
                 await conn.execute("DELETE FROM erasure_fence WHERE account_digest = $1", digest)
+
+
+async def test_an_admin_key_quota_becomes_the_organization_ceiling(store):
+    await store.update_org(personal_org_id(_USER), {"budget_daily_usd": 10})
+
+    await store.create_key(
+        key_hash="h-projects-admin-quota",
+        key_prefix="hyi-adm",
+        user_id=_USER,
+        quota_daily_cost_usd=2,
+        quota_monthly_cost_usd=None,
+    )
+
+    key = await store.get_auth_context_with_spend("h-projects-admin-quota")
+    daily, monthly = await store.get_account_budgets(_USER)
+    assert key is not None
+    assert key["quota_daily_cost_usd"] == 2
+    assert (daily, monthly) == (2.0, None)
+
+
+async def test_an_organization_ceiling_edit_reaches_the_accounts_keys(store):
+    await store.create_key(
+        key_hash="h-projects-org-edit",
+        key_prefix="hyi-org",
+        user_id=_USER,
+        inherit_account_quota=True,
+    )
+
+    await store.update_org(personal_org_id(_USER), {"budget_daily_usd": 50})
+
+    key = await store.get_active_key_by_account(_USER)
+    auth = await store.get_auth_context_with_spend("h-projects-org-edit")
+    daily, _ = await store.get_account_budgets(_USER)
+    assert key is not None and key["quota_daily_cost_usd"] == 50
+    assert auth is not None and auth["quota_daily_cost_usd"] == 50
+    assert daily == 50.0

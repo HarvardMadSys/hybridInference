@@ -30,14 +30,15 @@ def personal_org_id(user_id: str) -> str:
     return f"org_p_{user_id}"
 
 
+def personal_org_user_id(org_id: str) -> str | None:
+    """Return the account a personal organization id belongs to, or None."""
+    prefix = "org_p_"
+    return org_id[len(prefix) :] if org_id.startswith(prefix) else None
+
+
 def default_project_id(user_id: str) -> str:
     """Return the deterministic id of the account's Default project."""
     return f"proj_d_{user_id}"
-
-
-def account_scope_id(user_id: str) -> str:
-    """Return the spend-counter scope id for an account's personal organization."""
-    return personal_org_id(user_id)
 
 
 async def ensure_personal_org(

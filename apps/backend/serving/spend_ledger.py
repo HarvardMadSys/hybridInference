@@ -98,7 +98,7 @@ _UNAVAILABLE_SQLSTATE_CLASSES = frozenset({"08", "40", "53", "57", "58"})
 #: store is taken to be failing rather than those entries.
 _MAX_FAILURES_BEFORE_ANY_WRITE = 3
 
-_Key = tuple[str, int | None, str]  # user id, API key id, UTC day
+_Key = tuple[str, int | None, str, str | None]  # user id, API key id, UTC day, project id
 
 
 def utc_day(now: datetime | None = None) -> str:
@@ -315,7 +315,7 @@ class SpendLedger:
         self._writing: dict[_Key, _Amount] = {}
         # Per user, everything recorded and not yet confirmed written: pending,
         # being written, written with an outcome nobody could tell, or refused.
-        self._unconfirmed: dict[str, dict[tuple[int | None, str], _Unconfirmed]] = {}
+        self._unconfirmed: dict[str, dict[tuple[int | None, str, str | None], _Unconfirmed]] = {}
         # Writes confirmed: (when, {user: [(key, day, cost), ...]}).
         self._landed: deque[
             tuple[float, dict[str, list[tuple[int | None, str, float, str | None]]]]
@@ -408,7 +408,7 @@ class SpendLedger:
                     if day == today:
                         totals[2] += cost
 
-        for (cost_key, day), amount in self._unconfirmed.get(user_id, {}).items():
+        for (cost_key, day, _project), amount in self._unconfirmed.get(user_id, {}).items():
             count(cost_key, day, amount.cost, amount.project_id)
         now = time.monotonic()
         self._forget_landed(now)
@@ -481,15 +481,15 @@ class SpendLedger:
             )
             cost_usd = MAX_REQUEST_COST_USD
         day = utc_day()
-        key: _Key = (user_id, api_key_id, day)
         context = req_ctx.get() or {}
         org_id = context.get(req_ctx.ORG_ID) or None
         project_id = context.get(req_ctx.PROJECT_ID) or None
+        key: _Key = (user_id, api_key_id, day, project_id)
         self._pending.setdefault(key, _Amount(org_id=org_id, project_id=project_id)).add(
             cost_usd, counted_amount(cost_usd), 1
         )
         unconfirmed = self._unconfirmed.setdefault(user_id, {}).setdefault(
-            (api_key_id, day), _Unconfirmed(project_id=project_id)
+            (api_key_id, day, project_id), _Unconfirmed(project_id=project_id)
         )
         unconfirmed.cost += cost_usd
         unconfirmed.requests += 1
@@ -573,15 +573,15 @@ class SpendLedger:
         self._forget_landed(now)
 
     def _unconfirm(self, key: _Key, amount: _Amount) -> None:
-        user_id, key_id, day = key
+        user_id, key_id, day, project_id = key
         per_user = self._unconfirmed.get(user_id)
-        entry = per_user.get((key_id, day)) if per_user else None
+        entry = per_user.get((key_id, day, project_id)) if per_user else None
         if per_user is None or entry is None:
             return
         entry.requests -= amount.requests
         entry.cost -= amount.cost
         if entry.requests <= 0:
-            del per_user[(key_id, day)]
+            del per_user[(key_id, day, project_id)]
             if not per_user:
                 del self._unconfirmed[user_id]
 

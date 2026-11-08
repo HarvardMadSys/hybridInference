@@ -21,7 +21,7 @@ async def scratch():
 
 
 async def test_the_previous_release_keeps_working_while_it_runs(scratch):
-    await mig.upgrade(scratch, "0002_api_key_limits")
+    await mig.upgrade(scratch, "0011_trim_oversized_preferences")
     async with mig.connected(scratch) as conn:
         await conn.execute(
             "INSERT INTO users (id, email, password_hash) VALUES ('u-old', 'old@x.test', 'h')"
