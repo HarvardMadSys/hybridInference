@@ -156,3 +156,39 @@ async def test_a_reset_or_a_removal_never_empties_the_rollback_catalog():
             assert yaml.safe_load(await legacy_body(conn)) == document
             await conn.execute("DELETE FROM app_config WHERE key='MODEL_CATALOG'")
             assert yaml.safe_load(await legacy_body(conn)) == document
+
+
+async def test_restoring_a_backup_from_before_the_upgrade_keeps_the_catalog(monkeypatch):
+    from serving.config import app_config
+    from serving.config.app_config_registry import static_entries
+    from serving.config.app_config_store import AppConfigStore
+    from serving.config.settings import get_settings
+
+    for entry in static_entries():
+        monkeypatch.delenv(entry.key, raising=False)
+    get_settings.cache_clear()
+    async with mig.scratch_database() as database:
+        secret = await upgraded_with_legacy_catalog(database)
+        async with mig.connected(database) as conn:
+            store = AppConfigStore(conn)
+            await app_config.load(store, bootstrap=False)
+            app_config.attach(store)
+            catalog = await conn.fetchval("SELECT value FROM app_config WHERE key='MODEL_CATALOG'")
+            # What a backup the previous release took holds: neither the catalog
+            # nor the credential lifted out of it.
+            backup = [
+                item
+                for item in await app_config.export_rows(include_secret_values=True)
+                if item["key"] not in ("MODEL_CATALOG", secret)
+            ]
+            backup.append({"key": "SITE_NAME", "value": "Restored", "source": "admin"})
+            await app_config.restore_rows(backup, updated_by="restore-test")
+            rows = {
+                record["key"]: record["value"]
+                for record in await conn.fetch("SELECT key, value FROM app_config")
+            }
+            assert rows["MODEL_CATALOG"] == catalog
+            assert rows[secret] == "legacy-key"
+            assert rows["SITE_NAME"] == "Restored"
+            # And the rollback's copy is the one the previous release stored.
+            assert await legacy_body(conn) == LEGACY

@@ -2395,6 +2395,21 @@ class _RestorePlan:
     target_resets: dict[str, ConfigRow]
     to_delete: frozenset[str]
     summary: RestoreSummary
+    #: Rows in force after the restore that it leaves exactly as they are.
+    untouched: frozenset[str] = frozenset()
+
+
+def _kept_unless_named(key: str) -> bool:
+    """Whether a restore keeps *key*'s stored row when the backup does not name it.
+
+    The application documents, and the ``CATALOG_SECRET_*`` credentials the
+    upgrade lifted out of the catalog: a backup taken before the upgrade has
+    neither, and restoring it must not delete the catalog. Removing one is an
+    administrator's explicit reset, never a side effect of a restore.
+    """
+    from serving.config.documents import KEY_KINDS
+
+    return key in KEY_KINDS or key.startswith("CATALOG_SECRET_")
 
 
 def _plan_restore(
@@ -2406,6 +2421,9 @@ def _plan_restore(
     updated_by: str,
 ) -> _RestorePlan:
     """Decide what restoring *items* over the stored rows writes, and check it.
+
+    An application document or a ``CATALOG_SECRET_*`` setting the backup does
+    not name is kept as it is (:func:`_kept_unless_named`).
 
     Raises:
         ConfigUpdateError: 400 for an invalid entry, or for a result that would
@@ -2523,8 +2541,16 @@ def _plan_restore(
         )
 
     # Never drop an already-settled immutable row or a generated secret that
-    # has no environment fallback when the backup omitted it.
+    # has no environment fallback when the backup omitted it, nor what a backup
+    # from before the application documents could not name (_kept_unless_named).
     all_entries = _build_entries(current_rows, current_resets)
+    untouched = frozenset(
+        key
+        for key in (*current_rows, *current_resets)
+        if key not in seen_keys and _kept_unless_named(key)
+    )
+    target_rows.update((key, current_rows[key]) for key in untouched if key in current_rows)
+    target_resets.update((key, current_resets[key]) for key in untouched if key in current_resets)
     for key, existing_row in current_rows.items():
         if key in target_rows or key in target_resets:
             continue
@@ -2576,6 +2602,7 @@ def _plan_restore(
             preserved_immutable=tuple(sorted(preserved_immutable)),
             not_restored=tuple(sorted(not_restored)),
         ),
+        untouched=untouched,
     )
 
 
@@ -2615,7 +2642,10 @@ async def restore_rows(
 
     A secret whose value the backup withholds (``value`` is ``None``) keeps the
     value this deployment has; with none here it stays unset, and the summary
-    names it in ``not_restored``.
+    names it in ``not_restored``. An application document or a
+    ``CATALOG_SECRET_*`` setting the backup does not name at all keeps its
+    stored row too: a backup taken before the upgrade that introduced them
+    names none of them.
 
     Args:
         items: Stored row dicts (``key``, ``value``, ``secret``, ``source``).
@@ -2653,10 +2683,14 @@ async def restore_rows(
             await check_plan(transaction, plan.summary)
         for key in sorted(plan.to_delete):
             await transaction.delete(key)
-        if plan.target_rows:
-            await transaction.write(list(plan.target_rows.values()))
+        # A row the restore keeps is not rewritten: rewriting the catalog would
+        # replace the previous release's copy of it (0014's mirror) as well.
+        written = [row for key, row in plan.target_rows.items() if key not in plan.untouched]
+        if written:
+            await transaction.write(written)
         for key, reset_row in sorted(plan.target_resets.items()):
-            await transaction.reset(key, secret=reset_row.secret, updated_by=updated_by)
+            if key not in plan.untouched:
+                await transaction.reset(key, secret=reset_row.secret, updated_by=updated_by)
 
         if before_commit is not None:
             await before_commit(transaction)

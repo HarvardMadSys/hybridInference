@@ -147,3 +147,35 @@ async def test_the_audit_log_still_records_a_valid_document():
         "old_value": VALID_CATALOG,
         "new_value": replacement,
     }
+
+
+# --- restoring a backup -------------------------------------------------------
+
+
+async def test_a_restore_keeps_the_documents_and_credentials_a_backup_predates():
+    store = await load(
+        [
+            row("MODEL_CATALOG", VALID_CATALOG),
+            row("CATALOG_SECRET_0123456789ABCDEF0123", "lifted-credential", secret=True),
+            row("ROUTING_POLICY", "", source="reset"),
+            row("SITE_NAME", "Before"),
+        ]
+    )
+    # Taken before the upgrade: it names no document and no lifted credential.
+    summary = await app_config.restore_rows(
+        [{"key": "SITE_NAME", "value": "After", "source": "admin"}], updated_by="restore"
+    )
+    assert store.rows["MODEL_CATALOG"].value == VALID_CATALOG
+    assert store.rows["CATALOG_SECRET_0123456789ABCDEF0123"].value == "lifted-credential"
+    assert store.rows["ROUTING_POLICY"].source == "reset"
+    assert store.rows["SITE_NAME"].value == "After"
+    assert summary.changed == ("SITE_NAME",)
+
+
+async def test_a_restore_still_replaces_a_document_the_backup_names():
+    store = await load([row("MODEL_CATALOG", VALID_CATALOG)])
+    replacement = json.dumps({"models": []})
+    await app_config.restore_rows(
+        [{"key": "MODEL_CATALOG", "value": replacement, "source": "admin"}], updated_by="restore"
+    )
+    assert store.rows["MODEL_CATALOG"].value == replacement
