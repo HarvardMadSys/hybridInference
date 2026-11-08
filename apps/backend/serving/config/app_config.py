@@ -2022,12 +2022,20 @@ async def update(
             pending.append(
                 ConfigRow(key, raw, secret=secret, source="admin", updated_by=updated_by)
             )
+            old_raw = _resolve(rows, key, entry)
+            # The audit log withholds what a backup withholds (_is_secret_row):
+            # a row marked secret, and a document its validator refuses, which
+            # can carry a credential inline (a hand-edited row, one stored
+            # before the validator existed, or the environment's in its place).
+            withheld = (
+                secret or (key in rows and rows[key].secret) or _invalid_document(entry, old_raw)
+            )
             changes.append(
                 ConfigChange(
                     key,
-                    secret,
-                    old_value=None if secret else _typed(entry, _resolve(rows, key, entry)),
-                    new_value=None if secret else _typed(entry, raw),
+                    withheld,
+                    old_value=None if withheld else _typed(entry, old_raw),
+                    new_value=None if withheld else _typed(entry, raw),
                     marked_secret=marked,
                 )
             )
@@ -2094,13 +2102,16 @@ async def delete(
 
     async def body(transaction: AppConfigStore) -> ConfigChange:
         rows, resets = await _read(transaction)
+        entries = _build_entries(rows, resets)
         if registry.is_retired(key):
             # Nothing reads it any more; only an administrator removes what an
             # earlier version stored.
             row, reset = rows.get(key), resets.get(key)
             if row is None and reset is None:
                 raise ConfigUpdateError(404, f"{key} has no stored value.")
-            secret = (row is not None and row.secret) or (reset is not None and reset.secret)
+            secret = (row is not None and _is_secret_row(key, row, entries)) or (
+                reset is not None and reset.secret
+            )
             change = ConfigChange(
                 key, secret, old_value=None if secret or row is None else row.value
             )
@@ -2121,11 +2132,16 @@ async def delete(
             damage = _damage(rows, remaining, [key])
             if damage is not None:
                 raise ConfigUpdateError(409, damage.resetting())
+            new_raw = _resolve(remaining, key, entry)
+            # As for update: neither a secret row's value nor a document its
+            # validator refuses (the stored one, or the environment's that the
+            # reset puts back) reaches the audit log.
+            withheld = _is_secret_row(key, row, entries) or _invalid_document(entry, new_raw)
             change = ConfigChange(
                 key,
-                secret,
-                old_value=None if secret else _typed(entry, row.value),
-                new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
+                withheld,
+                old_value=None if withheld else _typed(entry, row.value),
+                new_value=None if withheld else _typed(entry, new_raw),
             )
             if entry.origin == "custom":
                 await transaction.delete(key)
@@ -2305,13 +2321,14 @@ def _is_secret_row(key: str, row: ConfigRow, entries: Mapping[str, ConfigEntry])
     """Whether *row*'s value is a secret: as :func:`describe` decides, or by its name."""
     entry = entries.get(key) or registry.numbered_key_entry(key)
     if entry is not None:
-        return (
-            entry.secret
-            or row.secret
-            or (entry.validator is not None and _value_problem(entry, row.value) is not None)
-        )
+        return entry.secret or row.secret or _invalid_document(entry, row.value)
     # A retired setting has no entry; its row's flag and its name decide.
     return row.secret or registry.is_secret_name(key)
+
+
+def _invalid_document(entry: ConfigEntry, raw: str | None) -> bool:
+    """Whether *raw* is a document its validator refuses, which may carry a credential inline."""
+    return entry.validator is not None and _value_problem(entry, raw) is not None
 
 
 async def export_rows(*, include_secret_values: bool = False) -> list[dict[str, Any]]:

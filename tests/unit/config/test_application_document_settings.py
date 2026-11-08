@@ -121,3 +121,29 @@ def test_an_invalid_environment_site_document_closes_the_site_before_anything_lo
     )
     with pytest.raises(DistributionConfigError):
         get_active_distribution_config()
+
+
+# --- the audit log -------------------------------------------------------------
+
+
+async def test_the_audit_log_withholds_a_refused_document_an_update_replaces():
+    await load([row("MODEL_CATALOG", INVALID_CATALOG)])
+    [change] = await app_config.update({"MODEL_CATALOG": VALID_CATALOG}, updated_by="admin")
+    assert change.audit_details() == {"key": "MODEL_CATALOG", "changed": True}
+
+
+async def test_the_audit_log_withholds_a_refused_document_a_reset_removes():
+    await load([row("MODEL_CATALOG", INVALID_CATALOG)])
+    change = await app_config.delete("MODEL_CATALOG", updated_by="admin")
+    assert change.audit_details() == {"key": "MODEL_CATALOG", "changed": True}
+
+
+async def test_the_audit_log_still_records_a_valid_document():
+    await load([row("MODEL_CATALOG", VALID_CATALOG)])
+    replacement = json.dumps({"models": []})
+    [change] = await app_config.update({"MODEL_CATALOG": replacement}, updated_by="admin")
+    assert change.audit_details() == {
+        "key": "MODEL_CATALOG",
+        "old_value": VALID_CATALOG,
+        "new_value": replacement,
+    }
