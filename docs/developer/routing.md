@@ -99,15 +99,17 @@ Three deliberate exceptions:
   Splicing a second provider into a committed SSE stream would duplicate role
   events, switch voice mid-message, and produce mismatched usage totals; the
   truncated stream is the lesser harm.
-- **A request two routes refuse as malformed stops there.** A 400, 404, 413 or
-  422 is usually the answering server's own verdict, so the walk goes on after
-  the first one; after a second it stops, and the request is reported as if
-  every route had failed. Otherwise every malformed request reached every
-  weighted route, a 1% fallback or a canary included. A context-window refusal
-  does not count: fallback already passes over every route whose window is no
-  wider and keeps the wider ones. The stop is logged as
-  `request_refusal_fallback_stopped`; the hybrid composition walks its plan
-  under the same bound.
+- **A request two routes refuse as malformed stops there.** A 400 or 422 is
+  usually the answering server's own verdict, so the walk goes on after the
+  first one; after a second it stops, and the request is reported as if every
+  route had failed. Otherwise every malformed request reached every weighted
+  route, a 1% fallback or a canary included. A context-window refusal does not
+  count: fallback already passes over every route whose window is no wider and
+  keeps the wider ones. Nor does a 404 or a 413, which usually describes the
+  route that answered (a model that server does not serve, a proxy's body
+  limit), so the walk goes on to the routes that may serve it. The stop is
+  logged as `request_refusal_fallback_stopped`; the hybrid composition walks its
+  plan under the same bound.
 
 Successful responses carry a `_routing` blob (`provider`, `base_url`,
 `endpoint_id`, plus `fallback` and `failed_attempts` when a fallback ran) so

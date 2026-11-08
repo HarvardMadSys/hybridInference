@@ -673,7 +673,7 @@ def _skips_for_context_window(
 
 # How many routes may refuse one request as malformed before fallback stops.
 #
-# A request-describing failure (``_REQUEST_DESCRIBING_STATUSES``) is usually the
+# A refusal of the payload (``_REQUEST_REFUSAL_STATUSES``) is usually the
 # answering server's own verdict -- one SGLang build rejects a tool schema
 # another accepts -- which is why the walk goes on after the first one. Once a
 # second route has refused the same request, the rest are very likely to refuse
@@ -688,10 +688,20 @@ def _skips_for_context_window(
 # wider ones, which can.
 _REQUEST_REFUSAL_LIMIT = 2
 
+# The request-describing statuses that count toward that bound: a verdict on the
+# payload itself. A 404 and a 413 stay request-describing for the error the
+# caller is told about (``_select_surfaced_error``), but are usually about the
+# route that answered: a 404 names a model that server does not serve -- an
+# on-demand deployment not loaded, a ``provider_model_id`` set wrong for that
+# route -- and a 413 is often one route's proxy body limit. Counted, two such
+# routes ended the walk before a healthy one was tried, and as 4xx answers they
+# are never charged to the breaker either, so nothing steered requests off them.
+_REQUEST_REFUSAL_STATUSES = frozenset({400, 422})
+
 
 def _counts_as_request_refusal(exc: BaseException) -> bool:
     """Return whether ``exc`` refuses the request as malformed, its length aside."""
-    return _describes_request(exc) and not exceeds_context_window(exc)
+    return _http_status_of(exc) in _REQUEST_REFUSAL_STATUSES and not exceeds_context_window(exc)
 
 
 def request_refusals_end_fallback(
