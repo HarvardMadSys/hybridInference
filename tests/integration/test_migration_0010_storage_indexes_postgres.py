@@ -115,6 +115,25 @@ async def test_a_long_transaction_stops_the_build_and_the_rerun_finishes_it(scra
     assert await _revision(scratch) == REVISION
 
 
+async def test_the_usage_rollup_deletes_a_day_through_its_index(scratch):
+    """The refill deletes each day before it counts it again: a probe, not a table read."""
+    await mig.upgrade(scratch, REVISION)
+    async with mig.connected(scratch) as conn:
+        await conn.execute(
+            "INSERT INTO user_usage_daily (user_id, day, request_count, total_tokens) "
+            "SELECT 'u-' || u, CURRENT_DATE - d, 1, 1 "
+            "FROM generate_series(1, 50) AS u, generate_series(1, 100) AS d"
+        )
+        await conn.execute("ANALYZE user_usage_daily")
+        plan = "\n".join(
+            r[0]
+            for r in await conn.fetch(
+                "EXPLAIN DELETE FROM user_usage_daily WHERE day = CURRENT_DATE - 7"
+            )
+        )
+    assert "idx_user_usage_daily_day" in plan, plan
+
+
 _DROPPED = ("idx_api_logs_served_endpoint", "idx_api_logs_user")
 
 

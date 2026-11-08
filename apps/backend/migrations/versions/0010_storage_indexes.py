@@ -1,10 +1,16 @@
-"""Index session liveness by account and session id; drop two ``api_logs`` indexes no query uses.
+"""Index session liveness and the usage rollup's days; drop two ``api_logs`` indexes no query uses.
 
 ``session_is_live`` -- asked on every request a console token makes, on the
 request pool -- looks a session up by ``(user_id, sid)``. Neither had an index
 of its own: ``idx_auth_sessions_user`` is ``(user_id, expires_at)``, so the
 lookup read every unexpired session of the account to find the one sid, and an
 account can hold thousands. ``idx_auth_sessions_user_sid`` makes it one probe.
+
+``user_usage_daily`` is keyed ``(user_id, day)``, but its fill and its
+invalidation delete by ``day`` alone, and each such delete read the whole
+table: once per day refilled, which on the first start after
+``0004_user_usage_sums`` is every day of the history. ``idx_user_usage_daily_day``
+makes each one a probe.
 
 Every insert into ``api_logs``, the largest table, also updated two indexes that
 no query needs:
@@ -56,6 +62,9 @@ INDEXES = {
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_auth_sessions_user_sid "
         "ON auth_sessions (user_id, sid)"
     ),
+    "idx_user_usage_daily_day": (
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_user_usage_daily_day ON user_usage_daily (day)"
+    ),
 }
 
 #: The indexes it drops.
@@ -67,7 +76,7 @@ DROPS = (
 #: Its statements on the tables ``migrations.baseline.api_logs`` builds, in order,
 #: each run on its own outside a transaction. Tests that build those tables from
 #: the frozen baseline in a schema of their own apply them after it.
-STATEMENTS = DROPS
+STATEMENTS = (*DROPS, INDEXES["idx_user_usage_daily_day"])
 
 #: Whether the index *name* is there but invalid, as an interrupted build leaves it.
 INVALID_SQL = "SELECT NOT indisvalid FROM pg_index WHERE indexrelid = to_regclass(:name)"
