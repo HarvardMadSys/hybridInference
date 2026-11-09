@@ -46,10 +46,10 @@ function MissingConfigurationNotice(): JSX.Element | null {
   if (!state.isAuthenticated || !state.user) return null;
 
   return (
-    <div className={`mx-auto w-full ${consoleWidth} px-6`}>
+    <div className={`mx-auto w-full ${consoleWidth} px-4 sm:px-6`}>
       <div
         role="status"
-        className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900 shadow-subtle"
+        className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-subtle sm:px-5"
       >
         {state.user.is_admin ? (
           <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">

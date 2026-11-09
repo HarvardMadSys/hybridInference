@@ -89,12 +89,14 @@ export function ConsoleNav() {
     : [];
 
   // On a phone the row is wider than the screen: bring the current page into
-  // view on first load and after every navigation.
+  // view on first load, after every navigation, and when an entry that loads
+  // later (Batches, after its capabilities arrive) moves it along the row.
+  const entries = [...pages, ...adminPages].map((item) => item.href).join(' ');
   useEffect(() => {
     const scroller = scrollerRef.current;
     const active = scroller?.querySelector<HTMLElement>('[aria-current="page"]');
     if (scroller && active) revealHorizontally(scroller, active);
-  }, [pathname]);
+  }, [pathname, entries]);
 
   function renderItem(item: NavItem) {
     if (item.external) {
