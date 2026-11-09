@@ -27,6 +27,7 @@ from .routers import (
     batch_console,
     batch_console_create,
     batches,
+    billing,
     compat,
     completions,
     embeddings,
@@ -157,6 +158,7 @@ def create_app() -> FastAPI:
     app.include_router(site_updates.router)
     app.include_router(public_stats.router)
     app.include_router(compat.router)
+    app.include_router(billing.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)
     app.include_router(setup.router)
