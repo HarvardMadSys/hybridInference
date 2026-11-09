@@ -57,6 +57,7 @@ from routing.model_selection import (
     select,
 )
 from routing.prefill_load import estimate_prefill_tokens
+from serving.adapters.reasoning_effort import declared_public_levels
 from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -101,12 +102,7 @@ def candidate_info(configs: Sequence[ModelConfig]) -> CandidateInfo:
     conservative reading ``/v1/models`` gives a model with several routes: the
     endpoint that ends up serving the request is not known yet.
     """
-    efforts = [
-        frozenset(cfg.reasoning_efforts)
-        if "reasoning_effort" in (cfg.supported_params or ())
-        else frozenset()
-        for cfg in configs
-    ]
+    efforts = [frozenset(declared_public_levels(cfg)) for cfg in configs]
     return CandidateInfo(
         context_length=min(cfg.context_length for cfg in configs),
         max_output_length=min(cfg.max_output_length for cfg in configs),

@@ -112,3 +112,38 @@ async def test_deleting_a_runtime_model_deletes_its_overrides(
 
     assert await postgres_op_store.list_route_capability_overrides_for_model("itest-gone") == []
     assert len(await postgres_op_store.list_route_capability_overrides_for_model("itest-kept")) == 1
+
+
+async def test_an_effort_map_keeps_its_order_through_jsonb(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """A JSONB object reorders keys (``low, max, high``); the stored pairs do not.
+
+    The order is the order the levels are offered in, so a map saved as
+    ``low, high, max`` must come back that way, and an old row without the
+    field must still read as "no map".
+    """
+    from serving.adapters.reasoning_effort import read_effort_map
+    from serving.schemas_admin import RuntimeModelCapabilities
+
+    effort_map = {"low": "high", "high": "xhigh", "max": "max"}
+    declared = RuntimeModelCapabilities.model_validate(
+        {**WIDE, "reasoning_effort_map": effort_map}
+    ).model_dump(exclude_none=True)
+    await postgres_op_store.upsert_route_capability_override(
+        "itest-model", "itest-model:mapped-api", declared, "admin"
+    )
+    await postgres_op_store.upsert_route_capability_override(
+        "itest-model", "itest-model:old-api", WIDE, "admin"
+    )
+    # What the object form would have done: JSONB sorts keys by length, then bytes.
+    async with postgres_op_store._pool.acquire() as conn:
+        reordered = await conn.fetchval("""SELECT '{"low": 1, "high": 2, "max": 3}'::jsonb::text""")
+    assert reordered == '{"low": 1, "max": 3, "high": 2}'
+
+    stored = _capabilities(
+        await postgres_op_store.list_route_capability_overrides_for_model("itest-model")
+    )
+    mapped = stored["itest-model:mapped-api"]
+    assert list(read_effort_map(mapped["reasoning_effort_map"]).items()) == list(effort_map.items())
+    assert "reasoning_effort_map" not in stored["itest-model:old-api"]

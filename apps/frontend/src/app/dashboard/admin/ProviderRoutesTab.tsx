@@ -16,6 +16,7 @@ import {
   ProviderRouteOption,
   Role,
   RouteWeight,
+  RouteCapabilities,
   RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
@@ -58,7 +59,9 @@ import {
   readCapabilityDraft,
   sameCapabilities,
   sameCapabilityDraft,
+  sameEffortMap,
   type CapabilityDraft,
+  type EffortRow,
   type DeclaredChoice,
 } from './RouteCapabilityFields';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
@@ -105,6 +108,7 @@ type CreateRouteForm = {
   imageInput: DeclaredChoice;
   toolCalling: DeclaredChoice;
   otherInputModalities: string[];
+  effortRows: EffortRow[];
 };
 
 const emptyCreateForm: CreateRouteForm = {
@@ -462,6 +466,31 @@ function routePrimaryUpstreamProvider(route: ProviderRoute) {
 
 // A route edit's capability change: set new values, or return to the defaults.
 type CapabilitySave = { capabilities: RuntimeModelCapabilities } | { reset_capabilities: true };
+
+// A draft with no effort rows keeps the route's default map; compare it as that.
+function withDefaultEffortMap(
+  draft: RuntimeModelCapabilities | null,
+  defaults: RouteCapabilities,
+): RuntimeModelCapabilities | null {
+  if (!draft || draft.reasoning_effort_map) return draft;
+  return { ...draft, reasoning_effort_map: defaults.reasoning_effort_map ?? null };
+}
+
+// The effort map to save with the other values. Different from the route's
+// default: the map. Equal to it: none is sent, which keeps the route's current
+// setting -- or, when a console map is in use now, null, which returns the
+// route to its default instead of keeping that map.
+function effortMapToSend(
+  draft: RuntimeModelCapabilities,
+  defaults: RouteCapabilities,
+  served: RouteCapabilities,
+): RuntimeModelCapabilities {
+  if (!sameEffortMap(draft.reasoning_effort_map, defaults.reasoning_effort_map)) return draft;
+  const { reasoning_effort_map: _default, ...rest } = draft;
+  return sameEffortMap(served.reasoning_effort_map, defaults.reasoning_effort_map)
+    ? rest
+    : { ...rest, reasoning_effort_map: null };
+}
 
 const CAPABILITY_FIELDS_INVALID = 'Fix the context length and max output to save.';
 
@@ -1109,7 +1138,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     sameCapabilityDraft(editCapabilityDraft, capabilityDraftFrom(editCapabilityDefaults));
   const editCapabilitySave: CapabilitySave | null = (() => {
     if (!editCapabilities || !editCapabilityDefaults || !editCapabilitiesEdited) return null;
-    const draft = editCapabilityReading.payload;
+    const draft = withDefaultEffortMap(editCapabilityReading.payload, editCapabilityDefaults);
     if (
       editCapabilitiesOverridden &&
       (editCapabilityDraftIsDefaults || (draft && sameCapabilities(draft, editCapabilityDefaults)))
@@ -1119,7 +1148,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         : { reset_capabilities: true };
     }
     if (!draft) return null;
-    return sameCapabilities(draft, editCapabilities) ? null : { capabilities: draft };
+    return sameCapabilities(draft, editCapabilities)
+      ? null
+      : { capabilities: effortMapToSend(draft, editCapabilityDefaults, editCapabilities) };
   })();
   const capabilityEditChanges: Change[] = (() => {
     if (!editingRoute || !editCapabilitySave || !editCapabilities || !editCapabilityDefaults) {
@@ -1147,7 +1178,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     editCapabilitiesEdited && !editCapabilityReading.payload && !editCapabilitySave;
   const editCapabilityShownReading = editCapabilitiesInvalid
     ? editCapabilityReading
-    : { ...editCapabilityReading, contextLengthError: null, maxOutputLengthError: null };
+    : {
+        ...editCapabilityReading,
+        contextLengthError: null,
+        maxOutputLengthError: null,
+        effortMapError: null,
+      };
   const editChangeCount = routeEditChanges.length + capabilityEditChanges.length;
 
   const restoreCapabilityDefaults = () => {
@@ -1489,8 +1525,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         : '',
       // A starting point, not a copy: the admin confirms or changes each value
       // for this provider, and the route stores what was submitted.
+      // Never its effort map: that names the values one server accepts.
       ...(selectedRoutes[0]?.capabilities
-        ? capabilityDraftFrom(selectedRoutes[0].capabilities)
+        ? { ...capabilityDraftFrom(selectedRoutes[0].capabilities), effortRows: [] }
         : emptyCapabilityDraft),
     });
     setCreateKeyOptions([]);
@@ -3517,6 +3554,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     }
                     help="The gateway applies these to requests through this route. They do not change what the upstream model can do."
                     disabled={confirmation.busy}
+                    effort={{
+                      mappable: editingRoute.reasoning_effort_mappable ?? true,
+                      published: editingRoute.reasoning_efforts_published ?? null,
+                      defaultMap: editCapabilityDefaults?.reasoning_effort_map ?? null,
+                    }}
                   />
                   {!editCapabilitiesEdited && editCapabilityReading.payload === null && (
                     <p className="mt-1 text-[11px] leading-5 text-amber-700">

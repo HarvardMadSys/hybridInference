@@ -61,7 +61,7 @@ itself and are read only at the model level.
 | `supports_tools` | bool | No | Function calling support (default: false) |
 | `supports_structured_output` | bool | No | JSON mode support (default: false) |
 | `supported_params` | list[string] | No | Allowed parameter names (default: `temperature`, `top_p`, `max_tokens`) |
-| `reasoning_efforts` | list[string] | No | The values this model's `reasoning_effort` accepts. Meaningful only when `reasoning_effort` is in `supported_params`; empty means "not offered". It has no default, because the accepted values differ from model to model |
+| `reasoning_efforts` | list[string] | No | The values this model's `reasoning_effort` accepts. Meaningful only when `reasoning_effort` is in `supported_params`; empty means "not offered". It has no default, because the accepted values differ from model to model. The model listings publish it; see [Reasoning effort in the model listings](#reasoning-effort-in-the-model-listings) |
 | `on_demand` | bool | No | Model is lazily loaded on shared GPUs (started on first request, stopped when idle). Exposed in `/v1/models`, and the RouteWise background latency prober never probes such endpoints (default: false) |
 | `processor` | string | No | Output-processor override for `OpenAICompatAdapter`, bypassing model-ID auto-detection. Accepted: `"default"`, `"glm"`, `"qwen_coder"`, `"think_block"` |
 | `extra_body` | dict | No | Default fields merged into OpenAI-compatible upstream request bodies. Core fields and validated client parameters win |
@@ -91,6 +91,86 @@ An explicit `required_role` also takes the place of `admin_only: true`, with
 one exception kept from earlier releases: `admin_only: true` together with
 `required_role: free` stays admin-only. To open such a model to the free tier,
 remove `admin_only`.
+
+### Reasoning effort in the model listings
+
+`/v1/models` tells a client which `reasoning_effort` values a request would
+deliver to each model, so a client can offer those and nothing else. The
+OpenAI/OpenRouter shape carries `reasoning: {"supported_efforts": [...]}`, in
+the order `reasoning_efforts` declares them; the Anthropic shape (an
+`anthropic-version` header, or `/anthropic/v1/models`) carries
+`capabilities.effort` as the Anthropic Models API spells it, with
+`supported` and one `{"supported": true|false}` for each of `low`, `medium`,
+`high`, `xhigh` and `max`. Only `effort` is filled in under `capabilities`.
+
+A value is published only when every route of the model delivers it:
+
+- a route with a `reasoning_effort_map` delivers the map's public levels (its
+  keys, in their order), never the upstream values it sends;
+- an `openai_compat` route (OpenRouter included) with `reasoning_effort` in
+  `supported_params` delivers its `reasoning_efforts`;
+- a route without `reasoning_effort` in `supported_params` delivers none, and
+  the model is published with an empty list (`supported: false`);
+- for anything else nothing is published (`reasoning: null`, no
+  `capabilities`): a route whose adapter does not forward the parameter itself
+  (`anthropic`, `claude`, `gemini`), `reasoning_effort` without a declared
+  domain, or a domain that is not a list of distinct level names.
+
+Auto models publish nothing, because selection picks the model per request.
+
+### Mapping reasoning-effort levels on a route
+
+The level a client chooses and the value a server takes are not always the
+same word. A route can declare the translation with `reasoning_effort_map`:
+each key is a **public level** (what clients send as `reasoning_effort` on
+Chat Completions, `reasoning.effort` on Responses or `output_config.effort` on
+Messages, and what `/v1/models` offers them), and each value is the **upstream
+value** this route's server receives as `reasoning_effort`.
+
+```json
+{
+  "id": "example-reasoner",
+  "name": "Example reasoner",
+  "provider": "vllm",
+  "route": [
+    {
+      "kind": "vllm",
+      "base_url": "${EXAMPLE_REASONER_BASE_URL}",
+      "reasoning_effort_map": {"low": "high", "high": "xhigh", "max": "max"}
+    }
+  ]
+}
+```
+
+Each key is the public level and each value what this server's
+`reasoning_effort` takes.
+
+On that route:
+
+- exactly the keys are offered and accepted, in this order: the listing above
+  publishes `low`, `high` and `max`. Any other level, `xhigh` and `medium`
+  included, is refused with a 400 before anything is sent; it is never dropped
+  or rounded to a neighbour. A thinking switch such as `none` is not a level
+  unless the map names it;
+- a level is translated once, on the route that serves the request, from the
+  level the client sent. A retry, a fallback to another route or a reroute
+  starts again from the client's level, and a route without a map sends it
+  unchanged;
+- the map is the whole declaration: the route forwards `reasoning_effort`
+  whether or not `supported_params` names it, and `reasoning_efforts` is not
+  read for it;
+- a request that names no level sends none, so the server's own default
+  applies. The gateway adds no default. Clients have their own: Claude Code,
+  for one, sends `output_config.effort: high` when its user chose nothing.
+
+The map is a fact about one server, so it is declared on the route and
+rejected on the model (including a shorthand model without a route list), and
+only a route whose adapter sends `reasoning_effort` (an OpenAI-compatible
+kind) may carry one: on `anthropic`, `claude` or `gemini` it is a
+configuration error. Each key and value is one short word of letters, digits,
+`_`, `.` or `-`. Routes without a map behave as they always did. An admin can
+set or replace a route's map from the console; see
+[Route capabilities](configuration.md#routing-tab).
 
 ### Automatic DeepSeek prices
 
@@ -208,6 +288,7 @@ Beyond the model fields above, a route entry accepts:
 | `deployment_type` | string | Route-only admission classification: `auto` (default, recognizes loopback/host endpoints), `self_hosted` (an engine you operate, including on a LAN), or `provider_api` (provider-key concurrency, even through a loopback proxy). Independent of `provider_type`; see [Outbound concurrency](routing.md#outbound-concurrency) |
 | `include_usage_in_stream` | bool | Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: Admin refuses a model-wide or non-boolean value (`"false"`, `null`) when the catalog is saved, and a stored catalog with one registers no catalog model and logs an error. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields |
 | `routewise_pool`, `quota_pool`, `concurrency_pool`, `quota_source`, `quota`, `concurrency` | — | RouteWise pool and budget metadata |
+| `reasoning_effort_map` | dict | Route-only. The public reasoning-effort levels this route takes, each mapped to the value its upstream receives as `reasoning_effort`; see [Mapping reasoning-effort levels on a route](#mapping-reasoning-effort-levels-on-a-route) |
 
 A route reports its `kind` as the provider label — the value recorded in
 `api_logs.provider` and grouped on by every provider-scoped admin view. Two

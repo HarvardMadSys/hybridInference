@@ -431,15 +431,9 @@ msgstr "允许的参数名（默认：`temperature`、`top_p`、`max_tokens`）"
 msgid "`reasoning_efforts`"
 msgstr ""
 
-#: ../developer/adding-models.md
-msgid ""
-"The values this model's `reasoning_effort` accepts. Meaningful only when "
-"`reasoning_effort` is in `supported_params`; empty means \"not offered\"."
-" It has no default, because the accepted values differ from model to "
-"model"
-msgstr ""
-"这个模型的 `reasoning_effort` 接受哪些取值。只有当 `reasoning_effort` 在 "
-"`supported_params` 里时才有意义；为空表示「不提供」。它没有默认值，因为各模型接受的取值不同"
+#: ../developer/adding-models.md:0
+msgid "The values this model's `reasoning_effort` accepts. Meaningful only when `reasoning_effort` is in `supported_params`; empty means \"not offered\". It has no default, because the accepted values differ from model to model. The model listings publish it; see [Reasoning effort in the model listings](#reasoning-effort-in-the-model-listings)"
+msgstr "这个模型的 `reasoning_effort` 接受哪些取值。只有当 `reasoning_effort` 在 `supported_params` 里时才有意义；为空表示「不提供」。它没有默认值，因为各模型接受的取值不同。模型列表会公布它；见[模型列表中的推理强度](#reasoning-effort-in-the-model-listings)"
 
 #: ../developer/adding-models.md
 msgid "`on_demand`"
@@ -1597,10 +1591,86 @@ msgstr "如需别名或其他元数据，请在 **Admin → Settings → Models*
 msgid "Set `GATEWAY_API_KEY` in the shell when authentication is enabled. The smoke uses the real inference path and normal quota. Check streaming separately when clients depend on it. A catalog change marked **Restart required** needs `make restart s=backend`; ordinary Admin route edits do not."
 msgstr "启用认证后，请在 shell 中设置 `GATEWAY_API_KEY`。冒烟检查使用真实推理路径并消耗正常配额。客户端依赖流式响应时，请单独验证流式请求。标记为 **Restart required** 的目录修改需要执行 `make restart s=backend`；普通 Admin 路由修改无需重启。"
 
+#: ../developer/adding-models.md:95
+msgid "Reasoning effort in the model listings"
+msgstr "模型列表中的推理强度"
+
+#: ../developer/adding-models.md:97
+msgid "`/v1/models` tells a client which `reasoning_effort` values a request would deliver to each model, so a client can offer those and nothing else. The OpenAI/OpenRouter shape carries `reasoning: {\"supported_efforts\": [...]}`, in the order `reasoning_efforts` declares them; the Anthropic shape (an `anthropic-version` header, or `/anthropic/v1/models`) carries `capabilities.effort` as the Anthropic Models API spells it, with `supported` and one `{\"supported\": true|false}` for each of `low`, `medium`, `high`, `xhigh` and `max`. Only `effort` is filled in under `capabilities`."
+msgstr "`/v1/models` 告诉客户端：对每个模型，请求里的哪些 `reasoning_effort` 取值会真正送达模型，这样客户端只提供这些取值。OpenAI/OpenRouter 格式带 `reasoning: {\"supported_efforts\": [...]}`，顺序与 `reasoning_efforts` 的声明一致；Anthropic 格式（带 `anthropic-version` 请求头，或 `/anthropic/v1/models`）按 Anthropic Models API 的写法带 `capabilities.effort`：一个 `supported`，以及 `low`、`medium`、`high`、`xhigh`、`max` 各一个 `{\"supported\": true|false}`。`capabilities` 下只填写 `effort`。"
+
+#: ../developer/adding-models.md:106
+msgid "A value is published only when every route of the model delivers it:"
+msgstr "只有模型的每条路由都能送达的取值才会公布："
+
+#: ../developer/adding-models.md:108
+msgid "a route with a `reasoning_effort_map` delivers the map's public levels (its keys, in their order), never the upstream values it sends;"
+msgstr "带 `reasoning_effort_map` 的路由送达映射的公开档位（即它的键，按其顺序），而不是它发往上游的取值；"
+
+#: ../developer/adding-models.md:110
+msgid "an `openai_compat` route (OpenRouter included) with `reasoning_effort` in `supported_params` delivers its `reasoning_efforts`;"
+msgstr "`supported_params` 含 `reasoning_effort` 的 `openai_compat` 路由（包括 OpenRouter）送达它的 `reasoning_efforts`；"
+
+#: ../developer/adding-models.md:112
+msgid "a route without `reasoning_effort` in `supported_params` delivers none, and the model is published with an empty list (`supported: false`);"
+msgstr "`supported_params` 不含 `reasoning_effort` 的路由不送达任何取值，模型以空列表公布（`supported: false`）；"
+
+#: ../developer/adding-models.md:114
+msgid "for anything else nothing is published (`reasoning: null`, no `capabilities`): a route whose adapter does not forward the parameter itself (`anthropic`, `claude`, `gemini`), `reasoning_effort` without a declared domain, or a domain that is not a list of distinct level names."
+msgstr "其他情况一律不公布（`reasoning: null`，没有 `capabilities`）：适配器本身不转发该参数的路由（`anthropic`、`claude`、`gemini`）、有 `reasoning_effort` 但没有声明取值范围，或取值范围不是一组互不重复的级别名称。"
+
+#: ../developer/adding-models.md:119
+msgid "Auto models publish nothing, because selection picks the model per request."
+msgstr "自动模型不公布任何取值，因为每个请求由选择逻辑决定用哪个模型。"
+
+#: ../developer/adding-models.md:121
+msgid "Mapping reasoning-effort levels on a route"
+msgstr "在路由上映射推理强度档位"
+
+#: ../developer/adding-models.md:123
+msgid "The level a client chooses and the value a server takes are not always the same word. A route can declare the translation with `reasoning_effort_map`: each key is a **public level** (what clients send as `reasoning_effort` on Chat Completions, `reasoning.effort` on Responses or `output_config.effort` on Messages, and what `/v1/models` offers them), and each value is the **upstream value** this route's server receives as `reasoning_effort`."
+msgstr "客户端选择的档位与服务器接受的取值不一定是同一个词。路由可以用 `reasoning_effort_map` 声明这种转换：每个键是一个**公开档位**（客户端在 Chat Completions 中以 `reasoning_effort`、在 Responses 中以 `reasoning.effort`、在 Messages 中以 `output_config.effort` 发送的值，也是 `/v1/models` 向它们提供的值），每个值是这条路由的服务器作为 `reasoning_effort` 收到的**上游取值**。"
+
+#: ../developer/adding-models.md:145
+msgid "Each key is the public level and each value what this server's `reasoning_effort` takes."
+msgstr "每个键是公开档位，每个值是该服务器的 `reasoning_effort` 接收的取值。"
+
+#: ../developer/adding-models.md:148
+msgid "On that route:"
+msgstr "在这条路由上："
+
+#: ../developer/adding-models.md:150
+msgid "exactly the keys are offered and accepted, in this order: the listing above publishes `low`, `high` and `max`. Any other level, `xhigh` and `medium` included, is refused with a 400 before anything is sent; it is never dropped or rounded to a neighbour. A thinking switch such as `none` is not a level unless the map names it;"
+msgstr "提供并接受的正好是这些键，按此顺序：上面的列表发布 `low`、`high` 和 `max`。其他任何档位（包括 `xhigh` 和 `medium`）都会在发送任何内容之前以 400 拒绝，绝不会被丢弃或就近取整。像 `none` 这样的思考开关不是档位，除非映射中写了它；"
+
+#: ../developer/adding-models.md:155
+msgid "a level is translated once, on the route that serves the request, from the level the client sent. A retry, a fallback to another route or a reroute starts again from the client's level, and a route without a map sends it unchanged;"
+msgstr "档位只在实际处理请求的路由上、从客户端发送的档位转换一次。重试、回退到另一条路由或改路由都从客户端的档位重新开始，没有映射的路由原样发送它；"
+
+#: ../developer/adding-models.md:159
+msgid "the map is the whole declaration: the route forwards `reasoning_effort` whether or not `supported_params` names it, and `reasoning_efforts` is not read for it;"
+msgstr "映射就是完整的声明：无论 `supported_params` 是否列出，这条路由都会转发 `reasoning_effort`，也不会为它读取 `reasoning_efforts`；"
+
+#: ../developer/adding-models.md:162
+msgid "a request that names no level sends none, so the server's own default applies. The gateway adds no default. Clients have their own: Claude Code, for one, sends `output_config.effort: high` when its user chose nothing."
+msgstr "未指定档位的请求不发送任何档位，因此由服务器自己的默认值决定。网关不添加默认值。客户端有自己的默认值：例如 Claude Code 在用户未作选择时发送 `output_config.effort: high`。"
+
+#: ../developer/adding-models.md:166
+msgid "The map is a fact about one server, so it is declared on the route and rejected on the model (including a shorthand model without a route list), and only a route whose adapter sends `reasoning_effort` (an OpenAI-compatible kind) may carry one: on `anthropic`, `claude` or `gemini` it is a configuration error. Each key and value is one short word of letters, digits, `_`, `.` or `-`. Routes without a map behave as they always did. An admin can set or replace a route's map from the console; see [Route capabilities](configuration.md#routing-tab)."
+msgstr "映射是关于某一台服务器的事实，因此在路由上声明，在模型上声明会被拒绝（包括没有路由列表的简写模型）；并且只有适配器会发送 `reasoning_effort` 的路由（OpenAI 兼容类）才能携带映射：在 `anthropic`、`claude` 或 `gemini` 上它是配置错误。每个键和值都是由字母、数字、`_`、`.` 或 `-` 组成的一个短词。没有映射的路由行为不变。管理员可以在控制台设置或替换路由的映射；参见[路由能力](configuration.md#routing-tab)。"
+
 #: ../developer/adding-models.md
 msgid "`include_usage_in_stream`"
 msgstr "`include_usage_in_stream`"
 
 #: ../developer/adding-models.md
+msgid "`reasoning_effort_map`"
+msgstr "`reasoning_effort_map`"
+
+#: ../developer/adding-models.md
 msgid "Whether this OpenAI-compatible upstream answers `stream_options.include_usage` with a final usage chunk, so cached-token counts and completion tokens on tool-call-only streams are measured rather than estimated. Route-level only, and a boolean: Admin refuses a model-wide or non-boolean value (`\"false\"`, `null`) when the catalog is saved, and a stored catalog with one registers no catalog model and logs an error. An explicit route value wins; otherwise defaults per `kind`: on for `deepseek`, `zai`, `kimi`, `minimax`, `vllm`, `sglang`, off otherwise. OpenRouter always requests usage regardless of this flag; native Anthropic, Claude, and Gemini adapters do not use it. Set `false` on a compatible endpoint that rejects unknown body fields"
 msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` 并返回最终用量数据块，以便在仅包含工具调用的流中测量缓存 token 数和 completion token 数，而不是估算。此项仅适用于路由，且必须是布尔值：保存目录时，Admin 会拒绝模型级配置或非布尔值（`\"false\"`、`null`）；已保存的目录若含有这样的值，不会注册任何目录模型，并会记录一条错误。显式路由值优先；否则默认值因 `kind` 而异：`deepseek`、`zai`、`kimi`、`minimax`、`vllm` 和 `sglang` 为启用，其他类型为关闭。OpenRouter 始终请求用量，不受此标志影响；原生 Anthropic、Claude 和 Gemini 适配器不使用此标志。若兼容端点会拒绝未知请求体字段，请设为 `false`。"
+
+#: ../developer/adding-models.md:0
+msgid "Route-only. The public reasoning-effort levels this route takes, each mapped to the value its upstream receives as `reasoning_effort`; see [Mapping reasoning-effort levels on a route](#mapping-reasoning-effort-levels-on-a-route)"
+msgstr "仅限路由。这条路由接受的公开推理强度档位，每个映射到其上游作为 `reasoning_effort` 收到的取值；参见[在路由上映射推理强度档位](#mapping-reasoning-effort-levels-on-a-route)"

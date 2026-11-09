@@ -27,6 +27,11 @@ from serving.adapters import (
     OpenRouterAdapter,
 )
 from serving.adapters.base import validate_deployment_type
+from serving.adapters.reasoning_effort import (
+    EFFORT_MAP_FIELD,
+    MAX_MAP_ENTRIES,
+    validate_effort_map,
+)
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
@@ -293,6 +298,15 @@ _ROUTE_ONLY_FIELDS = {
         ": it states that one server was started with cache reporting on, which "
         "cannot be true of every route a model has"
     ),
+    EFFORT_MAP_FIELD: ": it states which values one server accepts",
+}
+# Built-in kinds served by an adapter of their own rather than
+# OpenAICompatAdapter. Registration still checks the adapter it builds, which
+# also covers an extension's kind.
+_NATIVE_ADAPTER_KINDS = {
+    "anthropic": AnthropicAdapter,
+    "claude": ClaudeAdapter,
+    "gemini": GeminiAdapter,
 }
 
 
@@ -473,6 +487,8 @@ def _check_route(model: dict[str, Any], route: dict[str, Any], where: str) -> No
             )
     if route.get("embeddings_path") is not None:
         _check_embeddings_path(route["embeddings_path"], where)
+    if EFFORT_MAP_FIELD in route:
+        _check_effort_map(route[EFFORT_MAP_FIELD], base_kind, where)
     _check_provider_label(model, route, kind, base_kind, where)
     api_keys = route.get("api_keys")
     if api_keys is not None:
@@ -510,6 +526,24 @@ def _check_route(model: dict[str, Any], route: dict[str, Any], where: str) -> No
             )
         except (TypeError, ValueError) as exc:
             raise RegistryConfigError(f"{exc} ({where})") from None
+
+
+def _check_effort_map(raw: Any, base_kind: str, where: str) -> None:
+    """Refuse a route's reasoning-effort map that registration would refuse."""
+    try:
+        validate_effort_map(raw)
+    except ValueError:
+        raise RegistryConfigError(
+            f"{EFFORT_MAP_FIELD} must map 1 to {MAX_MAP_ENTRIES} distinct public levels to "
+            "upstream values, each a short token (letters, digits, '_', '.', '-'; at most "
+            f"32 characters) ({where})"
+        ) from None
+    native = _NATIVE_ADAPTER_KINDS.get(base_kind)
+    if native is not None and not native.forwards_reasoning_effort:
+        raise RegistryConfigError(
+            f"{EFFORT_MAP_FIELD} needs an adapter that sends reasoning_effort; this route's "
+            f"kind does not, so there is nothing to translate ({where})"
+        )
 
 
 def _check_embeddings_path(path: Any, where: str) -> None:
@@ -1241,6 +1275,26 @@ def register_from_models_document(
                 if "include_usage_in_stream" in r:
                     adapter_cfg["include_usage_in_stream"] = r["include_usage_in_stream"]
 
+                # The route's strict public -> upstream reasoning-effort map
+                # (serving.adapters.reasoning_effort). Route-level ONLY: it is a
+                # claim about which values one server accepts, and a model-level
+                # map would ride along to every fallback, translating levels for
+                # a server that never takes those names.
+                if EFFORT_MAP_FIELD in m:
+                    raise ValueError(
+                        f"{EFFORT_MAP_FIELD} for model {top_cfg.get('id')!r} must be "
+                        "declared on a route, not on the model (including shorthand "
+                        "models without a route list): it states which values one "
+                        "server accepts."
+                    )
+                if EFFORT_MAP_FIELD in r:
+                    try:
+                        adapter_cfg[EFFORT_MAP_FIELD] = validate_effort_map(r[EFFORT_MAP_FIELD])
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"{exc} (model {top_cfg.get('id')!r}, route {route_index})"
+                        ) from exc
+
                 # Route-level input_modalities override (default: inherit the
                 # model-level declaration). Lets a narrower fallback (e.g. a
                 # text-only mirror of a vision model) advertise fewer modalities
@@ -1306,6 +1360,14 @@ def register_from_models_document(
                         continue
                     raise
                 adapter = _make_adapter(kind, adapter_cfg)
+                if adapter_cfg.get(EFFORT_MAP_FIELD) and not getattr(
+                    adapter, "forwards_reasoning_effort", False
+                ):
+                    raise ValueError(
+                        f"{EFFORT_MAP_FIELD} on model {top_cfg.get('id')!r}, route "
+                        f"{route_index} (kind {kind!r}): this adapter does not send "
+                        "reasoning_effort, so there is nothing to translate"
+                    )
                 adapters_with_weights.append((adapter, weight))
 
                 # Register adapter for runtime key-pool management. We always
