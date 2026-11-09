@@ -2165,6 +2165,15 @@ def _is_runtime_created_route(route) -> bool:
     return getattr(route, BASELINE_ENTRIES_ATTR, None) == []
 
 
+def _is_config_model(route) -> bool:
+    """Whether *route* was registered from the model catalog, not created at runtime.
+
+    A runtime model stores an empty baseline. A catalog model has either no
+    baseline yet or the entries the catalog gave it.
+    """
+    return not _is_runtime_created_route(route)
+
+
 def _route_is_runtime_candidate(services, model_id: str, route_id: str) -> bool:
     try:
         route = _validate_canonical_route(services, model_id)
@@ -6096,6 +6105,21 @@ async def delete_provider_route_candidate(
         deleting_model = len(current_entries) == 1
         if not deleting_model:
             _ensure_not_last_usable_route(services, model_id, route, route_id, "delete")
+        if deleting_model and _is_config_model(route):
+            # The last live route of a catalog model is this runtime route: the
+            # catalog entry is what a restart would serve, so it has to go too.
+            await _finish_router_transition_on_cancellation(
+                _remove_config_model_locked(
+                    services,
+                    op_store,
+                    model_id=model_id,
+                    route=route,
+                    route_id=route_id,
+                    admin_id=admin_id,
+                    actor=actor,
+                )
+            )
+            return _gone_model_response(services, model_id)
         if not deleting_model and _offload_route_id(services, model_id) == route_id:
             # Refused rather than cleared as a side effect: the admin chose this
             # route to take the model's overflow, and deleting it would quietly
@@ -6604,6 +6628,222 @@ async def update_provider_route_batch(
     )
 
 
+def _stored_catalog_model_ids() -> set[str] | None:
+    """Return ids in the latest stored catalog, or None when that set is not known.
+
+    None keeps every live model. A process that has not loaded configuration,
+    or a catalog the validator refuses, must not be treated as an empty catalog:
+    that would drop the deployment's models. A saved empty catalog is an empty set.
+    """
+    from serving.config import app_config
+    from serving.config.documents import DocumentError, parse
+
+    if not app_config.loaded_from_database():
+        return None
+    if app_config.validation_problem("MODEL_CATALOG"):
+        return None
+    raw = app_config.configured_value("MODEL_CATALOG") or ""
+    try:
+        document = parse(raw) if raw.strip() else {}
+    except DocumentError:
+        return None
+    models = document.get("models")
+    if models is None:
+        return set()
+    if not isinstance(models, list):
+        return None
+    found: set[str] = set()
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("id")
+        if isinstance(model_id, str) and model_id:
+            found.add(model_id)
+    return found
+
+
+async def _remove_model_from_catalog(model_id: str, *, updated_by: str) -> None:
+    """Drop *model_id* from the stored model catalog.
+
+    The database row then wins over a catalog the environment still holds, so
+    the next start does not register the model and the deployment can stop
+    shipping that file. A catalog that does not list the model is left as it is.
+
+    Raises:
+        HTTPException: The catalog lists the model and cannot be saved. The
+            live model is unchanged, so a refused write does not stop serving.
+    """
+    from serving.config import app_config
+    from serving.config.documents import DocumentError, check, encode, parse, without_model
+
+    raw = app_config.configured_value("MODEL_CATALOG") or ""
+    try:
+        document = parse(raw) if raw.strip() else {}
+        updated, removed = without_model(document, model_id)
+        if removed:
+            check("models", updated)
+    except DocumentError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"The model catalog cannot be updated: {exc}",
+        ) from None
+    if not removed:
+        return
+    if app_config.attached_store() is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Configuration storage is unavailable: the database is not connected.",
+        )
+    try:
+        await app_config.update(
+            {"MODEL_CATALOG": encode(updated)},
+            updated_by=updated_by,
+            expected_version=app_config.source_version(),
+        )
+    except app_config.ConfigUpdateError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from None
+
+
+def _drop_model_aliases(services, model_id: str, route) -> None:
+    """Drop alias route-table entries that still point at a removed model."""
+    routes = services.router.routes
+    keys = [
+        key
+        for key, item in list(routes.items())
+        if key != model_id
+        and (item is route or getattr(item, "canonical_model_id", None) == model_id)
+    ]
+    if not keys:
+        return
+
+    def mutate() -> None:
+        for key in keys:
+            routes.pop(key, None)
+
+    _mutate_router_routes(services, mutate)
+
+
+def _gone_model_response(services, model_id: str) -> ListProviderRoutesResponse:
+    """The route list of a model that was just removed."""
+    return ListProviderRoutesResponse(
+        model_id=model_id,
+        strategy="fixed",
+        provider_options=_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(services),
+        routes=[],
+    )
+
+
+def _config_model_setting_keys(model_id: str) -> tuple[str, ...]:
+    return (
+        _model_required_role_setting_key(model_id),
+        _model_strategy_setting_key(model_id),
+        *model_routewise_setting_keys(model_id),
+        offload_route_setting_key(model_id),
+    )
+
+
+async def _remove_config_model_locked(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    route,
+    route_id: str,
+    admin_id: str,
+    actor: AuditActor,
+) -> None:
+    """Remove a catalog model from the stored catalog and from this process.
+
+    The caller holds the model's transition lock. The catalog is updated
+    first, and a refusal leaves the model serving. Once the catalog no longer
+    lists it, the live model is dropped even when a later cleanup fails, so a
+    removal that was saved is not left serving until restart.
+    """
+    await _remove_model_from_catalog(model_id, updated_by=admin_id)
+    setting_keys = _config_model_setting_keys(model_id)
+
+    async def persist_and_remove() -> None:
+        try:
+            await op_store.delete_runtime_model_state(model_id, setting_keys)
+        except BaseException:
+            # The catalog already omits the model. Tombstone it here too, so a
+            # cleanup that may have committed is not left serving.
+            try:
+                await _teardown_runtime_model_locked(
+                    services,
+                    op_store,
+                    model_id=model_id,
+                    route=route,
+                    route_id=route_id,
+                    persistence_cleared=False,
+                )
+                _drop_model_aliases(services, model_id, route)
+            except BaseException:
+                logger.error(
+                    "Failed to finish removal of catalog model=%s after a cleanup error",
+                    model_id,
+                    exc_info=True,
+                )
+            raise
+        await _teardown_runtime_model_locked(
+            services,
+            op_store,
+            model_id=model_id,
+            route=route,
+            route_id=route_id,
+            persistence_cleared=True,
+        )
+        _drop_model_aliases(services, model_id, route)
+        await log_admin_action(
+            op_store,
+            action="routing.provider_routes.model.delete",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={"model_id": model_id, "route_id": route_id, "source": "config"},
+        )
+
+    await _finish_router_transition_on_cancellation(persist_and_remove())
+
+
+async def retire_models_removed_from_catalog(services) -> None:
+    """Drop catalog models this process still serves that the stored catalog lacks.
+
+    Runtime-created models are not in the catalog and stay. A catalog that
+    cannot be read drops nothing. Each model is retired under its transition
+    lock, and checked again there, so an edit that put it back is kept.
+    """
+    present = _stored_catalog_model_ids()
+    if present is None:
+        return
+    routes = getattr(getattr(services, "router", None), "routes", None)
+    if not isinstance(routes, dict):
+        return
+    missing = [
+        model_id
+        for model_id, route in list(routes.items())
+        if _is_canonical_model(model_id, route)
+        and _is_config_model(route)
+        and model_id not in present
+    ]
+    for model_id in missing:
+        async with model_router_transition_lock(services, model_id):
+            route = services.router.routes.get(model_id)
+            if route is None or not _is_canonical_model(model_id, route):
+                continue
+            if not _is_config_model(route):
+                continue
+            latest = _stored_catalog_model_ids()
+            if latest is None or model_id in latest:
+                continue
+            await _retire_runtime_model(services, model_id, route)
+            _drop_model_aliases(services, model_id, route)
+            logger.info(
+                "Stopped serving catalog model removed from configuration model=%s",
+                model_id,
+            )
+
+
 @router.post(
     "/routing/provider-route-removals/{model_route_path:path}",
     response_model=ListProviderRoutesResponse,
@@ -6615,13 +6855,15 @@ async def remove_config_provider_route(
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ListProviderRoutesResponse:
-    """Delete a config (models.yaml) route from this deployment, restorably.
+    """Delete a catalog route from this deployment.
 
-    models.yaml is not edited: a persisted removal mark takes the route out of
-    the live table now and again at every start. Its edit override and weight
-    override are kept, so restoring it brings back exactly the route that was
-    deleted. (Reset is different: it discards the edit override and keeps the
-    route.) Runtime-added routes are deleted as candidates instead.
+    A model that still has another route keeps the deleted one as a removal
+    mark: the catalog is not edited, and Restore brings the route back with
+    its edits and weight. (Reset is different: it discards the edit and keeps
+    the route.) Deleting the model's last route removes the model from the
+    stored catalog. It stops serving now and is not registered on the next
+    start, which is what lets a deployment stop shipping a model file.
+    Runtime-added routes are deleted as candidates instead.
     """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -6639,11 +6881,16 @@ async def remove_config_provider_route(
                 detail="Runtime-added provider routes must be deleted as candidates",
             )
         if len(entries) == 1:
-            raise HTTPException(
-                status_code=409,
-                detail=f"route {route_id!r} is the only route of {model_id}; a config model "
-                "keeps at least one",
+            await _remove_config_model_locked(
+                services,
+                op_store,
+                model_id=model_id,
+                route=route,
+                route_id=route_id,
+                admin_id=admin_id,
+                actor=actor,
             )
+            return _gone_model_response(services, model_id)
         if _offload_route_id(services, model_id) == route_id:
             raise HTTPException(
                 status_code=409,

@@ -7729,6 +7729,232 @@ async def test_deleting_the_last_enabled_config_route_is_refused(admin_client):
     assert (await _remove(client, CHUTES)).status_code == 200
 
 
+def _minimax_catalog(*, include_minimax: bool = True) -> dict:
+    models = []
+    if include_minimax:
+        models.append(
+            {
+                "id": "minimax-fast",
+                "provider": "vllm",
+                "base_url": "http://localhost:9/v1",
+                "aliases": ["minimax-alias"],
+            }
+        )
+    models.append({"id": "keep-me", "provider": "vllm", "base_url": "http://localhost:9/v1"})
+    return {"auto": {"enabled": False}, "models": models}
+
+
+async def _store_catalog(document: dict, *, attach: bool = True):
+    from serving.config import app_config
+    from serving.config.documents import encode
+    from tests.fixtures.app_config_store import FakeAppConfigStore, row
+
+    store = FakeAppConfigStore([row("MODEL_CATALOG", encode(document))])
+    await app_config.load(store, bootstrap=False)
+    if attach:
+        app_config.attach(store)
+    return store
+
+
+def _stored_document(store) -> dict:
+    from serving.config.documents import parse
+
+    return parse(store.rows["MODEL_CATALOG"].value)
+
+
+def _share_minimax_alias(route_executor) -> None:
+    route_executor.routes["minimax-alias"] = route_executor.routes["minimax-fast"]
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_config_route_removes_the_model_from_the_catalog(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    document = _minimax_catalog()
+    store = await _store_catalog(document)
+
+    for route_id in (CHUTES, FEATHERLESS):
+        removed = await _remove(client, route_id)
+        assert removed.status_code == 200, removed.text
+        assert any(
+            row["route_id"] == route_id and row["removed"] for row in removed.json()["routes"]
+        )
+    assert _stored_document(store) == document
+    op_store.delete_runtime_model_state.assert_not_awaited()
+    _share_minimax_alias(route_executor)
+
+    response = await _remove(client, DEEPINFRA)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["model_id"] == "minimax-fast"
+    assert response.json()["routes"] == []
+    assert "minimax-fast" not in route_executor.routes
+    assert "minimax-alias" not in route_executor.routes
+    assert "MiniMax-Fast" not in route_executor.routes
+    stored = _stored_document(store)
+    assert [model["id"] for model in stored["models"]] == ["keep-me"]
+    assert stored["auto"] == {"enabled": False}
+    op_store.delete_runtime_model_state.assert_awaited_once_with(
+        "minimax-fast",
+        (
+            "model_required_role:minimax-fast",
+            "model_router_strategy:minimax-fast",
+            *model_routewise_setting_keys("minimax-fast"),
+            "model_offload_route:minimax-fast",
+        ),
+    )
+    call = provider_routes.log_admin_action.await_args_list[-1]
+    assert call.kwargs["action"] == "routing.provider_routes.model.delete"
+    assert call.kwargs["details"] == {
+        "model_id": "minimax-fast",
+        "route_id": DEEPINFRA,
+        "source": "config",
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_catalog_edit_keeps_the_model_serving(admin_client, monkeypatch):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    document = _minimax_catalog()
+    store = await _store_catalog(document)
+    assert (await _remove(client, CHUTES)).status_code == 200
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+    _share_minimax_alias(route_executor)
+
+    async def refuse(*_args, **_kwargs):
+        from serving.config.app_config import ConfigUpdateError
+
+        raise ConfigUpdateError(409, "The configuration changed since it was loaded.")
+
+    monkeypatch.setattr("serving.config.app_config.update", refuse)
+
+    response = await _remove(client, DEEPINFRA)
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "The configuration changed since it was loaded."
+    assert DEEPINFRA in _live_route_ids(route_executor)
+    assert "minimax-alias" in route_executor.routes
+    assert _stored_document(store) == document
+    op_store.delete_runtime_model_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_removal_without_storage_leaves_the_model_serving(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    document = _minimax_catalog()
+    store = await _store_catalog(document, attach=False)
+    assert (await _remove(client, CHUTES)).status_code == 200
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+
+    response = await _remove(client, DEEPINFRA)
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == (
+        "Configuration storage is unavailable: the database is not connected."
+    )
+    assert DEEPINFRA in _live_route_ids(route_executor)
+    assert _stored_document(store) == document
+    op_store.delete_runtime_model_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_route_still_removes_a_model_absent_from_the_catalog(
+    admin_client,
+):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    document = _minimax_catalog(include_minimax=False)
+    store = await _store_catalog(document)
+    assert (await _remove(client, CHUTES)).status_code == 200
+    assert (await _remove(client, FEATHERLESS)).status_code == 200
+
+    response = await _remove(client, DEEPINFRA)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["routes"] == []
+    assert "minimax-fast" not in route_executor.routes
+    assert _stored_document(store) == document
+    assert store.writes == []
+    op_store.delete_runtime_model_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_last_runtime_candidate_removes_its_config_model(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _RouteStateTable(client, op_store, route_executor)
+    _CandidateTable(op_store)
+    document = _minimax_catalog()
+    store = await _store_catalog(document)
+    await _add_minimax_runtime_route(client, op_store)
+    for route_id in (CHUTES, FEATHERLESS, DEEPINFRA):
+        removed = await _remove(client, route_id)
+        assert removed.status_code == 200, removed.text
+    assert _stored_document(store) == document
+    assert _live_route_ids(route_executor) == [MINIMAX_ROUTE_ID]
+
+    response = await client.delete(
+        f"/admin/routing/provider-route-candidates/minimax-fast/{MINIMAX_ROUTE_ID}",
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["routes"] == []
+    assert "minimax-fast" not in route_executor.routes
+    assert [model["id"] for model in _stored_document(store)["models"]] == ["keep-me"]
+    op_store.delete_runtime_model_state.assert_awaited_once()
+    assert provider_routes.log_admin_action.await_args_list[-1].kwargs["details"]["source"] == (
+        "config"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_runtime_model_does_not_edit_the_catalog(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    document = {
+        "models": [
+            {
+                "id": "deepseek-v4-flash",
+                "provider": "vllm",
+                "base_url": "http://localhost:9/v1",
+            },
+            {"id": "keep-me", "provider": "vllm", "base_url": "http://localhost:9/v1"},
+        ]
+    }
+    store = await _store_catalog(document)
+    create_response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 1,
+            "pricing": RUNTIME_PRICING,
+            "capabilities": RUNTIME_CAPABILITIES,
+        },
+        headers=AUTH,
+    )
+    assert create_response.status_code == 200, create_response.text
+
+    response = await client.delete(
+        "/admin/routing/provider-route-candidates/deepseek-v4-flash/"
+        "deepseek-v4-flash:openrouter[parasail]-api",
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert "deepseek-v4-flash" not in route_executor.routes
+    assert _stored_document(store) == document
+    assert store.writes == []
+
+
 @pytest.mark.asyncio
 async def test_a_failed_config_route_delete_keeps_the_route(admin_client):
     client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
