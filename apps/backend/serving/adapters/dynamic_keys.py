@@ -198,6 +198,16 @@ def get_known_providers() -> set[str]:
         return set(_known_providers)
 
 
+def snapshot_adapter_key_providers() -> dict[int, set[str]]:
+    """Return live key-pool bindings keyed by adapter identity."""
+    with _lock:
+        providers: dict[int, set[str]] = {}
+        for provider, adapters in _adapters_by_provider.items():
+            for adapter in adapters:
+                providers.setdefault(id(adapter), set()).add(provider)
+        return providers
+
+
 def get_registered_base_urls(provider: str) -> list[str]:
     """Return base URLs observed on live adapters for *provider*."""
     with _lock:

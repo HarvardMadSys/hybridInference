@@ -537,8 +537,22 @@ async def test_verify_provider_key_uses_registered_kind_for_custom_label(
             "api_keys": [old_key],
         },
     )
+    # A different key pool owns a route with the same display label. Even
+    # stale metadata claiming the requested provider cannot override its binding.
+    other_adapter = _make_adapter(
+        "openai_compat",
+        {
+            "id": "example-local",
+            "name": "Example Local",
+            "provider": provider,
+            "base_url": "https://different.example.test/v1",
+            "route_metadata": {"key_provider": provider},
+        },
+    )
+    dynamic_keys.register_adapter_for_provider("example-local", other_adapter)
     dynamic_keys.register_adapter_for_provider(provider, adapter)
     store.services.router.routes = {
+        "example-local": SimpleNamespace(adapters=[(other_adapter, 1.0)]),
         "example-chat": SimpleNamespace(adapters=[(adapter, 1.0)]),
     }
 
