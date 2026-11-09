@@ -465,6 +465,36 @@ async def _spend_check(
     top of what was read, what the spend ledger knows and the counters do not
     show yet: requests in flight and costs not yet written.
     """
+    counters = await _quota_counters(
+        identity,
+        api_key_id=api_key_id,
+        op_store=op_store,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=spent_today_usd,
+    )
+    return SpendCheck(
+        ledger=ledger_for(op_store),
+        user_id=identity["user_id"],
+        key_id=api_key_id,
+        read_at=read_at,
+        **counters,
+    )
+
+
+async def _quota_counters(
+    identity: dict[str, Any],
+    *,
+    api_key_id: int | None,
+    op_store: Any,
+    quota_daily_cost_usd: float,
+    spent_today_usd: float,
+) -> dict[str, Any]:
+    """Return the limit and counter fields a :class:`SpendCheck` is built from.
+
+    The same dict is what a balance poll reports. In-flight reservations are
+    not part of it: the gate adds those on top, and they live on the worker
+    that admitted the request.
+    """
     daily = monthly = None
     project_daily = project_monthly = None
     if api_key_id is not None:
@@ -486,28 +516,24 @@ async def _spend_check(
             account_month = float(identity["account_spent_month_usd"])
         elif op_store:
             account_month = await op_store.get_user_cost_period(identity["user_id"], "month")
-    return SpendCheck(
-        ledger=ledger_for(op_store),
-        user_id=identity["user_id"],
-        key_id=api_key_id,
-        read_at=read_at,
-        account_quota_usd=quota_daily_cost_usd,
-        account_spent_usd=spent_today_usd,
-        account_quota_monthly_usd=monthly_quota,
-        account_spent_month_usd=account_month,
-        key_budget_daily_usd=daily,
-        key_budget_monthly_usd=monthly,
-        key_spent_today_usd=key_today,
-        key_spent_month_usd=key_month,
-        key_prefix=identity.get("key_prefix"),
-        key_label=_key_label(identity),
-        project_budget_daily_usd=project_daily,
-        project_budget_monthly_usd=project_monthly,
-        project_spent_today_usd=float(identity.get("project_spent_today_usd") or 0.0),
-        project_spent_month_usd=float(identity.get("project_spent_month_usd") or 0.0),
-        project_id=identity.get("project_id"),
-        project_name=identity.get("project_name"),
-    )
+    return {
+        "account_quota_usd": quota_daily_cost_usd,
+        "account_spent_usd": spent_today_usd,
+        "account_quota_monthly_usd": monthly_quota,
+        "account_spent_month_usd": account_month,
+        "key_budget_daily_usd": daily,
+        "key_budget_monthly_usd": monthly,
+        "key_spent_today_usd": key_today,
+        "key_spent_month_usd": key_month,
+        "key_prefix": identity.get("key_prefix"),
+        "key_label": _key_label(identity),
+        "project_budget_daily_usd": project_daily,
+        "project_budget_monthly_usd": project_monthly,
+        "project_spent_today_usd": float(identity.get("project_spent_today_usd") or 0.0),
+        "project_spent_month_usd": float(identity.get("project_spent_month_usd") or 0.0),
+        "project_id": identity.get("project_id"),
+        "project_name": identity.get("project_name"),
+    }
 
 
 def _anonymous_context() -> dict[str, Any]:
@@ -1381,6 +1407,36 @@ async def verify_api_key_for_balance(
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )
+
+
+async def read_balance_limits(
+    request: Request,
+    authorization: str | None,
+    x_api_key: str | None,
+    op_store: Any,
+) -> dict[str, Any] | None:
+    """Authenticate a balance poll and return the counters it should display.
+
+    ``None`` means user auth is disabled, so there is no quota. Otherwise the
+    dict is :func:`_quota_counters` plus ``user_id``. A missing or invalid key
+    is a 401, the same as :func:`verify_api_key_for_balance`. An exhausted
+    quota is not a 429, and ``last_used_at`` is not updated: reading the
+    balance must keep working when nothing is left to spend.
+    """
+    if not is_user_auth_enabled():
+        return None
+    user, _key_hash, cost_spent = await _authenticate_by_api_key(
+        request, authorization, x_api_key, op_store, want_spend=True
+    )
+    limits = await _quota_counters(
+        user,
+        api_key_id=user.get("id"),
+        op_store=op_store,
+        quota_daily_cost_usd=_daily_quota_usd(user),
+        spent_today_usd=float(cost_spent or 0.0),
+    )
+    limits["user_id"] = user["user_id"]
+    return limits
 
 
 async def optional_verify_api_key(

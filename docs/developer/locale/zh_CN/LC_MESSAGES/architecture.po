@@ -1180,6 +1180,21 @@ msgid "Optional — a key only widens what is listed"
 msgstr "可选——带上 key 只会让列出的模型变多"
 
 #: ../developer/architecture.md
+msgid "Balance probes"
+msgstr "余额探测"
+
+#: ../developer/architecture.md
+msgid ""
+"`GET /v1/usage`, `GET /v1/dashboard/billing/subscription`, `GET "
+"/v1/dashboard/billing/usage`, `GET /v1/dashboard/billing/credit_grants`, "
+"`GET /v1/sub2api/billing`"
+msgstr ""
+
+#: ../developer/architecture.md
+msgid "API key. A spent quota still answers; these routes do not admit work"
+msgstr "API key。额度用完时仍会应答；这些路由不接收推理请求"
+
+#: ../developer/architecture.md
 msgid "Health"
 msgstr "健康检查"
 
@@ -1233,6 +1248,22 @@ msgid ""
 msgstr ""
 "`/v1/models` 的响应格式因客户端而异：Anthropic 系的客户端调用它，拿到的是 Anthropic 格式的列表；而 "
 "`/models` 和 `/openrouter/models` 始终返回 OpenAI/OpenRouter 格式。"
+
+#: ../developer/architecture.md
+msgid ""
+"The balance probes answer the quota checks that new-api, one-api, sub2api "
+"and cc-switch run on a timer or on demand. Four of them report the money "
+"left under the tightest of the account's daily quota, its monthly quota when "
+"one is set, and the presented key's and project's budgets; "
+"`/v1/sub2api/billing` answers sub2api's rate-multiplier probe. A limit reads "
+"as spent once the request gate would refuse a request on it, so remaining is "
+"`0` exactly when a request would be refused, and a spent quota still answers "
+"HTTP 200. new-api disables a channel whose balance check reads `0` or less "
+"when the channel's automatic disabling is on, and enables it again only if "
+"its operator turned on automatic enabling. While user auth is disabled the "
+"same paths report an unlimited balance."
+msgstr ""
+"余额探测接口用于响应 new-api、one-api、sub2api 和 cc-switch 定时或按需发起的额度查询。其中四个接口报告在最紧的限额下还剩多少钱：账户的每日额度、设置了月度额度时的月度额度，以及所用 key 和项目的预算；`/v1/sub2api/billing` 用于响应 sub2api 的费率倍数探测。一旦请求闸门会因某个限额拒绝请求，该限额即视为已用完，因此剩余额度恰好在请求会被拒绝时为 `0`，额度用完时这些接口仍返回 HTTP 200。如果 new-api 的渠道开启了自动禁用，余额检查读到 `0` 或更低时，new-api 会禁用该渠道；只有运营者开启了自动启用，渠道才会被重新启用。关闭用户认证时，这些路径报告无限余额。"
 
 #: ../developer/architecture.md:497
 msgid "Deployment shape"
