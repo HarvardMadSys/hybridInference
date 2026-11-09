@@ -100,15 +100,17 @@ export function ModelsSection(): JSX.Element {
       )}
 
       {!isLoading && !error && models.length > 0 && (
+        // Below `sm` the context and output limits go under the model's name,
+        // so the prices keep a column of their own and nothing scrolls off.
         <div className="overflow-x-auto -mx-1">
-          <table className="w-full min-w-[22rem] border-collapse text-left text-xs">
+          <table className="w-full border-collapse text-left text-xs sm:min-w-[22rem]">
             <thead>
               <tr className="border-b border-gray-200 text-[11px] font-medium uppercase tracking-wide text-gray-500">
                 <th className="py-1.5 pr-2">{t('dashboard.models.col_model', 'Model')}</th>
-                <th className="py-1.5 pr-2 whitespace-nowrap">
+                <th className="hidden py-1.5 pr-2 whitespace-nowrap sm:table-cell">
                   {t('dashboard.models.col_limits', 'Ctx / out')}
                 </th>
-                <th className="py-1.5 text-right whitespace-nowrap">
+                <th className="py-1.5 text-right sm:whitespace-nowrap">
                   {t('dashboard.models.col_price', 'USD / 1M tokens')}
                 </th>
               </tr>
@@ -116,18 +118,23 @@ export function ModelsSection(): JSX.Element {
             <tbody className="text-gray-800">
               {models.map((model) => (
                 <tr key={model.id} className="border-b border-gray-100 last:border-0">
-                  <td className="max-w-[14rem] py-1 pr-2 align-top">
+                  <td className="py-1 pr-2 align-top sm:max-w-[14rem]">
                     <button
                       type="button"
                       onClick={() => copyModelId(model.id)}
-                      className="block max-w-full truncate text-left font-mono text-[11px] text-blue-700 hover:text-blue-900"
+                      className="block max-w-full break-all text-left font-mono text-[11px] text-blue-700 hover:text-blue-900 sm:truncate"
                       title={t('dashboard.models.copy', 'Copy model ID')}
                     >
                       {model.id}
                     </button>
-                    <div className="truncate text-[11px] text-gray-500">{model.name}</div>
+                    <div className="text-[11px] text-gray-500 sm:truncate">{model.name}</div>
+                    <div className="text-[11px] tabular-nums text-gray-700 sm:hidden">
+                      {t('dashboard.models.col_limits', 'Ctx / out')}{' '}
+                      {formatTokenLimit(model.context_length)} /{' '}
+                      {formatTokenLimit(model.max_output_length)}
+                    </div>
                   </td>
-                  <td className="whitespace-nowrap py-1 pr-2 align-top tabular-nums text-gray-700">
+                  <td className="hidden whitespace-nowrap py-1 pr-2 align-top tabular-nums text-gray-700 sm:table-cell">
                     {formatTokenLimit(model.context_length)} /{' '}
                     {formatTokenLimit(model.max_output_length)}
                   </td>

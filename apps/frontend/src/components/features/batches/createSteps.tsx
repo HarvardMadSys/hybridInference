@@ -22,7 +22,7 @@ import { FormatExample } from './FormatExample';
 
 function StepCard({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+    <section className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
       <h2 className="text-base font-semibold text-gray-900">{title}</h2>
       <div className="mt-4 space-y-4">{children}</div>
     </section>

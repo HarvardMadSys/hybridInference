@@ -119,7 +119,7 @@ export function SiteFooter(): JSX.Element {
 
   return (
     <footer
-      className={`mx-auto w-full ${consoleWidth} px-6 py-6 text-center text-sm text-gray-400`}
+      className={`mx-auto w-full ${consoleWidth} px-4 py-6 text-center text-sm text-gray-400 sm:px-6`}
     >
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
         {entries.map((entry, index) => (

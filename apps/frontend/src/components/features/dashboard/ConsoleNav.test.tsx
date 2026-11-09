@@ -30,6 +30,9 @@ vi.mock('@/lib/hooks/queries/useBatchCapabilities', () => ({
   }),
 }));
 
+vi.mock('@/components/ui/revealHorizontally', () => ({ revealHorizontally: vi.fn() }));
+
+import { revealHorizontally } from '@/components/ui/revealHorizontally';
 import { ConsoleNav, isCurrent } from './ConsoleNav';
 
 function reset() {
@@ -168,6 +171,32 @@ describe('ConsoleNav administration and feature access', () => {
     const link = screen.getByRole('link', { name: 'pgAdmin' });
     expect(link).toHaveAttribute('href', '/pgadmin/');
     expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('brings the current page back into view when an entry loads ahead of it', () => {
+    // On a phone the row scrolls sideways. Batches arrives after its
+    // capabilities do and pushes Settings along, so Settings is revealed again.
+    pathname = '/dashboard/settings';
+    batchEntry = null;
+    const reveal = vi.mocked(revealHorizontally);
+    reveal.mockClear();
+
+    const { rerender } = render(<ConsoleNav />);
+    const nav = screen.getByRole('navigation', { name: 'Console' });
+    expect(reveal).toHaveBeenLastCalledWith(nav, screen.getByRole('link', { name: 'Settings' }));
+
+    reveal.mockClear();
+    batchEntry = true;
+    rerender(<ConsoleNav />);
+
+    expect(screen.getByRole('link', { name: 'Batches' })).toBeInTheDocument();
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal).toHaveBeenCalledWith(nav, screen.getByRole('link', { name: 'Settings' }));
+
+    // A render that changes nothing leaves the reader's own scrolling alone.
+    reveal.mockClear();
+    rerender(<ConsoleNav />);
+    expect(reveal).not.toHaveBeenCalled();
   });
 
   it('shows no Batches entry while the capabilities are unknown', () => {

@@ -2203,7 +2203,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             className="mt-1 w-full min-w-[240px] max-w-sm"
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {loading && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}

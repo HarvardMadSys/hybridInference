@@ -78,6 +78,30 @@
   }
 }
 
+/* A phone zooms the page in when a text field smaller than 16px takes focus,
+   and Safari leaves it zoomed once the keyboard closes. On touch screens the
+   console's fields are 16px; a field already set larger keeps its own size. */
+@media (hover: none) and (pointer: coarse) {
+  .console-theme
+    :is(
+      input:not(
+        [type='checkbox'],
+        [type='radio'],
+        [type='range'],
+        [type='file'],
+        [type='color'],
+        [type='button'],
+        [type='submit'],
+        [type='reset'],
+        [type='image']
+      ),
+      select,
+      textarea
+    ):not(.text-base, .text-lg, .text-xl, .text-2xl, .text-3xl, .text-4xl) {
+    font-size: 16px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in-up,
   .animate-float-slow,

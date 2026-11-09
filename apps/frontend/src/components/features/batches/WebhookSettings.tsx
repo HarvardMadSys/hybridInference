@@ -140,7 +140,7 @@ export function WebhookSettings({ canEdit = true }: { canEdit?: boolean }) {
           : t('batches.webhook.state.configured', 'Configured');
 
   return (
-    <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+    <section className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
       <details ref={detailsRef}>
         <summary className="cursor-pointer rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500">
           <h2 className="ml-1 inline text-base font-semibold text-gray-900">

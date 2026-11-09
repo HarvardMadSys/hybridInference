@@ -484,7 +484,7 @@ export function ApiKeyManager(): JSX.Element {
   }
 
   return (
-    <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+    <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900">

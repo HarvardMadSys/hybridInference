@@ -35,7 +35,9 @@ export function ConsoleChrome({ children }: { children: React.ReactNode }) {
     <div className="console-theme flex min-h-screen flex-1 flex-col bg-gray-50 text-gray-900">
       <Header />
       <ConfigurationBanner />
-      <main className={`mx-auto flex w-full ${consoleWidth} flex-1 flex-col px-6 py-12`}>
+      <main
+        className={`mx-auto flex w-full ${consoleWidth} flex-1 flex-col px-4 py-6 sm:px-6 sm:py-12`}
+      >
         {children}
       </main>
       <SiteFooter />
