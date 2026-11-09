@@ -2335,6 +2335,10 @@
     "source": "{app_name} logo",
     "text": "{app_name} 标志"
   },
+  "chrome.header.menu": {
+    "source": "Menu",
+    "text": "菜单"
+  },
   "chrome.header.stats": {
     "source": "Stats",
     "text": "统计"

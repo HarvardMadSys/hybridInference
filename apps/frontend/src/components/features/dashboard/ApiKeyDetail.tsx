@@ -15,7 +15,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { limitsSummary, parseBudget } from './keyLimits';
 import { ModelPicker } from './ModelPicker';
 
-const CARD = 'rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200';
+const CARD = 'rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6';
 
 function budgetText(value: number | null | undefined): string {
   return value == null ? '' : String(value);
