@@ -1853,6 +1853,59 @@ async def test_verify_provider_route_update_does_not_apply(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_verify_config_route_retains_registered_adapter_for_current_target(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    model_id = "example-chat"
+    route_id = f"{model_id}:local-api"
+    provider = "example-hosted"
+    base_url = "http://example-internal.test:8000/v1"
+    adapter = _make_adapter(
+        "deepseek",
+        {
+            "id": model_id,
+            "name": "Example Chat",
+            "provider": "deepseek",
+            "base_url": base_url,
+            "chat_path": "/custom/chat/completions",
+            "endpoint_id": route_id,
+            "provider_model_id": "vendor/example-chat",
+            "api_key": "example-existing-fixture",
+            "route_metadata": {
+                "route_provider": provider,
+                "upstream_provider": provider,
+                "key_provider": provider,
+            },
+        },
+    )
+    dynamic_keys.register_adapter_for_provider(provider, adapter)
+    route_executor.register_route(model_id, [(adapter, 1.0)])
+    op_store.get_provider_key_full.return_value = (provider, "example-candidate-fixture")
+
+    response = await client.post(
+        f"/admin/routing/provider-route-verifications/{model_id}/{route_id}",
+        json={
+            "upstream_provider": provider,
+            "base_url": base_url,
+            "api_key_id": "example-key-id",
+            "provider_model_id": "vendor/example-chat",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    verify_mock.assert_awaited_once()
+    candidate = verify_mock.await_args.args[0].adapter
+    assert candidate is not adapter
+    assert candidate.config.provider == "deepseek"
+    assert candidate.config.provider_profile == "deepseek"
+    assert candidate.config.chat_path == "/custom/chat/completions"
+    assert candidate._key_pool.snapshot_keys() == ["example-candidate-fixture"]
+    assert route_executor.routes[model_id].adapters[0][0] is adapter
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    fake_routewise.refresh_route_table.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_put_provider_route_verify_failure_does_not_apply(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")

@@ -585,6 +585,13 @@ def _check_provider_label(
 
 
 def _make_adapter(kind: str, cfg: dict[str, Any]):
+    """Construct an adapter and retain the kind used to build it."""
+    adapter = _build_adapter(kind, cfg)
+    adapter.registered_kind = kind
+    return adapter
+
+
+def _build_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:

@@ -3142,9 +3142,15 @@ async def _prepare_route_update(
         concurrency["limit"] = concurrency_limit_override
         cfg["concurrency"] = concurrency
 
-    provider_for_cfg = _model_config_provider_for_target(target)
-    cfg["provider"] = provider_for_cfg
-    _apply_target_adapter_defaults(cfg, target)
+    # An unchanged endpoint already has a trusted protocol configuration.
+    # Its key-pool name may be a label that cannot construct an adapter.
+    registered_kind = getattr(current_adapter, "registered_kind", None)
+    if same_target and same_url and registered_kind:
+        adapter_kind = registered_kind
+    else:
+        adapter_kind = target.kind
+        cfg["provider"] = _model_config_provider_for_target(target)
+        _apply_target_adapter_defaults(cfg, target)
     _carry_endpoint_facts_if_unmoved(
         cfg,
         current_adapter=current_adapter,
@@ -3163,7 +3169,7 @@ async def _prepare_route_update(
         openrouter_sort=openrouter_sort,
     )
 
-    adapter = _make_adapter(target.kind, cfg)
+    adapter = _make_adapter(adapter_kind, cfg)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(

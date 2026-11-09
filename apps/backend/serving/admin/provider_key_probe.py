@@ -126,6 +126,9 @@ def _openrouter_adapter_kind(config: Any) -> str:
 
 
 def _adapter_kind(adapter: object) -> str:
+    registered_kind = getattr(adapter, "registered_kind", None)
+    if registered_kind:
+        return registered_kind
     config = getattr(adapter, "config", None)
     if config is None:
         return ""
@@ -201,8 +204,8 @@ async def probe_provider_key_with_existing_route(
     cfg["api_key"] = api_key
     cfg["api_keys"] = None
 
-    dry_run_adapter = _make_adapter(_adapter_kind(adapter), cfg)
     try:
+        dry_run_adapter = _make_adapter(_adapter_kind(adapter), cfg)
         await asyncio.wait_for(
             dry_run_adapter.chat_completion(
                 [{"role": "user", "content": "ping"}],
