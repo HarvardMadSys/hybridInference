@@ -162,12 +162,17 @@ def _legacy_levels(config: Any) -> tuple[str, ...] | None:
     return tuple(declared)
 
 
+def has_legacy_effort_declaration(config: Any) -> bool:
+    """Whether the route declares its own legacy domain or passthrough."""
+    supported = getattr(config, "supported_params", None) or ()
+    return getattr(config, "reasoning_effort_declared", True) and (
+        EFFORT_PARAM in supported or _legacy_levels(config) is not None
+    )
+
+
 def inherited_effort_map(config: Any) -> Mapping[str, str]:
     """The matched preset map, unless the route declares its own legacy effort behavior."""
-    supported = getattr(config, "supported_params", None) or ()
-    if getattr(config, "reasoning_effort_declared", True) and (
-        EFFORT_PARAM in supported or _legacy_levels(config)
-    ):
+    if has_legacy_effort_declaration(config):
         return {}
     return getattr(config, "reasoning_effort_preset_map", None) or {}
 
@@ -182,6 +187,11 @@ def effort_contract(config: Any) -> EffortContract:
     mapping = getattr(config, EFFORT_MAP_FIELD, None) or inherited_effort_map(config)
     if isinstance(mapping, Mapping) and mapping:
         return EffortContract(forwards=True, levels=tuple(mapping), upstream=dict(mapping))
+    return legacy_effort_contract(config)
+
+
+def legacy_effort_contract(config: Any) -> EffortContract:
+    """The route's effort contract without any mapping or preset."""
     supported = getattr(config, "supported_params", None) or ()
     if EFFORT_PARAM not in supported:
         return EffortContract(forwards=False, levels=())
@@ -220,7 +230,9 @@ __all__ = [
     "ReasoningEffortRefused",
     "declared_public_levels",
     "effort_contract",
+    "has_legacy_effort_declaration",
     "inherited_effort_map",
+    "legacy_effort_contract",
     "read_effort_map",
     "stored_effort_map",
     "translate_effort",

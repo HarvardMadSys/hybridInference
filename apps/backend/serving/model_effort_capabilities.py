@@ -42,7 +42,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from serving.adapters.reasoning_effort import EFFORT_PARAM, effort_contract
+from serving.adapters.reasoning_effort import (
+    EFFORT_PARAM,
+    effort_contract,
+    legacy_effort_contract,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -69,11 +73,12 @@ def _well_formed(levels: tuple[str, ...]) -> list[str] | None:
     return domain
 
 
-def adapter_effort_domain(adapter: Any) -> list[str] | None:
-    """The values ``adapter``'s route delivers: a list (maybe empty), or ``None`` for unknown."""
+def adapter_effort_domain(adapter: Any, *, legacy: bool = False) -> list[str] | None:
+    """The route's public domain, or its legacy domain when previewing catalog defaults."""
     if not getattr(adapter, "forwards_reasoning_effort", False):
         return None
-    contract = effort_contract(getattr(adapter, "config", None))
+    config = getattr(adapter, "config", None)
+    contract = legacy_effort_contract(config) if legacy else effort_contract(config)
     if not contract.forwards:
         return [] if getattr(adapter.config, "reasoning_effort_declared", True) else None
     if contract.levels is None:

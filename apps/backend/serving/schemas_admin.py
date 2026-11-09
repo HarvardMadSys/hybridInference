@@ -1779,6 +1779,7 @@ class RouteEffortPresetTarget(BaseModel):
     provider_model_id: str
     base_url: str
     openrouter_provider: str | None = None
+    model_route_path: str | None = None
 
 
 class RouteEffortPresetItem(BaseModel):
@@ -1786,6 +1787,12 @@ class RouteEffortPresetItem(BaseModel):
 
     label: str
     reasoning_effort_map: dict[str, str]
+
+
+class RouteLegacyEffortItem(BaseModel):
+    """The catalog's legacy effort declaration when the edit returns to its target."""
+
+    reasoning_efforts_published: list[str] | None
 
 
 class ProviderRouteItem(BaseModel):

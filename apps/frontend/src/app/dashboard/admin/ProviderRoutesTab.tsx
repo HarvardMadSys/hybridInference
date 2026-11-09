@@ -17,7 +17,7 @@ import {
   Role,
   RouteWeight,
   RouteCapabilities,
-  type RouteEffortPreset,
+  type RouteEffortPreview,
   RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
@@ -739,7 +739,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [effortRestoreChosen, setEffortRestoreChosen] = useState(false);
   const [effortPreview, setEffortPreview] = useState<{
     key: string;
-    preset: RouteEffortPreset | null;
+    preview: RouteEffortPreview | null;
   }>();
   const [addingRoute, setAddingRoute] = useState(false);
   const [creatingModel, setCreatingModel] = useState(false);
@@ -912,9 +912,21 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         ? selectedCreateOpenRouterProvider
         : selectedOpenRouterProvider
       : null;
-  const effortPreviewKey = JSON.stringify([effortProvider, effortModel, effortUrl, effortPin]);
-  const selectedEffortPreset =
-    effortPreview?.key === effortPreviewKey ? effortPreview.preset : null;
+  const effortRoutePath =
+    !createFormOpen && editingRoute && editEffortTargetChanged
+      ? `${editingRoute.model_id}/${editingRoute.route_id}`
+      : null;
+  const effortPreviewKey = JSON.stringify([
+    effortProvider,
+    effortModel,
+    effortUrl,
+    effortPin,
+    effortRoutePath,
+  ]);
+  const selectedEffort = effortPreview?.key === effortPreviewKey ? effortPreview.preview : null;
+  const selectedEffortPreset = selectedEffort && 'label' in selectedEffort ? selectedEffort : null;
+  const selectedLegacyEffort =
+    selectedEffort && 'reasoning_efforts_published' in selectedEffort ? selectedEffort : null;
   const strategy = selectedRoutes[0]?.strategy ?? 'fixed';
   const isRoutewise = strategy === 'routewise';
   // RouteWise does not use offload routes, and the console refuses to switch a
@@ -1474,9 +1486,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (!effortProvider || !effortModel || !effortUrl) return undefined;
     let cancelled = false;
     const timeout = window.setTimeout(() => {
-      void previewRouteEffortPreset(effortProvider, effortModel, effortUrl, effortPin)
-        .then((preset) => {
-          if (!cancelled) setEffortPreview({ key: effortPreviewKey, preset });
+      void previewRouteEffortPreset(
+        effortProvider,
+        effortModel,
+        effortUrl,
+        effortPin,
+        effortRoutePath,
+      )
+        .then((preview) => {
+          if (!cancelled) setEffortPreview({ key: effortPreviewKey, preview });
         })
         .catch(() => {
           // The gateway still applies its own default at save time.
@@ -1486,7 +1504,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [effortPreviewKey, effortProvider, effortModel, effortUrl, effortPin]);
+  }, [effortPreviewKey, effortProvider, effortModel, effortUrl, effortPin, effortRoutePath]);
 
   useEffect(() => {
     setDiscoveredOpenRouterProviderOptions([]);
@@ -3672,16 +3690,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         Boolean(selectedEffortPreset) ||
                         (editingRoute.reasoning_effort_mappable ?? true),
                       published: editEffortTargetChanged
-                        ? null
+                        ? (selectedLegacyEffort?.reasoning_efforts_published ?? null)
                         : (editingRoute.reasoning_efforts_published ?? null),
                       defaultMap: editCapabilityDefaults.reasoning_effort_map,
                       presetLabel:
                         editEffortTargetChanged && !hasConfiguredEffortDefault
                           ? selectedEffortPreset?.label
                           : editingRoute.reasoning_effort_preset_label,
-                      source: sameEffortMap(editEffortMap, editCapabilities?.reasoning_effort_map)
-                        ? editingRoute.reasoning_effort_source
-                        : undefined,
+                      source:
+                        !editEffortMap && selectedLegacyEffort
+                          ? 'configured'
+                          : sameEffortMap(editEffortMap, editCapabilities?.reasoning_effort_map)
+                            ? editingRoute.reasoning_effort_source
+                            : undefined,
                       onRestore:
                         !effortRestoreChosen &&
                         (editingRoute.reasoning_effort_source === 'override' ||

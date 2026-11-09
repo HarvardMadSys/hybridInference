@@ -10012,6 +10012,18 @@ async def test_retarget_effort_defaults_follow_the_catalog_identity(admin_client
         headers=AUTH,
     )
     assert override.status_code == 200, override.text
+    preview = await client.post(
+        "/admin/routing/reasoning-effort-preset",
+        json={
+            "provider": "featherless",
+            "base_url": original.base_url,
+            "provider_model_id": original.provider_model_id,
+            "model_route_path": YAML_ROUTE_PATH,
+        },
+        headers=AUTH,
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json() == {"reasoning_efforts_published": ["medium", "high"]}
     back = await edit(original.provider_model_id)
     assert back["reasoning_effort_source"] == "override"
     assert (

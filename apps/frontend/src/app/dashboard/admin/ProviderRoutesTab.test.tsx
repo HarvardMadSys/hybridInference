@@ -5025,7 +5025,24 @@ describe('ProviderRoutesTab', () => {
           'vendor/model',
           'https://openrouter.ai/api/v1',
           'parasail',
+          `${presetRoute.model_id}/${presetRoute.route_id}`,
         );
+      });
+
+      it('shows the catalog legacy effort choices before saving a return to its target', async () => {
+        vi.mocked(previewRouteEffortPreset).mockResolvedValueOnce({
+          reasoning_efforts_published: ['medium', 'high'],
+        });
+        const dialog = await renderWithRoute(presetRoute);
+        fireEvent.change(within(dialog).getByLabelText('Provider model ID'), {
+          target: { value: 'original-catalog-model' },
+        });
+
+        expect(
+          await within(dialog).findByText('Client choices on this route: medium, high'),
+        ).toBeVisible();
+        expect(within(dialog).getByText('Route configuration')).toBeVisible();
+        expect(within(dialog).queryByText('Preset · Verified test preset')).toBeNull();
       });
 
       it('offers no map on a route whose adapter sends no effort', async () => {

@@ -27,6 +27,7 @@ from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
 from serving.adapters.reasoning_effort import (
     EFFORT_MAP_FIELD,
+    has_legacy_effort_declaration,
     inherited_effort_map,
     read_effort_map,
     stored_effort_map,
@@ -58,6 +59,7 @@ from serving.schemas_admin import (
     RouteCapabilityEdit,
     RouteEffortPresetItem,
     RouteEffortPresetTarget,
+    RouteLegacyEffortItem,
     RuntimeModelCapabilities,
     UpdateProviderRouteBatchRequest,
     UpdateProviderRouteCandidateRequest,
@@ -3040,6 +3042,35 @@ async def _prepare_model_route_candidate(
     )
 
 
+def _effort_catalog_adapter(
+    route, route_id: str, target: ProviderTarget, base_url: str, provider_model_id: str
+):
+    """The original adapter if the edit points at its catalog upstream."""
+    baseline = getattr(route, BASELINE_ENTRIES_ATTR, None)
+    if baseline is None:
+        baseline = _raw_route_entries(route)
+    catalog_adapter = next(
+        (
+            adapter
+            for adapter, _weight, endpoint_id in baseline
+            if _route_id_for_entry(adapter, endpoint_id) == route_id
+        ),
+        None,
+    )
+    if catalog_adapter is None or _is_runtime_candidate(catalog_adapter):
+        return None
+    config = catalog_adapter.config
+    url = _canonical_base_url(base_url)
+    if (
+        url is not None
+        and url == _canonical_base_url(config.base_url)
+        and _same_upstream_target(target, _upstream_provider(catalog_adapter))
+        and provider_model_id == (getattr(config, "provider_model_id", None) or config.id)
+    ):
+        return catalog_adapter
+    return None
+
+
 async def _prepare_route_update(
     services,
     op_store,
@@ -3137,15 +3168,11 @@ async def _prepare_route_update(
     # fallback behavior, but only let them outrank a preset on that target.
     # Compare against the catalog entry so moving back and replaying saved
     # edits at startup agree even after several consecutive target edits.
-    baseline_entries = getattr(route, BASELINE_ENTRIES_ATTR, None) or entries
-    baseline_adapter = baseline_entries[_route_index_for_id(baseline_entries, route_id)][0]
-    baseline_config = baseline_adapter.config
-    cfg["reasoning_effort_declared"] = (
-        getattr(baseline_config, "reasoning_effort_declared", True)
-        and _same_upstream_target(target, _upstream_provider(baseline_adapter))
-        and effective_url is not None
-        and effective_url == _canonical_base_url(baseline_config.base_url)
-        and provider_model_id == (getattr(baseline_config, "provider_model_id", None) or model_id)
+    catalog_adapter = _effort_catalog_adapter(
+        route, route_id, target, cleaned_base_url, provider_model_id
+    )
+    cfg["reasoning_effort_declared"] = catalog_adapter is not None and getattr(
+        catalog_adapter.config, "reasoning_effort_declared", True
     )
     deployment_type_declaration = deployment_type_override
     if deployment_type_declaration is None and not (same_target and same_url):
@@ -4684,21 +4711,31 @@ async def list_all_provider_routes(
     )
 
 
-@router.post("/routing/reasoning-effort-preset", response_model=RouteEffortPresetItem | None)
+@router.post(
+    "/routing/reasoning-effort-preset",
+    response_model=RouteEffortPresetItem | RouteLegacyEffortItem | None,
+)
 async def preview_reasoning_effort_preset(
     payload: RouteEffortPresetTarget,
     _admin_id: str = Depends(verify_admin_access),
-) -> RouteEffortPresetItem | None:
-    """Preview the verified default for a selected target without probing the upstream."""
+    services=Depends(get_services),
+) -> RouteEffortPresetItem | RouteLegacyEffortItem | None:
+    """Preview the effective effort default without probing the selected upstream."""
     target = _target_for_provider(
         _target_provider_from_request(payload.provider, payload.openrouter_provider)
     )
-    preset = find_reasoning_effort_preset(
-        target.provider,
-        target.kind,
-        payload.provider_model_id.strip(),
-        _normalize_base_url(payload.base_url),
-    )
+    base_url = _normalize_base_url(payload.base_url)
+    provider_model_id = payload.provider_model_id.strip()
+    if payload.model_route_path:
+        _model_id, route_id, route = _split_model_route_path(services, payload.model_route_path)
+        catalog_adapter = _effort_catalog_adapter(
+            route, route_id, target, base_url, provider_model_id
+        )
+        if catalog_adapter is not None and has_legacy_effort_declaration(catalog_adapter.config):
+            return RouteLegacyEffortItem(
+                reasoning_efforts_published=adapter_effort_domain(catalog_adapter, legacy=True)
+            )
+    preset = find_reasoning_effort_preset(target.provider, target.kind, provider_model_id, base_url)
     if preset is None:
         return None
     return RouteEffortPresetItem(label=preset.label, reasoning_effort_map=dict(preset.effort_map))

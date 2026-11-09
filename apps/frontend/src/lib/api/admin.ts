@@ -2715,12 +2715,17 @@ export interface RouteEffortPreset {
   reasoning_effort_map: Record<string, string>;
 }
 
+export type RouteEffortPreview =
+  | RouteEffortPreset
+  | { reasoning_efforts_published: string[] | null };
+
 export async function previewRouteEffortPreset(
   provider: string,
   providerModelId: string,
   baseUrl: string,
   openRouterProvider: string | null,
-): Promise<RouteEffortPreset | null> {
+  modelRoutePath: string | null,
+): Promise<RouteEffortPreview | null> {
   const response = await fetchWithAuth(API_BASE, '/admin/routing/reasoning-effort-preset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2729,9 +2734,10 @@ export async function previewRouteEffortPreset(
       provider_model_id: providerModelId,
       base_url: baseUrl,
       openrouter_provider: openRouterProvider,
+      model_route_path: modelRoutePath,
     }),
   });
-  return jsonOrThrow<RouteEffortPreset | null>(response);
+  return jsonOrThrow<RouteEffortPreview | null>(response);
 }
 
 export async function listOpenRouterProviderOptions(
