@@ -345,7 +345,7 @@ function ReasoningEffortFields({
       : 'Custom mapping'
     : context?.presetLabel
       ? `Preset · ${context.presetLabel}`
-      : context?.source === 'configured'
+      : defaultMap || context?.source === 'configured'
         ? 'Route configuration'
         : null;
   return (

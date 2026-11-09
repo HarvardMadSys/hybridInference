@@ -29,7 +29,7 @@ from serving.config.settings import get_settings
 from serving.pricing import PricingSchedule, effective_pricing
 from serving.servers.bootstrap import _EffectiveRouteRefreshState, _reload_effective_route_state
 from serving.servers.deps import AppServices
-from serving.servers.registry import _make_adapter
+from serving.servers.registry import _make_adapter, register_from_models_text
 from serving.servers.routers import admin as admin_router
 from serving.servers.routers.admin import provider_routes
 from serving.servers.routers.admin.provider_routes import (
@@ -9885,3 +9885,140 @@ async def test_old_runtime_route_inherits_preset_and_admin_can_clear_only_effort
     assert inherited.json()["capabilities"]["max_output_length"] == 4096
     stored = op_store.capability_rows[(row["model_id"], row["route_id"])]["capabilities"]
     assert json.loads(stored) == four
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "label", "upstream", "pin", "url"),
+    [
+        ("openai_compat", "analytics-label", "openai_compat", None, "https://effort.example/v1"),
+        (
+            "openrouter[parasail]",
+            "openrouter",
+            "openrouter",
+            "parasail",
+            "https://openrouter.ai/api/v1",
+        ),
+    ],
+)
+async def test_effort_preset_matches_catalog_preview_and_credential_edit(
+    admin_client, monkeypatch, kind, label, upstream, pin, url
+):
+    from serving.adapters.reasoning_effort import upstream_effort
+    from serving.config import reasoning_effort_presets as presets
+
+    client, op_store, route_executor, _routewise, _verify = admin_client
+    monkeypatch.setattr(presets, "_PRESETS", {})
+    presets.register_reasoning_effort_preset(
+        provider=upstream,
+        adapter_kind=kind,
+        provider_model_id="verified",
+        base_url=url,
+        label="Verified preset",
+        effort_map=ROUTE_EFFORT_MAP,
+    )
+    register_from_models_text(
+        route_executor,
+        f"""
+models:
+  - id: effort-preview
+    route:
+      - kind: "{kind}"
+        provider: {label}
+        base_url: {url}
+        provider_model_id: verified
+""",
+    )
+    route = route_executor.routes["effort-preview"]
+    adapter, _weight, route_id = route.raw_adapters[0]
+    assert upstream_effort(adapter.config, "high") == "xhigh"
+
+    target = {
+        "provider_model_id": "verified",
+        "base_url": url,
+        "openrouter_provider": pin,
+    }
+    preview = await client.post(
+        "/admin/routing/reasoning-effort-preset",
+        json={**target, "provider": upstream, "base_url": url.removeprefix("https://")},
+        headers=AUTH,
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["reasoning_effort_map"] == ROUTE_EFFORT_MAP
+    if pin:
+        unpinned = await client.post(
+            "/admin/routing/reasoning-effort-preset",
+            json={**target, "provider": upstream, "openrouter_provider": None},
+            headers=AUTH,
+        )
+        assert unpinned.json() is None
+
+    op_store.get_provider_key_full.return_value = (upstream, "fixture-provider-key")
+    edited = await client.put(
+        f"/admin/routing/provider-routes/effort-preview/{route_id}",
+        json={**target, "upstream_provider": upstream, "api_key_id": "replacement-key"},
+        headers=AUTH,
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["reasoning_effort_source"] == "preset"
+    assert edited.json()["reasoning_efforts_published"] == ["low", "high", "max"]
+    assert upstream_effort(route.raw_adapters[0][0].config, "high") == "xhigh"
+
+
+@pytest.mark.asyncio
+async def test_retarget_effort_defaults_follow_the_catalog_identity(admin_client, monkeypatch):
+    from serving.adapters.reasoning_effort import upstream_effort
+    from serving.config import reasoning_effort_presets as presets
+
+    client, _store, route_executor, _routewise, _verify = admin_client
+    monkeypatch.setattr(presets, "_PRESETS", {})
+    original = _route_adapter(route_executor, EFFORT_ROUTE_ID).config
+    original.supported_params = ["reasoning_effort"]
+    original.reasoning_efforts = ["medium", "high"]
+    for model in (original.provider_model_id, "verified-other-model"):
+        presets.register_reasoning_effort_preset(
+            provider="featherless",
+            adapter_kind="featherless",
+            provider_model_id=model,
+            base_url=original.base_url,
+            label="Verified preset",
+            effort_map=ROUTE_EFFORT_MAP,
+        )
+
+    async def edit(model):
+        response = await client.put(
+            f"/admin/routing/provider-routes/{YAML_ROUTE_PATH}",
+            json={
+                "upstream_provider": "featherless",
+                "base_url": original.base_url,
+                "provider_model_id": model,
+            },
+            headers=AUTH,
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    switched = await edit("verified-other-model")
+    assert switched["reasoning_effort_source"] == "preset"
+    assert switched["reasoning_efforts_published"] == ["low", "high", "max"]
+    assert (
+        upstream_effort(_route_adapter(route_executor, EFFORT_ROUTE_ID).config, "high") == "xhigh"
+    )
+
+    # A saved admin override still outranks the new upstream's preset.
+    override = await client.put(
+        EFFORT_CAPABILITIES_PATH,
+        json=_with_effort_map(RUNTIME_CAPABILITIES, {"high": "custom"}),
+        headers=AUTH,
+    )
+    assert override.status_code == 200, override.text
+    back = await edit(original.provider_model_id)
+    assert back["reasoning_effort_source"] == "override"
+    assert (
+        upstream_effort(_route_adapter(route_executor, EFFORT_ROUTE_ID).config, "high") == "custom"
+    )
+
+    cleared = await client.delete(EFFORT_CAPABILITIES_PATH, headers=AUTH)
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["reasoning_efforts_published"] == ["medium", "high"]
+    assert upstream_effort(_route_adapter(route_executor, EFFORT_ROUTE_ID).config, "high") == "high"

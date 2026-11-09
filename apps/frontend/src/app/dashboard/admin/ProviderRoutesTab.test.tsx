@@ -5003,6 +5003,31 @@ describe('ProviderRoutesTab', () => {
         expect(within(dialog).queryByText('Preset · Verified test preset')).toBeNull();
       });
 
+      it('refreshes the effort preview when only the OpenRouter pin changes', async () => {
+        vi.mocked(previewRouteEffortPreset).mockResolvedValueOnce({
+          label: 'Pinned endpoint preset',
+          reasoning_effort_map: { high: 'high' },
+        });
+        const dialog = await renderWithRoute({
+          ...presetRoute,
+          provider: 'openrouter',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'deepinfra',
+          key_provider: 'openrouter',
+          base_url: 'https://openrouter.ai/api/v1',
+          provider_model_id: 'vendor/model',
+        });
+        chooseValue(within(dialog).getByLabelText('OpenRouter routing'), 'provider:parasail');
+
+        expect(await within(dialog).findByText('Preset · Pinned endpoint preset')).toBeVisible();
+        expect(previewRouteEffortPreset).toHaveBeenLastCalledWith(
+          'openrouter',
+          'vendor/model',
+          'https://openrouter.ai/api/v1',
+          'parasail',
+        );
+      });
+
       it('offers no map on a route whose adapter sends no effort', async () => {
         const dialog = await renderWithRoute({ ...route, reasoning_effort_mappable: false });
         expect(

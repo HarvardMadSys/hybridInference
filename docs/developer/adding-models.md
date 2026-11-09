@@ -179,11 +179,14 @@ set or replace a route's map from the console; see
 
 A trusted backend extension can call `register_reasoning_effort_preset` from
 `serving.config.reasoning_effort_presets` in its `register()` hook. Register the
-provider label, adapter kind, exact upstream model ID and base URL that were
-verified together, with a short display label and a `reasoning_effort_map`.
-A different endpoint, model or protocol requires its own verification.
-Explicit admin overrides and route maps retain precedence. A declared legacy
-effort domain or explicit legacy passthrough also retains its behavior. A
+upstream provider, adapter kind, exact upstream model ID and base URL that
+were verified together, with a short display label and a `reasoning_effort_map`.
+The upstream provider follows the route target, independent of its analytics
+label. For an OpenRouter pin, use provider `openrouter` and adapter kind
+`openrouter[<pin>]`. A different endpoint, model or protocol requires its own
+verification.
+Explicit admin overrides and route maps retain precedence. Legacy effort declarations keep
+precedence on their original upstream. A
 preset with an identity map still supplies a public domain and enables
 forwarding.
 

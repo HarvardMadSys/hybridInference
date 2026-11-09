@@ -1670,14 +1670,17 @@ class _BaseUrlNotResolved(HTTPException):
     """
 
 
-async def _validate_base_url(base_url: str) -> str:
+def _normalize_base_url(base_url: str) -> str:
     cleaned = base_url.strip()
     if not cleaned:
         raise HTTPException(status_code=422, detail="base_url must not be blank")
-
     if "://" not in cleaned:
-        cleaned = f"https://{cleaned.lstrip('/')}"
+        return f"https://{cleaned.lstrip('/')}"
+    return cleaned
 
+
+async def _validate_base_url(base_url: str) -> str:
+    cleaned = _normalize_base_url(base_url)
     try:
         parsed = urlparse(cleaned)
         _ = parsed.port  # Validate malformed and out-of-range ports before DNS.
@@ -2863,7 +2866,7 @@ async def _prepare_route_candidate(
         cfg["concurrency_pool"] = _runtime_concurrency_pool(model_id, candidate_route_id)
         cfg["concurrency"] = {"limit": concurrency_limit}
 
-    adapter = _make_adapter(target.kind, cfg, effort_provider=target.provider)
+    adapter = _make_adapter(target.kind, cfg)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -3013,7 +3016,7 @@ async def _prepare_model_route_candidate(
         cfg["concurrency_pool"] = _runtime_concurrency_pool(model_id, candidate_route_id)
         cfg["concurrency"] = {"limit": concurrency_limit}
 
-    adapter = _make_adapter(target.kind, cfg, effort_provider=target.provider)
+    adapter = _make_adapter(target.kind, cfg)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -3130,6 +3133,20 @@ async def _prepare_route_update(
         current_adapter.config,
         strip_route_capabilities=not (same_target and same_url),
     )
+    # Legacy effort fields come from the catalog target. Preserve their
+    # fallback behavior, but only let them outrank a preset on that target.
+    # Compare against the catalog entry so moving back and replaying saved
+    # edits at startup agree even after several consecutive target edits.
+    baseline_entries = getattr(route, BASELINE_ENTRIES_ATTR, None) or entries
+    baseline_adapter = baseline_entries[_route_index_for_id(baseline_entries, route_id)][0]
+    baseline_config = baseline_adapter.config
+    cfg["reasoning_effort_declared"] = (
+        getattr(baseline_config, "reasoning_effort_declared", True)
+        and _same_upstream_target(target, _upstream_provider(baseline_adapter))
+        and effective_url is not None
+        and effective_url == _canonical_base_url(baseline_config.base_url)
+        and provider_model_id == (getattr(baseline_config, "provider_model_id", None) or model_id)
+    )
     deployment_type_declaration = deployment_type_override
     if deployment_type_declaration is None and not (same_target and same_url):
         # Older clients and legacy DB overrides omit this field. A declaration
@@ -3174,7 +3191,7 @@ async def _prepare_route_update(
         openrouter_sort=openrouter_sort,
     )
 
-    adapter = _make_adapter(target.kind, cfg, effort_provider=target.provider)
+    adapter = _make_adapter(target.kind, cfg)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -4673,9 +4690,14 @@ async def preview_reasoning_effort_preset(
     _admin_id: str = Depends(verify_admin_access),
 ) -> RouteEffortPresetItem | None:
     """Preview the verified default for a selected target without probing the upstream."""
-    target = _target_for_provider(payload.provider)
+    target = _target_for_provider(
+        _target_provider_from_request(payload.provider, payload.openrouter_provider)
+    )
     preset = find_reasoning_effort_preset(
-        target.provider, target.kind, payload.provider_model_id.strip(), payload.base_url.strip()
+        target.provider,
+        target.kind,
+        payload.provider_model_id.strip(),
+        _normalize_base_url(payload.base_url),
     )
     if preset is None:
         return None

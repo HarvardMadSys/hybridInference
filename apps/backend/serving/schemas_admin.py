@@ -1778,6 +1778,7 @@ class RouteEffortPresetTarget(BaseModel):
     provider: str
     provider_model_id: str
     base_url: str
+    openrouter_provider: str | None = None
 
 
 class RouteEffortPresetItem(BaseModel):

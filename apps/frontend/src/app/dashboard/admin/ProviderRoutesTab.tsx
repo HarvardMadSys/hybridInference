@@ -896,6 +896,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const editEffortTargetChanged = Boolean(
     editingRoute &&
     (routePrimaryUpstreamProvider(editingRoute) !== form.upstreamProvider ||
+      (form.upstreamProvider === 'openrouter' &&
+        selectedOpenRouterProvider !==
+          resolvedOpenRouterProvider(routeOpenRouterProvider(editingRoute), '')) ||
       canonicalEndpointUrl(editingRoute.base_url) !== canonicalEndpointUrl(form.baseUrl) ||
       (editingRoute.provider_model_id ?? '') !== form.providerModelId.trim()),
   );
@@ -903,7 +906,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const effortProvider = previewForm?.upstreamProvider ?? '';
   const effortModel = previewForm?.providerModelId.trim() ?? '';
   const effortUrl = previewForm?.baseUrl.trim() ?? '';
-  const effortPreviewKey = JSON.stringify([effortProvider, effortModel, effortUrl]);
+  const effortPin =
+    effortProvider === 'openrouter'
+      ? createFormOpen
+        ? selectedCreateOpenRouterProvider
+        : selectedOpenRouterProvider
+      : null;
+  const effortPreviewKey = JSON.stringify([effortProvider, effortModel, effortUrl, effortPin]);
   const selectedEffortPreset =
     effortPreview?.key === effortPreviewKey ? effortPreview.preset : null;
   const strategy = selectedRoutes[0]?.strategy ?? 'fixed';
@@ -1148,10 +1157,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const editCapabilityReading = readCapabilityDraft(editCapabilityDraft);
   const editCapabilities = editingRoute?.capabilities;
   const liveCapabilityDefaults = editingRoute?.capabilities_baseline ?? editCapabilities;
+  const hasConfiguredEffortDefault = Boolean(
+    liveCapabilityDefaults?.reasoning_effort_map && !editingRoute?.reasoning_effort_preset_label,
+  );
   const editCapabilityDefaults =
-    liveCapabilityDefaults &&
-    editEffortTargetChanged &&
-    (editingRoute?.reasoning_effort_preset_label || !liveCapabilityDefaults.reasoning_effort_map)
+    liveCapabilityDefaults && editEffortTargetChanged && !hasConfiguredEffortDefault
       ? {
           ...liveCapabilityDefaults,
           reasoning_effort_map: selectedEffortPreset?.reasoning_effort_map ?? null,
@@ -1464,7 +1474,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (!effortProvider || !effortModel || !effortUrl) return undefined;
     let cancelled = false;
     const timeout = window.setTimeout(() => {
-      void previewRouteEffortPreset(effortProvider, effortModel, effortUrl)
+      void previewRouteEffortPreset(effortProvider, effortModel, effortUrl, effortPin)
         .then((preset) => {
           if (!cancelled) setEffortPreview({ key: effortPreviewKey, preset });
         })
@@ -1476,7 +1486,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [effortPreviewKey, effortProvider, effortModel, effortUrl]);
+  }, [effortPreviewKey, effortProvider, effortModel, effortUrl, effortPin]);
 
   useEffect(() => {
     setDiscoveredOpenRouterProviderOptions([]);
@@ -3665,9 +3675,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         ? null
                         : (editingRoute.reasoning_efforts_published ?? null),
                       defaultMap: editCapabilityDefaults.reasoning_effort_map,
-                      presetLabel: editEffortTargetChanged
-                        ? selectedEffortPreset?.label
-                        : editingRoute.reasoning_effort_preset_label,
+                      presetLabel:
+                        editEffortTargetChanged && !hasConfiguredEffortDefault
+                          ? selectedEffortPreset?.label
+                          : editingRoute.reasoning_effort_preset_label,
                       source: sameEffortMap(editEffortMap, editCapabilities?.reasoning_effort_map)
                         ? editingRoute.reasoning_effort_source
                         : undefined,

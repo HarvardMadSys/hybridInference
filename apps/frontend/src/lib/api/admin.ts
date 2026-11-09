@@ -2719,11 +2719,17 @@ export async function previewRouteEffortPreset(
   provider: string,
   providerModelId: string,
   baseUrl: string,
+  openRouterProvider: string | null,
 ): Promise<RouteEffortPreset | null> {
   const response = await fetchWithAuth(API_BASE, '/admin/routing/reasoning-effort-preset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider, provider_model_id: providerModelId, base_url: baseUrl }),
+    body: JSON.stringify({
+      provider,
+      provider_model_id: providerModelId,
+      base_url: baseUrl,
+      openrouter_provider: openRouterProvider,
+    }),
   });
   return jsonOrThrow<RouteEffortPreset | null>(response);
 }

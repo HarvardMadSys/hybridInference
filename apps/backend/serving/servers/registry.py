@@ -585,7 +585,7 @@ def _check_provider_label(
         )
 
 
-def _make_adapter(kind: str, cfg: dict[str, Any], *, effort_provider: str | None = None):
+def _make_adapter(kind: str, cfg: dict[str, Any]):
     """Construct an adapter and resolve its defaults for the actual upstream."""
     adapter = _build_adapter(kind, cfg)
     config = adapter.config
@@ -595,8 +595,12 @@ def _make_adapter(kind: str, cfg: dict[str, Any], *, effort_provider: str | None
     )
     preset = None
     if getattr(adapter, "forwards_reasoning_effort", False):
+        upstream = (config.route_metadata or {}).get("upstream_provider")
+        provider = (
+            upstream.strip() if isinstance(upstream, str) and upstream.strip() else config.provider
+        )
         preset = find_reasoning_effort_preset(
-            effort_provider or config.provider,
+            provider,
             kind,
             config.provider_model_id or config.id,
             config.base_url or "",
