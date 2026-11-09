@@ -109,7 +109,10 @@ A value is published only when every route of the model delivers it:
   keys, in their order), never the upstream values it sends;
 - an `openai_compat` route (OpenRouter included) with `reasoning_effort` in
   `supported_params` delivers its `reasoning_efforts`;
-- a route without `reasoning_effort` in `supported_params` delivers none, and
+- a matching verified preset provides the public levels and their upstream
+  translations when the route lacks an explicit map or legacy effort settings;
+- a route that declares `supported_params` without `reasoning_effort` and has
+  no matching preset delivers no effort choices, and
   the model is published with an empty list (`supported: false`);
 - for anything else nothing is published (`reasoning: null`, no
   `capabilities`): a route whose adapter does not forward the parameter itself
@@ -172,7 +175,19 @@ configuration error. Each key and value is one short word of letters, digits,
 set or replace a route's map from the console; see
 [Route capabilities](configuration.md#routing-tab).
 
-### Automatic DeepSeek prices
+#### Deployment presets
+
+A trusted backend extension can call `register_reasoning_effort_preset` from
+`serving.config.reasoning_effort_presets` in its `register()` hook. Register the
+provider label, adapter kind, exact upstream model ID and base URL that were
+verified together, with a short display label and a `reasoning_effort_map`.
+A different endpoint, model or protocol requires its own verification.
+Explicit admin overrides and route maps retain precedence. A declared legacy
+effort domain or explicit legacy passthrough also retains its behavior. A
+preset with an identity map still supplies a public domain and enables
+forwarding.
+
+## Automatic DeepSeek prices
 
 To follow DeepSeek prices automatically, configure the official API model id as a pricing source. The source is independent of the inference endpoint, so a self-hosted route can use these reference prices too. PostgreSQL stores the last validated snapshot; no API key is sent to the pricing or calendar sources.
 

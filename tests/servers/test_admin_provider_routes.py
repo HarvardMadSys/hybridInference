@@ -9832,3 +9832,56 @@ async def test_a_save_without_a_map_keeps_the_console_map_and_null_returns_to_ya
         YAML_EFFORT_MAP
     )
     assert _stored_capabilities(op_store) == four
+
+
+@pytest.mark.asyncio
+async def test_old_runtime_route_inherits_preset_and_admin_can_clear_only_effort(
+    admin_client, monkeypatch
+):
+    from serving.config import reasoning_effort_presets as presets
+
+    client, op_store, _route_executor, _routewise, _verify = admin_client
+    monkeypatch.setattr(presets, "_PRESETS", {})
+    # This row predates reasoning_effort_map and will not be rewritten.
+    row = _stored_runtime_row(FIRST_ROUTE, RUNTIME_CAPABILITIES)
+    presets.register_reasoning_effort_preset(
+        provider=row["provider"],
+        adapter_kind="openrouter",
+        provider_model_id=row["provider_model_id"],
+        base_url=row["base_url"],
+        label="Verified test preset",
+        effort_map=ROUTE_EFFORT_MAP,
+    )
+    restored = await _restore_runtime_rows(admin_client, [row])
+    adapter = restored[FIRST_ROUTE[0]]
+    assert provider_routes._declared_capabilities(adapter) == RUNTIME_CAPABILITIES
+
+    preview = await client.post(
+        "/admin/routing/reasoning-effort-preset",
+        json={key: row[key] for key in ("provider", "provider_model_id", "base_url")},
+        headers=AUTH,
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["reasoning_effort_map"] == ROUTE_EFFORT_MAP
+
+    path = f"/admin/routing/provider-route-capabilities/{row['model_id']}/{row['route_id']}"
+    # An older console can still edit other capabilities with no map.
+    four = {**RUNTIME_CAPABILITIES, "max_output_length": 4096}
+    inherited = await client.put(path, json=four, headers=AUTH)
+    assert inherited.status_code == 200, inherited.text
+    assert inherited.json()["reasoning_effort_source"] == "preset"
+    assert inherited.json()["reasoning_efforts_published"] == ["low", "high", "max"]
+    assert inherited.json()["capabilities"]["reasoning_effort_map"] == ROUTE_EFFORT_MAP
+
+    override = await client.put(path, json=_with_effort_map(four, YAML_EFFORT_MAP), headers=AUTH)
+    assert override.status_code == 200, override.text
+    assert override.json()["reasoning_effort_source"] == "override"
+    assert override.json()["reasoning_efforts_published"] == ["high"]
+
+    inherited = await client.put(path, json=_with_effort_map(four, None), headers=AUTH)
+    assert inherited.status_code == 200, inherited.text
+    assert inherited.json()["reasoning_effort_source"] == "preset"
+    assert inherited.json()["reasoning_efforts_published"] == ["low", "high", "max"]
+    assert inherited.json()["capabilities"]["max_output_length"] == 4096
+    stored = op_store.capability_rows[(row["model_id"], row["route_id"])]["capabilities"]
+    assert json.loads(stored) == four

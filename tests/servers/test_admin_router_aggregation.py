@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 155  # includes role-quota, provider-key verification/probe, key min-role (db+env)
+    expected = 156  # includes role-quota, provider-key verification/probe, key min-role (db+env)
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -55,7 +55,7 @@ def test_admin_router_has_expected_route_count() -> None:
     # users/turn-averages, users/ask-question-fractions, users/providers, usage-insights/analyze,
     # usage-insights/samples, usage-insights/settings GET/PUT, and the per-user + bulk users
     # automation-score routes, plus provider-observability,
-    # plus provider-definitions list/verify/create/update/delete,
+    # plus provider-definitions list/verify/create/update/delete and effort preset preview,
     # plus provider availability list + disable/enable toggle,
     # plus the geo-temporal analytics endpoint,
     # plus the daily growth-rate analytics endpoint.

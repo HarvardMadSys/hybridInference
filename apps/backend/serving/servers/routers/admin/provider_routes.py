@@ -25,11 +25,17 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
-from serving.adapters.reasoning_effort import EFFORT_MAP_FIELD, read_effort_map, stored_effort_map
+from serving.adapters.reasoning_effort import (
+    EFFORT_MAP_FIELD,
+    inherited_effort_map,
+    read_effort_map,
+    stored_effort_map,
+)
 from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
 from serving.config.batch_routes import default_batch_allowed
 from serving.config.offload_routes import offload_route_setting_key
+from serving.config.reasoning_effort_presets import find_reasoning_effort_preset
 from serving.config.route_states import ENABLED, RouteState
 from serving.config.settings import (
     ROUTE_TYPE_ORDER,
@@ -50,6 +56,8 @@ from serving.schemas_admin import (
     ProviderRouteOption,
     RouteCapabilitiesItem,
     RouteCapabilityEdit,
+    RouteEffortPresetItem,
+    RouteEffortPresetTarget,
     RuntimeModelCapabilities,
     UpdateProviderRouteBatchRequest,
     UpdateProviderRouteCandidateRequest,
@@ -2786,6 +2794,9 @@ async def _prepare_route_candidate(
 
     template_adapter = entries[0][0]
     cfg = _config_to_dict(template_adapter.config, strip_route_capabilities=True)
+    # Cloned legacy params keep their existing fallback behavior. They are not
+    # an effort declaration about this new upstream.
+    cfg["reasoning_effort_declared"] = False
     cfg.update(
         {
             "id": model_id,
@@ -2852,7 +2863,7 @@ async def _prepare_route_candidate(
         cfg["concurrency_pool"] = _runtime_concurrency_pool(model_id, candidate_route_id)
         cfg["concurrency"] = {"limit": concurrency_limit}
 
-    adapter = _make_adapter(target.kind, cfg)
+    adapter = _make_adapter(target.kind, cfg, effort_provider=target.provider)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -3002,7 +3013,7 @@ async def _prepare_model_route_candidate(
         cfg["concurrency_pool"] = _runtime_concurrency_pool(model_id, candidate_route_id)
         cfg["concurrency"] = {"limit": concurrency_limit}
 
-    adapter = _make_adapter(target.kind, cfg)
+    adapter = _make_adapter(target.kind, cfg, effort_provider=target.provider)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -3163,7 +3174,7 @@ async def _prepare_route_update(
         openrouter_sort=openrouter_sort,
     )
 
-    adapter = _make_adapter(target.kind, cfg)
+    adapter = _make_adapter(target.kind, cfg, effort_provider=target.provider)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -4440,6 +4451,24 @@ async def _route_row(
         else getattr(adapter.config, "provider_model_id", None)
     )
     source = "runtime" if is_runtime else ("override" if stored_override else "yaml")
+    capabilities = _config_capabilities(adapter.config)
+    baseline = _baseline_capabilities(adapter.config)
+    preset = inherited_effort_map(adapter.config)
+    published = adapter_effort_domain(adapter)
+    live_route = services.router.routes.get(model_id)
+    overrides = getattr(live_route, CAPABILITY_OVERRIDES_ATTR, None) or {}
+    if overrides.get(route_id, {}).get(EFFORT_MAP_FIELD) and EFFORT_MAP_FIELD in capabilities:
+        effort_source = "override"
+    elif EFFORT_MAP_FIELD in capabilities:
+        effort_source = "configured"
+    elif preset:
+        effort_source = "preset"
+        capabilities[EFFORT_MAP_FIELD] = dict(preset)
+    else:
+        effort_source = "unknown" if published is None else "configured"
+    uses_preset_baseline = bool(preset and EFFORT_MAP_FIELD not in baseline)
+    if uses_preset_baseline:
+        baseline[EFFORT_MAP_FIELD] = dict(preset)
     return ProviderRouteItem(
         model_id=model_id,
         strategy=strategy,
@@ -4469,11 +4498,15 @@ async def _route_row(
         **_batch_fields(services, model_id, route_id, adapter),
         updated_at=stored_override.get("updated_at") if stored_override else None,
         updated_by=stored_override.get("updated_by") if stored_override else None,
-        capabilities=RouteCapabilitiesItem(**_config_capabilities(adapter.config)),
-        capabilities_baseline=RouteCapabilitiesItem(**_baseline_capabilities(adapter.config)),
+        capabilities=RouteCapabilitiesItem(**capabilities),
+        capabilities_baseline=RouteCapabilitiesItem(**baseline),
         capabilities_overridden=isinstance(route_metadata.get(_CAPABILITY_BASELINE), dict),
         reasoning_effort_mappable=bool(getattr(adapter, "forwards_reasoning_effort", False)),
-        reasoning_efforts_published=adapter_effort_domain(adapter),
+        reasoning_efforts_published=published,
+        reasoning_effort_source=effort_source,
+        reasoning_effort_preset_label=(
+            adapter.config.reasoning_effort_preset_label if uses_preset_baseline else None
+        ),
     )
 
 
@@ -4632,6 +4665,21 @@ async def list_all_provider_routes(
         openrouter_provider_options=_openrouter_provider_options(services),
         routes=all_rows,
     )
+
+
+@router.post("/routing/reasoning-effort-preset", response_model=RouteEffortPresetItem | None)
+async def preview_reasoning_effort_preset(
+    payload: RouteEffortPresetTarget,
+    _admin_id: str = Depends(verify_admin_access),
+) -> RouteEffortPresetItem | None:
+    """Preview the verified default for a selected target without probing the upstream."""
+    target = _target_for_provider(payload.provider)
+    preset = find_reasoning_effort_preset(
+        target.provider, target.kind, payload.provider_model_id.strip(), payload.base_url.strip()
+    )
+    if preset is None:
+        return None
+    return RouteEffortPresetItem(label=preset.label, reasoning_effort_map=dict(preset.effort_map))
 
 
 @router.get(

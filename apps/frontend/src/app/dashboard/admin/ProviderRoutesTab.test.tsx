@@ -37,6 +37,7 @@ vi.mock('@/lib/api/admin', () => ({
   listOpenRouterProviderOptions: vi.fn(),
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
+  previewRouteEffortPreset: vi.fn(() => Promise.resolve(null)),
   listRecentRequests: vi.fn(() =>
     Promise.resolve({ requests: [], total: 0, limit: 20, offset: 0 }),
   ),
@@ -79,6 +80,7 @@ import {
   listOpenRouterProviderOptions,
   listProviderKeys,
   listProviderRoutes,
+  previewRouteEffortPreset,
   listRouteWeights,
   listRoutewiseProbeSamples,
   listRoutewiseSettings,
@@ -4771,7 +4773,12 @@ describe('ProviderRoutesTab', () => {
         reasoning_effort_mappable: true,
         reasoning_efforts_published: null,
       };
+      const openMapping = (dialog: HTMLElement) => {
+        const summary = within(dialog).getByText('Advanced mapping');
+        if (!summary.parentElement?.hasAttribute('open')) fireEvent.click(summary);
+      };
       const addRow = (dialog: HTMLElement, level: string, upstream: string) => {
+        openMapping(dialog);
         fireEvent.click(within(dialog).getByRole('button', { name: 'Add level' }));
         const rows = within(dialog).getAllByLabelText(/^Public level \d+$/);
         const index = rows.length;
@@ -4793,9 +4800,7 @@ describe('ProviderRoutesTab', () => {
         const dialog = await renderWithRoute(mappedRoute);
         expect(within(dialog).getByText('Reasoning effort levels')).toBeInTheDocument();
         expect(
-          within(dialog).getByText(
-            'Offered to clients now: not declared (clients are offered no levels)',
-          ),
+          within(dialog).getByText('Effort capability has not been declared for this route.'),
         ).toBeInTheDocument();
 
         for (const [level, upstream] of Object.entries(EFFORT_MAP)) addRow(dialog, level, upstream);
@@ -4841,7 +4846,7 @@ describe('ProviderRoutesTab', () => {
         expect(within(dialog).getByLabelText('Public level 1')).toHaveValue('low');
         expect(within(dialog).getByLabelText('Upstream value 2')).toHaveValue('xhigh');
         expect(
-          within(dialog).getByText('Offered to clients now: low, high, max'),
+          within(dialog).getByText('Client choices on this route: low, high, max'),
         ).toBeInTheDocument();
 
         fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
@@ -4864,11 +4869,7 @@ describe('ProviderRoutesTab', () => {
         };
         vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(yamlMapped);
         const dialog = await renderWithRoute(yamlMapped);
-        expect(
-          within(dialog).getByText(
-            /Without rows, the route keeps its default mapping \(high → high\)/,
-          ),
-        ).toBeInTheDocument();
+        expect(within(dialog).getByText('Client choices on this route: high')).toBeVisible();
 
         fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
           target: { value: '4096' },
@@ -4893,6 +4894,7 @@ describe('ProviderRoutesTab', () => {
           capabilities_overridden: true,
         });
 
+        openMapping(dialog);
         for (let i = 0; i < 3; i += 1) {
           fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
         }
@@ -4915,6 +4917,7 @@ describe('ProviderRoutesTab', () => {
           capabilities_overridden: true,
         });
 
+        openMapping(dialog);
         for (let i = 0; i < 3; i += 1) {
           fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
         }
@@ -4930,12 +4933,80 @@ describe('ProviderRoutesTab', () => {
         });
       });
 
+      const presetRoute: ProviderRoute = {
+        ...mappedRoute,
+        capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+        capabilities_baseline: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+        reasoning_efforts_published: ['low', 'high', 'max'],
+        reasoning_effort_source: 'preset',
+        reasoning_effort_preset_label: 'Verified test preset',
+      };
+
+      it('shows the preset choices and only opens mapping inputs when customized', async () => {
+        const dialog = await renderWithRoute(presetRoute);
+        expect(
+          within(dialog).getByText('Client choices on this route: low, high, max'),
+        ).toBeVisible();
+        expect(within(dialog).getByText('Preset · Verified test preset')).toBeVisible();
+        expect(within(dialog).queryByLabelText('Upstream value 2')).toBeNull();
+        openMapping(dialog);
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Customize mapping' }));
+        expect(within(dialog).getByLabelText('Upstream value 2')).toHaveValue('xhigh');
+
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(presetRoute);
+        fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+          target: { value: '4096' },
+        });
+        saveRouteEdit();
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, max_output_length: 4096 },
+          );
+        });
+      });
+
+      it('clears a saved map identical to the preset and keeps other overrides', async () => {
+        const dialog = await renderWithRoute({
+          ...presetRoute,
+          capabilities: { ...presetRoute.capabilities!, max_output_length: 4096 },
+          capabilities_overridden: true,
+          reasoning_effort_source: 'override',
+        });
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(presetRoute);
+        openMapping(dialog);
+        fireEvent.click(
+          within(dialog).getByRole('button', { name: 'Use default effort settings' }),
+        );
+        expect(within(dialog).getByText('Preset · Verified test preset')).toBeVisible();
+        saveRouteEdit();
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, max_output_length: 4096, reasoning_effort_map: null },
+          );
+        });
+      });
+
+      it('refreshes the preset when the exact upstream model changes', async () => {
+        vi.mocked(previewRouteEffortPreset).mockResolvedValueOnce({
+          label: 'Second verified preset',
+          reasoning_effort_map: { low: 'low', high: 'high', max: 'max' },
+        });
+        const dialog = await renderWithRoute(presetRoute);
+        fireEvent.change(within(dialog).getByLabelText('Provider model ID'), {
+          target: { value: 'second-model' },
+        });
+        expect(await within(dialog).findByText('Preset · Second verified preset')).toBeVisible();
+        expect(within(dialog).queryByText('Preset · Verified test preset')).toBeNull();
+      });
+
       it('offers no map on a route whose adapter sends no effort', async () => {
         const dialog = await renderWithRoute({ ...route, reasoning_effort_mappable: false });
         expect(
-          within(dialog).getByText(
-            "This route's adapter does not send reasoning_effort, so no mapping applies to it.",
-          ),
+          within(dialog).getByText(/Its adapter has no reasoning_effort mapping/),
         ).toBeInTheDocument();
         expect(within(dialog).queryByRole('button', { name: 'Add level' })).toBeNull();
       });

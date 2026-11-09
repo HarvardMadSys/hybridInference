@@ -35,6 +35,7 @@ from serving.adapters.reasoning_effort import (
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
+from serving.config.reasoning_effort_presets import find_reasoning_effort_preset
 from serving.model_access import default_required_role_for_model
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
@@ -584,7 +585,28 @@ def _check_provider_label(
         )
 
 
-def _make_adapter(kind: str, cfg: dict[str, Any]):
+def _make_adapter(kind: str, cfg: dict[str, Any], *, effort_provider: str | None = None):
+    """Construct an adapter and resolve its defaults for the actual upstream."""
+    adapter = _build_adapter(kind, cfg)
+    config = adapter.config
+    config.reasoning_effort_declared = cfg.get(
+        "reasoning_effort_declared",
+        cfg.get("supported_params") is not None or cfg.get("reasoning_efforts") is not None,
+    )
+    preset = None
+    if getattr(adapter, "forwards_reasoning_effort", False):
+        preset = find_reasoning_effort_preset(
+            effort_provider or config.provider,
+            kind,
+            config.provider_model_id or config.id,
+            config.base_url or "",
+        )
+    config.reasoning_effort_preset_label = preset.label if preset else None
+    config.reasoning_effort_preset_map = dict(preset.effort_map) if preset else {}
+    return adapter
+
+
+def _build_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
