@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from serving.quota import first_refusal
 from serving.servers import billing_compat
 from serving.servers.billing_compat import (
     BillingSnapshot,
@@ -58,6 +59,7 @@ def _app(snapshot: BillingSnapshot | None = None) -> FastAPI:
     app.dependency_overrides[get_log_store] = lambda: None
     if snapshot is not None:
         app.dependency_overrides[billing.get_billing_snapshot] = lambda: snapshot
+        app.dependency_overrides[billing.get_quota_snapshot] = lambda: snapshot
     return app
 
 
@@ -217,6 +219,12 @@ def test_unlimited_snapshot_uses_the_client_sentinels():
     usage = usage_payload(snapshot)
     assert usage["mode"] == "unrestricted"
     assert usage["remaining"] == -1
+    # new-api reads -1 as unlimited only beside a subscription with no limits.
+    assert usage["subscription"] == {
+        "daily_limit_usd": None,
+        "weekly_limit_usd": None,
+        "monthly_limit_usd": None,
+    }
     assert "quota" not in usage
     assert subscription_payload(snapshot)["hard_limit_usd"] == 100_000_000
     assert dashboard_usage_payload(snapshot)["total_usage"] == 0
@@ -262,6 +270,9 @@ def test_auth_disabled_reports_unlimited(monkeypatch):
     subscription = client.get("/v1/dashboard/billing/subscription")
     assert usage.status_code == 200
     assert usage.json()["remaining"] == -1
+    assert usage.json()["subscription"]["daily_limit_usd"] is None
+    # Nothing was read, so no totals are reported as zeros.
+    assert "usage" not in usage.json()
     assert subscription.json()["hard_limit_usd"] == 100_000_000
     assert subscription.json()["access_until"] == 0
 
@@ -351,7 +362,7 @@ def test_routed_snapshot_prefers_the_key_budget_and_keeps_today_cost(monkeypatch
     assert body["rate_limits"][0]["used"] == 3.5
 
 
-def test_a_rollup_failure_still_returns_the_quota(monkeypatch):
+def test_a_rollup_failure_still_returns_the_quota_and_leaves_the_totals_out(monkeypatch):
     monkeypatch.setenv("USER_AUTH_ENABLED", "1")
 
     async def fake_auth(request, authorization, x_api_key, op_store, *, want_spend=False):
@@ -366,8 +377,8 @@ def test_a_rollup_failure_still_returns_the_quota(monkeypatch):
     body = TestClient(app).get("/v1/usage", headers={"Authorization": "Bearer hyi-test"}).json()
 
     assert body["remaining"] == 9.0
-    assert body["usage"]["today"]["cost"] == 1.0
-    assert body["usage"]["today"]["requests"] == 0
+    assert body["rate_limits"][0]["used"] == 1.0
+    assert "usage" not in body
 
 
 def test_next_midnight_helper_matches_the_payload():
@@ -377,3 +388,88 @@ def test_next_midnight_helper_matches_the_payload():
     moment = datetime(2026, 11, 9, tzinfo=UTC)
     formatted = billing_compat._rfc3339_nano(next_utc_midnight(moment))
     assert formatted == "2026-11-10T00:00:00.000000000Z"
+
+
+_GATE_ARGUMENTS = (
+    "account_quota_usd",
+    "account_spent_usd",
+    "account_quota_monthly_usd",
+    "account_spent_month_usd",
+    "key_budget_daily_usd",
+    "key_budget_monthly_usd",
+    "key_spent_today_usd",
+    "key_spent_month_usd",
+    "project_budget_daily_usd",
+    "project_budget_monthly_usd",
+    "project_spent_today_usd",
+    "project_spent_month_usd",
+)
+
+
+@pytest.mark.parametrize(
+    ("limit_key", "spent_key"),
+    [
+        ("account_quota_usd", "account_spent_usd"),
+        ("account_quota_monthly_usd", "account_spent_month_usd"),
+        ("key_budget_daily_usd", "key_spent_today_usd"),
+        ("key_budget_monthly_usd", "key_spent_month_usd"),
+        ("project_budget_daily_usd", "project_spent_today_usd"),
+        ("project_budget_monthly_usd", "project_spent_month_usd"),
+    ],
+)
+@pytest.mark.parametrize("spent", [0.0, 9.0, 9.98, 9.985, 9.99, 9.991, 9.995, 10.0, 12.5])
+def test_nothing_is_left_exactly_when_the_gate_refuses(limit_key, spent_key, spent):
+    """Every answer reads 0 when, and only when, the request gate would refuse.
+
+    The gate refuses once its per-request estimate no longer fits under a
+    limit, a cent before the limit itself. The limits come from the counters
+    the way the route reads them, and the verdict from the gate's own check.
+    """
+    limits = {
+        "user_id": "u1",
+        "account_quota_usd": 100.0,
+        "account_spent_usd": 0.0,
+        limit_key: 10.0,
+        spent_key: spent,
+    }
+    snapshot = billing._snapshot(limits, None, NOW)
+    refused = first_refusal(**{key: limits[key] for key in _GATE_ARGUMENTS if key in limits})
+
+    remaining = binding_quota(snapshot).remaining_usd
+    assert (remaining == 0) is (refused is not None)
+    new_api_balance = (
+        subscription_payload(snapshot)["hard_limit_usd"]
+        - dashboard_usage_payload(snapshot)["total_usage"] / 100
+    )
+    assert new_api_balance == pytest.approx(remaining, abs=1e-9)
+    assert usage_payload(snapshot)["remaining"] == remaining
+    assert credit_grants_payload(snapshot)["total_available"] == remaining
+    if refused is None:
+        assert remaining == pytest.approx(10.0 - spent, abs=1e-6)
+
+
+def test_the_money_only_answers_do_not_read_the_usage_rollup(monkeypatch):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+
+    async def fake_auth(request, authorization, x_api_key, op_store, *, want_spend=False):
+        return {"id": 1, "user_id": "u1", "quota_daily_cost_usd": 10.0}, "hash", 2.0
+
+    monkeypatch.setattr("serving.servers.auth._authenticate_by_api_key", fake_auth)
+    log_store = AsyncMock()
+    log_store.get_user_usage_detail.return_value = {"today": {}, "alltime": {}}
+    app = _app()
+    app.dependency_overrides[get_log_store] = lambda: log_store
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer hyi-test"}
+
+    for path in (
+        "/v1/dashboard/billing/subscription",
+        "/v1/dashboard/billing/usage",
+        "/v1/dashboard/billing/credit_grants",
+        "/v1/sub2api/billing",
+    ):
+        assert client.get(path, headers=headers).status_code == 200
+    log_store.get_user_usage_detail.assert_not_awaited()
+
+    assert client.get("/v1/usage", headers=headers).status_code == 200
+    log_store.get_user_usage_detail.assert_awaited_once()

@@ -2,18 +2,24 @@
 
 FreeInference bills cost quotas per account, and optional budgets per project
 and per API key. Callers such as new-api, one-api, sub2api, and cc-switch each
-expect a different JSON shape, but they all display one number: how much of
-the tightest applicable limit is left.
+expect a different JSON shape of the same amount: how much of the tightest
+applicable limit is left.
 
 The numbers come from the same counters the request gate reads
-(``user_daily_cost``, ``api_key_daily_cost``, ``spend_counters``). A poll does
-not include in-flight reservations: those live on the worker that admitted the
-request, and a balance read has to agree across workers.
+(``user_daily_cost``, ``api_key_daily_cost``, ``spend_counters``), and a limit
+counts as spent by the gate's own rule (:func:`serving.quota.first_refusal`):
+once a request no longer fits, nothing is left, even if a few cents remain
+below the limit. A poll does not include in-flight reservations: those live on
+the worker that admitted the request, and a balance read has to agree across
+workers.
 
 new-api computes ``balance = hard_limit_usd - total_usage / 100`` and ignores
 the ``start_date`` / ``end_date`` query it sends. ``total_usage`` is therefore
-spend against the binding quota, in cents, clamped so the balance is never
-negative.
+the binding limit minus what is left, in cents, so the balance is never
+negative and is 0 exactly when the gate refuses. new-api disables a channel
+whose balance check reads 0 or less if the channel's automatic disabling is
+on, and does not enable it again when the quota resets unless its operator
+turned on automatic enabling.
 """
 
 from __future__ import annotations
@@ -25,10 +31,19 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from datetime import datetime
 
-from serving.quota import next_utc_midnight, next_utc_month_start
+from serving.quota import ESTIMATED_REQUEST_COST_USD, next_utc_midnight, next_utc_month_start
 
-#: new-api treats a hard limit this large, with no usage, as unlimited.
+#: The hard limit reported when there is no quota: more than any client spends.
 _UNLIMITED_USD = 100_000_000.0
+
+#: How sub2api describes a subscription with no daily, weekly or monthly limit.
+#: new-api reads ``remaining: -1`` as unlimited only beside this object;
+#: without it, -1 is a balance below zero and disables the channel.
+_UNLIMITED_SUBSCRIPTION = {
+    "daily_limit_usd": None,
+    "weekly_limit_usd": None,
+    "monthly_limit_usd": None,
+}
 
 _PLAN_NAME = {
     ("account", "day"): "Daily quota",
@@ -83,8 +98,12 @@ class BillingSnapshot:
     total: UsageTotals
     now: datetime
     # Auth-disabled local runs have no quota. Clients treat a negative
-    # remaining (sub2api) or a huge hard limit (new-api) as unlimited.
+    # remaining with an unlimited subscription (sub2api) or a huge hard limit
+    # (new-api) as unlimited.
     unlimited: bool = False
+    # False when the usage rollup could not be read, or was not: the token and
+    # request totals are then left out rather than reported as zeros.
+    usage_available: bool = True
 
 
 @dataclass(frozen=True)
@@ -103,7 +122,14 @@ def _money(value: float) -> float:
 
 
 def _remaining(limit: float, spent: float) -> float:
-    return _money(max(0.0, limit - spent))
+    """Money left under *limit*: 0 once the request gate refuses on it.
+
+    The gate refuses a request whose estimate no longer fits under the limit
+    (``quota._over``), so the last few cents below a limit are not spendable.
+    """
+    if spent + ESTIMATED_REQUEST_COST_USD > limit:
+        return 0.0
+    return _money(limit - spent)
 
 
 def _utc(moment: datetime) -> datetime:
@@ -137,9 +163,11 @@ def binding_quota(snapshot: BillingSnapshot) -> BindingQuota:
             chosen_remaining = remaining
     if chosen is None or chosen_remaining is None:
         return BindingQuota(0.0, 0.0, 0.0, "account", "day")
+    # Used is what makes limit - used equal remaining, in every shape: the
+    # spend itself until the gate refuses, the whole limit from then on.
     return BindingQuota(
         limit_usd=_money(chosen.limit_usd),
-        used_usd=_money(min(chosen.spent_usd, chosen.limit_usd)),
+        used_usd=_money(chosen.limit_usd - chosen_remaining),
         remaining_usd=chosen_remaining,
         scope=chosen.scope,
         window=chosen.window,
@@ -179,8 +207,14 @@ def usage_payload(snapshot: BillingSnapshot) -> dict[str, Any]:
 
     ``remaining`` and ``quota`` are the tightest limit. ``rate_limits`` always
     describes the account's daily quota, including spend past that quota, so a
-    monthly or key cap does not hide today's account usage.
+    monthly or key cap does not hide today's account usage. ``usage`` is left
+    out when the rollup it comes from could not be read.
     """
+    usage = (
+        {"usage": {"today": _usage_block(snapshot.today), "total": _usage_block(snapshot.total)}}
+        if snapshot.usage_available
+        else {}
+    )
     if snapshot.unlimited:
         return {
             "mode": "unrestricted",
@@ -189,10 +223,8 @@ def usage_payload(snapshot: BillingSnapshot) -> dict[str, Any]:
             "planName": "Unlimited",
             "remaining": -1,
             "unit": "USD",
-            "usage": {
-                "today": _usage_block(snapshot.today),
-                "total": _usage_block(snapshot.total),
-            },
+            "subscription": dict(_UNLIMITED_SUBSCRIPTION),
+            **usage,
         }
 
     binding = binding_quota(snapshot)
@@ -219,10 +251,7 @@ def usage_payload(snapshot: BillingSnapshot) -> dict[str, Any]:
                 "reset_at": _rfc3339_nano(next_utc_midnight(snapshot.now)),
             }
         ],
-        "usage": {
-            "today": _usage_block(snapshot.today),
-            "total": _usage_block(snapshot.total),
-        },
+        **usage,
     }
     return body
 
@@ -230,8 +259,8 @@ def usage_payload(snapshot: BillingSnapshot) -> dict[str, Any]:
 def subscription_payload(snapshot: BillingSnapshot) -> dict[str, Any]:
     """Build the GET /v1/dashboard/billing/subscription body new-api parses.
 
-    ``access_until`` stays 0. new-api treats a past access time as an expired
-    key and can disable the channel. A quota resets; it does not expire the key.
+    new-api reads only ``hard_limit_usd`` here. ``access_until`` is 0, no
+    expiry: a quota resets, it does not end the key's access.
     """
     binding = binding_quota(snapshot)
     return {
@@ -247,8 +276,9 @@ def subscription_payload(snapshot: BillingSnapshot) -> dict[str, Any]:
 def dashboard_usage_payload(snapshot: BillingSnapshot) -> dict[str, Any]:
     """Build the GET /v1/dashboard/billing/usage body.
 
-    ``total_usage`` is USD cents of the binding quota's used amount, clamped
-    to the limit. new-api ignores the requested date window, and so does this.
+    ``total_usage`` is the binding limit minus what is left, in USD cents, so
+    ``hard_limit_usd - total_usage / 100`` is the remaining money. new-api
+    ignores the requested date window, and so does this.
     """
     binding = binding_quota(snapshot)
     return {
