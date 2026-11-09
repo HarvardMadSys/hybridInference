@@ -396,7 +396,11 @@ def test_import_legacy_imports_an_active_manifest_and_its_alert_rules(
     rules.write_text("rules:\n  client_error_burst:\n    threshold_count: 7\n")
 
     assert manage.main(["import-legacy", str(manifest), "--alerts", str(rules)]) == 0
-    assert "Imported ALERT_RULES, SITE_CONFIGURATION." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Imported ALERT_RULES, SITE_CONFIGURATION." in out
+    # Imported alert rules need a restart as a catalog does; the site document does not.
+    assert "ALERT_RULES: Restart the backend to apply it." in out
+    assert "SITE_CONFIGURATION: Running backends apply it within" in out
     assert json.loads(store.rows["SITE_CONFIGURATION"].value)["distribution"]["id"] == "imported"
     # Run again, it replaces nothing.
     assert manage.main(["import-legacy", str(manifest), "--alerts", str(rules)]) == 0
