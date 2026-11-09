@@ -316,6 +316,29 @@ async def test_invalid_active_manifest_cannot_create_accounts(
     store.create_user.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_invalid_site_document_is_logged_once_not_per_signup(
+    signup_client, monkeypatch, caplog
+):
+    from serving.config import distribution
+
+    client, store = signup_client
+    monkeypatch.setattr(distribution, "_invalid_reported", False)
+    monkeypatch.setenv("SITE_CONFIGURATION", "invalid")
+    get_settings.cache_clear()
+
+    with caplog.at_level("ERROR"):
+        for _ in range(3):
+            response = await client.post("/auth/signup", json=create_signup_request())
+            assert response.status_code == 403
+            _assert_neutral_and_closed(await client.get("/site-config"))
+
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "public signup is closed" in errors[0].getMessage()
+    store.create_user.assert_not_awaited()
+
+
 def _assert_neutral_and_closed(response):
     """An invalid site document leaves the console working, signup closed."""
     assert response.status_code == 200
