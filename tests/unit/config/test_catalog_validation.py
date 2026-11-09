@@ -62,6 +62,13 @@ _ACCEPTED = {
     "shorthand model": {"models": [{"id": "short", "provider": "zai", "base_url": "https://z"}]},
     "empty models": {"models": None},
     "auto section": {"models": [_model()], "auto": {"enabled": False}},
+    "reasoning_effort_map on a route": {
+        "models": [
+            _model(
+                route=[_route(reasoning_effort_map={"low": "high", "high": "xhigh", "max": "max"})]
+            )
+        ]
+    },
 }
 
 
@@ -206,6 +213,38 @@ _REFUSED = {
     ),
     "models an object": ({"models": {"id": "chat"}}, "models must be a list"),
     "id missing": ({"models": [{"name": "x"}]}, r"id must be a non-empty string \(models\[0\]\)"),
+    "reasoning_effort_map on the model": (
+        {"models": [_model(reasoning_effort_map={"low": "high"})]},
+        r"reasoning_effort_map must be declared on a route.*\(model 'chat'\)",
+    ),
+    "reasoning_effort_map empty": (
+        {"models": [_model(route=[_route(reasoning_effort_map={})])]},
+        r"reasoning_effort_map must map 1 to 16 distinct public levels.*\(model 'chat', route 1\)",
+    ),
+    "reasoning_effort_map with a blank in a level": (
+        {"models": [_model(route=[_route(reasoning_effort_map={"low": "very high"})])]},
+        r"reasoning_effort_map must map 1 to 16 distinct public levels.*\(model 'chat', route 1\)",
+    ),
+    "reasoning_effort_map a list of levels": (
+        {"models": [_model(route=[_route(reasoning_effort_map=["low", "high"])])]},
+        "reasoning_effort_map must map 1 to 16 distinct public levels",
+    ),
+    "reasoning_effort_map on a native adapter": (
+        {
+            "models": [
+                _model(
+                    route=[
+                        _route(
+                            kind="anthropic",
+                            base_url="https://api.anthropic.com",
+                            reasoning_effort_map={"low": "low"},
+                        )
+                    ]
+                )
+            ]
+        },
+        r"reasoning_effort_map needs an adapter that sends reasoning_effort.*\(model 'chat', route 1\)",
+    ),
 }
 
 
@@ -239,6 +278,10 @@ _SECRET = "sk-live-do-not-show-0042"
         ("MODEL_CATALOG", {"models": [_model(route=[_route(provider=f"{_SECRET}!")])]}),
         ("MODEL_CATALOG", {"models": [_model(route=[_route(kind=_SECRET)])]}),
         ("MODEL_CATALOG", {"models": [_model(route=[_route(include_usage_in_stream=_SECRET)])]}),
+        (
+            "MODEL_CATALOG",
+            {"models": [_model(route=[_route(reasoning_effort_map={"low": f"{_SECRET}!"})])]},
+        ),
         ("MODEL_CATALOG", {"models": [_model(router="routewise", router_params={"x": _SECRET})]}),
         ("MODEL_CATALOG", {"models": [_model(router=_SECRET)]}),
         ("MODEL_CATALOG", {"models": [_model(api_key=_SECRET)]}),

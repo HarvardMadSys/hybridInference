@@ -363,7 +363,7 @@ models:
         base_url: http://127.0.0.1:1
         reasoning_effort_map: [low, high]
 """,
-            "must be a mapping",
+            "must map 1 to 16 distinct public levels",
             id="not-a-mapping",
         ),
         pytest.param(
@@ -377,7 +377,7 @@ models:
         api_key: test-key
         reasoning_effort_map: {low: high}
 """,
-            "does not send reasoning_effort",
+            "needs an adapter that sends reasoning_effort",
             id="native-anthropic",
         ),
     ],

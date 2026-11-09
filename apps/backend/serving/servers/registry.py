@@ -27,7 +27,11 @@ from serving.adapters import (
     OpenRouterAdapter,
 )
 from serving.adapters.base import validate_deployment_type
-from serving.adapters.reasoning_effort import EFFORT_MAP_FIELD, validate_effort_map
+from serving.adapters.reasoning_effort import (
+    EFFORT_MAP_FIELD,
+    MAX_MAP_ENTRIES,
+    validate_effort_map,
+)
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
@@ -294,6 +298,15 @@ _ROUTE_ONLY_FIELDS = {
         ": it states that one server was started with cache reporting on, which "
         "cannot be true of every route a model has"
     ),
+    EFFORT_MAP_FIELD: ": it states which values one server accepts",
+}
+# Built-in kinds served by an adapter of their own rather than
+# OpenAICompatAdapter. Registration still checks the adapter it builds, which
+# also covers an extension's kind.
+_NATIVE_ADAPTER_KINDS = {
+    "anthropic": AnthropicAdapter,
+    "claude": ClaudeAdapter,
+    "gemini": GeminiAdapter,
 }
 
 
@@ -474,6 +487,8 @@ def _check_route(model: dict[str, Any], route: dict[str, Any], where: str) -> No
             )
     if route.get("embeddings_path") is not None:
         _check_embeddings_path(route["embeddings_path"], where)
+    if EFFORT_MAP_FIELD in route:
+        _check_effort_map(route[EFFORT_MAP_FIELD], base_kind, where)
     _check_provider_label(model, route, kind, base_kind, where)
     api_keys = route.get("api_keys")
     if api_keys is not None:
@@ -511,6 +526,24 @@ def _check_route(model: dict[str, Any], route: dict[str, Any], where: str) -> No
             )
         except (TypeError, ValueError) as exc:
             raise RegistryConfigError(f"{exc} ({where})") from None
+
+
+def _check_effort_map(raw: Any, base_kind: str, where: str) -> None:
+    """Refuse a route's reasoning-effort map that registration would refuse."""
+    try:
+        validate_effort_map(raw)
+    except ValueError:
+        raise RegistryConfigError(
+            f"{EFFORT_MAP_FIELD} must map 1 to {MAX_MAP_ENTRIES} distinct public levels to "
+            "upstream values, each a short token (letters, digits, '_', '.', '-'; at most "
+            f"32 characters) ({where})"
+        ) from None
+    native = _NATIVE_ADAPTER_KINDS.get(base_kind)
+    if native is not None and not native.forwards_reasoning_effort:
+        raise RegistryConfigError(
+            f"{EFFORT_MAP_FIELD} needs an adapter that sends reasoning_effort; this route's "
+            f"kind does not, so there is nothing to translate ({where})"
+        )
 
 
 def _check_embeddings_path(path: Any, where: str) -> None:
