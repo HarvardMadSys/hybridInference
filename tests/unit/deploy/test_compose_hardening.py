@@ -7,17 +7,56 @@ is installed.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
+OVERLAYS = sorted((REPO / "deploy" / "docker").glob("docker-compose.*.yml"))
 FRONTEND_DOCKERFILE = REPO / "deploy" / "docker" / "Dockerfile.frontend"
 
 
-def _services() -> dict:
-    return yaml.safe_load(COMPOSE.read_text())["services"]
+def _services(path: Path = COMPOSE) -> dict:
+    return yaml.safe_load(path.read_text())["services"]
+
+
+ROTATED = {"driver": "json-file", "options": {"max-size": "100m", "max-file": "5"}}
+
+
+def test_every_service_rotates_its_log() -> None:
+    """json-file keeps a container's whole log otherwise, on the disk Postgres uses.
+
+    The backend logs request headers at INFO, so a client sending large
+    headers could fill that disk.
+    """
+    for name, service in _services().items():
+        assert service.get("logging") == ROTATED, name
+
+
+def test_the_overlays_keep_the_base_log_rotation() -> None:
+    """A service an overlay adds, or whose logging it sets, would escape the rotation.
+
+    So an overlay never sets a base service's logging, and a service of its own
+    -- the restore drill's throwaway database server -- rotates the same way.
+    """
+    assert OVERLAYS, "the overlay scan went blind"
+    base = _services()
+    for overlay in OVERLAYS:
+        for name, service in _services(overlay).items():
+            if name in base:
+                assert "logging" not in service, f"{overlay.name} overrides {name}'s logging"
+            else:
+                assert service.get("logging") == ROTATED, f"{overlay.name} adds {name} unrotated"
+
+
+def test_the_env_example_writes_no_log_file() -> None:
+    """LOG_FILE is a plain file handler: inside a container it grows unrotated."""
+    lines = (REPO / ".env.example").read_text().splitlines()
+
+    assert not [line for line in lines if line.strip().startswith("LOG_FILE=")]
 
 
 def test_the_console_has_a_memory_ceiling() -> None:
@@ -94,3 +133,61 @@ def test_pgadmin_is_reachable_only_from_the_console_and_its_database() -> None:
     }
     assert on_pgadmin_network == {"frontend", "pgadmin", "postgres"}
     assert "pgadmin" not in services["backend"]["networks"]
+
+
+PGADMIN_PORT_OVERLAY = REPO / "deploy" / "docker" / "docker-compose.pgadmin-port.yml"
+
+
+def test_pgadmin_publishes_no_host_port_unless_asked() -> None:
+    """A host port skips the console's admin check; every local account can reach it.
+
+    pgAdmin carries a saved superuser connection, so that port handed the
+    database, and every secret in app_config, to anyone on the host.
+    """
+    pgadmin = _services()["pgadmin"]
+
+    assert "ports" not in pgadmin
+    assert "expose" not in pgadmin
+    assert "PGADMIN_PORT" not in COMPOSE.read_text()
+    # The opt-in publishes on loopback only.
+    assert _services(PGADMIN_PORT_OVERLAY) == {
+        "pgadmin": {"ports": ["127.0.0.1:${PGADMIN_PORT:-5050}:80"]}
+    }
+
+
+def _compose_command(*make_args: str) -> str:
+    env = {k: v for k, v in os.environ.items() if k not in {"DISTRIBUTION", "PGADMIN_PUBLISH"}}
+    proc = subprocess.run(
+        ["make", "--no-print-directory", "-n", "ps", "DISTRIBUTION=none", *make_args],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    (line,) = [line for line in proc.stdout.splitlines() if "docker compose" in line]
+    return line
+
+
+def test_the_makefile_publishes_pgadmin_only_when_asked() -> None:
+    overlay = "-f deploy/docker/docker-compose.pgadmin-port.yml"
+
+    assert overlay not in _compose_command()
+    assert overlay not in _compose_command("PGADMIN_PUBLISH=0")
+    assert overlay in _compose_command("PGADMIN_PUBLISH=1")
+
+
+def test_pgadmin_asks_for_its_own_login_with_no_fallback_password() -> None:
+    """The fallbacks were desktop mode, which has no login, and the password ``admin``.
+
+    A required ``${PGADMIN_PASSWORD:?}`` would stop every Compose command,
+    pgAdmin's profile in use or not, so the password has no default instead:
+    pgAdmin itself refuses to set up a volume without one.
+    """
+    environment = _services()["pgadmin"]["environment"]
+
+    assert environment["PGADMIN_CONFIG_SERVER_MODE"] == "${PGADMIN_CONFIG_SERVER_MODE:-True}"
+    assert environment["PGADMIN_DEFAULT_PASSWORD"] == "${PGADMIN_PASSWORD-}"
+    assert "PGADMIN_CONFIG_SERVER_MODE=True" in (REPO / ".env.example").read_text().splitlines()

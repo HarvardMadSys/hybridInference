@@ -72,8 +72,13 @@ describe('the /agents rewrites', () => {
       '/agents/:path*',
       '/agents',
     ]);
-    // The gateway's own API rewrites must survive untouched.
-    expect(afterFiles.length).toBeGreaterThan(10);
+    // The gateway's own rewrites must survive untouched.
+    const neutral = await loadRewrites({
+      AGENT_WEB_INTERNAL_URL: undefined,
+      AGENT_CONTROL_PLANE_INTERNAL_URL: undefined,
+    });
+    expect(afterFiles).toEqual(neutral.afterFiles);
+    expect(afterFiles.length).toBeGreaterThan(0);
   });
 
   it('matches the API prefix before the web prefix', async () => {

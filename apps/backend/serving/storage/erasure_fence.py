@@ -5,6 +5,12 @@ lock the hard delete takes when it establishes the account's tombstone, and the
 fingerprint that pins the secret the fence's digests are derived with. The
 tables themselves (``erasure_fence``, ``erasure_fence_metadata``) come from the
 schema migrations.
+
+The two other writes a request can make after its account was erased -- a
+stream's stored Responses turn (``ResponseStore.save``) and its cost
+(``PostgresOperationalStore.increment_user_costs``) -- follow the same protocol:
+the account's shared lock in one statement, the tombstone check with the write
+in the next. The hard delete purges those tables after the fence commits.
 """
 
 from __future__ import annotations

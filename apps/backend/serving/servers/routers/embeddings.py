@@ -32,6 +32,7 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.model_availability import model_not_found_detail
+from serving.servers.request_body import json_body_after, json_body_schema
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import ledger_for
 from serving.storage.utils import calculate_cost
@@ -138,6 +139,10 @@ class EmbeddingServices:
     runtime_settings: Any
 
 
+#: Reads the body once ``verify_api_key`` has run; see ``create_embeddings``.
+_embeddings_body = json_body_after(verify_api_key, EmbeddingRequest)
+
+
 @router.post(
     "/v1/embeddings",
     response_model=EmbeddingResponse,
@@ -146,9 +151,11 @@ class EmbeddingServices:
         404: {"model": ErrorResponse, "description": "Model Not Found"},
         500: {"model": ErrorResponse, "description": "Server Error"},
     },
+    # The body is read by a dependency, once the caller is authenticated (see
+    # the ``request`` parameter); described here so the API schema shows it.
+    openapi_extra=json_body_schema(EmbeddingRequest),
 )
 async def create_embeddings(
-    request: EmbeddingRequest,
     http_request: Request,
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
@@ -160,6 +167,11 @@ async def create_embeddings(
     op_store=Depends(get_operational_store),
     runtime_settings=Depends(get_runtime_settings),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    # Not a declared body: FastAPI would read and decode that before any
+    # dependency runs, so an anonymous caller could make the server decode up
+    # to the body limit before its 401. Read after authentication instead, and
+    # after admission, where a declared body was validated too.
+    request: EmbeddingRequest = Depends(_embeddings_body),
 ) -> dict[str, Any]:
     """Create embeddings for the given input text(s).
 
@@ -171,8 +183,8 @@ async def create_embeddings(
     """
     # The validated model drops anything the embeddings schema does not
     # declare, so the body is read back raw for the session declaration --
-    # FastAPI has already parsed and cached it, so this costs nothing and
-    # cannot fail on a request that got this far.
+    # validating it decoded and cached it, so this costs nothing and cannot
+    # fail on a request that got this far.
     try:
         raw_body: Any = await http_request.json()
     except Exception:  # pragma: no cover - validation would have rejected it
@@ -285,6 +297,8 @@ async def execute_embeddings(
     # The key the usage is attributed to, for its owner's per-key views.
     if user_ctx.get("api_key_id") is not None:
         metadata["api_key_id"] = user_ctx["api_key_id"]
+    if user_ctx.get("project_id"):
+        metadata["project_id"] = user_ctx["project_id"]
     metadata.update(ledger_attribution(user_ctx, started_at=start_time))
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
     metadata.update(ctx.batch_log_metadata())

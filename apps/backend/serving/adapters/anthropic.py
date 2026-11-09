@@ -23,7 +23,13 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from serving.http import AsyncHTTPClient, read_error_text, stream_timeout
+from serving.http import (
+    AsyncHTTPClient,
+    UpstreamPayloadTooLarge,
+    read_error_text,
+    stream_timeout,
+)
+from serving.servers.sse import SSEFrameTooLarge, SSEMessage, SSEParser
 from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -53,29 +59,127 @@ from .upstream_limiter import UpstreamSlot, upstream_slot
 logger = get_logger(__name__)
 
 
-async def _with_eof_frame_terminator(source: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    r"""Yield ``source``'s bytes, then the frame terminator SSE requires at EOF.
+def _feed(parser: SSEParser, raw: bytes) -> list[SSEMessage]:
+    """Feed one read to *parser* and return the events it completed.
 
-    The frame loop below accumulates into a buffer and parses a frame only once
-    it sees the ``\n\n`` delimiter. An upstream that closes the body straight
-    after its last event -- without that trailing blank line -- therefore leaves
-    the event unparsed, and here that event is usually ``message_delta`` /
-    ``message_stop``: the request's output-token count and its ``stop_reason``.
-    Losing them silently undercounts usage (and so cost).
+    The adapter's own loops appended every read to one buffer and searched all
+    of it for the blank line that ends a frame: quadratic in a frame's length,
+    and unbounded for an upstream that never ends one. :class:`SSEParser` keeps
+    an unfinished frame as pieces and fails one past its limit, raised here as
+    the ``UpstreamPayloadTooLarge`` the shared client raises for it.
 
-    Appending the delimiter at the end of a clean body completes that frame. The
-    scope is deliberately "clean EOF only": an aborted read raises out of
-    ``source`` before the terminator is reached, so a genuinely half-received
-    frame is still never parsed. Appending to a body that *did* end with the
-    delimiter is a no-op -- it produces one empty frame, which the loop ignores.
-
-    Only for a loop that consumes the bytes. The Anthropic-format passthrough
-    forwards every chunk to the client verbatim, so it drains its own residue
-    instead of taking bytes this helper synthesized.
+    At a clean end of body, ``parser.flush()`` returns the event the upstream
+    left without its terminating blank line -- usually ``message_delta`` /
+    ``message_stop``, the output-token count and ``stop_reason``. An aborted
+    read raises out of the read loop first, so a half-received frame is never
+    parsed.
     """
-    async for chunk in source:
-        yield chunk
-    yield b"\n\n"
+    try:
+        return parser.feed(raw)
+    except SSEFrameTooLarge as exc:
+        raise UpstreamPayloadTooLarge(str(exc)) from exc
+
+
+async def _sse_events(source: AsyncIterator[bytes]) -> AsyncIterator[SSEMessage]:
+    """Yield the SSE events of ``source``, the unterminated last one included (:func:`_feed`)."""
+    parser = SSEParser()
+    async for raw in source:
+        for message in _feed(parser, raw):
+            yield message
+    for message in parser.flush():
+        yield message
+
+
+def _data_lines(message: SSEMessage) -> list[str]:
+    """Return the payload of each ``data:`` line of *message*, stripped, blanks dropped."""
+    return [line.strip() for line in message.data.split("\n") if line.strip()]
+
+
+def _count_usage(message: SSEMessage, usage: dict[str, int]) -> None:
+    """Fold the usage counts in one passthrough event into *usage*."""
+    from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
+
+    frame = "".join(f"data: {line}\n" for line in _data_lines(message))
+    if frame:
+        extract_anthropic_usage_from_sse(f"{frame}\n".encode(), usage)
+
+
+# -- What the native passthrough refuses ---------------------------------------
+#
+# The passthrough forwards the caller's body and ``anthropic-beta`` header. Some
+# of what they can ask for runs on the provider's servers and is billed per use
+# on top of tokens -- web search, web fetch, code execution containers, tool
+# search, the advisor (a second model), MCP connectors, Agent Skills -- and none
+# of it reaches the gateway's billing: the usage it reads is input and output
+# tokens. Until the gateway can price that work, such a request is refused,
+# before anything is sent, rather than served at the operator's expense.
+
+#: Anthropic-defined tool types the *client* executes: Claude asks for the call
+#: and the caller runs it, as with a custom tool, so the request costs only its
+#: tokens. Every other ``type`` is refused, a future server tool included.
+_CLIENT_TOOL_TYPE_PREFIXES = ("bash_", "text_editor_", "memory_", "computer_")
+#: Top-level fields that set the provider's servers to work: MCP connectors, and
+#: the code-execution container Agent Skills run in.
+_SERVER_SIDE_FIELDS = ("mcp_servers", "container")
+#: Betas that exist to enable that work.
+_SERVER_TOOL_BETA_PREFIXES = (
+    "mcp-client-",
+    "code-execution-",
+    "web-fetch-",
+    "web-search-",
+    "advisor-tool-",
+    "skills-",
+)
+
+
+class ServerToolRefused(aiohttp.ClientResponseError):
+    """A native request for provider-side tool work the gateway cannot bill.
+
+    A 400 raised before anything is sent upstream: a ``ClientResponseError`` so
+    ``/v1/messages`` answers ``invalid_request_error`` with its message, and the
+    endpoint's breaker exempts it as the caller's request, as for any 4xx.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            request_info=None,  # type: ignore[arg-type]
+            history=(),
+            status=400,
+            message=message,
+        )
+
+    def __str__(self) -> str:
+        # ``ClientResponseError.__str__`` reads the request's URL, and there is
+        # no request.
+        return f"400, message={self.message!r}"
+
+
+def refuse_server_tools(body: dict[str, Any], extra_headers: dict[str, str] | None) -> None:
+    """Raise :class:`ServerToolRefused` when the request asks for a server-side tool.
+
+    Checks the tools' ``type`` (custom tools and :data:`_CLIENT_TOOL_TYPE_PREFIXES`
+    pass), the top-level :data:`_SERVER_SIDE_FIELDS` and the forwarded betas.
+    """
+    unsupported = "is not available through this gateway, which cannot bill the work it does"
+    for name in _SERVER_SIDE_FIELDS:
+        if body.get(name) is not None:
+            raise ServerToolRefused(f"`{name}` {unsupported}.")
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for index, tool in enumerate(tools):
+            kind = tool.get("type") if isinstance(tool, dict) else None
+            if kind is None or kind == "custom":
+                continue
+            if isinstance(kind, str) and kind.startswith(_CLIENT_TOOL_TYPE_PREFIXES):
+                continue
+            raise ServerToolRefused(
+                f"tools.{index}: the server tool {kind!r} {unsupported}. "
+                "Define your own tool and run it instead."
+            )
+    betas = (extra_headers or {}).get("anthropic-beta") or ""
+    for beta in (part.strip() for part in betas.split(",")):
+        if beta.startswith(_SERVER_TOOL_BETA_PREFIXES):
+            raise ServerToolRefused(f"The beta {beta!r} {unsupported}.")
 
 
 #: The ``anthropic-version`` values a batch item may carry upstream; the batch
@@ -316,47 +420,38 @@ class AnthropicAdapter(BaseAdapter):
                     message=error_body[:500],
                     headers=resp.headers,
                 )
-            buf = b""
-            async for raw in _with_eof_frame_terminator(resp.content.iter_any()):
-                buf += raw
-                while b"\n\n" in buf:
-                    frame, buf = buf.split(b"\n\n", 1)
-                    for line in frame.split(b"\n"):
-                        if not line.startswith(b"data: "):
-                            continue
-                        payload_bytes = line[len(b"data: ") :].strip()
-                        if not payload_bytes:
-                            continue
-                        try:
-                            evt = json.loads(payload_bytes)
-                        except json.JSONDecodeError:
-                            continue
+            async for message in _sse_events(resp.content.iter_any()):
+                for payload in _data_lines(message):
+                    try:
+                        evt = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
 
-                        # Before the handler keeps a tool call's JSON back: a
-                        # router waiting on a first token must hear it now.
-                        if not saw_output and is_output_event(evt):
-                            saw_output = True
-                            report_first_token()
+                    # Before the handler keeps a tool call's JSON back: a
+                    # router waiting on a first token must hear it now.
+                    if not saw_output and is_output_event(evt):
+                        saw_output = True
+                        report_first_token()
 
-                        result = handle_stream_event(evt, accum)
+                    result = handle_stream_event(evt, accum)
 
-                        if result.input_tokens:
-                            input_tokens = result.input_tokens
-                        if result.output_tokens:
-                            output_tokens = result.output_tokens
-                        if result.cache_read_tokens:
-                            cache_read_input_tokens = result.cache_read_tokens
-                        if result.cache_read_reported:
-                            cache_read_reported = True
-                        if result.cache_write_tokens:
-                            cache_creation_input_tokens = result.cache_write_tokens
+                    if result.input_tokens:
+                        input_tokens = result.input_tokens
+                    if result.output_tokens:
+                        output_tokens = result.output_tokens
+                    if result.cache_read_tokens:
+                        cache_read_input_tokens = result.cache_read_tokens
+                    if result.cache_read_reported:
+                        cache_read_reported = True
+                    if result.cache_write_tokens:
+                        cache_creation_input_tokens = result.cache_write_tokens
 
-                        if result.text_delta:
-                            total_content += result.text_delta
-                            yield self.format_stream_chunk(result.text_delta, self.config.id)
+                    if result.text_delta:
+                        total_content += result.text_delta
+                        yield self.format_stream_chunk(result.text_delta, self.config.id)
 
-                        if result.finish_reason:
-                            finish_reason = result.finish_reason
+                    if result.finish_reason:
+                        finish_reason = result.finish_reason
 
         # Always emit final usage chunk and [DONE] after upstream closes,
         # even if message_stop was never received (truncated upstream).
@@ -405,7 +500,12 @@ class AnthropicAdapter(BaseAdapter):
         ``usage_sink`` is accepted for interface compatibility and left empty:
         the response's own Anthropic usage is all there is, with thinking
         already counted in ``output_tokens`` and no separate reasoning count.
+
+        Raises:
+            ServerToolRefused: The request asks for a server-side tool
+                (:func:`refuse_server_tools`); nothing was sent.
         """
+        refuse_server_tools(body, extra_headers)
         forward = dict(body)
         forward["model"] = self._upstream_model()
 
@@ -433,9 +533,12 @@ class AnthropicAdapter(BaseAdapter):
         Forwards raw upstream SSE bytes to the caller and accumulates the
         per-event usage counts into ``usage_sink`` so the router can
         record them in DB logging once the stream completes.
-        """
-        from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
 
+        Raises:
+            ServerToolRefused: The request asks for a server-side tool
+                (:func:`refuse_server_tools`); nothing was sent.
+        """
+        refuse_server_tools(body, extra_headers)
         forward = dict(body)
         forward["model"] = self._upstream_model()
         forward["stream"] = True
@@ -469,19 +572,17 @@ class AnthropicAdapter(BaseAdapter):
                     message=error_body[:500],
                     headers=resp.headers,
                 )
-            buf = b""
+            parser = SSEParser()
             async for chunk in resp.content.iter_any():
                 yield chunk
-                buf += chunk
-                while b"\n\n" in buf:
-                    frame, buf = buf.split(b"\n\n", 1)
-                    extract_anthropic_usage_from_sse(frame + b"\n\n", usage)
+                for message in _feed(parser, chunk):
+                    _count_usage(message, usage)
             # Clean EOF with the last event left unterminated: complete it for
             # usage extraction, or this request's output tokens go uncounted.
             # Only our accounting needs this -- the client already received
             # those bytes verbatim above, so nothing is added to the wire.
-            if buf.strip():
-                extract_anthropic_usage_from_sse(buf + b"\n\n", usage)
+            for message in parser.flush():
+                _count_usage(message, usage)
 
         if usage_sink is not None:
             usage_sink.update(usage)

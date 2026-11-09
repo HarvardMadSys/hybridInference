@@ -58,6 +58,11 @@ starts its requests as soon as their models have room. From then on each
 request succeeds or fails on its own: a request the model rejects, or that
 still fails after its retries, fails alone, and the others keep running.
 
+Validation, including console preflight, applies the same per-request limits
+on messages, content parts, tools and stop sequences as interactive requests.
+Every JSON number must be finite, including numbers nested in tool arguments
+or schemas.
+
 Each request then runs exactly as if you had sent it to its endpoint yourself:
 the same models, routing and fallback, the same price, logged under your
 account. It counts toward your daily cost quota. It does **not** take a slot of
@@ -86,14 +91,21 @@ any limit allows, usually a long or repetitive output with a large
 count toward pausing the model, which several failures in a row do: one
 runaway request says nothing about the model's health.
 
+If a provider's response cannot be encoded as valid JSON and UTF-8, the request
+fails permanently with `upstream_error` (`502`). It is not retried, and any
+known charge remains recorded.
+
 A model served on demand (a cluster job, say) may answer that it is queued:
 its deployment is waiting for a GPU. That answer (a `503` with the error code
 `model_queued`) is not a failure and uses up no attempt. The request goes back
-to the queue, the model takes no new batch requests for the deployment's
-`Retry-After` (two minutes without one), and the requests keep waiting like
-this until the model is up or the batch's completion window ends. The same
+to the queue until the deployment's `Retry-After` (two minutes without one),
+the model takes no new batch requests for that long (at most 15 minutes), and
+the requests keep waiting like this until the model is up or the batch's
+completion window ends. The same
 answer reaches an interactive caller as a `503` with the deployment's message,
 and neither the circuit breaker nor the failed-request alerts count it.
+Negative or non-finite `Retry-After` values use the two-minute default; finite
+delays are capped at 168 hours.
 
 An operator may lift the window altogether by setting
 `BATCH_COMPLETION_WINDOW_HOURS` to `0` (see
@@ -121,6 +133,10 @@ again:
   with that key pause, and are checked again within the hour, so raising the
   key's budget lets them resume; batches of your other keys keep running;
 - if your role no longer allows batches, they pause until it does.
+
+The quotas and budgets count your requests still running at what they may
+cost. When those alone stand in the way, and what has been charged leaves
+room, nothing pauses: the request waits half a minute and is checked again.
 
 So keep the key you created a batch with until the batch finishes.
 
@@ -299,9 +315,10 @@ curl -s "https://your-gateway.example/v1/batches/$BATCH_ID/results?limit=100" \
 }
 ```
 
-`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the next
-page with `after` set to the page's `last_id`. Every request of the batch is
-listed, finished or not. A request still `queued` or `running` has no
+`limit` is 1–1000 (default 100). A page also stops at about 8 MiB of results,
+so large ones (embeddings, say) come a few to a page. When `has_more` is
+`true`, ask for the next page with `after` set to the page's `last_id`. Every
+request of the batch is listed, finished or not. A request still `queued` or `running` has no
 `response` yet, but may retain its last `error` while being retried. Read the
 results once the batch is in a final status, or read them again later.
 
@@ -319,6 +336,7 @@ is `cancelled`, `expired` or `failed`. Error codes:
 | `timeout` | Ran out of time (`504`); not retried |
 | `service_unavailable` | No endpoint could serve it after every retry (`503`) |
 | `upstream_error` | Another server error after every retry |
+| `result_too_large` | The response was larger than one request may store, or the batch's responses had reached their storage limit (the requests still to run then fail without running) |
 | `batch_failed` | Not run: the batch failed |
 | `batch_expired` | Not run before the completion window closed |
 
@@ -436,7 +454,9 @@ bytes every time it is downloaded, and its size and SHA-256 (the `ETag`) are
 fixed when the batch ends. `GET /v1/files` lists your files, `GET
 /v1/files/{id}` returns one, and `DELETE /v1/files/{id}` deletes one for good:
 a deleted output file is not written again, though the batch still names it.
-Deleting an input file does not affect a batch already created from it.
+Deleting an input file does not affect a batch already created from it. A
+download is a stream: it may run for as long as `STREAM_REQUEST_TIMEOUT_SECONDS`
+allows (an hour by default), not only the 120 seconds an ordinary request gets.
 
 The official OpenAI SDKs work with this flow:
 
@@ -617,7 +637,9 @@ are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 of
 `"{webhook-id}.{webhook-timestamp}.{body}"` with the secret's base64 part as the
 key). A delivery that is not answered with a `2xx` is retried with backoff, up
 to eight attempts; the same event can arrive more than once, so deduplicate on
-`webhook-id`.
+`webhook-id`. Your events go out one at a time, beside other users'. An
+endpoint that fails three deliveries in a row by timing out gets none for ten
+minutes, and longer each further time, up to an hour.
 
 A webhook URL must be HTTPS and reach a public address. Private, loopback,
 link-local and cloud-metadata addresses are refused when the URL is saved, again
@@ -745,6 +767,7 @@ and submit as a new batch.
 | Input files you may keep, and upload per hour | 512 MiB; 60 |
 | Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches), or no limit if the operator set none |
 | Time a finished batch is kept | 7 days |
+| Responses one batch may store | 8 GiB in all; 4 MiB per request |
 
 The operator may have changed any of them. A larger job is several batches.
 
@@ -813,8 +836,9 @@ and to the worker's next round.
 | `BATCH_INTERACTIVE_RESERVE` | 0 | Slots of every model's batch cap kept free for interactive requests, on top of those in flight. Applies only while `BATCH_YIELD_TO_INTERACTIVE` is on |
 | `BATCH_MAX_LINE_KB` | 4096 | Largest line of an input file |
 | `BATCH_MAX_RESULT_KB` | 4096 | Largest response one batch request may store |
+| `BATCH_MAX_RESULTS_MB_PER_BATCH` | 8192 | Responses one batch may store in all, in MiB. Once they reach it, a response that does not fit fails with `result_too_large`, and so does every request of that batch still to run, without running. Counted in each gateway process from the results it records; after a restart, what a batch already stored counts at its stored, compressed size. `0` removes the limit |
 | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` | 512 | Uploaded input files one user may keep |
-| `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour |
+| `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour, uploads that failed included (those counted in each gateway process on its own) |
 | `BATCH_FILE_RETENTION_DAYS` | 30 | Days an uploaded input file is kept |
 | `BATCH_ANTHROPIC_VERSIONS` | `2023-06-01,2026-10-21` | `anthropic-version` values a new `/v1/messages` batch may name. A stored batch keeps running under its own, and a create it made still replays |
 | `BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS` | off | Let webhooks reach private and loopback addresses. For isolated test deployments only |

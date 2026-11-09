@@ -80,7 +80,9 @@ class _Route(BaseAdapter):
         self.calls += 1
         ctx = req_ctx.get()
         self.deadlines.append(ctx.get(req_ctx.UPSTREAM_QUEUE_DEADLINE, UNSET))
-        self.watches.append(ctx.get(req_ctx.UPSTREAM_DISPATCH_WATCH, UNSET))
+        # The router's dispatch report; the first-token watch rides on it.
+        report = ctx.get(req_ctx.UPSTREAM_DISPATCH_WATCH, UNSET)
+        self.watches.append(report if report is UNSET else report.watch)
 
     async def chat_completion(
         self, messages: list[dict[str, Any]], **params: Any

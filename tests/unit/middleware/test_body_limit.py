@@ -15,11 +15,15 @@ from pydantic import BaseModel
 
 from serving.config.app_config_registry import static_entry
 from serving.servers.middleware.body_limit import (
+    ADMIN_MAX_BODY_BYTES,
+    AUTHENTICATED_BODY_PATHS,
+    CONTROL_MAX_BODY_BYTES,
     DEFAULT_MAX_BODY_MB,
     EXEMPT_PATHS,
     MAX_BODY_SETTING,
     RequestBodyLimitMiddleware,
     configured_max_body_bytes,
+    control_limit,
 )
 
 LIMIT = 1024
@@ -299,3 +303,150 @@ def test_the_application_installs_the_limit_innermost() -> None:
     # (so its 413 carries CORS headers) and inside every other middleware.
     assert middleware[-1] is RequestBodyLimitMiddleware
     assert middleware.index(SettingsCORSMiddleware) < middleware.index(RequestBodyLimitMiddleware)
+
+
+# --- control routes -----------------------------------------------------------
+#
+# FastAPI decodes a declared body model before any dependency runs, so on a
+# control route an anonymous caller's body is decoded before the 401. They get
+# a small limit of their own.
+
+
+def _control_app(paths: list[str]) -> FastAPI:
+    app = FastAPI()
+    app.add_middleware(RequestBodyLimitMiddleware)
+
+    for path in paths:
+
+        @app.post(path)
+        async def echo(request: Request) -> dict[str, int]:
+            return {"received": len(await request.body())}
+
+    return app
+
+
+CONTROL_ROUTES = [
+    "/auth/login",
+    "/user/api-keys/hyi-abcdefgh/reveal",
+    "/user/profile",
+    "/internal/agent-grants",
+    "/v1/identity/code",
+    "/v1/batch_webhook",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", CONTROL_ROUTES)
+async def test_a_control_route_refuses_a_body_over_its_small_limit(path: str) -> None:
+    app = _control_app([path])
+    async with await _client(app) as client:
+        refused = await client.post(path, content=b"x" * (CONTROL_MAX_BODY_BYTES + 1))
+        accepted = await client.post(path, content=b"x" * CONTROL_MAX_BODY_BYTES)
+    assert refused.status_code == 413
+    assert refused.json()["error"]["type"] == "request_too_large"
+    assert str(CONTROL_MAX_BODY_BYTES) in refused.json()["error"]["message"]
+    assert accepted.json() == {"received": CONTROL_MAX_BODY_BYTES}
+
+
+@pytest.mark.asyncio
+async def test_a_control_route_reads_no_more_than_its_limit_of_a_chunked_body() -> None:
+    app = _control_app(["/auth/login"])
+    produced: list[int] = []
+
+    async def chunks():
+        for i in range(64):
+            produced.append(i)
+            yield b"c" * (64 * 1024)
+
+    async with await _client(app) as client:
+        response = await client.post("/auth/login", content=chunks())
+    assert response.status_code == 413
+    # 4 chunks are the limit; the fifth passes it and nothing after it is read.
+    assert produced == [0, 1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_administration_gets_a_larger_limit_than_other_control_routes() -> None:
+    app = _control_app(["/admin/site-updates"])
+    async with await _client(app) as client:
+        accepted = await client.post("/admin/site-updates", content=b"a" * ADMIN_MAX_BODY_BYTES)
+        refused = await client.post(
+            "/admin/site-updates", content=b"a" * (ADMIN_MAX_BODY_BYTES + 1)
+        )
+    assert accepted.status_code == 200
+    assert refused.status_code == 413
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", sorted(AUTHENTICATED_BODY_PATHS))
+async def test_routes_that_read_after_authentication_keep_the_general_limit(path: str) -> None:
+    app = _control_app([path])
+    size = 2 * 1024 * 1024
+    async with await _client(app) as client:
+        response = await client.post(path, content=b"b" * size)
+    assert response.status_code == 200
+    assert response.json() == {"received": size}
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/v1/chat/completions", None),
+        ("/v1/embeddings", None),
+        ("/v1/messages", None),
+        ("/v1/qdrant/collections/c/points", None),
+        ("/v1/identity", None),
+        ("/v1/identity/token", CONTROL_MAX_BODY_BYTES),
+        ("/userinfo", None),
+        ("/user/batches", CONTROL_MAX_BODY_BYTES),
+        ("/admin/config", ADMIN_MAX_BODY_BYTES),
+        ("/admin/config/restore", None),
+        ("/internal/playground/chat", None),
+        ("/internal/playground/models", CONTROL_MAX_BODY_BYTES),
+    ],
+)
+def test_which_paths_are_control_routes(path: str, expected: int | None) -> None:
+    assert control_limit(path) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_control_limit_never_raises_the_general_one() -> None:
+    app = FastAPI()
+    app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=LIMIT)
+
+    @app.post("/auth/login")
+    async def login(request: Request) -> dict[str, int]:
+        return {"received": len(await request.body())}
+
+    async with await _client(app) as client:
+        response = await client.post("/auth/login", content=b"l" * (LIMIT + 1))
+    assert response.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_every_body_model_route_outside_the_limits_reads_after_authentication() -> None:
+    """A route that declares a body model must be a control route.
+
+    FastAPI decodes a declared body before the route's authentication runs; only
+    the control limit keeps that small. A route that takes a large body reads it
+    after authentication instead (serving.servers.request_body).
+    """
+    from fastapi.routing import APIRoute, _IncludedRouter
+
+    from serving.servers.app import create_app
+
+    def routes(entries):
+        for entry in entries:
+            if isinstance(entry, _IncludedRouter):
+                yield from entry.effective_route_contexts()
+            elif isinstance(entry, APIRoute):
+                yield entry
+
+    uncapped = sorted(
+        route.path
+        for route in routes(create_app().routes)
+        if route.body_field is not None
+        and control_limit(route.path.rstrip("/")) is None
+        and route.path not in EXEMPT_PATHS
+    )
+    assert uncapped == []

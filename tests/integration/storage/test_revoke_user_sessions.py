@@ -75,3 +75,19 @@ async def test_without_a_current_session_every_session_is_revoked(store):
         await session(store, "owner", sid)
     assert await store.revoke_user_sessions("owner") == 2
     assert set((await revoked(store)).values()) == {True}
+
+
+async def test_signing_out_revokes_the_one_session_a_token_names(store):
+    """Logout ends the token's own session wherever it is held, and nothing else."""
+    for sid in ("here", "laptop"):
+        await session(store, "owner", sid)
+    await session(store, "someone-else", "here")
+
+    assert await store.revoke_session_by_sid("owner", "here") is True
+    assert await revoked(store) == {
+        "owner-here": True,
+        "owner-laptop": False,
+        "someone-else-here": False,
+    }
+    assert await store.revoke_session_by_sid("owner", "here") is False
+    assert await store.revoke_session_by_sid("owner", "no-such-sid") is False

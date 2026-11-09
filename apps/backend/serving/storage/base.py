@@ -56,6 +56,13 @@ class ProviderDefinitionRow:
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
 
+USER_PREFERENCES_MAX_BYTES = 16 * 1024
+"""The most an account holder's own writes may leave in their preferences, as JSON text.
+
+Their saved prober layout, the largest entry, comes to a few KiB even listing
+every model of a deployment of dozens; the language choice is under 100 bytes.
+"""
+
 
 class CostIncrement(NamedTuple):
     """One addition to the cost counters (``user_daily_cost``, ``api_key_daily_cost``).
@@ -70,6 +77,8 @@ class CostIncrement(NamedTuple):
     api_key_id: int | None
     cost_usd: Decimal | float
     requests: int = 1
+    org_id: str | None = None
+    project_id: str | None = None
 
 
 class CostWriteOutcomeUnknown(Exception):
@@ -202,6 +211,11 @@ class OperationalStore(ABC):
         email_verified, created_at, last_login_at, password_hash, preferences.
         ``email`` is None for an account created without one (the first-run
         setup administrator), which signs in with ``login_name`` instead.
+
+        ``preferences`` holds only the entries a request acts on
+        (``disabled_models`` and ``locale``): every console request reads
+        this row, so it does not carry the rest. The whole document is
+        :meth:`get_user_preferences`.
         """
 
     @abstractmethod
@@ -640,6 +654,7 @@ class OperationalStore(ABC):
         inherit_account_quota: bool = False,
         name: str | None = None,
         max_active_keys: int | None = None,
+        project_id: str | None = None,
     ) -> Row:
         """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
 
@@ -649,9 +664,11 @@ class OperationalStore(ABC):
         account must therefore carry the same values. Implementations keep it
         that way:
 
-        - ``inherit_account_quota=True`` (a user adding a key): when the
-          account already holds an unrevoked key, the new key takes its quota
-          and the given values are ignored; they only seed a first key.
+        - ``inherit_account_quota=True`` (a user adding a key): the new key
+          takes the account's quota and the given values are ignored; they
+          only seed the account's first key. The account's quota is that of
+          its unrevoked keys, or with none of those, of its most recently
+          revoked key: revoking every key must not reset a limit an admin set.
         - ``inherit_account_quota=False`` (an admin setting one): the given
           values become the account's, written to every unrevoked key of the
           user in the same transaction.
@@ -679,6 +696,74 @@ class OperationalStore(ABC):
         api_key_encrypted, budget_daily_usd, budget_monthly_usd,
         allowed_models, spent_today_usd, spent_month_usd``; never the hash.
         The spend is the key's over the current UTC day and month.
+        """
+
+    # -- projects ------------------------------------------------------------
+    #
+    # A project belongs to the owner's personal organization. Its budgets are
+    # sub-limits of the account ceiling, and its allowlist narrows the models
+    # its keys may call. The Default project of each account is where keys go
+    # when the caller names none.
+
+    @abstractmethod
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        description: str | None = None,
+        budget_daily_usd: Decimal | float | None = None,
+        budget_monthly_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+        max_concurrent_requests: int | None = None,
+    ) -> Row:
+        """Insert a project under the user's personal organization."""
+
+    @abstractmethod
+    async def list_projects(self, user_id: str) -> list[Row]:
+        """Return the user's active projects, newest first."""
+
+    @abstractmethod
+    async def get_default_project(self, user_id: str) -> Row | None:
+        """Return the user's Default project."""
+
+    @abstractmethod
+    async def get_project(self, user_id: str, project_id: str) -> Row | None:
+        """Return one active project owned by *user_id*, or None."""
+
+    @abstractmethod
+    async def update_project(
+        self, user_id: str, project_id: str, changes: dict[str, Any]
+    ) -> Row | None:
+        """Update named project columns; return the row, or None when absent."""
+
+    @abstractmethod
+    async def archive_project(self, user_id: str, project_id: str) -> int:
+        """Archive a project and revoke its keys; return keys revoked."""
+
+    @abstractmethod
+    async def get_project_spend(self, project_id: str) -> tuple[float, float]:
+        """The project's spend on the current UTC day and month, ``(today, month)``."""
+
+    @abstractmethod
+    async def count_project_keys(self, project_id: str) -> int:
+        """Return how many active keys the project holds."""
+
+    @abstractmethod
+    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
+        """Update an organization's ceilings or status; return the row."""
+
+    @abstractmethod
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Return the status of the account's personal organization, or None."""
+
+    @abstractmethod
+    async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
+        """Return ``(daily, monthly)`` ceilings for the account, monthly None when unset.
+
+        Reads the personal organization first and falls back to the legacy key
+        quota while the organization has no ceiling of its own.
         """
 
     @abstractmethod
@@ -809,8 +894,12 @@ class OperationalStore(ABC):
         """Update the session with a new refresh token hash and JTI."""
 
     @abstractmethod
-    async def revoke_session(self, session_id: str) -> None:
-        """Set ``revoked = TRUE`` on the session."""
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Set ``revoked = TRUE`` on the session; return the account it belongs to.
+
+        ``None`` when there is no such session. A caching layer forgets that
+        account's cached session liveness, and no other account's.
+        """
 
     @abstractmethod
     async def delete_user_sessions(self, user_id: str) -> None:
@@ -821,6 +910,14 @@ class OperationalStore(ABC):
         """Revoke every live session of *user_id* but the one whose sid is *except_sid*.
 
         Returns how many sessions were revoked.
+        """
+
+    @abstractmethod
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Revoke *user_id*'s session *sid*, the ``sid`` claim of an access token.
+
+        Whichever browser holds it can no longer refresh it. Returns whether a
+        session was still live to revoke.
         """
 
     # -- browser sessions ----------------------------------------------------
@@ -893,8 +990,12 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Revoke every account's session in a browser, and the browser session."""
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Revoke every account's session in a browser, and the browser session.
+
+        Returns the accounts whose sessions were revoked, so a caching layer
+        forgets their cached session liveness and no other account's.
+        """
 
     # -- login events (audit) ------------------------------------------------
 
@@ -1158,6 +1259,8 @@ class OperationalStore(ABC):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
 
@@ -1174,6 +1277,8 @@ class OperationalStore(ABC):
         writes them.
 
         Args:
+            org_id: Organization attributed at request admission.
+            project_id: Project attributed at request admission.
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
             day: Date string (YYYY-MM-DD). Defaults to UTC today.
@@ -1203,6 +1308,8 @@ class OperationalStore(ABC):
                 day=increment.day,
                 api_key_id=increment.api_key_id,
                 requests=increment.requests,
+                org_id=increment.org_id,
+                project_id=increment.project_id,
             )
 
     @abstractmethod
@@ -1284,15 +1391,33 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """Return the preferences JSONB column for *user_id*, parsed as dict."""
+        """Return the preferences JSONB column for *user_id*, parsed as dict.
+
+        A document stored far over :data:`USER_PREFERENCES_MAX_BYTES`, which
+        only a write made before that bound existed can have left, reads as
+        just the entries ``get_user_by_id`` carries: decoding it must not cost
+        more than a bounded one, and the account holder's next save of the
+        oversized entry replaces it.
+        """
 
     # Preferences are written one key at a time, in the database. A whole-column
     # write from a value read earlier loses whatever another request wrote to a
     # different key in between, so there is deliberately no such method.
 
     @abstractmethod
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
-        """Set one preference key atomically; return False when there is no such user."""
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
+        """Set one preference key atomically; return False when there is no such user.
+
+        With *max_total_bytes*, the write is refused, leaving the row as it
+        was, when the account's whole preferences document would come out
+        larger than that as JSON text: it raises
+        :class:`~serving.exceptions.PreferencesTooLargeError`. Pass it for a
+        value the account holder chose (:data:`USER_PREFERENCES_MAX_BYTES`).
+        An administrator's write passes none, so an account holder cannot
+        block one by filling their own document.
+        """
 
     @abstractmethod
     async def delete_user_preference(self, user_id: str, key: str) -> bool:
@@ -2216,7 +2341,8 @@ class LogStore(ABC):
         ``limit`` rows from the window, still ordered ascending for replay.
 
         ``include_metadata`` drives the per-row metadata JSON that only the
-        latency replay reads (``endpoint_id`` and ``failed_attempts``).  The
+        latency replay reads (``endpoint_id``, ``failed_attempts`` and
+        RouteWise's own ``attempt_ttft_ms``).  The
         envelope replay needs token counts alone, so it passes ``False`` and
         implementations may leave those fields unset rather than fetching and
         decoding a JSON document per row.

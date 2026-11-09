@@ -505,16 +505,16 @@ async def _charged_at_least(pool, user_id: str, amount: float) -> bool:
     return float(total) >= amount - 1e-12
 
 
-async def test_a_worker_that_reclaims_its_own_lapsed_item_still_settles_it_once(
+async def test_a_worker_never_reclaims_an_item_it_is_still_running(
     gateway, owner, pool, monkeypatch
 ):
-    """The same worker can re-claim an item whose lease it let lapse (Q8, as it is today).
+    """A worker whose lease lapsed under an item it is running never claims it again.
 
-    Nothing stops a worker from claiming again an item it is still running once
-    its lease has lapsed: the attempt in flight is not cancelled, so the item
-    runs twice inside one process. The fence still settles it once, on the
-    newer attempt; the older one is abandoned with an unknown cost; and the
-    worker's own bookkeeping drains once both calls return. Not exactly-once.
+    Its heartbeat could not keep the lease (here: none runs at all), so the item
+    is claimable by the store's own rules; but every claim this worker makes
+    leaves out the items it is running, so the upstream is called once. The
+    item settles on its one attempt, billed once, and the worker's own
+    bookkeeping drains.
     """
     import dataclasses
 
@@ -549,9 +549,6 @@ async def test_a_worker_that_reclaims_its_own_lapsed_item_still_settles_it_once(
         worker_id=f"lapsing-{uuid.uuid4().hex[:6]}",
         timings=dataclasses.replace(_TIMINGS, lease_seconds=1, heartbeat_seconds=3600),
     )
-    # Every attempt this worker starts. The re-claim replaces the stale entry in
-    # ``_in_flight`` (keyed by item), so an empty ``_in_flight`` does not mean
-    # the stale attempt's task has finished; only its task says that.
     tracked = []
     track = worker._track
 
@@ -564,12 +561,12 @@ async def test_a_worker_that_reclaims_its_own_lapsed_item_still_settles_it_once(
     worker.start()
     try:
         await asyncio.wait_for(entered_first.wait(), timeout=10)
-        await _until(lambda: _status_is(store, batch_id, "completed"), what="the self re-claim")
+        # Well past the lease, with a round every few milliseconds.
+        await asyncio.sleep(2.5)
+        assert entered == [1]
+        assert len(tracked) == 1
         release_first.set()
-        await _until(lambda: answered == [2, 1], what="the stale call to return")
-        assert len(tracked) == 2
-        # Each task's ``_forget`` callback was added before gather's own, so it
-        # has run by the time gather returns.
+        await _until(lambda: _status_is(store, batch_id, "completed"), what="the item to settle")
         await asyncio.wait_for(asyncio.gather(*(e.task for e in tracked)), timeout=20)
         assert not worker._in_flight
         assert dict(worker._running) == {}
@@ -579,10 +576,10 @@ async def test_a_worker_that_reclaims_its_own_lapsed_item_still_settles_it_once(
 
     settled = await store.get_batch(batch_id)
     (result,) = await store.list_results(batch_id)
-    assert result["response"]["choices"][0]["message"]["content"].endswith("#2")
+    assert result["response"]["choices"][0]["message"]["content"].endswith("#1")
     assert (settled["completed_count"], settled["failed_count"]) == (1, 0)
     assert float(settled["cost_usd"]) == pytest.approx(_ITEM_COST)
-    assert settled["unknown_cost_count"] == 1
+    assert settled["unknown_cost_count"] == 0
     async with pool.acquire() as conn:
         attempts = await conn.fetch(
             "SELECT attempt_no, worker_id, outcome, cost_status FROM batch_attempts "
@@ -590,12 +587,11 @@ async def test_a_worker_that_reclaims_its_own_lapsed_item_still_settles_it_once(
             batch_id,
         )
     assert [(a["attempt_no"], a["outcome"], a["cost_status"]) for a in attempts] == [
-        (1, "abandoned", "unknown"),
-        (2, "succeeded", "billed"),
+        (1, "succeeded", "billed"),
     ]
     assert {a["worker_id"] for a in attempts} == {worker.worker_id}
-    assert entered == [1, 2]
+    assert entered == answered == [1]
     await _until(
-        lambda: _charged_at_least(pool, owner["user_id"], 2 * _ITEM_COST),
-        what="both charges to land",
+        lambda: _charged_at_least(pool, owner["user_id"], _ITEM_COST),
+        what="the charge to land",
     )

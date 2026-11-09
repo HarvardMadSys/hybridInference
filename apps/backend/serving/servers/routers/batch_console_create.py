@@ -77,7 +77,12 @@ from serving.servers.deps import (
     get_services,
 )
 from serving.servers.routers.batch_console import COPYABLE_TARGETS, batch_detail
-from serving.servers.routers.files import content_disposition, file_object, store_upload
+from serving.servers.routers.files import (
+    content_disposition,
+    file_object,
+    jsonl_download,
+    store_upload,
+)
 from serving.servers.routers.models import _build_model_list_async
 from serving.storage.batch_file_store import BatchFileQuotaExceeded
 from serving.storage.batch_store import (
@@ -402,6 +407,7 @@ async def delete_source(
 @router.get("/user/batch-files/{file_id}/content", response_model=None)
 async def download_source(
     file_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
     file_store=Depends(get_batch_file_store),
@@ -409,9 +415,9 @@ async def download_source(
     """Download one of the user's uploads (a source, or a batch's stored-request copy) as stored."""
     store, file_store, _config = _surface(store, file_store)
     row = await _owned_upload(file_store, file_id, current_user["user_id"])
-    return StreamingResponse(
+    return jsonl_download(
+        request,
         stream_upload(store=store, file_store=file_store, file_id=file_id),
-        media_type="application/jsonl",
         headers={
             "content-length": str(int(row.get("bytes") or 0)),
             "content-disposition": content_disposition(row.get("filename") or file_id),
@@ -681,6 +687,9 @@ async def create_console_batch(
                 f"The API key this batch runs under has spent its {period} budget; raise it on "
                 "the key's page, or submit after it renews"
             )
+        elif exc.scope == "project":
+            code = "project_budget_exceeded"
+            message = f"The project this batch runs under has spent its {period} budget; raise it on the project's page, or submit after it renews"
         else:
             code = "quota_exceeded" if exc.window == "day" else "monthly_quota_exceeded"
             message = f"Your {period} quota is spent; submit after it renews"

@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.mark.asyncio
@@ -237,17 +238,41 @@ async def test_mail_routes_refuse_an_address_alike_whether_or_not_it_has_an_acco
     assert answers["held@example.com"] == answers["free@example.com"] == (429, _LIMITED, "3600")
 
 
-@pytest.mark.asyncio
-async def test_mail_routes_share_a_window_per_client(test_app, test_client, mock_operational_store):
-    mock_operational_store.get_user_by_email.return_value = None
-    for n in range(10):
-        path = "/auth/forgot-password" if n % 2 else "/auth/resend-verification"
-        response = await test_client.post(path, json={"email": f"user{n}@example.com"})
-        assert response.status_code == 200
+def _client_at(app, address: str) -> AsyncClient:
+    transport = ASGITransport(app=app, client=(address, 123))
+    return AsyncClient(transport=transport, base_url="http://test")
 
-    refused = await test_client.post("/auth/forgot-password", json={"email": "new@example.com"})
+
+@pytest.mark.asyncio
+async def test_mail_routes_share_a_window_per_client(test_app, mock_operational_store):
+    mock_operational_store.get_user_by_email.return_value = None
+    async with _client_at(test_app, "5.6.7.8") as client:
+        for n in range(10):
+            path = "/auth/forgot-password" if n % 2 else "/auth/resend-verification"
+            response = await client.post(path, json={"email": f"user{n}@example.com"})
+            assert response.status_code == 200
+
+        refused = await client.post("/auth/forgot-password", json={"email": "new@example.com"})
 
     assert (refused.status_code, refused.json()) == (429, _LIMITED)
+
+
+@pytest.mark.asyncio
+async def test_clients_the_backend_cannot_tell_apart_do_not_share_one_window(
+    test_app, test_client, mock_operational_store
+):
+    """Loopback is unresolved, as is every browser behind an untrusted proxy.
+
+    One window for all of them was a cap on the deployment: ten requests an
+    hour from anyone stopped every password reset.
+    """
+    mock_operational_store.get_user_by_email.return_value = None
+    for n in range(30):
+        response = await test_client.post("/auth/forgot-password", json={"email": f"x{n}@e.com"})
+        assert response.status_code == 200
+
+    owner = await test_client.post("/auth/forgot-password", json={"email": "owner@example.com"})
+    assert owner.status_code == 200
 
 
 @pytest.mark.asyncio

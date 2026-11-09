@@ -3,16 +3,145 @@
 These helpers generate OpenAI-compatible SSE chunks for streaming
 chat completions. Keeping this logic in one place ensures adapters
 emit consistent formats and minimizes duplication.
+
+:func:`pump_stream` and :class:`StreamQueue` are the reader a streaming
+response consumes its upstream through, shared by the surfaces that stream, and
+:class:`StreamText` is how each layer keeps the text it relays.
 """
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+logger = get_logger(__name__)
+
+
+class StreamText:
+    """Text that arrives a piece at a time, kept in one growing buffer.
+
+    Adding a piece costs about its own length. It neither copies the text so
+    far, as ``+=`` on a string held in an attribute, a closure or a dict does --
+    quadratic over a stream -- nor keeps an object per piece, as a list of the
+    pieces did: some 60 bytes for a token of four characters, fifteen times the
+    text, in every layer that kept one. The text is built when it is read, and
+    built again only once more has arrived.
+    """
+
+    __slots__ = ("_buffer", "_text")
+
+    def __init__(self, text: str = "") -> None:
+        """Start with *text*."""
+        self._buffer = io.StringIO()
+        self._buffer.write(text)
+        self._text: str | None = text
+
+    def append(self, piece: str) -> None:
+        """Add *piece*; anything but a ``str`` raises ``TypeError``."""
+        self._buffer.write(piece)
+        if piece:
+            self._text = None
+
+    @property
+    def text(self) -> str:
+        """Everything added so far."""
+        if self._text is None:
+            self._text = self._buffer.getvalue()
+        return self._text
+
+    def __bool__(self) -> bool:
+        """Whether any text has been added."""
+        return self._buffer.tell() > 0
+
+
+#: How far a stream's reader may run ahead of the response it feeds, in chunks
+#: and in bytes of them. A client that stops reading then stops the reads from
+#: the upstream as well, through TCP, instead of making the gateway buffer the
+#: rest of a generation that may run for an hour.
+STREAM_QUEUE_MAX_ITEMS = 256
+STREAM_QUEUE_MAX_BYTES = 1 << 20
+
+
+class StreamQueue(asyncio.Queue):
+    """A queue of stream chunks, full at so many chunks or so many bytes of them.
+
+    A chunk's size is its length; anything else (an exception, an end marker)
+    counts toward the item bound only. A chunk larger than the byte bound
+    still goes in once the queue holds less than that, so a put never waits on
+    a chunk that could not fit.
+    """
+
+    def __init__(
+        self, *, max_items: int = STREAM_QUEUE_MAX_ITEMS, max_bytes: int = STREAM_QUEUE_MAX_BYTES
+    ) -> None:
+        """Bound the queue at *max_items* chunks or *max_bytes* bytes, whichever comes first."""
+        super().__init__(maxsize=max_items)
+        self._max_bytes = max_bytes
+        self._bytes = 0
+
+    def full(self) -> bool:
+        """Whether a put has to wait for the consumer to take something."""
+        return self._bytes >= self._max_bytes or super().full()
+
+    def _put(self, item: Any) -> None:
+        self._bytes += _chunk_size(item)
+        super()._put(item)
+
+    def _get(self) -> Any:
+        item = super()._get()
+        self._bytes -= _chunk_size(item)
+        return item
+
+
+def _chunk_size(item: object) -> int:
+    return len(item) if isinstance(item, str | bytes | bytearray) else 0
+
+
+async def pump_stream(source: AsyncIterator[Any], queue: asyncio.Queue, *, end: object) -> None:
+    """Read *source* into *queue*: each chunk, an exception as an item, then *end*.
+
+    Run as the task a streaming response reads its upstream in, so that a
+    keepalive can go out while the upstream is quiet. With a bounded queue
+    (:class:`StreamQueue`) the reads pause while the response takes no chunks.
+
+    The response stops this task by cancelling it, once it is done or its
+    client is gone. Nothing more is put then -- a put on a full queue nobody
+    drains would never return -- and *source* is closed, which ends the
+    upstream request and gives back what was held for it (its outbound slot, a
+    lease) even when the task was waiting on the queue rather than in *source*.
+    A cancellation *source* raises of its own accord, with nobody cancelling
+    this task, ends the stream as its end does, as it always has.
+    """
+    try:
+        try:
+            async for item in source:
+                await queue.put(item)
+        except Exception as exc:
+            await queue.put(exc)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is None or task.cancelling():
+                raise
+            await queue.put(end)
+            raise
+        await queue.put(end)
+    finally:
+        close = getattr(source, "aclose", None)
+        if close is not None:
+            try:
+                await close()
+            except Exception:
+                logger.warning("Closing a stream's upstream failed", exc_info=True)
 
 
 def new_completion_id() -> str:

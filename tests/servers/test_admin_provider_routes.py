@@ -344,7 +344,19 @@ async def admin_client(monkeypatch):
     op_store.delete_runtime_model_state = AsyncMock(return_value=True)
     op_store.get_provider_key_full = AsyncMock(return_value=None)
     op_store.list_provider_keys = AsyncMock(return_value=[])
-    op_store.list_provider_keys_full = AsyncMock(return_value=[])
+
+    async def list_provider_keys_full(provider, *, exclude_ids=None):
+        # The row a test resolves by id is an active key of its provider, as
+        # the table would list it; a test lists other active keys as before.
+        listed = list(op_store.list_provider_keys_full.return_value)
+        row = op_store.get_provider_key_full.return_value
+        if isinstance(row, tuple) and row[0] == provider and row[1] not in listed:
+            listed.append(row[1])
+        return listed
+
+    op_store.list_provider_keys_full = AsyncMock(
+        return_value=[], side_effect=list_provider_keys_full
+    )
     op_store.list_disabled_provider_env_key_hashes = AsyncMock(return_value=set())
     op_store.get_user_by_id = AsyncMock(return_value=None)
     op_store.create_audit_log = AsyncMock()
@@ -659,6 +671,22 @@ def test_config_clone_preserves_validated_pricing_schedule():
     cloned = ModelConfig(**cloned_values)
 
     assert cloned.pricing_schedule is config.pricing_schedule
+
+
+def test_config_clone_strips_endpoint_usage_only_when_requested():
+    config = ModelConfig(
+        id="usage-model",
+        name="Usage model",
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        include_usage_in_stream=False,
+    )
+
+    preserved = provider_routes._config_to_dict(config)
+    stripped = provider_routes._config_to_dict(config, strip_route_capabilities=True)
+
+    assert preserved["include_usage_in_stream"] is False
+    assert "include_usage_in_stream" not in stripped
 
 
 @pytest.mark.asyncio
@@ -2122,10 +2150,31 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
     assert runtime_adapter.config.provider == "minimax"
     assert runtime_adapter.config.provider_profile == "minimax"
+    # The openrouter template explicitly lacks stream usage, while the MiniMax
+    # protocol supports it. A runtime-created route takes the target default.
+    assert runtime_adapter.config.include_usage_in_stream is True
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "minimax"
     assert runtime_adapter.config.route_metadata["upstream_provider"] == "minimax"
     fake_routewise.refresh_route_table.assert_called_once_with()
+
+
+def test_stripped_usage_on_template_yields_kind_default_off():
+    """The harmful inheritance direction: a usage-on template (deepseek)
+    cloned for a usage-off kind (chutes) must not turn the new route on.
+    The clone strips the capability, so the target kind's default applies."""
+    config = ModelConfig(
+        id="usage-model",
+        name="Usage model",
+        provider="deepseek",
+        base_url="https://api.deepseek.com",
+        include_usage_in_stream=True,
+    )
+    stripped = provider_routes._config_to_dict(config, strip_route_capabilities=True)
+    assert "include_usage_in_stream" not in stripped
+
+    adapter = _make_adapter("chutes", stripped)
+    assert adapter.config.include_usage_in_stream is False
 
 
 @pytest.mark.asyncio
@@ -3353,9 +3402,10 @@ async def test_route_edit_resolves_listed_single_static_key(
     assert rows[0]["status"] == "active"
     assert key not in listed.text
     key_id = rows[0]["id"] if explicit_key else None
+    # The provider's own host: a check sends its stored key nowhere else.
     payload = {
         "upstream_provider": provider,
-        "base_url": "https://replacement.example.test/v1",
+        "base_url": "https://static.example.test/v2",
         "api_key_id": key_id,
         "provider_model_id": "static-model",
     }
@@ -4836,6 +4886,78 @@ async def test_custom_provider_route_update_uses_definition_chat_path(admin_clie
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("api_key_id", ["db-minimax", None], ids=["named-key", "provider-keys"])
+async def test_a_check_never_sends_a_stored_key_to_a_host_its_routes_do_not_use(
+    admin_client, api_key_id
+):
+    """Verify saves nothing, so a base URL of anyone's choosing would collect the key unseen."""
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("minimax", "cpk-stored-minimax-secret")
+    op_store.list_provider_keys_full.return_value = ["cpk-stored-minimax-secret"]
+    audit = provider_routes.log_admin_action
+    audit.reset_mock()
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidate-verifications/minimax-fast",
+        json={
+            "capabilities": RUNTIME_CAPABILITIES,
+            "route_type": "on_demand",
+            "upstream_provider": "minimax",
+            "base_url": "https://keys.attacker.example/v1",
+            "api_key_id": api_key_id,
+            "provider_model_id": "anything",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert "keys.attacker.example" in response.json()["detail"]
+    assert "cpk-stored-minimax-secret" not in response.text
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    audit.assert_awaited_once()
+    call = audit.await_args.kwargs
+    assert call["action"] == "routing.provider_routes.verify"
+    assert call["success"] is False
+    assert call["details"]["base_url"] == "https://keys.attacker.example/v1"
+    assert call["details"]["api_key_id"] == api_key_id
+    assert "cpk-stored-minimax-secret" not in repr(call)
+
+
+@pytest.mark.asyncio
+async def test_every_check_is_audited_with_its_outcome(admin_client):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    audit = provider_routes.log_admin_action
+    body = {
+        "capabilities": RUNTIME_CAPABILITIES,
+        "route_type": "on_demand",
+        "upstream_provider": "openrouter",
+        "openrouter_provider": "parasail",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_id": "db-openrouter",
+        "provider_model_id": "minimax/minimax-m2.5",
+        "weight": 1,
+    }
+    path = "/admin/routing/provider-route-candidate-verifications/minimax-fast"
+
+    audit.reset_mock()
+    assert (await client.post(path, json=body, headers=AUTH)).status_code == 200
+    ok = audit.await_args.kwargs
+    assert (ok["action"], ok["success"]) == ("routing.provider_routes.verify", True)
+    assert ok["target"] == AuditTarget.model("minimax-fast")
+    assert ok["details"]["upstream_provider"] == "openrouter[parasail]"
+
+    audit.reset_mock()
+    verify_mock.side_effect = HTTPException(status_code=400, detail="Provider said no")
+    assert (await client.post(path, json=body, headers=AUTH)).status_code == 400
+    failed = audit.await_args.kwargs
+    assert failed["success"] is False
+    assert failed["details"]["error"] == "Provider said no"
+
+
+@pytest.mark.asyncio
 async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
@@ -5623,6 +5745,48 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     registry.prepare_router_strategy_change.assert_called_once_with("deepseek-v4-flash", "fixed")
     registry.commit_router_strategy_change.assert_called_once_with(change)
     registry.refresh_route_tables.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_restore_runtime_route_rederives_stream_usage_from_its_kind(admin_client):
+    _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.list_provider_keys_full.return_value = ["minimax-db-key-1234567890"]
+    op_store.list_all_provider_route_candidates.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:minimax-api",
+            "route_type": "on_demand",
+            "provider": "minimax",
+            "openrouter_sort": None,
+            "base_url": "https://api.minimax.io/v1",
+            "api_key_id": None,
+            "provider_model_id": "MiniMax-M2.5",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 1.0,
+            "pricing": RUNTIME_PRICING,
+            "capabilities": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=MagicMock(),
+        managed_routers=[],
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_provider_route_candidates(services, op_store)
+
+    restored = next(
+        adapter
+        for adapter, _weight, endpoint_id in route_executor.routes["minimax-fast"].raw_adapters
+        if endpoint_id == "minimax-fast:minimax-api"
+    )
+    assert restored.config.include_usage_in_stream is True
 
 
 # Two runtime routes of one model. The plain route sorts first, so restore
@@ -6656,6 +6820,61 @@ async def test_route_update_keeps_the_licence_across_an_equivalent_url_spelling(
     assert response.status_code == 200, response.text
     updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert updated.config.null_cache_details_means_miss is True
+
+
+@pytest.mark.asyncio
+async def test_same_endpoint_edit_preserves_explicit_stream_usage_override(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    current = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    current.config.include_usage_in_stream = True
+    op_store.get_provider_key_full.return_value = ("chutes", "chutes-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-chutes",
+            provider="chutes",
+            key_prefix="chutes...7890",
+            label="rotated",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1",
+            "api_key_id": "db-chutes",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated.config.include_usage_in_stream is True
+
+
+@pytest.mark.asyncio
+async def test_repointed_route_uses_new_kind_stream_usage_default(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    current = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    current.config.include_usage_in_stream = False
+    op_store.list_provider_keys_full.return_value = ["minimax-db-key-1234567890"]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+            "provider_model_id": "MiniMax-M2.5",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    updated = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated.config.include_usage_in_stream is True
 
 
 def test_canonical_base_url_folds_only_request_equivalent_spellings():

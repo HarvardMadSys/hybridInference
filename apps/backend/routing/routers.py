@@ -23,11 +23,13 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from routing.backends import LeafBackend
+from routing.completion_outcome import CompletionOutcome
 from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
 from routing.endpoint_health import (
     DispatchClaim,
     EndpointHealthRegistry,
     _http_status_of,
+    failed_handling_request,
     failure_may_lose_prefix_cache,
 )
 from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
@@ -39,6 +41,7 @@ from routing.offload import (
     abandoned_for_offload,
 )
 from routing.prefill_load import (
+    PrefillLease,
     PrefillLoadTracker,
     _env_int,
     conversation_fingerprint,
@@ -209,6 +212,48 @@ class RoutingObservation:
     own content (``routing.endpoint_health.is_client_error_status``) from an
     endpoint that is slow, overloaded or down.
     """
+    uncharged: bool = False
+    """Whether the failure is one no endpoint is charged with.
+
+    True when nothing was sent -- no outbound slot, no usable key -- or the
+    endpoint answered exactly as designed (``routing.telemetry
+    .is_uncharged_failure``). The breaker leaves such a failure out, and a
+    learning router must too: it says nothing about the endpoint it names.
+    """
+
+    outcome: CompletionOutcome | None = field(default=None)
+    """Typed semantic result of the completed request.
+
+    Defaults to ``None`` so every existing construction site keeps working and
+    stays back-compatible. ``None`` means "not classified"; it is deliberately
+    NOT treated as evidence of useful work. See
+    :class:`routing.completion_outcome.CompletionOutcome`.
+    """
+
+    @property
+    def admits_real_work(self) -> bool:
+        """Whether this observation may be used as evidence that real work happened.
+
+        Transport success (``success=True``) is not sufficient: a provider warmup
+        notice is a well-formed HTTP 200 containing text, so it scores
+        ``success=True`` while being no work at all. Only an outcome that admits
+        real work qualifies. ``__post_init__`` guarantees ``outcome`` is never
+        ``None``, so an unclassified observation reads as ``UNKNOWN`` and does
+        not admit.
+        """
+        return bool(self.outcome.admits_real_work)
+
+    def __post_init__(self) -> None:
+        """Default an unset outcome to ``UNKNOWN``, never to a positive claim.
+
+        An observation that was not classified carries no evidence that work
+        happened, so it must not admit real work. Defaulting to ``PROGRESS``
+        whenever ``success`` is true would reintroduce the exact defect this
+        type exists to prevent: a warmup notice is a 200 with text, and would be
+        read as evidence of useful serving.
+        """
+        if self.outcome is None:
+            self.outcome = CompletionOutcome.UNKNOWN
 
 
 @dataclass
@@ -362,12 +407,17 @@ class _RouteAttempt:
     attempt it retries. ``adapter`` can be a binding's adapter instead, and an
     admin edit can put a new adapter behind the same endpoint id mid-request,
     so neither of those identifies a retry.
+
+    ``sent`` is whether the request had left the gateway when the attempt
+    failed (``_DispatchReport``): only then can its failure be the endpoint
+    failing on the request (``_failed_on_request``).
     """
 
     adapter: BaseAdapter
     error: BaseException
     offload: str | None = None
     route: BaseAdapter | None = None
+    sent: bool = False
 
 
 def _describes_request(exc: BaseException) -> bool:
@@ -673,7 +723,7 @@ def _skips_for_context_window(
 
 # How many routes may refuse one request as malformed before fallback stops.
 #
-# A request-describing failure (``_REQUEST_DESCRIBING_STATUSES``) is usually the
+# A refusal of the payload (``_REQUEST_REFUSAL_STATUSES``) is usually the
 # answering server's own verdict -- one SGLang build rejects a tool schema
 # another accepts -- which is why the walk goes on after the first one. Once a
 # second route has refused the same request, the rest are very likely to refuse
@@ -688,10 +738,20 @@ def _skips_for_context_window(
 # wider ones, which can.
 _REQUEST_REFUSAL_LIMIT = 2
 
+# The request-describing statuses that count toward that bound: a verdict on the
+# payload itself. A 404 and a 413 stay request-describing for the error the
+# caller is told about (``_select_surfaced_error``), but are usually about the
+# route that answered: a 404 names a model that server does not serve -- an
+# on-demand deployment not loaded, a ``provider_model_id`` set wrong for that
+# route -- and a 413 is often one route's proxy body limit. Counted, two such
+# routes ended the walk before a healthy one was tried, and as 4xx answers they
+# are never charged to the breaker either, so nothing steered requests off them.
+_REQUEST_REFUSAL_STATUSES = frozenset({400, 422})
+
 
 def _counts_as_request_refusal(exc: BaseException) -> bool:
     """Return whether ``exc`` refuses the request as malformed, its length aside."""
-    return _describes_request(exc) and not exceeds_context_window(exc)
+    return _http_status_of(exc) in _REQUEST_REFUSAL_STATUSES and not exceeds_context_window(exc)
 
 
 def request_refusals_end_fallback(
@@ -726,6 +786,61 @@ def _stops_after_request_refusals(model_id: str, attempts: Sequence[_RouteAttemp
         model_id,
         [(endpoint_id_for_adapter(attempt.adapter), attempt.error) for attempt in attempts],
     )
+
+
+# How many more routes one request may try once an endpoint has failed on it.
+#
+# A 5xx, or a connection dropped once open, after the request had left the
+# gateway (``_failed_on_request``) is what an engine that crashed, ran out of
+# memory or restarted on the request looks like -- and a request that does that
+# to one engine will do it to the next. Walked on without a bound, such a
+# request was replayed on every route of its model and charged to every
+# breaker: three of them opened every circuit for a cooldown, and every other
+# caller of the model got a 503. Two more routes still cover the ordinary
+# failover -- one route down and another healthy, or two down and a third
+# healthy -- while bounding how many engines one request reaches. Each such
+# failure after the first is also kept off its breaker (``_charges_breaker``).
+_ROUTES_AFTER_ENDPOINT_FAULT = 2
+
+
+def _failed_on_request(attempt: _RouteAttempt) -> bool:
+    """Return whether ``attempt`` failed at an endpoint its request had reached."""
+    return attempt.sent and failed_handling_request(attempt.error)
+
+
+def _charges_breaker(earlier: Sequence[_RouteAttempt], attempt: _RouteAttempt) -> bool:
+    """Return whether a failed attempt is charged to its endpoint's breaker.
+
+    A request charges at most one breaker for failing on the endpoints it
+    reached: once one endpoint has failed on it, the next one failing the same
+    way is likely the request, not the endpoint, and charging each let a few
+    such requests open every circuit of a model. Every other failure is charged
+    as before, so a route that is simply down still opens its own circuit.
+    """
+    return not (_failed_on_request(attempt) and any(_failed_on_request(a) for a in earlier))
+
+
+def _stops_after_endpoint_fault(model_id: str, attempts: Sequence[_RouteAttempt]) -> bool:
+    """Return whether the walk ends: enough routes tried since an endpoint failed on the request.
+
+    Logs ``endpoint_fault_fallback_stopped`` when it returns True. See
+    ``_ROUTES_AFTER_ENDPOINT_FAULT`` for the policy.
+    """
+    first = next((i for i, attempt in enumerate(attempts) if _failed_on_request(attempt)), None)
+    if first is None or len(attempts) - first - 1 < _ROUTES_AFTER_ENDPOINT_FAULT:
+        return False
+    logger.info(
+        "Stopping fallback for %s: %d routes tried after an endpoint failed on the request",
+        model_id,
+        len(attempts) - first - 1,
+        extra={
+            "event": "endpoint_fault_fallback_stopped",
+            "model_id": model_id,
+            "endpoint_ids": [endpoint_id_for_adapter(attempt.adapter) for attempt in attempts],
+            "fault_endpoint_id": endpoint_id_for_adapter(attempts[first].adapter),
+        },
+    )
+    return True
 
 
 class _PrimaryOffload(NamedTuple):
@@ -829,6 +944,60 @@ class _PromptAnchor:
         return self._anchor
 
 
+class _DispatchReport:
+    """What the serving layer reports about one attempt's request, for this router.
+
+    Pushed as ``req_ctx.UPSTREAM_DISPATCH_WATCH`` around every attempt, streaming
+    or not. ``serving.adapters.dispatch_watch`` reports when the request waits in
+    the gateway (``on_queued``: a remote-media fetch, an outbound slot), when it
+    leaves it (``on_sent``) and when the upstream starts answering
+    (``on_first_token``). Each report is passed on to the attempt's first-token
+    watch (``routing.engine_wait``), when it has one.
+
+    The attempt's prefill lease counts against other callers' affinity ceiling
+    only while its request is out of the gateway
+    (``PrefillLoadTracker.mark_dispatched``). Counted from selection, a request
+    held here up to half a minute moved every caller pinned to its endpoint onto
+    a cold one, without ever reaching the engine.
+
+    ``sent`` is whether the request was out of the gateway when the report last
+    heard. ``watch`` is the attempt's first-token watch, or None.
+    """
+
+    __slots__ = ("_lease", "_tracker", "sent", "watch")
+
+    def __init__(self, tracker: PrefillLoadTracker, watch: FirstTokenWatch | None = None) -> None:
+        self._tracker = tracker
+        self.watch = watch
+        self._lease: PrefillLease | None = None
+        self.sent = False
+
+    def attach(self, lease: PrefillLease | None) -> None:
+        """Report on ``lease`` from now on, as dispatched if the request already left."""
+        self._lease = lease
+        if self.sent:
+            self._tracker.mark_dispatched(lease)
+
+    def on_queued(self) -> None:
+        """The request waits in the gateway: its lease stops counting against others."""
+        self.sent = False
+        self._tracker.mark_dispatched(self._lease, dispatched=False)
+        if self.watch is not None:
+            self.watch.on_queued()
+
+    def on_sent(self) -> None:
+        """The request has left the gateway: its lease counts against others."""
+        self.sent = True
+        self._tracker.mark_dispatched(self._lease)
+        if self.watch is not None:
+            self.watch.on_sent()
+
+    def on_first_token(self) -> None:
+        """The upstream has started answering; only a first-token watch cares."""
+        if self.watch is not None:
+            self.watch.on_first_token()
+
+
 class FixedRouter:
     """Weighted random routing with automatic fallback.
 
@@ -930,6 +1099,7 @@ class FixedRouter:
         reason: str = "error",
         detail: str | None = None,
         exc: BaseException | None = None,
+        charge: bool = True,
     ) -> None:
         # An endpoint failing with a 5xx or with no answer at all may have lost
         # its prefix cache (restart, OOM, a container replaced under the same
@@ -944,6 +1114,20 @@ class FixedRouter:
         # busiest.
         if failure_may_lose_prefix_cache(exc):
             self._prefill_load.forget_endpoint(endpoint_id)
+        if not charge:
+            # The request's earlier attempt was charged for failing the same
+            # way (``_charges_breaker``); the hints above are still forgotten,
+            # since this endpoint may have restarted all the same.
+            logger.info(
+                "repeat_fault_skip_breaker",
+                extra={
+                    "event": "repeat_fault_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "reason": reason,
+                    "detail": detail,
+                },
+            )
+            return
         self._health_registry.record_failure(
             endpoint_id,
             reason=reason,
@@ -2123,8 +2307,8 @@ class FixedRouter:
         # caller's key to the prefill-aware draw below.
         pin_key = affinity_key if use_affinity else None
 
-        # Set when a pin is dropped for backlog, so selection does not simply
-        # hand the caller straight back to the endpoint it was moved off.
+        # Set when a pin is passed over for backlog, so this selection does not
+        # simply hand the caller straight back to the endpoint it was moved off.
         avoid_endpoint_id: str | None = None
         # A required target outranks affinity. Affinity remembers what served
         # this conversation last, and honoring it here would hand back an
@@ -2143,9 +2327,8 @@ class FixedRouter:
                             # but not into a queue: one high-volume key holding
                             # a binding is exactly how a single replica ends up
                             # absorbing every request while its siblings idle.
-                            # Falling through re-runs selection and re-pins to
-                            # whatever it picks, so the caller rebuilds locality
-                            # on an endpoint that can actually serve it.
+                            # Falling through re-runs selection for this
+                            # request only; the pin stays (see below).
                             if self._prefill_load.should_keep_affinity(
                                 entry.endpoint_id, affinity_key=pin_key
                             ):
@@ -2157,6 +2340,13 @@ class FixedRouter:
                         del self._affinity[(pin_key, model_id)]
                 elif entry is not None:
                     del self._affinity[(pin_key, model_id)]
+        # The pin a backlog passed over is kept, not overwritten by this
+        # request's pick: the caller goes back to the endpoint holding its prefix
+        # once the queue there drains, which is what ``should_keep_affinity``
+        # promises. Re-pinning moved every caller on an endpoint to a cold one
+        # for good each time another caller's large prompt passed through it.
+        if avoid_endpoint_id is not None:
+            pin_key = None
 
         # A caller-supplied target outranks affinity: it was asked for now,
         # while affinity only remembers what served this conversation last. It
@@ -2445,6 +2635,31 @@ class FixedRouter:
         """Return the leaf that executes ``binding``."""
         return LeafBackend.for_binding(binding)
 
+    def _acquire_lease(
+        self,
+        adapter: BaseAdapter,
+        prefill_tokens: int,
+        affinity_key: str | None,
+        fingerprint: str | None,
+        anchor: tuple[int, str] | None = None,
+    ) -> PrefillLease:
+        """Charge one attempt's prefill to ``adapter``'s endpoint, pending dispatch.
+
+        Taken inside the routing transaction, so a concurrent selection sees it
+        and spreads. It counts against other callers' affinity ceiling only once
+        the attempt's ``_DispatchReport`` hears the request leave the gateway,
+        and never for more than the route's context window.
+        """
+        return self._prefill_load.acquire(
+            endpoint_id_for_adapter(adapter),
+            prefill_tokens,
+            affinity_key=affinity_key,
+            fingerprint=fingerprint,
+            anchor=anchor,
+            dispatched=False,
+            context_window=_configured_context_window(adapter),
+        )
+
     def _dispatch_priority(
         self,
         execution: BaseAdapter,
@@ -2561,12 +2776,7 @@ class FixedRouter:
                     use_affinity=use_affinity,
                 )
                 if primary is not None:
-                    lease = self._prefill_load.acquire(
-                        endpoint_id_for_adapter(primary),
-                        prefill_tokens,
-                        affinity_key=affinity_key,
-                        fingerprint=fingerprint,
-                    )
+                    lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)
         except BaseException:
             if primary_claim is not None:
                 self._health_registry.end_dispatch(primary_claim)
@@ -2591,6 +2801,9 @@ class FixedRouter:
         # routing transaction every request's selection waits on, because it is
         # a pass over the whole prompt.
         lease.anchor = anchors.for_endpoint(execution)
+        # A response that arrives whole has no first token to watch.
+        primary_report = _DispatchReport(self._prefill_load)
+        primary_report.attach(lease)
         primary_plan = self._primary_offload(
             model_id,
             primary,
@@ -2612,9 +2825,9 @@ class FixedRouter:
                         execution, endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
-                    # A response that arrives whole has no first token to watch,
-                    # nor one to give its place at the engine up on.
-                    req_ctx.UPSTREAM_DISPATCH_WATCH: None,
+                    req_ctx.UPSTREAM_DISPATCH_WATCH: primary_report,
+                    # A response that arrives whole has no first token to give
+                    # its place at the engine up on.
                     req_ctx.UPSTREAM_ENGINE_HOLD: None,
                 },
             ):
@@ -2654,7 +2867,11 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
+            attempts = [
+                _RouteAttempt(
+                    primary, primary_error, primary_plan.reason, primary, primary_report.sent
+                )
+            ]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
@@ -2732,6 +2949,7 @@ class FixedRouter:
                     self._log_offload(
                         model_id, adapter, offload_reason, offload_policy, failed_attempts
                     )
+                fallback_report = _DispatchReport(self._prefill_load)
                 try:
                     with req_ctx.push(
                         model=model_id,
@@ -2756,7 +2974,7 @@ class FixedRouter:
                                     refused_window=refused_window,
                                 )
                             ),
-                            req_ctx.UPSTREAM_DISPATCH_WATCH: None,
+                            req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_report,
                             req_ctx.UPSTREAM_ENGINE_HOLD: None,
                         },
                     ):
@@ -2764,13 +2982,10 @@ class FixedRouter:
                         # Before the transaction: a pass over the whole prompt.
                         fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
-                            lease = self._prefill_load.acquire(
-                                endpoint_id,
-                                prefill_tokens,
-                                affinity_key=affinity_key,
-                                fingerprint=fingerprint,
-                                anchor=fallback_anchor,
+                            lease = self._acquire_lease(
+                                adapter, prefill_tokens, affinity_key, fingerprint, fallback_anchor
                             )
+                        fallback_report.attach(lease)
                         try:
                             resp = await leaf.chat_completion(messages, **params)
                             self._prefill_load.release(lease, prefill_confirmed=True)
@@ -2793,19 +3008,23 @@ class FixedRouter:
                     _mark_offload(resp["_routing"], attempts)
                     return resp
                 except Exception as fallback_error:
+                    attempt = _RouteAttempt(
+                        execution, fallback_error, offload_reason, adapter, fallback_report.sent
+                    )
                     self._on_failure(
                         endpoint_id,
                         reason="chat_exception",
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
+                        charge=_charges_breaker(attempts, attempt),
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(
-                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
-                    )
+                    attempts.append(attempt)
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
-                    if _stops_after_request_refusals(model_id, attempts):
+                    if _stops_after_request_refusals(
+                        model_id, attempts
+                    ) or _stops_after_endpoint_fault(model_id, attempts):
                         break
                     continue
                 finally:
@@ -2887,12 +3106,7 @@ class FixedRouter:
                     use_affinity=use_affinity,
                 )
                 if primary is not None:
-                    lease = self._prefill_load.acquire(
-                        endpoint_id_for_adapter(primary),
-                        prefill_tokens,
-                        affinity_key=affinity_key,
-                        fingerprint=fingerprint,
-                    )
+                    lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)
         except BaseException:
             if primary_claim is not None:
                 self._health_registry.end_dispatch(primary_claim)
@@ -2923,11 +3137,14 @@ class FixedRouter:
         # For every stream of this request, whatever its offload plan says.
         engine_queue_limit = self._engine_queue_limit(model_id)
         chunks_yielded = False
+        primary_report = _DispatchReport(self._prefill_load)
+        primary_report.attach(lease)
         try:
             primary_endpoint_id = endpoint_id_for_adapter(primary)
             if primary_plan.reason is not None:
                 self._log_offload(model_id, primary, primary_plan.reason, primary_plan.policy, ())
             primary_watch = self._watch_for(primary, primary_plan.policy, primary_plan.deadline)
+            primary_report.watch = primary_watch
             with req_ctx.push(
                 model=model_id,
                 provider=execution.config.provider,
@@ -2941,7 +3158,7 @@ class FixedRouter:
                         messages,
                     ),
                     req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
-                    req_ctx.UPSTREAM_DISPATCH_WATCH: primary_watch,
+                    req_ctx.UPSTREAM_DISPATCH_WATCH: primary_report,
                     req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
                 },
             ):
@@ -2997,7 +3214,11 @@ class FixedRouter:
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [_RouteAttempt(primary, primary_error, primary_plan.reason, primary)]
+            attempts = [
+                _RouteAttempt(
+                    primary, primary_error, primary_plan.reason, primary, primary_report.sent
+                )
+            ]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -3088,6 +3309,7 @@ class FixedRouter:
                     self._log_offload(
                         model_id, adapter, offload_reason, offload_policy, failed_attempts
                     )
+                fallback_report = _DispatchReport(self._prefill_load)
                 try:
                     # The offload attempt queues normally and is not watched:
                     # there is nowhere left to send it.
@@ -3101,6 +3323,7 @@ class FixedRouter:
                         )
                     )
                     fallback_watch = self._watch_for(adapter, offload_policy, queue_deadline)
+                    fallback_report.watch = fallback_watch
                     with req_ctx.push(
                         model=model_id,
                         provider=execution.config.provider,
@@ -3114,7 +3337,7 @@ class FixedRouter:
                                 messages,
                             ),
                             req_ctx.UPSTREAM_QUEUE_DEADLINE: queue_deadline,
-                            req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_watch,
+                            req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_report,
                             req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
                         },
                     ):
@@ -3133,13 +3356,10 @@ class FixedRouter:
                         # Before the transaction: a pass over the whole prompt.
                         fallback_anchor = anchors.for_endpoint(execution)
                         with self._prefill_load.routing_transaction():
-                            lease = self._prefill_load.acquire(
-                                adapter_endpoint_id,
-                                prefill_tokens,
-                                affinity_key=affinity_key,
-                                fingerprint=fingerprint,
-                                anchor=fallback_anchor,
+                            lease = self._acquire_lease(
+                                adapter, prefill_tokens, affinity_key, fingerprint, fallback_anchor
                             )
+                        fallback_report.attach(lease)
                         stream = aiter(leaf.stream_chat_completion(messages, **params))
                         if fallback_watch is not None:
                             held = await self._await_first_token(stream, fallback_watch)
@@ -3159,16 +3379,18 @@ class FixedRouter:
                             chunks_yielded = True
                     return
                 except Exception as fallback_error:
+                    attempt = _RouteAttempt(
+                        execution, fallback_error, offload_reason, adapter, fallback_report.sent
+                    )
                     self._on_failure(
                         adapter_endpoint_id,
                         reason="stream_exception",
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
+                        charge=_charges_breaker(attempts, attempt),
                     )
                     failed_attempts.append(failed_attempt(execution, fallback_error))
-                    attempts.append(
-                        _RouteAttempt(execution, fallback_error, offload_reason, adapter)
-                    )
+                    attempts.append(attempt)
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
@@ -3191,7 +3413,9 @@ class FixedRouter:
                         raise
                     refused_window = _widest_refused_window(refused_window, adapter, fallback_error)
                     order.record_failure(fallback_error, adapter)
-                    if _stops_after_request_refusals(model_id, attempts):
+                    if _stops_after_request_refusals(
+                        model_id, attempts
+                    ) or _stops_after_endpoint_fault(model_id, attempts):
                         break
                     continue
                 finally:

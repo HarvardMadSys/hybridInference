@@ -14,7 +14,16 @@ request failed); a batch whose input was invalid gets neither.
 
 **Downloads.** A result file is rendered again on every download, in pages of
 items, from the same items with the renderer version its manifest names, so the
-bytes and their digest match the manifest whenever it is downloaded. While a
+bytes and their digest match the manifest whenever it is downloaded.
+
+**Pages.** Sealing and every download read the items a page at a time, and a
+page is bounded by the size of its items' stored JSON as well as by their
+number (:data:`PAGE_BYTES`), so a batch of large results (embeddings lists of
+megabytes) never has a page of them in memory at once. Only the items a file
+holds are read. Each item is decoded and rendered on its own, and the work
+yields to the event loop after about :data:`_YIELD_BYTES` of it: decoding and
+encoding JSON is C code that holds the GIL, so a thread would not let the loop
+run any sooner, but a pause between items does. While a
 download runs it holds a read lease on the batch, renewed as it goes, which
 defers the physical deletion a user's delete or the retention purge would
 otherwise do. The lease is renewed by a task of its own, so a slow reader
@@ -40,16 +49,22 @@ from serving.batch.renderers import (
     result_line,
 )
 from serving.storage.batch_file_store import new_file_id
-from serving.storage.batch_store import terminal_event
+from serving.storage.batch_store import load_request, load_response, terminal_event
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator
 
 logger = get_logger(__name__)
 
-#: Items read per page while sealing or downloading.
+#: Items read per page while sealing or downloading ...
 PAGE = 200
+#: ... and the most of their stored JSON one page holds (one item at least).
+PAGE_BYTES = 16 * 1024 * 1024
+#: Rendering yields to the event loop after about this much JSON.
+_YIELD_BYTES = 1024 * 1024
+#: A download sends what it has rendered once it holds this much.
+_SEND_BYTES = 1024 * 1024
 #: How long a download's read lease lasts without renewal.
 READ_LEASE_SECONDS = 120
 _RENEW_EVERY = 30.0
@@ -61,12 +76,26 @@ class DownloadInterrupted(RuntimeError):
     """The rows a download was reading were removed under it (a permanent user deletion)."""
 
 
-def _wanted(kind: str) -> Callable[[dict[str, Any]], bool]:
+def _statuses(kind: str) -> frozenset[str]:
+    """The item statuses a file of *kind* holds lines for."""
     if kind == "output":
-        return lambda item: item.get("status") in OUTPUT_STATUSES
+        return OUTPUT_STATUSES
     if kind == "error":
-        return lambda item: item.get("status") in FINAL_ITEM_STATUSES - OUTPUT_STATUSES
-    return lambda item: item.get("status") in FINAL_ITEM_STATUSES
+        return FINAL_ITEM_STATUSES - OUTPUT_STATUSES
+    return FINAL_ITEM_STATUSES
+
+
+class _Pacer:
+    """Yields to the event loop after about :data:`_YIELD_BYTES` of JSON work."""
+
+    def __init__(self) -> None:
+        self._since = 0
+
+    async def step(self, size: int) -> None:
+        self._since += size
+        if self._since >= _YIELD_BYTES:
+            self._since = 0
+            await asyncio.sleep(0)
 
 
 async def seal_file_batch(
@@ -80,23 +109,29 @@ async def seal_file_batch(
     lines = {"output": 0, "error": 0}
     after = 0
     last_renew = time.monotonic()
+    pacer = _Pacer()
     while True:
-        items = await store.iter_items(batch_id, after=after, limit=PAGE)
+        items, more = await store.result_page(
+            batch_id, after=after, limit=PAGE, max_bytes=PAGE_BYTES
+        )
         if not items:
             break
         for item in items:
             after = item["id"]
             kind = "output" if item.get("status") in OUTPUT_STATUSES else "error"
-            line = result_line(item, RENDERER_VERSION)
+            line = result_line(load_response(item), RENDERER_VERSION)
             digests[kind].update(line)
             sizes[kind] += len(line)
             lines[kind] += 1
+            await pacer.step(int(item.get("bytes") or 0) + len(line))
         if time.monotonic() - last_renew > _RENEW_EVERY:
             last_renew = time.monotonic()
             if not await store.extend_batch_work(
                 batch_id=batch_id, worker_id=worker_id, lease_seconds=lease_seconds, phase="sealing"
             ):
                 return None
+        if not more:
+            break
     files = [
         {
             "id": new_file_id(),
@@ -191,10 +226,11 @@ async def stream_lines(
     fail the download instead of ending it as complete.
 
     Raises:
-        DownloadInterrupted: The batch was removed under the download, its
-            read lease was lost, or the rendering does not match its manifest.
+        DownloadInterrupted: The batch was removed under the download (its
+            owner's erasure began), its read lease was lost, or the rendering
+            does not match its manifest.
     """
-    wanted = _wanted(kind)
+    statuses = _statuses(kind)
     try:
         lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
     except LookupError:
@@ -203,19 +239,35 @@ async def stream_lines(
     digest = hashlib.sha256()
     size = 0
     limit = int(expected["bytes"]) if expected is not None else None
+    pacer = _Pacer()
     try:
         after = 0
-        while True:
-            items = await store.iter_items(batch_id, after=after, limit=PAGE)
+        more = True
+        while more:
+            items, more = await store.result_page(
+                batch_id, after=after, limit=PAGE, max_bytes=PAGE_BYTES, statuses=statuses
+            )
             if keeper.lost:
                 raise DownloadInterrupted(batch_id)
             if not items:
                 break
             chunk = bytearray()
-            for item in items:
+            for index, item in enumerate(items):
                 after = item["id"]
-                if wanted(item):
-                    chunk += result_line(item, version)
+                if item.get("status") not in statuses:
+                    continue
+                line = result_line(load_response(item), version)
+                chunk += line
+                await pacer.step(int(item.get("bytes") or 0) + len(line))
+                if len(chunk) < _SEND_BYTES and index + 1 < len(items):
+                    continue
+                digest.update(chunk)
+                size += len(chunk)
+                if limit is not None and size > limit:
+                    _mismatch(batch_id, kind, size, digest, expected)
+                    raise DownloadInterrupted(batch_id)
+                yield bytes(chunk)
+                chunk = bytearray()
             if chunk:
                 digest.update(chunk)
                 size += len(chunk)
@@ -223,7 +275,7 @@ async def stream_lines(
                     _mismatch(batch_id, kind, size, digest, expected)
                     raise DownloadInterrupted(batch_id)
                 yield bytes(chunk)
-        if not await store.batch_exists(batch_id):
+        if keeper.lost or not await store.batch_intact(batch_id):
             raise DownloadInterrupted(batch_id)
         if expected is not None and (size != limit or digest.hexdigest() != expected.get("sha256")):
             _mismatch(batch_id, kind, size, digest, expected)
@@ -297,18 +349,21 @@ async def stream_requests(
     only the items in ``statuses`` when given.
 
     Raises:
-        DownloadInterrupted: The batch was removed under the download.
+        DownloadInterrupted: The batch was removed under the download (its
+            owner's erasure began), or its read lease was lost.
     """
     try:
         lease = await store.take_read_lease(batch_id=batch_id, ttl_seconds=READ_LEASE_SECONDS)
     except LookupError:
         raise DownloadInterrupted(batch_id) from None
     keeper = LeaseKeeper(store, lease)
+    pacer = _Pacer()
     try:
         after = 0
-        while True:
-            page = await store.iter_item_requests(
-                batch_id, statuses=statuses, after=after, limit=PAGE
+        more = True
+        while more:
+            page, more = await store.request_page(
+                batch_id, statuses=statuses, after=after, limit=PAGE, max_bytes=PAGE_BYTES
             )
             if keeper.lost:
                 raise DownloadInterrupted(batch_id)
@@ -317,19 +372,24 @@ async def stream_requests(
             lines = []
             for item in page:
                 after = item["id"]
-                lines.append(
+                line = (
                     json.dumps(
                         {
                             "custom_id": item["custom_id"],
                             "method": "POST",
                             "url": url,
-                            "body": item["request"],
+                            "body": load_request(item)["request"],
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
                     )
                     + "\n"
                 )
-            yield "".join(lines).encode("utf-8")
+                lines.append(line)
+                await pacer.step(int(item.get("bytes") or 0) + len(line))
+            if lines:
+                yield "".join(lines).encode("utf-8")
+        if keeper.lost or not await store.batch_intact(batch_id):
+            raise DownloadInterrupted(batch_id)
     finally:
         await keeper.close()

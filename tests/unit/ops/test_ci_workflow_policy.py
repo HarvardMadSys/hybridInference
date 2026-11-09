@@ -434,8 +434,9 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert "backend_image_id=" in stage1
     assert "Stage 1 unexpectedly started" in stage1
     assert "Stage 1 unexpectedly created the example database volume" in stage1
-    assert "name: Reloaded Example Chat" in stage1
-    assert "make restart s=backend DISTRIBUTION=example" in stage1
+    assert '"name": "Reloaded Example Chat"' in stage1
+    assert "make up DISTRIBUTION=example" in stage1
+    assert "make restart s=backend DISTRIBUTION=example" not in stage1
     assert 'test "${backend_image_after}" = "${backend_image_before}"' in stage1
     assert "make demo DISTRIBUTION=example" in promote
     assert 'test "${provider_id}" = "${{ steps.stage1-state.outputs.provider_id }}"' in promote
@@ -478,6 +479,14 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
         stage3.index("--configure-upstream")
         < stage3.index("make demo DISTRIBUTION=example")
         < stage3.index("make demo-smoke DISTRIBUTION=example")
+    )
+    restore_drill = by_name["Restore the previous backend on the migrated database"]["run"]
+    assert "make demo-previous DISTRIBUTION=example" in restore_drill
+    # The drill rolls back as `make rollback` does: to the recorded image's ID.
+    assert "docker container inspect --format '{{.Image}}'" in restore_drill
+    assert "docker image inspect --format '{{.Id}}' \"${image}\"" in restore_drill
+    assert restore_drill.index("make demo-previous DISTRIBUTION=example") < restore_drill.index(
+        "make demo DISTRIBUTION=example"
     )
     assert "make demo-down DISTRIBUTION=example" in resume_smoke
     assert resume_smoke.index("tutorial-provider.log") < resume_smoke.index(
@@ -579,3 +588,88 @@ def test_every_action_is_pinned_to_a_commit(path: Path) -> None:
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if re.match(r"^\s*(?:-\s+)?uses:", line) and "uses: ./" not in line:
             assert pinned.match(line), f"{path.name}:{number}: {line.strip()}"
+
+
+def _jobs() -> list[tuple[str, str, dict, dict]]:
+    out = []
+    for path in _workflow_files():
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for name, job in workflow["jobs"].items():
+            out.append((path.name, name, job, workflow))
+    return out
+
+
+def test_every_registry_login_stays_in_a_docker_config_of_its_own() -> None:
+    """The runner account's ``~/.docker/config.json`` is shared by every job on its host.
+
+    Push CI on unreviewed branches runs on the same self-hosted hosts as the
+    publish jobs, so a ``packages: write`` login written there could be read
+    and reused by other code for as long as the publishing job ran.
+    """
+    isolate = 'echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"'
+    remove = 'rm -f "${RUNNER_TEMP}/docker-config/config.json"'
+    logins = 0
+    for workflow, name, job, _ in _jobs():
+        steps = job.get("steps") or []
+        for index, step in enumerate(steps):
+            run = str(step.get("run", ""))
+            if "docker/login-action" in str(step.get("uses", "")):
+                logins += 1
+                earlier = "\n".join(str(s.get("run", "")) for s in steps[:index])
+                assert 'docker_config="${RUNNER_TEMP}/docker-config"' in earlier, (workflow, name)
+                assert isolate in earlier, (workflow, name)
+                assert steps[-1].get("if") == "always()", (workflow, name)
+                assert remove in str(steps[-1].get("run", "")), (workflow, name)
+            for line in run.splitlines():
+                if "docker login" in line:
+                    logins += 1
+                    # An inline login names its own directory, removed however
+                    # the step ends.
+                    assert re.search(r'DOCKER_CONFIG="\$\{\w+\}" docker login', line), line
+                    assert "trap 'rm -rf" in run, (workflow, name)
+    # Six publish jobs, the diagnostic build and the tutorial's restore drill.
+    assert logins >= 8
+
+
+def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
+    """actions/checkout writes its token into .git/config unless told not to.
+
+    Where the token has a packages scope, that is a registry credential left in
+    a persistent runner's workspace for the length of the job; nothing in these
+    jobs fetches again after the checkout.
+    """
+    checkouts = 0
+    for workflow, name, job, defaults in _jobs():
+        permissions = job.get("permissions", defaults.get("permissions"))
+        if isinstance(permissions, dict) and "packages" not in permissions:
+            continue
+        for step in job.get("steps") or []:
+            if "actions/checkout@" in str(step.get("uses", "")):
+                checkouts += 1
+                assert (step.get("with") or {}).get("persist-credentials") is False, (
+                    workflow,
+                    name,
+                )
+    assert checkouts >= 6
+
+
+def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
+    """`uv venv` replaces .venv, so a restored one was downloaded and thrown away.
+
+    What keeps the sync fast is the uv cache, setup-uv's ``enable-cache``.
+    """
+    syncing = 0
+    for workflow, name, job, _ in _jobs():
+        steps = job.get("steps") or []
+        for step in steps:
+            if "actions/cache@" in str(step.get("uses", "")):
+                paths = str((step.get("with") or {}).get("path", "")).splitlines()
+                assert not [p for p in paths if p.strip().rstrip("/").endswith(".venv")], (
+                    workflow,
+                    name,
+                )
+        if any("uv venv" in str(step.get("run", "")) for step in steps):
+            syncing += 1
+            (setup,) = [s for s in steps if "astral-sh/setup-uv@" in str(s.get("uses", ""))]
+            assert setup["with"].get("enable-cache") is True, (workflow, name)
+    assert syncing >= 3

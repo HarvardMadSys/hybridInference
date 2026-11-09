@@ -302,6 +302,98 @@ async def test_non_streaming_basic(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
+async def test_completion_handler_classifies_provider_warmup_body(
+    completions_client: AsyncClient,
+    completions_app: FastAPI,
+    monkeypatch,
+    stream: bool,
+):
+    """Both HTTP handler paths pass the accumulated provider body to classification."""
+    from routing.completion_outcome import CompletionOutcome
+
+    warmup = "The model is starting up - this takes about 120 seconds. Please wait..."
+    active_router = completions_app.state.services.router
+    active_router.record_observation = MagicMock()
+    adapter = active_router.routes["gpt-4"].adapters[0][0]
+
+    if stream:
+
+        async def stream_warmup(messages, **params):
+            yield adapter.format_stream_chunk(model="gpt-4", content=warmup)
+            yield make_final_usage_chunk(
+                model="gpt-4",
+                messages=messages,
+                total_content=warmup,
+                prompt_tokens_override=100,
+                completion_tokens_override=18,
+            )
+            yield done_sentinel()
+
+        monkeypatch.setattr(adapter, "stream_chat_completion", stream_warmup)
+    else:
+
+        async def complete_warmup(messages, **params):
+            response = adapter.format_response(content=warmup, model="gpt-4")
+            response["usage"] = {
+                "prompt_tokens": 100,
+                "completion_tokens": 18,
+                "total_tokens": 118,
+            }
+            return response
+
+        monkeypatch.setattr(adapter, "chat_completion", complete_warmup)
+
+    response = await completions_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": stream,
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    observation = active_router.record_observation.call_args.args[0]
+    assert observation.outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
+    assert observation.admits_real_work is False
+
+
+@pytest.mark.asyncio
+async def test_streaming_completion_without_usage_still_classifies_text(
+    completions_client: AsyncClient,
+    completions_app: FastAPI,
+    monkeypatch,
+):
+    """A provider stream without usage can still warm locality from its text."""
+    from routing.completion_outcome import CompletionOutcome
+
+    active_router = completions_app.state.services.router
+    active_router.record_observation = MagicMock()
+    adapter = active_router.routes["gpt-4"].adapters[0][0]
+
+    async def stream_answer(messages, **params):
+        yield adapter.format_stream_chunk(model="gpt-4", content="Here is the answer.")
+        yield done_sentinel()
+
+    monkeypatch.setattr(adapter, "stream_chat_completion", stream_answer)
+    response = await completions_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    observation = active_router.record_observation.call_args.args[0]
+    assert observation.completion_tokens == 0
+    assert observation.outcome is CompletionOutcome.PROGRESS
+    assert observation.admits_real_work is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
 async def test_source_pricing_unavailable_is_503_before_any_upstream_usage(
     completions_client, completions_app, monkeypatch, stream
 ):

@@ -55,8 +55,12 @@ lookups a request makes before it is served — API-key authentication and spend
 session checks, quotas, and the runtime settings read on the way. Slow work on
 the general pool (reports, exports, rollups) cannot hold those up, and a request
 that cannot get a request-pool connection within 3 seconds is answered with a
-503 and `Retry-After` instead of waiting. With the alert-history pool's 4, a
-process holds at most 18 connections; size `max_connections` for that times
+503 and `Retry-After` instead of waiting; a statement on the request pool is
+stopped after 5 seconds. On the general pool, users' reads of their own request
+history (`/user/recent-requests`, `/user/usage`) hold at most 4 connections at
+once, and those reads and the Responses API's loads and saves wait at most 5
+seconds for a connection before the same 503. With the alert-history pool's 4,
+a process holds at most 18 connections; size `max_connections` for that times
 the number of gateway processes, plus the tools you run beside them.
 
 The bundled stack (`deploy/docker/docker-compose.yml`) runs `postgres:16`,
@@ -71,9 +75,10 @@ change every table, and a deploy applies them as a step of its own, with the
 image it is about to start, before it restarts the gateway:
 
 ```bash
-make migrate                                                  # the bundled Compose stack
-docker compose run --rm backend python -m migrations upgrade  # the same, by hand
-cd apps/backend && uv run python -m migrations upgrade        # a checkout
+make migrate                                            # the bundled Compose stack
+docker compose up -d --no-recreate --wait postgres      # the same, by hand:
+docker compose run --rm --no-deps backend python -m migrations upgrade
+cd apps/backend && uv run python -m migrations upgrade  # a checkout
 ```
 
 The command reads the gateway's own `DB_*` settings, and does nothing when
@@ -160,10 +165,10 @@ settings govern this:
 |---|---|---|
 | Request history | `api_logs`, `api_stats_hourly`, `provider_hourly_stats`, `provider_hourly_coverage`, `request_volume_hourly`, `user_usage_daily`, `user_usage_daily_coverage`, `daily_activity`, `admin_view_results`, `admin_view_state` | One row per request (model, provider, tokens, latency, TTFT, status, cost) plus hourly and daily rollups used by the dashboards, the admin Users table and the user dashboard's usage figures, and the last computed result of the admin console's slowest views |
 | Settings | `app_config` | The settings on the admin console's Settings tab, secrets included; see [Settings and first-run setup](#settings-and-first-run-setup) |
-| Accounts and auth | `users`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, hashed API keys with their quotas and their own budgets and model allowlists, refresh sessions and the accounts signed in on each browser, sign-in history |
+| Accounts and auth | `users`, `organizations`, `org_members`, `projects`, `api_keys`, `auth_sessions`, `browser_sessions`, `browser_session_accounts`, `login_events`, `email_verification_tokens`, `password_reset_tokens`, `identity_auth_codes` | User records, each account's personal organization, projects and API keys with their own budgets and model allowlists, refresh sessions (each deleted a day after it expires or is signed out) and the accounts signed in on each browser, sign-in history |
 | Admin actions | `admin_audit_log`, `signup_allowed_domains`, `site_settings`, `site_updates`, `email_broadcasts`, `email_broadcast_recipients` | Audited admin changes, signup policy, runtime settings and the first-run setup marker, announcements, broadcast delivery state |
 | Runtime routing overrides | `provider_definitions`, `provider_api_keys`, `provider_route_configs`, `provider_route_candidates`, `provider_weight_overrides`, `disabled_providers`, `disabled_provider_env_keys`, `provider_env_key_min_roles`, `model_visibility_overrides`, `model_concurrency_exemptions` | Everything the admin console can change about routing without editing YAML — see [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console) |
-| Cost and quota | `user_daily_cost`, `api_key_daily_cost` | Per-user daily spend used for quota enforcement, and the same per API key for the console's per-key spend |
+| Cost and quota | `user_daily_cost`, `api_key_daily_cost`, `spend_counters` | Per-user daily spend used for quota enforcement, the same per API key for the console's per-key spend, and counters for each project scope by day and month, which project budgets enforce |
 | RouteWise | `routewise_probe_samples`, `routewise_probe_leases` | Latency probe samples and the lease that stops two workers probing at once |
 | Responses API | `openai_responses` | Stored `/v1/responses` state, when content storage is enabled, kept for 30 days from each response's creation; a conversation is stored only while its history is no larger than `REQUEST_MAX_BODY_MB` |
 | Batch inference | `batch_jobs`, `batch_items`, `batch_attempts`, `batch_idempotency`, `batch_files`, `batch_file_chunks`, `batch_webhooks`, `batch_webhook_events`, `batch_model_limits`, `batch_user_state`, `batch_interactive_load`, `batch_read_leases` | Batches of all three batch APIs with their requests, attempts and results until `BATCH_RETENTION_DAYS` after they finish; uploaded input files and result files; idempotency keys; webhooks and their deliveries; the per-model batch concurrency caps; and the worker's scheduling state and download leases. See [Running batch inference](batches.md#running-batch-inference) |
@@ -210,6 +215,15 @@ fingerprint of the newest user message (`last_user_msg_chars`,
 Turning it on stores full prompts and responses. Weigh that against your users'
 expectations before you do.
 
+A row's size stays bounded even then. A request's conversation (its messages,
+system prompt, tool definitions and input) is stored up to 4 Mi characters,
+more than any context window holds. The other fields of its body share
+64 Ki characters: each is stored whole while they fit, smallest first, and left
+out when it does not, so a field the gateway ignores cannot fill the table. A
+refused request (a 4xx other than 499) keeps a summary of each of them, of at
+most 64 Ki characters. `metadata.payload_truncated` marks a row from which
+anything was cut.
+
 ### Which session a request belongs to
 
 `api_logs.session_id` groups one conversation's requests together. A client can
@@ -248,6 +262,25 @@ recorded. Like the derived columns above, the session is recorded whether or not
 part of the conversation.
 
 ## Backup
+
+The standard lifecycle commands create a private dump and verify it in a
+throwaway database server:
+
+```bash
+make backup BACKUP=/private/path/gateway.dump
+make restore-check BACKUP=/private/path/gateway.dump
+```
+
+The dump includes every application document and secret in `app_config`.
+Without `BACKUP` it goes to `.ops/<distribution>/gateway.dump`, which neither Git
+nor a Docker build includes. The restore check never touches the deployment's
+database server: it restores the dump into a throwaway PostgreSQL container of
+the same image, with its own volume and internal network, runs this release's
+migrations on the copy, so a backup taken before an upgrade passes as it would
+restore, and removes the container, volume and network afterwards. It needs
+free disk where Docker keeps volumes, normally the disk of the deployment's
+database: about twice the database's size plus 1 GiB, or it refuses to start.
+The commands below remain available when a manual database restore is required.
 
 `pg_dump` in custom format, straight out of the container:
 
@@ -314,9 +347,10 @@ docker exec -it hybridinference-postgres psql -U "$DB_USER" -d "$DB_NAME"
 ```
 
 Useful starting points: `\dt` for the table list and `\d api_logs` for the request
-log's columns. `make ps` shows the published bindings — Postgres and pgAdmin
-should both read `127.0.0.1:...`; anything else means the database is listening
-beyond this host.
+log's columns. `make ps` shows the published bindings — Postgres should read
+`127.0.0.1:...`, and pgAdmin shows none unless you published it, when it reads
+`127.0.0.1:...` too; anything else means the database is listening beyond this
+host.
 
 ## Optional: pgAdmin
 
@@ -341,22 +375,36 @@ around it (Compose then reports the network as still in use). Pass
 
 ### Authentication
 
-Two separate gates can protect pgAdmin, and by default only the console's is on:
+Two separate gates protect pgAdmin, and by default both are on:
 
-- `PGADMIN_CONFIG_SERVER_MODE` defaults to `False`, which serves pgAdmin with **no
-  login of its own**. Set it to `True` in `.env` and pgAdmin asks for
-  `PGADMIN_EMAIL` / `PGADMIN_PASSWORD` (which themselves default to
-  `admin@local.dev` / `admin` — change them before enabling this).
 - Reached through the console at `/pgadmin/`, the request is gated on an admin
   session by a Next.js route handler
   (`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`), which asks the backend
-  to verify the caller. Reached directly on its published port
-  (`127.0.0.1:${PGADMIN_PORT:-5050}`, loopback only), that gate does not apply —
-  use an SSH tunnel:
+  to verify the caller. By default this is the only way in: pgAdmin publishes
+  no host port.
+- `PGADMIN_CONFIG_SERVER_MODE` defaults to `True`, so pgAdmin asks for its own
+  login, `PGADMIN_EMAIL` / `PGADMIN_PASSWORD`. Set the password in `.env` before
+  pgAdmin first starts. There is no fallback: without one pgAdmin refuses to set
+  up its volume and says so in `docker logs hybridinference-pgadmin`. `False`
+  serves pgAdmin with **no login of its own**.
 
-  ```bash
-  ssh -L 5050:127.0.0.1:5050 <user>@<your-gateway-host>
-  ```
+pgAdmin keeps the login it first started with in its volume and ignores these
+settings afterwards. A volume first started with no password, under the
+earlier Compose fallback, signs in as `admin@local.dev` / `admin`: change that
+password in pgAdmin. One first started with server mode off has no login at
+all, so once server mode is on nobody can sign in: reset the volume as
+described below, which removes only pgAdmin's saved connections.
+
+For an SSH tunnel, `PGADMIN_PUBLISH=1` publishes pgAdmin on the host's
+loopback, on port `PGADMIN_PORT` (5050 unless set). Pass it on every command
+that touches pgAdmin, as with the profile. That port skips the console's gate
+and every account on the host can reach it, so pgAdmin's own login is the
+only gate there: do not combine it with server mode off.
+
+```bash
+make up COMPOSE_PROFILES=admin PGADMIN_PUBLISH=1
+ssh -L 5050:127.0.0.1:5050 <user>@<your-gateway-host>
+```
 
 pgAdmin's *master password* prompt never appears:
 `PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` is pinned to `"False"` in the Compose

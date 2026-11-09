@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import collections
+import inspect
+import json
 import random
+import re
+import statistics
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,6 +25,13 @@ from serving.utils.tokens import (
     estimate_text_tokens,
     run_tokenization,
 )
+
+
+@pytest.fixture(autouse=True)
+def _repeatable_phases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Draw each estimate's sample phase from a fixed seed, so a test repeats."""
+    monkeypatch.setattr(tokens, "_SAMPLE_PHASE", random.Random(20261107))
+
 
 _WORDS = [
     "def",
@@ -148,14 +162,162 @@ def test_many_short_messages_are_estimated_without_bias() -> None:
     assert abs(estimate_prompt_tokens_bounded(messages) - exact) <= 0.03 * exact
 
 
-def test_the_estimate_is_deterministic_and_cheap() -> None:
+def test_the_estimate_is_cheap() -> None:
     messages = _conversation(random.Random(3), 2_000_000)
     started = time.perf_counter()
-    first = estimate_prompt_tokens_bounded(messages)
+    estimate_prompt_tokens_bounded(messages)
     elapsed = time.perf_counter() - started
-    assert estimate_prompt_tokens_bounded(messages) == first
     # A full encode of these two million characters takes well over 100 ms.
     assert elapsed < 0.1
+
+
+def test_the_sample_is_right_on_average() -> None:
+    messages = _conversation(random.Random(5), 600_000)
+    exact = estimate_prompt_tokens(messages)
+    estimates = [estimate_prompt_tokens_bounded(messages) for _ in range(40)]
+    assert abs(statistics.mean(estimates) - exact) <= 0.015 * exact
+
+
+def test_each_estimate_reads_windows_of_its_own(monkeypatch) -> None:
+    messages = _conversation(random.Random(6), 300_000)
+    windows: list[list[str]] = []
+    count = tokens._count_with_tiktoken
+
+    def spy(text: str) -> int:
+        windows[-1].append(text)
+        return count(text)
+
+    monkeypatch.setattr(tokens, "_count_with_tiktoken", spy)
+    for _ in range(2):
+        windows.append([])
+        estimate_prompt_tokens_bounded(messages)
+    assert windows[0] != windows[1]
+
+
+def _hidden_from_fixed_windows(payload: str, size: int) -> list[dict[str, Any]]:
+    """*size* bytes of the ASCII *payload*, with spaces where fixed windows read.
+
+    The windows used to be centred at fixed offsets, the middle of each
+    stride, so a caller who put spaces there had the sample read little else
+    and billed a long prompt as a few thousand tokens.
+    """
+    width = tokens._SAMPLE_WINDOW_BYTES
+    windows = INLINE_ESTIMATE_MAX_CHARS // width
+    stride = size / windows
+    # The sample's offsets run over the role text, then the content.
+    cursor = len("user")
+    used = 0
+    pieces: list[str] = []
+    for index in range(windows):
+        centre = int((index + 0.5) * stride)
+        dense = centre - width - cursor
+        pieces.append(payload[used : used + dense])
+        used += dense
+        pieces.append(" " * (2 * width))
+        cursor = centre + width
+    pieces.append(payload[used : used + size - cursor])
+    content = "".join(pieces)
+    assert len(content) == size - len("user")
+    return [{"role": "user", "content": content}]
+
+
+def _numbers(rng: random.Random, chars: int) -> str:
+    """Dense text: a JSON list of floats, about two bytes a token."""
+    return json.dumps([round(rng.random(), 6) for _ in range(chars // 9)])
+
+
+def test_a_prompt_hidden_from_fixed_windows_is_billed_in_full_on_average() -> None:
+    messages = _hidden_from_fixed_windows(_numbers(random.Random(8), 450_000), 400_000)
+    exact = estimate_prompt_tokens(messages)
+    estimates = [estimate_prompt_tokens_bounded(messages) for _ in range(32)]
+    assert statistics.mean(estimates) >= 0.95 * exact
+
+
+def test_a_sample_that_reads_only_whitespace_is_raised_to_the_dense_floor(monkeypatch) -> None:
+    english = _english()
+    messages = _hidden_from_fixed_windows(english * (450_000 // len(english) + 1), 400_000)
+    exact = estimate_prompt_tokens(messages)
+    # Every window lands in the spaces: the phase the windows used to have.
+    monkeypatch.setattr(tokens, "_SAMPLE_PHASE", SimpleNamespace(random=lambda: 0.5))
+
+    estimate = estimate_prompt_tokens_bounded(messages)
+
+    content = messages[0]["content"]
+    dense = len(content) - content.count(" ") - content.count("\n")
+    assert estimate >= dense / tokens._FLOOR_BYTES_PER_TOKEN
+    # Most of the prompt is still billed, where the sample alone read next to
+    # nothing of it.
+    assert estimate >= 0.75 * exact
+    monkeypatch.setattr(tokens, "_dense_floor", lambda texts, sizes: 0)
+    assert estimate_prompt_tokens_bounded(messages) < 0.05 * exact
+
+
+def _python_source() -> str:
+    return inspect.getsource(argparse)
+
+
+def _english() -> str:
+    docs = [inspect.getdoc(value) for value in vars(collections).values()]
+    docs += [inspect.getdoc(value) for value in vars(argparse).values()]
+    return "\n\n".join(doc for doc in docs if doc)
+
+
+def _cjk(rng: random.Random) -> str:
+    sentences = []
+    for _ in range(4000):
+        words = "".join(
+            rng.choice("的一是不了人我在有他这为之大来以个中上们说时年") for _ in range(18)
+        )
+        # Full-width full stop, comma, question and exclamation marks.
+        sentences.append(words + rng.choice("\u3002\uff0c\uff1f\uff01"))
+    return "".join(sentences)
+
+
+def _padded_table(rng: random.Random) -> str:
+    names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "theta", "kappa"]
+    rows = (" | ".join(f"{rng.choice(names):<18}" for _ in range(5)) for _ in range(4000))
+    return "\n".join(f"| {row} |" for row in rows)
+
+
+_HONEST_TEXTS = {
+    "prose of code words": lambda: _prose(random.Random(10), 200_000),
+    "english docstrings": _english,
+    "python source": _python_source,
+    "python indented by 8": lambda: re.sub(
+        r"^( +)", lambda m: m.group(1) * 2, _python_source(), flags=re.M
+    ),
+    "python indented by tabs": lambda: re.sub(
+        r"^((?:    )+)", lambda m: "\t" * (len(m.group(1)) // 4), _python_source(), flags=re.M
+    ),
+    "chinese": lambda: _cjk(random.Random(11)),
+    "padded table": lambda: _padded_table(random.Random(12)),
+    "indented json": lambda: json.dumps(
+        {"items": [{"id": i, "tags": ["a", "b"], "meta": {"ok": True}} for i in range(3000)]},
+        indent=4,
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", list(_HONEST_TEXTS))
+def test_the_floor_never_raises_an_honest_estimate(kind: str) -> None:
+    text = _HONEST_TEXTS[kind]()
+    while len(text) < 4 * INLINE_ESTIMATE_MAX_CHARS:
+        text += "\n" + text
+    exact = estimate_text_tokens(text)
+    # Below the exact count, so an honest prompt is billed by its sample alone.
+    assert tokens._dense_floor([text], [tokens._utf8_size(text)]) < exact
+    messages = [{"role": "user", "content": text}]
+    assert abs(estimate_prompt_tokens_bounded(messages) - estimate_prompt_tokens(messages)) <= (
+        0.05 * exact
+    )
+
+
+def test_texts_a_window_reads_whole_are_left_out_of_the_floor() -> None:
+    # "assistant" is one token of nine bytes: floored, it would count as two.
+    texts = ["assistant", "ok", "user", "go on"] * 10_000
+    assert tokens._dense_floor(texts, [tokens._utf8_size(text) for text in texts]) == 0
+    long_text = "x" * (tokens._SAMPLE_WINDOW_BYTES + 1)
+    assert tokens._dense_floor([*texts, long_text], [*map(tokens._utf8_size, texts), 513]) > 0
 
 
 @pytest.mark.asyncio

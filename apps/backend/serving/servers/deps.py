@@ -138,6 +138,7 @@ class AppServices:
     disabled_provider_refresh_task: Any | None = None
     route_state_refresh_task: Any | None = None
     offload_route_refresh_task: Any | None = None
+    routing_sync: Any | None = None
 
 
 def model_router_transition_lock(
@@ -563,7 +564,9 @@ async def verify_admin_access(
 
     import hmac as _hmac
 
-    if not _hmac.compare_digest(token, admin_token):
+    # As bytes: compare_digest refuses two str with non-ASCII characters, and
+    # the header can carry any byte -- a TypeError there was a 500, not a 401.
+    if not _hmac.compare_digest(token.encode(), admin_token.encode()):
         raise HTTPException(
             status_code=401,
             detail="Invalid authentication token.",

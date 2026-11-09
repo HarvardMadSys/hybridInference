@@ -13,14 +13,14 @@ For remote providers or custom adapters, see
 Adding a local model has three parts:
 
 1. Start the local inference server.
-2. Add an entry to your model registry that points at that server.
-3. Restart the gateway and verify through the public `/v1` API.
+2. Create a model and verified route in Admin Routing that points at that server.
+3. Grant the intended users access and verify through the public `/v1` API.
 
 The local server must expose OpenAI-compatible endpoints. The gateway forwards
 chat requests to `/v1/chat/completions`, and embedding requests to
 `/v1/embeddings` when the model is registered with `model_type: embedding`.
 
-Below, "your model registry" means the file the gateway loads models from;
+Below, "your model registry" means the database model catalog in Admin;
 [Where your model registry lives](adding-models.md#where-your-model-registry-lives)
 explains which one that is.
 
@@ -32,13 +32,18 @@ path.
 
 Point the route at the private address:
 
-```yaml
-    route:
-      - kind: openai_compat
-        weight: 1.0
-        base_url: "http://10.0.12.34:8000/v1"
-        deployment_type: self_hosted
-        provider_model_id: "your-served-model-name"
+```json
+{
+  "route": [
+    {
+      "kind": "openai_compat",
+      "weight": 1.0,
+      "base_url": "http://10.0.12.34:8000/v1",
+      "deployment_type": "self_hosted",
+      "provider_model_id": "your-served-model-name"
+    }
+  ]
+}
 ```
 
 `deployment_type: self_hosted` tells the gateway this route reaches an engine
@@ -70,8 +75,10 @@ ssh -N -R 8001:127.0.0.1:8000 <user>@<gateway-host>
 
 Then the route target is a loopback address on the gateway host:
 
-```yaml
-base_url: "http://127.0.0.1:8001/v1"  # resolved on the gateway host
+```json
+{
+  "base_url": "http://127.0.0.1:8001/v1"
+}
 ```
 
 For reverse-tunnel setups, verify from the gateway host before changing any
@@ -126,34 +133,55 @@ registry so the container can reach the host. If it runs directly on the host,
 Add a new entry under `models:`. Keep the public `id` short and stable, because
 clients send it in the `model` field.
 
-```yaml
-  - id: my-local-model
-    name: My Local Model
-    provider: sglang
-    quantization: "unknown"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 65536
-    max_output_length: 8192
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream]
-    aliases: ["My-Local-Model"]
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      - kind: sglang
-        weight: 1.0
-        base_url: "http://host.docker.internal:8007"
-        provider_model_id: "my-local-model"
-        pricing:
-          prompt: "0"
-          completion: "0"
+```json
+[
+  {
+    "id": "my-local-model",
+    "name": "My Local Model",
+    "provider": "sglang",
+    "quantization": "unknown",
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "context_length": 65536,
+    "max_output_length": 8192,
+    "supports_tools": true,
+    "supports_structured_output": true,
+    "supported_params": [
+      "temperature",
+      "top_p",
+      "max_tokens",
+      "stop",
+      "stream"
+    ],
+    "aliases": [
+      "My-Local-Model"
+    ],
+    "pricing": {
+      "prompt": "0",
+      "completion": "0",
+      "image": "0",
+      "request": "0",
+      "input_cache_reads": "0",
+      "input_cache_writes": "0"
+    },
+    "route": [
+      {
+        "kind": "sglang",
+        "weight": 1.0,
+        "base_url": "http://host.docker.internal:8007",
+        "provider_model_id": "my-local-model",
+        "pricing": {
+          "prompt": "0",
+          "completion": "0"
+        }
+      }
+    ]
+  }
+]
 ```
 
 Use these fields carefully:
@@ -189,20 +217,27 @@ by `kind: vllm` therefore land in one row and cannot be compared.
 
 Give each route its own label to split them, and optionally a display name:
 
-```yaml
-    route:
-      - kind: vllm
-        weight: 1.0
-        provider: local-a
-        provider_display_name: "Local box A"
-        base_url: ${LOCAL_A_URL}
-        api_key: ${LOCAL_API_KEY}
-      - kind: vllm
-        weight: 1.0
-        provider: local-b
-        provider_display_name: "Local box B"
-        base_url: ${LOCAL_B_URL}
-        api_key: ${LOCAL_API_KEY}
+```json
+{
+  "route": [
+    {
+      "kind": "vllm",
+      "weight": 1.0,
+      "provider": "local-a",
+      "provider_display_name": "Local box A",
+      "base_url": "${LOCAL_A_URL}",
+      "api_key": "${LOCAL_API_KEY}"
+    },
+    {
+      "kind": "vllm",
+      "weight": 1.0,
+      "provider": "local-b",
+      "provider_display_name": "Local box B",
+      "base_url": "${LOCAL_B_URL}",
+      "api_key": "${LOCAL_API_KEY}"
+    }
+  ]
+}
 ```
 
 The dashboard then shows `Local box A · local-a` and `Local box B · local-b` as
@@ -224,7 +259,7 @@ Rules and caveats:
   provider's quota reporting and disable switch. A malformed or reserved label
   stops the registry from loading at that model, so the backend comes up with
   only the models before it rather than silently mislabelling traffic. Look for
-  `Failed to load models.yaml` in the log; it is written at `WARNING`, not
+  `Failed to load the Admin model catalog` in the log; it is written at `WARNING`, not
   `ERROR`.
 - `provider_display_name` works on its own too, if you want to rename a provider
   in the dashboard without splitting it.
@@ -245,34 +280,43 @@ For automatic fallback, add another route. The fallback is only tried if its
 weight is above `0`; a small weight such as `0.01` makes it a fallback that
 almost never takes a request first:
 
-```yaml
-    route:
-      - kind: sglang
-        weight: 1.0
-        base_url: "http://host.docker.internal:8007"
-        provider_model_id: "my-local-model"
-        pricing:
-          prompt: "0"
-          completion: "0"
-      - kind: openrouter
-        weight: 0.01
-        base_url: https://openrouter.ai/api/v1
-        api_key: ${OPENROUTER_API_KEY}
-        provider_model_id: "<upstream-model-slug>"
-        pricing:
-          prompt: "0"
-          completion: "0"
+```json
+{
+  "route": [
+    {
+      "kind": "sglang",
+      "weight": 1.0,
+      "base_url": "http://host.docker.internal:8007",
+      "provider_model_id": "my-local-model",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    },
+    {
+      "kind": "openrouter",
+      "weight": 0.01,
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "${OPENROUTER_API_KEY}",
+      "provider_model_id": "<upstream-model-slug>",
+      "pricing": {
+        "prompt": "0",
+        "completion": "0"
+      }
+    }
+  ]
+}
 ```
 
 With these weights about one request in a hundred goes to OpenRouter first, and
 a request that fails on the local server is retried there. A route with weight `0`
 stays configured but is never used, not even as a fallback.
-`config/examples/models.openrouter.yaml` ships a working local-first entry
+`config/examples/models.openrouter.json` ships a working local-first entry
 built this way.
 
 ## Step 4: Restart the Gateway
 
-Restart the backend so it reloads the registry. With the bundled Docker Compose
+Create the model and route in Admin Routing for an online update. If you edited the model catalog document instead, follow its Restart required marker. With the bundled Docker Compose
 setup:
 
 ```bash
@@ -283,12 +327,11 @@ For local development without Docker, start it directly:
 
 ```bash
 PYTHONPATH=apps/backend \
-  MODELS_CONFIG_PATH=/path/to/your/models.yaml \
   uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
 
-At startup the backend logs `Registered N routes from <path>`. That line is the
-fastest way to confirm which registry file it actually loaded.
+Admin Routing shows the effective routes. For catalog changes, check that the
+restart marker clears after restarting the backend.
 
 ## Step 5: Verify Through the Gateway
 
@@ -345,20 +388,26 @@ can declare that, and the gateway will stamp a per-request `priority` on the
 upstream body so a mega-prefill is scheduled behind interactive traffic rather
 than ahead of it:
 
-```yaml
-    route:
-      - kind: sglang
-        weight: 1.0
-        base_url: ${LOCAL_DEPLOYMENT_URL}
-        api_keys:
-          - ${LOCAL_API_KEY}
-        priority_scheduling: true
-      # A remote fallback must NOT set it — it is a fact about an sglang
-      # server, not about the model.
-      - kind: openrouter
-        weight: 0.01
-        base_url: https://openrouter.ai/api/v1
-        api_key: ${OPENROUTER_API_KEY}
+```json
+{
+  "route": [
+    {
+      "kind": "sglang",
+      "weight": 1.0,
+      "base_url": "${LOCAL_DEPLOYMENT_URL}",
+      "api_keys": [
+        "${LOCAL_API_KEY}"
+      ],
+      "priority_scheduling": true
+    },
+    {
+      "kind": "openrouter",
+      "weight": 0.01,
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "${OPENROUTER_API_KEY}"
+    }
+  ]
+}
 ```
 
 Priority is derived from the estimated *un-cached* prefill — the prompt size
@@ -387,14 +436,20 @@ denominator computed off that column.
 A route can declare that its server does report, which turns the null into the
 0 it means:
 
-```yaml
-    route:
-      - kind: sglang
-        weight: 1.0
-        base_url: ${LOCAL_DEPLOYMENT_URL}
-        api_keys:
-          - ${LOCAL_API_KEY}
-        null_cache_details_means_miss: true
+```json
+{
+  "route": [
+    {
+      "kind": "sglang",
+      "weight": 1.0,
+      "base_url": "${LOCAL_DEPLOYMENT_URL}",
+      "api_keys": [
+        "${LOCAL_API_KEY}"
+      ],
+      "null_cache_details_means_miss": true
+    }
+  ]
+}
 ```
 
 **Verify before setting it.** The null is ambiguous: sglang *without*
@@ -418,8 +473,8 @@ Two loader rules keep a wrong declaration from passing quietly:
 - **Route-level only.** Declaring it on the model (including a shorthand model
   with no `route:` block) is a config error, because the claim is about one
   server's startup flags and inheritance would carry it to every fallback.
-- **Real YAML booleans only.** A quoted `"false"` is a config error, so it can
-  never turn the flag on by accident.
+- **Booleans only.** In the JSON catalog, a quoted `"false"` is a config error,
+  so it can never turn the flag on by accident.
 
 What the client sees differs by surface: a non-streaming response carries
 `cache_read_tokens: 0` (the `Usage` response model drops the rest), while a
@@ -447,12 +502,12 @@ It needs outbound internet access for this and does not use an HTTP proxy.
 
 ### Model Does Not Appear in `/v1/models`
 
-- Confirm which registry the backend loaded, from the
-  `Registered N routes from <path>` startup log line. If no registry is found at
-  the resolved path, it logs an error naming that path, `/v1/models` is empty,
-  and every request reports the model as not found.
-- Check YAML indentation under `models:`.
-- Restart the backend after editing the registry.
+- Confirm which catalog the backend loaded, from the
+  `Registered N routes from the database route catalog` startup log line. When
+  the catalog has no models, it logs an error, `/v1/models` is empty, and every
+  request reports the model as not found.
+- Check that the model is an entry of the catalog's `models` list.
+- Restart the backend after saving the catalog.
 - Confirm `id` and `aliases` do not collide with another model.
 - A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` resolves to
   empty drops the whole model; the log names the skipped models and the unset

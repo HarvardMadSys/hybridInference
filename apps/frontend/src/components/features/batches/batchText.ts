@@ -121,6 +121,24 @@ export function pauseText(batch: ConsoleBatch, t: Translate): string | null {
       { until },
     );
   }
+  if (batch.paused_reason === 'project_budget') {
+    return fill(
+      t(
+        'batches.paused.project_budget',
+        "Paused: the project this batch runs under has spent its budget. It is checked again after {until}; raise the project's budget on its page to resume sooner.",
+      ),
+      { until },
+    );
+  }
+  if (batch.paused_reason === 'account_budget') {
+    return fill(
+      t(
+        'batches.paused.account_budget',
+        'Paused: the account this batch runs under has spent its quota. It is checked again after {until}; raise the account quota to resume sooner.',
+      ),
+      { until },
+    );
+  }
   if (batch.paused_reason === 'role') {
     return fill(
       t(

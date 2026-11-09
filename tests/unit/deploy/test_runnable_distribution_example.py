@@ -24,7 +24,7 @@ FAKE_PROVIDER = EXAMPLE / "fixtures" / "fake-openai-provider"
 BASE_COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
 EXAMPLE_COMPOSE = EXAMPLE / "deploy" / "docker-compose.yml"
 DEMO_COMPOSE = EXAMPLE / "deploy" / "docker-compose.demo.yml"
-DEMO_MANIFEST = EXAMPLE / "distribution.demo.yaml"
+DEMO_MANIFEST = EXAMPLE / "distribution.demo.json"
 FULL_SMOKE = EXAMPLE / "full_smoke.py"
 ACTIVE_CI = REPO / ".github" / "workflows" / "ci.yml"
 TUTORIAL = REPO / "docs" / "developer" / "router-tutorial.md"
@@ -55,14 +55,14 @@ def _make_dry_run(*args: str, cwd: Path = REPO) -> str:
 
 
 def test_example_manifest_and_config_are_self_contained() -> None:
-    config = load_distribution_config(EXAMPLE / "distribution.yaml")
+    config = load_distribution_config(EXAMPLE / "distribution.json")
     assert config.distribution.id == "example"
     assert config.site.public_base_url == "http://localhost:18080"
     assert config.features.public_signup is False
-    assert Path(config.paths.models) == (EXAMPLE / "config" / "models.yaml").resolve()
-    assert Path(config.paths.routing) == (EXAMPLE / "config" / "routing.yaml").resolve()
+    assert config.paths.models == ""
+    assert config.paths.routing == ""
 
-    models_text = (EXAMPLE / "config" / "models.yaml").read_text()
+    models_text = (EXAMPLE / "config" / "models.json").read_text()
     assert "${VAR:-default}" not in models_text
     models = yaml.safe_load(models_text)["models"]
     route = models[0]["route"][0]
@@ -74,21 +74,20 @@ def test_example_manifest_and_config_are_self_contained() -> None:
 
 
 def test_demo_manifest_enables_signup_without_changing_stage_one() -> None:
-    stage_one = load_distribution_config(EXAMPLE / "distribution.yaml")
+    stage_one = load_distribution_config(EXAMPLE / "distribution.json")
     demo = load_distribution_config(DEMO_MANIFEST)
 
     assert stage_one.features.public_signup is False
     assert demo.distribution.id == "example"
     assert demo.site.public_base_url == "http://localhost:13001"
     assert demo.features.public_signup is True
-    assert Path(demo.paths.models) == (EXAMPLE / "config" / "models.yaml").resolve()
-    assert Path(demo.paths.routing) == (EXAMPLE / "config" / "routing.yaml").resolve()
+    assert demo.paths.models == ""
+    assert demo.paths.routing == ""
 
 
 def test_manifest_only_reference_has_no_dangling_config_paths() -> None:
-    reference = load_distribution_config(REPO / "config" / "examples" / "distribution.example.yaml")
-    assert Path(reference.paths.models).is_file()
-    assert Path(reference.paths.routing).is_file()
+    reference = load_distribution_config(REPO / "config" / "examples" / "distribution.example.json")
+    assert not any(reference.paths.model_dump().values())
 
     readme = (REPO / "README.md").read_text()
     assert "make up DISTRIBUTION=example" in readme
@@ -103,7 +102,7 @@ def test_example_registry_loads_with_its_fake_upstream_env(
     monkeypatch.setenv("EXAMPLE_UPSTREAM_MODEL", "example-upstream")
 
     router = FixedRouter()
-    count, infos = register_from_models_yaml(router, EXAMPLE / "config" / "models.yaml")
+    count, infos = register_from_models_yaml(router, EXAMPLE / "config" / "models.json")
 
     assert count == 1
     assert [info.model_id for info in infos] == ["example-chat"]
@@ -226,9 +225,7 @@ def test_demo_compose_is_an_explicit_full_local_third_layer() -> None:
     assert backend["DB_ENABLED"] == "true"
     assert backend["DB_STORE_FULL_CONTENT"] == "false"
     assert backend["USER_AUTH_ENABLED"] == "true"
-    assert backend["DISTRIBUTION_CONFIG_PATH"] == (
-        "/app/distributions/example/distribution.demo.yaml"
-    )
+    assert json.loads(backend["SITE_CONFIGURATION"])["features"]["public_signup"] is True
     assert backend["SIGNUP_ENABLED"] == "true"
     assert backend["SIGNUP_REQUIRE_EMAIL_VERIFICATION"] == "false"
     assert backend["REFRESH_TOKEN_COOKIE_NAME"] == "hybridinference_example_refresh"
@@ -519,11 +516,67 @@ def test_smoke_url_follows_the_distribution_env_file(
     deploy.mkdir(parents=True)
     shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
     shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    shutil.copy2(EXAMPLE / "EXAMPLE_OVERLAY", deploy.parent / "EXAMPLE_OVERLAY")
+    shutil.copytree(EXAMPLE / "config", deploy.parent / "config")
+    shutil.copy2(EXAMPLE / "distribution.json", deploy.parent / "distribution.json")
     (deploy / "backend.env").write_text("BACKEND_PORT=24242\n")
 
     smoke = _make_dry_run("smoke", "DISTRIBUTION=example", cwd=sandbox)
 
     assert '--base-url "http://localhost:24242"' in smoke
+
+
+def test_a_deployment_overlay_keeps_its_own_smoke_check(tmp_path: Path) -> None:
+    """An overlay's smoke.py is what `make smoke` ran before; the generic check is the fallback."""
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "distributions" / "acme" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    (deploy / "backend.env").write_text("BACKEND_PORT=25252\n")
+
+    generic = _make_dry_run("smoke", "DISTRIBUTION=acme", cwd=sandbox)
+    assert "-m ops.admin.gateway_ops smoke" in generic
+
+    (deploy.parent / "smoke.py").write_text("raise SystemExit(0)\n")
+    own = _make_dry_run("smoke", "DISTRIBUTION=acme", cwd=sandbox)
+    assert 'distributions/acme/smoke.py" --base-url "http://localhost:25252"' in own
+    assert "gateway_ops" not in own
+
+
+def test_a_teaching_overlay_seeds_its_own_documents(tmp_path: Path) -> None:
+    """Stage 1's JSON seeds come from the selected overlay, not a fixed example path."""
+    sandbox = tmp_path / "repo"
+    overlay = sandbox / "distributions" / "tutorial"
+    (overlay / "deploy").mkdir(parents=True)
+    (overlay / "config").mkdir()
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE / "EXAMPLE_OVERLAY", overlay / "EXAMPLE_OVERLAY")
+    (overlay / "deploy" / "backend.env").write_text("BACKEND_PORT=26262\n")
+    (overlay / "config" / "models.json").write_text('{"models": [{"id": "tutorial-chat"}]}')
+    (overlay / "config" / "routing.json").write_text('{"default_router": "fixed"}')
+    (overlay / "distribution.json").write_text('{"distribution": {"id": "tutorial"}}')
+
+    env = {k: v for k, v in os.environ.items() if k != "DISTRIBUTION"}
+    proc = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            '--eval=seeds: ; @printf \'%s\\n\' "$$MODEL_CATALOG" "$$ROUTING_POLICY" '
+            '"$$SITE_CONFIGURATION"',
+            "seeds",
+            "DISTRIBUTION=tutorial",
+        ],
+        cwd=sandbox,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    models, routing, site = (json.loads(line) for line in proc.stdout.splitlines())
+    assert models["models"][0]["id"] == "tutorial-chat"
+    assert routing == {"default_router": "fixed"}
+    assert site["distribution"]["id"] == "tutorial"
 
 
 def test_make_selection_preserves_default_and_none_semantics(tmp_path: Path) -> None:
@@ -745,6 +798,53 @@ def test_demo_make_contract_uses_the_third_layer_without_down_or_forced_build(
         cwd=sandbox,
     )
     assert f'--expect-existing-state "{state_file}"' in resumed_smoke
+
+
+def test_the_restore_drill_runs_the_rollback_code_path(tmp_path: Path) -> None:
+    """CI's restore drill must exercise what `make rollback` does, not a side door.
+
+    It used to start the previous image through the digest overlay with
+    drill-only variables, so a rollback losing the older image's configuration
+    selectors -- through the overlay `make rollback` uses -- passed CI.
+    """
+    sandbox = tmp_path / "repo"
+    deploy = sandbox / "distributions" / "example" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy2(REPO / "Makefile", sandbox / "Makefile")
+    shutil.copy2(EXAMPLE / "deploy" / "backend.env", deploy / "backend.env")
+    shutil.copy2(EXAMPLE_COMPOSE, deploy / "docker-compose.yml")
+    shutil.copy2(DEMO_COMPOSE, deploy / "docker-compose.demo.yml")
+    shutil.copy2(EXAMPLE / "EXAMPLE_OVERLAY", deploy.parent / "EXAMPLE_OVERLAY")
+    shutil.copy2(FULL_SMOKE, deploy.parent / "full_smoke.py")
+
+    output = _make_dry_run(
+        "demo-previous",
+        "DISTRIBUTION=example",
+        "PREVIOUS_BACKEND_IMAGE=ghcr.io/example/backend:dev-previous",
+        cwd=sandbox,
+    )
+    selectors = (
+        "DISTRIBUTION_CONFIG_PATH=/app/distributions/example/distribution.demo.json "
+        "DISTRIBUTION_CONFIG_MODE=active docker compose"
+    )
+    state = ".ops/example/restore-drill"
+    (record,) = [line for line in output.splitlines() if "previous.json" in line]
+    assert f'> "{state}/previous.json"' in record
+    (rollback,) = [line for line in output.splitlines() if "gateway_ops rollback" in line]
+    assert f'--state "{state}"' in rollback
+    assert '--base-url "http://localhost:13001"' in rollback
+    assert f"--compose env COMPOSE_PROFILES= {selectors}" in rollback
+    assert "-f distributions/example/deploy/docker-compose.demo.yml" in rollback
+    (smoke,) = [line for line in output.splitlines() if "full_smoke.py" in line]
+    assert f"--recreate-command env COMPOSE_PROFILES= {selectors}" in smoke
+    assert (
+        f"-f deploy/docker/docker-compose.artifacts.yml --env-file {state}/images.env "
+        "up -d --no-deps --no-build --force-recreate --wait backend"
+    ) in smoke
+    assert "digest-backend" not in output
+    assert "ROLLBACK_" not in output
+    assert output.index("previous.json") < output.index("gateway_ops rollback")
+    assert output.index("gateway_ops rollback") < output.index("full_smoke.py")
 
 
 def test_demo_lifecycle_is_declared_by_artifacts_not_a_known_distribution_name(
@@ -1187,7 +1287,11 @@ def test_full_smoke_configures_the_upstream_from_its_environment(
     full_smoke._configure_upstream("http://localhost:13001", "not-printed", time.monotonic() + 10)
 
     assert logins == [("admin", "not-printed")]
-    assert requests == [("PATCH", "/admin/config", {"values": values}, "jwt")]
+    # Security-relevant settings: the gateway refuses the change (400) without
+    # the administrator's password.
+    assert requests == [
+        ("PATCH", "/admin/config", {"values": values, "password": "not-printed"}, "jwt")
+    ]
 
     # A value the API did not store is a failure, not a silent no-op.
     stored["entries"] = stored["entries"][:2]
@@ -1798,7 +1902,7 @@ def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
     ):
         assert command in tutorial
 
-    models = yaml.safe_load((EXAMPLE / "config" / "models.yaml").read_text())["models"]
+    models = yaml.safe_load((EXAMPLE / "config" / "models.json").read_text())["models"]
     assert f'"model":"{models[0]["id"]}"' in compact
 
     fake = _load_module("_runnable_example_fake_tutorial", FAKE_PROVIDER / "server.py")

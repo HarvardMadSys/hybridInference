@@ -58,7 +58,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from serving.batch import admission
@@ -99,7 +98,7 @@ from serving.servers.deps import (
     get_router,
     get_services,
 )
-from serving.servers.routers.files import content_disposition
+from serving.servers.routers.files import content_disposition, jsonl_download
 from serving.storage.batch_store import (
     PHASE_SEALED,
     PHASE_VALIDATING,
@@ -108,10 +107,13 @@ from serving.storage.batch_store import (
     TARGET_MESSAGES,
     TERMINAL_BATCH_STATUSES,
     BatchDeleteInProgress,
+    load_response,
 )
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from fastapi.responses import StreamingResponse
+
     from serving.batch.config import BatchConfig
 
 logger = get_logger(__name__)
@@ -124,6 +126,14 @@ _RESULT_ID = re.compile(rf"{RESULT_ID_PREFIX}(\d{{1,18}})")
 
 # Requests validated between two yields to the event loop.
 _YIELD_EVERY = 1000
+
+#: The most stored JSON one page of results holds; a page always holds one
+#: result at least. A result may be megabytes (an embeddings list), and a page
+#: is decoded and answered whole, so ``limit`` alone could make one answer
+#: gigabytes. A page cut short still says ``has_more``.
+RESULTS_PAGE_BYTES = 8 * 1024 * 1024
+#: Results decoded between two yields to the event loop, by stored size.
+_RESULTS_YIELD_BYTES = 1024 * 1024
 
 
 def _surface(store: Any) -> tuple[Any, BatchConfig]:
@@ -311,7 +321,11 @@ def _envelope_error(exc: ValidationError, decoded: Any) -> str:
 def _parse_create_body(raw: bytes | bytearray) -> tuple[BatchCreateRequest, Any]:
     """Decode and validate the create body, parsing the JSON once."""
     try:
-        decoded = json.loads(raw, parse_constant=admission.reject_json_constant)
+        decoded = json.loads(
+            raw,
+            parse_constant=admission.reject_json_constant,
+            parse_float=admission.finite_json_float,
+        )
     except (ValueError, RecursionError) as exc:
         raise HTTPException(400, "Request body is not valid JSON") from exc
     if admission.has_invalid_unicode(decoded):
@@ -489,13 +503,24 @@ async def _check_file(
     return upload
 
 
+def _role_refusal(config: BatchConfig) -> HTTPException:
+    """The 403 for a caller below ``BATCH_MIN_ROLE``."""
+    return HTTPException(403, f"Creating batches requires the {config.min_role!r} role or higher")
+
+
 def _may_create(request: Request, user_ctx: dict[str, Any], config: BatchConfig) -> None:
     """Refuse a caller below ``BATCH_MIN_ROLE`` (403) or out of daily quota (429)."""
     if not may_use_batch(user_ctx.get("role"), config):
-        raise HTTPException(
-            403, f"Creating batches requires the {config.min_role!r} role or higher"
-        )
+        raise _role_refusal(config)
     enforce_daily_quota(request, user_ctx)
+
+
+async def _key_names_a_batch(store: Any, owner: str, key: str) -> bool:
+    """Whether the owner already used *key* for a batch, by either input method."""
+    for surface in (SURFACE_OPENAI_INLINE, SURFACE_OPENAI_FILE):
+        if await store.find_idempotent(owner_id=owner, api_surface=surface, key=key) is not None:
+            return True
+    return False
 
 
 @router.post("/v1/batches", response_model=BatchObject)
@@ -517,6 +542,14 @@ async def create_batch(
         # them upload the body.
         _may_create(request, user_ctx, config)
         await admission.precheck_active(store, owner, config)
+    elif not may_use_batch(user_ctx.get("role"), config) and not await _key_names_a_batch(
+        store, owner, key
+    ):
+        # A caller whose role was lowered may still replay a batch it created
+        # under this key, so a replay is decided before the role check. With no
+        # batch under the key there is nothing to replay: refused before it
+        # uploads the body, as without a key.
+        raise _role_refusal(config)
     payload, _decoded = _parse_create_body(
         await admission.read_body(request, config.max_body_bytes)
     )
@@ -697,16 +730,30 @@ async def list_batch_results(
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
 ) -> BatchResultsPage:
-    """Page through a batch's requests in submission order, with their outcomes."""
+    """Page through a batch's requests in submission order, with their outcomes.
+
+    A page holds up to ``limit`` results and no more than
+    :data:`RESULTS_PAGE_BYTES` of their stored JSON (one at least);
+    ``has_more`` says whether more follow either way.
+    """
     store, _config = _surface(store)
     cursor = _results_cursor(after)
     if await store.get_batch(batch_id, user_id=_lookup_scope(user_ctx)) is None:
         raise _not_found(batch_id)
-    rows = await store.list_results(batch_id, after=cursor, limit=limit + 1)
-    page = [_result(row) for row in rows[:limit]]
+    rows, more = await store.result_page(
+        batch_id, after=cursor or 0, limit=limit, max_bytes=RESULTS_PAGE_BYTES
+    )
+    page = []
+    decoded = 0
+    for row in rows:
+        page.append(_result(load_response(row)))
+        decoded += int(row.get("bytes") or 0)
+        if decoded >= _RESULTS_YIELD_BYTES:
+            decoded = 0
+            await asyncio.sleep(0)
     return BatchResultsPage(
         data=page,
-        has_more=len(rows) > limit,
+        has_more=more,
         first_id=page[0].id if page else None,
         last_id=page[-1].id if page else None,
     )
@@ -722,6 +769,7 @@ def results_final(row: dict[str, Any]) -> bool:
 @router.get("/v1/batches/{batch_id}/output.jsonl", response_model=None)
 async def export_batch_results(
     batch_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
@@ -732,8 +780,8 @@ async def export_batch_results(
         raise _not_found(batch_id)
     if not results_final(row):
         raise HTTPException(409, f"Batch '{batch_id}' has not finished; its results are not final")
-    return StreamingResponse(
+    return jsonl_download(
+        request,
         stream_lines(store=store, batch_id=batch_id, kind="all"),
-        media_type="application/jsonl",
         headers={"content-disposition": content_disposition(f"{batch_id}.jsonl")},
     )

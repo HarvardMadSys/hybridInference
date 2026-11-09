@@ -543,6 +543,80 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_account_keys(account_id)
 
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        description: str | None = None,
+        budget_daily_usd: Decimal | float | None = None,
+        budget_monthly_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+        max_concurrent_requests: int | None = None,
+    ) -> Row:
+        """Delegate, then invalidate auth caches."""
+        row = await self._store.create_project(
+            project_id=project_id,
+            user_id=user_id,
+            name=name,
+            description=description,
+            budget_daily_usd=budget_daily_usd,
+            budget_monthly_usd=budget_monthly_usd,
+            allowed_models=allowed_models,
+            max_concurrent_requests=max_concurrent_requests,
+        )
+        await self.invalidate_auth_caches()
+        return row
+
+    async def list_projects(self, user_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_projects(user_id)
+
+    async def get_default_project(self, user_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_default_project(user_id)
+
+    async def get_project(self, user_id: str, project_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_project(user_id, project_id)
+
+    async def update_project(
+        self, user_id: str, project_id: str, changes: dict[str, Any]
+    ) -> Row | None:
+        """Delegate, then invalidate auth caches."""
+        row = await self._store.update_project(user_id, project_id, changes)
+        await self.invalidate_auth_caches()
+        return row
+
+    async def archive_project(self, user_id: str, project_id: str) -> int:
+        """Delegate, then invalidate auth caches."""
+        revoked = await self._store.archive_project(user_id, project_id)
+        await self.invalidate_auth_caches()
+        return revoked
+
+    async def get_project_spend(self, project_id: str) -> tuple[float, float]:
+        """Delegate to wrapped store."""
+        return await self._store.get_project_spend(project_id)
+
+    async def count_project_keys(self, project_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.count_project_keys(project_id)
+
+    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
+        """Delegate, then invalidate auth caches."""
+        row = await self._store.update_org(org_id, changes)
+        await self.invalidate_auth_caches()
+        return row
+
+    async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
+        """Delegate to wrapped store."""
+        return await self._store.get_account_budgets(user_id)
+
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_personal_org_status(user_id)
+
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
     ) -> tuple[Row, Row] | None:
@@ -719,6 +793,7 @@ class CachedOperationalStore(OperationalStore):
         inherit_account_quota: bool = False,
         name: str | None = None,
         max_active_keys: int | None = None,
+        project_id: str | None = None,
     ) -> Row:
         """Delegate, then invalidate auth caches when the account quota may have moved.
 
@@ -741,6 +816,7 @@ class CachedOperationalStore(OperationalStore):
             inherit_account_quota=inherit_account_quota,
             name=name,
             max_active_keys=max_active_keys,
+            project_id=project_id,
         )
         if not inherit_account_quota:
             await self.invalidate_user_auth_caches(user_id)
@@ -806,10 +882,15 @@ class CachedOperationalStore(OperationalStore):
             session_id, new_refresh_token_hash=new_refresh_token_hash, new_jti=new_jti
         )
 
-    async def revoke_session(self, session_id: str) -> None:
-        """Delegate, then forget every session's liveness (whose this was is not known)."""
-        await self._store.revoke_session(session_id)
-        await self._forget_sessions()
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Delegate, then forget the owning account's session liveness.
+
+        Every account's, as before, only when the store cannot say whose the
+        session was.
+        """
+        owner = await self._store.revoke_session(session_id)
+        await self._forget_sessions(owner if isinstance(owner, str) else None)
+        return owner
 
     async def delete_user_sessions(self, user_id: str) -> None:
         """Delegate, then forget the account's session liveness."""
@@ -819,6 +900,12 @@ class CachedOperationalStore(OperationalStore):
     async def revoke_user_sessions(self, user_id: str, *, except_sid: str | None = None) -> int:
         """Delegate, then forget the account's session liveness."""
         revoked = await self._store.revoke_user_sessions(user_id, except_sid=except_sid)
+        await self._forget_sessions(user_id)
+        return revoked
+
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Delegate, then forget the account's session liveness."""
+        revoked = await self._store.revoke_session_by_sid(user_id, sid)
         await self._forget_sessions(user_id)
         return revoked
 
@@ -878,10 +965,20 @@ class CachedOperationalStore(OperationalStore):
         await self._forget_sessions(user_id)
         return remaining
 
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Delegate, then forget every session's liveness (the browser's accounts are not known)."""
-        await self._store.revoke_browser_session(browser_session_id)
-        await self._forget_sessions()
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Delegate, then forget the session liveness of the accounts it signed out.
+
+        Signing out of every account in one browser is any user's to ask for; it
+        must not flush every other account's cached answers with them. Every
+        account's, as before, only when the store cannot say whose they were.
+        """
+        accounts = await self._store.revoke_browser_session(browser_session_id)
+        if isinstance(accounts, list) and all(isinstance(a, str) for a in accounts):
+            for account in accounts:
+                await self._forget_sessions(account)
+        else:
+            await self._forget_sessions()
+        return accounts
 
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
@@ -1161,9 +1258,13 @@ class CachedOperationalStore(OperationalStore):
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_user_auth_caches(user_id)
 
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
         """Delegate then invalidate user and auth caches."""
-        found = await self._store.set_user_preference(user_id, key, value)
+        found = await self._store.set_user_preference(
+            user_id, key, value, max_total_bytes=max_total_bytes
+        )
         await self._invalidate_preferences(user_id)
         return found
 
@@ -1612,10 +1713,18 @@ class CachedOperationalStore(OperationalStore):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.increment_user_cost(
-            user_id, cost_usd, day=day, api_key_id=api_key_id, requests=requests
+            user_id,
+            cost_usd,
+            day=day,
+            api_key_id=api_key_id,
+            requests=requests,
+            org_id=org_id,
+            project_id=project_id,
         )
 
     @property

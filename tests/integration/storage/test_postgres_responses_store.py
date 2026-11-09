@@ -9,6 +9,7 @@ deletes working, or stored rows could no longer be erased.
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -243,3 +244,34 @@ async def test_the_retention_purge_reads_the_owner_index_not_the_table(pool, use
     assert "Seq Scan on openai_responses" not in plan, plan
     assert "idx_openai_responses_user" in plan
     assert "openai_responses_pkey" in plan
+
+
+async def test_a_get_reads_the_owners_response_alone(store, users):
+    """What GET serves: the owner's Responses object, matched in SQL, without the conversation."""
+    alice, bob = users
+    rid = await _save(store, alice)
+
+    body = await store.get_response(rid, user_id=alice)
+
+    assert json.loads(body) == {"id": rid, "status": "completed", "output": [{"text": "héllo ✓"}]}
+    assert await store.get_response(rid, user_id=bob) is None
+    assert await store.get_response(_rid(), user_id=alice) is None
+
+
+async def test_a_follow_up_reads_the_owners_conversation_and_its_stored_size(store, users):
+    alice, bob = users
+    rid = await _save(store, alice)
+
+    stored, size = await store.get_conversation(rid, user_id=alice)
+
+    assert responses_store.decode_conversation(stored) == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "héllo ✓", "reasoning_content": "thought"},
+    ]
+    async with store._pool.acquire() as conn:
+        assert size == await conn.fetchval(
+            "SELECT octet_length(messages::text) FROM openai_responses WHERE id = $1", rid
+        )
+    # Measured as the bytes of the text asyncpg hands back, non-ASCII included.
+    assert size == len(stored.encode())
+    assert await store.get_conversation(rid, user_id=bob) is None

@@ -252,12 +252,19 @@ class ErrorResponse(BaseModel):  # type: ignore[no-any-unimported]
 
 # Embedding schemas
 
+#: The most inputs one embeddings request may carry: OpenAI's own limit, so a
+#: client written for it never meets this one. The response grows with the
+#: inputs -- each brings back a vector of about 20 bytes a dimension as JSON
+#: floats -- and the gateway reads, validates and re-encodes all of it; 12,000
+#: one-character inputs made about 255 MiB of it.
+MAX_EMBEDDING_INPUTS = 2048
+
 
 class EmbeddingRequest(BaseModel):  # type: ignore[no-any-unimported]
     """OpenAI-compatible embeddings request payload."""
 
     model: str
-    input: str | list[str]
+    input: str | Annotated[list[str], Field(max_length=MAX_EMBEDDING_INPUTS)]
     encoding_format: Literal["float", "base64"] | None = None
     dimensions: int | None = None
 

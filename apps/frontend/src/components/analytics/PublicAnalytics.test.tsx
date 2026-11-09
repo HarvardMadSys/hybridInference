@@ -4,36 +4,19 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const nav = vi.hoisted(() => ({ pathname: '/' }));
-const scripts = vi.hoisted(() => ({ onLoad: [] as (() => void)[] }));
 
 vi.mock('next/navigation', () => ({ usePathname: () => nav.pathname }));
-vi.mock('next/script', () => ({
-  default: ({
-    id,
-    src,
-    nonce,
-    children,
-    onLoad,
-  }: {
-    id?: string;
-    src?: string;
-    nonce?: string;
-    children?: React.ReactNode;
-    onLoad?: () => void;
-  }) => {
-    if (onLoad) scripts.onLoad.push(onLoad);
-    // An inert stand-in for the element `next/script` would add.
-    return (
-      <div data-script={id} data-src={src} data-nonce={nonce}>
-        {children}
-      </div>
-    );
-  },
-}));
 
-import { isAnalyticsPath, PublicAnalytics } from './PublicAnalytics';
+type Module = typeof import('./PublicAnalytics');
+type Client = typeof import('@/lib/api/client');
 
-const reload = vi.fn();
+const COUNTER_SRC = 'https://www.statcounter.com/counter/counter.js';
+
+let PublicAnalytics: Module['PublicAnalytics'];
+let isAnalyticsPath: Module['isAnalyticsPath'];
+let client: Client;
+let address: { pathname: string; reload: ReturnType<typeof vi.fn> };
+let idle: (() => void)[];
 
 function analytics(signedOut = true) {
   return (
@@ -41,44 +24,79 @@ function analytics(signedOut = true) {
   );
 }
 
-beforeEach(() => {
+/** The browser goes idle after the page has loaded: what the counter waits for. */
+async function settle(): Promise<void> {
+  for (const callback of idle.splice(0)) callback();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+/** Move to `path` as the console does: the address changes, then the page draws. */
+function navigate(path: string, rerender: (ui: React.ReactElement) => void) {
+  address.pathname = path;
+  nav.pathname = path;
+  rerender(analytics());
+}
+
+function counter(): HTMLScriptElement | null {
+  return document.querySelector(`script[src="${COUNTER_SRC}"]`);
+}
+
+function token(sub: string): string {
+  const encode = (value: object) => btoa(JSON.stringify(value)).replace(/=+$/, '');
+  const exp = Math.floor(Date.now() / 1000) + 900;
+  return `${encode({ alg: 'HS256' })}.${encode({ sub, exp })}.signature`;
+}
+
+beforeEach(async () => {
+  // What a document decides, and the session it holds, are module state: a
+  // fresh pair of modules is a fresh document.
+  vi.resetModules();
+  ({ PublicAnalytics, isAnalyticsPath } = await import('./PublicAnalytics'));
+  client = await import('@/lib/api/client');
+  sessionStorage.clear();
   nav.pathname = '/';
-  scripts.onLoad = [];
-  reload.mockReset();
-  vi.stubGlobal('location', { ...window.location, reload });
+  idle = [];
+  address = { ...window.location, pathname: '/', reload: vi.fn() };
+  vi.stubGlobal('location', address);
+  vi.stubGlobal('requestIdleCallback', (callback: () => void) => idle.push(callback));
+  vi.stubGlobal('cancelIdleCallback', (handle: number) => {
+    idle[handle - 1] = () => undefined;
+  });
 });
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  for (const script of document.querySelectorAll('script')) script.remove();
 });
 
 describe('PublicAnalytics', () => {
-  it('loads the counter on a public page for a visitor with no session', () => {
-    const { container } = render(analytics());
+  it('loads the counter on a public page for a visitor with no session', async () => {
+    render(analytics());
+    await settle();
 
-    expect(container.querySelector('[data-script="statcounter-config"]')?.textContent).toContain(
-      'var sc_project=12345',
-    );
-    expect(container.querySelector('[data-script="statcounter-loader"]')).toHaveAttribute(
-      'data-src',
-      'https://www.statcounter.com/counter/counter.js',
-    );
+    expect(counter()).not.toBeNull();
     // The page's policy runs no script without the response's nonce.
-    expect(container.querySelector('[data-script="statcounter-loader"]')).toHaveAttribute(
-      'data-nonce',
-      'n0nce',
-    );
+    expect(counter()?.nonce).toBe('n0nce');
+    expect(window).toMatchObject({ sc_project: 12345, sc_invisible: 1, sc_security: 'key' });
+  });
+
+  it('waits for the page to load and the browser to go idle', () => {
+    render(analytics());
+
+    expect(counter()).toBeNull();
   });
 
   // A third-party script can read the access token and call /auth/refresh.
-  it('never loads for a visitor who has a session', () => {
+  it('never loads for a visitor who has a session', async () => {
     const { container } = render(analytics(false));
+    await settle();
 
-    expect(container.querySelector('[data-script]')).toBeNull();
+    expect(counter()).toBeNull();
+    expect(container.innerHTML).not.toContain('statcounter');
   });
 
-  it('never loads on the console, the account forms or a page with a token in its URL', () => {
+  it('never loads on the console, the account forms or a page with a token in its URL', async () => {
     for (const path of [
       '/dashboard',
       '/dashboard/admin/users',
@@ -91,44 +109,148 @@ describe('PublicAnalytics', () => {
       '/chat',
     ]) {
       nav.pathname = path;
+      address.pathname = path;
       const { container } = render(analytics());
-      expect(container.querySelector('[data-script]'), path).toBeNull();
+      await settle();
+      expect(counter(), path).toBeNull();
       expect(container.innerHTML, path).not.toContain('statcounter');
       cleanup();
     }
   });
 
-  it('does not start on a public page reached from one where it could not load', () => {
+  it('does not start on a public page reached from one where it could not load', async () => {
     nav.pathname = '/login';
-    const { container, rerender } = render(analytics());
+    address.pathname = '/login';
+    const { rerender } = render(analytics());
 
-    nav.pathname = '/';
-    rerender(analytics());
+    navigate('/', rerender);
+    await settle();
 
-    expect(container.querySelector('[data-script]')).toBeNull();
+    expect(counter()).toBeNull();
+  });
+
+  // The visitor clicked "Sign in" before the page finished loading: the
+  // counter must not arrive on the sign-in form.
+  it('does not load once the visitor has left the public pages', async () => {
+    const { rerender } = render(analytics());
+
+    navigate('/login', rerender);
+    await settle();
+
+    expect(counter()).toBeNull();
+  });
+
+  it('loads on another public page the visitor moved to meanwhile', async () => {
+    const { rerender } = render(analytics());
+
+    navigate('/team', rerender);
+    await settle();
+
+    expect(counter()).not.toBeNull();
+  });
+
+  it('adds the counter once, however often the page draws', async () => {
+    const { rerender } = render(analytics());
+    navigate('/stats', rerender);
+    navigate('/', rerender);
+    await settle();
+
+    expect(document.querySelectorAll(`script[src="${COUNTER_SRC}"]`)).toHaveLength(1);
   });
 
   // The console moves between pages without reloading, and a loaded script stays.
-  it('reloads the page when the visitor leaves the public pages after it has loaded', () => {
+  it('reloads the page when the visitor leaves the public pages after it has loaded', async () => {
     const { rerender } = render(analytics());
-    for (const onLoad of scripts.onLoad) onLoad();
+    await settle();
+    counter()?.dispatchEvent(new Event('load'));
 
-    nav.pathname = '/team';
-    rerender(analytics());
-    expect(reload).not.toHaveBeenCalled();
+    navigate('/team', rerender);
+    expect(address.reload).not.toHaveBeenCalled();
 
-    nav.pathname = '/login';
-    rerender(analytics());
-    expect(reload).toHaveBeenCalledOnce();
+    navigate('/login', rerender);
+    expect(address.reload).toHaveBeenCalledOnce();
   });
 
-  it('does not reload when the counter never loaded', () => {
+  // The counter added but not yet run is on its way all the same.
+  it('reloads the page when the visitor leaves before the counter has arrived', async () => {
+    const { rerender } = render(analytics());
+    await settle();
+    expect(counter()).not.toBeNull();
+
+    navigate('/login', rerender);
+
+    expect(address.reload).toHaveBeenCalledOnce();
+  });
+
+  it('reloads the page when the visitor leaves before the counter was even added', () => {
     const { rerender } = render(analytics());
 
-    nav.pathname = '/login';
-    rerender(analytics());
+    navigate('/login', rerender);
 
-    expect(reload).not.toHaveBeenCalled();
+    expect(address.reload).toHaveBeenCalledOnce();
+  });
+
+  it('never reloads a document that does not run it', () => {
+    nav.pathname = '/login';
+    address.pathname = '/login';
+    const { rerender } = render(analytics());
+
+    navigate('/', rerender);
+    navigate('/dashboard', rerender);
+
+    expect(address.reload).not.toHaveBeenCalled();
+  });
+});
+
+describe('a document that runs the counter', () => {
+  it('holds no session: the client mints and installs none', () => {
+    render(analytics());
+
+    expect(client.isDocumentKeptSignedOut()).toBe(true);
+  });
+
+  it('drops a token the tab kept from an earlier page', () => {
+    client.setAccessToken(token('user-a'));
+
+    render(analytics());
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(sessionStorage.getItem('access_token')).toBeNull();
+  });
+
+  it('leaves the session alone in a document that does not run it', () => {
+    client.setAccessToken(token('user-a'));
+
+    render(analytics(false));
+
+    expect(client.isDocumentKeptSignedOut()).toBe(false);
+    expect(client.getAccessToken()).not.toBeNull();
+  });
+
+  // Every change of account remounts the pages, this component with them.
+  it('is decided by the first page the document draws, not again on a remount', async () => {
+    nav.pathname = '/login';
+    address.pathname = '/login';
+    render(analytics());
+    cleanup();
+
+    navigate('/', () => undefined);
+    render(analytics());
+    await settle();
+
+    expect(counter()).toBeNull();
+    expect(client.isDocumentKeptSignedOut()).toBe(false);
+  });
+
+  it('does not add the counter once the document is on its way out', async () => {
+    render(analytics());
+
+    // Signed in from another tab, say: the page reloads to take the session up.
+    client.reloadDocument();
+    await settle();
+
+    expect(counter()).toBeNull();
+    expect(address.reload).toHaveBeenCalledOnce();
   });
 });
 

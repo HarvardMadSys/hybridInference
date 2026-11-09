@@ -306,6 +306,26 @@ async def test_login_records_rate_limited(app, fake_op_store, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_source_that_keeps_trying_is_recorded_once_a_minute(
+    app, fake_op_store, monkeypatch
+):
+    """Every refusal used to be a database write: one row now stands for a minute's."""
+
+    async def _deny(email, ip, *, device=None):
+        return False, "ip"
+
+    monkeypatch.setattr(
+        "serving.servers.routers.auth_routes.check_and_record_login",
+        _deny,
+    )
+    for n in range(30):
+        assert (await _post_login(app, email=f"x{n}@y.com")).status_code == 429
+
+    fake_op_store.record_login_event.assert_awaited_once()
+    fake_op_store.get_user_by_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reason", "retry_after"),
     [("ip", "3600"), ("email", "900"), ("account", "900"), ("device", "900")],

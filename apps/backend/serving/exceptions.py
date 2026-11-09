@@ -112,6 +112,10 @@ class DuplicateAPIKeyError(UserFacingError):
     pass
 
 
+class ProjectNotFoundError(UserFacingError):
+    """The project is absent, archived, or owned by another account."""
+
+
 class APIKeyLimitReachedError(UserFacingError):
     """The account already holds as many active API keys as it may."""
 
@@ -131,6 +135,14 @@ class APIKeyNotFoundError(UserFacingError):
     """API key not found."""
 
     pass
+
+
+class PreferencesTooLargeError(UserFacingError):
+    """A preference write would leave the account's preferences over their size bound."""
+
+    def __init__(self, limit_bytes: int):
+        self.limit_bytes = limit_bytes
+        super().__init__(f"An account's saved preferences may take at most {limit_bytes} bytes")
 
 
 # Token errors

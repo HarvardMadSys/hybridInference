@@ -49,7 +49,16 @@ from serving.config.batch_routes import (
     route_batch_allowed,
 )
 from serving.model_access import model_access_denial, route_canonical_model_id
-from serving.responses_translator import responses_request_to_chat_params
+from serving.request_limits import (
+    chat_limit_problem,
+    messages_limit_problem,
+    responses_limit_problem,
+)
+from serving.responses_translator import (
+    merge_leading_system_messages,
+    responses_input_to_messages,
+    responses_request_to_chat_params,
+)
 from serving.schemas import ChatCompletionRequest, EmbeddingRequest
 from serving.servers.model_availability import model_not_found_detail
 from serving.storage.batch_store import (
@@ -460,6 +469,13 @@ async def admit_item(target: str, body: Any, ctx: AdmissionContext) -> str:
     """
     if not isinstance(body, dict):
         raise ItemRejected("invalid_request", "body must be a JSON object")
+    check_limits = {
+        TARGET_CHAT: chat_limit_problem,
+        TARGET_MESSAGES: messages_limit_problem,
+        TARGET_RESPONSES: responses_limit_problem,
+    }.get(target)
+    if check_limits is not None and (problem := check_limits(body)) is not None:
+        raise ItemRejected("invalid_request", problem)
     if target == TARGET_CHAT:
         return await _admit_chat(body, ctx)
     if target == TARGET_EMBEDDINGS:
@@ -745,12 +761,31 @@ async def _admit_responses(body: dict[str, Any], ctx: AdmissionContext) -> str:
     problem = _responses_tools_problem(body.get("tools"))
     if problem:
         raise ItemRejected("invalid_request", problem, param="tools")
-    _params, dropped = responses_request_to_chat_params(body)
+    params, dropped = responses_request_to_chat_params(body)
     if dropped:
         raise ItemRejected(
             "invalid_request",
             f"tools: hosted tool types {sorted(set(dropped))} are not supported in batches",
             param="tools",
         )
+    # Execution translates to Chat before validating its fields. Apply the
+    # same validation now, so a bad range or type refuses the entire batch
+    # before any of its other requests can run.
+    messages = responses_input_to_messages(body.get("input"))
+    if body.get("instructions"):
+        messages.insert(0, {"role": "system", "content": body["instructions"]})
+    chat_body = {
+        "model": body.get("model"),
+        "messages": merge_leading_system_messages(messages),
+        **params,
+    }
+    if problem := chat_limit_problem(chat_body):
+        raise ItemRejected("invalid_request", problem)
+    try:
+        ChatCompletionRequest.model_validate(chat_body)
+    except ValidationError as exc:
+        raise ItemRejected(
+            "invalid_request", f"body is not a valid Responses request: {_describe(exc)}"
+        ) from None
     canonical, _route = await _cached_route_model(body.get("model"), ctx, TARGET_RESPONSES)
     return canonical

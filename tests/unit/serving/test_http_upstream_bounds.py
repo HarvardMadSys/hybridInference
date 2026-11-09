@@ -308,6 +308,19 @@ async def test_a_proxied_body_over_the_limit_is_refused(upstream, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_proxy_may_read_less_than_the_default(upstream):
+    upstream.body = b"q" * 4096
+
+    with pytest.raises(UpstreamPayloadTooLarge):
+        await AsyncHTTPClient.shared().request("GET", upstream.url, max_body_bytes=1024)
+
+    status, body, _ = await AsyncHTTPClient.shared().request(
+        "GET", upstream.url, max_body_bytes=4096
+    )
+    assert (status, len(body)) == (200, 4096)
+
+
+@pytest.mark.asyncio
 async def test_only_the_start_of_an_error_body_is_read(upstream):
     """The provider's message survives; a huge error page is not held whole."""
     message = '{"error":{"message":"model overloaded"}}'

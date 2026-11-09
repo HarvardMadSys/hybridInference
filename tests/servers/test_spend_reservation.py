@@ -67,13 +67,13 @@ def _store(*, quota_usd: float, spent_usd: float = 0.0, **row: Any) -> MagicMock
     return store
 
 
-def _app(store: MagicMock, limiter: UserConcurrencyLimiter) -> FastAPI:
+def _app(store: MagicMock, limiter: UserConcurrencyLimiter, router: Any = None) -> FastAPI:
     app = FastAPI()
     app.state.gate = asyncio.Event()
     app.dependency_overrides[get_operational_store] = lambda: store
     app.dependency_overrides[get_log_store] = lambda: None
     app.dependency_overrides[get_user_concurrency_limiter] = lambda: limiter
-    app.dependency_overrides[get_router] = lambda: None
+    app.dependency_overrides[get_router] = lambda: router
     app.dependency_overrides[get_model_concurrency_resolver] = lambda: None
     app.dependency_overrides[get_embedding_adapters] = lambda: {}
 
@@ -339,3 +339,72 @@ async def test_a_cost_not_yet_written_to_the_counters_counts_at_the_gate():
     assert refused.status_code == 429
     assert refused.json()["detail"]["spent_usd"] == pytest.approx(0.495)
     store.increment_user_cost.assert_awaited_once()
+
+
+def _priced_router(prompt: str, completion: str) -> Any:
+    """A router with one model, ``pricey``, served at these prices (USD per million tokens)."""
+    config = types.SimpleNamespace(
+        id="pricey",
+        pricing={"prompt": prompt, "completion": completion},
+        context_length=200_000,
+        max_output_length=32_000,
+        model_type="chat",
+    )
+    route = types.SimpleNamespace(adapters=[(types.SimpleNamespace(config=config), 1.0)])
+    return types.SimpleNamespace(routes={"pricey": route})
+
+
+def _reserved(store: MagicMock) -> float:
+    entry = ledger_for(store)._reserved_users.get(USER)
+    return float(entry[0]) if entry else 0.0
+
+
+#: About 100k prompt tokens and 20k of output: $3.00 at $15/$75 per million.
+_PRICEY = {
+    "model": "pricey",
+    "max_tokens": 20_000,
+    "messages": [{"role": "user", "content": "x" * 400_000}],
+}
+
+
+@pytest.mark.asyncio
+async def test_a_request_reserves_what_it_may_cost():
+    """Not a flat $0.01: requests running together count for what they may cost (M19)."""
+    store = _store(quota_usd=100.0)
+    app = _app(
+        store, UserConcurrencyLimiter(static_limits_provider(LIMITS)), _priced_router("15", "75")
+    )
+
+    async with _client(app) as client:
+        held = asyncio.create_task(client.post("/hold", json=_PRICEY))
+        await _until(lambda: _in_flight(store) == 1)
+        assert _reserved(store) == pytest.approx(3.0, rel=0.01)
+        app.state.gate.set()
+        assert (await held).status_code == 200
+    assert _reserved(store) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_near_the_quota_a_request_holds_what_is_left_and_the_next_waits():
+    """$0.04 left: the first is admitted (its worst case does not refuse it) and holds it all.
+
+    With a flat $0.01, four of these were admitted, and spent four times what
+    one costs past the quota.
+    """
+    store = _store(quota_usd=1.0, spent_usd=0.96)
+    app = _app(
+        store, UserConcurrencyLimiter(static_limits_provider(LIMITS)), _priced_router("15", "75")
+    )
+
+    async with _client(app) as client:
+        first = asyncio.create_task(client.post("/hold", json=_PRICEY))
+        await _until(lambda: _in_flight(store) == 1)
+        assert _reserved(store) == pytest.approx(0.04)
+
+        refused = await asyncio.wait_for(client.post("/hold", json=_PRICEY), 3)
+
+        assert refused.status_code == 429
+        assert refused.json()["detail"]["code"] == "budget_exceeded"
+        app.state.gate.set()
+        assert (await first).status_code == 200
+    assert _in_flight(store) == 0

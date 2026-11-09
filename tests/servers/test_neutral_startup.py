@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_EXAMPLE_REGISTRY = "config/examples/models.openrouter.yaml"
+_EXAMPLE_REGISTRY = "config/examples/models.openrouter.json"
 
 _SCRIPT = """
 import json
@@ -34,11 +34,12 @@ with TestClient(create_app()) as client:
     models = client.get("/v1/models")
     assert models.status_code == 200, models.status_code
     served = {m["id"] for m in models.json()["data"]}
-    expected = {"llama-3.3-70b", "llama-3.1-8b", "llama-3.1-8b-hybrid"}
+    expected = set()
     assert served == expected, f"served={sorted(served)}"
 
     site = client.get("/site-config").json()
     assert site["distribution"]["id"] == "neutral", site
+    assert site["configuration"]["incomplete"] is True
     assert site["site"]["public_base_url"] == "", site
 
     # Nothing user-visible may leak the distribution's identity.
@@ -50,7 +51,7 @@ print("NEUTRAL_STARTUP_OK")
 """
 
 
-def test_neutral_deployment_serves_the_reference_registry() -> None:
+def test_neutral_deployment_does_not_assume_any_provider_or_model() -> None:
     env = {
         # A bare environment on purpose: PATH/HOME only, plus what an
         # operator would actually set. Inheriting os.environ would import

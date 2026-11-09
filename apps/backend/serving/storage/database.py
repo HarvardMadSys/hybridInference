@@ -23,6 +23,7 @@ from serving.storage.pools import (
     COMMAND_TIMEOUT_SEC,
     GENERAL_POOL_MAX_SIZE,
     GENERAL_POOL_MIN_SIZE,
+    REQUEST_COMMAND_TIMEOUT_SEC,
     REQUEST_POOL_MAX_SIZE,
     REQUEST_POOL_MIN_SIZE,
 )
@@ -122,7 +123,7 @@ class DatabaseLogger:
                 **self.db_config,
                 min_size=REQUEST_POOL_MIN_SIZE,
                 max_size=REQUEST_POOL_MAX_SIZE,
-                command_timeout=COMMAND_TIMEOUT_SEC,
+                command_timeout=REQUEST_COMMAND_TIMEOUT_SEC,
             )
             if self.fence_secret:
                 async with self.pool.acquire() as conn:

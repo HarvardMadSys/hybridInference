@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -33,7 +34,14 @@ class _Router:
     """The one surface of the router the playground uses, around a script."""
 
     def __init__(self, script: Callable[[], AsyncIterator[str]]) -> None:
-        self.routes: dict[str, Any] = {}
+        # One published model any caller may use, so the playground's access
+        # check lets the request through to the script.
+        adapter = SimpleNamespace(config=SimpleNamespace(id="m", pricing_source=None))
+        self.routes: dict[str, Any] = {
+            "m": SimpleNamespace(
+                published=True, adapters=[(adapter, 1.0)], required_role="free", admin_only=False
+            )
+        }
         self._script = script
         self.closed = False
 
@@ -50,7 +58,9 @@ class _Router:
 
 async def _open(router: _Router) -> AsyncIterator[str]:
     body = playground.PlaygroundChatRequest(model="m", messages=[{"role": "user", "content": "hi"}])
-    response = await playground.playground_chat(body, _admin={}, router_exec=router)
+    response = await playground.playground_chat(
+        body, _admin={}, router_exec=router, model_visibility_resolver=None
+    )
     return response.body_iterator
 
 

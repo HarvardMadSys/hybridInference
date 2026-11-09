@@ -20,6 +20,12 @@ redirect hop again before it is followed (at most :data:`MAX_REDIRECTS`), and
 every socket at connect time (:func:`guarded_socket`), which is the check that
 holds when a name resolves differently later. ``BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS``
 lifts the private-address rule (never the metadata one) for isolated tests.
+
+**Delivery** runs up to :data:`CONCURRENCY` events at once per process, at most
+one per user, so a receiver that answers slowly (or not at all, until every
+hop has timed out) holds up only its own owner's events. A receiver whose
+deliveries keep failing slowly is left alone for a while
+(:class:`_SlowReceivers`) before it is tried again.
 """
 
 from __future__ import annotations
@@ -55,6 +61,17 @@ REQUEST_TIMEOUT_SECONDS = 10.0
 #: timing out), so it cannot lapse while the event is being sent.
 LEASE_SECONDS = int(REQUEST_TIMEOUT_SECONDS * (MAX_REDIRECTS + 1)) + 30
 USER_AGENT = "hybridinference-batch-webhooks/1.0"
+#: Deliveries one process makes at once; one user's events go one at a time.
+CONCURRENCY = 8
+#: A failed delivery that took this long is a receiver timing out ...
+SLOW_FAILURE_SECONDS = REQUEST_TIMEOUT_SECONDS * 0.9
+#: ... and after this many of those in a row its owner's events wait, first
+#: this long, then twice as long each time, up to the cap.
+SLOW_STREAK = 3
+SLOW_HOLD_SECONDS = 600.0
+SLOW_HOLD_CAP_SECONDS = 3600.0
+#: How often a delivery run looks for newly due events while others are sent.
+POLL_SECONDS = 5.0
 
 
 class WebhookTargetRefused(ValueError):
@@ -269,77 +286,197 @@ def next_attempt_at(attempts: int) -> datetime | None:
     return datetime.now(UTC) + timedelta(seconds=delay)
 
 
+class _SlowReceivers:
+    """The users whose webhook receiver keeps failing slowly, held back for a while.
+
+    Kept per process. A delivery that fails after about the whole request
+    timeout counts against its receiver; :data:`SLOW_STREAK` of them in a row
+    hold the owner's events back for :data:`SLOW_HOLD_SECONDS`, doubling with
+    each further slow failure up to :data:`SLOW_HOLD_CAP_SECONDS`. Their events
+    stay due and are sent once the hold ends; any delivery that is not a slow
+    failure clears the record.
+    """
+
+    def __init__(self) -> None:
+        self._streak: dict[str, int] = {}
+        self._until: dict[str, float] = {}
+
+    def held(self, now: float) -> list[str]:
+        for user_id in [u for u, until in self._until.items() if until <= now]:
+            del self._until[user_id]
+        return sorted(self._until)
+
+    def record(self, user_id: str, *, slow_failure: bool, now: float) -> None:
+        if not slow_failure:
+            self._streak.pop(user_id, None)
+            self._until.pop(user_id, None)
+            return
+        streak = self._streak.get(user_id, 0) + 1
+        self._streak[user_id] = streak
+        if streak >= SLOW_STREAK:
+            hold = min(SLOW_HOLD_CAP_SECONDS, SLOW_HOLD_SECONDS * 2 ** (streak - SLOW_STREAK))
+            self._until[user_id] = now + hold
+            logger.info(
+                "batch webhook receiver of user %s failed slowly %d times in a row; "
+                "its events wait %.0fs",
+                user_id,
+                streak,
+                hold,
+                extra={"event": "batch_webhook_receiver_held", "user_id": user_id},
+            )
+
+
+_SLOW_RECEIVERS = _SlowReceivers()
+
+
 async def deliver_due_events(
     *,
     webhook_store: Any,
     worker_id: str,
     allow_private: bool,
     decrypt: Any,
-    limit: int = 20,
+    limit: int = 200,
+    concurrency: int = CONCURRENCY,
+    poll_seconds: float = POLL_SECONDS,
+    slow: _SlowReceivers | None = None,
 ) -> int:
-    """Deliver due events, leasing each just before it is sent; return how many were tried.
+    """Deliver due events, up to *concurrency* at once; return how many were tried.
 
-    One event at a time: its lease (:data:`LEASE_SECONDS`) outlasts the
-    longest a delivery can take, so no event waits in a local queue while its
-    lease runs out and another worker sends it too. Recording the outcome is
-    fenced on this worker's lease and attempt.
+    Each event is leased just before it is sent, never left waiting in a local
+    queue: its lease (:data:`LEASE_SECONDS`) outlasts the longest a delivery
+    can take, so no other worker sends it meanwhile. At most one event per
+    user is in flight, and the events of a receiver that keeps failing slowly
+    wait (:class:`_SlowReceivers`), so one slow endpoint never holds up anyone
+    else's. Recording the outcome is fenced on this worker's lease and
+    attempt. Returns once nothing more is due and nothing is in flight, or
+    once *limit* events have been tried and sent.
     """
+    receivers = slow if slow is not None else _SLOW_RECEIVERS
+    in_flight: dict[asyncio.Task[None], str] = {}
     tried = 0
-    for _ in range(limit):
-        events = await webhook_store.claim_due_events(
-            worker_id=worker_id, limit=1, lease_seconds=LEASE_SECONDS
-        )
-        if not events:
-            break
-        event = events[0]
-        tried += 1
-        attempt = int(event["attempts"])
-        payload = event["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        if not event.get("enabled"):
-            await webhook_store.mark_failed(
-                event_id=event["id"],
-                worker_id=worker_id,
-                attempt=attempt,
-                error="webhook disabled",
-                status_code=None,
-                next_attempt_at=None,
+    look = True
+    claiming = True
+    try:
+        while True:
+            while claiming and look and len(in_flight) < concurrency and tried < limit:
+                busy = set(in_flight.values()) | set(receivers.held(time.monotonic()))
+                try:
+                    events = await webhook_store.claim_due_events(
+                        worker_id=worker_id,
+                        limit=1,
+                        lease_seconds=LEASE_SECONDS,
+                        exclude_users=sorted(busy),
+                    )
+                except Exception:
+                    if not in_flight:
+                        raise
+                    # Let what is being sent finish; the next run looks again.
+                    logger.warning("batch webhook events could not be claimed", exc_info=True)
+                    claiming = False
+                    break
+                if not events:
+                    look = False
+                    break
+                event = events[0]
+                tried += 1
+                task = asyncio.create_task(
+                    _send_event(
+                        event,
+                        webhook_store=webhook_store,
+                        worker_id=worker_id,
+                        allow_private=allow_private,
+                        decrypt=decrypt,
+                        receivers=receivers,
+                    ),
+                    name=f"batch_webhook:{event['id']}",
+                )
+                in_flight[task] = str(event["user_id"])
+            if not in_flight:
+                return tried
+            done, _ = await asyncio.wait(
+                in_flight, timeout=poll_seconds, return_when=asyncio.FIRST_COMPLETED
             )
-            continue
-        try:
-            secret = decrypt(event["secret_encrypted"])
-        except Exception:
-            await webhook_store.mark_failed(
-                event_id=event["id"],
-                worker_id=worker_id,
-                attempt=attempt,
-                error="signing secret unreadable",
-                status_code=None,
-                next_attempt_at=None,
-            )
-            continue
-        delivered, status, error = await deliver(
-            url=event["url"],
-            secret=secret,
+            for task in done:
+                user_id = in_flight.pop(task)
+                if not task.cancelled() and task.exception() is not None:
+                    logger.warning(
+                        "batch webhook delivery for user %s failed",
+                        user_id,
+                        exc_info=task.exception(),
+                        extra={"event": "batch_webhook_delivery_error"},
+                    )
+            # A user's turn came free, or time passed: look again.
+            look = True
+    finally:
+        for task in in_flight:
+            task.cancel()
+        if in_flight:
+            await asyncio.gather(*in_flight, return_exceptions=True)
+
+
+async def _send_event(
+    event: dict[str, Any],
+    *,
+    webhook_store: Any,
+    worker_id: str,
+    allow_private: bool,
+    decrypt: Any,
+    receivers: _SlowReceivers,
+) -> None:
+    """Send one leased event and record how it went."""
+    attempt = int(event["attempts"])
+    payload = event["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not event.get("enabled"):
+        await webhook_store.mark_failed(
             event_id=event["id"],
-            payload=payload,
-            allow_private=allow_private,
+            worker_id=worker_id,
+            attempt=attempt,
+            error="webhook disabled",
+            status_code=None,
+            next_attempt_at=None,
         )
-        if delivered:
-            await webhook_store.mark_delivered(
-                event_id=event["id"],
-                worker_id=worker_id,
-                attempt=attempt,
-                status_code=int(status or 200),
-            )
-        else:
-            await webhook_store.mark_failed(
-                event_id=event["id"],
-                worker_id=worker_id,
-                attempt=attempt,
-                error=error or "delivery failed",
-                status_code=status,
-                next_attempt_at=next_attempt_at(attempt),
-            )
-    return tried
+        return
+    try:
+        secret = decrypt(event["secret_encrypted"])
+    except Exception:
+        await webhook_store.mark_failed(
+            event_id=event["id"],
+            worker_id=worker_id,
+            attempt=attempt,
+            error="signing secret unreadable",
+            status_code=None,
+            next_attempt_at=None,
+        )
+        return
+    started = time.monotonic()
+    delivered, status, error = await deliver(
+        url=event["url"],
+        secret=secret,
+        event_id=event["id"],
+        payload=payload,
+        allow_private=allow_private,
+    )
+    finished = time.monotonic()
+    receivers.record(
+        str(event["user_id"]),
+        slow_failure=not delivered and finished - started >= SLOW_FAILURE_SECONDS,
+        now=finished,
+    )
+    if delivered:
+        await webhook_store.mark_delivered(
+            event_id=event["id"],
+            worker_id=worker_id,
+            attempt=attempt,
+            status_code=int(status or 200),
+        )
+    else:
+        await webhook_store.mark_failed(
+            event_id=event["id"],
+            worker_id=worker_id,
+            attempt=attempt,
+            error=error or "delivery failed",
+            status_code=status,
+            next_attempt_at=next_attempt_at(attempt),
+        )

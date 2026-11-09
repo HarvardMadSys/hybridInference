@@ -70,6 +70,11 @@ def _sms_provider_registered() -> bool:
 
 
 CATEGORIES: tuple[Category, ...] = (
+    Category(
+        "application",
+        "Application",
+        "Models, routing policy, alert rules and public site configuration.",
+    ),
     Category("general", "General", "Public addresses, site identity and logging."),
     Category(
         "security",
@@ -188,6 +193,7 @@ class ConfigEntry:
     flag: bool = False
     #: The key whose value applies while this one is empty.
     fallback_key: str | None = None
+    validator: Callable[[str], None] | None = None
 
     def is_required(self, context: RequirementContext) -> bool:
         """Evaluate ``required`` against the effective configuration."""
@@ -264,7 +270,55 @@ def _setting(
 # Static entries, grouped by category in the order the console lists them.
 # Descriptions are operator-facing; they come from the comments in settings.py
 # and .env.example.
+def _document_validator(key: str) -> Callable[[str], None]:
+    def validate(text: str) -> None:
+        from serving.config.documents import validate as validate_document
+
+        validate_document(key, text)
+
+    return validate
+
+
 _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
+    *(
+        ConfigEntry(
+            key,
+            "application",
+            description,
+            type="text",
+            setup=True,
+            one_time=True,
+            restart_required=restart,
+            validator=_document_validator(key),
+        )
+        for key, description, restart in (
+            (
+                "MODEL_CATALOG",
+                "Model catalog as JSON. Add models and routes here or in Admin Routing. Credentials reference separate secret settings as ${NAME}.",
+                True,
+            ),
+            (
+                "ROUTING_POLICY",
+                "Optional routing policy as JSON. Omit to use the default Fixed router.",
+                True,
+            ),
+            (
+                "ALERT_RULES",
+                "Alert thresholds and rule switches as JSON. Omit to use built-in thresholds.",
+                True,
+            ),
+            (
+                "SITE_CONFIGURATION",
+                "Public site identity and feature policy as JSON. No file paths are accepted.",
+                False,
+            ),
+            (
+                "SITE_BRANDING",
+                "Public branding as JSON. Only validated public branding fields are accepted.",
+                False,
+            ),
+        )
+    ),
     # --- general -----------------------------------------------------------
     _setting(
         "base_url",
@@ -664,9 +718,21 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         case_sensitive=True,
         setup=True,
     ),
-    _setting("smtp_host", "email", "SMTP server host.", "str", setup=True),
     _setting(
-        "smtp_port", "email", "SMTP server port.", "int", setup=True, minimum=1, maximum=65_535
+        "smtp_host",
+        "email",
+        "SMTP server host. The server's TLS certificate must be valid for this name.",
+        "str",
+        setup=True,
+    ),
+    _setting(
+        "smtp_port",
+        "email",
+        "SMTP server port. Port 465 uses TLS from the start; any other port must offer STARTTLS.",
+        "int",
+        setup=True,
+        minimum=1,
+        maximum=65_535,
     ),
     _setting(
         "smtp_user",
@@ -992,16 +1058,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         default="3600",
     ),
     # Read per request by serving.servers.middleware.body_limit, which falls
-    # back to the same default for a missing or invalid value.
+    # back to the same default for a missing or invalid value and holds a
+    # larger one to the same maximum.
     ConfigEntry(
         "REQUEST_MAX_BODY_MB",
         "routing",
         "Largest request body, in MiB, the gateway reads; a larger one gets 413 before "
-        "it is parsed. Raise it for requests that carry many images or long media. "
-        "Batch uploads keep their own limit, BATCH_MAX_BODY_MB.",
+        "it is parsed. Raise it for requests that carry many images or long media, up "
+        "to 256. Batch uploads keep their own limit, BATCH_MAX_BODY_MB.",
         type="int",
         default="32",
         minimum=1,
+        maximum=256,
     ),
     # --- batch inference ---------------------------------------------------
     # Read through serving.batch.config, which falls back to the same defaults
@@ -1167,6 +1235,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     ConfigEntry(
+        "BATCH_MAX_RESULTS_MB_PER_BATCH",
+        "batch",
+        "Responses one batch may store in all, in MiB (counted by each gateway process "
+        "from the results it records). Once a batch's results reach it, a response that "
+        "does not fit fails with result_too_large, and so does every request of that "
+        "batch still to run, without running. 0 removes the limit.",
+        type="int",
+        default="8192",
+        minimum=0,
+    ),
+    ConfigEntry(
         "BATCH_FILES_MAX_TOTAL_MB_PER_USER",
         "batch",
         "Uploaded batch input files one user may keep at once, in MiB.",
@@ -1177,7 +1256,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_FILE_UPLOADS_PER_HOUR",
         "batch",
-        "Batch input files one user may upload per hour.",
+        "Batch input files one user may upload per hour, uploads that failed included.",
         type="int",
         default="60",
         minimum=1,
@@ -1552,13 +1631,6 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "DB_USER": "database connection",
     "DB_PASSWORD": "database connection",
     "DB_ENABLED": "database connection",
-    "MODELS_CONFIG_PATH": "configuration file location",
-    "MODELS_CONFIG": "configuration file location",
-    "ROUTING_CONFIG_PATH": "configuration file location",
-    "ROUTING_CONFIG": "configuration file location",
-    "ALERTS_CONFIG_PATH": "configuration file location",
-    "DISTRIBUTION_CONFIG_PATH": "configuration file location",
-    "DISTRIBUTION_CONFIG_MODE": "configuration file location",
     "LOG_FILE": "process wiring",
     "BACKEND_EXTENSIONS": "process wiring: imports code at boot",
     "GEOIP_COUNTRY_DB": "process wiring",
@@ -1585,6 +1657,13 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
 #: nor written here, and every boot that finds one warns about it once. An
 #: administrator may still delete the row.
 RETIRED_SETTINGS: Mapping[str, str] = {
+    "MODELS_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "MODELS_CONFIG": "application documents are configured in Admin Settings",
+    "ROUTING_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "ROUTING_CONFIG": "application documents are configured in Admin Settings",
+    "ALERTS_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "DISTRIBUTION_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "DISTRIBUTION_CONFIG_MODE": "application documents are configured in Admin Settings",
     "BATCH_EXPANSION_ENABLED": "every batch kind is available whenever BATCH_ENABLED is on",
 }
 
@@ -2039,6 +2118,19 @@ def _discover_alerts(data: Any, found: dict[str, DiscoveredReference]) -> None:
         _note(found, key, "alerts")
 
 
+def discover_documents(models: Any, routing: Any, alerts: Any) -> dict[str, DiscoveredReference]:
+    """Discover settings referenced by parsed database application documents."""
+    found: dict[str, DiscoveredReference] = {}
+    _discover_models(models, found)
+    _discover_routing(routing, found)
+    _discover_alerts(alerts, found)
+    for data in (models, routing, alerts):
+        for key in _credential_references(data):
+            if key in found:
+                found[key].credential = True
+    return found
+
+
 def discover_references(
     models_path: Path | None,
     routing_path: Path | None,
@@ -2046,6 +2138,7 @@ def discover_references(
     *,
     models_text: str | None = None,
     routing_text: str | None = None,
+    alerts_text: str | None = None,
 ) -> dict[str, DiscoveredReference]:
     """Find every ``${VAR}`` reference in the three configuration files.
 
@@ -2064,13 +2157,14 @@ def discover_references(
         alerts_path: Alerts file.
         models_text: Stored model registry, when the database has that row.
         routing_text: Stored routing document, when the database has that row.
+        alerts_text: Explicit stored alert document; used instead of a file when provided.
     """
     found: dict[str, DiscoveredReference] = {}
     models = _load_yaml_text(models_text) if models_text is not None else _load_yaml(models_path)
     routing = (
         _load_yaml_text(routing_text) if routing_text is not None else _load_yaml(routing_path)
     )
-    alerts = _load_yaml(alerts_path)
+    alerts = _load_yaml_text(alerts_text) if alerts_text is not None else _load_yaml(alerts_path)
     _discover_models(models, found)
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)

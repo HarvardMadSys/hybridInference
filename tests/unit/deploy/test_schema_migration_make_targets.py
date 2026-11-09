@@ -15,13 +15,16 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
-MIGRATE = "run --rm backend python -m migrations upgrade"
+MIGRATE = "run --rm --no-deps backend python -m migrations upgrade"
+# What the migrations need running first: the database, started if it is not,
+# never recreated.
+DATABASE = "up -d --no-recreate --wait postgres"
 
 
-def _compose_lines(target: str) -> list[str]:
+def _compose_lines(target: str, *variables: str) -> list[str]:
     env = {k: v for k, v in os.environ.items() if k != "DISTRIBUTION"}
     proc = subprocess.run(
-        ["make", "--no-print-directory", "-n", target, "DISTRIBUTION=none"],
+        ["make", "--no-print-directory", "-n", target, "DISTRIBUTION=none", *variables],
         cwd=REPO,
         env=env,
         capture_output=True,
@@ -36,9 +39,24 @@ def _compose_lines(target: str) -> list[str]:
 def test_a_database_stack_migrates_before_anything_starts(target):
     lines = _compose_lines(target)
     migrations = [i for i, line in enumerate(lines) if line.endswith(MIGRATE)]
-    starts = [i for i, line in enumerate(lines) if " up -d" in line]
+    starts = [i for i, line in enumerate(lines) if " up -d" in line and not line.endswith(DATABASE)]
     assert len(migrations) == 1, lines
     assert all(i > migrations[0] for i in starts), lines
+
+
+@pytest.mark.parametrize("target", ["up", "build", "migrate"])
+def test_the_migration_neither_starts_nor_recreates_the_database(target):
+    """`compose run` without --no-deps brings the backend's dependencies up itself.
+
+    It recreated Postgres whenever its configuration had changed, under the
+    backend still serving, before a migration that might then fail. The
+    database is started beforehand instead, only if it is not running.
+    """
+    lines = _compose_lines(target)
+    (migration,) = [i for i, line in enumerate(lines) if "migrations upgrade" in line]
+
+    assert "--no-deps" in lines[migration].split(), lines[migration]
+    assert [i for i, line in enumerate(lines) if line.endswith(DATABASE)] == [migration - 1]
 
 
 def test_a_restart_migrates_nothing():
@@ -50,3 +68,50 @@ def test_no_service_runs_or_waits_for_the_migrations():
     for name, service in services.items():
         assert "migrations" not in str(service.get("command", "")), name
         assert "migrat" not in str(service.get("depends_on", {})), name
+
+
+@pytest.mark.parametrize("target", ["up", "build"])
+def test_a_legacy_manifest_is_imported_after_the_migrations_and_before_the_start(target):
+    """An upgrade from file-based configuration must not serve before its policy is stored."""
+    lines = _compose_lines(target, "LEGACY_MANIFEST=distributions/site/distribution.yaml")
+    migration = next(i for i, line in enumerate(lines) if line.endswith(MIGRATE))
+    (imported,) = [i for i, line in enumerate(lines) if "import-legacy" in line]
+    starts = [i for i, line in enumerate(lines) if " up -d" in line and not line.endswith(DATABASE)]
+    assert migration < imported < min(starts), lines
+    assert lines[imported].endswith(
+        "run --rm --no-deps backend python -m serving.config.manage import-legacy "
+        '"distributions/site/distribution.yaml"'
+    )
+    assert not any("import-legacy" in line for line in _compose_lines(target))
+    # Files the environment names, or an explicit one, need no manifest.
+    (options_only,) = [
+        line
+        for line in _compose_lines(target, "LEGACY_IMPORT_OPTIONS=--alerts=/app/alerts.yaml")
+        if "import-legacy" in line
+    ]
+    assert options_only.endswith("import-legacy --alerts=/app/alerts.yaml")
+
+
+def test_deploy_hands_the_legacy_manifest_and_its_options_to_gateway_ops():
+    env = {k: v for k, v in os.environ.items() if k != "DISTRIBUTION"}
+    proc = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "-n",
+            "deploy",
+            "DISTRIBUTION=none",
+            "LEGACY_MANIFEST=distributions/site/distribution.yaml",
+            "LEGACY_IMPORT_OPTIONS=--one --two",
+        ],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (
+        '--legacy-manifest "distributions/site/distribution.yaml" '
+        "--legacy-import-option=--one --legacy-import-option=--two "
+    ) in proc.stdout

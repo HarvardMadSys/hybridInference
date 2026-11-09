@@ -28,8 +28,8 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 from serving.servers.registry import register_from_models_yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_EXAMPLE = _REPO_ROOT / "config" / "examples" / "models.routewise.yaml"
-_QUOTA_EXAMPLE = _REPO_ROOT / "config" / "examples" / "models.routewise.quota.yaml"
+_EXAMPLE = _REPO_ROOT / "config" / "examples" / "models.routewise.json"
+_QUOTA_EXAMPLE = _REPO_ROOT / "config" / "examples" / "models.routewise.quota.json"
 
 
 def _example_model() -> dict:
@@ -37,22 +37,14 @@ def _example_model() -> dict:
 
 
 def _commented_reference_routes() -> list[dict]:
-    """Uncomment the `route:` entries the example ships as documentation."""
-    import re
+    return json.loads((_EXAMPLE.parent / "route-capacity-reference.json").read_text())
 
-    lines = _EXAMPLE.read_text().splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "route:")
-    body: list[str] = []
-    for line in lines[start + 1 :]:
-        match = re.match(r"^      # ?(.*)$", line)
-        if not match:
-            continue
-        entry = match.group(1)
-        if entry.startswith("- kind:") or (entry.startswith("  ") and entry.strip()):
-            body.append(entry)
-    routes = yaml.safe_load("\n".join(body))
-    assert routes, "the example no longer carries commented reference routes"
-    return routes
+
+def _catalog_environment(path: Path) -> dict[str, str]:
+    from serving.config.documents import separate_secrets
+
+    document, secrets = separate_secrets(yaml.safe_load(path.read_text()) or {}, "runtime-test")
+    return {"MODEL_CATALOG": json.dumps(document), **secrets}
 
 
 def _start_example_fixture(response_text: str, delay_ms: float):
@@ -100,20 +92,13 @@ def _rebind_example_to(text: str, ports: list[int]) -> str:
     tracks the shipped file, and a route that moves or is renamed is caught
     here rather than silently untested.
     """
-    lines = text.splitlines()
-    rewritten, hits = [], 0
-    for line in lines:
-        match = re.match(r"^(\s*base_url: http://127\.0\.0\.1:)(\d+)(/v1\s*)$", line)
-        if match and hits < len(ports):
-            rewritten.append(f"{match.group(1)}{ports[hits]}{match.group(3)}")
-            hits += 1
-        else:
-            rewritten.append(line)
-    assert hits == len(ports), (
-        f"expected {len(ports)} loopback base_url lines in the example, rewrote {hits}. "
-        "The routes moved, and this test is no longer driving what it thinks it is."
-    )
-    return "\n".join(rewritten) + "\n"
+    document = json.loads(text)
+    routes = document["models"][0]["route"]
+    assert len(routes) == len(ports)
+    for route, port in zip(routes, ports, strict=True):
+        assert urlparse(route["base_url"]).hostname == "127.0.0.1"
+        route["base_url"] = f"http://127.0.0.1:{port}/v1"
+    return json.dumps(document)
 
 
 def _start_fixture_cli(
@@ -179,21 +164,14 @@ def _example_with_reference_routes_enabled(tmp_path: Path) -> Path:
     The extra routes are opt-in local fixtures. Uncomment them exactly as a
     reader would, so the registry and fetcher see the documented bindings.
     """
-    text = _EXAMPLE.read_text()
-    lines = text.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "route:")
-    out = lines[: start + 1]
-    for line in lines[start + 1 :]:
-        match = re.match(r"^      # ?(.*)$", line)
-        if match:
-            entry = match.group(1)
-            if entry.startswith("- kind:") or (entry.startswith("  ") and entry.strip()):
-                out.append("      " + entry)
-                continue
-            continue
-        out.append(line)
-    path = tmp_path / "models.routewise.enabled.yaml"
-    path.write_text("\n".join(out) + "\n")
+    import json
+
+    data = json.loads(_EXAMPLE.read_text())
+    data["models"][0]["route"].extend(
+        json.loads((_EXAMPLE.parent / "route-capacity-reference.json").read_text())
+    )
+    path = tmp_path / "models.routewise.enabled.json"
+    path.write_text(json.dumps(data))
     return path
 
 
@@ -360,8 +338,8 @@ def test_neutral_quota_example_boots_and_routes(mode, tmp_path):
         env = {
             **os.environ,
             "PYTHONPATH": os.pathsep.join((str(_REPO_ROOT / "apps/backend"), str(_REPO_ROOT))),
-            "MODELS_CONFIG_PATH": str(config),
-            "ROUTING_CONFIG_PATH": str(_REPO_ROOT / "config/examples/routing.minimal.yaml"),
+            **_catalog_environment(config),
+            "ROUTING_CONFIG_PATH": str(_REPO_ROOT / "config/examples/routing.minimal.json"),
             "BACKEND_EXTENSIONS": (
                 "" if mode == "unregistered" else "distributions.example.quota_extension"
             ),
@@ -481,8 +459,8 @@ def _boot_and_ask(
     env = {
         **os.environ,
         "PYTHONPATH": str(_REPO_ROOT / "apps" / "backend"),
-        "MODELS_CONFIG_PATH": str(config),
-        "ROUTING_CONFIG_PATH": str(_REPO_ROOT / "config" / "examples" / "routing.minimal.yaml"),
+        **_catalog_environment(config),
+        "ROUTING_CONFIG_PATH": str(_REPO_ROOT / "config" / "examples" / "routing.minimal.json"),
         "DB_ENABLED": "false",
         "USER_AUTH_ENABLED": "false",
         "DEMO_EXPECT": expect,

@@ -42,7 +42,9 @@ async def stores(monkeypatch, tmp_path):
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM app_config WHERE key = 'SITE_NAME'")
             await conn.execute("DELETE FROM provider_api_keys WHERE provider = 'itest-restore'")
-            await conn.execute("DELETE FROM site_settings WHERE key = 'auto_mode_enabled'")
+            await conn.execute(
+                "DELETE FROM site_settings WHERE key IN ('auto_mode_enabled', 'signup_enabled')"
+            )
             await conn.execute("DELETE FROM signup_allowed_domains WHERE domain LIKE 'itest-%'")
             await conn.execute("DELETE FROM batch_model_limits WHERE model_id = 'itest-model'")
 
@@ -176,4 +178,54 @@ async def test_a_withheld_provider_key_keeps_its_value(stores) -> None:
                 "SELECT label FROM provider_api_keys WHERE id = 'itest-restore-key'"
             )
             == "relabelled"
+        )
+
+
+async def test_a_restore_refuses_a_security_change_made_after_its_plan(stores) -> None:
+    """Another administrator's change after the confirmation is not reverted unconfirmed."""
+    pool, op_store, batch_store = stores
+    payload = _payload(
+        site_settings=[
+            {"key": "auto_mode_enabled", "value": "true", "value_type": "bool"},
+            {"key": "signup_enabled", "value": "false", "value_type": "bool"},
+        ]
+    )
+    await op_store.set_setting("signup_enabled", "false", "bool", "itest")
+    confirmed, _not_restored, _summary = await config_backup._restore_plan(payload, op_store)
+    assert "site_settings:signup_enabled" not in confirmed
+    # Sign-up opened elsewhere while the administrator typed the password.
+    await op_store.set_setting("signup_enabled", "true", "bool", "itest-other-admin")
+    before = await _state(pool)
+
+    async def check_plan(transaction, summary) -> None:
+        await config_backup._check_confirmed_plan(
+            transaction,
+            summary,
+            payload=payload,
+            op_store=op_store,
+            batch_store=batch_store,
+            confirmed=confirmed,
+        )
+
+    async def apply_in_transaction(transaction) -> None:
+        async with config_backup._stores_in(transaction, op_store, batch_store) as (tx, tb):
+            await config_backup._apply_operational_and_batch_stores(
+                tx, tb, payload, "itest-admin", None
+            )
+
+    with pytest.raises(app_config.ConfigUpdateError) as refused:
+        await app_config.restore_rows(
+            [row.model_dump() for row in payload.app_config],
+            updated_by="itest-admin",
+            check_plan=check_plan,
+            before_commit=apply_in_transaction,
+        )
+
+    assert refused.value.status_code == 409
+    assert "site_settings:signup_enabled" in refused.value.detail
+    assert await _state(pool) == before
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval("SELECT value FROM site_settings WHERE key = 'signup_enabled'")
+            == "true"
         )

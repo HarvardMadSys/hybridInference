@@ -594,6 +594,14 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
 #: from them instead of from the Anthropic shape.
 OPENAI_USAGE_SINK_KEY = "openai_usage"
 
+#: ``usage_sink`` key under which a translated stream declares the estimate it
+#: seeded ``message_start.usage.input_tokens`` with, before the upstream was
+#: asked. That number is the gateway's guess, not a count: the router must not
+#: bill a stream cut off after message_start for it as if the upstream had
+#: reported it. The native passthrough declares nothing, because its
+#: message_start carries the provider's own count.
+INPUT_SEED_SINK_KEY = "input_tokens_seed"
+
 
 def openai_usage_record(usage: dict[str, Any]) -> dict[str, int | None]:
     """The upstream's OpenAI-shaped counts, kept for logging and billing.

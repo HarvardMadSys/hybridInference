@@ -12,6 +12,8 @@ import concurrent.futures
 import contextvars
 import functools
 import itertools
+import math
+import random
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import tiktoken
@@ -246,27 +248,69 @@ INLINE_ESTIMATE_MAX_CHARS = 32_768
 #: Bytes in each window a bounded estimate tokenizes from a longer prompt.
 _SAMPLE_WINDOW_BYTES = 512
 
+#: Where a sampled estimate's evenly spaced windows begin, drawn afresh for each
+#: estimate (seeded from the OS). At fixed offsets a caller could put
+#: whitespace exactly where the windows land and be billed for a sliver of a
+#: long prompt cut off mid-stream; at a random phase every byte is as likely to
+#: be read as any other, so the sample is right on average whatever the text.
+_SAMPLE_PHASE = random.Random()
+
+#: More bytes, other than spaces and newlines, than one token covers in real
+#: text. Measured with cl100k_base per 40 KB: at most 3.9 in this repository's
+#: English docs, Python and TypeScript (3.2-3.4 on average), at most 3.5 in Go,
+#: C, C++, Ruby, Java, C# and PHP; Chinese 2.8, JSON 2.0, base64 1.4. Unusual
+#: text runs higher and still stays below: a stream of one-token words 4.35,
+#: Markdown thick with rules 4.4, URL lists 4.1. Spaces and newlines are left
+#: out because their runs (indentation, padded columns) cost next to nothing:
+#: counted in, indented code reaches 6 bytes a token.
+_FLOOR_BYTES_PER_TOKEN = 4.5
+
 
 def _utf8_size(text: str) -> int:
     """The UTF-8 length of *text*, without encoding it when it is ASCII."""
     return len(text) if text.isascii() else len(text.encode("utf-8", "surrogatepass"))
 
 
+def _dense_floor(texts: list[str], sizes: list[int]) -> int:
+    """The fewest tokens the texts a sampled window is cut from can hold.
+
+    Their UTF-8 bytes other than spaces and newlines, over
+    :data:`_FLOOR_BYTES_PER_TOKEN`, rounded up: counted over every byte, so no
+    arrangement of the text lowers it, and below the exact count of any real
+    text. A text no longer than a window is left out, because a window reads it
+    whole; it is often a role name such as ``assistant``, one token of nine
+    bytes.
+    """
+    dense = sum(
+        size - text.count(" ") - text.count("\n")
+        for text, size in zip(texts, sizes, strict=True)
+        if size > _SAMPLE_WINDOW_BYTES
+    )
+    return math.ceil(dense / _FLOOR_BYTES_PER_TOKEN)
+
+
 def estimate_texts_tokens_bounded(texts: list[str], *, max_chars: int) -> int:
     """Estimate the summed token counts of *texts*, tokenizing about *max_chars* at most.
 
     Exactly ``sum(estimate_text_tokens(t) for t in texts)`` while the texts hold
-    no more than *max_chars* characters. Past that, a deterministic sample:
-    windows of :data:`_SAMPLE_WINDOW_BYTES` spread evenly over the texts' UTF-8
-    bytes are tokenized, each weighted by the share of the prompt it stands
-    for. Bytes rather than characters, because tokens per byte vary far less
-    between scripts than tokens per character (a CJK character is about one
-    token, an English one about a quarter). A text no longer than a window that
-    a window lands in is tokenized whole and weighted by its own size, so a
-    prompt of many short messages is counted without bias; a window cut out of
-    a longer text gives up the half token each cut edge adds. On real prompts
-    the sample comes within a few percent of the exact count, at a cost set by
-    *max_chars* instead of by the prompt.
+    no more than *max_chars* characters. Past that, a sample: windows of
+    :data:`_SAMPLE_WINDOW_BYTES` spread evenly over the texts' UTF-8 bytes, from
+    a phase drawn at random for each estimate, are tokenized, each weighted by
+    the share of the prompt it stands for. Bytes rather than characters, because
+    tokens per byte vary far less between scripts than tokens per character (a
+    CJK character is about one token, an English one about a quarter). A text no
+    longer than a window that a window lands in is tokenized whole and weighted
+    by its own size, so a prompt of many short messages is counted without bias;
+    a window cut out of a longer text gives up the half token each cut edge
+    adds. On real prompts the sample comes within a few percent of the exact
+    count, and equals it on average, at a cost set by *max_chars* instead of by
+    the prompt.
+
+    The caller writes the text and is billed by this number, so the sample is
+    never trusted below :func:`_dense_floor`, which no arrangement of the text
+    can lower: a prompt that hid from the windows is still billed a token for
+    every :data:`_FLOOR_BYTES_PER_TOKEN` bytes of it that are not spaces or
+    newlines.
     """
     texts = [text for text in texts if text]
     if sum(len(text) for text in texts) <= max_chars:
@@ -277,11 +321,12 @@ def estimate_texts_tokens_bounded(texts: list[str], *, max_chars: int) -> int:
     width = _SAMPLE_WINDOW_BYTES
     windows = max(1, max_chars // width)
     stride = total / windows
+    phase = _SAMPLE_PHASE.random()
     starts = list(itertools.accumulate(sizes, initial=0))
     encoded: dict[int, bytes] = {}
     estimate = 0.0
     for window_index in range(windows):
-        offset = min(int((window_index + 0.5) * stride), total - 1)
+        offset = min(int((window_index + phase) * stride), total - 1)
         index = bisect.bisect_right(starts, offset) - 1
         text, size = texts[index], sizes[index]
         if size <= width:
@@ -302,7 +347,7 @@ def estimate_texts_tokens_bounded(texts: list[str], *, max_chars: int) -> int:
             continue
         tokens = max(_count_with_tiktoken(window) - cut_edges / 2, 0.0)
         estimate += tokens * stride / window_size
-    return round(estimate)
+    return max(round(estimate), _dense_floor(texts, sizes))
 
 
 def estimate_prompt_tokens_bounded(

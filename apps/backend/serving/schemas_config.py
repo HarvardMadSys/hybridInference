@@ -69,6 +69,11 @@ class ConfigEntryItem(BaseModel):
         None, description="Why the stored value could not be applied; null without one"
     )
     used_by: list[str] = Field(default_factory=list, description="Model ids that reference it")
+    security_relevant: bool = Field(
+        False,
+        description="Changing or resetting it needs the signed-in administrator's password, "
+        "and the admin token cannot; a configuration restore lists it for confirmation",
+    )
     updated_at: datetime | None = None
     updated_by: str | None = None
     group: str | None = Field(
@@ -143,6 +148,8 @@ class LiveGroupStatus(BaseModel):
     """A live configuration group across every registered process."""
 
     name: str
+    source: str | None = None
+    version: ConfigSourceVersion | None = None
     keys: list[str]
     schema_version: int
     contract: dict[str, Any] | None = Field(
@@ -193,6 +200,21 @@ class UpdateConfigRequest(BaseModel):
         "again. For custom, discovered and numbered keys, whether this request writes them or "
         "they already have a stored row (a key absent from values keeps its value); built-in "
         "settings keep their own flag. A custom key named like a credential is secret anyway",
+    )
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed when values change a "
+        "security-relevant setting (security_relevant on its entry)",
+    )
+
+
+class ResetConfigRequest(BaseModel):
+    """What ``DELETE /admin/config/{key}`` may carry: the password a guarded reset needs."""
+
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed to reset a "
+        "security-relevant setting",
     )
 
 

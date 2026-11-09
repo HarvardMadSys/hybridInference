@@ -45,4 +45,22 @@ describe('security headers', () => {
       expect(await headersFor(path), path).toEqual({});
     }
   });
+
+  // Their address carries a live token until the page has read it; nothing
+  // the page requests meanwhile may carry it on in a Referer, to this origin
+  // (whose gateway logs Referers) or any other.
+  it('send no more than the origin as the Referer from the reset and verification pages', async () => {
+    for (const path of ['/reset-password', '/verify-email']) {
+      expect(await headersFor(path), path).toEqual({
+        'x-content-type-options': 'nosniff',
+        'x-frame-options': 'DENY',
+        'referrer-policy': 'strict-origin',
+      });
+    }
+    for (const path of ['/forgot-password', '/reset-password-help', '/verify-email/extra']) {
+      expect((await headersFor(path))['referrer-policy'], path).toBe(
+        'strict-origin-when-cross-origin',
+      );
+    }
+  });
 });

@@ -153,7 +153,34 @@ async def test_no_key_without_the_password(app, audit, password):
 
     assert resp.status_code == 400
     assert FULL_KEY not in resp.text
-    audit.assert_not_awaited()
+    # Refused, and audited as refused: a session trying passwords is what a
+    # stolen console token looks like.
+    audit.assert_awaited_once()
+    assert audit.await_args.kwargs["action"] == "reveal_key"
+    assert audit.await_args.kwargs["success"] is False
+    assert audit.await_args.kwargs["details"] == {
+        "actor": "user",
+        "key_prefix": PREFIX,
+        "refused": "wrong_password",
+    }
+
+
+async def test_refusals_past_the_sign_in_limit_are_audited_once_a_minute(app, audit):
+    for _ in range(5):
+        assert (await _reveal(app, password="Wrong-Password-1")).status_code == 400
+    for _ in range(20):
+        assert (await _reveal(app, password="Wrong-Password-1")).status_code == 429
+
+    refused = [call.kwargs["details"]["refused"] for call in audit.await_args_list]
+    assert refused == ["wrong_password"] * 5 + ["rate_limited"]
+
+
+async def test_a_failed_audit_write_does_not_hide_the_refusal(app, audit):
+    audit.side_effect = RuntimeError("audit table unavailable")
+
+    resp = await _reveal(app, password="Wrong-Password-1")
+
+    assert resp.status_code == 400
 
 
 async def test_guessing_the_password_here_counts_against_the_sign_in_limits(app):

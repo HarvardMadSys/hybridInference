@@ -19,9 +19,10 @@ while ``BATCH_SHARED_INTERACTIVE_LOAD`` is on, else this process's own. When the
 shared view cannot be read, no new item starts that round.
 ``BATCH_INTERACTIVE_RESERVE`` keeps that many more slots of every cap free.
 Users take turns before batches do; how many of a user's items run at once is
-their role's batch quota (below). Claimed items carry a lease the loop keeps
-extending; when a process dies its leases run out and any process claims those
-items again.
+their role's batch quota (below). Claimed items carry a lease that a task of
+its own keeps extending, however long a round takes; when a process dies its
+leases run out and any process claims those items again. A process never
+claims an item it is still running, even should its lease have run out.
 
 Before every attempt the item's owner is authenticated afresh from the stored
 key (:func:`~serving.servers.auth.authenticate_stored_key`): a revoked key or
@@ -31,7 +32,11 @@ slot of the owner's batch quota -- ``BATCH_ROLE_CONCURRENCY_<ROLE>``, counted in
 this process by a limiter of the worker's own, apart from the interactive
 per-user limiter, so batch work and the owner's own requests never compete for
 one budget -- its attempt is marked as dispatched, and it runs through :func:`~serving.batch.dispatch.dispatch_item`
-on its target. A failure that may pass (a 408/425/429, a 5xx) is
+on its target. A claim is told how many more of each owner's items this
+process can run, by the role the owner last authenticated with, so an owner
+whose quota is taken is skipped rather than claimed, looked up and handed back;
+an item handed back to wait does not wake the loop. A failure that may pass (a
+408/425/429, a 5xx) is
 retried with exponential backoff for as long as its batch's window is open:
 it fails with its last error once the next try would start after the window
 closes. A batch with no window (``BATCH_COMPLETION_WINDOW_HOURS`` 0, a null
@@ -42,9 +47,10 @@ out however long it lasts. Only such failures count toward cooling a model down;
 upstream call's timeout, the item's deadline), without cooling the model down:
 the request generates past every limit and a retry would only repeat it.
 
-The same loop also does the background work batches need besides inference,
-each in at most one task per process at a time: validating uploaded input
-files (:mod:`serving.batch.validation`), sealing finished file batches
+The same loop also starts the background work batches need besides
+inference, each in at most one task per process at a time and none of it
+holding up a claim: validating uploaded input files
+(:mod:`serving.batch.validation`), sealing finished file batches
 (:mod:`serving.batch.delivery`), delivering webhooks
 (:mod:`serving.batch.webhooks`), and, every sweep, expiry, retention and file
 collection.
@@ -55,6 +61,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import dataclasses
 import os
 import random
 import secrets
@@ -83,7 +90,11 @@ from serving.servers.auth import (
     authenticate_stored_key,
     stored_key_quota_exceeded,
 )
-from serving.servers.concurrency import UserConcurrencyLimiter, canonical_model_id
+from serving.servers.concurrency import (
+    UserConcurrencyLimiter,
+    canonical_model_id,
+    scope_concurrency_limits,
+)
 from serving.spend_ledger import spend_check_of
 from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
 from serving.utils.logging import get_logger
@@ -94,6 +105,7 @@ if TYPE_CHECKING:
     from serving.batch.config import BatchConfig
     from serving.batch.dispatch import DispatchResult
     from serving.batch.interactive_load import SharedInteractiveLoad
+    from serving.spend_ledger import SpendCheck
 
 logger = get_logger(__name__)
 
@@ -102,6 +114,14 @@ logger = get_logger(__name__)
 QUEUED_GAP_SECONDS = 3600.0
 #: The long-wait alert repeats at most daily while the wait goes on.
 QUEUED_ALERT_COOLDOWN_SECONDS = 86400
+#: The longest one "model queued" answer stops this worker claiming the model's
+#: other items. The answered item waits out the upstream's own ``Retry-After``
+#: (capped at a week); the hold only keeps every slot from asking again at
+#: once, so a long or bogus hint costs a probe per hold here, not a week of
+#: the model's batch work on this worker.
+MAX_MODEL_HOLD_SECONDS = 15 * 60.0
+#: Owners whose role the worker remembers between claims (see ``_owner_rooms``).
+_MAX_REMEMBERED_OWNERS = 4096
 
 
 @dataclass(frozen=True)
@@ -146,6 +166,11 @@ class SchedulerTimings:
     #: How long the batches of an owner whose role no longer qualifies stay
     #: paused before the role is checked again.
     role_pause_seconds: float = 300.0
+    #: How long an owner's items wait when a cost limit refuses them only
+    #: because of what is still in flight (the reservations of requests
+    #: running, costs not written yet), while what the database holds leaves
+    #: room: those end soon, and the limit is checked again then.
+    spend_retry_seconds: float = 30.0
     #: At most how long batches paused on a spent key budget or a spent monthly
     #: quota wait before the limit is checked again: a budget or quota can be
     #: raised any time, and a monthly one renews only at the start of the month.
@@ -177,12 +202,17 @@ class _InFlight:
     # after it. None when the claim did not say (retries are then bounded by
     # ``max_attempts`` alone).
     expires_at: datetime | None = None
+    # The batch's owner, whose batch quota the item counts against.
+    user_id: str = ""
     task: asyncio.Task[None] | None = None
     # The item has been handed back to the store (finished, scheduled for
     # retry or released), so it is no longer this process's to release.
     settled: bool = False
     # Its upstream call began: a release now leaves its cost unknown.
     dispatched: bool = False
+    # It was handed back to wait (deferred): its end frees no capacity worth
+    # waking the loop for.
+    deferred: bool = False
 
 
 def _default_worker_id() -> str:
@@ -261,10 +291,22 @@ class BatchScheduler:
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._publisher: asyncio.Task[None] | None = None
+        self._heartbeater: asyncio.Task[None] | None = None
         self._background: dict[str, asyncio.Task[Any]] = {}
         self._stopping = False
         self._in_flight: dict[int, _InFlight] = {}
         self._running: Counter[str] = Counter()
+        # Per owner: their items in flight here, the batch quota slots those
+        # hold, and the role they last authenticated with, which says what
+        # their quota is. A claim is told how much room each owner has left,
+        # so an owner at their quota is not claimed only to be handed back.
+        self._owner_running: Counter[str] = Counter()
+        self._owner_slots: Counter[str] = Counter()
+        self._owner_roles: dict[str, tuple[str, bool]] = {}
+        # Owners held back here for a moment (see _refused_spend), until when,
+        # and those whose hold ended: one item of theirs is tried before more.
+        self._owner_held: dict[str, float] = {}
+        self._owner_probing: set[str] = set()
         self._failure_streak: Counter[str] = Counter()
         self._cooldown_until: dict[str, float] = {}
         # A model's current wait for capacity upstream: since when, the latest
@@ -274,7 +316,6 @@ class BatchScheduler:
         self._queued_alerted: set[str] = set()
         self._alerts: set[asyncio.Task[Any]] = set()
         self._next_sweep = 0.0
-        self._next_heartbeat = 0.0
         self._next_webhooks = 0.0
         self._enabled: bool | None = None
         self._shared_unavailable = False
@@ -295,6 +336,12 @@ class BatchScheduler:
         if self._shared_load is not None and (self._publisher is None or self._publisher.done()):
             self._publisher = asyncio.create_task(
                 self._publish_load(), name="batch_load_publisher", context=contextvars.Context()
+            )
+        if self._heartbeater is None or self._heartbeater.done():
+            # A task of its own, so leases are kept however long a round, a
+            # sweep or a claim takes.
+            self._heartbeater = asyncio.create_task(
+                self._keep_leases(), name="batch_lease_heartbeat", context=contextvars.Context()
             )
 
     def notify(self) -> None:
@@ -321,6 +368,10 @@ class BatchScheduler:
             if self._shared_load is not None:
                 with contextlib.suppress(Exception):
                     await self._shared_load.withdraw()
+        heartbeater, self._heartbeater = self._heartbeater, None
+        if heartbeater is not None:
+            heartbeater.cancel()
+            await asyncio.gather(heartbeater, return_exceptions=True)
         background = list(self._background.values())
         self._background.clear()
         for task in background:
@@ -371,7 +422,6 @@ class BatchScheduler:
         logger.info(
             "batch worker %s started", self._worker_id, extra={"event": "batch_worker_started"}
         )
-        self._next_heartbeat = self._clock() + self._timings.heartbeat_seconds
         while not self._stopping:
             try:
                 delay = await self._round()
@@ -380,15 +430,22 @@ class BatchScheduler:
                     "batch worker round failed", extra={"event": "batch_worker_round_failed"}
                 )
                 delay = self._timings.idle_poll_seconds
+            await self._sleep(delay)
+
+    async def _keep_leases(self) -> None:
+        """Extend the leases of this process's running items, every heartbeat interval."""
+        while not self._stopping:
+            await asyncio.sleep(self._timings.heartbeat_seconds)
+            if self._stopping:
+                return
             try:
-                await self._heartbeat_if_due()
+                await self._heartbeat()
             except Exception:
                 logger.warning(
                     "batch lease heartbeat failed",
                     extra={"event": "batch_heartbeat_failed"},
                     exc_info=True,
                 )
-            await self._sleep(delay)
 
     async def _publish_load(self) -> None:
         """Keep this process's interactive counts in the shared view."""
@@ -420,10 +477,10 @@ class BatchScheduler:
         if not cfg.enabled:
             return self._timings.idle_poll_seconds
         now = self._clock()
-        if now >= self._next_sweep:
+        sweep = now >= self._next_sweep
+        if sweep:
             self._next_sweep = now + self._timings.sweep_seconds
-            await self._sweep(cfg)
-        self._spawn_background(cfg, now)
+        self._spawn_background(cfg, now, sweep=sweep)
         models = await self._store.active_models()
         if not models:
             return self._timings.idle_poll_seconds
@@ -518,11 +575,17 @@ class BatchScheduler:
                 extra={"event": "batch_sweep"},
             )
 
-    def _spawn_background(self, cfg: BatchConfig, now: float) -> None:
-        """Start each kind of background work that is not already running here."""
+    def _spawn_background(self, cfg: BatchConfig, now: float, *, sweep: bool = False) -> None:
+        """Start each kind of background work that is not already running here.
+
+        The sweep too, when it is due: off the round, so however long it takes
+        (a purge of large batches, say) it holds up no claim.
+        """
         if self._stopping:
             return
         jobs: dict[str, Callable[[], Awaitable[Any]]] = {}
+        if sweep:
+            jobs["sweep"] = lambda: self._sweep(cfg)
         if self._file_store is not None:
             jobs["validate"] = lambda: self._work_phase("validating", cfg)
         jobs["seal"] = lambda: self._work_phase("sealing", cfg)
@@ -616,11 +679,19 @@ class BatchScheduler:
             limit=room,
             max_running=cap,
             lease_seconds=self._timings.lease_seconds,
+            user_rooms=self._owner_rooms(cfg),
+            # Never what runs here already, even should its lease have run out
+            # (the heartbeat failing for a while): it is still running.
+            exclude_ids=[e.item_id for e in self._in_flight.values() if not e.settled],
         )
         if not items:
             return
         logger.debug("batch: claimed %d item(s) of model %s", len(items), model_id)
         for item in items:
+            running = self._in_flight.get(int(item["id"]))
+            if running is not None and not running.settled:
+                await self._adopt(running, item)
+                continue
             entry = self._track(item)
             if self._stopping:
                 # Stopping while the claim was in flight: hand them straight back.
@@ -633,6 +704,36 @@ class BatchScheduler:
                 context=contextvars.Context(),
             )
             entry.task.add_done_callback(lambda _task, entry=entry: self._forget(entry))
+
+    async def _adopt(self, entry: _InFlight, item: dict[str, Any]) -> None:
+        """Take over a new claim of an item this process is still running.
+
+        Its lease ran out while it ran here and a claim took it again (a store
+        that did not leave it out). Running it a second time would make a
+        second upstream call, billed twice; instead the run in progress goes on
+        under the newer claim, and its outcome is recorded with that claim's
+        fencing token.
+        """
+        attempt = int(item.get("attempt_seq") or item["attempts"])
+        logger.warning(
+            "batch item %s was claimed again while it runs here; "
+            "its run carries on under the new claim",
+            entry.item_id,
+            extra={"event": "batch_item_reclaimed_while_running", "model": entry.model_id},
+        )
+        entry.attempt = attempt
+        if not entry.dispatched:
+            return
+        try:
+            await self._store.mark_dispatched(
+                item_id=entry.item_id, worker_id=self._worker_id, attempt=attempt
+            )
+        except Exception:
+            logger.warning(
+                "batch item %s: marking the adopted attempt dispatched failed",
+                entry.item_id,
+                exc_info=True,
+            )
 
     def _canonical(self, model_id: str) -> str:
         """Return the canonical id interactive load is counted under for *model_id*."""
@@ -656,11 +757,7 @@ class BatchScheduler:
         )
         return False
 
-    async def _heartbeat_if_due(self) -> None:
-        now = self._clock()
-        if now < self._next_heartbeat:
-            return
-        self._next_heartbeat = now + self._timings.heartbeat_seconds
+    async def _heartbeat(self) -> None:
         item_ids = [e.item_id for e in self._in_flight.values() if not e.settled]
         if item_ids:
             await self._store.heartbeat(
@@ -677,9 +774,11 @@ class BatchScheduler:
             model_id=item["model_id"],
             attempt=int(item.get("attempt_seq") or item["attempts"]),
             expires_at=item.get("expires_at"),
+            user_id=str(item.get("user_id") or ""),
         )
         self._in_flight[entry.item_id] = entry
         self._running[entry.model_id] += 1
+        self._owner_running[entry.user_id] += 1
         return entry
 
     def _forget(self, entry: _InFlight) -> None:
@@ -688,8 +787,90 @@ class BatchScheduler:
         self._running[entry.model_id] -= 1
         if self._running[entry.model_id] <= 0:
             del self._running[entry.model_id]
+        self._owner_running[entry.user_id] -= 1
+        if self._owner_running[entry.user_id] <= 0:
+            del self._owner_running[entry.user_id]
+        if entry.deferred:
+            # Handed back to wait: whatever kept it from running (its owner's
+            # quota, an unreachable store) has not changed, and waking the loop
+            # would only claim the next of the same owner's items to defer too.
+            return
         # A slot on the model is free again: let the loop fill it now.
         self.notify()
+
+    # -- each owner's batch quota -------------------------------------------------
+
+    def _owner_cap(self, owner: str, cfg: BatchConfig) -> int | None:
+        """The owner's batch quota by the role they last authenticated with.
+
+        None when this process has not authenticated them yet, or their role
+        has no cap. The same lookup the quota's own limiter makes.
+        """
+        known = self._owner_roles.get(owner)
+        if known is None:
+            return None
+        role, is_admin = known
+        limits = cfg.role_concurrency
+        if is_admin:
+            cap = limits.get("admin", 0)
+        elif role in limits:
+            cap = limits[role]
+        else:
+            cap = limits.get("free", 0)
+        return cap if cap > 0 else None
+
+    def _owner_rooms(self, cfg: BatchConfig) -> dict[str, int]:
+        """How many more items of each known owner this process can run now.
+
+        An item in flight counts whether or not it has taken its slot yet, so
+        the models claimed one after the other in a round never hand the same
+        owner more than their quota between them.
+        """
+        rooms: dict[str, int] = {}
+        for owner in self._owner_roles:
+            cap = self._owner_cap(owner, cfg)
+            if cap is not None:
+                rooms[owner] = max(0, cap - self._owner_running[owner])
+        held = self._held_owners()
+        for owner in self._owner_probing:
+            rooms[owner] = 0 if self._owner_running[owner] else 1
+        for owner in held:
+            rooms[owner] = 0
+        return rooms
+
+    def _held_owners(self) -> list[str]:
+        """The owners held back here for a moment, moving those whose hold ended to probing."""
+        now = self._clock()
+        for owner in [o for o, until in self._owner_held.items() if until <= now]:
+            del self._owner_held[owner]
+            if len(self._owner_probing) >= _MAX_REMEMBERED_OWNERS:
+                self._owner_probing.clear()
+            self._owner_probing.add(owner)
+        return list(self._owner_held)
+
+    def _remember_role(self, owner: str, user_ctx: dict[str, Any]) -> None:
+        """Note the role an owner just authenticated with, for the next claim's rooms."""
+        role = user_ctx.get("role", "free") or "free"
+        self._owner_roles.pop(owner, None)
+        self._owner_roles[owner] = (role, bool(user_ctx.get("is_admin", False)))
+        if len(self._owner_roles) > _MAX_REMEMBERED_OWNERS:
+            # Forget the owner seen longest ago with nothing running here; it
+            # is looked up again on its next item.
+            for stale in self._owner_roles:
+                if not self._owner_running[stale]:
+                    del self._owner_roles[stale]
+                    break
+
+    def _results_full(self, batch_id: str, cfg: BatchConfig) -> bool:
+        """Whether the batch's stored responses have used up ``BATCH_MAX_RESULTS_MB_PER_BATCH``."""
+        budget = cfg.max_results_per_batch_bytes
+        spent = getattr(self._store, "result_budget_spent", None)
+        return bool(budget) and spent is not None and spent(batch_id, budget)
+
+    def _owner_at_cap(self, owner: str, cfg: BatchConfig) -> bool:
+        """Whether every slot of the owner's batch quota is taken here, as last known."""
+        cap = self._owner_cap(owner, cfg)
+        return cap is not None and self._owner_slots[owner] >= cap
 
     def _model_failed(self, model_id: str) -> None:
         streak = self._failure_streak[model_id] + 1
@@ -712,7 +893,12 @@ class BatchScheduler:
         )
 
     def _hold_model(self, model_id: str, seconds: float) -> None:
-        """Give the model no new claims for ``seconds``: its upstream queued it."""
+        """Give the model no new claims for ``seconds``: its upstream queued it.
+
+        At most :data:`MAX_MODEL_HOLD_SECONDS`; only a deadline that comes later
+        replaces the current one.
+        """
+        seconds = min(seconds, MAX_MODEL_HOLD_SECONDS)
         until = self._clock() + seconds
         if until <= self._cooldown_until.get(model_id, 0.0):
             return
@@ -828,6 +1014,30 @@ class BatchScheduler:
 
         batch_id = item["batch_id"]
         owner = item["user_id"]
+        if self._results_full(batch_id, cfg):
+            # The batch's results have used up their budget: whatever this
+            # request answered could not be stored, so it does not run.
+            budget = cfg.max_results_per_batch_bytes
+            await self._complete(
+                entry,
+                error={
+                    "code": "result_too_large",
+                    "message": "The batch's responses reached their storage limit of "
+                    f"{budget} bytes; this request did not run.",
+                    "status": 500,
+                },
+                status_code=500,
+                cost_status="not_billed",
+            )
+            return
+        if self._owner_at_cap(entry.user_id, cfg):
+            # Every slot of the owner's quota is taken here: no use looking the
+            # owner up only to find that out.
+            await self._defer_for_slot(entry)
+            return
+        if entry.user_id in self._held_owners():
+            await self._release(entry, delay=self._timings.spend_retry_seconds)
+            return
         try:
             user_ctx = await authenticate_stored_key(
                 item.get("key_hash"), getattr(self._services, "operational_store", None)
@@ -837,7 +1047,7 @@ class BatchScheduler:
             await self._fail_batch(batch_id, exc.reason)
             return
         except StoredKeyQuotaExceeded as exc:
-            await self._defer_for_spent_limit(entry, item, exc)
+            await self._refused_spend(entry, item, exc, getattr(exc, "check", None))
             return
         except Exception:
             logger.warning(
@@ -848,6 +1058,7 @@ class BatchScheduler:
             )
             await self._release(entry, delay=self._timings.owner_retry_seconds)
             return
+        self._remember_role(entry.user_id, user_ctx)
 
         role = user_ctx.get("role") or "free"
         if not may_use_batch(role, cfg):
@@ -880,10 +1091,9 @@ class BatchScheduler:
             )
             return
         dispatch_body = self._dispatch_body(item, entry, target)
-        give_back = await self._take_user_slot(user_ctx, entry.model_id)
+        give_back = await self._take_user_slot(user_ctx, entry.model_id, owner=entry.user_id)
         if give_back is None:
-            logger.debug("batch item %s: owner at concurrency limit; deferred", entry.item_id)
-            await self._release(entry, delay=self._timings.slot_retry_seconds)
+            await self._defer_for_slot(entry)
             return
         reservation = None
         try:
@@ -895,10 +1105,12 @@ class BatchScheduler:
             if check is not None:
                 reservation, refusal = check.admit()
                 if refusal is not None:
-                    await self._defer_for_spent_limit(
-                        entry, item, stored_key_quota_exceeded(refusal)
+                    await self._refused_spend(
+                        entry, item, stored_key_quota_exceeded(refusal), check
                     )
                     return
+            # Admitted: an owner whose hold ended may have their items again.
+            self._owner_probing.discard(entry.user_id)
             marked = await self._store.mark_dispatched(
                 item_id=entry.item_id, worker_id=self._worker_id, attempt=entry.attempt
             )
@@ -927,6 +1139,36 @@ class BatchScheduler:
             give_back()
         await self._settle(entry, result, attempts, cfg)
 
+    async def _refused_spend(
+        self,
+        entry: _InFlight,
+        item: dict[str, Any],
+        exc: StoredKeyQuotaExceeded,
+        check: SpendCheck | None,
+    ) -> None:
+        """Hand back an item a cost limit refused, and hold back what the refusal covers.
+
+        A refusal counts the requests in flight (each holds a reservation of
+        its estimated cost while it runs) and costs not written yet, besides
+        what the database holds. When the database alone still leaves room,
+        the limit is not spent: the owner's items wait here for
+        ``spend_retry_seconds``, until what is in flight has ended, instead of
+        pausing every batch of the owner until the limit renews; then one item
+        of theirs is tried before the rest. Refused again on what the database
+        holds, they pause as a spent limit does.
+        """
+        if check is not None and dataclasses.replace(check, ledger=None).refusal() is None:
+            logger.debug(
+                "batch item %s: refused only by what is in flight; retrying shortly",
+                entry.item_id,
+            )
+            self._owner_probing.discard(entry.user_id)
+            self._owner_held[entry.user_id] = self._clock() + self._timings.spend_retry_seconds
+            await self._release(entry, delay=self._timings.spend_retry_seconds)
+            return
+        self._owner_probing.discard(entry.user_id)
+        await self._defer_for_spent_limit(entry, item, exc)
+
     async def _defer_for_spent_limit(
         self, entry: _InFlight, item: dict[str, Any], exc: StoredKeyQuotaExceeded
     ) -> None:
@@ -950,8 +1192,8 @@ class BatchScheduler:
         await self._pause_owner(
             owner,
             until,
-            "API key daily budget spent" if exc.window == "day" else "API key monthly budget spent",
-            kind="key_budget",
+            f"{'Project' if exc.scope == 'project' else 'API key'} {'daily' if exc.window == 'day' else 'monthly'} budget spent",
+            kind=f"{exc.scope}_budget",
             key_hash=item.get("key_hash"),
         )
 
@@ -973,13 +1215,14 @@ class BatchScheduler:
         return {**body, "model": entry.model_id}
 
     async def _take_user_slot(
-        self, user_ctx: dict[str, Any], model: str
+        self, user_ctx: dict[str, Any], model: str, *, owner: str = ""
     ) -> Callable[[], None] | None:
         """Take a slot of the owner's batch quota; return how to give it back.
 
         The quota is the owner's role's ``BATCH_ROLE_CONCURRENCY_<ROLE>``, held
         across every model. ``None`` when the owner has none free. *model* only
-        labels the deferral in the logs.
+        labels the deferral in the logs; *owner* is the batch's owner, whose
+        slots held here the next claim's rooms count.
         """
         user_id = str(user_ctx.get("user_id") or "")
         granted, _limit, _role = await self._role_slots.try_acquire(
@@ -989,9 +1232,18 @@ class BatchScheduler:
         )
         if not granted:
             return None
+        self._owner_slots[owner] += 1
+
+        scoped_limiter = getattr(self._services, "user_concurrency_limiter", None)
+        acquired_scopes: list[str] = []
 
         def give_back() -> None:
+            self._owner_slots[owner] -= 1
+            if self._owner_slots[owner] <= 0:
+                del self._owner_slots[owner]
             try:
+                for slot in reversed(acquired_scopes):
+                    scoped_limiter.release(slot)
                 self._role_slots.release(user_id)
             except Exception:
                 logger.exception(
@@ -1003,6 +1255,22 @@ class BatchScheduler:
                     },
                 )
 
+        try:
+            if scoped_limiter is not None:
+                for _scope, slot, capacity in scope_concurrency_limits(user_ctx):
+                    granted, _, _ = await scoped_limiter.try_acquire(
+                        slot,
+                        user_ctx.get("role") or "free",
+                        bool(user_ctx.get("is_admin", False)),
+                        capacity,
+                    )
+                    if not granted:
+                        give_back()
+                        return None
+                    acquired_scopes.append(slot)
+        except BaseException:
+            give_back()
+            raise
         return give_back
 
     async def _settle(
@@ -1022,6 +1290,7 @@ class BatchScheduler:
                 cost_status=result.cost_status,
                 max_result_bytes=cfg.max_result_bytes,
                 cached_tokens=result.cached_tokens,
+                max_batch_result_bytes=cfg.max_results_per_batch_bytes or None,
             )
             return
         requeue = result.requeue_after
@@ -1107,6 +1376,7 @@ class BatchScheduler:
         cost_status: str | None = None,
         max_result_bytes: int | None = None,
         cached_tokens: int | None = None,
+        max_batch_result_bytes: int | None = None,
     ) -> None:
         """Record the item's final outcome.
 
@@ -1132,6 +1402,7 @@ class BatchScheduler:
                     cost_status=cost_status,
                     max_result_bytes=max_result_bytes,
                     cached_tokens=cached_tokens,
+                    max_batch_result_bytes=max_batch_result_bytes,
                 )
             except Exception:
                 if delay is None:
@@ -1157,7 +1428,12 @@ class BatchScheduler:
     async def _release(
         self, entry: _InFlight, *, delay: float | None = None, dispatched: bool = False
     ) -> None:
-        """Hand the item back to the queue without using up its attempt."""
+        """Hand the item back to the queue without using up its attempt.
+
+        With a *delay* the item waits; so does whatever held it back, and its
+        end does not wake the loop (see :meth:`_forget`).
+        """
+        entry.deferred = delay is not None
         await self._store.release_item(
             item_id=entry.item_id,
             worker_id=self._worker_id,
@@ -1168,6 +1444,11 @@ class BatchScheduler:
             dispatched=dispatched,
         )
         entry.settled = True
+
+    async def _defer_for_slot(self, entry: _InFlight) -> None:
+        """Hand back an item whose owner has no batch quota slot free here."""
+        logger.debug("batch item %s: owner at concurrency limit; deferred", entry.item_id)
+        await self._release(entry, delay=self._timings.slot_retry_seconds)
 
     async def _fail_batch(self, batch_id: str, reason: str) -> None:
         failed = await self._store.fail_batch(

@@ -1,5 +1,7 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
+
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
@@ -707,6 +709,7 @@ interface ProviderRoutesTabProps {
 const HELD_FOR_DRAFTS = 'Save or discard the unsaved changes first';
 
 export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
+  const router = useRouter();
   const toast = useAccountToast();
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
   const [routeWeights, setRouteWeights] = useState<RouteWeight[]>([]);
@@ -1726,6 +1729,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           : await createProviderRouteCandidate(targetModel, routePayload);
         setRoutes((current) => [...current, created]);
         if (model) {
+          router.refresh();
           setSelectedModel(created.model_id);
           resetInlineDrafts();
         }
@@ -2478,7 +2482,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     ) : (
                       <div className="space-y-2">
                         <div className="text-[11px] leading-4 text-gray-400">
-                          YAML {formatWeight(yamlWeight)} · Effective{' '}
+                          Catalog {formatWeight(yamlWeight)} · Effective{' '}
                           {formatWeight(effectiveWeight)}
                         </div>
                         <div>
