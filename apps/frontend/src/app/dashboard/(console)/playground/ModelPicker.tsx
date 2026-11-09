@@ -203,16 +203,16 @@ export function ModelPicker({
             close();
           }
         }}
-        className={`flex w-full items-center gap-3 rounded-lg border bg-gray-800/70 px-3 py-2.5 text-left text-sm outline-none transition hover:border-gray-500 hover:bg-gray-800 focus-visible:border-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500/30 disabled:cursor-not-allowed disabled:opacity-50 ${
-          isOpen ? 'border-indigo-500 ring-2 ring-indigo-500/20' : 'border-gray-700'
+        className={`flex w-full items-center gap-3 rounded-lg border bg-white px-3 py-2.5 text-left text-sm outline-none transition hover:border-gray-300 focus-visible:border-gray-400 focus-visible:ring-2 focus-visible:ring-gray-400/30 disabled:cursor-not-allowed disabled:opacity-50 ${
+          isOpen ? 'border-gray-400 ring-2 ring-gray-400/30' : 'border-gray-200'
         }`}
       >
         <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium text-gray-100">
+          <span className="block truncate font-medium text-gray-900">
             {selectedLabel?.name ?? placeholder}
           </span>
           {selected && (
-            <span className="mt-0.5 block truncate text-xs text-gray-400">{selected.id}</span>
+            <span className="mt-0.5 block truncate text-xs text-gray-500">{selected.id}</span>
           )}
         </span>
         <svg
@@ -232,10 +232,10 @@ export function ModelPicker({
           <div
             ref={popoverRef}
             style={position}
-            className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-gray-700 bg-gray-900 text-white shadow-2xl shadow-black/50"
+            className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white text-gray-900 shadow-lg"
           >
-            <div className="shrink-0 border-b border-gray-800 p-2.5">
-              <div className="flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-950/70 px-3 focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500/30">
+            <div className="shrink-0 border-b border-gray-100 p-2.5">
+              <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 focus-within:border-gray-400 focus-within:ring-1 focus-within:ring-gray-400/30">
                 <svg
                   aria-hidden="true"
                   className="h-4 w-4 shrink-0 text-gray-500"
@@ -266,13 +266,13 @@ export function ModelPicker({
                   placeholder="Search models or providers…"
                   autoComplete="off"
                   spellCheck={false}
-                  className="min-w-0 flex-1 bg-transparent py-2 text-sm text-gray-100 outline-none placeholder:text-gray-500"
+                  className="min-w-0 flex-1 bg-transparent py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400"
                 />
-                <span aria-hidden="true" className="text-[10px] text-gray-500">
+                <span aria-hidden="true" className="text-[10px] text-gray-400">
                   ESC
                 </span>
               </div>
-              <div aria-live="polite" className="px-1 pt-2 text-xs text-gray-400">
+              <div aria-live="polite" className="px-1 pt-2 text-xs text-gray-500">
                 {query.trim()
                   ? `${filtered.length} of ${models.length} models`
                   : `${models.length} ${models.length === 1 ? 'model' : 'models'}`}
@@ -283,7 +283,7 @@ export function ModelPicker({
               id={listId}
               role="listbox"
               aria-label="Models"
-              className="dark-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5"
+              className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5"
             >
               {filtered.map((model, index) => {
                 const label = modelLabel(model.name);
@@ -307,32 +307,28 @@ export function ModelPicker({
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => choose(model.id)}
                     className={`flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2.5 outline-none transition-colors ${
-                      isActive
-                        ? 'bg-indigo-500/15 ring-1 ring-inset ring-indigo-400/30'
-                        : isSelected
-                          ? 'bg-gray-800/70'
-                          : 'hover:bg-gray-800/70'
+                      isActive ? 'bg-gray-100' : isSelected ? 'bg-gray-50' : 'hover:bg-gray-50'
                     }`}
                   >
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                        <span className="max-w-full break-words text-sm font-medium leading-5 text-gray-100">
+                        <span className="max-w-full break-words text-sm font-medium leading-5 text-gray-900">
                           {label.name}
                         </span>
                         {label.detail && (
-                          <span className="max-w-full rounded bg-gray-800 px-1.5 py-0.5 text-[11px] leading-4 text-gray-400">
+                          <span className="max-w-full rounded bg-gray-100 px-1.5 py-0.5 text-[11px] leading-4 text-gray-500">
                             {label.detail}
                           </span>
                         )}
                       </span>
-                      <span className="mt-0.5 block break-all text-xs leading-4 text-gray-400">
+                      <span className="mt-0.5 block break-all text-xs leading-4 text-gray-500">
                         {model.id}
                       </span>
                     </span>
                     {isSelected && (
                       <svg
                         aria-hidden="true"
-                        className="mt-0.5 h-4 w-4 shrink-0 text-indigo-400"
+                        className="mt-0.5 h-4 w-4 shrink-0 text-gray-900"
                         viewBox="0 0 20 20"
                         fill="none"
                         stroke="currentColor"
@@ -348,8 +344,8 @@ export function ModelPicker({
 
             {filtered.length === 0 && (
               <div className="px-6 py-8 text-center">
-                <p className="text-sm font-medium text-gray-200">No models found</p>
-                <p className="mt-1 text-xs text-gray-400">
+                <p className="text-sm font-medium text-gray-800">No models found</p>
+                <p className="mt-1 text-xs text-gray-500">
                   Try another model name, ID, or provider.
                 </p>
               </div>

@@ -26,7 +26,7 @@ export function isWideConsoleRoute(pathname: string): boolean {
 export function isUserConsoleRoute(pathname: string): boolean {
   if (pathname === '/dashboard') return true;
   if (!pathname.startsWith('/dashboard/')) return false;
-  return !isWideConsoleRoute(pathname) && !/^\/dashboard\/playground(\/|$)/.test(pathname);
+  return !isWideConsoleRoute(pathname);
 }
 
 export function consoleWidthFor(pathname: string): string {

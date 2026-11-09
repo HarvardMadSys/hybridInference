@@ -218,7 +218,7 @@ describe('PlaygroundPage', () => {
     });
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    const firstSession = screen.getByRole('button', { name: /New session No messages -- glm-4.6/ });
+    const firstSession = screen.getByRole('button', { name: /New session No messages · glm-4.6/ });
     chooseOption('Provider', 'Chutes');
     fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
       target: { value: 'First session draft' },
@@ -367,7 +367,7 @@ describe('PlaygroundPage', () => {
     const badge = await screen.findByTitle(/endpoint: glm-4\.6:zai-api/);
     expect(badge).toHaveTextContent('glm-4.6:zai-api');
     expect(badge.getAttribute('title')).toContain('host: api.z.ai');
-    expect(badge).not.toHaveClass('text-amber-400');
+    expect(badge).not.toHaveClass('text-amber-700');
   });
 
   it('flags a fallback and names the attempt that failed', async () => {
@@ -395,7 +395,7 @@ describe('PlaygroundPage', () => {
     // Last frame wins: the fallback is what actually served the response.
     const badge = await screen.findByTitle(/served by fallback/);
     expect(badge).toHaveTextContent('glm-4.6:chutes-api');
-    expect(badge).toHaveClass('text-amber-400');
+    expect(badge).toHaveClass('text-amber-700');
     expect(badge.getAttribute('title')).toContain('failed: glm-4.6:zai-api (HTTPStatusError)');
   });
 
@@ -774,6 +774,49 @@ describe('PlaygroundPage', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('opens the sessions and settings from the header on a phone', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+
+    const toggle = screen.getByRole('button', { name: 'Chat settings' });
+    const drawer = screen.getByRole('complementary', { name: 'Chat settings' });
+    expect(toggle).toHaveAttribute('aria-controls', drawer.id);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Close chat settings' })).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveFocus();
+
+    // The empty conversation offers the same drawer, and closing returns focus.
+    fireEvent.click(screen.getByRole('button', { name: 'Open chat settings' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Close chat settings' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveFocus();
+  });
+
+  it('shows the conversation once a session is started or chosen from the drawer', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    const toggle = screen.getByRole('button', { name: 'Chat settings' });
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getAllByRole('button', { name: /^New session/ })[0]);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('opens the sessions and settings from the header on a phone', async () => {
