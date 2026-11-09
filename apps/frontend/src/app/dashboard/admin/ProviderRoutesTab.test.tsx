@@ -4763,6 +4763,183 @@ describe('ProviderRoutesTab', () => {
       });
       expect(createProviderRouteCandidate).toHaveBeenCalledTimes(1);
     });
+
+    describe('reasoning effort levels', () => {
+      const EFFORT_MAP = { low: 'high', high: 'xhigh', max: 'max' };
+      const mappedRoute: ProviderRoute = {
+        ...route,
+        reasoning_effort_mappable: true,
+        reasoning_efforts_published: null,
+      };
+      const addRow = (dialog: HTMLElement, level: string, upstream: string) => {
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Add level' }));
+        const rows = within(dialog).getAllByLabelText(/^Public level \d+$/);
+        const index = rows.length;
+        fireEvent.change(within(dialog).getByLabelText(`Public level ${index}`), {
+          target: { value: level },
+        });
+        fireEvent.change(within(dialog).getByLabelText(`Upstream value ${index}`), {
+          target: { value: upstream },
+        });
+      };
+
+      it('saves a map with the four values, which stay as served', async () => {
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          capabilities_overridden: true,
+          reasoning_efforts_published: ['low', 'high', 'max'],
+        });
+        const dialog = await renderWithRoute(mappedRoute);
+        expect(within(dialog).getByText('Reasoning effort levels')).toBeInTheDocument();
+        expect(
+          within(dialog).getByText(
+            'Offered to clients now: not declared (clients are offered no levels)',
+          ),
+        ).toBeInTheDocument();
+
+        for (const [level, upstream] of Object.entries(EFFORT_MAP)) addRow(dialog, level, upstream);
+        expect(within(dialog).getByText('1 unsaved change')).toBeVisible();
+        saveRouteEdit();
+
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          );
+        });
+        expect(updateProviderRoute).not.toHaveBeenCalled();
+      });
+
+      it('refuses a half-filled or repeated row and blocks Save', async () => {
+        const dialog = await renderWithRoute(mappedRoute);
+        addRow(dialog, 'low', '');
+        expect(
+          within(dialog).getByText('Fill in both levels of each row, or remove the row.'),
+        ).toBeInTheDocument();
+        fireEvent.change(within(dialog).getByLabelText('Upstream value 1'), {
+          target: { value: 'high' },
+        });
+        addRow(dialog, 'low', 'max');
+        expect(within(dialog).getByText('Public level "low" is listed twice.')).toBeInTheDocument();
+        expect(within(dialog).getByRole('button', { name: /Save changes to/ })).toBeDisabled();
+        fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[1]);
+        expect(within(dialog).queryByText('Public level "low" is listed twice.')).toBeNull();
+      });
+
+      it('keeps a map set in the console when only the connection changes', async () => {
+        const withMap: ProviderRoute = {
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          capabilities_baseline: ROUTE_CAPABILITIES,
+          capabilities_overridden: true,
+          reasoning_efforts_published: ['low', 'high', 'max'],
+        };
+        vi.mocked(updateProviderRoute).mockResolvedValue({ ...withMap, concurrency_limit: 2 });
+        const dialog = await renderWithRoute(withMap);
+        expect(within(dialog).getByLabelText('Public level 1')).toHaveValue('low');
+        expect(within(dialog).getByLabelText('Upstream value 2')).toHaveValue('xhigh');
+        expect(
+          within(dialog).getByText('Offered to clients now: low, high, max'),
+        ).toBeInTheDocument();
+
+        fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+          target: { value: '2' },
+        });
+        saveRouteEdit();
+
+        await waitFor(() => expect(updateProviderRoute).toHaveBeenCalledTimes(1));
+        const body = vi.mocked(updateProviderRoute).mock.calls[0][2];
+        expect(body).not.toHaveProperty('capabilities');
+        expect(body).not.toHaveProperty('reset_capabilities');
+      });
+
+      it('does not copy a models.yaml map into the console when other values change', async () => {
+        const yamlMapped: ProviderRoute = {
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: { high: 'high' } },
+          capabilities_baseline: { ...ROUTE_CAPABILITIES, reasoning_effort_map: { high: 'high' } },
+          reasoning_efforts_published: ['high'],
+        };
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(yamlMapped);
+        const dialog = await renderWithRoute(yamlMapped);
+        expect(
+          within(dialog).getByText(
+            /Without rows, the route keeps its default mapping \(high → high\)/,
+          ),
+        ).toBeInTheDocument();
+
+        fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+          target: { value: '4096' },
+        });
+        saveRouteEdit();
+
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, max_output_length: 4096 },
+          );
+        });
+      });
+
+      it('returns to the default map by clearing the console values', async () => {
+        vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(mappedRoute);
+        const dialog = await renderWithRoute({
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          capabilities_baseline: ROUTE_CAPABILITIES,
+          capabilities_overridden: true,
+        });
+
+        for (let i = 0; i < 3; i += 1) {
+          fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
+        }
+        saveRouteEdit();
+
+        await waitFor(() => expect(resetProviderRouteCapabilities).toHaveBeenCalledTimes(1));
+        expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+      });
+
+      it('returns a console map to the default while saving other values', async () => {
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(mappedRoute);
+        const dialog = await renderWithRoute({
+          ...mappedRoute,
+          capabilities: {
+            ...ROUTE_CAPABILITIES,
+            max_output_length: 4096,
+            reasoning_effort_map: EFFORT_MAP,
+          },
+          capabilities_baseline: ROUTE_CAPABILITIES,
+          capabilities_overridden: true,
+        });
+
+        for (let i = 0; i < 3; i += 1) {
+          fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
+        }
+        saveRouteEdit();
+
+        // The four stay set in the console; the map is cleared explicitly.
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, max_output_length: 4096, reasoning_effort_map: null },
+          );
+        });
+      });
+
+      it('offers no map on a route whose adapter sends no effort', async () => {
+        const dialog = await renderWithRoute({ ...route, reasoning_effort_mappable: false });
+        expect(
+          within(dialog).getByText(
+            "This route's adapter does not send reasoning_effort, so no mapping applies to it.",
+          ),
+        ).toBeInTheDocument();
+        expect(within(dialog).queryByRole('button', { name: 'Add level' })).toBeNull();
+      });
+    });
   });
 });
 

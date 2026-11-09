@@ -42,6 +42,11 @@ from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
 from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
+from serving.adapters.reasoning_effort import (
+    ReasoningEffortRefused,
+    effort_contract,
+    translate_effort,
+)
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
     AnthropicStreamModelRenamer,
@@ -931,6 +936,26 @@ def _extract_forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
 # to become a 400 nobody can trace back to a CLI flag.
 
 
+def _requested_effort(body: dict[str, Any]) -> Any:
+    """The level a Messages body asks for: ``output_config.effort``, else ``reasoning_effort``."""
+    requested = body.get("output_config")
+    effort = requested.get("effort") if isinstance(requested, dict) else None
+    return body.get("reasoning_effort") if effort is None else effort
+
+
+def _undeclared_mapped_effort(body: dict[str, Any], adapter) -> ReasoningEffortRefused | None:
+    """The refusal for a level ``adapter``'s mapped route does not declare, else ``None``."""
+    contract = effort_contract(getattr(adapter, "config", None))
+    effort = _requested_effort(body)
+    if not contract.mapped or effort is None:
+        return None
+    try:
+        translate_effort(contract, effort)
+    except ReasoningEffortRefused as refused:
+        return refused
+    return None
+
+
 def _apply_reasoning_effort(body: dict[str, Any], adapter, request_id: str) -> None:
     """Translate a requested reasoning effort into the OpenAI parameter.
 
@@ -940,8 +965,10 @@ def _apply_reasoning_effort(body: dict[str, Any], adapter, request_id: str) -> N
     parameter and declares the value; otherwise removes it and logs why.
 
     Postcondition: ``body["reasoning_effort"]`` is either absent or a value this
-    model's own registry entry declared. Called after any reroute, so the check
-    runs against the model that will actually serve the request.
+    model's own registry entry declared -- except on a route with a
+    ``reasoning_effort_map``, where any requested level is kept for the adapter
+    to translate or refuse (400), never dropped. Called after any reroute, so
+    the check runs against the model that will actually serve the request.
     """
     requested = body.get("output_config")
     effort = requested.get("effort") if isinstance(requested, dict) else None
@@ -952,15 +979,21 @@ def _apply_reasoning_effort(body: dict[str, Any], adapter, request_id: str) -> N
     body.pop("reasoning_effort", None)
 
     cfg = getattr(adapter, "config", None)
-    supported = getattr(cfg, "supported_params", None) or ()
-    declared = getattr(cfg, "reasoning_efforts", None) or ()
+    contract = effort_contract(cfg)
     model_id = getattr(cfg, "id", "?")
-    if "reasoning_effort" not in supported:
+    if contract.mapped:
+        # A route with a reasoning_effort_map is strict: the adapter translates
+        # a level it declares and refuses any other with a 400, so nothing is
+        # dropped here.
+        body["reasoning_effort"] = effort
+        return
+    if not contract.forwards:
         logger.warning(
             f"[{request_id}] Dropped reasoning effort {effort!r}: "
             f"model {model_id!r} does not support reasoning_effort"
         )
         return
+    declared = contract.levels or ()
     if effort not in declared:
         logger.warning(
             f"[{request_id}] Dropped reasoning effort {effort!r}: "
@@ -2259,6 +2292,12 @@ async def execute_messages(
     # sent to -- exactly the claim-without-dispatch that starves the recovery it
     # is supposed to orchestrate. Released in the ``finally`` that brackets the
     # dispatch below, on both the streaming and non-streaming paths.
+    # A route with a reasoning_effort_map refuses a level it does not declare.
+    # The adapter would too, but a stream is committed by then and could only
+    # say so in-band; here, before the endpoint is claimed, it is a plain 400
+    # on both paths, and nothing is sent.
+    if adapter.native_format == "openai" and (refused := _undeclared_mapped_effort(body, adapter)):
+        return _messages_error(400, refused.message)
     dispatch_claim = health_registry.begin_dispatch(dispatch_endpoint_id)
     if dispatch_claim is None:
         # Another request is already probing this endpoint. ``eligible_adapters``

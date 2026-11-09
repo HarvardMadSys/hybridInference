@@ -130,6 +130,12 @@ class ModelConfig:
     # field exists to prevent. A deployment that wants the knob declares the
     # domain it verified.
     reasoning_efforts: list[str] = field(default_factory=list)
+    # Route-level, strict public -> upstream translation of ``reasoning_effort``
+    # (``serving.adapters.reasoning_effort``). Empty: the legacy contract above.
+    # Set: its keys are the only public levels this route takes, each sent
+    # upstream as its value, whatever ``supported_params`` / ``reasoning_efforts``
+    # say. Only adapters that forward the parameter may carry one.
+    reasoning_effort_map: dict[str, str] = field(default_factory=dict)
     pricing: dict[str, str] = field(
         default_factory=lambda: {
             "prompt": "0",
@@ -262,6 +268,12 @@ class BaseAdapter(ABC):
     # messages()/stream_messages() to identity-passthrough; OpenAI-native ones
     # rely on the default impls below which translate Anthropic <-> OpenAI.
     native_format: str = "openai"
+    # Whether this adapter puts a request's ``reasoning_effort`` on the wire
+    # itself (for a route whose ``supported_params`` name it). The model
+    # listings publish an effort domain only for routes whose adapter does
+    # (``serving.model_effort_capabilities``); for any other the configuration
+    # does not say what reaches the provider.
+    forwards_reasoning_effort: bool = False
 
     def __init__(self, config: ModelConfig):
         self.config = config

@@ -43,6 +43,7 @@ from .profiles import (
     resolve_tool_choice_for_profile,
     supports_guided_json,
 )
+from .reasoning_effort import EFFORT_PARAM, EffortContract, effort_contract, translate_effort
 from .remote_media import inline_remote_media
 from .upstream_limiter import (
     UpstreamSaturated,
@@ -535,6 +536,10 @@ class OpenAICompatAdapter(BaseAdapter):
     - extra_headers / extra_query (dict[str,str])
     """
 
+    #: ``_apply_supported_passthrough_params`` forwards it, translated on a
+    #: route with a ``reasoning_effort_map``.
+    forwards_reasoning_effort = True
+
     def __init__(self, config):
         super().__init__(config)
 
@@ -671,10 +676,32 @@ class OpenAICompatAdapter(BaseAdapter):
         self._key_pool.add_key(normalized)
         return True
 
+    def _resolve_effort(self, params: dict[str, Any]) -> tuple[EffortContract, Any]:
+        """This request's effort contract, and on a mapped route the value to send.
+
+        Raises:
+            ReasoningEffortRefused: A mapped route was asked for a level it does
+                not declare (400), before any I/O.
+        """
+        contract = effort_contract(self.config)
+        requested = params.get(EFFORT_PARAM)
+        if not contract.mapped or requested is None:
+            return contract, None
+        return contract, translate_effort(contract, requested)
+
     def _apply_supported_passthrough_params(
-        self, payload: dict[str, Any], params: dict[str, Any]
+        self,
+        payload: dict[str, Any],
+        params: dict[str, Any],
+        *,
+        effort: tuple[EffortContract, Any] | None = None,
     ) -> None:
-        """Forward OpenAI-like params that do not need special normalization."""
+        """Forward OpenAI-like params that do not need special normalization.
+
+        ``effort`` is :meth:`_resolve_effort`'s answer for this request, read
+        before its first await; resolved here when not given.
+        """
+        contract, upstream_value = effort if effort is not None else self._resolve_effort(params)
         passthrough_params = (
             "top_k",
             "min_p",
@@ -691,6 +718,14 @@ class OpenAICompatAdapter(BaseAdapter):
             "parallel_tool_calls",
         )
         for name in passthrough_params:
+            if name == EFFORT_PARAM and contract.mapped:
+                # A mapped route forwards the parameter on its own declaration,
+                # translated once, here, on the adapter about to send it.
+                # ``params`` keeps the public value, so a retry or another route
+                # never sees a translated one.
+                if upstream_value is not None:
+                    payload[name] = upstream_value
+                continue
             if name in params and name in self.config.supported_params:
                 if name == "parallel_tool_calls" and not payload.get("tools"):
                     continue
@@ -1417,6 +1452,9 @@ class OpenAICompatAdapter(BaseAdapter):
         Returns:
             OpenAI-compatible response dict
         """
+        # Before anything else this request would fetch or send, and once: the
+        # route's map as it is now, whatever an admin edit does meanwhile.
+        effort = self._resolve_effort(params)
         validated = filter_sampling_params(self._usage_profile, self.validate_params(params))
 
         # Clean messages to remove None fields (some APIs reject them)
@@ -1436,7 +1474,7 @@ class OpenAICompatAdapter(BaseAdapter):
             if tool_choice is not None:
                 payload["tool_choice"] = tool_choice
 
-        self._apply_supported_passthrough_params(payload, params)
+        self._apply_supported_passthrough_params(payload, params, effort=effort)
 
         self._apply_response_format(payload, params, stream=False)
         self._apply_upstream_priority(payload)
@@ -1477,6 +1515,9 @@ class OpenAICompatAdapter(BaseAdapter):
         Yields:
             SSE-formatted chunks
         """
+        # Before anything else this request would fetch or send, and once: the
+        # route's map as it is now, whatever an admin edit does meanwhile.
+        effort = self._resolve_effort(params)
         validated = filter_sampling_params(self._usage_profile, self.validate_params(params))
 
         # Clean messages to remove None fields (some APIs reject them)
@@ -1496,7 +1537,7 @@ class OpenAICompatAdapter(BaseAdapter):
             if tool_choice is not None:
                 payload["tool_choice"] = tool_choice
 
-        self._apply_supported_passthrough_params(payload, params)
+        self._apply_supported_passthrough_params(payload, params, effort=effort)
 
         self._apply_response_format(payload, params, stream=True)
         if getattr(self.config, "include_usage_in_stream", False):

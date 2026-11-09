@@ -198,6 +198,18 @@ weights, and disable or remove routes. Resetting a catalog-route override return
 it to its database catalog baseline. The legacy API source label `yaml` and
 `yaml_weight` field remain compatibility names for that baseline.
 
+The same edit carries a route's reasoning-effort map (`reasoning_effort_map`,
+see [Mapping reasoning-effort levels on a route](adding-models.md#mapping-reasoning-effort-levels-on-a-route)):
+**Reasoning effort levels**, one row per public level and the value the
+upstream receives for it. It is optional in the body: left out, the route keeps
+the map it has, so saving the other capabilities never clears one; `null`
+returns the route to its own map from the catalog or its creation. A route
+whose adapter does not send `reasoning_effort` refuses a map (422), and a route
+added from the console never takes another route's map. Route listings report
+`reasoning_effort_mappable` and `reasoning_efforts_published`, the levels the
+live route offers clients. A save answers only once the route this process
+serves uses the saved map; otherwise it answers 409.
+
 ### Settings tab
 
 Edit application documents, credentials, delivery settings, network policy,

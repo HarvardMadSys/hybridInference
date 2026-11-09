@@ -2801,6 +2801,10 @@ msgstr "已保存但不再通过验证的站点文档会被跳过：先应用显
 msgid "Catalog and routing changes saved in this release are copied back to those rows, as canonical JSON, so a rollback runs the latest catalog the previous release can run. A catalog holding a credential reference where the previous release would not expand one is not copied, nor are a reset and a removal: the rows keep the last copy."
 msgstr "在当前版本中保存的目录和路由修改会以规范 JSON 的形式回写到这些旧行，因此回退会运行上一版本能够运行的最新目录。如果目录在上一版本不会展开凭据引用的位置含有凭据引用，则不会回写；重置和删除也不会回写：旧行保留最后一次回写的副本。"
 
+#: ../developer/configuration.md:201
+msgid "The same edit carries a route's reasoning-effort map (`reasoning_effort_map`, see [Mapping reasoning-effort levels on a route](adding-models.md#mapping-reasoning-effort-levels-on-a-route)): **Reasoning effort levels**, one row per public level and the value the upstream receives for it. It is optional in the body: left out, the route keeps the map it has, so saving the other capabilities never clears one; `null` returns the route to its own map from the catalog or its creation. A route whose adapter does not send `reasoning_effort` refuses a map (422), and a route added from the console never takes another route's map. Route listings report `reasoning_effort_mappable` and `reasoning_efforts_published`, the levels the live route offers clients. A save answers only once the route this process serves uses the saved map; otherwise it answers 409."
+msgstr "同一次编辑还携带路由的推理强度映射（`reasoning_effort_map`，参见[在路由上映射推理强度档位](adding-models.md#mapping-reasoning-effort-levels-on-a-route)）：**Reasoning effort levels**，每行一个公开档位及上游为它收到的取值。它在请求体中是可选的：省略时路由保留已有的映射，因此只保存其他能力永远不会清除映射；`null` 让路由回到它来自目录或创建时的映射。适配器不发送 `reasoning_effort` 的路由会拒绝映射（422），从控制台添加的路由也绝不会沿用其他路由的映射。路由列表会报告 `reasoning_effort_mappable` 和 `reasoning_efforts_published`，即当前生效路由向客户端提供的档位。只有在本进程所服务的路由已使用保存的映射后，保存才会成功返回；否则返回 409。"
+
 msgid "An application document from the environment that does not validate is not imported: the log names the setting and the reason, never the value, and the backend refuses to start on it unless a valid stored value takes its place."
 msgstr "来自环境变量、未通过验证的应用文档不会被导入：日志会写明设置名和原因，绝不写出其值；除非已有有效的已保存值替代它，否则后端会拒绝以它启动。"
 
