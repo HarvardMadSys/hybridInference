@@ -1817,6 +1817,13 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     Anything else raised ``AttributeError`` there: a 500 for the client's
     mistake, and on a half-open endpoint a probe claim held until it timed out.
     Checked with the required fields instead, so it is a 400 before any claim.
+
+    The adapter clamps ``max_tokens``, ``temperature`` and ``top_p`` with
+    ``min()``/``max()`` and reads each entry of a non-empty ``tools`` as an
+    object, also after the claim. A value of another JSON type raised there,
+    and that failure was counted by the endpoint's circuit breaker: three such
+    requests from one caller opened it for every user of the model. Only what
+    raised is refused; an empty ``tools`` was skipped, and still is.
     """
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -1827,6 +1834,17 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     metadata = body.get("metadata")
     if metadata is not None and not isinstance(metadata, dict):
         return "Invalid field: metadata must be an object"
+    for name in ("max_tokens", "temperature", "top_p"):
+        value = body.get(name)
+        if value is not None and not isinstance(value, (int, float)):
+            return f"Invalid field: {name} must be a number"
+    tools = body.get("tools")
+    if tools:
+        if not isinstance(tools, list):
+            return "Invalid field: tools must be an array"
+        for index, tool in enumerate(tools):
+            if not isinstance(tool, dict):
+                return f"Invalid field: tools[{index}] must be an object"
     return None
 
 

@@ -358,6 +358,24 @@ async def test_an_upstream_timeout_is_marked_timed_out(error):
     assert result.error is not None
 
 
+async def test_a_connection_that_timed_out_opening_is_retried_not_timed_out():
+    """Opening the connection timed out: nothing was sent, as with a refused connection.
+
+    ``aiohttp.ConnectionTimeoutError`` is a ``TimeoutError`` too, and was taken
+    for a generation running past every limit, which the scheduler fails at once
+    without a retry: a host that dropped connections for a few seconds failed
+    every item in flight for good.
+    """
+    import aiohttp
+
+    app, services = _setup(_Upstream(error=aiohttp.ConnectionTimeoutError()))
+
+    result = await _dispatch(app, services)
+
+    assert result.timed_out is False
+    assert result.retryable is True
+
+
 async def test_cancellation_propagates():
     upstream = _Upstream(delay=5.0)
     app, services = _setup(upstream)

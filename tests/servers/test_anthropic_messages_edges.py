@@ -337,6 +337,56 @@ async def test_a_malformed_request_gets_an_anthropic_400(
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ({"temperature": "0.5"}, "Invalid field: temperature must be a number"),
+        ({"top_p": [1]}, "Invalid field: top_p must be a number"),
+        ({"max_tokens": "100"}, "Invalid field: max_tokens must be a number"),
+        ({"tools": {"name": "lookup"}}, "Invalid field: tools must be an array"),
+        ({"tools": ["lookup"]}, "Invalid field: tools[0] must be an object"),
+    ],
+    ids=["temperature", "top-p", "max-tokens", "tools-not-an-array", "tool-not-an-object"],
+)
+async def test_a_wrongly_typed_field_is_a_400_and_never_charged_to_the_endpoint(
+    anthropic_test_client, anthropic_compat_router, field, message, stream
+):
+    """The adapter clamps these with min()/max() and reads each tool as an object.
+
+    A value of another JSON type raised TypeError there, after the endpoint's
+    dispatch claim: a 502 for the client's mistake, counted by the circuit
+    breaker, so three such requests from one caller opened the endpoint for
+    every user of the model.
+    """
+    from routing.endpoints import endpoint_id_for_adapter
+
+    adapter = anthropic_compat_router.routes[OPENAI_MODEL].adapters[0][0]
+    endpoint_id = endpoint_id_for_adapter(adapter)
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 5,
+        "stream": stream,
+        "messages": [{"role": "user", "content": "hi"}],
+        **field,
+    }
+
+    for _ in range(3):
+        r = await anthropic_test_client.post(
+            "/v1/messages",
+            content=json.dumps(body).encode(),
+            headers={**_auth(), "content-type": "application/json"},
+        )
+        assert r.status_code == 400
+        assert r.json() == {
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": message},
+        }
+
+    assert anthropic_compat_router.endpoint_health_registry.allow_request(endpoint_id)
+
+
 def _nested(depth: int) -> list:
     return json.loads("[" * depth + "]" * depth)
 

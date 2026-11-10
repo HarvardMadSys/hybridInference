@@ -57,6 +57,17 @@ async def test_a_reason_never_repeats_a_reference_the_validator_expanded(monkeyp
     assert "private-endpoint-credential" not in refused.value.detail
 
 
+async def test_a_stored_policy_naming_no_strategy_is_reported_instead_of_served():
+    """Saved before the check existed, it failed every startup; now the default policy applies."""
+    await load([row("ROUTING_POLICY", json.dumps({"default_router": "fixd"}))])
+
+    assert get("routing") == {}
+    entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
+    assert entries["ROUTING_POLICY"]["invalid"].startswith(
+        "/default_router names no routing strategy"
+    )
+
+
 # --- documents from the environment -------------------------------------------
 
 
