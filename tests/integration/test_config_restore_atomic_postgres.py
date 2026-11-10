@@ -149,7 +149,7 @@ async def test_a_restore_that_succeeds_commits_every_table(stores) -> None:
     assert await _state(pool) == {
         "site_name": "After Restore",
         "key": "sk-itest-restore-new-0123456789abcdef",
-        "setting": "true",
+        "setting": "True",
         "limit": 2,
         "domains": 1,
     }

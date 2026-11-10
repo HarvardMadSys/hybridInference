@@ -1028,6 +1028,57 @@ async def test_revoking_a_key_a_runtime_route_pins_takes_it_out_of_every_pool_at
 
 
 @pytest.mark.asyncio
+async def test_re_enabling_a_key_a_runtime_route_pins_restores_it_to_that_route_at_once(client):
+    """Disabling a pinned key takes it out of its route at once; enabling puts it back at once.
+
+    The route opts out of provider-wide key injection, so the re-enable skipped
+    it and the key returned to the route only at the next routing refresh. A
+    route pinned to another key must still not receive it.
+    """
+    http, _store = client
+    pinned_key = "zai-pinned-db-key-eeeeeeeeeeee"
+    other_key = "zai-other-db-key-ffffffffffff"
+    configured = _registered_provider_adapter("zai", api_key="zai-env-key-gggggggggggg")
+    dynamic_keys.register_adapter_for_provider("zai", configured)
+    key_ids = {}
+    for key in (pinned_key, other_key):
+        add = await http.post(
+            "/admin/provider-keys", json={"provider": "zai", "api_key": key}, headers=AUTH
+        )
+        key_ids[key] = add.json()["key"]["id"]
+
+    def pinned_route(key: str) -> OpenAICompatAdapter:
+        adapter = OpenAICompatAdapter(
+            ModelConfig(
+                id=f"runtime-model-{key_ids[key]}",
+                name="runtime-model",
+                provider="zai",
+                base_url="https://zai.example/v1",
+                api_keys=[key],
+                provider_model_id="Provider/Test-Model",
+            )
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "zai", adapter, allow_db_key_injection=False, api_key_id=key_ids[key]
+        )
+        return adapter
+
+    route = pinned_route(pinned_key)
+    other_route = pinned_route(other_key)
+    disable = await http.post(f"/admin/provider-keys/{key_ids[pinned_key]}/disable", headers=AUTH)
+    assert disable.status_code == 200, disable.text
+    assert pinned_key not in route._key_pool.snapshot_keys()
+
+    resp = await http.post(f"/admin/provider-keys/{key_ids[pinned_key]}/enable", headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pools_updated"] == 2
+    assert route._key_pool.snapshot_keys() == [pinned_key]
+    assert pinned_key in configured._key_pool.snapshot_keys()
+    assert other_route._key_pool.snapshot_keys() == [other_key]
+
+
+@pytest.mark.asyncio
 async def test_enable_env_key_only_restores_to_owning_pool(client):
     """Re-enabling an env key re-adds it only to adapters configured with it.
 
