@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from serving.adapters.reasoning_effort import declared_public_levels
 from serving.model_access import model_access_denial
+from serving.model_effort_capabilities import model_effort_domain
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -93,8 +93,8 @@ def agent_model_reasoning_efforts(router_exec: Any, models: Sequence[str]) -> di
     answer this at all. One shape for both, so the picker cannot render an
     empty control in either case.
 
-    Read off the first route's config, as the rest of this module does — the
-    field is per model, copied onto every route the registry builds from it.
+    Use the same intersection as the public model listings. An unknown
+    route or an empty intersection leaves the model out of this mapping.
 
     Args:
         router_exec: Model registry.
@@ -112,12 +112,9 @@ def agent_model_reasoning_efforts(router_exec: Any, models: Sequence[str]) -> di
         # endpoint whose actual job is the model list, so a route that cannot
         # account for its adapters costs the caller one absent effort domain —
         # not the catalog, and not the job that was about to be created.
-        configs = [adapter.config for adapter, _ in getattr(route, "adapters", None) or ()]
-        if not configs:
-            continue
-        # The public levels (a route's reasoning_effort_map keys, else its
-        # declared reasoning_efforts), never the upstream values a map sends.
-        declared = [str(value) for value in declared_public_levels(configs[0])]
+        declared = model_effort_domain(
+            adapter for adapter, _ in getattr(route, "adapters", None) or ()
+        )
         if declared:
             efforts[model_id] = declared
     return efforts
